@@ -750,6 +750,44 @@ class ModelMeta(ModelMetaclass):
             # Generate Reference class with ID
             cls.Reference = mcs._create_reference_class(cls, name)
 
+        # Sanitize inherited field defaults to avoid leaking ModelFieldAccessor instances
+        model_fields = getattr(cls, "model_fields", {})
+        if model_fields:
+            for field_name, field in model_fields.items():
+                if isinstance(field.default, ModelFieldAccessor):
+                    resolved_default = None
+                    resolved_factory = None
+
+                    for base in cls.__mro__[1:]:
+                        base_fields = getattr(base, "model_fields", None)
+                        if not base_fields or field_name not in base_fields:
+                            continue
+
+                        base_field = base_fields[field_name]
+                        if isinstance(base_field.default, ModelFieldAccessor):
+                            continue
+
+                        resolved_default = base_field.default
+                        resolved_factory = base_field.default_factory
+                        break
+
+                    if resolved_default is None:
+                        try:
+                            from pydantic_core import PydanticUndefined
+                        except (
+                            ImportError
+                        ):  # pragma: no cover - fallback for older versions
+                            try:
+                                from pydantic.fields import PydanticUndefined  # type: ignore
+                            except ImportError:  # pragma: no cover - ultimate fallback
+                                PydanticUndefined = ...  # type: ignore[assignment]
+
+                        resolved_default = PydanticUndefined
+                        resolved_factory = None
+
+                    field.default = resolved_default
+                    field.default_factory = resolved_factory
+
         return cls
 
     @staticmethod

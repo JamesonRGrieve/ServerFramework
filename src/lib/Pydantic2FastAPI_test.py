@@ -627,6 +627,21 @@ class TestFastAPIIntegration:
         assert data["has_registry"] is True
 
 
+class TestModelFieldSanitization:
+    """Ensure generated models have serializable defaults."""
+
+    def test_domain_models_use_serializable_defaults(self):
+        """TeamModel fields should avoid ModelFieldAccessor defaults."""
+        from logic.BLL_Auth import TeamModel
+        from logic.AbstractLogicManager import ModelFieldAccessor
+
+        for field in TeamModel.model_fields.values():
+            assert not isinstance(field.default, ModelFieldAccessor)
+
+        assert TeamModel.model_fields["id"].is_required()
+        assert TeamModel.model_fields["description"].default is None
+
+
 class TestCompleteWorkflow:
     """Test complete workflow with real operations."""
 
