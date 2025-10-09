@@ -35,9 +35,11 @@ from fastapi import (
     Security,
     status,
 )
+from fastapi.encoders import jsonable_encoder
 from fastapi.params import Depends as DependsParam
 from fastapi.security import HTTPBasic
 from pydantic import BaseModel, ValidationError, create_model
+from pydantic_core import PydanticUndefined
 
 # Compatibility patch for Pydantic 2.x ValidationError.from_exception_data
 try:
@@ -279,6 +281,18 @@ class ExampleGenerator:
         return str(uuid.uuid4())
 
     @staticmethod
+    def _is_serializable_default(value: Any) -> bool:
+        """Check if a default value can be safely serialized to JSON."""
+        if value is None or value is PydanticUndefined:
+            return value is None
+
+        try:
+            jsonable_encoder(value)
+        except Exception:
+            return False
+        return True
+
+    @staticmethod
     def get_example_value(field_type: Type, field_name: str) -> Any:
         """
         Generate an appropriate example value based on field type and name.
@@ -430,13 +444,25 @@ class ExampleGenerator:
 
                 # Check if field has a default value
                 if not field_info.is_required():
-                    if field_info.default is not None:
-                        example[field_name] = field_info.default
+                    default_value = field_info.default
+                    if ExampleGenerator._is_serializable_default(default_value):
+                        example[field_name] = default_value
                         continue
-                    # Check if field has a default factory
-                    elif field_info.default_factory is not None:
-                        example[field_name] = field_info.default_factory()
-                        continue
+
+                    if field_info.default_factory is not None:
+                        try:
+                            factory_value = field_info.default_factory()
+                        except Exception as factory_error:
+                            logger.debug(
+                                "Default factory for %s.%s failed with %s; generating synthetic example",
+                                model_cls.__name__,
+                                field_name,
+                                factory_error,
+                            )
+                        else:
+                            if ExampleGenerator._is_serializable_default(factory_value):
+                                example[field_name] = factory_value
+                                continue
 
                 # Check for example in field metadata
                 if (

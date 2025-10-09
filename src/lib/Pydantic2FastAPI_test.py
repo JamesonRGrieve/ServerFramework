@@ -797,6 +797,20 @@ class TestExampleGenerator:
         assert example["id"] is None or len(str(example["id"])) == 36  # UUID or None
         assert isinstance(example["name"], str)
 
+    def test_generate_example_skips_model_field_accessor_defaults(self):
+        """Ensure models with non-serializable defaults produce safe examples."""
+        from fastapi.encoders import jsonable_encoder
+        from logic.BLL_Auth import TeamModel
+
+        example = ExampleGenerator.generate_example_for_model(TeamModel)
+        encoded = jsonable_encoder(example)
+
+        assert isinstance(encoded, dict)
+        assert isinstance(example["id"], str)
+        assert len(example["id"]) == 36
+        assert isinstance(example["created_at"], str)
+        assert isinstance(example["created_by_user_id"], str)
+
     def test_generate_operation_examples(self):
         """Test operation example generation."""
         examples = ExampleGenerator.generate_operation_examples(
