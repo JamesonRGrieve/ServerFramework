@@ -350,10 +350,13 @@ class EXT_EMail(AbstractStaticExtension):
         """Validate extension configuration and return list of issues."""
         issues = []
 
-        if not env("SENDGRID_API_KEY"):
+        # Import env at call time so tests that patch lib.Environment.env are respected
+        from lib.Environment import env as _env
+
+        if not _env("SENDGRID_API_KEY"):
             issues.append("SENDGRID_API_KEY environment variable not set")
 
-        if not env("SENDGRID_FROM_EMAIL"):
+        if not _env("SENDGRID_FROM_EMAIL"):
             issues.append("SENDGRID_FROM_EMAIL environment variable not set")
 
         return issues
@@ -377,7 +380,7 @@ class EXT_EMail(AbstractStaticExtension):
         Get the current status of the email extension.
         This is a meta ability that works regardless of provider.
         """
-        # Import env at call-time so runtime patches (e.g. in tests) take effect
+        # Import env at call time so tests that patch lib.Environment.env are respected
         from lib.Environment import env as _env
 
         return {
@@ -395,7 +398,7 @@ class EXT_EMail(AbstractStaticExtension):
         Get the current email configuration.
         This is a meta ability that works regardless of provider.
         """
-        # Import env at call-time so runtime patches (e.g. in tests) take effect
+        # Import env at call time so tests that patch lib.Environment.env are respected
         from lib.Environment import env as _env
 
         return {
@@ -413,7 +416,7 @@ class EXT_EMail(AbstractStaticExtension):
         Validate that the email extension is properly configured.
         """
         # Check for required environment variables
-        # Import env at call-time so runtime patches take effect
+        # Import env at call time so tests that patch lib.Environment.env are respected
         from lib.Environment import env as _env
 
         email_provider = _env("EMAIL_PROVIDER") or "sendgrid"
@@ -428,6 +431,7 @@ class EXT_EMail(AbstractStaticExtension):
     @classmethod
     def get_default_provider_name(cls) -> str:
         """Get the default email provider name from configuration."""
+        # Import env at call time so tests that patch lib.Environment.env are respected
         from lib.Environment import env as _env
 
         return _env("EMAIL_PROVIDER") or "sendgrid"
