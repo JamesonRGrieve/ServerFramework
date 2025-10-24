@@ -2,8 +2,8 @@ name: Downstream Trigger
 
 on:
   pull_request:
-    branches:
-      - main
+    # branches:
+    #   - main
 
 jobs:
   check-pr-source:
@@ -37,17 +37,18 @@ jobs:
     permissions:
       contents: write # For lint within pytest
 
-  call-reusable-stage-downstream:
-    name: Call Reusable Stage Downstream Workflow
-    needs: [check-pr-source, run-tests] # Ensures tests pass and branch is correct before staging
-    if: needs.check-pr-source.outputs.is_from_dev == 'true'
-    uses: JamesonRGrieve/Workflows/.github/workflows/gh-test-downstream.yml@main
-    with:
-      source_repo_ref: "dev" # Staging happens from the 'dev' branch of the current repo
-    secrets:
-      PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
-      DOWNSTREAM_REPOSITORIES: ${{ secrets.DOWNSTREAM_REPOSITORIES }}
-    permissions:
-      contents: write
-      pull-requests: write
-    # Permissions are handled by the reusable workflow itself.
+
+  # call-reusable-stage-downstream:
+  #   name: Call Reusable Stage Downstream Workflow
+  #   needs: [check-pr-source, run-tests] # Ensures tests pass and branch is correct before staging
+  #   if: needs.check-pr-source.outputs.is_from_dev == 'true'
+  #   uses: JamesonRGrieve/Workflows/.github/workflows/gh-test-downstream.yml@main
+  #   with:
+  #     source_repo_ref: "dev" # Staging happens from the 'dev' branch of the current repo
+  #   secrets:
+  #     PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
+  #     DOWNSTREAM_REPOSITORIES: ${{ secrets.DOWNSTREAM_REPOSITORIES }}
+  #   permissions:
+  #     contents: write
+  #     pull-requests: write
+  # Permissions are handled by the reusable workflow itself.

@@ -1,4 +1,3 @@
-import inspect
 import json
 import re
 import uuid
@@ -36,9 +35,9 @@ from fastapi import (
     Security,
     status,
 )
+from fastapi.encoders import jsonable_encoder
 from fastapi.params import Depends as DependsParam
 from fastapi.security import HTTPBasic
-from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, ValidationError, create_model
 
 # Sentinel import for Pydantic's undefined values
@@ -1338,6 +1337,7 @@ def register_route(
                 ..., description=f"{stringcase.titlecase(resource_name)} ID"
             ),
             query_params: network_model.GET = Depends(),
+            # TODO This ^ Depends() is not correctly retrieving the query parameters from the request query string.
             manager=Depends(manager_factory),
         ):
             try:

@@ -1,11 +1,11 @@
+import inspect
 import json
+import sys
 import uuid
 from dataclasses import dataclass
-import inspect
-import sys
-from types import UnionType
 from enum import Enum
 from itertools import combinations
+from types import UnionType
 from typing import (
     Any,
     Dict,
@@ -20,8 +20,8 @@ from typing import (
 )
 
 import pytest
-from faker import Faker
 import stringcase
+from faker import Faker
 
 from AbstractTest import (
     AbstractTest,
@@ -34,8 +34,8 @@ from AbstractTest import (
 from endpoints.AbstractGQLTest import AbstractGraphQLTest
 from lib.Environment import env, inflection
 from lib.Logging import logger
-from logic.AbstractBLLTest import AbstractBLLTest
 from lib.Pydantic import PydanticUtility
+from logic.AbstractBLLTest import AbstractBLLTest
 
 # Using shared inflection instance from Environment
 
@@ -1061,9 +1061,9 @@ class AbstractEndpointTest(AbstractTest, AbstractGraphQLTest):
         # Build query parameters
         query_params = []
         if fields:
-            query_params.append(f"fields={fields}")
+            query_params.append(f"fields={','.join(fields)}")
         if includes:
-            query_params.append(f"includes={includes}")
+            query_params.append(f"includes={','.join(includes)}")
 
         query_string = f"?{'&'.join(query_params)}" if query_params else ""
 
