@@ -1166,6 +1166,39 @@ def handle_resource_operation_error(err: Exception) -> None:
         )
 
 
+def _normalize_query_list(value: Any) -> Optional[List[str]]:
+    """Normalize query param that may be None, a string, or a list/tuple into a list of strings.
+
+    - If value is None -> None
+    - If value is a string -> split on commas, strip whitespace, dedupe preserving order
+    - If value is a list/tuple -> coerce items to str, strip, dedupe
+    Returns None if result is empty.
+    """
+    if value is None:
+        return None
+    # If FastAPI already parsed a list/tuple
+    if isinstance(value, (list, tuple)):
+        seen: list[str] = []
+        out: list[str] = []
+        for item in value:
+            if item is None:
+                continue
+            s = str(item).strip()
+            if not s:
+                continue
+            if s not in seen:
+                seen.append(s)
+                out.append(s)
+        return out if out else None
+    # If it's a string, split on commas
+    if isinstance(value, str):
+        parts = [p.strip() for p in value.split(",") if p.strip()]
+        return parts if parts else None
+    # Fallback: coerce to string
+    s = str(value).strip()
+    return [s] if s else None
+
+
 def register_route(
     router: APIRouter,
     route_type: RouteType,
@@ -1345,8 +1378,12 @@ def register_route(
                     parent_id = request["path_params"][parent_param_name]
                     # TODO: Add parent validation if needed
 
+                # Normalize include/fields query params to lists (accept comma-separated strings)
+                include_param = _normalize_query_list(getattr(query_params, "include", None))
+                fields_param = _normalize_query_list(getattr(query_params, "fields", None))
+
                 result = get_manager(manager, manager_property).get(
-                    id=id, include=query_params.include, fields=query_params.fields
+                    id=id, include=include_param, fields=fields_param
                 )
 
                 if result is None:
@@ -1391,9 +1428,12 @@ def register_route(
                     parent_id = request["path_params"][parent_param_name]
                     search_params[parent_param_name] = parent_id
 
+                include_param = _normalize_query_list(getattr(query_params, "include", None))
+                fields_param = _normalize_query_list(getattr(query_params, "fields", None))
+
                 results = get_manager(manager, manager_property).list(
-                    include=query_params.include,
-                    fields=query_params.fields,
+                    include=include_param,
+                    fields=fields_param,
                     offset=query_params.offset or 0,
                     limit=query_params.limit or 100,
                     sort_by=query_params.sort_by,
@@ -1648,6 +1688,10 @@ def register_route(
                 actual_fields = (
                     fields if fields is not None else getattr(criteria, "fields", None)
                 )
+
+                # Normalize include/fields to lists if strings provided
+                actual_include = _normalize_query_list(actual_include)
+                actual_fields = _normalize_query_list(actual_fields)
                 actual_limit = (
                     limit if limit is not None else getattr(criteria, "limit", None)
                 )
