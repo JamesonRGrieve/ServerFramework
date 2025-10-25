@@ -367,6 +367,9 @@ class SendGrid_ContactModel(AbstractExternalModel):
         default_factory=list, description="List IDs the contact belongs to"
     )
 
+    # Mark as an extension model for the framework introspection
+    _is_extension_model: ClassVar[bool] = True
+
     class Create(BaseModel):
         """Create model for SendGrid Contact."""
 
@@ -586,6 +589,9 @@ class SendGrid_TemplateModel(AbstractExternalModel):
         default_factory=list, description="Template versions"
     )
 
+    # Mark as an extension model for the framework introspection
+    _is_extension_model: ClassVar[bool] = True
+
     class Create(BaseModel):
         """Create model for SendGrid Template."""
 
@@ -764,6 +770,9 @@ class SendGrid_CampaignModel(AbstractExternalModel):
     status: str = Field(..., description="Campaign status")
     created_at: str = Field(..., description="Creation timestamp")
     updated_at: str = Field(..., description="Last update timestamp")
+
+    # Mark as an extension model for the framework introspection
+    _is_extension_model: ClassVar[bool] = True
 
     class Create(BaseModel):
         """Create model for SendGrid Campaign."""
