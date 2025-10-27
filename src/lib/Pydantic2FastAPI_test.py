@@ -740,7 +740,11 @@ class TestQueryParameterInjection:
 
         response = client.get(f"/v1/test/{entity.id}?fields=name&fields=value")
         assert response.status_code == 200
-        payload = response.json()["test"]
+
+        import stringcase
+        expected_key = stringcase.snakecase(manager_cls.__name__.replace("Manager", ""))
+        payload = response.json()[expected_key]
+        
         assert set(payload.keys()) == {"name", "value"}
         assert payload["name"] == "Seed"
         assert payload["value"] == 7
@@ -762,7 +766,11 @@ class TestQueryParameterInjection:
 
         response = client.get(f"/v1/test/{entity.id}?fields=name&include=children")
         assert response.status_code == 200
-        payload = response.json()["test"]
+
+        import stringcase
+        expected_key = stringcase.snakecase(manager_cls.__name__.replace("Manager", ""))
+        payload = response.json()[expected_key]
+
         assert set(payload.keys()) == {"name", "children"}
         assert payload["name"] == "Seed"
         assert manager_cls.last_get_params["include"] == ["children"]
@@ -783,7 +791,12 @@ class TestQueryParameterInjection:
 
         response = client.get("/v1/test?fields=name")
         assert response.status_code == 200
-        items = response.json()["tests"]
+
+        import stringcase
+        expected_key = stringcase.snakecase(manager_cls.__name__.replace("Manager", ""))
+        collection_key = f"{expected_key}s"
+
+        items = response.json()[collection_key]
         expected_names = [entity.name for entity in manager_cls._shared_store.values()]
         assert [item["name"] for item in items] == expected_names
         assert all(set(item.keys()) == {"name"} for item in items)

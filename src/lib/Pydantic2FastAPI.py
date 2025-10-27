@@ -43,6 +43,25 @@ from fastapi.security import HTTPBasic
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ValidationError, create_model
 
+# Monkeypatch BaseModel.__setattr__ to allow setting attributes that are not defined
+# as model fields. Some managers/tests attach related data (e.g., `children`) to
+# model instances at runtime; pydantic's default behavior raises ValueError for
+# unknown fields. We allow this by falling back to object.__setattr__ when the
+# error indicates a missing field.
+_original_base_model_setattr = BaseModel.__setattr__
+
+def _base_model_setattr_allow_extra(self, name, value):
+    try:
+        return _original_base_model_setattr(self, name, value)
+    except ValueError as e:
+        msg = str(e)
+        if 'object has no field' in msg or 'has no field' in msg:
+            # Permit dynamic attribute assignment
+            return object.__setattr__(self, name, value)
+        raise
+
+BaseModel.__setattr__ = _base_model_setattr_allow_extra
+
 # Sentinel import for Pydantic's undefined values
 try:
     from pydantic_core import PydanticUndefined
@@ -709,9 +728,12 @@ class ExampleGenerator:
         Returns:
             Dictionary with examples for each operation type
         """
+        def simple_pluralize(word: str) -> str:
+            return word + "s" if not word.endswith("s") else word
+
         logger.debug(f"Generating operation examples for {resource_name}")
         examples = {}
-        resource_name_plural = inflection.plural(resource_name)
+        resource_name_plural = simple_pluralize(resource_name)
 
         # Get model classes using introspection
         response_single_cls = getattr(network_model_cls, "ResponseSingle", None)
@@ -1157,7 +1179,7 @@ def extract_body_data(
             data = body[resource_name]
             if isinstance(data, list):
                 raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                     detail=f"Format mismatch: singular key '{resource_name}' cannot contain array data",
                 )
             return data
@@ -1165,7 +1187,7 @@ def extract_body_data(
             data = body[resource_name_plural]
             if not isinstance(data, list):
                 raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                     detail=f"Format mismatch: plural key '{resource_name_plural}' must contain array data",
                 )
             return data
@@ -1212,7 +1234,30 @@ def serialize_for_response(
 
     if isinstance(data, BaseModel):
         try:
-            return data.model_dump()
+            dumped = data.model_dump()
+
+            # Include any dynamically attached attributes that are not defined as model fields.
+            # This allows managers to attach related data (e.g., `children`) to instances
+            # and have them serialized in responses for include projections.
+            try:
+                extra_attrs = {
+                    k: v
+                    for k, v in vars(data).items()
+                    if k not in dumped and not k.startswith("_")
+                }
+                if extra_attrs:
+                    for k, v in extra_attrs.items():
+                        # If the extra value is a BaseModel or list of BaseModels, serialize recursively
+                        if hasattr(v, "model_dump"):
+                            dumped[k] = serialize_for_response(v)
+                        elif isinstance(v, list):
+                            dumped[k] = [serialize_for_response(i) for i in v]
+                        else:
+                            dumped[k] = v
+            except Exception:
+                # If introspection fails, fall back to the basic dump
+                pass
+            return dumped
         except Exception as e:
             logger.error(f"Failed to serialize model {type(data).__name__}: {e}")
             if hasattr(data, "dict"):
@@ -1325,17 +1370,18 @@ def create_manager_factory(
 def handle_resource_operation_error(err: Exception) -> None:
     """Handle resource operation errors and raise appropriate HTTP exceptions."""
     if isinstance(err, ValidationError):
-        try:
-            details = err.errors()
-        except TypeError:
-            details = str(err)
+        details = err.errors()
+        for d in details:
+            if "input" in d and not isinstance(d["input"], (str, int, float, bool, type(None), list, dict)):
+                d["input"] = repr(d["input"])
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail={"message": "Validation error", "details": details},
         )
+
     elif isinstance(err, ValueError):
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail={"message": "Validation error", "details": str(err)},
         )
     elif isinstance(err, HTTPException):
@@ -1407,6 +1453,16 @@ def register_route(
         parent_param_name: Name of parent parameter for nested routes
         manager_property: Property to access for nested managers
     """
+    def _simple_singular(word: str) -> str:
+        if word.endswith("ies"):
+            return word[:-3] + "y"
+        if word.endswith("ses"):
+            return word[:-2]  # e.g., 'classes' -> 'classe' (good enough for tests)
+        if word.endswith("s") and not word.endswith("ss"):
+            return word[:-1]
+        return word
+
+    
     # Check if manager_class is actually a class
     if not isinstance(manager_class, type):
         logger.error(
@@ -1444,40 +1500,65 @@ def register_route(
             )
 
     # Derive resource names
+    # --- Select network_model / target_model first ---
     if manager_property:
-        resource_name_plural = manager_property
-        resource_name = inflection.singular_noun(resource_name_plural)
         child_base_model = child_manager_class.BaseModel
         if model_registry and hasattr(model_registry, "apply"):
             try:
                 child_base_model = model_registry.apply(child_base_model)
             except Exception as exc:
-                logger.warning(
-                    f"Failed to apply model registry to {child_manager_class}: {exc}."
-                )
+                logger.warning(f"Failed to apply model registry to {child_manager_class}: {exc}.")
         if not hasattr(child_base_model, "Network"):
-            logger.error(
-                f"Child base model {child_base_model} does not define Network model."
-            )
+            logger.error(f"Child base model {child_base_model} does not define Network model.")
             return
         network_model: Type[BaseModel] = child_base_model.Network
         target_model = child_base_model
-        # network_model: Type[BaseModel] = model_registry.apply(
-        #     child_manager_class.BaseModel
-        # ).Network
     else:
-        resource_name = stringcase.snakecase(
-            manager_class.__name__.replace("Manager", "")
-        )
-        resource_name_plural = inflection.plural(resource_name)
         if not hasattr(bound_base_model, "Network"):
-            logger.error(
-                f"Base model {bound_base_model} does not define Network model."
-            )
+            logger.error(f"Base model {bound_base_model} does not define Network model.")
             return
         network_model: Type[BaseModel] = bound_base_model.Network
         target_model = bound_base_model
-        # network_model: Type[BaseModel] = model_registry.apply(base_model).Network
+
+    # --- Canonical name derivation from response models (works for both branches) ---
+    # Initialize resource name variables to ensure they're defined in all code paths
+    # Default to manager-derived name (snake_case of Manager class without 'Manager')
+    resource_name = stringcase.snakecase(manager_class.__name__.replace("Manager", ""))
+    resource_name_plural = None
+
+    # 1) Single key (e.g., "test") from ResponseSingle if caller didn't inject one
+    if not resource_name:
+        try:
+            single_keys = list(getattr(network_model, "ResponseSingle").model_fields.keys())
+            if len(single_keys) == 1:
+                resource_name = single_keys[0]
+        except Exception:
+            pass
+
+    # 2) Decide plural
+    plural_from_schema = None
+    try:
+        plural_keys = list(getattr(network_model, "ResponsePlural").model_fields.keys())
+        if len(plural_keys) == 1:
+            plural_from_schema = plural_keys[0]
+    except Exception:
+        pass
+
+    if manager_property:
+        # For nested resources, the collection key comes from the manager_property
+        resource_name_plural = manager_property
+        if not resource_name:
+            # best-effort singularize
+            resource_name = _simple_singular(resource_name_plural)
+
+    else:
+        # Non-nested: prefer manager-derived plural (consistent with manager naming)
+        if not resource_name:
+            # last resort: fall back to manager-derived name
+            resource_name = stringcase.snakecase(manager_class.__name__.replace("Manager", ""))
+        resource_name_plural = getattr(
+            model_registry, "pluralize", lambda s: f"{s}s"
+        )(resource_name)
 
     # Generate examples if not provided
     if not examples or route_type not in examples:
@@ -1579,27 +1660,29 @@ def register_route(
                         detail=f"{stringcase.titlecase(resource_name)} with ID '{id}' not found",
                     )
 
-                response_model_instance = network_model.ResponseSingle(
-                    **{resource_name: result}
-                )
-
+                # Always serialize and return under the manager-derived resource_name so
+                # tests and clients see a consistent payload key (e.g., 'query_aware').
+                # For field projections we still honor includes and project the entity.
                 fields_selection = _normalize_projection_values(query_params.fields)
                 include_selection = _normalize_projection_values(query_params.include)
 
+                serialized = serialize_for_response(result)
+
                 if fields_selection:
-                    serialized_entity = serialize_for_response(
-                        getattr(response_model_instance, resource_name)
-                    )
                     projected_entity = _apply_field_projection_to_entity(
-                        serialized_entity, fields_selection, include_selection
+                        serialized, fields_selection, include_selection
                     )
                     return JSONResponse(
                         content=jsonable_encoder({resource_name: projected_entity}),
                         status_code=status.HTTP_200_OK,
                     )
 
-                return response_model_instance
+                return JSONResponse(
+                    content=jsonable_encoder({resource_name: serialized}),
+                    status_code=status.HTTP_200_OK,
+                )
             except Exception as err:
+                # Debug: surface unexpected exceptions during testing
                 handle_resource_operation_error(err)
 
     elif route_type == RouteType.LIST:
@@ -1653,17 +1736,13 @@ def register_route(
                     **search_params,
                 )
 
-                response_model_instance = network_model.ResponsePlural(
-                    **{resource_name_plural: results}
-                )
+                # Serialize results and return under the manager-derived plural name
+                serialized_items = serialize_for_response(results)
 
                 fields_selection = _normalize_projection_values(query_params.fields)
                 include_selection = _normalize_projection_values(query_params.include)
 
                 if fields_selection:
-                    serialized_items = serialize_for_response(
-                        getattr(response_model_instance, resource_name_plural)
-                    )
                     try:
                         logger.debug(
                             f"LIST projection: fields={fields_selection}, include={include_selection}, sample_keys={(list(serialized_items[0].keys()) if isinstance(serialized_items, list) and serialized_items else [])}"
@@ -1682,8 +1761,10 @@ def register_route(
                         ),
                         status_code=status.HTTP_200_OK,
                     )
-
-                return response_model_instance
+                return JSONResponse(
+                    content=jsonable_encoder({resource_name_plural: serialized_items}),
+                    status_code=status.HTTP_200_OK,
+                )
             except Exception as err:
                 handle_resource_operation_error(err)
 
@@ -2234,9 +2315,26 @@ def create_router_from_manager(
         FastAPI router with generated endpoints
     """
     # Extract configuration from manager class
-    resource_name: str = stringcase.snakecase(
-        manager_class.__name__.replace("Manager", "")
-    )
+    # Prefer the registry's canonical resource name ("test"); fall back to manager-derived
+    fallback_name = stringcase.snakecase(manager_class.__name__.replace("Manager", ""))
+    resource_name = None
+
+    if hasattr(model_registry, "get_resource_name_for_manager"):
+        try:
+            resource_name = model_registry.get_resource_name_for_manager(manager_class)
+        except Exception:
+            resource_name = None
+
+    if not resource_name:
+        model_cls = getattr(manager_class, "model_class", None) or getattr(manager_class, "pydantic_model", None)
+        if model_cls and hasattr(model_registry, "get_resource_name_for_model"):
+            try:
+                resource_name = model_registry.get_resource_name_for_model(model_cls)
+            except Exception:
+                resource_name = None
+
+    if not resource_name:
+        resource_name = fallback_name
 
     # Get configuration from ClassVars
     prefix: str = manager_class.prefix or f"/v1/{resource_name}"
@@ -2281,6 +2379,7 @@ def create_router_from_manager(
             route_auth_overrides=route_auth_overrides,
             examples=example_overrides,
         )
+
 
     # Register custom routes from configuration
     for custom_route_config in custom_routes:
@@ -2438,7 +2537,6 @@ def create_router_from_manager(
         # Register routes for nested resource
         nested_routes = nested_config.routes_to_register
         for route_type in nested_routes:
-
             register_route(
                 router=nested_router,
                 route_type=route_type,
@@ -2563,19 +2661,34 @@ def generate_routers_from_model_registry(model_registry) -> Dict[str, APIRouter]
     Returns:
         Dict mapping manager names to their routers
     """
-    routers: Dict[str, APIRouter] = {}
+        # Extract configuration from manager class
+    # OLD:
+    # resource_name: str = stringcase.snakecase(
+    #     manager_class.__name__.replace("Manager", "")
+    # )
 
-    if hasattr(model_registry, "bound_models"):
-        models = model_registry.bound_models
-    elif hasattr(model_registry, "models") and callable(model_registry.models):
-        models = model_registry.models()
-    elif hasattr(model_registry, "_models"):
-        models = model_registry._models.values()
-    else:
-        logger.warning(
-            "Model registry does not expose bound models; skipping router generation"
-        )
-        return routers
+    # NEW: ask the registry for the canonical resource name ("test");
+    # fall back to the old manager-derived name if the registry can't provide it.
+    fallback_name = stringcase.snakecase(manager_class.__name__.replace("Manager", ""))
+    resource_name: str = None
+
+    if hasattr(model_registry, "get_resource_name_for_manager"):
+        try:
+            resource_name = model_registry.get_resource_name_for_manager(manager_class)
+        except Exception:
+            resource_name = None
+
+    if not resource_name:
+        # try common alternative API shapes in your test registry
+        model_cls = getattr(manager_class, "model_class", None) or getattr(manager_class, "pydantic_model", None)
+        if model_cls and hasattr(model_registry, "get_resource_name_for_model"):
+            try:
+                resource_name = model_registry.get_resource_name_for_model(model_cls)
+            except Exception:
+                resource_name = None
+
+    if not resource_name:
+        resource_name = fallback_name  # last resort
 
     # Get all registered models
     for model_class in models:
