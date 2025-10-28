@@ -2661,61 +2661,59 @@ def generate_routers_from_model_registry(model_registry) -> Dict[str, APIRouter]
     Returns:
         Dict mapping manager names to their routers
     """
-        # Extract configuration from manager class
-    # OLD:
-    # resource_name: str = stringcase.snakecase(
-    #     manager_class.__name__.replace("Manager", "")
-    # )
+    routers: Dict[str, APIRouter] = {}
 
-    # NEW: ask the registry for the canonical resource name ("test");
-    # fall back to the old manager-derived name if the registry can't provide it.
-    fallback_name = stringcase.snakecase(manager_class.__name__.replace("Manager", ""))
-    resource_name: str = None
-
-    if hasattr(model_registry, "get_resource_name_for_manager"):
+    # Try to obtain a list of model classes from the registry in a few common ways
+    models: List[Type[Any]] = []
+    if hasattr(model_registry, "models"):
         try:
-            resource_name = model_registry.get_resource_name_for_manager(manager_class)
+            models = list(model_registry.models())
         except Exception:
-            resource_name = None
+            models = []
 
-    if not resource_name:
-        # try common alternative API shapes in your test registry
-        model_cls = getattr(manager_class, "model_class", None) or getattr(manager_class, "pydantic_model", None)
-        if model_cls and hasattr(model_registry, "get_resource_name_for_model"):
-            try:
-                resource_name = model_registry.get_resource_name_for_model(model_cls)
-            except Exception:
-                resource_name = None
+    if not models and hasattr(model_registry, "_models"):
+        try:
+            models = list(model_registry._models.values())
+        except Exception:
+            models = []
 
-    if not resource_name:
-        resource_name = fallback_name  # last resort
+    # If still no models, return empty dict
+    if not models:
+        logger.debug("No models found in model_registry when generating routers")
+        return routers
 
-    # Get all registered models
     for model_class in models:
-        model_name: str = model_class.__name__
+        model_name: str = getattr(model_class, "__name__", str(model_class))
 
-        # Check if model has a Manager attribute
-        if hasattr(model_class, "Manager") and model_class.Manager:
-            manager_class: Type["AbstractBLLManager"] = model_class.Manager
-            manager_name: str = manager_class.__name__
-
-            # Check if it has RouterMixin (Router method)
-            if hasattr(manager_class, "Router"):
-                try:
-                    router: APIRouter = manager_class.Router(model_registry)
-                    routers[manager_name] = router
-                    logger.info(f"Generated router for {manager_name}")
-                except Exception as e:
-                    import traceback
-
-                    logger.error(
-                        f"Failed to generate router for {manager_name}: {traceback.format_exc()}"
-                    )
-            else:
-                logger.debug(
-                    f"Manager {manager_name} for model {model_name} does not have RouterMixin"
-                )
-        else:
+        # Check if model has a Manager attribute and that it's a class
+        manager_cls = getattr(model_class, "Manager", None)
+        if not manager_cls:
             logger.debug(f"Model {model_name} does not have a Manager attribute")
+            continue
+
+        # Ensure manager_cls is a class
+        if not isinstance(manager_cls, type):
+            logger.debug(f"Manager for {model_name} is not a class: {manager_cls}")
+            continue
+
+        manager_name: str = manager_cls.__name__
+
+        # Check for router generation capability
+        if not hasattr(manager_cls, "Router"):
+            logger.debug(
+                f"Manager {manager_name} for model {model_name} does not expose Router()"
+            )
+            continue
+
+        try:
+            router: APIRouter = manager_cls.Router(model_registry)
+            routers[manager_name] = router
+            logger.info(f"Generated router for {manager_name}")
+        except Exception:
+            import traceback
+
+            logger.error(
+                f"Failed to generate router for {manager_name}: {traceback.format_exc()}"
+            )
 
     return routers

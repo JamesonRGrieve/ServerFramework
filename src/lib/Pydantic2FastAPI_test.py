@@ -237,6 +237,38 @@ def router(model_registry):
     return create_router_from_manager(TestManager, model_registry)
 
 
+def _expected_resource_key(manager_cls, model_registry):
+    """Resolve the expected resource key for responses in tests.
+
+    Prefer the model_registry's canonical name when available, then fall back
+    to the manager-derived snake_case name so tests remain stable across
+    registry-driven or manager-driven naming strategies.
+    """
+    import stringcase
+
+    if hasattr(model_registry, "get_resource_name_for_manager"):
+        try:
+            name = model_registry.get_resource_name_for_manager(manager_cls)
+            if name:
+                return name
+        except Exception:
+            pass
+
+    # Try to derive from the manager's model_class if registry supports it
+    model_cls = getattr(manager_cls, "model_class", None) or getattr(
+        manager_cls, "pydantic_model", None
+    )
+    if model_cls and hasattr(model_registry, "get_resource_name_for_model"):
+        try:
+            name = model_registry.get_resource_name_for_model(model_cls)
+            if name:
+                return name
+        except Exception:
+            pass
+
+    return stringcase.snakecase(manager_cls.__name__.replace("Manager", ""))
+
+
 # Tests for Core Functions
 class TestAuthType:
     """Test AuthType enum."""
@@ -741,8 +773,7 @@ class TestQueryParameterInjection:
         response = client.get(f"/v1/test/{entity.id}?fields=name&fields=value")
         assert response.status_code == 200
 
-        import stringcase
-        expected_key = stringcase.snakecase(manager_cls.__name__.replace("Manager", ""))
+        expected_key = _expected_resource_key(manager_cls, model_registry)
         payload = response.json()[expected_key]
         
         assert set(payload.keys()) == {"name", "value"}
@@ -767,8 +798,7 @@ class TestQueryParameterInjection:
         response = client.get(f"/v1/test/{entity.id}?fields=name&include=children")
         assert response.status_code == 200
 
-        import stringcase
-        expected_key = stringcase.snakecase(manager_cls.__name__.replace("Manager", ""))
+        expected_key = _expected_resource_key(manager_cls, model_registry)
         payload = response.json()[expected_key]
 
         assert set(payload.keys()) == {"name", "children"}
@@ -792,9 +822,14 @@ class TestQueryParameterInjection:
         response = client.get("/v1/test?fields=name")
         assert response.status_code == 200
 
-        import stringcase
-        expected_key = stringcase.snakecase(manager_cls.__name__.replace("Manager", ""))
-        collection_key = f"{expected_key}s"
+        expected_key = _expected_resource_key(manager_cls, model_registry)
+        if hasattr(model_registry, "pluralize"):
+            try:
+                collection_key = model_registry.pluralize(expected_key)
+            except Exception:
+                collection_key = f"{expected_key}s"
+        else:
+            collection_key = f"{expected_key}s"
 
         items = response.json()[collection_key]
         expected_names = [entity.name for entity in manager_cls._shared_store.values()]
