@@ -2663,17 +2663,31 @@ def generate_routers_from_model_registry(model_registry) -> Dict[str, APIRouter]
     """
     routers: Dict[str, APIRouter] = {}
 
-    # Try to obtain a list of model classes from the registry in a few common ways
+    # Try to obtain a list of model classes from the registry in a few common ways.
+    # Different versions of ModelRegistry expose models via different attributes
+    # (models(), _models, bound_models). Probe them in order so this function
+    # works across repository copies and versions.
     models: List[Type[Any]] = []
+
+    # 1) model_registry.models() (preferred if available)
     if hasattr(model_registry, "models"):
         try:
             models = list(model_registry.models())
         except Exception:
             models = []
 
+    # 2) model_registry._models (dict mapping name->class)
     if not models and hasattr(model_registry, "_models"):
         try:
             models = list(model_registry._models.values())
+        except Exception:
+            models = []
+
+    # 3) model_registry.bound_models (list/iterable of model classes)
+    if not models and hasattr(model_registry, "bound_models"):
+        try:
+            # bound_models may be a set/list; convert to list
+            models = list(model_registry.bound_models)
         except Exception:
             models = []
 
