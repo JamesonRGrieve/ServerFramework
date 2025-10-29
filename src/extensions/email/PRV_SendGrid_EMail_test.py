@@ -10,6 +10,22 @@ from extensions.email.PRV_SendGrid_EMail import SendgridProvider
 from lib.Dependencies import check_pip_dependencies, install_pip_dependencies
 from lib.Environment import env
 from logic.BLL_Providers import ProviderInstanceModel
+import pytest
+
+
+# Provide lightweight placeholders for extension-level fixtures that are not available
+# in this focused test run; the provider tests will skip the heavy integration tests
+# based on the test_config, but pytest still resolves fixture names at collection.
+
+
+@pytest.fixture
+def extension_server():
+    return None
+
+
+@pytest.fixture
+def extension_db():
+    return None
 
 
 class TestSendgridProvider(AbstractPRVTest):
@@ -21,7 +37,30 @@ class TestSendgridProvider(AbstractPRVTest):
     # Configure the test class
     provider_class = SendgridProvider
     extension_id = "email"
-    test_config = ClassOfTestsConfig(
+    # The test harness expects some common ClassOfTestsConfig fields (timeout, categories, cleanup)
+    # while the provider mixin expects a ProviderTestConfig with test_types etc. Create a tiny
+    # adapter object that exposes both shapes and wrap the provider basic_config here.
+    class _TestConfigAdapter:
+        def __init__(self, provider_conf, categories=None, timeout=None, parallel=False, cleanup=True, gh_action_skip=False):
+            # AbstractPRVTest / AbstractTest expectations
+            self.categories = categories or [CategoryOfTest.EXTENSION]
+            self.timeout = timeout
+            self.parallel = parallel
+            self.cleanup = cleanup
+            self.gh_action_skip = gh_action_skip
+
+            # ProviderTestConfig surface
+            self.test_types = provider_conf.test_types
+            self.expected_abilities = provider_conf.expected_abilities
+            self.expected_services = provider_conf.expected_services
+            self.expected_dependencies = provider_conf.expected_dependencies
+            self.performance_thresholds = provider_conf.performance_thresholds
+            self.skip_rotation_tests = provider_conf.skip_rotation_tests
+            self.skip_performance_tests = provider_conf.skip_performance_tests
+            self.skip_error_handling_tests = provider_conf.skip_error_handling_tests
+
+    test_config = _TestConfigAdapter(
+        AbstractPRVTest.basic_config(),
         categories=[CategoryOfTest.EXTENSION, CategoryOfTest.INTEGRATION],
         cleanup=True,
     )

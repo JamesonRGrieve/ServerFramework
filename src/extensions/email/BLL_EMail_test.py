@@ -1,11 +1,14 @@
 # Set default test configuration for all test classes
 
+# Set default test configuration for all test classes
+
 from AbstractTest import ClassOfTestsConfig, CategoryOfTest
 from logic.AbstractBLLTest import AbstractBLLTest
 from extensions.AbstractEXTTest import ExtensionServerMixin
 from extensions.email.EXT_EMail import EXT_EMail
 from lib.Environment import env
-from logic.AbstractLogicManager import AbstractBLLManager
+
+from logic.BLL_Auth import InvitationManager
 
 
 AbstractBLLTest.test_config = ClassOfTestsConfig(
@@ -15,12 +18,13 @@ AbstractBLLTest.test_config = ClassOfTestsConfig(
 
 class TestEmailManager(AbstractBLLTest, ExtensionServerMixin):
     """
-    Test class for the Email Manager extension.
-    This class inherits from AbstractBLLTest and ExtensionServerMixin to provide
-    a framework for testing the email functionality in the server.
+    Test class for email-related behavior that integrates with the
+    InvitationManager. We run the generic BLL tests (create/list/get/update/etc.)
+    against InvitationManager so the full suite of logic tests in this
+    extension folder remain active.
     """
 
-    class_under_test = AbstractBLLManager
+    class_under_test = InvitationManager
     extension_class = EXT_EMail
 
     create_fields = {}
@@ -31,11 +35,11 @@ class TestEmailManager(AbstractBLLTest, ExtensionServerMixin):
         """
         Sends an email when an invitation-invitee is created.
 
-        Args:
-            entity: The invitee object containing invitation and details for the email.
+        This test creates an invitation via the InvitationManager which will
+        trigger the Email extension's invitation hook. We assert only that
+        the invitation was created successfully; the extension hook is run
+        as part of the create flow.
         """
-
-        from logic.BLL_Auth import InvitationManager
 
         with InvitationManager(
             model_registry=model_registry,
