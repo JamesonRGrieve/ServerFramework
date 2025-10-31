@@ -1157,7 +1157,7 @@ def extract_body_data(
             data = body[resource_name]
             if isinstance(data, list):
                 raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                     detail=f"Format mismatch: singular key '{resource_name}' cannot contain array data",
                 )
             return data
@@ -1165,7 +1165,7 @@ def extract_body_data(
             data = body[resource_name_plural]
             if not isinstance(data, list):
                 raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                     detail=f"Format mismatch: plural key '{resource_name_plural}' must contain array data",
                 )
             return data
@@ -1330,12 +1330,12 @@ def handle_resource_operation_error(err: Exception) -> None:
         except TypeError:
             details = str(err)
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail={"message": "Validation error", "details": details},
         )
     elif isinstance(err, ValueError):
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail={"message": "Validation error", "details": str(err)},
         )
     elif isinstance(err, HTTPException):
@@ -1579,8 +1579,11 @@ def register_route(
                         detail=f"{stringcase.titlecase(resource_name)} with ID '{id}' not found",
                     )
 
+                # Ensure the manager return value is serialized into plain data
+                # so Pydantic can validate it reliably (models -> dicts)
+                serialized_result = serialize_for_response(result)
                 response_model_instance = network_model.ResponseSingle(
-                    **{resource_name: result}
+                    **{resource_name: serialized_result}
                 )
 
                 fields_selection = _normalize_projection_values(query_params.fields)
@@ -1653,8 +1656,10 @@ def register_route(
                     **search_params,
                 )
 
+                # Serialize list items before constructing response model
+                serialized_results = serialize_for_response(results)
                 response_model_instance = network_model.ResponsePlural(
-                    **{resource_name_plural: results}
+                    **{resource_name_plural: serialized_results}
                 )
 
                 fields_selection = _normalize_projection_values(query_params.fields)
@@ -1833,12 +1838,13 @@ def register_route(
                 #         fields=getattr(body, "fields", None),
                 #     )
 
+                # Serialize update result for reliable validation
+                update_result = get_manager(manager, manager_property).update(
+                    id, **update_data
+                )
+                serialized_update = serialize_for_response(update_result)
                 return network_model.ResponseSingle(
-                    **{
-                        resource_name: get_manager(manager, manager_property).update(
-                            id, **update_data
-                        )
-                    }
+                    **{resource_name: serialized_update}
                 )
             except Exception as err:
                 handle_resource_operation_error(err)
@@ -1980,8 +1986,10 @@ def register_route(
                     **search_data,
                 )
 
+                # Serialize search results before building response model
+                serialized_search_results = serialize_for_response(search_results)
                 response_model_instance = network_model.ResponsePlural(
-                    **{resource_name_plural: search_results}
+                    **{resource_name_plural: serialized_search_results}
                 )
 
                 fields_selection = _normalize_projection_values(actual_fields)
