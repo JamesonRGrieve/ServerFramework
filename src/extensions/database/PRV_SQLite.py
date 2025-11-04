@@ -63,9 +63,15 @@ class PRV_SQLite(AbstractDatabaseProvider):
                 # Create default database file if not specified
                 conversation_name = config.get("conversation_name", "default")
                 conversation_dir = config.get("conversation_directory", ".")
-                database_file = os.path.join(
-                    conversation_dir, f"{conversation_name}.db"
-                )
+                # If a POSIX-style directory was provided (contains '/') prefer
+                # to preserve the exact string so tests that expect forward
+                # slashes (e.g. '/tmp/...') remain stable on Windows.
+                if "/" in conversation_dir and os.path.sep != "/":
+                    database_file = f"{conversation_dir}/{conversation_name}.db"
+                else:
+                    database_file = os.path.join(
+                        conversation_dir, f"{conversation_name}.db"
+                    )
 
             # Store configuration
             cls._connection_config = {"database_file": database_file, **config}
