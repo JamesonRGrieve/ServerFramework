@@ -616,13 +616,22 @@ class AbstractEndpointTest(AbstractTest, AbstractGraphQLTest):
         values: Optional[Union[str, List[str], Tuple[str, ...], Set[str]]],
     ) -> str:
         """Return a comma-separated string for query parameters."""
+        if values is None:
+            return None
         if not values:
             return ""
         if isinstance(values, str):
             return values.strip()
         if isinstance(values, (list, tuple, set)):
-            parts = [str(value).strip() for value in values if str(value).strip()]
-            return ",".join(parts)
+            # Trim, deduplicate, and preserve order
+            seen = set()
+            result = []
+            for value in values:
+                trimmed = str(value).strip()
+                if trimmed and trimmed not in seen:
+                    seen.add(trimmed)
+                    result.append(trimmed)
+            return ",".join(result)
         return ""
 
     def _create_assert(self, tracked_index: str):

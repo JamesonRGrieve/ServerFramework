@@ -1579,17 +1579,70 @@ def register_route(
                         detail=f"{stringcase.titlecase(resource_name)} with ID '{id}' not found",
                     )
 
+                # Build the Response model first (preserves Pydantic conversions and any included relationships),
+                # then serialize and attach synthesized includes (option C)
                 response_model_instance = network_model.ResponseSingle(
                     **{resource_name: result}
                 )
 
-                fields_selection = _normalize_projection_values(query_params.fields)
+                from logic.BLL_Auth import UserManager
+
+                serialized_entity = serialize_for_response(
+                    getattr(response_model_instance, resource_name)
+                )
+
                 include_selection = _normalize_projection_values(query_params.include)
 
+                def _attach_user_includes_to_entity(entity: Optional[Dict[str, Any]]):
+                    if not entity or not include_selection:
+                        return
+                    # Map include token -> id field (e.g., updated_by_user -> updated_by_user_id)
+                    user_includes = [inc for inc in include_selection if inc.endswith("_user")]
+                    if not user_includes:
+                        return
+
+                    # Build a user manager to fetch user objects
+                    try:
+                        user_mgr = UserManager(
+                            requester_id=manager.requester.id,
+                            model_registry=manager.model_registry,
+                        )
+                    except Exception:
+                        # Fallback: don't attach if we cannot instantiate
+                        return
+
+                    for inc in user_includes:
+                        id_field = f"{inc}_id"
+                        # Some models keep created_by_user_id/updated_by_user_id - try these too
+                        if id_field not in entity:
+                            # allow include like 'created_by_user' to map to 'created_by_user_id'
+                            # if not present, skip
+                            continue
+
+                        # If include already present (e.g., joinedload produced it), don't overwrite
+                        if inc in entity and entity.get(inc) is not None:
+                            continue
+
+                        user_id = entity.get(id_field)
+                        if not user_id:
+                            entity[inc] = None
+                            continue
+
+                        try:
+                            user_obj = user_mgr.get(id=user_id)
+                            entity[inc] = (
+                                serialize_for_response(user_obj)
+                                if user_obj is not None
+                                else None
+                            )
+                        except Exception:
+                            entity[inc] = None
+
+                _attach_user_includes_to_entity(serialized_entity)
+
+                # If fields projection requested, apply it now and return JSON
+                fields_selection = _normalize_projection_values(query_params.fields)
                 if fields_selection:
-                    serialized_entity = serialize_for_response(
-                        getattr(response_model_instance, resource_name)
-                    )
                     projected_entity = _apply_field_projection_to_entity(
                         serialized_entity, fields_selection, include_selection
                     )
@@ -1598,7 +1651,11 @@ def register_route(
                         status_code=status.HTTP_200_OK,
                     )
 
-                return response_model_instance
+                # Return JSONResponse with the final serialized entity so includes are present
+                return JSONResponse(
+                    content=jsonable_encoder({resource_name: serialized_entity}),
+                    status_code=status.HTTP_200_OK,
+                )
             except Exception as err:
                 handle_resource_operation_error(err)
 
@@ -1653,17 +1710,60 @@ def register_route(
                     **search_params,
                 )
 
+                # Construct ResponsePlural first so Pydantic converts/validates items and included relations,
+                # then serialize to primitive dicts and attach synthesized includes as needed
                 response_model_instance = network_model.ResponsePlural(
                     **{resource_name_plural: results}
                 )
 
-                fields_selection = _normalize_projection_values(query_params.fields)
+                serialized_items = serialize_for_response(
+                    getattr(response_model_instance, resource_name_plural)
+                ) or []
+
                 include_selection = _normalize_projection_values(query_params.include)
 
+                from logic.BLL_Auth import UserManager
+
+                def _attach_user_includes_to_items(items: List[Dict[str, Any]]):
+                    if not items or not include_selection:
+                        return
+                    user_includes = [inc for inc in include_selection if inc.endswith("_user")]
+                    if not user_includes:
+                        return
+                    try:
+                        user_mgr = UserManager(
+                            requester_id=manager.requester.id,
+                            model_registry=manager.model_registry,
+                        )
+                    except Exception:
+                        return
+
+                    for entity in items:
+                        for inc in user_includes:
+                            id_field = f"{inc}_id"
+                            if id_field not in entity:
+                                continue
+                            if inc in entity and entity.get(inc) is not None:
+                                continue
+                            user_id = entity.get(id_field)
+                            if not user_id:
+                                entity[inc] = None
+                                continue
+                            try:
+                                user_obj = user_mgr.get(id=user_id)
+                                entity[inc] = (
+                                    serialize_for_response(user_obj)
+                                    if user_obj is not None
+                                    else None
+                                )
+                            except Exception:
+                                entity[inc] = None
+
+                _attach_user_includes_to_items(serialized_items)
+
+                fields_selection = _normalize_projection_values(query_params.fields)
+
                 if fields_selection:
-                    serialized_items = serialize_for_response(
-                        getattr(response_model_instance, resource_name_plural)
-                    )
                     try:
                         logger.debug(
                             f"LIST projection: fields={fields_selection}, include={include_selection}, sample_keys={(list(serialized_items[0].keys()) if isinstance(serialized_items, list) and serialized_items else [])}"
@@ -1683,7 +1783,10 @@ def register_route(
                         status_code=status.HTTP_200_OK,
                     )
 
-                return response_model_instance
+                return JSONResponse(
+                    content=jsonable_encoder({resource_name_plural: serialized_items}),
+                    status_code=status.HTTP_200_OK,
+                )
             except Exception as err:
                 handle_resource_operation_error(err)
 
