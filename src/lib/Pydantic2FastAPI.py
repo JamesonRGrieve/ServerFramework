@@ -1637,8 +1637,38 @@ def register_route(
                             )
                         except Exception:
                             entity[inc] = None
+                def _attach_invitees_to_entity(entity: Optional[Dict[str, Any]]):
+                    """Attach invitees list to a single invitation entity when include=invitees."""
+                    if not entity or not include_selection:
+                        return
+                    if "invitees" not in include_selection:
+                        return
+
+                    try:
+                        actual_manager = get_manager(manager, manager_property)
+                    except Exception:
+                        return
+
+                    # Only attempt if the manager exposes an Invitee_manager helper
+                    invitee_mgr = getattr(actual_manager, "Invitee_manager", None)
+                    if not invitee_mgr:
+                        return
+
+                    invitation_id = entity.get("id")
+                    if not invitation_id:
+                        entity["invitees"] = []
+                        return
+
+                    try:
+                        invitees = invitee_mgr.list(invitation_id=invitation_id)
+                        entity["invitees"] = serialize_for_response(invitees) or []
+                    except Exception:
+                        # Don't break the response if invitee lookup fails
+                        entity["invitees"] = []
 
                 _attach_user_includes_to_entity(serialized_entity)
+                # Attach invitees for Invitation resources when requested
+                _attach_invitees_to_entity(serialized_entity)
 
                 # If fields projection requested, apply it now and return JSON
                 fields_selection = _normalize_projection_values(query_params.fields)
@@ -1760,6 +1790,36 @@ def register_route(
                                 entity[inc] = None
 
                 _attach_user_includes_to_items(serialized_items)
+
+                def _attach_invitees_to_items(items: List[Dict[str, Any]]):
+                    """Attach invitees lists to each invitation entity in a list when include=invitees."""
+                    if not items or not include_selection:
+                        return
+                    if "invitees" not in include_selection:
+                        return
+
+                    try:
+                        actual_manager = get_manager(manager, manager_property)
+                    except Exception:
+                        return
+
+                    invitee_mgr = getattr(actual_manager, "Invitee_manager", None)
+                    if not invitee_mgr:
+                        return
+
+                    for entity in items:
+                        invitation_id = entity.get("id")
+                        if not invitation_id:
+                            entity["invitees"] = []
+                            continue
+                        try:
+                            invitees = invitee_mgr.list(invitation_id=invitation_id)
+                            entity["invitees"] = serialize_for_response(invitees) or []
+                        except Exception:
+                            entity["invitees"] = []
+
+                # Attach invitees for Invitation resources when requested
+                _attach_invitees_to_items(serialized_items)
 
                 fields_selection = _normalize_projection_values(query_params.fields)
 
