@@ -330,6 +330,17 @@ def _convert_based_on_type_hint(value, type_hint):
     if value is None:
         return None
 
+    # If the type hint is typing.Any, just return the value as-is.
+    # Attempting to instantiate typing.Any (or calling Any(**value)) causes
+    # TypeError: "Any cannot be instantiated". Guard here to keep behavior
+    # resilient when DTO annotations use `Any` or Optional[Any].
+    try:
+        from typing import Any as _TypingAny
+    except Exception:
+        _TypingAny = Any
+    if type_hint is _TypingAny:
+        return value
+
     # Get the origin type (for generics like List, Optional)
     origin = get_origin(type_hint)
 

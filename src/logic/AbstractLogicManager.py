@@ -1803,70 +1803,158 @@ class AbstractBLLManager(ABC):
 
         joins = []
 
+        # Helper: resolve a single attribute name to an actual relationship attribute
+        def _resolve_relationship_attribute(cls, name):
+            """Try to resolve a relationship attribute on cls for the given include name.
+
+            Resolution strategy:
+            1. If attribute exists on the class and is a relationship, return it.
+            2. Inspect SQLAlchemy mapper relationships and try to match by relationship key.
+            3. If not found, look for a relationship whose local FK column matches '{name}_id'.
+            Returns the attribute descriptor or None.
+            """
+            # 1) direct attribute check
+            try:
+                if hasattr(cls, name):
+                    candidate = getattr(cls, name)
+                    if hasattr(candidate, "property") and hasattr(
+                        candidate.property, "mapper"
+                    ):
+                        return candidate
+            except Exception:
+                # fall through to mapper-based resolution
+                pass
+
+            # 2) mapper-based resolution
+            try:
+                from sqlalchemy.inspection import inspect as sa_inspect
+
+                mapper = sa_inspect(cls)
+                # Try to find relationship by key first
+                for rel in mapper.relationships:
+                    if rel.key == name:
+                        return getattr(cls, rel.key)
+
+                # 3) Try to match by local foreign key column name (e.g., created_by_user -> created_by_user_id)
+                fk_name = f"{name}_id"
+                for rel in mapper.relationships:
+                    # rel.local_columns is a set of Column objects
+                    for col in getattr(rel, "local_columns", set()):
+                        try:
+                            col_name = getattr(col, "name", getattr(col, "key", None))
+                        except Exception:
+                            col_name = None
+                        if col_name == fk_name or col_name == name:
+                            return getattr(cls, rel.key)
+                # 4) If no relationship found, but there is a FK column named fk_name, attempt to create a dynamic relationship
+                #    that points to the referenced table's model. This creates a view-only relationship on the class
+                #    so joinedload can be used for includes like 'created_by_user' when only '<name>_id' exists.
+                try:
+                    # Try to access table column object
+                    col_obj = None
+                    table = getattr(cls, "__table__", None)
+                    if table is not None and fk_name in table.c:
+                        col_obj = table.c[fk_name]
+                    else:
+                        # Try InstrumentedAttribute on class
+                        candidate = getattr(cls, fk_name, None)
+                        if candidate is not None and hasattr(candidate, "property"):
+                            # attempt to pull column from descriptor
+                            cols = getattr(candidate.property, "columns", None)
+                            if cols:
+                                col_obj = list(cols)[0]
+
+                    if col_obj is not None and getattr(col_obj, "foreign_keys", None):
+                        # Get referenced table name from the first FK
+                        fk_iter = iter(col_obj.foreign_keys)
+                        first_fk = next(fk_iter, None)
+                        if first_fk is not None and hasattr(first_fk, "column"):
+                            ref_table = getattr(first_fk.column, "table", None)
+                            ref_table_name = getattr(ref_table, "name", None)
+                            if ref_table_name:
+                                try:
+                                    import stringcase
+                                    from lib.Environment import inflection
+                                    # Derive candidate class names (likely Pydantic model names -> SQLAlchemy model classes)
+                                    singular = (
+                                        inflection.singular_noun(ref_table_name)
+                                        if hasattr(inflection, "singular_noun")
+                                        else None
+                                    )
+                                    if not singular:
+                                        # fallback: strip trailing 's' if present
+                                        singular = ref_table_name[:-1] if ref_table_name.endswith("s") else ref_table_name
+
+                                    candidate_class = stringcase.pascalcase(singular) + "Model"
+                                    # Create a view-only relationship using the candidate class name string
+                                    from sqlalchemy.orm import relationship as sa_relationship
+
+                                    rel_attr = sa_relationship(
+                                        candidate_class,
+                                        foreign_keys=[getattr(cls, fk_name)],
+                                        viewonly=True,
+                                    )
+                                    setattr(cls, name, rel_attr)
+                                    return getattr(cls, name)
+                                except Exception:
+                                    # If dynamic relationship creation fails, ignore and continue
+                                    pass
+                except Exception:
+                    # ignore any errors in dynamic relationship creation
+                    pass
+            except Exception:
+                pass
+
+            return None
+
         for field in include_fields:
             try:
                 # Handle nested includes (e.g., 'user_teams.team.roles')
                 if "." in field:
                     parts = field.split(".")
 
-                    # Start with the first relationship
-                    if not hasattr(model_class, parts[0]):
+                    # Resolve first part to an attribute (relationship)
+                    first_attr = _resolve_relationship_attribute(model_class, parts[0])
+                    if not first_attr:
                         logger.warning(
                             f"Relationship '{parts[0]}' not found on {model_class.__name__}"
                         )
                         continue
 
-                    current_attr = getattr(model_class, parts[0])
-
-                    # Check if it's actually a relationship
-                    if not (hasattr(current_attr.property, "mapper")):
+                    current_join = joinedload(first_attr)
+                    # Drill down into nested model class
+                    try:
+                        current_model_class = first_attr.property.mapper.class_
+                    except Exception:
                         logger.warning(
-                            f"'{parts[0]}' is not a relationship on {model_class.__name__}"
+                            f"Could not resolve mapper for relationship '{parts[0]}' on {model_class.__name__}"
                         )
                         continue
 
-                    # Start building the nested joinload
-                    current_join = joinedload(current_attr)
-                    current_model_class = current_attr.property.mapper.class_
-
-                    # Build nested joinloads for deeper relationships
                     for part in parts[1:]:
-                        if hasattr(current_model_class, part):
-                            nested_attr = getattr(current_model_class, part)
-
-                            # Ensure it's a relationship
-                            if hasattr(nested_attr.property, "mapper"):
-                                current_join = current_join.joinedload(nested_attr)
-                                current_model_class = nested_attr.property.mapper.class_
-                            else:
-                                logger.warning(
-                                    f"'{part}' is not a relationship on {current_model_class.__name__}"
-                                )
-                                break
+                        nested_attr = _resolve_relationship_attribute(current_model_class, part)
+                        if nested_attr and hasattr(nested_attr, "property") and hasattr(
+                            nested_attr.property, "mapper"
+                        ):
+                            current_join = current_join.joinedload(nested_attr)
+                            current_model_class = nested_attr.property.mapper.class_
                         else:
                             logger.warning(
                                 f"Relationship '{part}' not found on {current_model_class.__name__}"
                             )
                             break
                     else:
-                        # If we didn't break out of the loop, add the join
                         joins.append(current_join)
 
-                # Handle simple includes (e.g., 'user_teams')
-                elif hasattr(model_class, field):
-                    attr = getattr(model_class, field)
-
-                    # Check if this is actually a relationship (not a column property)
-                    if hasattr(attr.property, "mapper"):
+                else:
+                    # Simple include - try to resolve to a relationship attribute
+                    attr = _resolve_relationship_attribute(model_class, field)
+                    if attr is not None:
                         joins.append(joinedload(attr))
                     else:
                         logger.warning(
-                            f"'{field}' is not a relationship on {model_class.__name__}"
+                            f"Relationship '{field}' not found on {model_class.__name__}"
                         )
-                else:
-                    logger.warning(
-                        f"Relationship '{field}' not found on {model_class.__name__}"
-                    )
 
             except (AttributeError, TypeError) as e:
                 logger.warning(
