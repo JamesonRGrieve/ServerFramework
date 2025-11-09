@@ -949,6 +949,47 @@ class MigrationManager:
             return result, success
 
         except Exception as e:
+            # If the error is FileNotFoundError (e.g., 'alembic' not on PATH),
+            # retry by invoking the module via the current Python interpreter: `python -m alembic ...`.
+            logger.debug(f"Initial subprocess attempt failed: {e}")
+            try:
+                if isinstance(e, FileNotFoundError) and cmd and isinstance(cmd, (list, tuple)):
+                    # Build a fallback command that uses the current Python executable to run alembic as a module
+                    fallback_cmd = [sys.executable, "-m", cmd[0]] + list(cmd[1:])
+                    logger.debug(f"Retrying with fallback command: {' '.join(fallback_cmd)}")
+                    result = subprocess.run(
+                        fallback_cmd,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        env=combined_env,
+                        check=False,
+                    )
+
+                    # Log outputs
+                    if result.stderr:
+                        for line in result.stderr.strip().split("\n"):
+                            if line.strip():
+                                logger.debug(f"[FALLBACK_SUBPROCESS_STDERR] {line}")
+                    if result.stdout:
+                        for line in result.stdout.strip().split("\n"):
+                            if line.strip():
+                                logger.debug(f"[FALLBACK_SUBPROCESS_STDOUT] {line}")
+
+                    success = result.returncode == 0
+                    if success:
+                        logger.debug(
+                            f"Fallback command completed successfully with return code {result.returncode}"
+                        )
+                        return result, True
+                    else:
+                        logger.error(f"Fallback command failed with return code {result.returncode}")
+                        if result.stderr:
+                            logger.error(f"Fallback stderr: {result.stderr}")
+                        return result, False
+            except Exception as e2:
+                logger.error(f"Fallback subprocess attempt also failed: {e2}")
+
             logger.error(f"Error running command {' '.join(cmd)}: {e}")
             return None, False
 
