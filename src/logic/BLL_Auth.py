@@ -374,12 +374,10 @@ class UserManager(AbstractBLLManager, RouterMixin):
     prefix: ClassVar[Optional[str]] = "/v1/user"
     tags: ClassVar[Optional[List[str]]] = ["User Management"]
     auth_type: ClassVar[AuthType] = AuthType.JWT
-    # Register all routes except CREATE (user creation is handled by custom registration route)
+    # Register only SEARCH route (GET/LIST, UPDATE, DELETE are handled by custom routes)
+    # Note: LIST is not registered because GET /v1/user returns current user, not a list
+    # User listing is available via SEARCH endpoint
     routes_to_register: ClassVar[Optional[List[RouteType]]] = [
-        RouteType.GET,
-        RouteType.LIST,
-        RouteType.UPDATE,
-        RouteType.DELETE,
         RouteType.SEARCH,
     ]
     route_auth_overrides: ClassVar[Dict[RouteType, AuthType]] = {}
@@ -3383,7 +3381,7 @@ class UserTeamManager(AbstractBLLManager, RouterMixin):
     ) -> Any:
         """Get a user with optional included relationships."""
         options = []
-        
+
         fields = self.validate_fields(fields)
         # TODO Move generate_joins to AbstractDatabaseEntity.py
         if include:
