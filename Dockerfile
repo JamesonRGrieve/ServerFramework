@@ -12,13 +12,11 @@ ENV PYTHONUNBUFFERED=1 \
     CHROMIUM_PATH=/usr/bin/chromium \
     CHROMIUM_FLAGS=--no-sandbox
 
-# Install dependencies in a single layer to reduce image size
+# Install OS packages in a single layer
 RUN set -eux && \
     apt-get update && \
     apt-get upgrade -y && \
-    # Add NodeJS repository
     curl -sL https://deb.nodesource.com/setup_20.x | bash - && \
-    # Install all required packages in one step
     apt-get install -y --no-install-recommends \
     build-essential \
     bzip2 \
@@ -76,19 +74,26 @@ RUN set -eux && \
     xvfb \
     xz-utils \
     zlib1g-dev && \
-    # Clean up
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /server
 
-# Install Python dependencies
+# Install Python dependencies first
 COPY requirements.txt /server/requirements.txt
-RUN pip install --upgrade pip && pip install -r ./requirements.txt
+
+# Pre-create the .venv that app.py expects
+RUN python3 -m venv /server/.venv && \
+    /server/.venv/bin/python -m pip install --upgrade pip && \
+    /server/.venv/bin/python -m pip install -r /server/requirements.txt
 
 # Copy application code
 COPY . /server
 
 EXPOSE 1996
 
+# Activate venv by prepending to PATH so subprocesses (alembic) can find venv binaries
+ENV PATH="/server/.venv/bin:$PATH"
+
+# Run with venv python (PATH ensures alembic and other tools are found)
 ENTRYPOINT ["python3", "src/app.py"]
