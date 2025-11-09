@@ -1800,6 +1800,15 @@ class AbstractBLLManager(ABC):
         mapper_keys = (
             set(mapper_attrs.keys()) if hasattr(mapper_attrs, "keys") else set()
         )
+        column_attrs = {}
+        if hasattr(mapper, "column_attrs"):
+            column_attrs = {prop.key: prop for prop in mapper.column_attrs}
+        relationship_keys: Set[str] = set()
+        if hasattr(mapper, "relationships"):
+            try:
+                relationship_keys = set(mapper.relationships.keys())
+            except Exception:
+                relationship_keys = set()
 
         resolved: List[Any] = []
         invalid: List[str] = []
@@ -1807,9 +1816,14 @@ class AbstractBLLManager(ABC):
 
         for field_name in fields_list:
             if field_name in mapper_keys and hasattr(self.DB, field_name):
-                if field_name not in seen:
-                    resolved.append(getattr(self.DB, field_name))
-                    seen.add(field_name)
+                if field_name in column_attrs:
+                    if field_name not in seen:
+                        resolved.append(getattr(self.DB, field_name))
+                        seen.add(field_name)
+                elif field_name in relationship_keys:
+                    continue
+                else:
+                    invalid.append(field_name)
             else:
                 invalid.append(field_name)
 
@@ -1825,6 +1839,7 @@ class AbstractBLLManager(ABC):
         for required_name in required_field_names:
             if (
                 required_name in mapper_keys
+                and required_name in column_attrs
                 and hasattr(self.DB, required_name)
                 and required_name not in seen
             ):
@@ -1843,6 +1858,7 @@ class AbstractBLLManager(ABC):
         for required_name in model_required_fields:
             if (
                 required_name in mapper_keys
+                and required_name in column_attrs
                 and hasattr(self.DB, required_name)
                 and required_name not in seen
             ):

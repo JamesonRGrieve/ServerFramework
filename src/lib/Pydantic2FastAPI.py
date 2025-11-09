@@ -1655,19 +1655,26 @@ def register_route(
                 # Ensure the manager return value is serialized into plain data
                 # so Pydantic can validate it reliably (models -> dicts)
                 serialized_result = serialize_for_response(result)
+
+                # Check if fields are specified early to avoid validation errors
+                fields_selection = _normalize_projection_values(query_params.fields)
+                include_selection = _normalize_projection_values(query_params.include)
+
                 # Build the Response model first (preserves Pydantic conversions and any included relationships),
                 # then serialize and attach synthesized includes (option C)
-                response_model_instance = network_model.ResponseSingle(
-                    **{resource_name: serialized_result}
-                )
+                # Skip ResponseSingle creation when fields are specified to avoid validation errors with partial data
+                if not fields_selection:
+                    response_model_instance = network_model.ResponseSingle(
+                        **{resource_name: serialized_result}
+                    )
+                    serialized_entity = serialize_for_response(
+                        getattr(response_model_instance, resource_name)
+                    )
+                else:
+                    # When fields are specified, work directly with serialized_result
+                    serialized_entity = serialized_result
 
                 from logic.BLL_Auth import UserManager
-
-                serialized_entity = serialize_for_response(
-                    getattr(response_model_instance, resource_name)
-                )
-
-                include_selection = _normalize_projection_values(query_params.include)
 
                 def _attach_user_includes_to_entity(entity: Optional[Dict[str, Any]]):
                     if not entity or not include_selection:
@@ -1747,7 +1754,6 @@ def register_route(
                 _attach_invitees_to_entity(serialized_entity)
 
                 # If fields projection requested, apply it now and return JSON
-                fields_selection = _normalize_projection_values(query_params.fields)
                 if fields_selection:
                     projected_entity = _apply_field_projection_to_entity(
                         serialized_entity, fields_selection, include_selection
@@ -1766,6 +1772,14 @@ def register_route(
                         status_code=status.HTTP_200_OK,
                     )
 
+                # If we reach here without fields or includes, return the response_model_instance
+                # Note: response_model_instance is only created when fields_selection is empty
+                if fields_selection:
+                    # This shouldn't happen since we return early for fields, but handle it just in case
+                    return JSONResponse(
+                        content=jsonable_encoder({resource_name: serialized_entity}),
+                        status_code=status.HTTP_200_OK,
+                    )
                 return response_model_instance
             except Exception as err:
                 handle_resource_operation_error(err)
