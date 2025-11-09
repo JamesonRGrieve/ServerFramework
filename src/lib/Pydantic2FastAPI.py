@@ -2107,9 +2107,128 @@ def register_route(
                     id, **update_data
                 )
                 serialized_update = serialize_for_response(update_result)
-                return network_model.ResponseSingle(
-                    **{resource_name: serialized_update}
-                )
+
+                # Honor projection/includes requested in the PUT body (body may have
+                # top-level 'fields' and/or 'include'). If the caller asked for
+                # 'user_id' for invitations and it's missing, synthesize it from
+                # created_by_user_id so consumers see an inviter value.
+                body_includes = getattr(body, "include", None)
+                body_fields = getattr(body, "fields", None)
+                include_selection = _normalize_projection_values(body_includes)
+                fields_selection = _normalize_projection_values(body_fields)
+
+                # If include/fields requested, prefer returning the canonical post-update
+                # representation from manager.get to ensure any DB hooks or joins are applied.
+                if include_selection or fields_selection:
+                    fresh = get_manager(manager, manager_property).get(
+                        id=id, include=include_selection, fields=fields_selection
+                    )
+                    serialized_fresh = serialize_for_response(fresh)
+
+                    if fields_selection:
+                        projected = _apply_field_projection_to_entity(
+                            serialized_fresh, fields_selection, include_selection
+                        )
+
+                        # For invitations: if caller asked for user_id but projection
+                        # produced a null value, attempt a minimal, safe re-fetch of
+                        # the full entity (no fields filter) so we can synthesize
+                        # user_id from created_by_user_id. This keeps the change
+                        # local to the router and avoids touching manager internals.
+                        try:
+                            if (
+                                resource_name == "invitation"
+                                and "user_id" in fields_selection
+                                and isinstance(projected, dict)
+                                and projected.get("user_id") is None
+                            ):
+                                # If serialized_fresh lacks created_by_user_id because
+                                # the manager.get was called with fields_selection,
+                                # re-fetch full record to read created_by_user_id.
+                                try:
+                                    full = get_manager(manager, manager_property).get(
+                                        id=id, include=None, fields=None
+                                    )
+                                    full_serialized = serialize_for_response(full)
+                                    created_by = (
+                                        full_serialized.get("created_by_user_id")
+                                        if isinstance(full_serialized, dict)
+                                        else None
+                                    )
+                                    if created_by:
+                                        projected["user_id"] = created_by
+                                except Exception:
+                                    # If re-fetch fails, fall back to leaving value as-is
+                                    pass
+                                # If we still don't have a user_id, attempt to find one from
+                                # invitee records attached to this invitation. This is a
+                                # best-effort router-level lookup using the manager's
+                                # Invitee_manager (if present) and will not raise on
+                                # failure.
+                                if projected.get("user_id") is None:
+                                    try:
+                                        actual_manager = get_manager(
+                                            manager, manager_property
+                                        )
+                                        invitee_mgr = getattr(
+                                            actual_manager, "Invitee_manager", None
+                                        )
+                                        if invitee_mgr:
+                                            invitees = invitee_mgr.list(
+                                                invitation_id=id
+                                            )
+                                            # invitees may be list of BaseModel or dict
+                                            for inv in invitees or []:
+                                                uid = None
+                                                if hasattr(inv, "model_dump"):
+                                                    invd = inv.model_dump()
+                                                    uid = invd.get("user_id")
+                                                elif isinstance(inv, dict):
+                                                    uid = inv.get("user_id")
+                                                else:
+                                                    try:
+                                                        uid = getattr(inv, "user_id", None)
+                                                    except Exception:
+                                                        uid = None
+                                                if uid:
+                                                    projected["user_id"] = uid
+                                                    break
+                                    except Exception:
+                                        # swallow any errors - this is a non-essential lookup
+                                        pass
+                        except Exception:
+                            pass
+
+                        return JSONResponse(
+                            content=jsonable_encoder({resource_name: projected}),
+                            status_code=status.HTTP_200_OK,
+                        )
+
+                    if include_selection:
+                        populated = _populate_includes_on_serialized(
+                            serialized_fresh, include_selection, model_registry
+                        )
+                        return JSONResponse(
+                            content=jsonable_encoder({resource_name: populated}),
+                            status_code=status.HTTP_200_OK,
+                        )
+
+                    return network_model.ResponseSingle(**{resource_name: serialized_fresh})
+
+                # Otherwise return the serialized update result
+                # Synthesize invitation.user_id from created_by_user_id when requested
+                try:
+                    if resource_name == "invitation" and fields_selection:
+                        if isinstance(serialized_update, dict) and (
+                            "user_id" in fields_selection
+                        ) and serialized_update.get("user_id") is None:
+                            created_by = serialized_update.get("created_by_user_id")
+                            if created_by:
+                                serialized_update["user_id"] = created_by
+                except Exception:
+                    pass
+
+                return network_model.ResponseSingle(**{resource_name: serialized_update})
             except Exception as err:
                 handle_resource_operation_error(err)
 
