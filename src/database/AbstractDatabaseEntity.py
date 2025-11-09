@@ -538,9 +538,11 @@ class BaseMixin:
 
         # Use provided model registry or default to String type
         pk_type = model_registry.DB.manager.PK_TYPE if model_registry else String
-        
+
         # Filter out non-SQLAlchemy kwargs to avoid warnings
-        valid_column_kwargs = {k: v for k, v in kwargs.items() if k not in ['db_manager', 'model_registry']}
+        valid_column_kwargs = {
+            k: v for k, v in kwargs.items() if k not in ["db_manager", "model_registry"]
+        }
         return Column(pk_type, fk, **valid_column_kwargs)
 
     @declared_attr

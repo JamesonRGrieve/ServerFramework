@@ -1781,13 +1781,13 @@ class AbstractEndpointTest(AbstractTest, AbstractGraphQLTest):
 
         # Build endpoint with query string for fields
         endpoint = self.get_detail_endpoint(entity["id"], path_parent_ids)
-        
+
         # Try to get entity with invalid fields as query parameter
         response = server.get(
             f"{endpoint}?fields=invalid_field,another_invalid",
             headers=self._get_appropriate_headers(admin_a.jwt),
         )
-        
+
         self._assert_response_status(
             response,
             422,
@@ -1797,9 +1797,11 @@ class AbstractEndpointTest(AbstractTest, AbstractGraphQLTest):
 
         # Check that error message mentions invalid fields
         response_data = response.json()
-        assert "invalid" in str(response_data).lower() and "field" in str(response_data).lower(), \
-            f"Expected error about invalid fields, got: {response_data}"
-        
+        assert (
+            "invalid" in str(response_data).lower()
+            and "field" in str(response_data).lower()
+        ), f"Expected error about invalid fields, got: {response_data}"
+
     def test_GET_422_invalid_includes(self, server: Any, admin_a: Any, team_a: Any):
         """Test that GET endpoint rejects invalid include parameters."""
         self._create(server, admin_a.jwt, admin_a.id, key="get_invalid_includes")
@@ -1818,13 +1820,13 @@ class AbstractEndpointTest(AbstractTest, AbstractGraphQLTest):
 
         # Build endpoint with query string for includes
         endpoint = self.get_detail_endpoint(entity["id"], path_parent_ids)
-        
+
         # Try to get entity with invalid includes as query parameter
         response = server.get(
             f"{endpoint}?include=invalid_relation,another_invalid",
             headers=self._get_appropriate_headers(admin_a.jwt),
         )
-        
+
         self._assert_response_status(
             response,
             422,
@@ -1834,9 +1836,10 @@ class AbstractEndpointTest(AbstractTest, AbstractGraphQLTest):
 
         # Check that error message mentions invalid includes
         response_data = response.json()
-        assert "invalid" in str(response_data).lower() and "include" in str(response_data).lower(), \
-            f"Expected error about invalid includes, got: {response_data}"
-
+        assert (
+            "invalid" in str(response_data).lower()
+            and "include" in str(response_data).lower()
+        ), f"Expected error about invalid includes, got: {response_data}"
 
     def test_GET_422_unknown_query_param(self, server: Any, admin_a: Any, team_a: Any):
         """Test that GET endpoint rejects unknown query parameters."""
@@ -1856,13 +1859,13 @@ class AbstractEndpointTest(AbstractTest, AbstractGraphQLTest):
 
         # Build endpoint with unknown query parameter
         endpoint = self.get_detail_endpoint(entity["id"], path_parent_ids)
-        
+
         # Try to get entity with unknown query parameter
         response = server.get(
             f"{endpoint}?unknown_param=some_value",
             headers=self._get_appropriate_headers(admin_a.jwt),
         )
-        
+
         self._assert_response_status(
             response,
             422,
@@ -1872,8 +1875,10 @@ class AbstractEndpointTest(AbstractTest, AbstractGraphQLTest):
 
         # Check that error message mentions extra fields
         response_data = response.json()
-        assert "extra" in str(response_data).lower() or "forbidden" in str(response_data).lower(), \
-            f"Expected 'extra'/'forbidden' in error message, got: {response_data}"
+        assert (
+            "extra" in str(response_data).lower()
+            or "forbidden" in str(response_data).lower()
+        ), f"Expected 'extra'/'forbidden' in error message, got: {response_data}"
 
     def test_GET_422_list_fields_invalid(self, server: Any, admin_a: Any, team_a: Any):
         """Test that LIST endpoint rejects invalid field parameters."""
@@ -1893,13 +1898,13 @@ class AbstractEndpointTest(AbstractTest, AbstractGraphQLTest):
 
         # Build endpoint with invalid fields query parameter
         endpoint = self.get_list_endpoint(path_parent_ids)
-        
+
         # Try to list entities with invalid fields
         response = server.get(
             f"{endpoint}?fields=invalid_field,another_invalid",
             headers=self._get_appropriate_headers(admin_a.jwt),
         )
-        
+
         self._assert_response_status(
             response,
             422,
@@ -1909,8 +1914,10 @@ class AbstractEndpointTest(AbstractTest, AbstractGraphQLTest):
 
         # Check that error message mentions invalid fields
         response_data = response.json()
-        assert "invalid" in str(response_data).lower() and "field" in str(response_data).lower(), \
-            f"Expected error about invalid fields, got: {response_data}"
+        assert (
+            "invalid" in str(response_data).lower()
+            and "field" in str(response_data).lower()
+        ), f"Expected error about invalid fields, got: {response_data}"
 
     def test_GET_422_list_invalid_sort_by(self, server: Any, admin_a: Any, team_a: Any):
         """Test that LIST endpoint rejects invalid sort_by parameters."""
@@ -1930,13 +1937,13 @@ class AbstractEndpointTest(AbstractTest, AbstractGraphQLTest):
 
         # Build endpoint with invalid sort_by query parameter
         endpoint = self.get_list_endpoint(path_parent_ids)
-        
+
         # Try to list entities with invalid sort_by field
         response = server.get(
             f"{endpoint}?sort_by=invalid_field",
             headers=self._get_appropriate_headers(admin_a.jwt),
         )
-        
+
         self._assert_response_status(
             response,
             422,
@@ -1946,10 +1953,14 @@ class AbstractEndpointTest(AbstractTest, AbstractGraphQLTest):
 
         # Check that error message mentions invalid fields
         response_data = response.json()
-        assert "invalid" in str(response_data).lower() and "field" in str(response_data).lower(), \
-            f"Expected error about invalid fields, got: {response_data}"
+        assert (
+            "invalid" in str(response_data).lower()
+            and "field" in str(response_data).lower()
+        ), f"Expected error about invalid fields, got: {response_data}"
 
-    def test_GET_422_list_invalid_sort_order(self, server: Any, admin_a: Any, team_a: Any):
+    def test_GET_422_list_invalid_sort_order(
+        self, server: Any, admin_a: Any, team_a: Any
+    ):
         """Test that LIST endpoint rejects invalid sort_order parameters."""
         self._create(server, admin_a.jwt, admin_a.id, key="list_invalid_sort_order")
         entity = self.tracked_entities["list_invalid_sort_order"]
@@ -1967,13 +1978,13 @@ class AbstractEndpointTest(AbstractTest, AbstractGraphQLTest):
 
         # Build endpoint with invalid sort_order query parameter
         endpoint = self.get_list_endpoint(path_parent_ids)
-        
+
         # Try to list entities with invalid sort_order
         response = server.get(
             f"{endpoint}?sort_order=invalid_order",
             headers=self._get_appropriate_headers(admin_a.jwt),
         )
-        
+
         self._assert_response_status(
             response,
             422,
@@ -1983,8 +1994,10 @@ class AbstractEndpointTest(AbstractTest, AbstractGraphQLTest):
 
         # Check that error message mentions validation error
         response_data = response.json()
-        assert "pattern" in str(response_data).lower() or "validation" in str(response_data).lower(), \
-            f"Expected validation error in message, got: {response_data}"
+        assert (
+            "pattern" in str(response_data).lower()
+            or "validation" in str(response_data).lower()
+        ), f"Expected validation error in message, got: {response_data}"
 
     def test_GET_404_nonexistent_parent(self, server: Any, admin_a: Any):
         """Test listing resources for a nonexistent parent."""

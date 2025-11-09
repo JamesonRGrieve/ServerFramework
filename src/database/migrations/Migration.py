@@ -953,10 +953,16 @@ class MigrationManager:
             # retry by invoking the module via the current Python interpreter: `python -m alembic ...`.
             logger.debug(f"Initial subprocess attempt failed: {e}")
             try:
-                if isinstance(e, FileNotFoundError) and cmd and isinstance(cmd, (list, tuple)):
+                if (
+                    isinstance(e, FileNotFoundError)
+                    and cmd
+                    and isinstance(cmd, (list, tuple))
+                ):
                     # Build a fallback command that uses the current Python executable to run alembic as a module
                     fallback_cmd = [sys.executable, "-m", cmd[0]] + list(cmd[1:])
-                    logger.debug(f"Retrying with fallback command: {' '.join(fallback_cmd)}")
+                    logger.debug(
+                        f"Retrying with fallback command: {' '.join(fallback_cmd)}"
+                    )
                     result = subprocess.run(
                         fallback_cmd,
                         stdout=subprocess.PIPE,
@@ -983,7 +989,9 @@ class MigrationManager:
                         )
                         return result, True
                     else:
-                        logger.error(f"Fallback command failed with return code {result.returncode}")
+                        logger.error(
+                            f"Fallback command failed with return code {result.returncode}"
+                        )
                         if result.stderr:
                             logger.error(f"Fallback stderr: {result.stderr}")
                         return result, False

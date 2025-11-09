@@ -723,7 +723,9 @@ def build_app(model_registry: ModelRegistry):
                         from logic.BLL_Auth import UserManager
 
                         # Get model_registry from app state and try JWT auth
-                        model_registry = getattr(request.app.state, "model_registry", None)
+                        model_registry = getattr(
+                            request.app.state, "model_registry", None
+                        )
                         logger.debug(
                             f"GraphQL context: model_registry available = {model_registry is not None}"
                         )

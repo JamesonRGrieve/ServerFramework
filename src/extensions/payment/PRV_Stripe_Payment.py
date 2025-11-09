@@ -1116,7 +1116,9 @@ class PaymentExtensionStripeProvider(AbstractPaymentProvider):
             return {"success": False, "error": "Webhook secret not configured"}
 
         try:
-            event = stripe_client.Webhook.construct_event(payload, signature, webhook_secret)
+            event = stripe_client.Webhook.construct_event(
+                payload, signature, webhook_secret
+            )
 
             # Process the event based on type
             event_type = event.get("type")
@@ -1138,7 +1140,12 @@ class PaymentExtensionStripeProvider(AbstractPaymentProvider):
                 handled = False
                 logger.debug(f"Unhandled event type: {event_type}")
 
-            return {"success": True, "event_type": event_type, "event_id": event.get("id"), "processed": handled}
+            return {
+                "success": True,
+                "event_type": event_type,
+                "event_id": event.get("id"),
+                "processed": handled,
+            }
 
         except Exception as e:
             # Try to detect Stripe signature errors safely
