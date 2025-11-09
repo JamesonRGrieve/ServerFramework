@@ -1274,9 +1274,13 @@ class UserManager(AbstractBLLManager, RouterMixin):
         """Get a user with optional included relationships."""
         options = []
 
+        fields = self.validate_fields(fields)
+
         # TODO Move generate_joins to AbstractDatabaseEntity.py
         if include:
-            options = self.generate_joins(self.DB, include)
+            include_list = self._parse_includes(include)
+            if include_list:
+                options = self.generate_joins(self.DB, include_list)
 
         if "team_id" in kwargs:
             if not self.DB.user_has_read_access(
@@ -2308,7 +2312,7 @@ class TeamManager(AbstractBLLManager, RouterMixin):
                 "InvitationManager",
             ),
             # child_network_model_cls will be inferred from the manager
-            "routes_to_register": ["create", "search"],
+            "routes_to_register": ["get", "list", "create", "search"],
             "custom_routes": [
                 {
                     "path": "",
@@ -2345,7 +2349,7 @@ class TeamManager(AbstractBLLManager, RouterMixin):
                 "RoleManager",
             ),
             # child_network_model_cls will be inferred from the manager
-            "routes_to_register": ["create", "list", "search"],
+            "routes_to_register": ["create", "list", "search", "get"],
         },
     }
 
@@ -2534,9 +2538,13 @@ class TeamManager(AbstractBLLManager, RouterMixin):
         **kwargs,
     ) -> Any:
         """Get a team with optional included relationships. Returns 404 if not found."""
+
+        fields = self.validate_fields(fields)
+
         options = []
-        if include:
-            options = self.generate_joins(self.DB, include)
+        include_list = self.validate_includes(include)
+        if include_list:
+            options = self.generate_joins(self.DB, include_list)
         team = self.DB.get(
             requester_id=self.requester.id,
             model_registry=self.model_registry,
@@ -3048,9 +3056,14 @@ class RoleManager(AbstractBLLManager, RouterMixin):
         **kwargs,
     ) -> Any:
         """Get a role with optional included relationships. Returns 404 if not found."""
+
+        fields = self.validate_fields(fields)
+
         options = []
-        if include:
-            options = self.generate_joins(self.DB, include)
+
+        include_list = self.validate_includes(include)
+        if include_list:
+            options = self.generate_joins(self.DB, include_list)
         role = self.DB.get(
             requester_id=self.requester.id,
             fields=fields,
@@ -3355,10 +3368,13 @@ class UserTeamManager(AbstractBLLManager, RouterMixin):
     ) -> Any:
         """Get a user with optional included relationships."""
         options = []
-
+        
+        fields = self.validate_fields(fields)
         # TODO Move generate_joins to AbstractDatabaseEntity.py
         if include:
-            options = self.generate_joins(self.DB, include)
+            include_list = self._parse_includes(include)
+            if include_list:
+                options = self.generate_joins(self.DB, include_list)
 
         # First check if the record exists
         result = self.DB.get(
@@ -4233,8 +4249,12 @@ class InvitationManager(AbstractBLLManager, RouterMixin):
     ) -> Any:
         """Get an invitation with optional included relationships. Returns 404 if not found."""
         options = []
-        if include:
-            options = self.generate_joins(self.DB, include)
+
+        fields = self.validate_fields(fields)
+        include_list = self.validate_includes(include)
+        
+        if include_list:
+            options = self.generate_joins(self.DB, include_list)
 
         invitation = self.DB.get(
             requester_id=self.requester.id,

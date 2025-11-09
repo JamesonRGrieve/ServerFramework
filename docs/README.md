@@ -114,4 +114,4 @@ This framework provides:
 - **Extension Architecture**: Modular plugin system with isolated migrations
 - **Type Safety**: End-to-end type checking from API to database
 
-For a comprehensive overview, start with [Framework.md](../src/Framework.md).
+For a comprehensive overview, start with [Framework.md](../src/Framework.md)
