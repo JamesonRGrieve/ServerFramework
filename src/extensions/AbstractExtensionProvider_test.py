@@ -55,12 +55,12 @@ class TestExtension(AbstractStaticExtension):
 
     @staticmethod
     @ability(name="decorated_ability")
-    def test_decorated_ability():
+    def decorated_ability_handler():
         return "ability_result"
 
     @staticmethod
     @AbstractStaticExtension.hook("bll", "auth", "user", "create", "before")
-    def test_hook_handler():
+    def hook_handler():
         return "hook_result"
 
 
@@ -122,17 +122,17 @@ class OtherCircularExtension(AbstractStaticExtension):
 
     @staticmethod
     @ability(name="decorated_ability")
-    def test_decorated_ability():
+    def decorated_ability_handler():
         return "ability_result"
 
     @staticmethod
     @ability(name="meta_ability")
-    def test_meta_ability():
+    def meta_ability_handler():
         return "meta_ability_result"
 
     @staticmethod
     @AbstractStaticExtension.hook("bll", "auth", "user", "create", "before")
-    def test_hook_handler():
+    def hook_handler():
         return "hook_result"
 
 
