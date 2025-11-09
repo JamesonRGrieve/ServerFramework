@@ -25,6 +25,16 @@ class ParentEntity(BaseModel):
     test_class: Any
     nullable: bool = False
 
+    @property
+    def path_key(self) -> str:
+        """Convenience property for the path parameter key used in endpoints.
+
+        For a parent with name 'team' this returns 'team_id', which is the
+        expected path parameter name used throughout the tests and routing
+        helpers.
+        """
+        return f"{self.name}_id"
+
 
 class CategoryOfTest(str, Enum):
     """Categories of tests for organization and selective execution."""
