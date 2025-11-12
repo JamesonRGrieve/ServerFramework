@@ -70,6 +70,14 @@ class TestPayment_UserAndSessionEndpoints(
             details="Users and sessions are not retrievable by ID.",
         ),
         SkipThisTest(
+            name="test_GET_200_fields",
+            details="Users and sessions are not retrievable by ID.",
+        ),
+        SkipThisTest(
+            name="test_GET_200_includes",
+            details="Users and sessions are not retrievable by ID.",
+        ),
+        SkipThisTest(
             name="test_DELETE_404_other_user",
             details="Users and sessions are not retrievable by ID.",
         ),
