@@ -164,9 +164,7 @@ class TestPRVSQLite:
 
         try:
             # Setup empty table
-            await PRV_SQLite.execute_sql(
-                "CREATE TABLE test (id INTEGER PRIMARY KEY);"
-            )
+            await PRV_SQLite.execute_sql("CREATE TABLE test (id INTEGER PRIMARY KEY);")
 
             # Test empty result
             result = await PRV_SQLite.execute_sql("SELECT * FROM test;")
@@ -345,9 +343,7 @@ class TestPRVSQLite:
 
         try:
             # Setup table
-            await PRV_SQLite.execute_sql(
-                "CREATE TABLE test (id INTEGER, value TEXT);"
-            )
+            await PRV_SQLite.execute_sql("CREATE TABLE test (id INTEGER, value TEXT);")
 
             # Test INSERT data writing
             insert_sql = "INSERT INTO test (id, value) VALUES (1, 'test_data');"

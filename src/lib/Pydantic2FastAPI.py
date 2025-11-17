@@ -304,8 +304,7 @@ def create_query_model_dependency(
             field_name = alias_map.get(normalized_key, normalized_key)
             if field_name is None:
                 raise HTTPException(
-                    status_code=422,
-                    detail=f"Unexpected query parameter '{raw_key}"
+                    status_code=422, detail=f"Unexpected query parameter '{raw_key}"
                 )
             raw_values.setdefault(field_name, []).append(raw_value)
 
@@ -1628,18 +1627,18 @@ def register_route(
                 if fields_param:
                     # Get valid field names from the target model
                     valid_fields = set(target_model.model_fields.keys())
-                
+
                     # Check for invalid fields
                     invalid_fields = [f for f in fields_param if f not in valid_fields]
-                
+
                     if invalid_fields:
                         raise HTTPException(
                             status_code=422,
                             detail={
                                 "error": f"Invalid fields requested: {', '.join(invalid_fields)}",
                                 "invalid_fields": invalid_fields,
-                                "valid_fields": sorted(list(valid_fields))
-                            }
+                                "valid_fields": sorted(list(valid_fields)),
+                            },
                         )
 
                 result = get_manager(manager, manager_property).get(
@@ -1655,25 +1654,34 @@ def register_route(
                 # Ensure the manager return value is serialized into plain data
                 # so Pydantic can validate it reliably (models -> dicts)
                 serialized_result = serialize_for_response(result)
+
+                # Check if fields are specified early to avoid validation errors
+                fields_selection = _normalize_projection_values(query_params.fields)
+                include_selection = _normalize_projection_values(query_params.include)
+
                 # Build the Response model first (preserves Pydantic conversions and any included relationships),
                 # then serialize and attach synthesized includes (option C)
-                response_model_instance = network_model.ResponseSingle(
-                    **{resource_name: serialized_result}
-                )
+                # Skip ResponseSingle creation when fields are specified to avoid validation errors with partial data
+                if not fields_selection:
+                    response_model_instance = network_model.ResponseSingle(
+                        **{resource_name: serialized_result}
+                    )
+                    serialized_entity = serialize_for_response(
+                        getattr(response_model_instance, resource_name)
+                    )
+                else:
+                    # When fields are specified, work directly with serialized_result
+                    serialized_entity = serialized_result
 
                 from logic.BLL_Auth import UserManager
-
-                serialized_entity = serialize_for_response(
-                    getattr(response_model_instance, resource_name)
-                )
-
-                include_selection = _normalize_projection_values(query_params.include)
 
                 def _attach_user_includes_to_entity(entity: Optional[Dict[str, Any]]):
                     if not entity or not include_selection:
                         return
                     # Map include token -> id field (e.g., updated_by_user -> updated_by_user_id)
-                    user_includes = [inc for inc in include_selection if inc.endswith("_user")]
+                    user_includes = [
+                        inc for inc in include_selection if inc.endswith("_user")
+                    ]
                     if not user_includes:
                         return
 
@@ -1713,6 +1721,7 @@ def register_route(
                             )
                         except Exception:
                             entity[inc] = None
+
                 def _attach_invitees_to_entity(entity: Optional[Dict[str, Any]]):
                     """Attach invitees list to a single invitation entity when include=invitees."""
                     if not entity or not include_selection:
@@ -1747,7 +1756,6 @@ def register_route(
                 _attach_invitees_to_entity(serialized_entity)
 
                 # If fields projection requested, apply it now and return JSON
-                fields_selection = _normalize_projection_values(query_params.fields)
                 if fields_selection:
                     projected_entity = _apply_field_projection_to_entity(
                         serialized_entity, fields_selection, include_selection
@@ -1766,6 +1774,14 @@ def register_route(
                         status_code=status.HTTP_200_OK,
                     )
 
+                # If we reach here without fields or includes, return the response_model_instance
+                # Note: response_model_instance is only created when fields_selection is empty
+                if fields_selection:
+                    # This shouldn't happen since we return early for fields, but handle it just in case
+                    return JSONResponse(
+                        content=jsonable_encoder({resource_name: serialized_entity}),
+                        status_code=status.HTTP_200_OK,
+                    )
                 return response_model_instance
             except Exception as err:
                 handle_resource_operation_error(err)
@@ -1814,18 +1830,18 @@ def register_route(
                 if fields_param:
                     # Get valid field names from the target model
                     valid_fields = set(target_model.model_fields.keys())
-                    
+
                     # Check for invalid fields
                     invalid_fields = [f for f in fields_param if f not in valid_fields]
-                    
+
                     if invalid_fields:
                         raise HTTPException(
                             status_code=422,
                             detail={
                                 "error": f"Invalid fields requested: {', '.join(invalid_fields)}",
                                 "invalid_fields": invalid_fields,
-                                "valid_fields": sorted(list(valid_fields))
-                            }
+                                "valid_fields": sorted(list(valid_fields)),
+                            },
                         )
 
                 results = get_manager(manager, manager_property).list(
@@ -1846,9 +1862,12 @@ def register_route(
                     **{resource_name_plural: serialized_results}
                 )
 
-                serialized_items = serialize_for_response(
-                    getattr(response_model_instance, resource_name_plural)
-                ) or []
+                serialized_items = (
+                    serialize_for_response(
+                        getattr(response_model_instance, resource_name_plural)
+                    )
+                    or []
+                )
 
                 include_selection = _normalize_projection_values(query_params.include)
 
@@ -1857,7 +1876,9 @@ def register_route(
                 def _attach_user_includes_to_items(items: List[Dict[str, Any]]):
                     if not items or not include_selection:
                         return
-                    user_includes = [inc for inc in include_selection if inc.endswith("_user")]
+                    user_includes = [
+                        inc for inc in include_selection if inc.endswith("_user")
+                    ]
                     if not user_includes:
                         return
                     try:
@@ -1948,7 +1969,9 @@ def register_route(
                         serialized_results, include_selection, model_registry
                     )
                     return JSONResponse(
-                        content=jsonable_encoder({resource_name_plural: populated_items}),
+                        content=jsonable_encoder(
+                            {resource_name_plural: populated_items}
+                        ),
                         status_code=status.HTTP_200_OK,
                     )
 
@@ -2160,13 +2183,19 @@ def register_route(
                             logger.debug(
                                 f"PUT projection: manager.get returned 404 for {resource_name} id={id}; falling back to serialized update"
                             )
-                            serialized_fresh = serialized_update if serialized_update is not None else {}
+                            serialized_fresh = (
+                                serialized_update
+                                if serialized_update is not None
+                                else {}
+                            )
                         else:
                             raise
                     except Exception:
                         # Best-effort fallback to avoid turning a successful update
                         # into a 500 due to projection lookups.
-                        serialized_fresh = serialized_update if serialized_update is not None else {}
+                        serialized_fresh = (
+                            serialized_update if serialized_update is not None else {}
+                        )
 
                     if fields_selection:
                         projected = _apply_field_projection_to_entity(
@@ -2181,17 +2210,27 @@ def register_route(
                         # may not have provided the value.
                         try:
                             if isinstance(projected, dict):
-                                missing = [f for f in fields_selection if projected.get(f) is None]
+                                missing = [
+                                    f
+                                    for f in fields_selection
+                                    if projected.get(f) is None
+                                ]
                                 if missing:
                                     try:
-                                        full = get_manager(manager, manager_property).get(
-                                            id=id, include=None, fields=None
-                                        )
+                                        full = get_manager(
+                                            manager, manager_property
+                                        ).get(id=id, include=None, fields=None)
                                         full_serialized = serialize_for_response(full)
                                         if isinstance(full_serialized, dict):
                                             for mf in missing:
-                                                if mf in full_serialized and full_serialized.get(mf) is not None:
-                                                    projected[mf] = full_serialized.get(mf)
+                                                if (
+                                                    mf in full_serialized
+                                                    and full_serialized.get(mf)
+                                                    is not None
+                                                ):
+                                                    projected[mf] = full_serialized.get(
+                                                        mf
+                                                    )
                                     except Exception:
                                         # best-effort; continue to resource-specific fallbacks
                                         pass
@@ -2333,10 +2372,9 @@ def register_route(
                                     )
                                     full_serialized = serialize_for_response(full)
                                     if isinstance(full_serialized, dict):
-                                        user_id_val = (
-                                            full_serialized.get("user_id")
-                                            or full_serialized.get("created_by_user_id")
-                                        )
+                                        user_id_val = full_serialized.get(
+                                            "user_id"
+                                        ) or full_serialized.get("created_by_user_id")
                                 except Exception:
                                     user_id_val = None
 
@@ -2358,7 +2396,9 @@ def register_route(
                                                     invitees[0]
                                                 )
                                                 if isinstance(first_inv, dict):
-                                                    user_id_val = first_inv.get("user_id")
+                                                    user_id_val = first_inv.get(
+                                                        "user_id"
+                                                    )
                                     except Exception:
                                         user_id_val = None
 
@@ -2376,25 +2416,31 @@ def register_route(
                                     if projected.get(mf) is None:
                                         lname = str(mf).lower()
                                         # Numeric-ish heuristics
-                                        if any(k in lname for k in (
-                                            "count",
-                                            "max",
-                                            "limit",
-                                            "page",
-                                            "size",
-                                            "num",
-                                            "expires",
-                                        )):
+                                        if any(
+                                            k in lname
+                                            for k in (
+                                                "count",
+                                                "max",
+                                                "limit",
+                                                "page",
+                                                "size",
+                                                "num",
+                                                "expires",
+                                            )
+                                        ):
                                             projected[mf] = 0
                                         # Boolean-ish heuristics
-                                        elif any(k in lname for k in (
-                                            "enabled",
-                                            "active",
-                                            "deleted",
-                                            "revoked",
-                                            "is_",
-                                            "has_",
-                                        )):
+                                        elif any(
+                                            k in lname
+                                            for k in (
+                                                "enabled",
+                                                "active",
+                                                "deleted",
+                                                "revoked",
+                                                "is_",
+                                                "has_",
+                                            )
+                                        ):
                                             projected[mf] = False
                                         else:
                                             # Default to empty string for textual
@@ -2417,22 +2463,28 @@ def register_route(
                             status_code=status.HTTP_200_OK,
                         )
 
-                    return network_model.ResponseSingle(**{resource_name: serialized_fresh})
+                    return network_model.ResponseSingle(
+                        **{resource_name: serialized_fresh}
+                    )
 
                 # Otherwise return the serialized update result
                 # Synthesize invitation.user_id from created_by_user_id when requested
                 try:
                     if resource_name == "invitation" and fields_selection:
-                        if isinstance(serialized_update, dict) and (
-                            "user_id" in fields_selection
-                        ) and serialized_update.get("user_id") is None:
+                        if (
+                            isinstance(serialized_update, dict)
+                            and ("user_id" in fields_selection)
+                            and serialized_update.get("user_id") is None
+                        ):
                             created_by = serialized_update.get("created_by_user_id")
                             if created_by:
                                 serialized_update["user_id"] = created_by
                 except Exception:
                     pass
 
-                return network_model.ResponseSingle(**{resource_name: serialized_update})
+                return network_model.ResponseSingle(
+                    **{resource_name: serialized_update}
+                )
             except Exception as err:
                 handle_resource_operation_error(err)
 
@@ -2604,7 +2656,9 @@ def register_route(
                         serialized_search_results, include_selection, model_registry
                     )
                     return JSONResponse(
-                        content=jsonable_encoder({resource_name_plural: populated_items}),
+                        content=jsonable_encoder(
+                            {resource_name_plural: populated_items}
+                        ),
                         status_code=status.HTTP_200_OK,
                     )
 

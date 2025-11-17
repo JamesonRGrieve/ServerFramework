@@ -98,7 +98,8 @@ markers = [
     "synchronize: Synchronization tests",
     "mock: Mock-based tests",
     "real: Real database tests",
-    "stripe: Stripe payment provider tests"
+    "stripe: Stripe payment provider tests",
+    "timeout: Test timeout configuration"
 ]
 
 # Parallel execution settings

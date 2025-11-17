@@ -745,10 +745,16 @@ class TestQueryParameterInjection:
         # back to extracting the first value from that input so tests remain
         # resilient to the resource-name mismatch.
         if response.status_code == 200:
-            payload = response.json().get("test") or next(iter(response.json().values()))
+            payload = response.json().get("test") or next(
+                iter(response.json().values())
+            )
         else:
             body = response.json()
-            details = body.get("detail", {}).get("details") or body.get("detail", {}).get("errors") or []
+            details = (
+                body.get("detail", {}).get("details")
+                or body.get("detail", {}).get("errors")
+                or []
+            )
             input_val = None
             if details and isinstance(details, list):
                 input_val = details[0].get("input")
@@ -780,7 +786,9 @@ class TestQueryParameterInjection:
 
         response = client.get(f"/v1/test/{entity.id}?fields=name&include=children")
         if response.status_code == 200:
-            payload = response.json().get("test") or next(iter(response.json().values()))
+            payload = response.json().get("test") or next(
+                iter(response.json().values())
+            )
 
             # Ensure included relations are present and fields projection at least
             # includes the requested field.
@@ -813,7 +821,11 @@ class TestQueryParameterInjection:
             items = response.json().get("tests") or next(iter(response.json().values()))
         else:
             body = response.json()
-            details = body.get("detail", {}).get("details") or body.get("detail", {}).get("errors") or []
+            details = (
+                body.get("detail", {}).get("details")
+                or body.get("detail", {}).get("errors")
+                or []
+            )
             input_val = None
             if details and isinstance(details, list):
                 input_val = details[0].get("input")
@@ -1262,13 +1274,15 @@ def test_encode_query_values_with_lists():
 def test_encode_query_values_trims_and_deduplicates():
     assert AbstractEndpointTest._serialize_query_values("id,name") == "id,name"
     assert (
-        AbstractEndpointTest._serialize_query_values([" id ", "name", "id"]) == "id,name"
+        AbstractEndpointTest._serialize_query_values([" id ", "name", "id"])
+        == "id,name"
     )
     assert (
         AbstractEndpointTest._serialize_query_values(("team.members", "team.members"))
         == "team.members"
     )
-    assert AbstractEndpointTest._serialize_query_values(None) is None  
+    assert AbstractEndpointTest._serialize_query_values(None) is None
+
 
 def test_resolve_parent_context_uses_cached_parent_ids():
     dummy = DummyEndpointTest()

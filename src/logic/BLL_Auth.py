@@ -374,7 +374,13 @@ class UserManager(AbstractBLLManager, RouterMixin):
     prefix: ClassVar[Optional[str]] = "/v1/user"
     tags: ClassVar[Optional[List[str]]] = ["User Management"]
     auth_type: ClassVar[AuthType] = AuthType.JWT
-    routes_to_register: ClassVar[Optional[List[RouteType]]] = []
+    # Register GET, UPDATE and SEARCH routes
+    # Note: LIST is not registered because GET /v1/user returns current user, not a list
+    routes_to_register: ClassVar[Optional[List[RouteType]]] = [
+        RouteType.GET,
+        RouteType.UPDATE,
+        RouteType.SEARCH,
+    ]
     route_auth_overrides: ClassVar[Dict[RouteType, AuthType]] = {}
     factory_params: ClassVar[List[str]] = ["target_id"]
     auth_dependency: ClassVar[Optional[str]] = "get_auth_user"
@@ -3064,12 +3070,17 @@ class RoleManager(AbstractBLLManager, RouterMixin):
         include_list = self.validate_includes(include)
         if include_list:
             options = self.generate_joins(self.DB, include_list)
+
+        # When both fields and includes are specified, don't pass fields to DB layer
+        # The endpoint layer will handle field filtering while preserving includes
+        db_fields = [] if (fields and include_list) else fields
+
         role = self.DB.get(
             requester_id=self.requester.id,
-            fields=fields,
+            fields=db_fields,
             model_registry=self.model_registry,
-            return_type="dto" if not fields else "dict",
-            override_dto=self.Model if not fields else None,
+            return_type="dto" if not db_fields else "dict",
+            override_dto=self.Model if not db_fields else None,
             options=options,
             **kwargs,
         )
@@ -3080,10 +3091,13 @@ class RoleManager(AbstractBLLManager, RouterMixin):
                 detail=f"Role with ID '{role_id}' not found",
             )
 
-        if role.created_by_user_id != self.requester.id:
-            # Business logic validation: if accessing a team-specific role, validate team membership
-            if role.team_id:
-                self.validate_user_team(self.requester.id, role.team_id)
+        # Only perform validation if we have full data (not when fields are specified)
+        # When fields are specified, role is a dict with only requested fields
+        if not fields:
+            if role.created_by_user_id != self.requester.id:
+                # Business logic validation: if accessing a team-specific role, validate team membership
+                if role.team_id:
+                    self.validate_user_team(self.requester.id, role.team_id)
 
         return role
 
@@ -3368,7 +3382,7 @@ class UserTeamManager(AbstractBLLManager, RouterMixin):
     ) -> Any:
         """Get a user with optional included relationships."""
         options = []
-        
+
         fields = self.validate_fields(fields)
         # TODO Move generate_joins to AbstractDatabaseEntity.py
         if include:
@@ -4252,16 +4266,20 @@ class InvitationManager(AbstractBLLManager, RouterMixin):
 
         fields = self.validate_fields(fields)
         include_list = self.validate_includes(include)
-        
+
         if include_list:
             options = self.generate_joins(self.DB, include_list)
 
+        # When both fields and includes are specified, don't pass fields to DB layer
+        # The endpoint layer will handle field filtering while preserving includes
+        db_fields = [] if (fields and include_list) else fields
+
         invitation = self.DB.get(
             requester_id=self.requester.id,
-            fields=fields,
+            fields=db_fields,
             model_registry=self.model_registry,
-            return_type="dto" if not fields else "dict",
-            override_dto=self.Model if not fields else None,
+            return_type="dto" if not db_fields else "dict",
+            override_dto=self.Model if not db_fields else None,
             options=options,
             **kwargs,
         )

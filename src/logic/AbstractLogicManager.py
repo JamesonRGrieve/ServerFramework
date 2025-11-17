@@ -1721,54 +1721,58 @@ class AbstractBLLManager(ABC):
                 validated_fields.append(field_name)
 
         return validated_fields
-    
-    def validate_fields(self, fields: Optional[Union[List[str], str]]) -> Optional[List[str]]:
+
+    def validate_fields(
+        self, fields: Optional[Union[List[str], str]]
+    ) -> Optional[List[str]]:
         """
         Validate that requested fields exist in the model.
         Returns the processed fields list.
         Raises HTTPException 422 if invalid fields are provided.
-        
+
         Args:
             fields: List of field names or CSV string of field names
-            
+
         Returns:
             Processed list of valid field names, or None/empty list if no fields provided
-            
+
         Raises:
             HTTPException: 422 status if invalid fields are detected
         """
         if not fields:
             return fields
-        
+
         # Parse fields - handle both CSV strings and lists
         fields_list = self._parse_fields(fields)
-        
+
         if not fields_list:
             return fields_list
-        
+
         # Get valid field names from the model
         valid_fields = set(self.Model.model_fields.keys())
-        
+
         # Check for invalid fields
         provided_fields = set(fields_list)
         invalid_fields = provided_fields - valid_fields
-        
+
         if invalid_fields:
             raise HTTPException(
                 status_code=422,
                 detail={
                     "error": "Invalid fields provided",
                     "invalid_fields": sorted(list(invalid_fields)),
-                    "valid_fields": sorted(list(valid_fields))
-                }
+                    "valid_fields": sorted(list(valid_fields)),
+                },
             )
-        
+
         return fields_list
-    
-    def validate_includes(self, includes: Optional[Union[List[str], str]]) -> Optional[List[str]]:
+
+    def validate_includes(
+        self, includes: Optional[Union[List[str], str]]
+    ) -> Optional[List[str]]:
         """
         Validate that requested includes exist as valid relationships for the model.
-        
+
         This is a lightweight wrapper that uses generate_joins() for validation
         without actually generating the join options.
         """
@@ -1776,7 +1780,7 @@ class AbstractBLLManager(ABC):
             return includes
 
         includes_list = self._parse_includes(includes)
-        
+
         if not includes_list:
             return includes_list
 
@@ -1787,7 +1791,7 @@ class AbstractBLLManager(ABC):
         except HTTPException:
             # Re-raise the 422 error from generate_joins
             raise
-        
+
         return includes_list
 
     def _resolve_load_only_columns(self, fields_list: List[str]) -> List[Any]:
@@ -1800,6 +1804,24 @@ class AbstractBLLManager(ABC):
         mapper_keys = (
             set(mapper_attrs.keys()) if hasattr(mapper_attrs, "keys") else set()
         )
+        column_field_keys: Set[str] = set()
+        if hasattr(mapper, "column_attrs"):
+            try:
+                column_field_keys = {prop.key for prop in mapper.column_attrs}
+            except Exception:
+                column_field_keys = set()
+        relationship_keys: Set[str] = set()
+        if hasattr(mapper, "relationships"):
+            try:
+                relationship_keys = set(mapper.relationships.keys())
+            except Exception:
+                relationship_keys = set()
+
+        if not column_field_keys and mapper_keys:
+            # Fallback: treat mapper attribute keys that are not relationships as columns
+            column_field_keys = {
+                key for key in mapper_keys if key not in relationship_keys
+            }
 
         resolved: List[Any] = []
         invalid: List[str] = []
@@ -1807,9 +1829,14 @@ class AbstractBLLManager(ABC):
 
         for field_name in fields_list:
             if field_name in mapper_keys and hasattr(self.DB, field_name):
-                if field_name not in seen:
-                    resolved.append(getattr(self.DB, field_name))
-                    seen.add(field_name)
+                if field_name in column_field_keys:
+                    if field_name not in seen:
+                        resolved.append(getattr(self.DB, field_name))
+                        seen.add(field_name)
+                elif field_name in relationship_keys:
+                    continue
+                else:
+                    invalid.append(field_name)
             else:
                 invalid.append(field_name)
 
@@ -1825,6 +1852,7 @@ class AbstractBLLManager(ABC):
         for required_name in required_field_names:
             if (
                 required_name in mapper_keys
+                and required_name in column_field_keys
                 and hasattr(self.DB, required_name)
                 and required_name not in seen
             ):
@@ -1843,6 +1871,7 @@ class AbstractBLLManager(ABC):
         for required_name in model_required_fields:
             if (
                 required_name in mapper_keys
+                and required_name in column_field_keys
                 and hasattr(self.DB, required_name)
                 and required_name not in seen
             ):
@@ -1880,9 +1909,9 @@ class AbstractBLLManager(ABC):
         # Collect all valid relationships - try multiple detection methods
         try:
             # Method 1: Check __mapper__ (SQLAlchemy 1.x and 2.x)
-            if hasattr(model_class, '__mapper__'):
+            if hasattr(model_class, "__mapper__"):
                 mapper = model_class.__mapper__
-                if hasattr(mapper, 'relationships'):
+                if hasattr(mapper, "relationships"):
                     for rel_name in mapper.relationships.keys():
                         valid_relationships.append(rel_name)
         except Exception as e:
@@ -1891,15 +1920,15 @@ class AbstractBLLManager(ABC):
         # Method 2: Check via dir() and property inspection (fallback)
         if not valid_relationships:
             for attr_name in dir(model_class):
-                if attr_name.startswith('_'):
+                if attr_name.startswith("_"):
                     continue
                 try:
                     attr = getattr(model_class, attr_name)
                     # Check if it's a SQLAlchemy relationship
-                    if hasattr(attr, 'property'):
+                    if hasattr(attr, "property"):
                         if isinstance(attr.property, RelationshipProperty):
                             valid_relationships.append(attr_name)
-                        elif hasattr(attr.property, 'mapper'):
+                        elif hasattr(attr.property, "mapper"):
                             valid_relationships.append(attr_name)
                 except Exception:
                     continue
@@ -1979,6 +2008,7 @@ class AbstractBLLManager(ABC):
                                 try:
                                     import stringcase
                                     from lib.Environment import inflection
+
                                     # Derive candidate class names (likely Pydantic model names -> SQLAlchemy model classes)
                                     singular = (
                                         inflection.singular_noun(ref_table_name)
@@ -1987,11 +2017,19 @@ class AbstractBLLManager(ABC):
                                     )
                                     if not singular:
                                         # fallback: strip trailing 's' if present
-                                        singular = ref_table_name[:-1] if ref_table_name.endswith("s") else ref_table_name
+                                        singular = (
+                                            ref_table_name[:-1]
+                                            if ref_table_name.endswith("s")
+                                            else ref_table_name
+                                        )
 
-                                    candidate_class = stringcase.pascalcase(singular) + "Model"
+                                    candidate_class = (
+                                        stringcase.pascalcase(singular) + "Model"
+                                    )
                                     # Create a view-only relationship using the candidate class name string
-                                    from sqlalchemy.orm import relationship as sa_relationship
+                                    from sqlalchemy.orm import (
+                                        relationship as sa_relationship,
+                                    )
 
                                     rel_attr = sa_relationship(
                                         candidate_class,
@@ -2036,9 +2074,13 @@ class AbstractBLLManager(ABC):
                         continue
 
                     for part in parts[1:]:
-                        nested_attr = _resolve_relationship_attribute(current_model_class, part)
-                        if nested_attr and hasattr(nested_attr, "property") and hasattr(
-                            nested_attr.property, "mapper"
+                        nested_attr = _resolve_relationship_attribute(
+                            current_model_class, part
+                        )
+                        if (
+                            nested_attr
+                            and hasattr(nested_attr, "property")
+                            and hasattr(nested_attr.property, "mapper")
                         ):
                             current_join = current_join.joinedload(nested_attr)
                             current_model_class = nested_attr.property.mapper.class_
@@ -2190,7 +2232,6 @@ class AbstractBLLManager(ABC):
                 columns = self._resolve_load_only_columns(fields_list)
                 if columns:
                     options.append(load_only(*columns))
-                    
 
         # Filter out hook-related parameters before passing to database
         db_kwargs = {k: v for k, v in kwargs.items() if k not in ["hook_processed"]}
@@ -2267,8 +2308,8 @@ class AbstractBLLManager(ABC):
                     detail={
                         "error": f"Invalid sort_by field: '{sort_by}'",
                         "invalid_field": sort_by,
-                        "valid_fields": sorted(list(valid_fields))
-                    }
+                        "valid_fields": sorted(list(valid_fields)),
+                    },
                 )
 
         # Generate filters from complex search_params only

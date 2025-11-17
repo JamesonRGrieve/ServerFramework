@@ -37,11 +37,20 @@ class TestSendgridProvider(AbstractPRVTest):
     # Configure the test class
     provider_class = SendgridProvider
     extension_id = "email"
+
     # The test harness expects some common ClassOfTestsConfig fields (timeout, categories, cleanup)
     # while the provider mixin expects a ProviderTestConfig with test_types etc. Create a tiny
     # adapter object that exposes both shapes and wrap the provider basic_config here.
     class _TestConfigAdapter:
-        def __init__(self, provider_conf, categories=None, timeout=None, parallel=False, cleanup=True, gh_action_skip=False):
+        def __init__(
+            self,
+            provider_conf,
+            categories=None,
+            timeout=None,
+            parallel=False,
+            cleanup=True,
+            gh_action_skip=False,
+        ):
             # AbstractPRVTest / AbstractTest expectations
             self.categories = categories or [CategoryOfTest.EXTENSION]
             self.timeout = timeout
