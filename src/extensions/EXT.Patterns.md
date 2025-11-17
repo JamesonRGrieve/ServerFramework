@@ -83,7 +83,7 @@ all_extensions = list(registry.registry.values())
 # Extension types are automatically detected via the .types property
 extension_types = extension_class.types  # Set of ExtensionType enums (ENDPOINTS, DATABASE, EXTERNAL)
 
-# For backward compatibility, single type string is available (deprecated)
+# Single type string also available for convenience
 extension_type = extension_class.extension_type  # String: "external", "database", "endpoints", or "unknown"
 ```
 
@@ -1298,17 +1298,19 @@ class MyEntityManager(AbstractBLLManager):
 
 ### Step 3: Endpoints (Optional)
 ```python
-# Endpoints are now in BLL files with RouterMixin - EP_ files are deprecated
-from fastapi import APIRouter, Depends
+# Endpoints are defined in BLL files with RouterMixin
+from lib.Pydantic2FastAPI import RouterMixin, AuthType
+from logic.AbstractLogicManager import AbstractBLLManager
 
-def get_my_manager(user=Depends(auth_dependency)):
-    return MyEntityManager(requester_id=user.id, db_manager=self.db_manager, db_manager=self.db_manager)
+class MyEntityManager(RouterMixin, AbstractBLLManager):
+    prefix: ClassVar[str] = "/v1/my-extension"
+    tags: ClassVar[List[str]] = ["My Extension"]
+    auth_type: ClassVar[AuthType] = AuthType.JWT
 
-router = APIRouter(prefix="/my-extension", tags=["My Extension"])
+    Model = MyEntityModel
 
-@router.get("/entities")
-async def list_entities(manager=Depends(get_my_manager)):
-    return manager.list()
+    # Standard CRUD methods automatically generate endpoints
+    # Custom routes can be added with decorators
 ```
 
 ### Step 4: Providers (Optional)
@@ -1525,63 +1527,3 @@ Provider Test Environment:
 5. **Environment Variables**: Document all required and optional environment variables
 6. **Hook Documentation**: Document hook registration and execution patterns
 7. **Ability Documentation**: Document ability registration and usage patterns
-
-## Architectural Improvements
-
-### Recent Architectural Changes
-The extension system has undergone significant architectural improvements to simplify development and improve type safety:
-
-#### 1. Removal of Extension Type Mixins
-**Old Pattern**: Extensions required explicit mixins (, , )
-**New Pattern**: Extension types are automatically detected based on file patterns:
-- Extensions with `PRV_*.py` files → External type
-- Extensions with `BLL_*.py` files containing DatabaseMixin → Database type  
-- Extensions with BLL files using RouterMixin → Endpoints type
-- Types are non-mutually exclusive (extensions can be multiple types)
-
-#### 2. Separate Abstract Provider Classes
-**Old Pattern**: Abstract providers defined as inner classes
-**New Pattern**: Abstract providers defined as separate classes with extension_type attribute:
-```python
-class AbstractMyExtensionProvider(AbstractStaticProvider):
-    # Extension type is auto-detected - no need to specify
-    # Provider interface definition
-```
-
-#### 3. Standalone Ability Decorator
-**Old Pattern**: Required `meta=True/False` parameter and class-specific decorators
-**New Pattern**: Standalone `@ability` decorator that works everywhere:
-- Import from `extensions.AbstractExtensionProvider`
-- Context-based automatic detection of ability type
-- Works on both extensions and providers
-
-#### 4. External Models in PRV Files
-**Old Pattern**: External models scattered across different files
-**New Pattern**: External models and managers defined in PRV files alongside providers for better cohesion
-
-#### 5. Static Provider Pattern
-**Old Pattern**: Provider instances with state
-**New Pattern**: Static providers with `bond_instance()` method for configuration:
-```python
-@classmethod
-def bond_instance(cls, instance: ProviderInstanceModel) -> AbstractProviderInstance:
-    # Configure and return provider instance
-    pass
-```
-
-### Migration Guide
-When updating existing extensions:
-
-1. **Remove Type Mixins**: Delete any references to , , 
-2. **Update Abstract Providers**: Convert inner classes to separate classes with extension_type attribute
-3. **Update Ability Decorators**: Use standalone `@ability` decorator imported from AbstractExtensionProvider
-4. **Move External Models**: Relocate external models and managers to PRV files
-5. **Update Providers**: Convert to static pattern with bond_instance() method
-
-### Benefits
-- **Simpler Code**: Less boilerplate and explicit configuration
-- **Better Modularity**: Separate classes provide cleaner separation of concerns
-- **Automatic Detection**: System intelligently detects extension characteristics
-- **Better Organization**: Related code stays together (providers with their models)
-- **Clearer Semantics**: Meta vs abstract abilities are context-based
-- **Non-Exclusive Types**: Extensions can be multiple types simultaneously

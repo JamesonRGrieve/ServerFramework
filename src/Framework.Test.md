@@ -8,7 +8,7 @@ The framework provides a revolutionary testing approach that eliminates mocking 
 Unlike traditional testing frameworks that rely heavily on mocks and stubs, this framework takes a fundamentally different approach:
 
 - **Real Functionality**: Every test uses actual implementations, ensuring tests catch real issues
-- **Database Isolation**: Each test receives a completely isolated database instance with automatic cleanup
+- **Database Isolation**: Each extension permutation receives a completely isolated database instance with automatic cleanup
 - **End-to-End Validation**: Complete request-response cycles are tested as they would occur in production
 - **Parallel Execution**: Advanced isolation allows tests to run concurrently without interference
 - **Deterministic Results**: Real implementations with controlled environments ensure consistent results
@@ -32,9 +32,9 @@ The testing framework mirrors the main architecture with specialized abstract ba
 - **Seeding Validation**: Seed data integrity and dependency resolution testing
 
 ### Database Isolation
-- **Per-Test Databases**: Each test method gets fresh database instance
-- **Automatic Cleanup**: Database teardown after test completion
-- **Transaction Rollback**: Test-level transaction isolation where applicable
+- **Extension Permutation Databases**: Each extension permutation gets its own isolated database instance
+- **Automatic Cleanup**: Database teardown after extension test suite completion
+- **Transaction Rollback**: Transaction isolation within test suites where applicable
 - **Schema Consistency**: Validation of schema generation from Pydantic models
 
 ## Business Logic Layer Testing
