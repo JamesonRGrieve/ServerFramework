@@ -577,6 +577,14 @@ class TestUserAndSessionEndpoints(AbstractEndpointTest):
             details="Users and sessions are not retrievable by ID.",
         ),
         SkipThisTest(
+            name="test_GET_422_invalid_fields",
+            details="Users and sessions are not retrievable by ID.",
+        ),
+        SkipThisTest(
+            name="test_GET_422_unknown_query_param",
+            details="Users and sessions are not retrievable by ID.",
+        ),
+        SkipThisTest(
             name="test_DELETE_404_other_user",
             details="Users and sessions are not retrievable by ID.",
         ),
@@ -624,6 +632,10 @@ class TestUserAndSessionEndpoints(AbstractEndpointTest):
         ),
         SkipThisTest(
             name="test_POST_200_search",
+            details="User search is restricted for privacy/security reasons - users should not be searchable globally",
+        ),
+        SkipThisTest(
+            name="test_POST_200_search_includes",
             details="User search is restricted for privacy/security reasons - users should not be searchable globally",
         ),
     ]
