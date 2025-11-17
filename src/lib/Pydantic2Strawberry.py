@@ -433,6 +433,25 @@ class GraphQLManager(ErrorHandlerMixin):
 
     def _create_gql_type_from_model(self, model_class: Type[BaseModel]) -> Type:
         """Create a GraphQL type from a Pydantic model"""
+        # Ensure we are using the registry-applied model (with extensions) when available
+        try:
+            if hasattr(self, "model_registry") and self.model_registry:
+                apply_fn = getattr(self.model_registry, "apply", None)
+                if callable(apply_fn):
+                    try:
+                        applied_model = apply_fn(model_class)
+                        # Validate the returned object before using it
+                        if isinstance(applied_model, type) and hasattr(
+                            applied_model, "model_fields"
+                        ):
+                            model_class = applied_model
+                    except Exception:
+                        # If apply fails for any reason, continue with the original model
+                        pass
+        except Exception:
+            # Defensive: if anything unexpected happens, ignore and proceed
+            pass
+
         # Check if type already exists in registry
         if model_class in self._type_registry:
             return self._type_registry[model_class]
@@ -903,7 +922,7 @@ class GraphQLManager(ErrorHandlerMixin):
                             "Unable to authenticate user for GraphQL query - no requester_id found in context"
                         )
                     manager = manager_class(
-                        requester_id, model_registry=self.model_registry
+                        model_registry=self.model_registry, requester_id=requester_id
                     )
 
                     # For users, always query the requester (no ID parameter allowed)
@@ -925,7 +944,7 @@ class GraphQLManager(ErrorHandlerMixin):
                             "Unable to authenticate user for GraphQL query - no requester_id found in context"
                         )
                     manager = manager_class(
-                        requester_id, model_registry=self.model_registry
+                        model_registry=self.model_registry, requester_id=requester_id
                     )
 
                     # Call manager.get with just the ID
@@ -963,7 +982,7 @@ class GraphQLManager(ErrorHandlerMixin):
                             "Unable to authenticate user for GraphQL query - no requester_id found in context"
                         )
                     manager = manager_class(
-                        requester_id, model_registry=self.model_registry
+                        model_registry=self.model_registry, requester_id=requester_id
                     )
 
                     # If teamId is provided, return users in that team
@@ -1007,7 +1026,7 @@ class GraphQLManager(ErrorHandlerMixin):
                             "Unable to authenticate user for GraphQL query - no requester_id found in context"
                         )
                     manager = manager_class(
-                        requester_id, model_registry=self.model_registry
+                        model_registry=self.model_registry, requester_id=requester_id
                     )
 
                     # Call manager.list with pagination support
@@ -1042,12 +1061,21 @@ class GraphQLManager(ErrorHandlerMixin):
                         "Unable to authenticate user for GraphQL query - no requester_id found in context"
                     )
                 manager = manager_class(
-                    requester_id, model_registry=self.model_registry
+                    model_registry=self.model_registry, requester_id=requester_id
                 )
                 data = self._convert_input_to_dict(input)
 
                 # Call manager.create with same signature as REST API
-                result = manager.create(**data)
+                # Special-case User creation which uses a register flow
+                if "User" in manager_class.__name__:
+                    # Use the static register method on the manager class to perform registration
+                    try:
+                        result = manager_class.register(data, model_registry=self.model_registry)
+                    except TypeError:
+                        # Fallback to pass kwargs style if the register signature expects named args
+                        result = manager_class.register(registration_data=data, model_registry=self.model_registry)
+                else:
+                    result = manager.create(**data)
 
                 # Broadcast subscription (convert to dict for JSON serialization)
                 try:
@@ -1094,7 +1122,7 @@ class GraphQLManager(ErrorHandlerMixin):
                             "Unable to authenticate user for GraphQL query - no requester_id found in context"
                         )
                     manager = manager_class(
-                        requester_id, model_registry=self.model_registry
+                        model_registry=self.model_registry, requester_id=requester_id
                     )
                     logger.info(f"GraphQL update input: {input}")
                     logger.info(f"GraphQL update input type: {type(input)}")
@@ -1143,7 +1171,7 @@ class GraphQLManager(ErrorHandlerMixin):
                             "Unable to authenticate user for GraphQL query - no requester_id found in context"
                         )
                     manager = manager_class(
-                        requester_id, model_registry=self.model_registry
+                        model_registry=self.model_registry, requester_id=requester_id
                     )
                     data = self._convert_input_to_dict(input)
 
@@ -1191,7 +1219,7 @@ class GraphQLManager(ErrorHandlerMixin):
                             "Unable to authenticate user for GraphQL query - no requester_id found in context"
                         )
                     manager = manager_class(
-                        requester_id, model_registry=self.model_registry
+                        model_registry=self.model_registry, requester_id=requester_id
                     )
 
                     # For users, always delete the requester (no ID parameter allowed)
@@ -1225,7 +1253,7 @@ class GraphQLManager(ErrorHandlerMixin):
                             "Unable to authenticate user for GraphQL query - no requester_id found in context"
                         )
                     manager = manager_class(
-                        requester_id, model_registry=self.model_registry
+                        model_registry=self.model_registry, requester_id=requester_id
                     )
 
                     # Call manager.delete with same signature as REST API
@@ -1618,7 +1646,7 @@ class GraphQLManager(ErrorHandlerMixin):
                         return []
 
                     manager = manager_class(
-                        requester_id=requester_id, model_registry=self.model_registry
+                        model_registry=self.model_registry, requester_id=requester_id
                     )
 
                     # Build filter based on the foreign key
@@ -1709,7 +1737,7 @@ class GraphQLManager(ErrorHandlerMixin):
                     return []
 
                 manager = manager_class(
-                    requester_id=requester_id, model_registry=manager_ref.model_registry
+                    model_registry=manager_ref.model_registry, requester_id=requester_id
                 )
 
                 # Build filter based on the foreign key

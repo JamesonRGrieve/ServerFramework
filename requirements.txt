@@ -1,3 +1,5 @@
+setuptools<58
+
 # Core Web Framework
 fastapi
 uvicorn
@@ -5,7 +7,6 @@ fastapi-mcp
 
 # Data Validation & Serialization
 pydantic
-
 ordered_set
 
 # Database & ORM
@@ -52,5 +53,5 @@ resolvelib
 semver
 stringcase
 black
-setuptools
+
 tldextract
