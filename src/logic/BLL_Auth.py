@@ -3080,10 +3080,14 @@ class RoleManager(AbstractBLLManager, RouterMixin):
                 detail=f"Role with ID '{role_id}' not found",
             )
 
-        if role.created_by_user_id != self.requester.id:
+        # Handle both dict and object access patterns (dict when fields is specified)
+        created_by_user_id = role.get("created_by_user_id") if isinstance(role, dict) else role.created_by_user_id
+        team_id = role.get("team_id") if isinstance(role, dict) else role.team_id
+        
+        if created_by_user_id != self.requester.id:
             # Business logic validation: if accessing a team-specific role, validate team membership
-            if role.team_id:
-                self.validate_user_team(self.requester.id, role.team_id)
+            if team_id:
+                self.validate_user_team(self.requester.id, team_id)
 
         return role
 
