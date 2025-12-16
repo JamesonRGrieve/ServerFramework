@@ -38,141 +38,173 @@ from sdk.YourSDK import YourSDK
 
 class TestYourModule(AbstractSDKTest):
     # Required overrides
-    class_under_test = YourSDK
-    create_fields = {
+    sdk_class = YourSDK
+    resource_name = "your_resource"
+    sample_data = {
         "name": "Test Entity",
         "description": "A test entity",
-        # ... other fields for create operations
     }
-    update_fields = {
+    update_data = {
         "name": "Updated Entity",
-        "description": "An updated entity",
-        # ... other fields for update operations
     }
-    
-    
-    def test_your_method(self):
-        # Set up mock response
-        mock_response = {"key": "value"}
-        self.mock_response_json(mock_response)
-        
-        # Call method
-        result = self.sdk_handler.your_method()
-        
-        # Verify request and response
-        self.assert_request_called_with("GET", "/expected/endpoint")
-        assert result == mock_response
+
+    def create_test_data(self, resource_type: str, count: int = 1):
+        """Create test data for the specified resource type."""
+        return [{"name": f"test_{i}"} for i in range(count)]
+
+    def assert_valid_response_structure(self, response, expected_keys, resource_key=None):
+        """Assert that a response has the expected structure."""
+        if resource_key:
+            assert resource_key in response
+        for key in expected_keys:
+            assert key in response
+
+    def test_your_method(self, server, admin_a):
+        """Test SDK method with real server."""
+        sdk = self.create_authenticated_sdk(server, admin_a)
+        result = sdk.your_resources.list()
+        assert result is not None
+```
+
+## Required Overrides
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `sdk_class` | Type[AbstractSDKHandler] | The SDK class being tested |
+| `resource_name` | str | Primary resource name being tested |
+| `sample_data` | Dict[str, Any] | Sample data for creating test entities |
+| `update_data` | Dict[str, Any] | Sample data for updating test entities |
+
+## Optional Overrides
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `sdk_test_config` | SDKTestConfig | Test configuration options |
+| `resource_configs` | Dict[str, ResourceConfig] | Expected resource configurations |
+| `_skip_tests` | List[SkipThisTest] | Tests to skip with reasons |
+
+## Key Methods
+
+### SDK Creation
+
+```python
+# Create unauthenticated SDK
+sdk = self.create_sdk(server)
+
+# Create authenticated SDK with user fixture
+sdk = self.create_authenticated_sdk(server, admin_a)
+
+# Create with specific credentials
+sdk = self.create_sdk(server, token="jwt_token", api_key="api_key")
+```
+
+### Test Data Generation
+
+```python
+# Get test data with unique values
+data = self.get_test_data(TestVariant.VALID)
+data = self.get_test_data(TestVariant.MINIMAL)
+data = self.get_test_data(TestVariant.INVALID)
+
+# Create multiple test data items
+items = self.create_test_data("resource_type", count=5)
+```
+
+### Assertions
+
+```python
+# Assert response structure
+self.assert_valid_response_structure(response, ["id", "name"], "resource_key")
+
+# Assert pagination
+self.assert_pagination_response(response, "items")
+
+# Assert entity created
+entity = self.assert_entity_created(response)
+
+# Assert entity updated
+entity = self.assert_entity_updated(response, {"name": "updated"})
 ```
 
 ## Standard Test Methods
 
-The base class provides standard test methods that are automatically available:
+The base class provides standard test methods that are automatically inherited:
 
 ```python
 class TestYourModule(AbstractSDKTest):
-    # ... required overrides ...
-
     # These methods are inherited and will work automatically
-    
-    def test_create(self)  # Tests entity creation
-    
-    # @pytest.mark.dependency(depends=["test_create"])
-    def test_get(self)     # Tests entity retrieval
-    
-    # @pytest.mark.dependency(depends=["test_create"])
-    def test_list(self)    # Tests entity listing
-    
-    # @pytest.mark.dependency(depends=["test_create"])
-    def test_update(self)  # Tests entity updating
-    
-    # @pytest.mark.dependency(depends=["test_create"])
-    def test_delete(self)  # Tests entity deletion
+
+    def test_sdk_initialization(self, server)
+    def test_resource_configuration(self, server)
+    def test_resource_managers_created(self, server)
+    def test_headers_with_token(self, server)
+    def test_headers_with_api_key(self, server)
+    def test_url_building(self, server)
+    def test_unauthenticated_request_fails(self, server)
 ```
 
 ## Testing Real HTTP Interactions
 
-The `AbstractSDKTest` class tests actual HTTP requests against a real test server:
+Tests use pytest fixtures to get a real test server:
 
 ```python
-def test_successful_request(self, server):
+def test_successful_request(self, server, admin_a):
     """Test actual SDK request against real server."""
-    sdk = self.class_under_test(base_url=server.url)
-    result = sdk.get_user("123")
-    assert result["id"] == "123"
-    assert "name" in result
+    sdk = self.create_authenticated_sdk(server, admin_a)
+    result = sdk.users.get(admin_a.id)
+    assert result is not None
 
-def test_error_response(self, server):
+def test_error_response(self, server, admin_a):
     """Test SDK error handling with real server errors."""
-    sdk = self.class_under_test(base_url=server.url)
+    sdk = self.create_authenticated_sdk(server, admin_a)
     with pytest.raises(ResourceNotFoundError) as exc_info:
-        sdk.get_user("nonexistent-id")
+        sdk.users.get("nonexistent-id")
     assert exc_info.value.status_code == 404
 
-def test_validation_error(self, server):
+def test_validation_error(self, server, admin_a):
     """Test SDK validation with real server validation."""
-    sdk = self.class_under_test(base_url=server.url)
+    sdk = self.create_authenticated_sdk(server, admin_a)
     with pytest.raises(ValidationError) as exc_info:
-        sdk.create_user({"invalid": "data"})
-    assert "required" in str(exc_info.value).lower()
+        sdk.users.create({"invalid": "data"})
+    assert exc_info.value.status_code == 422
 ```
 
 ## Using Test Fixtures
 
-Leverage standard framework fixtures:
+SDK tests use the same fixtures from `conftest.py` as other framework tests:
+
+| Fixture | Scope | Description |
+|---------|-------|-------------|
+| `server` | session | TestClient for API requests |
+| `admin_a` | session | Admin user with JWT token |
+| `team_a` | session | Team fixture for testing |
+| `admin_b` | session | Second admin user |
+| `team_b` | session | Second team fixture |
+| `db` | function | Database session |
 
 ```python
-def test_with_fixtures(self, server, admin_a):
+def test_with_fixtures(self, server, admin_a, team_a):
     """Test using framework fixtures."""
-    sdk = self.class_under_test(base_url=server.url)
+    sdk = self.create_authenticated_sdk(server, admin_a)
 
-    # Authenticate with real admin user
-    result = sdk.login(email=admin_a.email, password="test_password")
-    assert "token" in result
+    # Get current user
+    user = sdk.get_current_user()
+    assert user is not None
 
-    # Use token for authenticated requests
-    sdk.set_token(result["token"])
-    user = sdk.get_user(admin_a.id)
-    assert user["id"] == admin_a.id
+    # List teams
+    teams = sdk.teams.list()
+    assert teams is not None
 ```
 
 ## Code Coverage
 
-Aim for high test coverage (90%+) for all SDK components. The test script includes coverage reporting. 
+Aim for high test coverage (90%+) for all SDK components. The test script includes coverage reporting.
 
 To view detailed coverage:
 
 ```bash
 pytest --cov=sdk --cov-report=html
 # Then open htmlcov/index.html in your browser
-```
-
-## Testing Authentication
-
-The base class automatically tests authentication. Override only if needed:
-
-```python
-
-def test_authentication(self):
-    """Test custom authentication behavior."""
-    super().test_authentication()
-    # Add custom authentication tests
-```
-
-## Testing Request Parameters
-
-Test real request parameter handling:
-
-```python
-def test_query_parameters(self, server):
-    """Test SDK properly sends query parameters."""
-    sdk = self.class_under_test(base_url=server.url)
-
-    # Call with parameters - server validates them
-    results = sdk.list_resources(offset=10, limit=50, sort_by="name")
-
-    # Server returns results based on actual parameters
-    assert len(results) <= 50
-    assert all(r["name"] for r in results)  # Verify sort worked
 ```
 
 ## End-to-End Testing
@@ -182,30 +214,31 @@ All SDK tests validate real behavior against the test server:
 ```python
 def test_complete_workflow(self, server, admin_a):
     """Test complete SDK workflow with real operations."""
-    sdk = self.class_under_test(base_url=server.url)
+    sdk = self.create_authenticated_sdk(server, admin_a)
 
-    # Login with real user
-    auth_result = sdk.login(email=admin_a.email, password="test_password")
-    sdk.set_token(auth_result["token"])
+    # List resources
+    resources = sdk.resources.list()
+    assert resources is not None
 
     # Create resource
-    created = sdk.create_resource({"name": "Test Resource"})
-    assert created["id"]
+    data = self.get_test_data()
+    created = sdk.resources.create(data)
+    entity = self.assert_entity_created(created)
 
     # Retrieve resource
-    retrieved = sdk.get_resource(created["id"])
-    assert retrieved["name"] == "Test Resource"
+    retrieved = sdk.resources.get(entity["id"])
+    assert retrieved is not None
 
     # Update resource
-    updated = sdk.update_resource(created["id"], {"name": "Updated"})
-    assert updated["name"] == "Updated"
+    updated = sdk.resources.update(entity["id"], self.update_data)
+    self.assert_entity_updated(updated, self.update_data)
 
     # Delete resource
-    sdk.delete_resource(created["id"])
+    sdk.resources.delete(entity["id"])
 
     # Verify deletion
     with pytest.raises(ResourceNotFoundError):
-        sdk.get_resource(created["id"])
+        sdk.resources.get(entity["id"])
 ```
 
 ## SDK-Specific Best Practices
@@ -213,9 +246,10 @@ def test_complete_workflow(self, server, admin_a):
 In addition to [common testing best practices](../Framework.Test.md#best-practices):
 
 1. **Extend AbstractSDKTest** - Always extend the base test class for SDK modules
-2. **Provide Required Overrides** - Set `class_under_test`, `create_fields`, and `update_fields`
+2. **Provide Required Overrides** - Set `sdk_class`, `resource_name`, `sample_data`, and `update_data`
 3. **Use Real Server** - Test against actual test server, never mock HTTP
-4. **Test Complete Workflows** - Validate end-to-end SDK functionality with real requests
+4. **Use Fixtures** - Leverage `server`, `admin_a`, `team_a` fixtures
+5. **Test Complete Workflows** - Validate end-to-end SDK functionality with real requests
 
 ## Running SDK Tests
 
@@ -223,17 +257,27 @@ See [Framework.Test.md](../Framework.Test.md#testing-commands) for common test c
 
 ```bash
 # Run all SDK tests
-pytest sdk/
+pytest src/sdk/ -v
 
 # Run a specific SDK test file
-pytest sdk/SDK_Auth_test.py
+pytest src/sdk/SDK_Auth_test.py -v
 
 # Run a specific SDK test class
-pytest sdk/SDK_Auth_test.py::TestAuthSDK
+pytest src/sdk/SDK_Auth_test.py::TestUserSDK -v
 
 # Run a specific SDK test method
-pytest sdk/SDK_Auth_test.py::TestAuthSDK::test_login
+pytest src/sdk/SDK_Auth_test.py::TestUserSDK::test_get_current_user -v
 
-# Run integration tests only
-pytest sdk/ -m "integration"
-``` 
+# Run with coverage
+pytest src/sdk/ --cov=sdk --cov-report=term-missing
+```
+
+## Test Categories
+
+SDK tests use the `CategoryOfTest.SDK` category:
+
+```python
+test_config: ClassOfTestsConfig = ClassOfTestsConfig(
+    categories=[CategoryOfTest.SDK]
+)
+```
