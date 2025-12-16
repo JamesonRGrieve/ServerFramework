@@ -4,7 +4,7 @@ import pytest
 from faker import Faker
 
 from AbstractTest import CategoryOfTest, ClassOfTestsConfig, ParentEntity
-from endpoints.AbstractEPTest import AbstractEndpointTest
+from endpoints.AbstractEPTest import AbstractEPTest
 from lib.Environment import env
 from logic.BLL_Extensions import AbilityModel, ExtensionModel
 
@@ -14,7 +14,7 @@ faker = Faker()
 
 @pytest.mark.ep
 @pytest.mark.extensions
-class TestExtensionEndpoints(AbstractEndpointTest):
+class TestExtensionEndpoints(AbstractEPTest):
     """Test class for Extension endpoints."""
 
     # Test configuration
@@ -144,7 +144,7 @@ class TestExtensionEndpoints(AbstractEndpointTest):
 
 @pytest.mark.ep
 @pytest.mark.extensions
-class TestAbilityEndpoints(AbstractEndpointTest):
+class TestAbilityEndpoints(AbstractEPTest):
     """Test class for Ability endpoints."""
 
     # Test configuration

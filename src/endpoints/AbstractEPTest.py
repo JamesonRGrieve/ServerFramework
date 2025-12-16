@@ -95,7 +95,7 @@ class EntityVariant(str, Enum):
 # @pytest.mark.dependency(
 #     scope="session", depends=["endpoints.AbstractEndpointRouter_test"]
 # )
-class AbstractEndpointTest(AbstractTest, AbstractGraphQLTest):
+class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
     """
     Base class for testing REST API endpoints with support for dependent entities.
 
@@ -402,12 +402,12 @@ class AbstractEndpointTest(AbstractTest, AbstractGraphQLTest):
         origin = get_origin(annotation)
         if origin is Annotated:
             return any(
-                AbstractEndpointTest._annotation_contains_any(arg)
+                AbstractEPTest._annotation_contains_any(arg)
                 for arg in get_args(annotation)
             )
         if origin is Union:
             return any(
-                AbstractEndpointTest._annotation_contains_any(arg)
+                AbstractEPTest._annotation_contains_any(arg)
                 for arg in get_args(annotation)
             )
         return False

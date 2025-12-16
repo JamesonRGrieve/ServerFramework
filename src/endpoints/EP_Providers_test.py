@@ -5,7 +5,7 @@ import pytest
 from faker import Faker
 
 from AbstractTest import CategoryOfTest, ClassOfTestsConfig, ParentEntity, SkipThisTest
-from endpoints.AbstractEPTest import AbstractEndpointTest
+from endpoints.AbstractEPTest import AbstractEPTest
 from logic.BLL_Providers import (
     ProviderExtensionAbilityModel,
     ProviderExtensionModel,
@@ -22,7 +22,7 @@ faker = Faker()
 
 @pytest.mark.ep
 @pytest.mark.providers
-class TestProviderEndpoints(AbstractEndpointTest):
+class TestProviderEndpoints(AbstractEPTest):
     """Tests for the Provider Management endpoints."""
 
     base_endpoint = "provider"
@@ -74,7 +74,7 @@ class TestProviderEndpoints(AbstractEndpointTest):
 
 @pytest.mark.ep
 @pytest.mark.extensions
-class TestProviderExtensionEndpoints(AbstractEndpointTest):
+class TestProviderExtensionEndpoints(AbstractEPTest):
     """Test class for Provider Extension endpoints."""
 
     # Test configuration
@@ -620,7 +620,7 @@ class TestProviderExtensionEndpoints(AbstractEndpointTest):
 
 @pytest.mark.ep
 @pytest.mark.providers
-class TestProviderInstanceEndpoints(AbstractEndpointTest):
+class TestProviderInstanceEndpoints(AbstractEPTest):
     """Tests for the Provider Instance Management endpoints."""
 
     base_endpoint = "provider/instance"
@@ -727,7 +727,7 @@ class TestProviderInstanceEndpoints(AbstractEndpointTest):
 
 @pytest.mark.ep
 @pytest.mark.providers
-class TestRotationEndpoints(AbstractEndpointTest):
+class TestRotationEndpoints(AbstractEPTest):
     """Tests for the Rotation Management endpoints."""
 
     base_endpoint = "rotation"
@@ -799,7 +799,7 @@ class TestRotationEndpoints(AbstractEndpointTest):
 
 @pytest.mark.ep
 @pytest.mark.providers
-class TestRotationProviderInstanceEndpoints(AbstractEndpointTest):
+class TestRotationProviderInstanceEndpoints(AbstractEPTest):
     """Tests for the Rotation Provider Management endpoints."""
 
     base_endpoint = "rotation/provider/instance"
@@ -903,7 +903,7 @@ class TestRotationProviderInstanceEndpoints(AbstractEndpointTest):
 
 @pytest.mark.ep
 @pytest.mark.providers
-class TestProviderExtensionAbilityEndpoints(AbstractEndpointTest):
+class TestProviderExtensionAbilityEndpoints(AbstractEPTest):
     """Tests for the Provider Extension Ability Management endpoints."""
 
     base_endpoint = "extension/ability/provider"
@@ -990,7 +990,7 @@ class TestProviderExtensionAbilityEndpoints(AbstractEndpointTest):
 
 @pytest.mark.ep
 @pytest.mark.providers
-class TestProviderInstanceSettingsEndpoints(AbstractEndpointTest):
+class TestProviderInstanceSettingsEndpoints(AbstractEPTest):
     base_endpoint = "provider/instance/setting"
     entity_name = "provider_instance_setting"
     string_field_to_update = "value"

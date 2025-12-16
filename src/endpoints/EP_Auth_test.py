@@ -8,7 +8,7 @@ import pytest
 import stringcase
 
 from AbstractTest import ParentEntity, SkipReason, SkipThisTest
-from endpoints.AbstractEPTest import AbstractEndpointTest, HttpMethod, StatusCode
+from endpoints.AbstractEPTest import AbstractEPTest, HttpMethod, StatusCode
 from lib.Environment import env
 from lib.Logging import logger
 from lib.Pydantic2Strawberry import convert_field_name
@@ -17,7 +17,7 @@ from logic.BLL_Auth import InvitationModel, RoleModel, TeamModel, UserModel
 
 @pytest.mark.ep
 @pytest.mark.auth
-class TestTeamEndpoints(AbstractEndpointTest):
+class TestTeamEndpoints(AbstractEPTest):
     """Tests for the Team Management endpoints."""
 
     faker = faker.Faker()
@@ -524,7 +524,7 @@ class TestTeamEndpoints(AbstractEndpointTest):
 
 @pytest.mark.ep
 @pytest.mark.auth
-class TestUserAndSessionEndpoints(AbstractEndpointTest):
+class TestUserAndSessionEndpoints(AbstractEPTest):
     """Tests for the User Management and Session endpoints."""
 
     class_under_test = UserModel
@@ -1740,7 +1740,7 @@ class TestUserAndSessionEndpoints(AbstractEndpointTest):
 
 @pytest.mark.ep
 @pytest.mark.auth
-class TestRoleEndpoints(AbstractEndpointTest):
+class TestRoleEndpoints(AbstractEPTest):
     """Tests for the Role Management endpoints."""
 
     base_endpoint = "role"
@@ -2152,7 +2152,7 @@ class TestRoleEndpoints(AbstractEndpointTest):
 
 @pytest.mark.ep
 @pytest.mark.auth
-class TestInvitationEndpoints(AbstractEndpointTest):
+class TestInvitationEndpoints(AbstractEPTest):
     """
     Comprehensive endpoint tests for Invitation Management covering all three invitation acceptance scenarios:
 

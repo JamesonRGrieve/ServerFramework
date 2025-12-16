@@ -1221,10 +1221,10 @@ if __name__ == "__main__":
 import json
 
 from AbstractTest import ParentEntity
-from endpoints.AbstractEPTest import AbstractEndpointTest
+from endpoints.AbstractEPTest import AbstractEPTest
 
 
-class DummyEndpointTest(AbstractEndpointTest):
+class DummyEndpointTest(AbstractEPTest):
     base_endpoint = "role"
     entity_name = "role"
     parent_entities = [
@@ -1264,24 +1264,21 @@ class DummyServer:
 
 
 def test_encode_query_values_with_lists():
-    assert AbstractEndpointTest._serialize_query_values(["id"]) == "id"
+    assert AbstractEPTest._serialize_query_values(["id"]) == "id"
     assert (
-        AbstractEndpointTest._serialize_query_values(["id", "name", "created_at"])
+        AbstractEPTest._serialize_query_values(["id", "name", "created_at"])
         == "id,name,created_at"
     )
 
 
 def test_encode_query_values_trims_and_deduplicates():
-    assert AbstractEndpointTest._serialize_query_values("id,name") == "id,name"
+    assert AbstractEPTest._serialize_query_values("id,name") == "id,name"
+    assert AbstractEPTest._serialize_query_values([" id ", "name", "id"]) == "id,name"
     assert (
-        AbstractEndpointTest._serialize_query_values([" id ", "name", "id"])
-        == "id,name"
-    )
-    assert (
-        AbstractEndpointTest._serialize_query_values(("team.members", "team.members"))
+        AbstractEPTest._serialize_query_values(("team.members", "team.members"))
         == "team.members"
     )
-    assert AbstractEndpointTest._serialize_query_values(None) is None
+    assert AbstractEPTest._serialize_query_values(None) is None
 
 
 def test_resolve_parent_context_uses_cached_parent_ids():
