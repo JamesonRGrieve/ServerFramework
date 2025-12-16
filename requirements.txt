@@ -1,5 +1,0 @@
-# All dependencies are now managed in src/pyproject.toml
-# Install with: pip install -e ./src[dev]
-# Or for production: pip install ./src
-
--e ./src[dev]
