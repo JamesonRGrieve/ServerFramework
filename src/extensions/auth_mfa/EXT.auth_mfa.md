@@ -1,5 +1,9 @@
 # Authentication MFA Extension
 
+This document describes the MFA extension implementation.
+
+> **Extension Architecture**: For general extension patterns, architecture, and concepts, see [EXT.Patterns.md](../EXT.Patterns.md).
+
 Multi-Factor Authentication extension for AGInfrastructure providing comprehensive MFA capabilities including TOTP, Email, and SMS-based authentication with recovery code support.
 
 ## Overview

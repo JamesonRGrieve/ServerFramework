@@ -1,14 +1,10 @@
 # SDK Testing Guide
 
-This document outlines the testing approach and best practices for the SDK.
+This document outlines SDK-specific testing patterns and best practices.
+
+> **Common Testing Resources**: For testing tools, commands, fixtures, and best practices shared across all layers, see [Framework.Test.md](../Framework.Test.md#testing-tools-and-framework).
 
 ## Testing Framework
-
-The SDK uses the following tools for testing:
-
-- **pytest**: Primary testing framework with pytest-depends for test dependencies
-- **pytest-mock**: For mocking and fixtures
-- **pytest-cov**: For code coverage reporting
 
 ## Test Structure
 
@@ -225,41 +221,32 @@ def test_integration_login(self):
     assert "token" in result
 ```
 
-## Best Practices
+## SDK-Specific Best Practices
 
-1. **Extend AbstractSDKTest** - Always extend the base test class
+In addition to [common testing best practices](../Framework.Test.md#best-practices):
+
+1. **Extend AbstractSDKTest** - Always extend the base test class for SDK modules
 2. **Provide Required Overrides** - Set `class_under_test`, `create_fields`, and `update_fields`
 3. **Use Standard Assertions** - Use `self.assert_request_called_with()` for request verification
-4. **Use pytest.mark.dependency()** - Mark all test methods with the decorator
-5. **Use pytest Fixtures** - Leverage pytest's powerful fixture system for test data
-6. **Mock External Dependencies** - Use pytest-mock for mocking
-7. **Clear Test Names** - Use descriptive test names that indicate the behavior being tested
-8. **Isolated Tests** - Tests should not depend on each other's state
-9. **Test Error Cases** - Don't just test the "happy path"
-10. **Test Edge Cases** - Test null values, empty lists, etc.
+4. **Mock HTTP Responses** - SDK tests mock HTTP rather than use real API calls
 
-## Running Tests
+## Running SDK Tests
 
-Use pytest to run the tests:
+See [Framework.Test.md](../Framework.Test.md#testing-commands) for common test commands. SDK-specific examples:
 
 ```bash
-# Run all tests
-pytest
+# Run all SDK tests
+pytest sdk/
 
-# Run a specific test file
+# Run a specific SDK test file
 pytest sdk/SDK_Auth_test.py
 
-# Run a specific test class
+# Run a specific SDK test class
 pytest sdk/SDK_Auth_test.py::TestAuthSDK
 
-# Run a specific test method
+# Run a specific SDK test method
 pytest sdk/SDK_Auth_test.py::TestAuthSDK::test_login
 
-# Run with specific markers
-pytest -v -m "integration"  # Run integration tests
-pytest -v -m "not integration"  # Skip integration tests
-```
-
-## Continuous Integration
-
-The test suite is automatically run in CI environments. Ensure all tests pass before submitting pull requests. 
+# Run integration tests only
+pytest sdk/ -m "integration"
+``` 

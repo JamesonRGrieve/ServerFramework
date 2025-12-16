@@ -1,5 +1,9 @@
 # Database Extension
 
+This document describes the Database extension implementation.
+
+> **Extension Architecture**: For general extension patterns, architecture, and concepts, see [EXT.Patterns.md](../EXT.Patterns.md).
+
 The Database extension provides comprehensive database connectivity for AGInfrastructure, supporting multiple database types through the Provider Rotation System for failover and load balancing.
 
 ## Overview

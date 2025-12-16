@@ -1,6 +1,8 @@
 # SDK Patterns
 
-This document outlines the design patterns and conventions used in the API SDK.
+This document outlines SDK-specific design patterns and conventions.
+
+> **Common Patterns**: For CRUD model patterns, error handling, and configuration patterns shared across all layers, see [Framework.md](../Framework.md#common-patterns-across-layers).
 
 ## Architecture
 

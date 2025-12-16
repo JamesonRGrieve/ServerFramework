@@ -1,5 +1,9 @@
 # Database Patterns
 
+This document describes database-specific patterns and implementation details.
+
+> **Common Patterns**: For CRUD model patterns, error handling, and configuration patterns shared across all layers, see [Framework.md](../Framework.md#common-patterns-across-layers).
+
 ## Overview
 The database layer implements a Pydantic-first architecture with automatic SQLAlchemy generation through the `DatabaseMixin` pattern. This approach, managed by `DatabaseManager.py`, provides enterprise-grade database management with developer-friendly patterns for rapid development.
 
@@ -153,39 +157,23 @@ class Document(Base, BaseMixin, UserRefMixin, TeamRefMixin.Optional):
 - Built-in nullable variants
 
 ### CRUD Model Pattern
-**Purpose**: Separate models for different operation types.
 
+See [Framework.md CRUD Model Pattern](../Framework.md#crud-model-pattern) for the common pattern used across all layers.
+
+**Database-Specific Implementation:**
 ```python
 class UserModel:
-    # Base model - for responses and general use
+    # Base model with DatabaseMixin for SQLAlchemy generation
     email: Optional[str] = Field(description="User's email address")
-    
-    class Create(BaseModel):
-        # Required fields for creation
-        email: str = Field(..., description="User's email address")
-        password: Optional[str] = Field(None, description="User's password")
-        
-        @model_validator(mode="after")
-        def validate_email(self):
-            if "@" not in self.email:
-                raise ValueError("Invalid email format")
-            return self
-            
-    class Update(BaseModel):
-        # All fields optional for updates
-        email: Optional[str] = Field(None, description="User's email address")
-        
-    class Search(ApplicationModel.Search):
-        # Search-specific fields with operators
-        email: Optional[StringSearchModel] = None
-        active: Optional[bool] = None
+
+    # Inherits Create, Update, Search from parent or defines them
+    # DatabaseMixin automatically generates SQLAlchemy model via .DB property
 ```
 
-**Benefits:**
-- Operation-specific validation rules
-- Clear API contracts
-- Prevents partial update issues
-- Search operator support
+**Database Benefits:**
+- Automatic SQLAlchemy model generation from Pydantic via DatabaseMixin
+- Search operators map to SQL WHERE clauses
+- Migration generation from model changes
 
 ### Network Model Pattern
 **Purpose**: Define API request/response structures.

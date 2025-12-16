@@ -1,6 +1,8 @@
 # Service Layer Patterns
 
-This document outlines the patterns and conventions for implementing background services using the AbstractService framework.
+This document outlines service-specific patterns and conventions.
+
+> **Common Patterns**: For CRUD model patterns, error handling, and configuration patterns shared across all layers, see [Framework.md](../Framework.md#common-patterns-across-layers).
 
 ## Core Service Architecture
 
