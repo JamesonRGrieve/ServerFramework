@@ -95,9 +95,44 @@ The framework follows a strict layered architecture with clear separation of con
 - **payment**: Stripe payment processing with subscription management
 - **database**: Multi-database support with natural language querying
 
+## Framework Design Philosophy
+
+### Extension-Only Implementation Pattern
+**Core principle:** All custom implementations go in `extensions/` directory only. This enables conflict-free framework updates.
+
+**Benefits:**
+- Zero-conflict updates when merging framework changes
+- Clean separation between framework and custom code
+- Modular, isolated extensions
+
+**Rules:**
+- ✅ Create new folders in `extensions/`
+- ✅ Use `@extension_model` to extend existing models
+- ✅ Register hooks in extensions
+- ✅ Extension-specific migrations in `extensions/{name}/versions/`
+- ❌ Avoid modifying `src/lib/`, `src/database/`, `src/logic/`, `src/endpoints/`
+- ❌ Avoid modifying core migrations
+
+**Structure:**
+```
+extensions/my_feature/
+├── EXT_MyFeature.py       # Extension definition
+├── BLL_MyModel.py         # Business logic + Pydantic models
+├── EP_MyEndpoints.py      # API endpoints (or use RouterMixin)
+├── PRV_MyProvider.py      # External service provider
+└── versions/001_initial.py  # Migrations
+```
+
+**Update Strategy:**
+1. Fork/branch framework for your implementation
+2. Keep all custom code in `extensions/` only
+3. Merge framework updates into your fork
+4. Result: Zero conflicts if only `extensions/` modified
+
 ## Development Principles
 
 ### Code Organization
+- **Extension-Only Development**: All implementations in `extensions/` directory for conflict-free updates
 - **UUID Primary Keys**: Consistent UUID usage across all entities
 - **Relative Imports**: All imports relative to `src/` directory
 - **Early Error Handling**: Fail fast with FastAPI HTTPExceptions at database layer

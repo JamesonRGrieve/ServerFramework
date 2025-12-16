@@ -161,11 +161,53 @@ Automated resolution of dependency conflicts with intelligent priority assignmen
 ### Extension Integration
 Seamless integration with the extension system for dependency discovery and resolution.
 
+#### Extension Loading
+Extensions load based on `APP_EXTENSIONS` environment variable:
+1. Parse CSV list of requested extensions
+2. Validate dependencies for each
+3. Resolve load order (topological sort)
+4. Load extensions in dependency order
+5. Register models, abilities, hooks
+
+**Rules:**
+- Required dependencies must exist
+- Optional dependencies can be missing
+- Circular dependencies → graceful failure
+- Missing required dependencies → graceful failure
+
+#### Graceful Failure
+Server halts on extension load failure with:
+- Extension name causing failure
+- Missing/problematic dependencies
+- Actionable resolution steps
+
+**Example error:**
+```
+Failed to load extension 'my_extension':
+  - Missing extension dependency: other_extension
+  - Missing system dependency: postgresql
+  - Circular dependency: ext_a → ext_b → ext_a
+```
+
 ### Testing Integration
 Built-in support for test environments with dependency isolation and validation.
 
 ### Environment Integration
 Integration with the environment management system for configuration and validation.
+
+## Known Installation Issues
+
+### pytest-dependency and stringcase
+Fail to build wheels on setuptools >= 58 due to deprecated `install_layout` attribute.
+
+**Error:** `AttributeError: install_layout`
+
+**Workarounds:**
+1. Use prebuilt wheels: `pip install pytest-dependency stringcase`
+2. Downgrade setuptools in venv: `pip install 'setuptools<58'` before installing packages
+3. Find alternative packages
+
+**Note:** Framework specifies `setuptools<58` in requirements.txt, but system Python may have newer versions that can't be downgraded.
 
 ## Best Practices
 

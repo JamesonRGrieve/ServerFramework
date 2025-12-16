@@ -259,4 +259,37 @@ async def async_endpoint(db: AsyncSession = Depends(db_manager.get_async_db)):
 - Connection string management
 - Primary key type determination
 
+## Migrations
+
+### Alembic Integration
+Schema changes managed via Alembic migrations:
+- Core migrations: `src/database/migrations/versions/`
+- Extension migrations: `extensions/{name}/migrations/versions/`
+
+### Extension Migrations
+Each extension has isolated migrations folder scaffolded by Alembic:
+```bash
+# Generate extension migration
+ALEMBIC_EXTENSION=my_extension alembic revision --autogenerate -m "description"
+```
+
+**Resolution Order:**
+1. All core migrations (dependency order)
+2. All extension migrations (extension dependency order)
+3. Non-conflicting when resolved sequentially
+
+**Structure:**
+```
+extensions/my_extension/
+└── migrations/
+    ├── env.py              # Extension-specific Alembic env
+    └── versions/
+        └── xxx_initial.py  # Migration files
+```
+
+**@extension_model Fields:**
+- Fields injected via `@extension_model` require manual migration creation
+- Use Alembic autogenerate to detect extended fields
+- Migrations applied in extension dependency order
+
 This consolidated approach provides a robust, scalable database management system that supports multiple database types while maintaining thread safety, performance, and proper resource management.
