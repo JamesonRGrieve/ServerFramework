@@ -1,143 +1,284 @@
 # Endpoint Layer Architecture
 
-High-level architecture overview. See [EP.Patterns.md](EP.Patterns.md) for usage patterns.
+> **See also:** [Framework.md](../Framework.md) for overall architecture, [EP.Patterns.md](EP.Patterns.md) for quick-reference patterns
 
-## System Layers
+## Core Principle
+
+**Pydantic models define everything.** BLL managers with `RouterMixin` automatically generate FastAPI routers with full CRUD operations, authentication, and OpenAPI documentation.
+
+## Architecture Overview
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                     API Layer (FastAPI)                         │
-├─────────────────────────────────────────────────────────────────┤
-│               RouterMixin (Route Generation)                    │
-├─────────────────────────────────────────────────────────────────┤
-│              Manager Layer (Business Logic)                     │
-├─────────────────────────────────────────────────────────────────┤
-│               Database Layer (SQLAlchemy ORM)                   │
+│                        API Request                               │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  Endpoint Layer (EP_*.py)                                        │
+│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐  │
+│  │ AbstractEPRouter│  │   RouterMixin   │  │  GraphQL Layer  │  │
+│  │ (manual routes) │  │ (auto-generate) │  │  (Strawberry)   │  │
+│  └────────┬────────┘  └────────┬────────┘  └────────┬────────┘  │
+└───────────┼────────────────────┼────────────────────┼───────────┘
+            │                    │                    │
+            ▼                    ▼                    ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  Business Logic Layer (BLL_*.py)                                 │
+│  AbstractBLLManager with CRUD operations + hooks                 │
+└─────────────────────────────────────────────────────────────────┘
+            │
+            ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  Database Layer (DB_*.py) - Auto-generated from Pydantic        │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-## Core Design Principles
+## RouterMixin
 
-1. **Manager-Driven Generation**: Routers generated from BLL manager classes
-2. **RouterMixin Pattern**: BLL managers inherit `RouterMixin` for auto-generation
-3. **Model Registry Integration**: `model_registry.build_routers()` builds all routers
-4. **Convention over Configuration**: Standard patterns reduce boilerplate
-5. **Automatic CRUD**: 8 standard routes generated from model structure
+Inherit `RouterMixin` in your BLL manager to auto-generate REST endpoints.
 
-## Data Flow
-
-```
-Request → Router → Body Extraction → Manager → Response → Client
-   ↓         ↓           ↓             ↓          ↓
-Validate  Route      Extract       Business   Format
-Schema   Match      Resource      Logic      Response
-```
-
-## Core Abstractions
-
-### RouterMixin
-
-Mixin added to BLL managers for automatic router generation:
+### Minimal Example
 
 ```python
-class ResourceManager(RouterMixin, AbstractBLLManager):
-    prefix: ClassVar[str] = "/v1/resource"
-    tags: ClassVar[List[str]] = ["Resource"]
-    auth_type: ClassVar[AuthType] = AuthType.JWT
+from lib.Pydantic2FastAPI import RouterMixin, AuthType
 
-    # Router generated via:
-    router = ResourceManager.Router(model_registry)
+class ItemManager(AbstractBLLManager, RouterMixin):
+    BaseModel = Item  # Pydantic model with Network subclass
+
+    # Optional overrides (all have sensible defaults)
+    prefix: ClassVar[str] = "/items"           # Default: derived from class name
+    tags: ClassVar[List[str]] = ["Items"]      # Default: derived from class name
+    auth_type: ClassVar[AuthType] = AuthType.JWT  # Default: JWT
 ```
 
-### Network Model
+### Configuration Options
 
-Defines request/response structure for auto-generation:
+| Option                 | Type                              | Default              | Description                   |
+| ---------------------- | --------------------------------- | -------------------- | ----------------------------- |
+| `prefix`               | `str`                             | Auto from class name | URL prefix (e.g., `/items`)   |
+| `tags`                 | `List[str]`                       | Auto from class name | OpenAPI tags                  |
+| `auth_type`            | `AuthType`                        | `JWT`                | Default auth for all routes   |
+| `routes_to_register`   | `List[RouteType]`                 | All 8 routes         | Which CRUD routes to create   |
+| `route_auth_overrides` | `Dict[RouteType, AuthType]`       | `{}`                 | Per-route auth override       |
+| `custom_routes`        | `List[CustomRouteConfig]`         | `[]`                 | Additional custom endpoints   |
+| `nested_resources`     | `Dict[str, NestedResourceConfig]` | `{}`                 | Child resource routes         |
+| `example_overrides`    | `Dict[str, Dict]`                 | `{}`                 | OpenAPI example customization |
+
+### Generated Routes
+
+| RouteType      | Method | Path      | Description                |
+| -------------- | ------ | --------- | -------------------------- |
+| `GET`          | GET    | `/{id}`   | Get single resource        |
+| `LIST`         | GET    | `/`       | List resources (paginated) |
+| `CREATE`       | POST   | `/`       | Create single/batch        |
+| `UPDATE`       | PUT    | `/{id}`   | Update resource            |
+| `DELETE`       | DELETE | `/{id}`   | Delete resource            |
+| `SEARCH`       | POST   | `/search` | Search with filters        |
+| `BATCH_UPDATE` | PUT    | `/batch`  | Update multiple            |
+| `BATCH_DELETE` | DELETE | `/batch`  | Delete multiple            |
+
+### Route Registration
 
 ```python
-class ResourceModel:
+app.include_router(ItemManager.Router(model_registry))
+```
+
+## Authentication
+
+| AuthType  | Header                          | Use Case                |
+| --------- | ------------------------------- | ----------------------- |
+| `JWT`     | `Authorization: Bearer <token>` | User sessions (default) |
+| `API_KEY` | `X-API-Key: <key>`              | Service-to-service      |
+| `BASIC`   | `Authorization: Basic <b64>`    | Simple auth             |
+| `NONE`    | None                            | Public endpoints        |
+
+### Per-Route Override
+
+```python
+class ItemManager(AbstractBLLManager, RouterMixin):
+    auth_type = AuthType.JWT
+    route_auth_overrides = {
+        RouteType.LIST: AuthType.NONE,       # Public listing
+        RouteType.CREATE: AuthType.API_KEY,  # Service-only creation
+    }
+```
+
+### Auth Resolution Order
+1. Route-specific override (`route_auth_overrides`)
+2. System entity check (auto API_KEY for system entities on writes)
+3. Manager default (`auth_type`)
+
+## Network Model Convention
+
+Every `BaseModel` requires a `Network` inner class:
+
+```python
+class Item(BaseModel):
+    id: str
+    name: str
+    description: Optional[str] = None
+
     class Network:
-        class GET: ...      # Query params
-        class POST: ...     # Create request body
-        class PUT: ...      # Update request body
-        class SEARCH: ...   # Search request body
-        class ResponseSingle: ...  # Single item response
-        class ResponsePlural: ...  # List response
+        class GET(BaseModel):
+            include: Optional[List[str]] = None
+            fields: Optional[List[str]] = None
+
+        class LIST(BaseModel):
+            include: Optional[List[str]] = None
+            fields: Optional[List[str]] = None
+            offset: int = 0
+            limit: int = 100
+            sort_by: Optional[str] = None
+            sort_order: str = "asc"
+
+        class POST(BaseModel):
+            item: ItemCreate
+
+        class PUT(BaseModel):
+            item: ItemUpdate
+
+        class SEARCH(BaseModel):
+            item: ItemSearch
+
+        class ResponseSingle(BaseModel):
+            item: Item
+
+        class ResponsePlural(BaseModel):
+            items: List[Item]
 ```
 
-### Manager Interface
+## Query Parameters
 
-BLL managers provide business logic methods:
-
-```python
-class ResourceManager(RouterMixin, AbstractBLLManager):
-    def create(self, **kwargs) -> Model: ...
-    def get(self, id: str, **kwargs) -> Model: ...
-    def list(self, **kwargs) -> List[Model]: ...
-    def search(self, **kwargs) -> List[Model]: ...
-    def update(self, id: str, **kwargs) -> Model: ...
-    def delete(self, id: str) -> None: ...
-    def batch_update(self, data: Dict, target_ids: List[str]) -> List[Model]: ...
-    def batch_delete(self, target_ids: List[str]) -> None: ...
-```
-
-## Authentication Flow
-
-1. Route checks for auth override (`route_auth_overrides`)
-2. System entity detection (auto API_KEY for writes)
-3. Falls back to router default (`auth_type`)
-4. Dependency injection provides authenticated user context
-
-## Router Generation Process
-
-```python
-# In ModelRegistry.build_routers():
-for manager_class in self.get_router_managers():
-    if hasattr(manager_class, 'Router'):
-        router = manager_class.Router(self)
-        routers.append(router)
-```
+| Parameter    | Example                         | Description                  |
+| ------------ | ------------------------------- | ---------------------------- |
+| `fields`     | `?fields=id,name`               | Return only specified fields |
+| `include`    | `?include=created_by_user,team` | Load related entities        |
+| `offset`     | `?offset=20`                    | Skip N records (pagination)  |
+| `limit`      | `?limit=50`                     | Max records to return        |
+| `sort_by`    | `?sort_by=created_at`           | Field to sort by             |
+| `sort_order` | `?sort_order=desc`              | `asc` or `desc`              |
 
 ## Nested Resources
 
-Parent-child relationships via manager properties:
+```python
+class TeamManager(AbstractBLLManager, RouterMixin):
+    nested_resources = {
+        "members": NestedResourceConfig(
+            child_resource_name="member",
+            manager_property="Member_manager",
+            child_manager_class=MemberManager,
+            routes_to_register=[RouteType.GET, RouteType.LIST, RouteType.CREATE],
+        ),
+    }
+```
+
+**Generated routes:**
+- `GET /teams/{team_id}/members`
+- `GET /teams/{team_id}/members/{id}`
+- `POST /teams/{team_id}/members`
+
+### Manager Property Resolution
+Child managers accessed via parent property path:
+```python
+class TeamManager:
+    @property
+    def Member_manager(self):
+        return MemberManager(team_id=self.team_id, ...)
+```
+
+## Custom Routes
+
+### Instance Method
 
 ```python
-class TeamManager(RouterMixin, AbstractBLLManager):
-    @property
-    def invitations(self):
-        return InvitationManager(parent_team_id=self.target_id, ...)
+class ItemManager(AbstractBLLManager, RouterMixin):
+    custom_routes = [
+        CustomRouteConfig(
+            path="/{id}/archive",
+            method=HTTPMethod.POST,
+            function="archive_item",
+            summary="Archive item",
+        ),
+    ]
 
-# Generates: /v1/team/{team_id}/invitation
+    def archive_item(self, id: str) -> Item:
+        return self.update(id, archived=True)
+```
+
+### Static Route (Extensions)
+
+```python
+from lib.Pydantic2FastAPI import static_route
+
+class EXT_MyExtension:
+    @static_route("/status", method=HTTPMethod.GET, auth_type=AuthType.NONE)
+    @classmethod
+    def get_status(cls) -> dict:
+        return {"status": "active"}
 ```
 
 ## Error Handling
 
-Manager exceptions → HTTP responses (automatic conversion):
+| Code | Exception               | When                           |
+| ---- | ----------------------- | ------------------------------ |
+| 400  | `InvalidRequestError`   | Malformed request              |
+| 401  | `AuthenticationError`   | Missing/invalid auth           |
+| 403  | `PermissionDeniedError` | Insufficient permissions       |
+| 404  | `ResourceNotFoundError` | Resource doesn't exist         |
+| 409  | `ResourceConflictError` | Duplicate/constraint violation |
+| 422  | `ValidationError`       | Pydantic validation failed     |
+| 500  | `Exception`             | Unexpected failure             |
 
-- `ResourceNotFoundError` → 404
-- `ResourceConflictError` → 409
-- `PermissionDeniedError` → 403
-- `ValidationError` → 422
+**Response format:**
+```json
+{
+    "detail": "Resource not found",
+    "status_code": 404,
+    "errors": [{"field": "id", "message": "Resource with id 'abc' not found"}]
+}
+```
 
-## GraphQL Integration
+## OpenAPI Examples
 
-Parallel schema generation from same models:
+`ExampleGenerator` creates realistic examples based on field names:
 
-- Types generated from Pydantic models
-- Resolvers delegate to manager methods
-- Same auth system as REST
+| Field Pattern | Generated                 |
+| ------------- | ------------------------- |
+| `*email*`     | `user@example.com`        |
+| `*name*`      | `John Smith`              |
+| `*_id`, `*id` | UUID                      |
+| `*url*`       | `https://example.com`     |
+| `*date*`      | ISO date                  |
+| `*status*`    | `active`, `pending`, etc. |
 
-## Performance
+**Custom overrides:**
+```python
+class ItemManager(AbstractBLLManager, RouterMixin):
+    example_overrides = {
+        "create": {"name": "My Custom Item"},
+    }
+```
 
-- Route registration: only needed routes
-- Example caching: by model class
-- Manager factories: lightweight DI
-- Auth dependencies: cached resolution
+## Data Flow
 
-## Related Documentation
+```
+Request → Validate → Route → Extract Body → Manager → Response → JSON
+```
 
-- [EP.Patterns.md](EP.Patterns.md) - Usage patterns and configuration
-- [EP.Router.md](EP.Router.md) - Implementation details
-- [EP.Test.md](EP.Test.md) - Testing framework
-- [EP.Schema.md](EP.Schema.md) - API endpoint reference
-- [EP.GQL.md](EP.GQL.md) - GraphQL integration
+1. **Validate**: Pydantic validates request against Network model
+2. **Route**: FastAPI matches route
+3. **Extract**: `extract_body_data()` pulls resource from body
+4. **Manager**: Business logic in BLL manager
+5. **Response**: Wrap in `ResponseSingle`/`ResponsePlural`
+6. **JSON**: Serialize for client
+
+## Implementation Files
+
+| File                                | Purpose                             |
+| ----------------------------------- | ----------------------------------- |
+| `lib/Pydantic2FastAPI.py`           | RouterMixin, route generation, auth |
+| `endpoints/AbstractEPRouter.py`     | Base class for manual routers       |
+| `endpoints/AbstractEPTest.py`       | REST endpoint test base             |
+| `endpoints/AbstractEPMatrixTest.py` | Matrix testing                      |
+| `endpoints/AbstractGQLTest.py`      | GraphQL test base                   |

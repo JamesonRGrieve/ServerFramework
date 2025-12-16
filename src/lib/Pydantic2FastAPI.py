@@ -257,6 +257,96 @@ def _apply_field_projection_to_entity(
     return {key: value for key, value in entity.items() if key in allowed_keys}
 
 
+def _get_valid_includes_for_model(model_class: Type[BaseModel]) -> Set[str]:
+    """
+    Get the set of valid include names for a model based on its fields.
+
+    Valid includes are derived from:
+    1. Fields ending with '_id' (the relationship name without '_id')
+    2. Fields ending with '_user' patterns (common relationship patterns)
+    3. Plural forms of relationship names
+
+    Args:
+        model_class: The Pydantic model class to analyze
+
+    Returns:
+        Set of valid include names
+    """
+    valid_includes: Set[str] = set()
+
+    if not hasattr(model_class, "model_fields"):
+        return valid_includes
+
+    for field_name in model_class.model_fields.keys():
+        # Fields ending with _id indicate a relationship
+        if field_name.endswith("_id"):
+            relationship_name = field_name[:-3]  # Remove '_id'
+            valid_includes.add(relationship_name)
+            # Also add plural form for collection relationships
+            valid_includes.add(inflection.plural(relationship_name))
+
+        # Fields ending with _user_id have special handling
+        if field_name.endswith("_user_id"):
+            # e.g., created_by_user_id -> created_by_user
+            user_relationship = field_name[:-3]  # Remove '_id'
+            valid_includes.add(user_relationship)
+
+    # Also check for Reference class if it exists
+    if hasattr(model_class, "Reference"):
+        reference_class = getattr(model_class, "Reference")
+        for attr_name in dir(reference_class):
+            if not attr_name.startswith("_"):
+                attr = getattr(reference_class, attr_name, None)
+                if attr is not None and hasattr(attr, "__name__"):
+                    if attr.__name__.endswith("Model"):
+                        # Convert ModelName to snake_case
+                        include_name = stringcase.snakecase(
+                            attr.__name__.replace("Model", "")
+                        )
+                        valid_includes.add(include_name)
+                        valid_includes.add(attr_name.lower())
+
+    return valid_includes
+
+
+def _validate_includes(
+    include_param: Optional[List[str]],
+    model_class: Type[BaseModel],
+    resource_name: str,
+) -> None:
+    """
+    Validate that requested includes are valid relationships for the model.
+
+    Args:
+        include_param: List of include names from the request
+        model_class: The target model class
+        resource_name: Name of the resource for error messages
+
+    Raises:
+        HTTPException: 422 if any includes are invalid
+    """
+    if not include_param:
+        return
+
+    valid_includes = _get_valid_includes_for_model(model_class)
+
+    # If we couldn't determine valid includes, skip validation (let BLL handle it)
+    if not valid_includes:
+        return
+
+    invalid_includes = [inc for inc in include_param if inc not in valid_includes]
+
+    if invalid_includes:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": f"Invalid includes requested: {', '.join(invalid_includes)}",
+                "invalid_includes": invalid_includes,
+                "valid_includes": sorted(list(valid_includes)),
+            },
+        )
+
+
 def create_query_model_dependency(
     model_cls: Type[BaseModel],
 ) -> Callable[[Request], BaseModel]:
@@ -1641,6 +1731,9 @@ def register_route(
                             },
                         )
 
+                # Validate includes against model relationships
+                _validate_includes(include_param, target_model, resource_name)
+
                 result = get_manager(manager, manager_property).get(
                     id=id, include=include_param, fields=fields_param
                 )
@@ -1843,6 +1936,9 @@ def register_route(
                                 "valid_fields": sorted(list(valid_fields)),
                             },
                         )
+
+                # Validate includes against model relationships
+                _validate_includes(include_param, target_model, resource_name)
 
                 results = get_manager(manager, manager_property).list(
                     include=include_param,
@@ -2612,6 +2708,9 @@ def register_route(
                 )
                 if not actual_sort_order:
                     actual_sort_order = "asc"
+
+                # Validate includes against model relationships
+                _validate_includes(actual_include, target_model, resource_name)
 
                 search_results = get_manager(manager, manager_property).search(
                     include=actual_include,
