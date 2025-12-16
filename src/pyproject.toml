@@ -5,10 +5,10 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "server"
 version = "0.0.0"
-description = "SDK for interacting with the API"
+description = "Extensible server framework"
 readme = "README.md"
 authors = [
-    {name = "API SDK Team", email = "sdk@example.com"}
+    {name = "ZephyrexTechnologies", email = "sdk@example.com"}
 ]
 license = {text = "MIT"}
 classifiers = [
@@ -21,25 +21,72 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
 ]
-keywords = ["api", "sdk", "client"]
+keywords = ["api", "server", "framework"]
 dependencies = [
-    "requests>=2.25.0",
+    # Build system
+    "setuptools<58",
+
+    # Core Web Framework
+    "fastapi",
+    "uvicorn",
+    "fastapi-mcp",
+
+    # Data Validation & Serialization
+    "pydantic",
+    "ordered_set",
+
+    # Database & ORM
+    "alembic",
+    "aiosqlite",
+    "SQLAlchemy",
+
+    # Asynchronous Operations
+    "broadcaster",
+    "greenlet",
+
+    # GraphQL
+    "strawberry-graphql[fastapi]",
+
+    # Authentication & Security
+    "bcrypt",
+    "cryptography",
+    "pyjwt",
+
+    # HTTP Clients
+    "httpx",
+
+    # Utilities
+    "colorama",
+    "distro",
+    "inflect",
+    "loguru",
+    "networkx",
+    "numpy",
+    "sendgrid",
+    "python-dotenv",
+    "resolvelib",
+    "semver",
+    "stringcase",
+    "tldextract",
 ]
 requires-python = ">=3.8"
 
 [project.urls]
-Homepage = "https://github.com/example/api-sdk"
-Documentation = "https://docs.example.com/api-sdk"
-Repository = "https://github.com/example/api-sdk.git"
-Issues = "https://github.com/example/api-sdk/issues"
+Homepage = "https://github.com/JamesonRGrieve/ServerFramework"
+Repository = "https://github.com/JamesonRGrieve/ServerFramework.git"
+Issues = "https://github.com/JamesonRGrieve/ServerFramework/issues"
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=6.0.0",
-    "pytest-asyncio>=0.23.0",
-    "pytest-xdist>=3.0.0",
-    "pytest-cov>=2.12.0",
-    "black>=22.1.0",
+    "pytest",
+    "pytest-asyncio",
+    "pytest-xdist",
+    "pytest-cov",
+    "pytest-dependency",
+    "pytest-order",
+    "black",
+    "coverage",
+    "faker",
     "isort>=5.10.0",
     "mypy>=0.910",
     "pylint>=2.12.0",

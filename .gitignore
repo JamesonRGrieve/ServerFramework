@@ -27,3 +27,4 @@ src/**/.cursorrules
 **/temp.*
 .vscode
 .idea
+*.egg-info/
