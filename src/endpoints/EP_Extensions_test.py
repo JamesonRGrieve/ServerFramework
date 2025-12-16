@@ -139,7 +139,8 @@ class TestExtensionEndpoints(AbstractEPTest):
             api_key=env("ROOT_API_KEY"),
             delete_key="test_delete_api_key",
         )
-        self._delete_assert("test_delete_api_key", server, api_key=env("ROOT_API_KEY"))
+        # Use JWT for assertion since ROOT_API_KEY can see soft-deleted entities
+        self._delete_assert("test_delete_api_key", server, jwt_token=admin_a.jwt)
 
 
 @pytest.mark.ep
@@ -287,4 +288,5 @@ class TestAbilityEndpoints(AbstractEPTest):
             api_key=env("ROOT_API_KEY"),
             delete_key="test_delete_api_key",
         )
-        self._delete_assert("test_delete_api_key", server, api_key=env("ROOT_API_KEY"))
+        # Use JWT for assertion since ROOT_API_KEY can see soft-deleted entities
+        self._delete_assert("test_delete_api_key", server, jwt_token=admin_a.jwt)

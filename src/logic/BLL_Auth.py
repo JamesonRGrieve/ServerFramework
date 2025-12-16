@@ -2349,7 +2349,14 @@ class TeamManager(AbstractBLLManager, RouterMixin):
                 "RoleManager",
             ),
             # child_network_model_cls will be inferred from the manager
-            "routes_to_register": ["create", "list", "search", "get"],
+            "routes_to_register": [
+                "create",
+                "list",
+                "search",
+                "get",
+                "update",
+                "delete",
+            ],
         },
     }
 
