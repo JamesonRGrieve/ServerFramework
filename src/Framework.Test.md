@@ -168,10 +168,9 @@ Extension Test → Provider Test (inherits DB + server)
 ### Core Testing Stack
 All layers use the following tools:
 - **pytest**: Primary testing framework with automatic test discovery
-- **pytest-mock**: Mocking and patching utilities (used selectively)
 - **pytest-cov**: Code coverage reporting
 - **pytest-xdist**: Parallel test execution
-- **pytest-depends**: Test dependency management
+- **pytest-dependency**: Test dependency management
 
 ### Testing Commands
 

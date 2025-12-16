@@ -6,7 +6,7 @@ This document covers endpoint-specific testing patterns and best practices.
 
 ## Overview
 
-The `AbstractEndpointTest` class (note: actual implementation uses `AbstractEndpointTest`, not `AbstractEPTest`) provides a complete testing suite for REST endpoints with:
+The `AbstractEPTest` class provides a complete testing suite for REST endpoints with:
 
 - **Automatic Test Generation**: Standard CRUD, batch, and error tests
 - **Multi-Level Nesting**: Support for complex parent-child relationships  
