@@ -1,5 +1,9 @@
 # Meta Logging Extension
 
+This document describes the Meta Logging extension implementation.
+
+> **Extension Architecture**: For general extension patterns, architecture, and concepts, see [EXT.Patterns.md](../EXT.Patterns.md).
+
 The Meta Logging extension provides comprehensive audit logging, failed login tracking, and privacy compliance logging for AGInfrastructure using InfluxDB for time-series data storage.
 
 ## Overview

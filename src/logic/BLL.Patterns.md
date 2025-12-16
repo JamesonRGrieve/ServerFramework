@@ -1,6 +1,8 @@
 # Business Logic Layer Patterns
 
-This document outlines the established patterns and conventions used throughout the Business Logic Layer (BLL) to ensure consistency, maintainability, and extensibility.
+This document outlines BLL-specific patterns and conventions.
+
+> **Common Patterns**: For CRUD model patterns, error handling, and configuration patterns shared across all layers, see [Framework.md](../Framework.md#common-patterns-across-layers).
 
 ## Manager Class Patterns
 
@@ -233,35 +235,30 @@ def _transform_overdue_search(self, value):
 
 ## Error Handling Patterns
 
-### Standard Error Responses
+See [Framework.md Error Handling Pattern](../Framework.md#error-handling-pattern) for standard status codes.
+
+**BLL-Specific Error Handling:**
 ```python
 def create_validation(self, entity):
-    """Standard validation error patterns"""
-    # Foreign key validation
-    if entity.parent_id and not Parent.exists(
-        requester_id=self.requester.id, db=self.db, id=entity.parent_id
-    ):
+    """BLL validation patterns"""
+    # Foreign key validation → 404
+    if entity.parent_id and not Parent.exists(...):
         raise HTTPException(status_code=404, detail="Parent not found")
-    
-    # Uniqueness validation  
-    if Entity.exists(
-        requester_id=self.requester.id, db=self.db, name=entity.name
-    ):
+
+    # Uniqueness validation → 409
+    if Entity.exists(requester_id=self.requester.id, db=self.db, name=entity.name):
         raise HTTPException(status_code=409, detail="Name already in use")
-    
-    # Business rule validation
+
+    # Business rule validation → 400
     if not self._check_business_rule(entity):
         raise HTTPException(status_code=400, detail="Business rule violation")
 
 def get(self, **kwargs) -> Any:
-    """Standard 404 handling pattern"""
+    """404 handling with ResourceNotFoundError"""
     entity = super().get(**kwargs)
     if entity is None:
         from endpoints.AbstractEndpointRouter import ResourceNotFoundError
-        raise ResourceNotFoundError(
-            "entity", 
-            kwargs.get("id") or kwargs.get("entity_id") or "unknown"
-        )
+        raise ResourceNotFoundError("entity", kwargs.get("id") or "unknown")
     return entity
 ```
 

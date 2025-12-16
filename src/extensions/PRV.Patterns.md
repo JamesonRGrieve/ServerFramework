@@ -1,5 +1,9 @@
 # Providers
 
+This document describes provider-specific patterns and architecture.
+
+> **Common Patterns**: For CRUD model patterns, error handling, and configuration patterns shared across all layers, see [Framework.md](../Framework.md#common-patterns-across-layers).
+
 Providers are the service integration layer for extensions, offering standardized interfaces to external services and abilities. They are implemented as **static/abstract classes** that require no instantiation and provide all functionality through class methods and static properties. Providers are **automatically discovered** by their parent extension through filesystem scanning.
 
 ## Key Concepts

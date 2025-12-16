@@ -1,5 +1,9 @@
 # Email Extension
 
+This document describes the Email extension implementation.
+
+> **Extension Architecture**: For general extension patterns, architecture, and concepts, see [EXT.Patterns.md](../EXT.Patterns.md).
+
 The Email extension provides comprehensive email functionality for AGInfrastructure through the Provider Rotation System, with built-in support for various email providers.
 
 ## Overview

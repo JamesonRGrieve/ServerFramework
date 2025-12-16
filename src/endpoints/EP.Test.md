@@ -1,8 +1,24 @@
 # Endpoint Testing Framework
 
-Testing framework for REST/GraphQL endpoints using `AbstractEPTest`.
+This document covers endpoint-specific testing patterns and best practices.
 
-## Quick Start
+> **Common Testing Resources**: For testing tools, commands, fixtures, and best practices shared across all layers, see [Framework.Test.md](../Framework.Test.md#testing-tools-and-framework).
+
+## Overview
+
+The `AbstractEPTest` class provides a complete testing suite for REST endpoints with:
+
+- **Automatic Test Generation**: Standard CRUD, batch, and error tests
+- **Multi-Level Nesting**: Support for complex parent-child relationships  
+- **Authentication Testing**: JWT, API Key, Basic auth, and unauthorized scenarios
+- **GraphQL Integration**: Full GraphQL query, mutation, and subscription testing
+- **Team/User Scoping**: Multi-tenant and user-specific resource validation
+- **System Entity Support**: Special handling for system-level entities
+- **Dependency Management**: Proper test execution order with pytest dependencies
+
+## Basic Implementation
+
+### Simple Entity Test
 
 ```python
 class TestResourceEndpoints(AbstractEPTest):
@@ -246,12 +262,13 @@ class EntityVariant(str, Enum):
     OTHER_USER = "other_user"    # Cross-user access test
 ```
 
-## Best Practices
+## Endpoint-Specific Best Practices
 
-1. **Complete config**: Set all required properties
-2. **Parent entities**: Configure for nested resources
-3. **Meaningful data**: Use realistic test data generators
-4. **Skip docs**: Document why tests are skipped
-5. **Custom assertions**: Add entity-specific validations
-6. **Dependencies**: Use pytest markers for test order
-7. **Cleanup**: Framework handles entity cleanup automatically
+In addition to [common testing best practices](../Framework.Test.md#best-practices):
+
+1. **Complete Configuration**: Specify all required endpoint configuration properties
+2. **Parent Entities**: Configure correctly for nested resources
+3. **Authentication Scenarios**: Test all auth types (JWT, API Key, unauthorized)
+4. **HTTP Status Codes**: Verify proper status codes for all scenarios
+5. **Field Projection**: Test field selection and filtering
+6. **GraphQL Testing**: Test queries, mutations, and subscriptions if applicable

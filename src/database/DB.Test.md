@@ -1,5 +1,9 @@
 # Database Testing Architecture
 
+This document describes database-specific testing patterns and best practices.
+
+> **Common Testing Resources**: For testing tools, commands, fixtures, and best practices shared across all layers, see [Framework.Test.md](../Framework.Test.md#testing-tools-and-framework).
+
 ## Overview
 The database testing architecture (`AbstractDBTest.py`, `AbstractDatabaseEntity_test.py`) provides enterprise-grade test coverage for database entities, sophisticated permission systems, dependency resolution seeding, and core database functionality. The system uses advanced inheritance patterns and parameterized testing to ensure comprehensive validation across all database models and return types.
 

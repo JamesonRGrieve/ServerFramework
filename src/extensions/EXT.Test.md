@@ -1,6 +1,10 @@
 # Extension Layer Testing (`AbstractEXTTest`)
 
-This document describes testing server framework extensions using the `AbstractEXTTest` class, located in `src/extensions/AbstractEXTTest.py`. This class provides a framework for testing the initialization, dependency management, and core functionalities (hooks, abilities) of classes inheriting from `AbstractStaticExtension`.
+This document describes extension-specific testing patterns and best practices.
+
+> **Common Testing Resources**: For testing tools, commands, fixtures, and best practices shared across all layers, see [Framework.Test.md](../Framework.Test.md#testing-tools-and-framework).
+
+This class provides a framework for testing the initialization, dependency management, and core functionalities (hooks, abilities) of classes inheriting from `AbstractStaticExtension`.
 
 ## Core Concepts
 
@@ -573,34 +577,28 @@ class TestEXTDatabase(EXT_Database.ServerMixin):
         assert response.status_code == 200
 ```
 
-## Best Practices
+## Extension-Specific Best Practices
+
+In addition to [common testing best practices](../Framework.Test.md#best-practices):
 
 ### Test Organization
-1. **Single Extension Per Test**: Each test class should test only one extension
-2. **Isolated Environment**: Always use the provided `extension_db` and `extension_server` fixtures
-3. **Static Testing**: Test extension functionality through class methods, not instances
-4. **Comprehensive Coverage**: Test metadata, dependencies, abilities, and specific functionality
-5. **Environment Variations**: Test different configuration states and dependency availability
+- **Single Extension Per Test**: Each test class should test only one extension
+- **Isolated Environment**: Always use the provided `extension_db` and `extension_server` fixtures
+- **Static Testing**: Test extension functionality through class methods, not instances
 
 ### Database Testing
-1. **Use Isolated Database**: Always use `extension_db` fixture for database operations
-2. **Session Management**: Properly manage database sessions with try/finally blocks
-3. **Test Extension Models**: Test any extended database models in isolation
-4. **Migration Testing**: Verify that extension migrations work correctly
-5. **Cleanup**: Let fixtures handle database cleanup automatically
+- **Use Isolated Database**: Always use `extension_db` fixture for database operations (test.{extension_name}.database.db)
+- **Test Extension Models**: Test any extended database models in isolation
+- **Migration Testing**: Verify that extension migrations work correctly
 
 ### Server Testing
-1. **Use Extension Server**: Always use `extension_server` fixture for API testing
-2. **Isolated Environment**: Tests run with only the target extension loaded
-3. **Authentication**: Mock authentication for API endpoint testing
-4. **Response Validation**: Validate both success and error responses
-5. **Extension-Specific Endpoints**: Focus on testing extension-specific functionality
+- **Use Extension Server**: Always use `extension_server` fixture for API testing
+- **Isolated Environment**: Tests run with only the target extension loaded via APP_EXTENSIONS
+- **Extension-Specific Endpoints**: Focus on testing extension-specific functionality
 
 ### Configuration Testing
-1. **Multiple Scenarios**: Test configured, not configured, and partially configured states
-2. **Environment Mocking**: Use fixtures to mock environment variables consistently
-3. **Graceful Degradation**: Test that extensions handle missing configuration gracefully
-4. **Static Configuration**: Test configuration access through static methods
+- **Multiple Scenarios**: Test configured, not configured, and partially configured states
+- **Graceful Degradation**: Test that extensions handle missing configuration gracefully
 5. **Validation Logic**: Test configuration validation thoroughly
 
 ### Dependency Testing
