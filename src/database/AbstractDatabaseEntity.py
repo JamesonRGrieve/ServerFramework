@@ -240,10 +240,25 @@ def db_to_return_type(
             # Filter fields if specified
             if fields:
                 for entity_dict in dict_entities:
-                    # Keep only requested fields
-                    keys_to_remove = [
-                        key for key in list(entity_dict.keys()) if key not in fields
-                    ]
+                    # Keep only requested fields, but preserve any relationship keys (dict/list values)
+                    # This allows combining fields with include parameters
+                    keys_to_remove = []
+                    for key in list(entity_dict.keys()):
+                        if key not in fields:
+                            # Check if this is a loaded SQLAlchemy relationship
+                            # Relationships are dicts with 'id' field or lists of such dicts
+                            value = entity_dict[key]
+                            is_relationship = False
+                            if isinstance(value, dict) and 'id' in value:
+                                # Dict with 'id' field is likely a loaded relationship
+                                is_relationship = True
+                            elif isinstance(value, list) and value and isinstance(value[0], dict) and 'id' in value[0]:
+                                # List of dicts with 'id' field is likely a loaded relationship collection
+                                is_relationship = True
+                            
+                            if not is_relationship:
+                                keys_to_remove.append(key)
+                    
                     for key in keys_to_remove:
                         del entity_dict[key]
 
@@ -253,10 +268,25 @@ def db_to_return_type(
             entity_dict = obj_to_dict(entity)
             # Filter fields if specified
             if fields:
-                # Keep only requested fields
-                keys_to_remove = [
-                    key for key in list(entity_dict.keys()) if key not in fields
-                ]
+                # Keep only requested fields, but preserve any relationship keys (dict/list values)
+                # This allows combining fields with include parameters
+                keys_to_remove = []
+                for key in list(entity_dict.keys()):
+                    if key not in fields:
+                        # Check if this is a loaded SQLAlchemy relationship
+                        # Relationships are dicts with 'id' field or lists of such dicts
+                        value = entity_dict[key]
+                        is_relationship = False
+                        if isinstance(value, dict) and 'id' in value:
+                            # Dict with 'id' field is likely a loaded relationship
+                            is_relationship = True
+                        elif isinstance(value, list) and value and isinstance(value[0], dict) and 'id' in value[0]:
+                            # List of dicts with 'id' field is likely a loaded relationship collection
+                            is_relationship = True
+                        
+                        if not is_relationship:
+                            keys_to_remove.append(key)
+                
                 for key in keys_to_remove:
                     del entity_dict[key]
 
