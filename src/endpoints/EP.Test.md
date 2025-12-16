@@ -21,7 +21,7 @@ The `AbstractEPTest` class provides a complete testing suite for REST endpoints 
 ### Simple Entity Test
 
 ```python
-class TestResourceEndpoints(AbstractEndpointTest):
+class TestResourceEndpoints(AbstractEPTest):
     # Core configuration
     base_endpoint = "resource"
     entity_name = "resource"
@@ -64,7 +64,7 @@ class TestResourceEndpoints(AbstractEndpointTest):
 ### System Entity Test
 
 ```python
-class TestExtensionEndpoints(AbstractEndpointTest):
+class TestExtensionEndpoints(AbstractEPTest):
     base_endpoint = "extension"
     entity_name = "extension"
     system_entity = True  # Requires API key for writes
@@ -81,7 +81,7 @@ class TestExtensionEndpoints(AbstractEndpointTest):
 ### Nested Entity Test
 
 ```python
-class TestInvitationEndpoints(AbstractEndpointTest):
+class TestInvitationEndpoints(AbstractEPTest):
     base_endpoint = "invitation"
     entity_name = "invitation"
     team_scoped = True
@@ -360,7 +360,7 @@ class SkipReason(str, Enum):
 For entities with multiple variations:
 
 ```python
-class AbstractEndpointMatrixTest(AbstractEndpointTest):
+class AbstractEndpointMatrixTest(AbstractEPTest):
     """Test matrix for multiple entity configurations."""
     
     @pytest.mark.parametrize("variant", [

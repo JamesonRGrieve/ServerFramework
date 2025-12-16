@@ -527,4 +527,4 @@ Available both as nested and standalone routes:
 6. **Search Optimization**: Search operations automatically filter to relevant fields for better usability
 7. **Example Generation**: All endpoints include automatically generated examples in OpenAPI documentation
 8. **Custom Route Support**: Managers can define custom routes using `@custom_route` and `@static_route` decorators
-9. **Test Coverage**: All endpoints are tested using the `AbstractEndpointTest` framework with manager-specific test classes
+9. **Test Coverage**: All endpoints are tested using the `AbstractEPTest` framework with manager-specific test classes
