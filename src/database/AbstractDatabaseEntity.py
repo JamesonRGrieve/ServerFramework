@@ -249,16 +249,21 @@ def db_to_return_type(
                             # Relationships are dicts with 'id' field or lists of such dicts
                             value = entity_dict[key]
                             is_relationship = False
-                            if isinstance(value, dict) and 'id' in value:
+                            if isinstance(value, dict) and "id" in value:
                                 # Dict with 'id' field is likely a loaded relationship
                                 is_relationship = True
-                            elif isinstance(value, list) and value and isinstance(value[0], dict) and 'id' in value[0]:
+                            elif (
+                                isinstance(value, list)
+                                and value
+                                and isinstance(value[0], dict)
+                                and "id" in value[0]
+                            ):
                                 # List of dicts with 'id' field is likely a loaded relationship collection
                                 is_relationship = True
-                            
+
                             if not is_relationship:
                                 keys_to_remove.append(key)
-                    
+
                     for key in keys_to_remove:
                         del entity_dict[key]
 
@@ -277,16 +282,21 @@ def db_to_return_type(
                         # Relationships are dicts with 'id' field or lists of such dicts
                         value = entity_dict[key]
                         is_relationship = False
-                        if isinstance(value, dict) and 'id' in value:
+                        if isinstance(value, dict) and "id" in value:
                             # Dict with 'id' field is likely a loaded relationship
                             is_relationship = True
-                        elif isinstance(value, list) and value and isinstance(value[0], dict) and 'id' in value[0]:
+                        elif (
+                            isinstance(value, list)
+                            and value
+                            and isinstance(value[0], dict)
+                            and "id" in value[0]
+                        ):
                             # List of dicts with 'id' field is likely a loaded relationship collection
                             is_relationship = True
-                        
+
                         if not is_relationship:
                             keys_to_remove.append(key)
-                
+
                 for key in keys_to_remove:
                     del entity_dict[key]
 
