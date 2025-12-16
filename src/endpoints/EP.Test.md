@@ -21,72 +21,72 @@ class TestItemEndpoints(AbstractEPTest):
 
 ## Configuration Reference
 
-| Property | Type | Default | Description |
-|----------|------|---------|-------------|
-| `base_endpoint` | `str` | Required | URL segment (e.g., `"item"`) |
-| `entity_name` | `str` | Required | Resource name in payloads |
-| `required_fields` | `List[str]` | Required | Fields for validation tests |
-| `string_field_to_update` | `str` | `"name"` | Field used in update tests |
-| `system_entity` | `bool` | `False` | Requires API key for writes |
-| `user_scoped` | `bool` | `True` | User-specific resources |
-| `team_scoped` | `bool` | `False` | Team-specific resources |
-| `supports_search` | `bool` | `True` | Enable search tests |
-| `searchable_fields` | `List[str]` | `["name"]` | Fields for search tests |
-| `create_fields` | `Dict` | `{}` | Field generators for create |
-| `update_fields` | `Dict` | `{}` | Field values for update |
+| Property                 | Type        | Default    | Description                  |
+| ------------------------ | ----------- | ---------- | ---------------------------- |
+| `base_endpoint`          | `str`       | Required   | URL segment (e.g., `"item"`) |
+| `entity_name`            | `str`       | Required   | Resource name in payloads    |
+| `required_fields`        | `List[str]` | Required   | Fields for validation tests  |
+| `string_field_to_update` | `str`       | `"name"`   | Field used in update tests   |
+| `system_entity`          | `bool`      | `False`    | Requires API key for writes  |
+| `user_scoped`            | `bool`      | `True`     | User-specific resources      |
+| `team_scoped`            | `bool`      | `False`    | Team-specific resources      |
+| `supports_search`        | `bool`      | `True`     | Enable search tests          |
+| `searchable_fields`      | `List[str]` | `["name"]` | Fields for search tests      |
+| `create_fields`          | `Dict`      | `{}`       | Field generators for create  |
+| `update_fields`          | `Dict`      | `{}`       | Field values for update      |
 
 ## Auto-Generated Tests
 
 ### CRUD Tests
 
-| Test | Status | Description |
-|------|--------|-------------|
-| `test_POST_201` | 201 | Create resource |
-| `test_POST_201_minimal` | 201 | Create with required fields only |
-| `test_POST_201_batch` | 201 | Batch create |
-| `test_POST_400` | 400 | Invalid data |
-| `test_POST_401` | 401 | No auth |
-| `test_POST_403_system` | 403 | System entity without API key |
-| `test_GET_200_id` | 200 | Get by ID |
-| `test_GET_200_list` | 200 | List resources |
-| `test_GET_200_fields` | 200 | Field projection |
-| `test_GET_200_includes` | 200 | Relationship includes |
-| `test_GET_200_pagination` | 200 | Paginated list |
-| `test_GET_401` | 401 | No auth |
-| `test_GET_404_nonexistent` | 404 | Invalid ID |
-| `test_PUT_200` | 200 | Update resource |
-| `test_PUT_200_batch` | 200 | Batch update |
-| `test_PUT_400` | 400 | Invalid data |
-| `test_PUT_401` | 401 | No auth |
-| `test_PUT_404_nonexistent` | 404 | Invalid ID |
-| `test_DELETE_204` | 204 | Delete resource |
-| `test_DELETE_204_batch` | 204 | Batch delete |
-| `test_DELETE_401` | 401 | No auth |
-| `test_DELETE_404_nonexistent` | 404 | Invalid ID |
+| Test                          | Status | Description                      |
+| ----------------------------- | ------ | -------------------------------- |
+| `test_POST_201`               | 201    | Create resource                  |
+| `test_POST_201_minimal`       | 201    | Create with required fields only |
+| `test_POST_201_batch`         | 201    | Batch create                     |
+| `test_POST_400`               | 400    | Invalid data                     |
+| `test_POST_401`               | 401    | No auth                          |
+| `test_POST_403_system`        | 403    | System entity without API key    |
+| `test_GET_200_id`             | 200    | Get by ID                        |
+| `test_GET_200_list`           | 200    | List resources                   |
+| `test_GET_200_fields`         | 200    | Field projection                 |
+| `test_GET_200_includes`       | 200    | Relationship includes            |
+| `test_GET_200_pagination`     | 200    | Paginated list                   |
+| `test_GET_401`                | 401    | No auth                          |
+| `test_GET_404_nonexistent`    | 404    | Invalid ID                       |
+| `test_PUT_200`                | 200    | Update resource                  |
+| `test_PUT_200_batch`          | 200    | Batch update                     |
+| `test_PUT_400`                | 400    | Invalid data                     |
+| `test_PUT_401`                | 401    | No auth                          |
+| `test_PUT_404_nonexistent`    | 404    | Invalid ID                       |
+| `test_DELETE_204`             | 204    | Delete resource                  |
+| `test_DELETE_204_batch`       | 204    | Batch delete                     |
+| `test_DELETE_401`             | 401    | No auth                          |
+| `test_DELETE_404_nonexistent` | 404    | Invalid ID                       |
 
 ### Search Tests
 
 `test_GET_200_search` auto-generates operator tests by field type:
 
-| Field Type | Operators |
-|------------|-----------|
-| String | `eq`, `inc`, `sw`, `ew` |
-| Numeric | `eq`, `neq`, `lt`, `gt`, `lteq`, `gteq` |
-| Date | `before`, `after`, `on` |
-| Boolean | `is_true` |
+| Field Type | Operators                               |
+| ---------- | --------------------------------------- |
+| String     | `eq`, `inc`, `sw`, `ew`                 |
+| Numeric    | `eq`, `neq`, `lt`, `gt`, `lteq`, `gteq` |
+| Date       | `before`, `after`, `on`                 |
+| Boolean    | `is_true`                               |
 
 ### GraphQL Tests
 
-| Test | Description |
-|------|-------------|
-| `test_GQL_query_single` | Single entity query |
-| `test_GQL_query_list` | List query |
-| `test_GQL_query_fields` | Field selection |
-| `test_GQL_query_nested` | Nested relationships |
-| `test_GQL_mutation_create` | Create mutation |
-| `test_GQL_mutation_update` | Update mutation |
-| `test_GQL_mutation_delete` | Delete mutation |
-| `test_GQL_subscription` | Real-time subscription |
+| Test                       | Description            |
+| -------------------------- | ---------------------- |
+| `test_GQL_query_single`    | Single entity query    |
+| `test_GQL_query_list`      | List query             |
+| `test_GQL_query_fields`    | Field selection        |
+| `test_GQL_query_nested`    | Nested relationships   |
+| `test_GQL_mutation_create` | Create mutation        |
+| `test_GQL_mutation_update` | Update mutation        |
+| `test_GQL_mutation_delete` | Delete mutation        |
+| `test_GQL_subscription`    | Real-time subscription |
 
 ## Nested Resources
 
@@ -116,14 +116,14 @@ class TestCommentEndpoints(AbstractEPTest):
 
 ### ParentEntity Fields
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `name` | `str` | Parent entity name |
-| `foreign_key` | `str` | FK field (e.g., `"post_id"`) |
-| `nullable` | `bool` | Can parent be null |
-| `path_level` | `int` | Nesting depth (1, 2, ...) |
-| `is_path` | `bool` | Include in URL path |
-| `test_class` | `Callable` | Parent test class for fixtures |
+| Field         | Type       | Description                    |
+| ------------- | ---------- | ------------------------------ |
+| `name`        | `str`      | Parent entity name             |
+| `foreign_key` | `str`      | FK field (e.g., `"post_id"`)   |
+| `nullable`    | `bool`     | Can parent be null             |
+| `path_level`  | `int`      | Nesting depth (1, 2, ...)      |
+| `is_path`     | `bool`     | Include in URL path            |
+| `test_class`  | `Callable` | Parent test class for fixtures |
 
 ## System Entity Testing
 
@@ -154,25 +154,25 @@ _skip_tests = [
 ]
 ```
 
-| SkipReason | When |
-|------------|------|
-| `NOT_IMPLEMENTED` | Feature not built |
-| `FLAKY` | Unstable in CI |
-| `SLOW` | Too slow for regular runs |
-| `ENVIRONMENT` | Env-specific issues |
-| `DEPRECATED` | Being removed |
+| SkipReason        | When                      |
+| ----------------- | ------------------------- |
+| `NOT_IMPLEMENTED` | Feature not built         |
+| `FLAKY`           | Unstable in CI            |
+| `SLOW`            | Too slow for regular runs |
+| `ENVIRONMENT`     | Env-specific issues       |
+| `DEPRECATED`      | Being removed             |
 
 ## Fixtures
 
 Standard fixtures (from conftest):
 
-| Fixture | Description |
-|---------|-------------|
-| `server` | FastAPI test client |
-| `admin_a`, `admin_b` | Admin users |
-| `user_a`, `user_b` | Regular users |
-| `team_a`, `team_b` | Teams |
-| `db` | Database session |
+| Fixture              | Description         |
+| -------------------- | ------------------- |
+| `server`             | FastAPI test client |
+| `admin_a`, `admin_b` | Admin users         |
+| `user_a`, `user_b`   | Regular users       |
+| `team_a`, `team_b`   | Teams               |
+| `db`                 | Database session    |
 
 ## Custom Payload
 

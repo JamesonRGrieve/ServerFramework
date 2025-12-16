@@ -60,12 +60,12 @@ class ItemManager(AbstractBLLManager, RouterMixin):
 
 ## Authentication Cheatsheet
 
-| Scenario | Config |
-|----------|--------|
-| All JWT (default) | `auth_type = AuthType.JWT` |
-| All public | `auth_type = AuthType.NONE` |
+| Scenario               | Config                                                                                 |
+| ---------------------- | -------------------------------------------------------------------------------------- |
+| All JWT (default)      | `auth_type = AuthType.JWT`                                                             |
+| All public             | `auth_type = AuthType.NONE`                                                            |
 | Public read, JWT write | `route_auth_overrides = {RouteType.LIST: AuthType.NONE, RouteType.GET: AuthType.NONE}` |
-| System entity | Set `is_system_entity=True` on model (auto API_KEY for writes) |
+| System entity          | Set `is_system_entity=True` on model (auto API_KEY for writes)                         |
 
 ## Query Parameter Patterns
 
@@ -190,10 +190,10 @@ class TestItemEndpoints(AbstractEPTest):
 
 ## Common Mistakes
 
-| Mistake | Fix |
-|---------|-----|
-| Network model field name mismatch | Field name must match resource name (`item` not `data`) |
-| Missing `BaseModel` attribute | Add `BaseModel = YourModel` to manager |
-| Wrong plural form | Check `ResponsePlural` uses correct plural (`items` not `item_list`) |
-| Auth not working | Check `route_auth_overrides` uses `RouteType` enum, not strings |
-| 422 on create | Verify request body structure matches `Network.POST` |
+| Mistake                           | Fix                                                                  |
+| --------------------------------- | -------------------------------------------------------------------- |
+| Network model field name mismatch | Field name must match resource name (`item` not `data`)              |
+| Missing `BaseModel` attribute     | Add `BaseModel = YourModel` to manager                               |
+| Wrong plural form                 | Check `ResponsePlural` uses correct plural (`items` not `item_list`) |
+| Auth not working                  | Check `route_auth_overrides` uses `RouteType` enum, not strings      |
+| 422 on create                     | Verify request body structure matches `Network.POST`                 |

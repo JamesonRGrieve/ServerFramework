@@ -54,29 +54,29 @@ class ItemManager(AbstractBLLManager, RouterMixin):
 
 ### Configuration Options
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `prefix` | `str` | Auto from class name | URL prefix (e.g., `/items`) |
-| `tags` | `List[str]` | Auto from class name | OpenAPI tags |
-| `auth_type` | `AuthType` | `JWT` | Default auth for all routes |
-| `routes_to_register` | `List[RouteType]` | All 8 routes | Which CRUD routes to create |
-| `route_auth_overrides` | `Dict[RouteType, AuthType]` | `{}` | Per-route auth override |
-| `custom_routes` | `List[CustomRouteConfig]` | `[]` | Additional custom endpoints |
-| `nested_resources` | `Dict[str, NestedResourceConfig]` | `{}` | Child resource routes |
-| `example_overrides` | `Dict[str, Dict]` | `{}` | OpenAPI example customization |
+| Option                 | Type                              | Default              | Description                   |
+| ---------------------- | --------------------------------- | -------------------- | ----------------------------- |
+| `prefix`               | `str`                             | Auto from class name | URL prefix (e.g., `/items`)   |
+| `tags`                 | `List[str]`                       | Auto from class name | OpenAPI tags                  |
+| `auth_type`            | `AuthType`                        | `JWT`                | Default auth for all routes   |
+| `routes_to_register`   | `List[RouteType]`                 | All 8 routes         | Which CRUD routes to create   |
+| `route_auth_overrides` | `Dict[RouteType, AuthType]`       | `{}`                 | Per-route auth override       |
+| `custom_routes`        | `List[CustomRouteConfig]`         | `[]`                 | Additional custom endpoints   |
+| `nested_resources`     | `Dict[str, NestedResourceConfig]` | `{}`                 | Child resource routes         |
+| `example_overrides`    | `Dict[str, Dict]`                 | `{}`                 | OpenAPI example customization |
 
 ### Generated Routes
 
-| RouteType | Method | Path | Description |
-|-----------|--------|------|-------------|
-| `GET` | GET | `/{id}` | Get single resource |
-| `LIST` | GET | `/` | List resources (paginated) |
-| `CREATE` | POST | `/` | Create single/batch |
-| `UPDATE` | PUT | `/{id}` | Update resource |
-| `DELETE` | DELETE | `/{id}` | Delete resource |
-| `SEARCH` | POST | `/search` | Search with filters |
-| `BATCH_UPDATE` | PUT | `/batch` | Update multiple |
-| `BATCH_DELETE` | DELETE | `/batch` | Delete multiple |
+| RouteType      | Method | Path      | Description                |
+| -------------- | ------ | --------- | -------------------------- |
+| `GET`          | GET    | `/{id}`   | Get single resource        |
+| `LIST`         | GET    | `/`       | List resources (paginated) |
+| `CREATE`       | POST   | `/`       | Create single/batch        |
+| `UPDATE`       | PUT    | `/{id}`   | Update resource            |
+| `DELETE`       | DELETE | `/{id}`   | Delete resource            |
+| `SEARCH`       | POST   | `/search` | Search with filters        |
+| `BATCH_UPDATE` | PUT    | `/batch`  | Update multiple            |
+| `BATCH_DELETE` | DELETE | `/batch`  | Delete multiple            |
 
 ### Route Registration
 
@@ -86,12 +86,12 @@ app.include_router(ItemManager.Router(model_registry))
 
 ## Authentication
 
-| AuthType | Header | Use Case |
-|----------|--------|----------|
-| `JWT` | `Authorization: Bearer <token>` | User sessions (default) |
-| `API_KEY` | `X-API-Key: <key>` | Service-to-service |
-| `BASIC` | `Authorization: Basic <b64>` | Simple auth |
-| `NONE` | None | Public endpoints |
+| AuthType  | Header                          | Use Case                |
+| --------- | ------------------------------- | ----------------------- |
+| `JWT`     | `Authorization: Bearer <token>` | User sessions (default) |
+| `API_KEY` | `X-API-Key: <key>`              | Service-to-service      |
+| `BASIC`   | `Authorization: Basic <b64>`    | Simple auth             |
+| `NONE`    | None                            | Public endpoints        |
 
 ### Per-Route Override
 
@@ -150,14 +150,14 @@ class Item(BaseModel):
 
 ## Query Parameters
 
-| Parameter | Example | Description |
-|-----------|---------|-------------|
-| `fields` | `?fields=id,name` | Return only specified fields |
-| `include` | `?include=created_by_user,team` | Load related entities |
-| `offset` | `?offset=20` | Skip N records (pagination) |
-| `limit` | `?limit=50` | Max records to return |
-| `sort_by` | `?sort_by=created_at` | Field to sort by |
-| `sort_order` | `?sort_order=desc` | `asc` or `desc` |
+| Parameter    | Example                         | Description                  |
+| ------------ | ------------------------------- | ---------------------------- |
+| `fields`     | `?fields=id,name`               | Return only specified fields |
+| `include`    | `?include=created_by_user,team` | Load related entities        |
+| `offset`     | `?offset=20`                    | Skip N records (pagination)  |
+| `limit`      | `?limit=50`                     | Max records to return        |
+| `sort_by`    | `?sort_by=created_at`           | Field to sort by             |
+| `sort_order` | `?sort_order=desc`              | `asc` or `desc`              |
 
 ## Nested Resources
 
@@ -220,15 +220,15 @@ class EXT_MyExtension:
 
 ## Error Handling
 
-| Code | Exception | When |
-|------|-----------|------|
-| 400 | `InvalidRequestError` | Malformed request |
-| 401 | `AuthenticationError` | Missing/invalid auth |
-| 403 | `PermissionDeniedError` | Insufficient permissions |
-| 404 | `ResourceNotFoundError` | Resource doesn't exist |
-| 409 | `ResourceConflictError` | Duplicate/constraint violation |
-| 422 | `ValidationError` | Pydantic validation failed |
-| 500 | `Exception` | Unexpected failure |
+| Code | Exception               | When                           |
+| ---- | ----------------------- | ------------------------------ |
+| 400  | `InvalidRequestError`   | Malformed request              |
+| 401  | `AuthenticationError`   | Missing/invalid auth           |
+| 403  | `PermissionDeniedError` | Insufficient permissions       |
+| 404  | `ResourceNotFoundError` | Resource doesn't exist         |
+| 409  | `ResourceConflictError` | Duplicate/constraint violation |
+| 422  | `ValidationError`       | Pydantic validation failed     |
+| 500  | `Exception`             | Unexpected failure             |
 
 **Response format:**
 ```json
@@ -243,14 +243,14 @@ class EXT_MyExtension:
 
 `ExampleGenerator` creates realistic examples based on field names:
 
-| Field Pattern | Generated |
-|---------------|-----------|
-| `*email*` | `user@example.com` |
-| `*name*` | `John Smith` |
-| `*_id`, `*id` | UUID |
-| `*url*` | `https://example.com` |
-| `*date*` | ISO date |
-| `*status*` | `active`, `pending`, etc. |
+| Field Pattern | Generated                 |
+| ------------- | ------------------------- |
+| `*email*`     | `user@example.com`        |
+| `*name*`      | `John Smith`              |
+| `*_id`, `*id` | UUID                      |
+| `*url*`       | `https://example.com`     |
+| `*date*`      | ISO date                  |
+| `*status*`    | `active`, `pending`, etc. |
 
 **Custom overrides:**
 ```python
@@ -275,10 +275,10 @@ Request → Validate → Route → Extract Body → Manager → Response → JSO
 
 ## Implementation Files
 
-| File | Purpose |
-|------|---------|
-| `lib/Pydantic2FastAPI.py` | RouterMixin, route generation, auth |
-| `endpoints/AbstractEPRouter.py` | Base class for manual routers |
-| `endpoints/AbstractEPTest.py` | REST endpoint test base |
-| `endpoints/AbstractEPMatrixTest.py` | Matrix testing |
-| `endpoints/AbstractGQLTest.py` | GraphQL test base |
+| File                                | Purpose                             |
+| ----------------------------------- | ----------------------------------- |
+| `lib/Pydantic2FastAPI.py`           | RouterMixin, route generation, auth |
+| `endpoints/AbstractEPRouter.py`     | Base class for manual routers       |
+| `endpoints/AbstractEPTest.py`       | REST endpoint test base             |
+| `endpoints/AbstractEPMatrixTest.py` | Matrix testing                      |
+| `endpoints/AbstractGQLTest.py`      | GraphQL test base                   |
