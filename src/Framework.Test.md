@@ -10,7 +10,7 @@ Unlike traditional testing frameworks that rely heavily on mocks and stubs, this
 - **Real Functionality**: Every test uses actual implementations, ensuring tests catch real issues
 - **Database Isolation**: Each extension permutation receives a completely isolated database instance with automatic cleanup
 - **End-to-End Validation**: Complete request-response cycles are tested as they would occur in production
-- **Parallel Execution**: Advanced isolation allows tests to run concurrently without interference
+- **Parallel Execution**: Advanced isolation allows tests to run concurrently using pytest async/threading
 - **Deterministic Results**: Real implementations with controlled environments ensure consistent results
 
 ### Architectural Test Patterns

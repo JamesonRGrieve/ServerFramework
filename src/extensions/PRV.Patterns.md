@@ -186,10 +186,13 @@ Hierarchical failover: tries root providers (`parent_id=None`), then progresses 
 
 **Flow:**
 1. Try root providers first
-2. On failure, try their children
+2. On failure (any exception), try next provider
 3. Continue recursively until success/exhaustion
+4. Raise HTTPException 500 if all fail
 
-**Implementation:** `_get_ordered_rotation_provider_instances()` (src/logic/BLL_Providers.py:1063-1118)
+**Failure Detection:** Any exception raised by provider triggers rotation to next (src/logic/BLL_Providers.py:1035)
+
+**Implementation:** `rotate()` (src/logic/BLL_Providers.py:956-1061), `_get_ordered_rotation_provider_instances()` (lines 1063-1118)
 
 **Usage:**
 ```python
