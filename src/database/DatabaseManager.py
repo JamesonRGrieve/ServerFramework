@@ -247,6 +247,7 @@ class DatabaseManager:
         self._database_type = database_type
         self._database_name = db_info["name"]
         self._database_uri = database_uri
+        self._database_file_path = db_info.get("file_path")  # Store file path for migrations
         self._pk_type = String if database_type == "sqlite" else UUID
 
         if database_type == "sqlite":

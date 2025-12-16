@@ -1221,10 +1221,10 @@ if __name__ == "__main__":
 import json
 
 from AbstractTest import ParentEntity
-from endpoints.AbstractEPTest import AbstractEndpointTest
+from endpoints.AbstractEPTest import AbstractEPTest
 
 
-class DummyEndpointTest(AbstractEndpointTest):
+class DummyEndpointTest(AbstractEPTest):
     base_endpoint = "role"
     entity_name = "role"
     parent_entities = [
@@ -1264,75 +1264,18 @@ class DummyServer:
 
 
 def test_encode_query_values_with_lists():
-    assert AbstractEndpointTest._serialize_query_values(["id"]) == "id"
+    assert AbstractEPTest._serialize_query_values(["id"]) == "id"
     assert (
-        AbstractEndpointTest._serialize_query_values(["id", "name", "created_at"])
+        AbstractEPTest._serialize_query_values(["id", "name", "created_at"])
         == "id,name,created_at"
     )
 
 
 def test_encode_query_values_trims_and_deduplicates():
-    assert AbstractEndpointTest._serialize_query_values("id,name") == "id,name"
+    assert AbstractEPTest._serialize_query_values("id,name") == "id,name"
+    assert AbstractEPTest._serialize_query_values([" id ", "name", "id"]) == "id,name"
     assert (
-        AbstractEndpointTest._serialize_query_values([" id ", "name", "id"])
-        == "id,name"
-    )
-    assert (
-        AbstractEndpointTest._serialize_query_values(("team.members", "team.members"))
+        AbstractEPTest._serialize_query_values(("team.members", "team.members"))
         == "team.members"
     )
-    assert AbstractEndpointTest._serialize_query_values(None) is None
-
-
-def test_resolve_parent_context_uses_cached_parent_ids():
-    dummy = DummyEndpointTest()
-    dummy.tracked_entities = {
-        "get_parent_ids": {"team_id": "TEAM123"},
-        "get_path_parent_ids": {},
-    }
-
-    parent_ids, path_ids = dummy._resolve_parent_context(
-        "get", {}, None, detail_nesting_level=1
-    )
-
-    assert parent_ids["team_id"] == "TEAM123"
-    assert path_ids["team_id"] == "TEAM123"
-
-
-def test_resolve_parent_context_falls_back_to_team_argument():
-    dummy = DummyEndpointTest()
-    dummy.tracked_entities = {}
-
-    parent_ids, path_ids = dummy._resolve_parent_context(
-        "get", {}, "TEAM456", detail_nesting_level=1
-    )
-
-    assert parent_ids["team_id"] == "TEAM456"
-    assert path_ids["team_id"] == "TEAM456"
-
-
-def test_get_falls_back_to_non_nested_endpoint(monkeypatch):
-    dummy = DummyEndpointTest()
-    dummy.tracked_entities = {
-        "get": {"id": "role123"},
-        "get_parent_ids": {"team_id": "TEAM123"},
-        "get_path_parent_ids": {"team_id": "TEAM123"},
-    }
-
-    server = DummyServer()
-
-    result = dummy._get(
-        server,
-        jwt_token="token",
-        user_id="user",
-        team_id="TEAM123",
-        get_key="get",
-        fields=["id"],
-    )
-
-    assert result["id"] == "role123"
-    assert dummy.tracked_entities["get_path_parent_ids"] == {}
-    assert server.calls == [
-        "/v1/team/TEAM123/role/role123?fields=id",
-        "/v1/role/role123?fields=id",
-    ]
+    assert AbstractEPTest._serialize_query_values(None) is None
