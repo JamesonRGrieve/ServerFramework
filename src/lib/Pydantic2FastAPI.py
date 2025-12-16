@@ -257,7 +257,9 @@ def _apply_field_projection_to_entity(
     return {key: value for key, value in entity.items() if key in allowed_keys}
 
 
-def _get_valid_includes_for_model(model_class: Type[BaseModel]) -> Set[str]:
+def _get_valid_includes_for_model(
+    model_class: Type[BaseModel], model_registry: Optional[Any] = None
+) -> Set[str]:
     """
     Get the set of valid include names for a model based on its fields.
 
@@ -265,9 +267,12 @@ def _get_valid_includes_for_model(model_class: Type[BaseModel]) -> Set[str]:
     1. Fields ending with '_id' (the relationship name without '_id')
     2. Fields ending with '_user' patterns (common relationship patterns)
     3. Plural forms of relationship names
+    4. extra_includes class variable on the model (for reverse/virtual relationships)
+    5. Inverse relationships discovered via model registry scanning
 
     Args:
         model_class: The Pydantic model class to analyze
+        model_registry: Optional ModelRegistry for discovering inverse relationships
 
     Returns:
         Set of valid include names
@@ -306,6 +311,43 @@ def _get_valid_includes_for_model(model_class: Type[BaseModel]) -> Set[str]:
                         valid_includes.add(include_name)
                         valid_includes.add(attr_name.lower())
 
+    # Check for extra_includes class variable (for reverse/virtual relationships)
+    if hasattr(model_class, "extra_includes"):
+        extra = getattr(model_class, "extra_includes", None)
+        if extra:
+            if isinstance(extra, (list, tuple, set, frozenset)):
+                valid_includes.update(extra)
+            elif isinstance(extra, str):
+                valid_includes.add(extra)
+
+    # Magic: Discover inverse relationships via model registry scanning
+    if model_registry and hasattr(model_registry, "bound_models"):
+        # Get this model's name in snake_case (e.g., TeamModel -> team)
+        model_name = model_class.__name__
+        if model_name.endswith("Model"):
+            model_name = model_name[:-5]  # Remove 'Model' suffix
+        model_name_snake = stringcase.snakecase(model_name)
+        fk_pattern = f"{model_name_snake}_id"
+
+        # Scan all bound models for foreign keys pointing to this model
+        for bound_model in model_registry.bound_models:
+            if bound_model is model_class:
+                continue  # Skip self
+            if not hasattr(bound_model, "model_fields"):
+                continue
+
+            for field_name in bound_model.model_fields.keys():
+                if field_name == fk_pattern:
+                    # Found a model with FK to this model - add as valid include
+                    other_model_name = bound_model.__name__
+                    if other_model_name.endswith("Model"):
+                        other_model_name = other_model_name[:-5]
+                    other_name_snake = stringcase.snakecase(other_model_name)
+                    # Add plural form (e.g., InviteeModel -> invitees)
+                    valid_includes.add(inflection.plural(other_name_snake))
+                    # Also add singular form
+                    valid_includes.add(other_name_snake)
+
     return valid_includes
 
 
@@ -313,6 +355,7 @@ def _validate_includes(
     include_param: Optional[List[str]],
     model_class: Type[BaseModel],
     resource_name: str,
+    model_registry: Optional[Any] = None,
 ) -> None:
     """
     Validate that requested includes are valid relationships for the model.
@@ -321,6 +364,7 @@ def _validate_includes(
         include_param: List of include names from the request
         model_class: The target model class
         resource_name: Name of the resource for error messages
+        model_registry: Optional ModelRegistry for discovering inverse relationships
 
     Raises:
         HTTPException: 422 if any includes are invalid
@@ -328,7 +372,7 @@ def _validate_includes(
     if not include_param:
         return
 
-    valid_includes = _get_valid_includes_for_model(model_class)
+    valid_includes = _get_valid_includes_for_model(model_class, model_registry)
 
     # If we couldn't determine valid includes, skip validation (let BLL handle it)
     if not valid_includes:
@@ -1732,9 +1776,11 @@ def register_route(
                         )
 
                 # Validate includes against model relationships
-                _validate_includes(include_param, target_model, resource_name)
+                actual_manager = get_manager(manager, manager_property)
+                registry = getattr(actual_manager, "model_registry", None)
+                _validate_includes(include_param, target_model, resource_name, registry)
 
-                result = get_manager(manager, manager_property).get(
+                result = actual_manager.get(
                     id=id, include=include_param, fields=fields_param
                 )
 
@@ -1938,9 +1984,11 @@ def register_route(
                         )
 
                 # Validate includes against model relationships
-                _validate_includes(include_param, target_model, resource_name)
+                actual_manager = get_manager(manager, manager_property)
+                registry = getattr(actual_manager, "model_registry", None)
+                _validate_includes(include_param, target_model, resource_name, registry)
 
-                results = get_manager(manager, manager_property).list(
+                results = actual_manager.list(
                     include=include_param,
                     fields=fields_param,
                     offset=query_params.offset or 0,
@@ -2710,9 +2758,11 @@ def register_route(
                     actual_sort_order = "asc"
 
                 # Validate includes against model relationships
-                _validate_includes(actual_include, target_model, resource_name)
+                actual_manager = get_manager(manager, manager_property)
+                registry = getattr(actual_manager, "model_registry", None)
+                _validate_includes(actual_include, target_model, resource_name, registry)
 
-                search_results = get_manager(manager, manager_property).search(
+                search_results = actual_manager.search(
                     include=actual_include,
                     fields=actual_fields,
                     offset=actual_offset,
