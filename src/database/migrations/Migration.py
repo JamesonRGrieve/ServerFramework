@@ -1752,8 +1752,8 @@ class MigrationManager:
         return ext_dir
 
     def create_db_file(self, extension_dir, extension_name):
-        """Create a sample DB_*.py file with table definitions"""
-        logger.debug(f"Creating sample DB model file for extension {extension_name}")
+        """Create a sample BLL_*.py file with table definitions"""
+        logger.debug(f"Creating sample BLL model file for extension {extension_name}")
 
         # Format extension name for class name (capitalize first letter)
         class_name = stringcase.pascalcase(extension_name)
@@ -1762,7 +1762,7 @@ class MigrationManager:
         table_name = f"{extension_name}_items"
 
         # Create the model file
-        model_file = extension_dir / f"DB_{class_name}.py"
+        model_file = extension_dir / f"BLL_{class_name}.py"
 
         # Get the template file
         template_file = self.template_dir / "db_model.py.mako"
@@ -1980,11 +1980,11 @@ class {class_name}(Base):
             ext_dir = self.paths["extensions_dir"] / ext_name
             if ext_dir.exists():
                 logger.debug(f"Extension directory {ext_name}: Exists")
-                # Check for DB models
-                db_files = list(ext_dir.glob("DB_*.py"))
+                # Check for BLL models
+                db_files = list(ext_dir.glob("BLL_*.py"))
                 if db_files:
                     logger.debug(
-                        f"Extension {ext_name} DB models: {[f.name for f in db_files]}"
+                        f"Extension {ext_name} BLL models: {[f.name for f in db_files]}"
                     )
                 else:
                     logger.debug(f"Extension {ext_name} DB models: None found")
@@ -2063,19 +2063,19 @@ class {class_name}(Base):
 
         extension_migrations = []
 
-        # First, check which extensions actually have DB models
+        # First, check which extensions actually have BLL models
         for ext_name in self.configured_extensions:
             extension_dir = self.paths["extensions_dir"] / ext_name
-            db_model_files = list(extension_dir.glob("DB_*.py"))
+            db_model_files = list(extension_dir.glob("BLL_*.py"))
 
             if not db_model_files:
                 logger.debug(
-                    f"Skipping extension '{ext_name}' - no DB_*.py files found"
+                    f"Skipping extension '{ext_name}' - no BLL_*.py files found"
                 )
                 continue
 
             logger.debug(
-                f"Found DB models for extension '{ext_name}': {[f.name for f in db_model_files]}"
+                f"Found BLL models for extension '{ext_name}': {[f.name for f in db_model_files]}"
             )
 
             # Check for migrations directory
@@ -2099,7 +2099,7 @@ class {class_name}(Base):
                 # No versions directory exists - need to create initial migration for upgrade
                 if command == "upgrade":
                     extension_dir = self.paths["extensions_dir"] / extension_name
-                    db_model_files = list(extension_dir.glob("DB_*.py"))
+                    db_model_files = list(extension_dir.glob("BLL_*.py"))
 
                     if db_model_files:
                         logger.debug(
@@ -2116,7 +2116,7 @@ class {class_name}(Base):
                             continue
                     else:
                         logger.debug(
-                            f"Skipping migration for extension {extension_name} as no DB_*.py files found."
+                            f"Skipping migration for extension {extension_name} as no BLL_*.py files found."
                         )
                         continue
                 else:
