@@ -182,16 +182,17 @@ class PRV_MyProvider_MyExtension(EXT_MyExtension.AbstractProvider):
 ## Provider Rotation System
 
 ### Rotation Algorithm
-Linear failover: tries providers in chain order starting from root (`parent_id=None`) until success or exhaustion.
+Linear failover: single sequence of providers tried in order until success or exhaustion.
 
-**Hierarchy Structure:**
-- Linear linked list (not tree)
-- Each provider has 0 or 1 parent (unique constraint on `parent_id`)
-- Multiple independent chains possible
+**Structure:**
+- Single linear linked list
+- Each provider: 0 or 1 parent (unique constraint on `parent_id`)
+- One provider with `parent_id=None` (root)
+- Forms single chain: A → B → C → D → E
 
 **Flow:**
-1. Start with root providers (`parent_id=None`)
-2. On failure (any exception), try next in chain
+1. Try first provider
+2. On failure (any exception), try next
 3. Continue until success/exhaustion
 4. Raise HTTPException 500 if all fail
 
@@ -208,12 +209,11 @@ if result.get('success'):
     customer_data = result['data']
 ```
 
-**Example Linear Chains:**
+**Example:**
 ```
-Chain A: Provider_A (parent=None) → Provider_A1 (parent=Provider_A) → Provider_A2 (parent=Provider_A1)
-Chain B: Provider_B (parent=None) → Provider_B1 (parent=Provider_B)
+Provider_A (parent=None) → Provider_B (parent=A) → Provider_C (parent=B) → Provider_D (parent=C)
 
-Rotation Order: Provider_A → Provider_B → Provider_A1 → Provider_B1 → Provider_A2
+Rotation Order: A → B → C → D
 ```
 
 ### Provider Instance Bonding Pattern
