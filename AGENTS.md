@@ -4,6 +4,7 @@
 - Any time you modify functionality in a file, ensure the accompanying `_test.py` file contains comprehensive tests for the modification WITHOUT MOCKS, as well as ensuring you update any relevant `.md` documentation in the same directory that references the code you changed.
 - Write concise code (avoid obvious comments and use one-liners where possible).
 - When requested to perform an implementation or refactor, critically analyze the requirements and ask any and all necessary clarifying questions to ensure your complete understanding of the goal.
+- Phrase documentation optimized for yourself (AI) as well as autistic/ADHD humans.
 
 ### DO NOT, EVER, UNDER ANY CIRCUMSTANCE:
 - Make assumptions, respond with "is likely", "probably" or "might be".
