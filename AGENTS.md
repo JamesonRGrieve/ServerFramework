@@ -1,6 +1,6 @@
 ## Key Directives / Rules
 ### DO, ALWAYS:
-- If functionality won't work without a parameter, it should be a required positional one without a default, not an optional one with a check.
+- If functionality won't work without a parameter, it should be a required positional one without a default, not an optional one with an inline check.
 - Any time you modify functionality in a file, ensure the accompanying `_test.py` file contains comprehensive tests for the modification WITHOUT MOCKS, as well as ensuring you update any relevant `.md` documentation in the same directory that references the code you changed.
 - Write concise code (avoid obvious comments and use one-liners where possible).
 - When requested to perform an implementation or refactor, critically analyze the requirements and ask any and all necessary clarifying questions to ensure your complete understanding of the goal.
