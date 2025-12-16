@@ -542,7 +542,7 @@ def critical_security_validation(context: HookContext) -> None:
     email = context.kwargs.get('email')
     if email and email in BLOCKED_EMAILS:
         raise HTTPException(status_code=403, detail="Email domain blocked")
-    
+
     # This error SHOULD propagate and stop user creation
 
 # Non-critical hook - failure should be logged but not stop operation
@@ -578,6 +578,74 @@ def optional_third_party_sync(context: HookContext) -> None:
         third_party_api.sync_user(context.result)
     # Any exception here will be caught and logged by wrapper
 ```
+
+### Exception Propagation and Blocking Behavior
+
+By default, hook exceptions propagate to the endpoint and affect operation resolution:
+
+**Current Behavior:**
+- Hook raises exception → Exception propagates → Operation fails → Endpoint returns error
+- This applies to both `BEFORE` and `AFTER` hooks
+- Uncaught exceptions in hooks will cause the entire operation to fail
+- The exception is logged and returned to the caller with appropriate status code
+
+**Recommended Patterns:**
+```python
+# Critical validation hook - exception should propagate
+@hook_bll(UserManager.create, timing=HookTiming.BEFORE, priority=5)
+def validate_required_fields(context: HookContext) -> None:
+    """Critical validation - exception propagates."""
+    if not context.kwargs.get('email'):
+        raise HTTPException(status_code=400, detail="Email is required")
+    # Exception propagates → operation fails → client receives 400 error
+
+# Non-critical hook - catch exceptions internally
+@hook_bll(UserManager.create, timing=HookTiming.AFTER, priority=30)
+def send_notification(context: HookContext) -> None:
+    """Non-critical notification - exceptions caught."""
+    try:
+        notification_service.send(context.result.email)
+    except Exception as e:
+        logger.error(f"Notification failed: {e}")
+        # Exception caught → operation succeeds → client receives 200
+```
+
+**Future Enhancement - Blocking Boolean:**
+
+A planned enhancement to the hook system will introduce a `blocking` boolean parameter to the `@hook_bll` decorator:
+
+```python
+# Proposed syntax (not yet implemented)
+@hook_bll(
+    UserManager.create,
+    timing=HookTiming.AFTER,
+    priority=30,
+    blocking=False  # Non-blocking hook
+)
+def optional_external_sync(context: HookContext) -> None:
+    """Optional sync - exceptions won't affect operation."""
+    external_api.sync_user(context.result)
+    # Even if this raises, operation will succeed
+
+@hook_bll(
+    UserManager.create,
+    timing=HookTiming.BEFORE,
+    priority=5,
+    blocking=True  # Blocking hook (default)
+)
+def required_validation(context: HookContext) -> None:
+    """Required validation - exceptions stop operation."""
+    validate_business_rules(context.kwargs)
+    # If this raises, operation fails
+```
+
+**Blocking Parameter Semantics:**
+- `blocking=True` (default): Exception propagates, operation fails
+- `blocking=False`: Exception logged, operation continues
+- Applies to both `BEFORE` and `AFTER` hooks
+- Non-blocking hooks should still be used carefully in `BEFORE` hooks as they may leave data in inconsistent state
+
+**Until the blocking parameter is implemented, use try/except blocks or the `@non_critical_hook` wrapper for non-blocking behavior.**
 
 ## Target ID and Caching Patterns
 

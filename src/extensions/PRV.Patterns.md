@@ -181,6 +181,61 @@ class PRV_MyProvider_MyExtension(EXT_MyExtension.AbstractProvider):
 
 ## Provider Rotation System
 
+### Rotation Algorithm
+The Provider Rotation System implements a hierarchical rotation strategy that progresses through provider instances based on their parentage tree:
+
+**Rotation Flow:**
+1. Start with root-level rotation providers (where `parent_id=None`)
+2. Attempt operation with first root provider
+3. On failure, rotate to next root provider
+4. Once all root providers exhausted, progress down parentage tree
+5. Try child providers of failed root providers
+6. Continue recursively through the hierarchy until success or exhaustion
+
+**Implementation Details:**
+- Rotation providers are ordered via `_get_ordered_rotation_provider_instances()` (src/logic/BLL_Providers.py:1063-1118)
+- Algorithm prioritizes providers without parents first (parentless rotation providers)
+- After exhausting root providers, progresses to their children
+- Uses breadth-first traversal through the provider hierarchy
+- Each provider instance is tried once per rotation cycle
+- Operation succeeds if any provider in the hierarchy completes successfully
+- Operation fails only when all providers in the hierarchy have been exhausted
+
+**Rotation Manager Usage:**
+```python
+# Access extension's root rotation manager
+payment_root = EXT_Payment.root
+
+if payment_root:
+    # Rotate through provider hierarchy until success
+    result = payment_root.rotate(
+        lambda instance: instance.create_customer(
+            email="user@example.com",
+            name="John Doe"
+        )
+    )
+
+    if result.get('success'):
+        # Operation succeeded with one of the providers
+        customer_data = result.get('data')
+    else:
+        # All providers in hierarchy failed
+        error = result.get('error')
+```
+
+**Provider Hierarchy Example:**
+```
+Root Provider A (parent_id=None)
+├── Child Provider A1 (parent_id=A)
+└── Child Provider A2 (parent_id=A)
+
+Root Provider B (parent_id=None)
+├── Child Provider B1 (parent_id=B)
+└── Child Provider B2 (parent_id=B)
+
+Rotation Order: A → B → A1 → A2 → B1 → B2
+```
+
 ### Provider Instance Bonding Pattern
 The Provider Rotation System uses instance bonding to manage API credentials and configuration:
 

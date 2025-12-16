@@ -161,11 +161,70 @@ Automated resolution of dependency conflicts with intelligent priority assignmen
 ### Extension Integration
 Seamless integration with the extension system for dependency discovery and resolution.
 
+#### Extension Loading
+Extensions are loaded based on the `APP_EXTENSIONS` environment variable and their dependencies. The loading process follows a strict dependency order:
+
+**Loading Process:**
+1. Parse `APP_EXTENSIONS` CSV to get requested extensions
+2. Discover and validate dependencies for each extension
+3. Resolve loading order using topological sort
+4. Load extensions in dependency order
+5. Register models, abilities, and hooks
+
+**Dependency Resolution:**
+- Required extension dependencies must be satisfied
+- Optional extension dependencies can be missing without failure
+- Circular dependencies are detected and cause graceful failure
+- Missing required dependencies cause graceful failure
+
+#### Graceful Failure Handling
+When an extension or its dependencies fail to load, the server should gracefully fail with clear error information:
+
+**Failure Conditions:**
+- Missing required extension dependencies
+- Missing required system or pip dependencies
+- Circular dependency chains
+- Import errors during extension loading
+- Model registration conflicts
+
+**Failure Behavior:**
+- Server startup halts with clear error message
+- Identifies the specific extension causing the failure
+- Lists missing or problematic dependencies
+- Provides actionable resolution steps
+- Logs detailed error information for debugging
+
+**Error Message Format:**
+```
+Failed to load extension '{extension_name}':
+  - Missing required extension dependency: {dep_name}
+  - Missing system dependency: {sys_dep}
+  - Circular dependency detected: {chain}
+```
+
 ### Testing Integration
 Built-in support for test environments with dependency isolation and validation.
 
 ### Environment Integration
 Integration with the environment management system for configuration and validation.
+
+## Known Installation Issues
+
+### pytest-dependency and stringcase
+These packages may fail to build wheels on systems with setuptools >= 58 due to deprecated `install_layout` attribute.
+
+**Issue:**
+- Error: `AttributeError: install_layout. Did you mean: 'install_platlib'?`
+- Affects: pytest-dependency, stringcase
+- Cause: Legacy setup.py incompatibility with modern setuptools
+
+**Workarounds:**
+1. Use prebuilt wheels (default pip behavior): `pip install pytest-dependency stringcase`
+2. Use older setuptools in virtual environment: `pip install 'setuptools<58'` (before installing packages)
+3. Install from alternative sources if packages are critical
+4. Consider alternative packages if available
+
+**Note:** The framework specifies `setuptools<58` in requirements.txt to avoid this issue, but system-managed Python installations may have newer setuptools that cannot be downgraded.
 
 ## Best Practices
 

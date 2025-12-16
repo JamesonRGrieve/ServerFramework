@@ -95,9 +95,58 @@ The framework follows a strict layered architecture with clear separation of con
 - **payment**: Stripe payment processing with subscription management
 - **database**: Multi-database support with natural language querying
 
+## Framework Design Philosophy
+
+### Extension-Only Implementation Pattern
+A core principle of this framework is that **any implementation should be achieved by ONLY creating one or more new folders in the `extensions/` directory**. This ensures that updates to the core framework can be merged without conflicts.
+
+**Key Benefits:**
+- **Zero-Conflict Updates**: Core framework updates never conflict with custom implementations
+- **Clean Separation**: Custom code completely separated from framework code
+- **Version Control Safety**: Core framework and custom extensions maintain independent histories
+- **Modular Architecture**: All domain logic packaged as isolated, reusable extensions
+- **Easy Maintenance**: Extensions can be added, removed, or updated independently
+
+**Implementation Guidelines:**
+1. **Never modify core framework files** - All customization goes in `extensions/`
+2. **Create new extension folders** - Each feature/domain gets its own extension directory
+3. **Use extension patterns** - Leverage EXT_*, BLL_*, DB_*, EP_*, PRV_* patterns
+4. **Maintain extension independence** - Extensions should be self-contained modules
+5. **Follow extension structure** - Use standard extension file organization
+
+**Extension Structure Example:**
+```
+extensions/
+└── my_feature/                # Your custom implementation
+    ├── EXT_MyFeature.py       # Extension definition
+    ├── BLL_MyModel.py         # Business logic and Pydantic models
+    ├── EP_MyEndpoints.py      # API endpoints (or use RouterMixin)
+    ├── PRV_MyProvider.py      # External service provider (if needed)
+    └── versions/              # Extension-specific migrations
+        └── 001_initial.py
+```
+
+**What This Means:**
+- ✅ Add new extensions in `extensions/` directory
+- ✅ Extend existing models using `@extension_model` decorator
+- ✅ Register hooks in extensions for cross-cutting concerns
+- ✅ Create extension-specific migrations in extension `versions/` folder
+- ❌ Avoid modifying files in `src/lib/`, `src/database/`, `src/logic/`, `src/endpoints/`
+- ❌ Avoid direct modifications to core migrations
+
+**Update Strategy:**
+- Fork/branch the core framework for your implementation (expected pattern)
+- Keep all custom code in `extensions/` directory only
+- When framework updates are released, merge them into your fork
+- **Zero merge conflicts** if you only modified/added files in `extensions/`
+- **Merge conflicts only occur** if you modified core framework files
+
+This design ensures that your custom implementations remain isolated from framework updates, enabling seamless upgrades while preserving all custom functionality. By keeping customizations exclusively in extensions, framework updates can be merged without conflicts.
+
 ## Development Principles
 
 ### Code Organization
+- **Extension-Only Development**: All implementations in `extensions/` directory for conflict-free updates
 - **UUID Primary Keys**: Consistent UUID usage across all entities
 - **Relative Imports**: All imports relative to `src/` directory
 - **Early Error Handling**: Fail fast with FastAPI HTTPExceptions at database layer

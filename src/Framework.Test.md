@@ -80,18 +80,157 @@ The testing framework mirrors the main architecture with specialized abstract ba
 ## Extension System Testing
 
 ### AbstractEXTTest
-- **Extension Isolation**: Each extension test runs in isolated environment
-- **Auto-Discovery Testing**: Extension and provider discovery mechanism validation
-- **Hook Integration**: Extension hook system integration testing
-- **Migration Testing**: Extension-specific migration execution and rollback
-- **Configuration Testing**: Extension configuration validation and error handling
+Configuration-driven extension testing with isolated test server instances.
+
+**Extension Test Isolation:**
+- Each extension gets a dedicated test server: `test.{extension_name}.database.db`
+- Server runs with **only that extension** (and its dependencies) loaded via `APP_EXTENSIONS`
+- Complete database and environment isolation from other extensions
+- Automatic cleanup after extension test suite completion
+
+**Test Server Creation:**
+```python
+class TestMyExtension(AbstractEXTTest):
+    extension_class = EXT_MyExtension
+    test_config = AbstractEXTTest.full_config(
+        expected_abilities={"my_ability"}
+    )
+
+    # Fixtures provided by ExtensionServerMixin:
+    # - server: Isolated TestClient for extension
+    # - model_registry: Extension's isolated ModelRegistry
+    # - extension_db: Database session for extension
+    # - admin_a, team_a: Test user/team fixtures
+    # - admin_b, team_b, user_b, mod_b: Additional test fixtures
+```
+
+**Configuration-Driven Tests:**
+- Test types control which tests run: STRUCTURE, METADATA, DEPENDENCIES, ABILITIES, ENVIRONMENT, ROTATION, PERFORMANCE, CONCURRENCY, MODEL_REGISTRY, DATABASE_ISOLATION
+- Parameterized tests execute based on configuration
+- Performance thresholds customizable per extension
+- Skip flags for optional test categories
+
+**Key Test Areas:**
+- **Structure Validation**: Required attributes, properties, and methods
+- **Metadata Validation**: Name, version, description format
+- **Dependencies**: Sys, pip, and extension dependency resolution
+- **Abilities**: Ability discovery and registration
+- **Model Registry**: Isolated registry per extension
+- **Database Isolation**: Unique database prefix per extension
+- **Rotation System**: Root rotation manager functionality
+- **Performance Metrics**: Caching effectiveness, concurrent access
+- **Hook System**: Ability and hook decorator validation
+
+**Shared Fixtures from ExtensionServerMixin (src/extensions/AbstractEXTTest.py:61-168):**
+```python
+@pytest.fixture(scope="module")
+def server(self):
+    """Create isolated test server for the extension."""
+    extension_name = self.extension_class.name.lower()
+    test_db_prefix = f"test.{extension_name}"
+    extension_list = extension_name  # Only this extension loaded
+
+    app = instance(db_prefix=test_db_prefix, extensions=extension_list)
+    client = TestClient(app)
+    yield client
+```
+
+**Test Configuration Patterns:**
+```python
+# Basic test configuration (minimal)
+test_config = AbstractEXTTest.basic_config()
+
+# Full test configuration (comprehensive)
+test_config = AbstractEXTTest.full_config(
+    expected_abilities={"ability1", "ability2"}
+)
+
+# Performance-focused configuration
+test_config = AbstractEXTTest.performance_config()
+
+# Custom configuration
+test_config = AbstractEXTTest.create_config(
+    test_types={ExtensionTestType.STRUCTURE, ExtensionTestType.ABILITIES},
+    expected_abilities={"custom_ability"},
+    skip_rotation=True,
+    skip_performance=True
+)
+```
 
 ### AbstractPRVTest
-- **Provider Rotation**: External API provider failover testing
-- **External Model Testing**: AbstractExternalModel integration validation
-- **API Integration**: External service integration pattern testing
-- **Error Handling**: Provider failure and recovery scenario testing
-- **Configuration Management**: Provider-specific configuration testing
+Configuration-driven provider testing with extension-inherited test isolation.
+
+**Provider Test Inheritance:**
+- Providers inherit test environment from parent extension
+- Same database prefix: `test.{parent_extension}.database.db`
+- Same extension loading: `APP_EXTENSIONS={parent_extension}`
+- Providers tested within parent extension's isolated environment
+- Tests defined in AbstractPRVTest (src/extensions/AbstractPRVTest.py:341-793)
+
+**Test Server Fixtures:**
+```python
+class TestMyProvider(AbstractPRVTest):
+    provider_class = PRV_MyProvider_MyExtension
+    test_config = AbstractPRVTest.full_config(
+        expected_abilities={"provider_ability"},
+        expected_services={"service_name"}
+    )
+
+    # Fixtures available:
+    # - extension_server: Parent extension's test server
+    # - extension_db: Parent extension's database
+```
+
+**Key Test Areas:**
+- **Structure Validation**: Provider attributes, methods, and properties
+- **Metadata Validation**: Name and description
+- **Dependencies**: Provider-specific dependency validation
+- **Abilities**: Ability declaration and discovery
+- **Services**: Service listing and availability
+- **Environment Variables**: Configuration validation
+- **Rotation Integration**: Integration with parent extension's rotation manager
+- **Performance**: Caching and concurrent access patterns
+- **Error Handling**: Provider failure scenarios
+- **Instance Bonding**: `bond_instance()` implementation validation
+
+**Test Configuration Patterns:**
+```python
+# Basic provider test configuration
+test_config = AbstractPRVTest.basic_config()
+
+# Full provider test configuration
+test_config = AbstractPRVTest.full_config(
+    expected_abilities={"api_call", "webhook"},
+    expected_services={"payment_processing"}
+)
+
+# Performance-focused configuration
+test_config = AbstractPRVTest.performance_config()
+
+# GraphQL testing for external models
+graphql_config = AbstractPRVTest.create_graphql_config(
+    entity_name="customer",
+    model_class=CustomerModel,
+    test_types={GraphQLTestType.QUERY_SINGLE, GraphQLTestType.MUTATION_CREATE}
+)
+```
+
+**Extension vs Provider Test Hierarchy:**
+```
+Extension Test (AbstractEXTTest):
+┌────────────────────────────────────────┐
+│ Database: test.my_extension.database.db │
+│ Server: APP_EXTENSIONS=my_extension    │
+│ Tests: Extension structure, abilities   │
+└────────────────────────────────────────┘
+                ↓ (inherited by)
+Provider Test (AbstractPRVTest):
+┌────────────────────────────────────────┐
+│ Database: Same as parent extension     │
+│ Server: Same as parent extension       │
+│ Tests: Provider-specific functionality │
+└────────────────────────────────────────┘
+```
 
 ### Core Extension Testing
 - **MFA Testing**: Multi-factor authentication flow validation (TOTP, email, SMS)
