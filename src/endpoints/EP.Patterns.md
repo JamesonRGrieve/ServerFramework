@@ -1,223 +1,199 @@
-# Endpoint Layer Patterns & Usage Guide
+# Endpoint Patterns Quick Reference
 
-This document covers endpoint-specific patterns and best practices.
+> **Full documentation:** [EP.Abstraction.md](EP.Abstraction.md) | **Common patterns:** [Framework.md](../Framework.md)
 
-> **Common Patterns**: For CRUD model patterns, error handling, and configuration patterns shared across all layers, see [Framework.md](../Framework.md#common-patterns-across-layers).
+## Quick Start Checklist
 
-This system automatically generates routers from BLL managers using the `RouterMixin` approach.
-
-## Quick Start
-
-### Basic Manager with RouterMixin
-
-```python
-from lib.Pydantic2FastAPI import RouterMixin, AuthType
-from logic.AbstractLogicManager import AbstractBLLManager
-from typing import ClassVar, List, Dict
-
-class ResourceManager(RouterMixin, AbstractBLLManager):
-    # Router configuration via ClassVars
-    prefix: ClassVar[str] = "/v1/resource"
-    tags: ClassVar[List[str]] = ["Resource Management"]
-    auth_type: ClassVar[AuthType] = AuthType.JWT
-    route_auth_overrides: ClassVar[Dict[str, AuthType]] = {}
-
-    # Standard CRUD methods implemented here
-    def create(self, **kwargs): ...
-    def get(self, id: str, **kwargs): ...
-    def list(self, **kwargs): ...
-    # etc.
-
-    # Router automatically available via .Router(model_registry) class method
-```
-
-### System Entity Setup
+1. Create Pydantic model with `Network` inner class
+2. Create BLL manager inheriting `RouterMixin` + `AbstractBLLManager`
+3. Set `BaseModel` class attribute
+4. Register router: `app.include_router(Manager.Router(model_registry))`
 
 ```python
-# System entities automatically use API key auth for writes
-class ExtensionManager(RouterMixin, AbstractBLLManager):
-    prefix: ClassVar[str] = "/v1/extension"
-    tags: ClassVar[List[str]] = ["Extensions"]
-    auth_type: ClassVar[AuthType] = AuthType.JWT  # Default for reads
-
-    # System entities auto-detected via Model.is_system_entity attribute
-    # Automatically applies API key auth for writes: create, update, delete, batch_*
+class ItemManager(AbstractBLLManager, RouterMixin):
+    BaseModel = Item
+    # Done - 8 CRUD endpoints auto-generated
 ```
 
-## Authentication Patterns
+## Request/Response Formats
 
-### Authentication Types
-
-- **JWT**: Default for user operations (`AuthType.JWT`)
-- **API Key**: System operations (`AuthType.API_KEY`)
-- **Basic**: Login only (`AuthType.BASIC`)
-- **None**: Public endpoints (`AuthType.NONE`)
-
-### Route-Specific Authentication
+### Single Resource
 
 ```python
-class ResourceManager(RouterMixin, AbstractBLLManager):
-    auth_type: ClassVar[AuthType] = AuthType.JWT  # Default
-    route_auth_overrides: ClassVar[Dict[str, AuthType]] = {
-        "create": AuthType.API_KEY,  # Override specific operations
-        "update": AuthType.API_KEY,
-        "delete": AuthType.API_KEY,
-    }
+# POST /items
+{"item": {"name": "Widget", "price": 9.99}}
+
+# Response
+{"item": {"id": "uuid", "name": "Widget", "price": 9.99, "created_at": "..."}}
 ```
 
-### System Entity Auto-Configuration
-
-Entities with `is_system_entity=True` automatically get API key authentication for write operations:
+### Batch Create
 
 ```python
-# Automatically applied:
-route_auth_overrides = {
-    "create": AuthType.API_KEY,
-    "update": AuthType.API_KEY,
-    "delete": AuthType.API_KEY,
-    "batch_update": AuthType.API_KEY,
-    "batch_delete": AuthType.API_KEY,
-}
+# POST /items
+{"items": [{"name": "A"}, {"name": "B"}]}
+
+# Response
+{"items": [{"id": "1", "name": "A"}, {"id": "2", "name": "B"}]}
 ```
 
-## Standard Routes
+### Batch Update
 
-RouterMixin automatically generates these routes:
-
-| Route        | Method | Path                  | Description           |
-|--------------|--------|-----------------------|-----------------------|
-| create       | POST   | `/v1/resource`        | Create resource(s)    |
-| get          | GET    | `/v1/resource/{id}`   | Get single resource   |
-| list         | GET    | `/v1/resource`        | List with filters     |
-| search       | POST   | `/v1/resource/search` | Complex search        |
-| update       | PUT    | `/v1/resource/{id}`   | Update single         |
-| delete       | DELETE | `/v1/resource/{id}`   | Delete single         |
-| batch_update | PUT    | `/v1/resource`        | Update multiple       |
-| batch_delete | DELETE | `/v1/resource`        | Delete multiple       |
-
-## Request/Response Patterns
-
-### Standard Formats
-
-**Single Resource Request:**
-```json
-{"resource_name": {"field1": "value1", "field2": "value2"}}
+```python
+# PUT /items/batch
+{"item": {"price": 19.99}, "target_ids": ["id1", "id2"]}
 ```
 
-**Single Resource Response:**
-```json
-{"resource_name": {"id": "uuid", "field1": "value1", "created_at": "2024-01-01T00:00:00Z"}}
-```
+### Batch Delete
 
-**List Response:**
-```json
-{"resource_name_plural": [{"id": "uuid1", "field1": "value1"}, {"id": "uuid2", "field1": "value2"}]}
-```
-
-### Batch Operations
-
-**Batch Create:**
-```json
-{"resource_name_plural": [{"field1": "value1"}, {"field1": "value2"}]}
-```
-
-**Batch Update:**
-```json
-{"resource_name": {"field1": "new_value"}, "target_ids": ["id1", "id2"]}
-```
-
-**Batch Delete:**
-```json
+```python
+# DELETE /items/batch
 {"target_ids": ["id1", "id2"]}
 ```
 
-## Custom Routes
-
-### Method Decorators
+### Search
 
 ```python
-class ResourceManager(RouterMixin, AbstractBLLManager):
-    # Custom routes via method decorators
-    @custom_route(method="post", path="/{id}/activate")
-    def activate(self, id: str) -> ResourceModel:
-        """Activate a resource."""
-        # Implementation here
-        return self.get(id)
-
-    @static_route(method="get", path="/status")
-    @classmethod
-    def get_status(cls) -> Dict[str, Any]:
-        """Get system status."""
-        return {"status": "active"}
+# POST /items/search
+{"item": {"status": "active", "min_price": 10}}
 ```
 
-## Example Generation
+## Authentication Cheatsheet
 
-### Automatic Examples
+| Scenario | Config |
+|----------|--------|
+| All JWT (default) | `auth_type = AuthType.JWT` |
+| All public | `auth_type = AuthType.NONE` |
+| Public read, JWT write | `route_auth_overrides = {RouteType.LIST: AuthType.NONE, RouteType.GET: AuthType.NONE}` |
+| System entity | Set `is_system_entity=True` on model (auto API_KEY for writes) |
 
-Examples are generated automatically using intelligent field name patterns:
+## Query Parameter Patterns
+
+```bash
+# Field projection
+GET /items?fields=id,name,price
+
+# Include relations
+GET /items?include=category,supplier
+
+# Combined
+GET /items/{id}?fields=id,name&include=category
+
+# Pagination
+GET /items?offset=20&limit=10&sort_by=created_at&sort_order=desc
+```
+
+## Network Model Template
 
 ```python
-# Auto-generated based on field names and types
-examples = ExampleGenerator.generate_operation_examples(
-    NetworkModel, "resource_name"
+class Item(BaseModel):
+    id: str
+    name: str
+
+    class Network:
+        class GET(BaseModel):
+            include: Optional[List[str]] = None
+            fields: Optional[List[str]] = None
+
+        class LIST(BaseModel):
+            include: Optional[List[str]] = None
+            fields: Optional[List[str]] = None
+            offset: int = 0
+            limit: int = 100
+            sort_by: Optional[str] = None
+            sort_order: str = "asc"
+
+        class POST(BaseModel):
+            item: ItemCreate  # singular, snake_case
+
+        class PUT(BaseModel):
+            item: ItemUpdate
+
+        class SEARCH(BaseModel):
+            item: ItemSearch
+
+        class ResponseSingle(BaseModel):
+            item: Item  # singular
+
+        class ResponsePlural(BaseModel):
+            items: List[Item]  # plural
+```
+
+## Custom Route Patterns
+
+### Instance Method
+
+```python
+custom_routes = [
+    CustomRouteConfig(
+        path="/{id}/publish",
+        method=HTTPMethod.POST,
+        function="publish",  # method name
+    ),
+]
+
+def publish(self, id: str) -> Item:
+    return self.update(id, published=True)
+```
+
+### With Auth Override
+
+```python
+CustomRouteConfig(
+    path="/public-stats",
+    method=HTTPMethod.GET,
+    function="get_stats",
+    auth_type=AuthType.NONE,
 )
 ```
 
-## Network Model Structure
-
-Required pattern for router compatibility:
+## Nested Resource Pattern
 
 ```python
-class ResourceNetworkModel:
-    class POST(BaseModel):
-        resource: ResourceCreateModel  # Field name = resource_name
+nested_resources = {
+    "comments": NestedResourceConfig(
+        child_resource_name="comment",
+        manager_property="Comment_manager",
+        child_manager_class=CommentManager,
+        routes_to_register=[RouteType.GET, RouteType.LIST, RouteType.CREATE],
+    ),
+}
 
-    class PUT(BaseModel):
-        resource: ResourceUpdateModel  # Field name = resource_name
-
-    class SEARCH(BaseModel):
-        resource: ResourceSearchModel  # Field name = resource_name
-
-    class ResponseSingle(BaseModel):
-        resource: ResourceResponseModel  # Field name = resource_name
-
-    class ResponsePlural(BaseModel):
-        resources: List[ResourceResponseModel]  # Plural form
+@property
+def Comment_manager(self):
+    return CommentManager(parent_id=self.target_id, requester_id=self.requester_id)
 ```
 
-## Error Handling
+**Result:** `GET/POST /items/{item_id}/comments`
 
-Consistent error responses through manager exceptions:
+## Error Response Format
 
-```python
-# In managers, raise these for automatic HTTP conversion:
-raise ResourceNotFoundError("resource", resource_id)     # → 404
-raise ResourceConflictError("resource", "already exists") # → 409
-raise InvalidRequestError("Invalid data")                # → 400
+```json
+{
+    "detail": "Item not found",
+    "status_code": 404,
+    "errors": [{"field": "id", "message": "Item with id 'abc' not found"}]
+}
 ```
 
-## Testing Integration
+## Testing Pattern
 
 ```python
-class TestResourceEndpoints(AbstractEPTest):
-    base_endpoint = "resource"
-    entity_name = "resource"
-    required_fields = ["name", "description"]
+class TestItemEndpoints(AbstractEPTest):
+    base_endpoint = "item"
+    entity_name = "item"
+    required_fields = ["name"]
     string_field_to_update = "name"
-
-    create_fields = {
-        "name": lambda: f"Test {faker.word()}",
-        "description": "Test description"
-    }
+    create_fields = {"name": lambda: f"Test {faker.word()}"}
+    update_fields = {"name": "Updated Name"}
 ```
 
-## Best Practices
+## Common Mistakes
 
-1. **Consistent Naming**: Use same `resource_name` throughout
-2. **Manager Logic**: Keep business logic in managers, not routes
-3. **Authentication**: JWT for users, API keys for system operations
-4. **Model Structure**: Follow NetworkModel requirements exactly
-5. **Testing**: Use AbstractEPTest for comprehensive coverage
-6. **Performance**: Implement pagination in managers
-7. **Security**: Proper auth and input validation
+| Mistake | Fix |
+|---------|-----|
+| Network model field name mismatch | Field name must match resource name (`item` not `data`) |
+| Missing `BaseModel` attribute | Add `BaseModel = YourModel` to manager |
+| Wrong plural form | Check `ResponsePlural` uses correct plural (`items` not `item_list`) |
+| Auth not working | Check `route_auth_overrides` uses `RouteType` enum, not strings |
+| 422 on create | Verify request body structure matches `Network.POST` |
