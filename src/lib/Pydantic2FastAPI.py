@@ -2760,7 +2760,9 @@ def register_route(
                 # Validate includes against model relationships
                 actual_manager = get_manager(manager, manager_property)
                 registry = getattr(actual_manager, "model_registry", None)
-                _validate_includes(actual_include, target_model, resource_name, registry)
+                _validate_includes(
+                    actual_include, target_model, resource_name, registry
+                )
 
                 search_results = actual_manager.search(
                     include=actual_include,
