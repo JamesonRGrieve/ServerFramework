@@ -1063,6 +1063,8 @@ class MigrationManager:
             os.chdir(str(self.paths["src_dir"]))
 
             rel_path = os.path.relpath(str(alembic_ini_path), self.paths["src_dir"])
+            # Normalize path for cross-platform compatibility (Windows uses backslashes)
+            rel_path = rel_path.replace("\\", "/")
             alembic_cmd = ["alembic", "-c", rel_path, command]
             if args:
                 alembic_cmd.extend(args)
