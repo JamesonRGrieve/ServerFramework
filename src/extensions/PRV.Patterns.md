@@ -182,15 +182,20 @@ class PRV_MyProvider_MyExtension(EXT_MyExtension.AbstractProvider):
 ## Provider Rotation System
 
 ### Rotation Algorithm
-Hierarchical failover: tries root providers (`parent_id=None`), then progresses down hierarchy breadth-first until success or exhaustion.
+Linear failover: tries providers in chain order starting from root (`parent_id=None`) until success or exhaustion.
+
+**Hierarchy Structure:**
+- Linear linked list (not tree)
+- Each provider has 0 or 1 parent (unique constraint on `parent_id`)
+- Multiple independent chains possible
 
 **Flow:**
-1. Try root providers first
-2. On failure (any exception), try next provider
-3. Continue recursively until success/exhaustion
+1. Start with root providers (`parent_id=None`)
+2. On failure (any exception), try next in chain
+3. Continue until success/exhaustion
 4. Raise HTTPException 500 if all fail
 
-**Failure Detection:** Any exception raised by provider triggers rotation to next (src/logic/BLL_Providers.py:1035)
+**Failure Detection:** Any exception triggers rotation (src/logic/BLL_Providers.py:1035)
 
 **Implementation:** `rotate()` (src/logic/BLL_Providers.py:956-1061), `_get_ordered_rotation_provider_instances()` (lines 1063-1118)
 
@@ -203,13 +208,12 @@ if result.get('success'):
     customer_data = result['data']
 ```
 
-**Example Hierarchy:**
+**Example Linear Chains:**
 ```
-Root A (parent_id=None)       Root B (parent_id=None)
-├── Child A1                  ├── Child B1
-└── Child A2                  └── Child B2
+Chain A: Provider_A (parent=None) → Provider_A1 (parent=Provider_A) → Provider_A2 (parent=Provider_A1)
+Chain B: Provider_B (parent=None) → Provider_B1 (parent=Provider_B)
 
-Rotation Order: A → B → A1 → A2 → B1 → B2
+Rotation Order: Provider_A → Provider_B → Provider_A1 → Provider_B1 → Provider_A2
 ```
 
 ### Provider Instance Bonding Pattern
