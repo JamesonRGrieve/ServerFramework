@@ -1,5 +1,9 @@
 # Provider Layer Testing (`AbstractPRVTest`)
 
+This document describes provider-specific testing patterns and best practices.
+
+> **Common Testing Resources**: For testing tools, commands, fixtures, and best practices shared across all layers, see [Framework.Test.md](../Framework.Test.md#testing-tools-and-framework).
+
 This document explains how to test server framework providers using the extension's ServerMixin. Providers are tested within their parent extension's isolated environment, ensuring proper integration and isolation.
 
 ## Core Concepts
@@ -643,34 +647,26 @@ class TestSQLiteProvider(EXT_Database.ServerMixin):
         assert "sql_execution" in abilities
 ```
 
-## Best Practices
+## Provider-Specific Best Practices
+
+In addition to [common testing best practices](../Framework.Test.md#best-practices):
 
 ### Provider-Extension Integration
-1. **Use ServerMixin**: Always inherit from parent extension's ServerMixin
-2. **Auto-Discovery**: Providers are discovered via `extension.providers` property
-3. **Test in Isolation**: Provider tests run in parent extension's isolated environment
-4. **Static Pattern**: All providers are static classes with no instantiation
-5. **Environment Inheritance**: ServerMixin provides complete test isolation
+- **Use ServerMixin**: Always inherit from parent extension's ServerMixin
+- **Auto-Discovery**: Providers are discovered via `extension.providers` property
+- **Test in Isolation**: Provider tests run in parent extension's isolated environment (same DB, same server)
+- **Static Pattern**: All providers are static classes with no instantiation
 
-### Database Testing
-1. **Use db Fixture**: Always use `db` fixture for database sessions
-2. **Session Management**: Properly manage database sessions with try/finally blocks
-3. **Extension Context**: Test provider database operations within extension context
-4. **Auto-Discovery**: Access providers via `extension.providers` property
-
-### Server Testing
-1. **Use Parent's Server**: Always use parent extension's isolated server via `extension_server`
-2. **Extension Context**: Test provider within the context of its parent extension
-3. **API Integration**: Test how provider integrates with extension's API endpoints
-4. **Service Availability**: Verify provider services are available within extension server
+### Provider Testing
+- **Extension Context**: Test provider within the context of its parent extension
+- **Bond Instance**: Test `bond_instance()` method for provider initialization
+- **Services**: Verify provider services are available and functional
+- **Abilities**: Test provider abilities through the rotation system
 
 ### Configuration Testing
-1. **Environment Variables**: Test provider's `_env` dictionary configuration
-2. **Bond Instance**: Test `bond_instance()` method for provider initialization
-3. **Extension Types**: Check extension types for auto-registered env vars
-4. **Static Methods**: All configuration through static class methods
-
-### Dependency Testing
+- **Environment Variables**: Test provider's `_env` dictionary configuration
+- **Extension Types**: Check extension types for auto-registered env vars
+- **Static Methods**: All configuration through static class methods
 1. **Unified System**: Test provider's Dependencies instance
 2. **Extension Integration**: Provider dependencies work with extension dependencies
 3. **Installation Mocking**: Mock dependency installation for safety

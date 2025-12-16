@@ -1,6 +1,10 @@
 # Endpoint Layer Patterns & Usage Guide
 
-This document covers common patterns and best practices for using the endpoint layer in the framework. The system automatically generates routers from BLL managers using the `RouterMixin` approach.
+This document covers endpoint-specific patterns and best practices.
+
+> **Common Patterns**: For CRUD model patterns, error handling, and configuration patterns shared across all layers, see [Framework.md](../Framework.md#common-patterns-across-layers).
+
+This system automatically generates routers from BLL managers using the `RouterMixin` approach.
 
 ## Quick Start
 

@@ -1,5 +1,9 @@
 # Payment Extension
 
+This document describes the Payment extension implementation.
+
+> **Extension Architecture**: For general extension patterns, architecture, and concepts, see [EXT.Patterns.md](../EXT.Patterns.md).
+
 Payment extension for AGInfrastructure providing comprehensive payment functionality through the Provider Rotation System with Stripe integration and User model extensions.
 
 ## Overview

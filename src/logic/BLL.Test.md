@@ -1,6 +1,8 @@
 # BLL Testing Framework
 
-This document describes the comprehensive testing framework for Business Logic Layer (BLL) managers, providing standardized test coverage for all BLL components.
+This document describes BLL-specific testing patterns and best practices.
+
+> **Common Testing Resources**: For testing tools, commands, fixtures, and best practices shared across all layers, see [Framework.Test.md](../Framework.Test.md#testing-tools-and-framework).
 
 ## Overview
 
@@ -304,61 +306,45 @@ def test_invitation_acceptance_workflow(self, admin_a, team_a):
     # Check metadata updates
 ```
 
-## Running Tests
+## Running BLL Tests
 
-### Execute All BLL Tests
+See [Framework.Test.md](../Framework.Test.md#testing-commands) for common test commands. BLL-specific examples:
+
 ```bash
-pytest -v src/logic/*_test.py
+# Run all BLL tests
+pytest src/logic/*_test.py
+
+# Run specific BLL module
+pytest src/logic/BLL_Auth_test.py
+
+# Run specific test class
+pytest src/logic/BLL_Auth_test.py::TestUserManager
+
+# Run single test method
+pytest src/logic/BLL_Auth_test.py::TestUserManager::test_create
 ```
 
-### Execute Specific Module
-```bash
-pytest -v src/logic/BLL_Auth_test.py
-pytest -v src/logic/BLL_Extensions_test.py  
-pytest -v src/logic/BLL_Providers_test.py
-```
+## BLL-Specific Best Practices
 
-### Execute Specific Test Class
-```bash
-pytest -v src/logic/BLL_Auth_test.py::TestUserManager
-```
-
-### Execute Single Test Method
-```bash
-pytest -v src/logic/BLL_Auth_test.py::TestUserManager::test_create
-```
-
-## Best Practices
+In addition to [common testing best practices](../Framework.Test.md#best-practices):
 
 ### Test Design
-1. **Use Dependencies** - Leverage `` for proper test ordering
-2. **Meaningful Names** - Use descriptive test method names
-3. **Isolated Tests** - Each test should be independent and clean up properly
-4. **Edge Cases** - Test both success and failure scenarios
-5. **Business Logic** - Override standard tests for custom business rules
+- **Use Dependencies** - Leverage pytest.mark.dependency for proper test ordering
+- **Business Logic** - Override standard tests for custom business rules
+- **Hook Testing** - Test before/after hooks thoroughly
 
 ### Data Management
-1. **Unique Data** - Use `faker` or UUID for unique test data
-2. **Cleanup** - Let AbstractBLLTest handle entity cleanup automatically
-3. **Fixtures** - Use provided fixtures like `admin_a`, `team_a`, `db`
-4. **Parent Dependencies** - Properly configure parent_entities for relationships
-
-### Error Testing
-1. **HTTP Exceptions** - Test proper status codes and error messages
-2. **Validation Errors** - Verify business rule enforcement
-3. **Permission Errors** - Test access control scenarios
-4. **Not Found Errors** - Validate 404 responses for missing entities
+- **Parent Dependencies** - Properly configure parent_entities for relationships
+- **Unique Data** - Use `faker` or UUID for unique test data
+- **Cleanup** - Let AbstractBLLTest handle entity cleanup automatically
 
 ### Extending the Framework
-
-To create tests for new BLL managers:
-
-1. **Inherit from AbstractBLLTest**
-2. **Configure required attributes** (class_under_test, create_fields, update_fields, unique_fields)
-3. **Define parent_entities** if needed
-4. **Override standard tests** for custom business logic
-5. **Add custom test methods** for specific functionality
-6. **Configure skip_tests** for incompatible standard tests
+1. Inherit from AbstractBLLTest
+2. Configure required attributes (class_under_test, create_fields, update_fields, unique_fields)
+3. Define parent_entities if needed
+4. Override standard tests for custom business logic
+5. Add custom test methods for specific functionality
+6. Configure skip_tests for incompatible standard tests
 
 ## Testing Utilities
 

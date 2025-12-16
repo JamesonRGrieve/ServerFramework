@@ -22,6 +22,33 @@ The framework follows a strict layered architecture with clear separation of con
 - **Automatic Router Generation**: BLL managers with RouterMixin eliminate manual endpoint creation
 - **Extension Isolation**: Each extension maintains independent migrations and configuration
 
+### Common Patterns Across Layers
+
+These patterns are used consistently across Database, Business Logic, and Endpoint layers. See layer-specific pattern documentation for implementation details.
+
+#### CRUD Model Pattern
+All entities follow a standard model structure:
+- **Base Model**: Core entity fields with full schema
+- **Create Model**: Fields required/allowed during creation (subset of base)
+- **Update Model**: Fields allowed during updates (subset of base, all optional)
+- **Search Model**: Fields available for filtering and search operations
+
+#### Error Handling Pattern
+Standard error responses across all layers:
+- **400**: Validation errors, malformed requests
+- **401**: Authentication required or invalid
+- **403**: Insufficient permissions for operation
+- **404**: Resource not found
+- **409**: Resource conflict (duplicate, constraint violation)
+- **500**: Internal server errors
+
+#### Environment Configuration Pattern
+Extensions and services use consistent configuration:
+- Static `_env` dictionary declares required variables
+- Automatic registration with framework's configuration system
+- Type-safe access through `env()` helper
+- Optional defaults and validation
+
 ## Database Layer
 
 ### Management

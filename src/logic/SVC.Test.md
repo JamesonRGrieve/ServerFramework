@@ -1,6 +1,8 @@
 # Service Layer Testing Framework
 
-This document describes the testing framework for background services using the `AbstractSVCTest` class, which provides comprehensive testing for services inheriting from `AbstractService`.
+This document describes service-specific testing patterns and best practices.
+
+> **Common Testing Resources**: For testing tools, commands, fixtures, and best practices shared across all layers, see [Framework.Test.md](../Framework.Test.md#testing-tools-and-framework).
 
 ## Overview
 
@@ -318,32 +320,28 @@ Service tests require pytest-asyncio:
 pytest -v --asyncio-mode=auto src/services/
 ```
 
-## Best Practices
+## Service-Specific Best Practices
+
+In addition to [common testing best practices](../Framework.Test.md#best-practices):
 
 ### Test Design
-1. **Use Appropriate Fixtures** - `mocked_service` for framework testing, `service` for logic testing
-2. **Short Intervals** - Use brief intervals (1 second) for faster test execution
-3. **Time Limits** - Use `_run_service_loop_for_time()` for controlled async testing
-4. **Mock External Dependencies** - Isolate service logic from external systems
-5. **Test Both Success and Failure** - Cover normal operation and error conditions
+- **Use Appropriate Fixtures** - `mocked_service` for framework testing, `service` for logic testing
+- **Short Intervals** - Use brief intervals (1 second) for faster test execution
+- **Time Limits** - Use `_run_service_loop_for_time()` for controlled async testing
 
 ### Error Testing
-1. **Specific Exceptions** - Test handling of different error types
-2. **Failure Limits** - Verify max_failures enforcement
-3. **Recovery Testing** - Test service recovery after errors
-4. **Resource Cleanup** - Ensure cleanup happens after failures
+- **Failure Limits** - Verify max_failures enforcement
+- **Recovery Testing** - Test service recovery after errors
+- **Resource Cleanup** - Ensure cleanup happens after failures
 
 ### Performance Testing
-1. **Async Behavior** - Test proper async/await usage
-2. **Resource Management** - Verify database connections are handled properly
-3. **Memory Usage** - Check for memory leaks in long-running tests
-4. **Timing Verification** - Test interval compliance
+- **Async Behavior** - Test proper async/await usage
+- **Resource Management** - Verify database connections are handled properly
+- **Timing Verification** - Test interval compliance
 
 ### Service-Specific Testing
-1. **Business Logic** - Test actual service functionality separately
-2. **Integration Points** - Test external API interactions with mocks
-3. **Data Processing** - Verify data transformation and storage
-4. **State Management** - Test service state persistence and recovery
+- **Business Logic** - Test actual service functionality separately
+- **State Management** - Test service state persistence and recovery
 
 ## Integration with Service Registry
 

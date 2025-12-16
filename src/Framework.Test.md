@@ -163,9 +163,18 @@ Extension Test → Provider Test (inherits DB + server)
 - **Memory Testing**: Memory usage patterns and leak detection
 - **Concurrency Testing**: Multi-user scenario validation
 
-## Testing Commands
+## Testing Tools and Framework
 
-### Basic Test Execution
+### Core Testing Stack
+All layers use the following tools:
+- **pytest**: Primary testing framework with automatic test discovery
+- **pytest-cov**: Code coverage reporting
+- **pytest-xdist**: Parallel test execution
+- **pytest-dependency**: Test dependency management
+
+### Testing Commands
+
+#### Basic Test Execution
 ```bash
 # Run all tests
 pytest
@@ -181,9 +190,12 @@ pytest path/to/test_file.py
 
 # Run specific test method
 pytest path/to/test_file.py::test_method_name
+
+# Run specific test class
+pytest path/to/test_file.py::TestClassName
 ```
 
-### Advanced Testing
+#### Advanced Testing
 ```bash
 # Parallel test execution
 pytest -n auto
@@ -191,12 +203,61 @@ pytest -n auto
 # Verbose output
 pytest -v
 
+# Very verbose output with all details
+pytest -vv
+
 # Coverage reporting
 pytest --cov=src
 
+# Coverage with HTML report
+pytest --cov=src --cov-report=html
+
 # Test with specific database
 pytest --db=postgresql
+
+# Stop on first failure
+pytest -x
+
+# Show local variables in tracebacks
+pytest -l
 ```
+
+### Common Test Fixtures
+
+Standard fixtures available across all test layers:
+- **server**: Test server instance with isolated environment
+- **db**: Database session for test operations
+- **model_registry**: Pydantic model registry instance
+- **admin_a**, **admin_b**: Admin user instances for testing
+- **user_a**, **user_b**: Regular user instances for testing
+- **team_a**, **team_b**: Team instances for testing
+
+### Best Practices
+
+#### Test Design
+- Extend appropriate AbstractTest class for your layer
+- Provide required overrides (class_under_test, create_fields, update_fields)
+- Use descriptive test method names indicating behavior being tested
+- Keep tests focused on single behavior or scenario
+- Use pytest.mark.dependency for tests with interdependencies
+
+#### Data Management
+- Use provided fixtures for consistent test data
+- Clean up test data after execution
+- Avoid hardcoded values - use parametrization
+- Test with realistic data scenarios
+
+#### Error Testing
+- Test both success and failure paths
+- Verify error messages and status codes
+- Test edge cases and boundary conditions
+- Validate error handling behavior
+
+#### Execution
+- Ensure tests can run independently
+- Avoid cross-test dependencies unless explicitly marked
+- Use markers to categorize tests by layer or feature
+- Keep test execution time reasonable
 
 ## Quality Assurance
 

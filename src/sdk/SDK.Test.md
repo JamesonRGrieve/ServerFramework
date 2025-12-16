@@ -1,14 +1,16 @@
 # SDK Testing Guide
 
-This document outlines the testing approach and best practices for the SDK.
+This document outlines SDK-specific testing patterns and best practices.
+
+> **Common Testing Resources**: For testing tools, commands, fixtures, and best practices shared across all layers, see [Framework.Test.md](../Framework.Test.md#testing-tools-and-framework).
 
 ## Testing Framework
 
-The SDK uses the following tools for testing:
-
-- **pytest**: Primary testing framework with pytest-depends for test dependencies
-- **pytest-mock**: For mocking and fixtures
-- **pytest-cov**: For code coverage reporting
+The SDK follows the framework's revolutionary no-mock approach:
+- **Real HTTP Requests**: Tests use actual HTTP client with real server responses
+- **No Mocks**: Tests validate actual SDK behavior, not mock assumptions
+- **pytest-based**: Uses pytest for test discovery and execution
+- **AbstractSDKTest**: Base class providing standardized SDK testing patterns
 
 ## Test Structure
 
@@ -87,77 +89,50 @@ class TestYourModule(AbstractSDKTest):
     def test_delete(self)  # Tests entity deletion
 ```
 
-## Mocking HTTP Requests
+## Testing Real HTTP Interactions
 
-The `AbstractSDKTest` class includes tools for mocking HTTP requests:
-
-```python
-# Mock a successful JSON response
-self.mock_response_json({"key": "value"})
-
-# Mock an error response
-self.mock_response_error(404, "Resource not found")
-
-# Mock a validation error
-self.mock_response_validation_error({"field": ["This field is required"]})
-
-# Verify request details
-self.assert_request_called_with(
-    method="POST",
-    endpoint="/v1/resource",
-    data={"key": "value"},
-    params={"filter": "value"}
-)
-```
-
-## Testing Different Response Types
-
-Test various response scenarios:
+The `AbstractSDKTest` class tests actual HTTP requests against a real test server:
 
 ```python
+def test_successful_request(self, server):
+    """Test actual SDK request against real server."""
+    sdk = self.class_under_test(base_url=server.url)
+    result = sdk.get_user("123")
+    assert result["id"] == "123"
+    assert "name" in result
 
-def test_successful_request(self):
-    response_data = {"user": {"id": "123", "name": "Test User"}}
-    self.mock_response_json(response_data)
-    result = self.sdk_handler.get_user("123")
-    assert result == response_data
-
-
-def test_error_response(self):
-    self.mock_response_error(404, "User not found")
+def test_error_response(self, server):
+    """Test SDK error handling with real server errors."""
+    sdk = self.class_under_test(base_url=server.url)
     with pytest.raises(ResourceNotFoundError) as exc_info:
-        self.sdk_handler.get_user("nonexistent")
+        sdk.get_user("nonexistent-id")
     assert exc_info.value.status_code == 404
 
-
-def test_request_exception(self, mocker):
-    # Use pytest-mock's mocker fixture
-    mocker.patch("httpx.Client.request", side_effect=Exception("Connection error"))
-    with pytest.raises(SDKException) as exc_info:
-        self.sdk_handler.get_user("123")
-    assert "Connection error" in str(exc_info.value)
+def test_validation_error(self, server):
+    """Test SDK validation with real server validation."""
+    sdk = self.class_under_test(base_url=server.url)
+    with pytest.raises(ValidationError) as exc_info:
+        sdk.create_user({"invalid": "data"})
+    assert "required" in str(exc_info.value).lower()
 ```
 
 ## Using Test Fixtures
 
-Create pytest fixtures for commonly used data:
+Leverage standard framework fixtures:
 
 ```python
-@pytest.fixture
-def user_data(self):
-    """Fixture providing test user data."""
-    return {
-        "id": "123",
-        "name": "Test User",
-        "email": "test@example.com"
-    }
+def test_with_fixtures(self, server, admin_a):
+    """Test using framework fixtures."""
+    sdk = self.class_under_test(base_url=server.url)
 
+    # Authenticate with real admin user
+    result = sdk.login(email=admin_a.email, password="test_password")
+    assert "token" in result
 
-def test_with_fixture(self, user_data):
-    """Test using the fixture data."""
-    self.mock_response_json({"user": user_data})
-    result = self.sdk_handler.get_user(user_data["id"])
-    assert result["user"] == user_data
+    # Use token for authenticated requests
+    sdk.set_token(result["token"])
+    user = sdk.get_user(admin_a.id)
+    assert user["id"] == admin_a.id
 ```
 
 ## Code Coverage
@@ -185,81 +160,80 @@ def test_authentication(self):
 
 ## Testing Request Parameters
 
-Verify correct request parameters using the standard assertion method:
+Test real request parameter handling:
 
 ```python
+def test_query_parameters(self, server):
+    """Test SDK properly sends query parameters."""
+    sdk = self.class_under_test(base_url=server.url)
 
-def test_query_parameters(self):
-    # Set up mock response
-    self.mock_response_json({"results": []})
-    
-    # Call method with query parameters
-    self.sdk_handler.list_resources(offset=10, limit=50, sort_by="name")
-    
-    # Verify request
-    self.assert_request_called_with(
-        "GET", 
-        "/v1/resource", 
-        params={"offset": 10, "limit": 50, "sort_by": "name"}
-    )
+    # Call with parameters - server validates them
+    results = sdk.list_resources(offset=10, limit=50, sort_by="name")
+
+    # Server returns results based on actual parameters
+    assert len(results) <= 50
+    assert all(r["name"] for r in results)  # Verify sort worked
 ```
 
-## Integration Testing
+## End-to-End Testing
 
-While most tests are unit tests that mock HTTP requests, you might want some integration tests against a real API:
+All SDK tests validate real behavior against the test server:
 
 ```python
-@pytest.mark.integration
+def test_complete_workflow(self, server, admin_a):
+    """Test complete SDK workflow with real operations."""
+    sdk = self.class_under_test(base_url=server.url)
 
-def test_integration_login(self):
-    """Integration test requiring real API access."""
-    if not pytest.importorskip("os").environ.get("RUN_INTEGRATION_TESTS"):
-        pytest.skip("Skipping integration test")
-        
-    # Use real API for this test
-    sdk = self.class_under_test(base_url="https://api.example.com")
-    result = sdk.login(
-        email=pytest.importorskip("os").environ.get("TEST_USER_EMAIL"),
-        password=pytest.importorskip("os").environ.get("TEST_USER_PASSWORD")
-    )
-    assert "token" in result
+    # Login with real user
+    auth_result = sdk.login(email=admin_a.email, password="test_password")
+    sdk.set_token(auth_result["token"])
+
+    # Create resource
+    created = sdk.create_resource({"name": "Test Resource"})
+    assert created["id"]
+
+    # Retrieve resource
+    retrieved = sdk.get_resource(created["id"])
+    assert retrieved["name"] == "Test Resource"
+
+    # Update resource
+    updated = sdk.update_resource(created["id"], {"name": "Updated"})
+    assert updated["name"] == "Updated"
+
+    # Delete resource
+    sdk.delete_resource(created["id"])
+
+    # Verify deletion
+    with pytest.raises(ResourceNotFoundError):
+        sdk.get_resource(created["id"])
 ```
 
-## Best Practices
+## SDK-Specific Best Practices
 
-1. **Extend AbstractSDKTest** - Always extend the base test class
+In addition to [common testing best practices](../Framework.Test.md#best-practices):
+
+1. **Extend AbstractSDKTest** - Always extend the base test class for SDK modules
 2. **Provide Required Overrides** - Set `class_under_test`, `create_fields`, and `update_fields`
-3. **Use Standard Assertions** - Use `self.assert_request_called_with()` for request verification
-4. **Use pytest.mark.dependency()** - Mark all test methods with the decorator
-5. **Use pytest Fixtures** - Leverage pytest's powerful fixture system for test data
-6. **Mock External Dependencies** - Use pytest-mock for mocking
-7. **Clear Test Names** - Use descriptive test names that indicate the behavior being tested
-8. **Isolated Tests** - Tests should not depend on each other's state
-9. **Test Error Cases** - Don't just test the "happy path"
-10. **Test Edge Cases** - Test null values, empty lists, etc.
+3. **Use Real Server** - Test against actual test server, never mock HTTP
+4. **Test Complete Workflows** - Validate end-to-end SDK functionality with real requests
 
-## Running Tests
+## Running SDK Tests
 
-Use pytest to run the tests:
+See [Framework.Test.md](../Framework.Test.md#testing-commands) for common test commands. SDK-specific examples:
 
 ```bash
-# Run all tests
-pytest
+# Run all SDK tests
+pytest sdk/
 
-# Run a specific test file
+# Run a specific SDK test file
 pytest sdk/SDK_Auth_test.py
 
-# Run a specific test class
+# Run a specific SDK test class
 pytest sdk/SDK_Auth_test.py::TestAuthSDK
 
-# Run a specific test method
+# Run a specific SDK test method
 pytest sdk/SDK_Auth_test.py::TestAuthSDK::test_login
 
-# Run with specific markers
-pytest -v -m "integration"  # Run integration tests
-pytest -v -m "not integration"  # Skip integration tests
-```
-
-## Continuous Integration
-
-The test suite is automatically run in CI environments. Ensure all tests pass before submitting pull requests. 
+# Run integration tests only
+pytest sdk/ -m "integration"
+``` 
