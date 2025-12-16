@@ -31,7 +31,7 @@ APP_EXTENSIONS="my_extension,my_other_extension,another_extension"
 
 ## Extension Table Detection
 
-Extension table ownership is determined solely by the location of the `DB_*.py` file in which they reside. Extension model files must be in the `src/extensions/<extension_name>/` in a `DB_*.py` file, and then they will be considered owned by <extension_name>. A table with `extends_existing=True` is not considered to be owned by that extension. 
+Extension table ownership is determined solely by the location of the `BLL_*.py` file in which they reside. Extension model files must be in `src/extensions/<extension_name>/` in a `BLL_*.py` file to be considered owned by <extension_name>. Tables that extend core tables using `@extension_model` decorator are detected via the model extension registry. 
 
 ## Usage
 
@@ -172,13 +172,14 @@ manager.debug_environment()
 
 The system isolates tables based on their source files:
 
-1. Core tables: Defined in `src/database/DB_*.py` files
-2. Extension tables: Defined in `src/extensions/<extension_name>/DB_*.py` files
+1. Core tables: Defined in `src/logic/BLL_*.py` files
+2. Extension tables: Defined in `src/extensions/<extension_name>/BLL_*.py` files
 
 When generating migrations, the system identifies which tables belong to which module, ensuring proper separation:
 
 - Core migrations only include changes to core tables
-- Extension migrations only include changes to tables owned by that extension or columns that are or have previously been directly referenced therein with `extends_existing=True`
+- Extension migrations only include changes to tables owned by that extension
+- Core tables extended by extensions (via `@extension_model`) are included in the extending extension's migrations
 
 ### Migration History
 
@@ -243,10 +244,12 @@ This approach ensures all environment files use the same implementation of these
 
 To ensure proper isolation and table ownership:
 
-1. Each DB model file should follow the naming convention: `DB_*.py`
-2. Tables should use the `__tablename__` attribute
-3. Extension tables should be defined in the extension's directory
-4. Only declarations that override base tables or those owned by other extensions should include `__table_args__ = {"extend_existing": True}` in extensions - tables that are "owned" where they are declared should not
+1. Each BLL model file should follow the naming convention: `BLL_*.py`
+2. Models inherit from `ApplicationModel` and `DatabaseMixin` (Pydantic2SQLAlchemy system)
+3. Core models should be in `src/logic/BLL_*.py`
+4. Extension models should be in `src/extensions/<extension_name>/BLL_*.py`
+5. To extend core models, use the `@extension_model(CoreModel)` decorator pattern
+6. SQLAlchemy tables are auto-generated from Pydantic models via the `.DB` property
 
 ## Shared Functions Architecture
 
@@ -329,48 +332,24 @@ A log file is generated/appended to in `src/database/migrations` whenever a migr
 
 These architectural improvements maintain all functionality while making the codebase more maintainable, robust, and easier to troubleshoot.
 
-## Troubleshooting
-
-### Common Issues
+## Common Issues
 
 1. **Empty migrations for extensions:**
-   - Problem: The system isn't properly detecting tables belonging to an extension
-   - Solution: 
-     - Ensure extension name is correctly set in `APP_EXTENSIONS` environment variable
-     - Check that the extension models are properly imported during migration
-     - Use the debug command to see which extensions are configured
+   - Ensure extension name is correctly set in `APP_EXTENSIONS` environment variable
+   - Check that the extension BLL models are properly defined with `DatabaseMixin`
+   - Verify models inherit from `ApplicationModel` and have `.DB` property accessible
+   - Use `python src/database/migrations/Migration.py debug` to see configured extensions
 
-2. **Branch label already used error:**
-   - This was a bug where branch labels were added to every migration
-   - Fixed by only adding branch labels to the first migration of an extension
+2. **Migration not detecting table changes:**
+   - Verify BLL model files follow `BLL_*.py` naming convention
+   - Ensure models are in correct location (`src/logic/` for core, `src/extensions/<name>/` for extensions)
+   - Check that models properly inherit from `ApplicationModel` and `DatabaseMixin`
+   - Confirm SQLAlchemy models are generated (access `.DB` property doesn't raise errors)
 
-3. **Multiple classes found for path error:**
-   - Make sure your model class names are unique across the system
-   - Use fully qualified imports to avoid ambiguity
-
-4. **Migration not detecting table changes:**
-   - Make sure the table belongs to the correct extension or core
-   - Check if the table is properly imported during migration
-   - Verify your table has the correct `__tablename__` attribute
-   - Ensure the table name follows the naming convention of its extension
-
-5. **Inconsistent behavior between core and extension migrations:**
-   - This has been fixed with the MigrationManager instance architecture
-   - Both core and extension migrations now use the same underlying static `env_*` methods
-
-### Debugging
-
-When things go wrong, use the `debug` command:
-```bash
-python src/database/migrations/Migration.py debug
-```
-
-This will show:
-- Environment variables related to the database (including `APP_EXTENSIONS`)
-- Database configuration
-- Paths being used
-- Alembic configuration
-- Extension configuration and discovered extensions
+3. **Import errors during migration:**
+   - Ensure all required dependencies are installed (especially `stringcase`)
+   - Run `pip install -r requirements.txt --use-pep517` to fix build issues with legacy packages
+   - Check that all BLL model imports resolve correctly
 
 ## Programmatic Access to Migrations
 
@@ -430,21 +409,19 @@ The migration system automatically cleans up temporary files after each command 
 **Preservation Policy:**
 1. Preserves all files in the `versions/` and `test_versions/` directories
 2. Preserves all migration files (`*.py`)
-3. Preserves all model files (`DB_*.py`)
+3. Preserves all model files (`BLL_*.py`)
 4. Only removes the specific temporary files listed above
 5. Cleanup happens automatically after every command, even on error
 
 ## Best Practices
 
-1. **Keep extensions independent:** Minimize cross-extension dependencies.
-2. **Use mixins for shared functionality:** Create common mixins in the core system.
-3. **Run migrations frequently:** Smaller, more frequent migrations are easier to manage.
-4. **Follow naming conventions:** Use `DB_*.py` for database model files.
-5. **Test migrations:** Always test migrations on a copy of production data.
-6. **Version control your migrations:** Never modify a migration that has been applied to production.
-7. **Run all migrations when deploying:** Make sure to run both core and extension migrations during deployment.
-8. **Use descriptive migration messages:** Clearly describe what each migration does.
-9. **Use the `debug` command when troubleshooting:** If migrations aren't detecting your tables, use the debug command to see what's configured.
-10. **Verify environment variables:** Always ensure `APP_EXTENSIONS` contains all the extensions you want to migrate.
-11. **Use instance-based architecture properly:** Create MigrationManager instances with appropriate test_mode and custom_db_info parameters for your use case.
-12. **Leverage test mode for testing:** Use `test_mode=True` and custom database configuration for isolated testing environments.
+1. **Follow naming conventions:** Use `BLL_*.py` for business logic/model files (core: `src/logic/`, extensions: `src/extensions/<name>/`)
+2. **Use Pydantic2SQLAlchemy patterns:** Models should inherit from `ApplicationModel` and `DatabaseMixin`
+3. **Extension independence:** Minimize cross-extension dependencies
+4. **Model extensions:** Use `@extension_model(CoreModel)` decorator to extend core tables from extensions
+5. **Version control migrations:** Never modify migrations applied to production
+6. **Descriptive messages:** Clearly describe what each migration does
+7. **Environment configuration:** Ensure `APP_EXTENSIONS` lists all extensions before running migrations
+8. **Test migrations:** Always test on non-production data first
+9. **Run all migrations on deploy:** Execute both core and extension migrations during deployment
+10. **Instance-based architecture:** Create MigrationManager instances with appropriate `test_mode` and `custom_db_info` parameters
