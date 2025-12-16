@@ -181,6 +181,41 @@ class PRV_MyProvider_MyExtension(EXT_MyExtension.AbstractProvider):
 
 ## Provider Rotation System
 
+### Rotation Algorithm
+Linear failover: single sequence of providers tried in order until success or exhaustion.
+
+**Structure:**
+- Single linear linked list
+- Each provider: 0 or 1 parent (unique constraint on `parent_id`)
+- One provider with `parent_id=None` (root)
+- Forms single chain: A → B → C → D → E
+
+**Flow:**
+1. Try first provider
+2. On failure (any exception), try next
+3. Continue until success/exhaustion
+4. Raise HTTPException 500 if all fail
+
+**Failure Detection:** Any exception triggers rotation (src/logic/BLL_Providers.py:1035)
+
+**Implementation:** `rotate()` (src/logic/BLL_Providers.py:956-1061), `_get_ordered_rotation_provider_instances()` (lines 1063-1118)
+
+**Usage:**
+```python
+result = EXT_Payment.root.rotate(
+    lambda instance: instance.create_customer(email="user@example.com")
+)
+if result.get('success'):
+    customer_data = result['data']
+```
+
+**Example:**
+```
+Provider_A (parent=None) → Provider_B (parent=A) → Provider_C (parent=B) → Provider_D (parent=C)
+
+Rotation Order: A → B → C → D
+```
+
 ### Provider Instance Bonding Pattern
 The Provider Rotation System uses instance bonding to manage API credentials and configuration:
 

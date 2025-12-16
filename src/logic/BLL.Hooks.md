@@ -542,7 +542,7 @@ def critical_security_validation(context: HookContext) -> None:
     email = context.kwargs.get('email')
     if email and email in BLOCKED_EMAILS:
         raise HTTPException(status_code=403, detail="Email domain blocked")
-    
+
     # This error SHOULD propagate and stop user creation
 
 # Non-critical hook - failure should be logged but not stop operation
@@ -578,6 +578,47 @@ def optional_third_party_sync(context: HookContext) -> None:
         third_party_api.sync_user(context.result)
     # Any exception here will be caught and logged by wrapper
 ```
+
+### Exception Propagation
+
+**Current Behavior:**
+Hook exception → propagates → operation fails → endpoint returns error (applies to BEFORE and AFTER hooks)
+
+**Patterns:**
+```python
+# Critical: let exception propagate
+@hook_bll(UserManager.create, timing=HookTiming.BEFORE, priority=5)
+def validate_required_fields(context: HookContext) -> None:
+    if not context.kwargs.get('email'):
+        raise HTTPException(status_code=400, detail="Email required")
+
+# Non-critical: catch exception
+@hook_bll(UserManager.create, timing=HookTiming.AFTER, priority=30)
+def send_notification(context: HookContext) -> None:
+    try:
+        notification_service.send(context.result.email)
+    except Exception as e:
+        logger.error(f"Notification failed: {e}")
+```
+
+**Planned: Blocking Boolean Parameter**
+```python
+# Proposed syntax (not yet implemented)
+@hook_bll(UserManager.create, timing=HookTiming.AFTER, blocking=False)
+def optional_sync(context: HookContext) -> None:
+    external_api.sync_user(context.result)  # Exception won't fail operation
+
+@hook_bll(UserManager.create, timing=HookTiming.BEFORE, blocking=True)  # default
+def required_validation(context: HookContext) -> None:
+    validate_business_rules(context.kwargs)  # Exception fails operation
+```
+
+**Semantics:**
+- `blocking=True` (default): Exception propagates, fails operation
+- `blocking=False`: Exception logged, operation continues
+- Use `blocking=False` carefully in BEFORE hooks (can cause inconsistent state)
+
+**Current workaround:** Use try/except blocks or `@non_critical_hook` wrapper.
 
 ## Target ID and Caching Patterns
 

@@ -45,6 +45,32 @@ Encapsulated model management system for application-specific model sets with is
 - Router generation system
 - GraphQL schema creation
 
+### SQLAlchemy Model Generation Timing
+SQLAlchemy models auto-generated from Pydantic models at **boot time** via `create_sqlalchemy_model()` (src/lib/Pydantic2SQLAlchemy.py).
+
+**Boot Sequence:**
+```
+Server Start → Extension Loading → Model Discovery (DatabaseMixin)
+→ ModelRegistry Binding → SQLAlchemy Generation → DB Connection
+→ Migrations → Server Ready
+```
+
+**Details:**
+- Generated via `DatabaseMixin.DB()` property or explicit `create_sqlalchemy_model()` calls
+- Cached in ModelRegistry
+- Extension models processed in dependency order
+- `table_comment`, field types, constraints, relationships automatically translated
+
+**Access:**
+```python
+class BLL_User(DatabaseMixin):
+    table_comment = "User accounts"
+    email: str
+    name: str
+
+# Access: BLL_User.DB or model_registry.get_db_model(BLL_User)
+```
+
 ### NetworkMixin (`NetworkMixin`)
 Mixin providing dynamic NetworkModel generation for REST API integration.
 

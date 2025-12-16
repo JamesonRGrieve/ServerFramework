@@ -10,7 +10,7 @@ Unlike traditional testing frameworks that rely heavily on mocks and stubs, this
 - **Real Functionality**: Every test uses actual implementations, ensuring tests catch real issues
 - **Database Isolation**: Each extension permutation receives a completely isolated database instance with automatic cleanup
 - **End-to-End Validation**: Complete request-response cycles are tested as they would occur in production
-- **Parallel Execution**: Advanced isolation allows tests to run concurrently without interference
+- **Parallel Execution**: Advanced isolation allows tests to run concurrently using pytest async/threading
 - **Deterministic Results**: Real implementations with controlled environments ensure consistent results
 
 ### Architectural Test Patterns
@@ -80,18 +80,62 @@ The testing framework mirrors the main architecture with specialized abstract ba
 ## Extension System Testing
 
 ### AbstractEXTTest
-- **Extension Isolation**: Each extension test runs in isolated environment
-- **Auto-Discovery Testing**: Extension and provider discovery mechanism validation
-- **Hook Integration**: Extension hook system integration testing
-- **Migration Testing**: Extension-specific migration execution and rollback
-- **Configuration Testing**: Extension configuration validation and error handling
+Configuration-driven extension testing with isolated test servers.
+
+**Isolation:**
+- Each extension: dedicated database `test.{extension_name}.database.db`
+- Server loads only that extension + dependencies via `APP_EXTENSIONS`
+- Automatic cleanup after suite
+
+**Usage:**
+```python
+class TestMyExtension(AbstractEXTTest):
+    extension_class = EXT_MyExtension
+    test_config = AbstractEXTTest.full_config(expected_abilities={"my_ability"})
+
+    # Fixtures: server, model_registry, extension_db, admin_a, team_a, etc.
+```
+
+**Test Types:**
+STRUCTURE, METADATA, DEPENDENCIES, ABILITIES, ENVIRONMENT, ROTATION, PERFORMANCE, CONCURRENCY, MODEL_REGISTRY, DATABASE_ISOLATION
+
+**Config Patterns:**
+```python
+test_config = AbstractEXTTest.basic_config()  # Minimal
+test_config = AbstractEXTTest.full_config(expected_abilities={...})  # Comprehensive
+test_config = AbstractEXTTest.performance_config()  # Performance focus
+test_config = AbstractEXTTest.create_config(test_types={...}, skip_rotation=True)  # Custom
+```
 
 ### AbstractPRVTest
-- **Provider Rotation**: External API provider failover testing
-- **External Model Testing**: AbstractExternalModel integration validation
-- **API Integration**: External service integration pattern testing
-- **Error Handling**: Provider failure and recovery scenario testing
-- **Configuration Management**: Provider-specific configuration testing
+Provider testing inherits parent extension's test environment (same DB, same server).
+
+**Usage:**
+```python
+class TestMyProvider(AbstractPRVTest):
+    provider_class = PRV_MyProvider_MyExtension
+    test_config = AbstractPRVTest.full_config(
+        expected_abilities={"provider_ability"},
+        expected_services={"service_name"}
+    )
+    # Fixtures: extension_server, extension_db
+```
+
+**Test Areas:**
+Structure, metadata, dependencies, abilities, services, environment, rotation integration, performance, error handling, instance bonding
+
+**Config Patterns:**
+```python
+test_config = AbstractPRVTest.basic_config()
+test_config = AbstractPRVTest.full_config(expected_abilities={...}, expected_services={...})
+test_config = AbstractPRVTest.performance_config()
+graphql_config = AbstractPRVTest.create_graphql_config(entity_name="...", model_class=...)
+```
+
+**Hierarchy:**
+```
+Extension Test → Provider Test (inherits DB + server)
+```
 
 ### Core Extension Testing
 - **MFA Testing**: Multi-factor authentication flow validation (TOTP, email, SMS)
