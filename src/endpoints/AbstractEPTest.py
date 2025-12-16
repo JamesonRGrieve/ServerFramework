@@ -1782,6 +1782,14 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         # Build endpoint with query string for fields
         endpoint = self.get_detail_endpoint(entity["id"], path_parent_ids)
 
+        # First check if the GET/{id} endpoint exists (some entities like User don't have it)
+        probe_response = server.get(
+            endpoint,
+            headers=self._get_appropriate_headers(admin_a.jwt),
+        )
+        if probe_response.status_code == 405:
+            pytest.skip(f"GET detail route not available for {self.entity_name}")
+
         # Try to get entity with invalid fields as query parameter
         response = server.get(
             f"{endpoint}?fields=invalid_field,another_invalid",
@@ -1821,6 +1829,14 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         # Build endpoint with query string for includes
         endpoint = self.get_detail_endpoint(entity["id"], path_parent_ids)
 
+        # First check if the GET/{id} endpoint exists (some entities like User don't have it)
+        probe_response = server.get(
+            endpoint,
+            headers=self._get_appropriate_headers(admin_a.jwt),
+        )
+        if probe_response.status_code == 405:
+            pytest.skip(f"GET detail route not available for {self.entity_name}")
+
         # Try to get entity with invalid includes as query parameter
         response = server.get(
             f"{endpoint}?include=invalid_relation,another_invalid",
@@ -1859,6 +1875,14 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
 
         # Build endpoint with unknown query parameter
         endpoint = self.get_detail_endpoint(entity["id"], path_parent_ids)
+
+        # First check if the GET/{id} endpoint exists (some entities like User don't have it)
+        probe_response = server.get(
+            endpoint,
+            headers=self._get_appropriate_headers(admin_a.jwt),
+        )
+        if probe_response.status_code == 405:
+            pytest.skip(f"GET detail route not available for {self.entity_name}")
 
         # Try to get entity with unknown query parameter
         response = server.get(
