@@ -2,9 +2,9 @@
 
 This document covers the architectural design and core abstractions of the endpoint layer, focusing on how the system achieves consistency, scalability, and maintainability across all API resources.
 
-**IMPORTANT**: This system has migrated from the legacy `AbstractEPRouter` pattern to a new `RouterMixin` approach. Routers are now generated automatically from BLL managers using the `RouterMixin` class in `lib/Pydantic2FastAPI.py`. The `AbstractEPRouter` class exists for compatibility but is no longer the primary pattern.
+Routers are automatically generated from BLL managers using the `RouterMixin` class in `lib/Pydantic2FastAPI.py`.
 
-## Current Architecture Overview
+## Architecture Overview
 
 ### Core Design Principles
 
@@ -17,7 +17,7 @@ This document covers the architectural design and core abstractions of the endpo
 7. **Model Registry Integration**: Automatic router building via model registry
 8. **Comprehensive Testing**: Automated test generation for all endpoints
 
-### System Layers (Current)
+### System Layers
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -31,57 +31,26 @@ This document covers the architectural design and core abstractions of the endpo
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### Legacy System Layers
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                     API Layer (FastAPI)                        │
-├─────────────────────────────────────────────────────────────────┤
-│                 AbstractEPRouter (Endpoint Layer)              │
-├─────────────────────────────────────────────────────────────────┤
-│               Pydantic2FastAPI (Route Generation)              │
-├─────────────────────────────────────────────────────────────────┤
-│                Manager Layer (Business Logic)                  │
-├─────────────────────────────────────────────────────────────────┤
-│                Database Layer (SQLAlchemy ORM)                 │
-└─────────────────────────────────────────────────────────────────┘
-```
-
 ## Core Abstractions
 
-### RouterMixin Pattern (Current)
+### RouterMixin Pattern
 
-The current system uses the `RouterMixin` class that BLL managers inherit from to automatically generate routers:
+The system uses the `RouterMixin` class that BLL managers inherit from to automatically generate routers:
 
 ```python
 # BLL Manager with RouterMixin
-class ResourceManager(RouterMixin, AbstractLogicManager):
+class ResourceManager(RouterMixin, AbstractBLLManager):
     # Router configuration via ClassVars
     prefix: ClassVar[str] = "/v1/resource"
     tags: ClassVar[List[str]] = ["Resource Management"]
     auth_type: ClassVar[AuthType] = AuthType.JWT
     route_auth_overrides: ClassVar[Dict[str, AuthType]] = {}
-    
+
     # Router automatically generated via .Router(model_registry) class method
     @classmethod
     def Router(cls, model_registry) -> APIRouter:
         # Implemented by RouterMixin - generates full CRUD router
         pass
-```
-
-### Legacy AbstractEPRouter (Deprecated)
-
-The legacy `AbstractEPRouter` class is still available but no longer used in the main application:
-
-```python
-# Legacy pattern - still functional but not used
-router = AbstractEPRouter(
-    model_registry=model_registry,
-    prefix="/v1/resource",
-    tags=["Resource Management"],
-    manager_factory=get_resource_manager,
-    manager_cls=ResourceManager,
-)
 ```
 
 #### Key Capabilities
@@ -164,15 +133,17 @@ This abstraction:
 ### Multi-Level Authentication System
 
 ```python
-# Router-level default
-router = AbstractEPRouter(auth_type=AuthType.JWT)
+# Manager-level authentication configuration
+class ResourceManager(RouterMixin, AbstractBLLManager):
+    # Default authentication type
+    auth_type: ClassVar[AuthType] = AuthType.JWT
 
-# Route-specific overrides  
-route_auth_overrides = {
-    "create": AuthType.API_KEY,
-    "update": AuthType.API_KEY,
-    "delete": AuthType.API_KEY,
-}
+    # Route-specific overrides
+    route_auth_overrides: ClassVar[Dict[str, AuthType]] = {
+        "create": AuthType.API_KEY,
+        "update": AuthType.API_KEY,
+        "delete": AuthType.API_KEY,
+    }
 
 # System entity auto-configuration
 # Entities with is_system_entity=True automatically get API key auth for writes
@@ -198,21 +169,20 @@ The system supports complex resource hierarchies through:
 
 ### Nesting Implementation
 
+Nested resources are handled through manager property paths and relationship definitions in the BLL layer:
+
 ```python
-# Parent router
-team_router = AbstractEPRouter(...)
+# Parent manager with RouterMixin
+class TeamManager(RouterMixin, AbstractBLLManager):
+    prefix: ClassVar[str] = "/v1/team"
 
-# Child router with automatic relationship handling
-invitation_router = team_router.create_nested_router(
-    parent_prefix="/v1/team",
-    parent_param_name="team_id",
-    child_resource_name="invitation", 
-    manager_property="invitations",  # Path: team_manager.invitations
-    child_network_model_cls=InvitationNetworkModel,  # Auto-inferred if not provided
-)
-
-# Optional standalone access
-mirror_router = invitation_router.create_mirror_router("/v1/invitation")
+    # Nested resource managers accessed through properties
+    @property
+    def invitations(self):
+        return InvitationManager(
+            requester_id=self.requester_id,
+            parent_team_id=self.target_id
+        )
 ```
 
 ### Network Model Inference
@@ -230,7 +200,7 @@ The system automatically infers network model classes for nested resources by:
    - `instances` → `ProviderInstanceModel`
    - `rotations` → `RotationModel`
    - `provider_instances` → `ProviderInstanceModel`
-4. **Pattern Support**: Both `ModelName.Network` and legacy `NetworkModel` patterns
+4. **Pattern Support**: `ModelName.Network` pattern for network model definitions
 
 ### Manager Property Resolution
 
@@ -409,34 +379,13 @@ def build_routers(self):
     return routers
 ```
 
-## Legacy Router Tree Generation
-
-The legacy `create_router_tree` function is still available but not used:
-
-```python
-# Legacy pattern - still functional but deprecated
-routers = create_router_tree(
-    model_registry=model_registry,
-    base_prefix="/v1/provider",
-    resource_name="provider", 
-    manager_cls=ProviderManager,
-    nested_resources=[
-        {
-            "name": "instance",
-            "network_model_cls": InstanceNetworkModel,
-            "create_mirror": True,
-        }
-    ],
-)
-```
-
 ## Integration Architecture
 
 ### FastAPI Integration
 
 ```python
-# Router creation
-resource_router = AbstractEPRouter(...)
+# Router creation via RouterMixin
+resource_router = ResourceManager.Router(model_registry)
 
 # FastAPI app integration
 app = FastAPI()

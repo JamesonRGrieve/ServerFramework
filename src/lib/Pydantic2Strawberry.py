@@ -1070,10 +1070,14 @@ class GraphQLManager(ErrorHandlerMixin):
                 if "User" in manager_class.__name__:
                     # Use the static register method on the manager class to perform registration
                     try:
-                        result = manager_class.register(data, model_registry=self.model_registry)
+                        result = manager_class.register(
+                            data, model_registry=self.model_registry
+                        )
                     except TypeError:
                         # Fallback to pass kwargs style if the register signature expects named args
-                        result = manager_class.register(registration_data=data, model_registry=self.model_registry)
+                        result = manager_class.register(
+                            registration_data=data, model_registry=self.model_registry
+                        )
                 else:
                     result = manager.create(**data)
 
