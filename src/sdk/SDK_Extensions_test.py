@@ -1,11 +1,27 @@
+"""
+SDK Extensions Tests - Real server integration tests for extension SDK modules.
+
+This module contains tests for the extension-related SDK modules using
+real HTTP requests against a test server. NO MOCKING - all tests validate
+actual SDK behavior against real server responses.
+
+Following the framework's testing philosophy from AGENTS.md:
+- Tests use actual HTTP requests to a real test server
+- No mocks - tests validate actual SDK behavior
+- pytest-based with fixtures for test data
+"""
+
+import uuid
 from typing import Any, Dict, List
+
+import pytest
 
 from sdk.AbstractSDKTest import AbstractSDKTest
 from sdk.SDK_Extensions import AbilitySDK, ExtensionSDK, ExtensionsSDK
 
 
 class TestExtensionSDK(AbstractSDKTest):
-    """Tests for the ExtensionSDK module using configuration-driven approach."""
+    """Tests for the ExtensionSDK module using real server integration."""
 
     sdk_class = ExtensionSDK
     resource_name = "extension"
@@ -25,7 +41,13 @@ class TestExtensionSDK(AbstractSDKTest):
             "description": f"Test {resource_type} extension description",
             "version": "1.0.0",
         }
-        return [{**base_data, "name": f"{base_data['name']}_{i}"} for i in range(count)]
+        return [
+            {
+                **base_data,
+                "name": f"{base_data['name']}_{uuid.uuid4().hex[:8]}_{i}",
+            }
+            for i in range(count)
+        ]
 
     def assert_valid_response_structure(
         self,
@@ -43,9 +65,19 @@ class TestExtensionSDK(AbstractSDKTest):
         for key in expected_keys:
             assert key in data, f"Response missing expected key: {key}"
 
+    def test_list_extensions(self, server, admin_a):
+        """Test listing extensions via SDK."""
+        sdk = self.create_authenticated_sdk(server, admin_a)
+
+        # List extensions
+        response = sdk.extensions.list()
+
+        # Validate response structure
+        assert response is not None
+
 
 class TestAbilitySDK(AbstractSDKTest):
-    """Tests for the AbilitySDK module using configuration-driven approach."""
+    """Tests for the AbilitySDK module using real server integration."""
 
     sdk_class = AbilitySDK
     resource_name = "ability"
@@ -67,7 +99,13 @@ class TestAbilitySDK(AbstractSDKTest):
             "description": f"Test {resource_type} ability description",
             "ability_type": "function",
         }
-        return [{**base_data, "name": f"{base_data['name']}_{i}"} for i in range(count)]
+        return [
+            {
+                **base_data,
+                "name": f"{base_data['name']}_{uuid.uuid4().hex[:8]}_{i}",
+            }
+            for i in range(count)
+        ]
 
     def assert_valid_response_structure(
         self,
@@ -85,9 +123,19 @@ class TestAbilitySDK(AbstractSDKTest):
         for key in expected_keys:
             assert key in data, f"Response missing expected key: {key}"
 
+    def test_list_abilities(self, server, admin_a):
+        """Test listing abilities via SDK."""
+        sdk = self.create_authenticated_sdk(server, admin_a)
+
+        # List abilities
+        response = sdk.abilities.list()
+
+        # Validate response structure
+        assert response is not None
+
 
 class TestExtensionsSDK(AbstractSDKTest):
-    """Tests for the composite ExtensionsSDK module using configuration-driven approach."""
+    """Tests for the composite ExtensionsSDK module using real server integration."""
 
     sdk_class = ExtensionsSDK
     resource_name = "extensions"
@@ -116,45 +164,35 @@ class TestExtensionsSDK(AbstractSDKTest):
         for key in expected_keys:
             assert key in data, f"Response missing expected key: {key}"
 
-    def test_extensions_sdk_initialization(self):
+    def test_extensions_sdk_initialization(self, server):
         """Test that ExtensionsSDK initializes all sub-SDKs correctly."""
+        sdk = self.create_sdk(server)
+
         # Verify all resource managers are available
         expected_resources = ["extensions", "abilities"]
 
         for resource in expected_resources:
             assert hasattr(
-                self.sdk, resource
+                sdk, resource
             ), f"ExtensionsSDK should have {resource} resource manager"
-            assert self.sdk.resource_managers[resource] is not None
+            assert sdk.resource_managers[resource] is not None
 
-    def test_extensions_sdk_convenience_methods(self):
-        """Test that ExtensionsSDK convenience methods work correctly."""
-        # Test extension convenience methods
-        with self.mock_request_context({"id": "extension_123"}) as mock_client:
-            extension_data = {
-                "name": "convenience_extension",
-                "description": "Convenience Extension",
-                "version": "1.0.0",
-            }
-            extension = self.sdk.create_extension(**extension_data)
-            assert "id" in extension
+    def test_extensions_sdk_list_extensions(self, server, admin_a):
+        """Test listing extensions via composite ExtensionsSDK."""
+        sdk = self.create_authenticated_sdk(server, admin_a)
 
-        # Test ability convenience methods
-        with self.mock_request_context({"id": "ability_123"}) as mock_client:
-            ability_data = {
-                "name": "convenience_ability",
-                "extension_id": "extension_123",
-                "description": "Convenience Ability",
-                "ability_type": "function",
-            }
-            ability = self.sdk.create_ability(**ability_data)
-            assert "id" in ability
+        # List extensions via the extensions resource manager
+        response = sdk.extensions.list()
 
-        # Test listing methods
-        with self.mock_request_context({"items": [], "total": 0}) as mock_client:
-            extensions = self.sdk.list_extensions()
-            assert "items" in extensions
+        # Validate response
+        assert response is not None
 
-        with self.mock_request_context({"items": [], "total": 0}) as mock_client:
-            abilities = self.sdk.list_abilities(extension_id="extension_123")
-            assert "items" in abilities
+    def test_extensions_sdk_list_abilities(self, server, admin_a):
+        """Test listing abilities via composite ExtensionsSDK."""
+        sdk = self.create_authenticated_sdk(server, admin_a)
+
+        # List abilities via the abilities resource manager
+        response = sdk.abilities.list()
+
+        # Validate response
+        assert response is not None

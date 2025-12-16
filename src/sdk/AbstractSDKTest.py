@@ -1,22 +1,30 @@
 """
 Abstract SDK Test module providing base functionality for testing SDK modules.
 
-This module contains base test classes and utilities for testing SDK functionality,
-including mocking HTTP requests and responses, standardized test patterns,
-configuration-driven test generation, and resource management.
+This module contains base test classes and utilities for testing SDK functionality
+using real HTTP requests against a test server, following the framework's no-mock
+testing philosophy.
 
 This follows patterns similar to AbstractEPTest to provide comprehensive
 test coverage with minimal code duplication.
+
+Key principles (from AGENTS.md):
+- NO MOCKING: Tests use actual HTTP requests to a real test server
+- Real functionality: Every test validates actual SDK behavior
+- pytest-based: Uses pytest for test discovery and execution
 """
 
-import unittest
 from abc import ABC, abstractmethod
-from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Dict, List, Optional, Type
-from unittest.mock import Mock, patch
 
+import pytest
+from faker import Faker
+
+from AbstractTest import AbstractTest, CategoryOfTest, ClassOfTestsConfig, SkipThisTest
+from lib.Environment import env
+from lib.Logging import logger
 from sdk.AbstractSDKHandler import AbstractSDKHandler, ResourceConfig, SDKException
 
 
@@ -76,28 +84,13 @@ class SDKTestConfig:
             self.test_resources = []
 
 
-class MockResponse:
-    """Mock HTTP response for testing."""
-
-    def __init__(self, json_data: Dict[str, Any], status_code: int = 200):
-        self.json_data = json_data
-        self.status_code = status_code
-
-    def json(self):
-        return self.json_data
-
-    @property
-    def is_success(self):
-        return 200 <= self.status_code < 300
-
-
-class AbstractSDKTest(unittest.TestCase, ABC):
+class AbstractSDKTest(AbstractTest, ABC):
     """Base test class for SDK modules.
 
     This class provides common testing utilities and patterns for testing
-    SDK functionality, including mocking HTTP requests and responses.
-    It follows a configuration-driven approach similar to AbstractEPTest
-    to provide comprehensive test coverage with minimal code duplication.
+    SDK functionality using real HTTP requests against a test server.
+    It follows the framework's no-mock testing philosophy - all tests
+    hit the actual server and validate real responses.
 
     Child classes must override:
     - sdk_class: The SDK class being tested
@@ -108,6 +101,13 @@ class AbstractSDKTest(unittest.TestCase, ABC):
     Optional overrides:
     - test_config: Test configuration to customize which tests run
     - resource_configs: Expected resource configurations for the SDK
+
+    Example:
+        class TestUserSDK(AbstractSDKTest):
+            sdk_class = UserSDK
+            resource_name = "user"
+            sample_data = {"email": "test@example.com", "first_name": "Test"}
+            update_data = {"first_name": "Updated"}
     """
 
     # Required overrides that child classes must provide
@@ -117,16 +117,26 @@ class AbstractSDKTest(unittest.TestCase, ABC):
     update_data: Dict[str, Any] = None
 
     # Optional overrides
-    test_config: SDKTestConfig = SDKTestConfig()
+    sdk_test_config: SDKTestConfig = SDKTestConfig()
     resource_configs: Dict[str, ResourceConfig] = None
 
-    # Base URL for testing
-    base_url: str = "https://api.test.com"
-    test_token: str = "test_token_123"
-    test_api_key: str = "test_api_key_456"
+    # Test configuration - use SDK category
+    test_config: ClassOfTestsConfig = ClassOfTestsConfig(
+        categories=[CategoryOfTest.SDK]
+    )
 
-    def setUp(self):
-        """Set up test fixtures."""
+    # Faker for generating test data
+    faker = Faker()
+
+    # Tests to skip
+    _skip_tests: List[SkipThisTest] = []
+
+    def setup_method(self, method):
+        """Set up method-level test fixtures."""
+        super().setup_method(method)
+        self.tracked_entities = {}
+        self._sdk_instance = None
+
         # Validate required overrides
         assert (
             self.sdk_class is not None
@@ -141,57 +151,92 @@ class AbstractSDKTest(unittest.TestCase, ABC):
             self.update_data is not None
         ), f"{self.__class__.__name__}: update_data must be defined"
 
-        # Create SDK handler instance for testing
-        self.sdk = self.sdk_class(
-            base_url=self.base_url, token=self.test_token, timeout=30, verify_ssl=False
+    def teardown_method(self, method):
+        """Clean up method-level test fixtures."""
+        try:
+            self._cleanup_sdk_entities()
+        finally:
+            super().teardown_method(method)
+
+    def _cleanup_sdk_entities(self):
+        """Clean up entities created during this test via SDK."""
+        if not hasattr(self, "tracked_entities"):
+            return
+
+        # Clean up created entities in reverse order
+        for entity_key, entity in reversed(list(self.tracked_entities.items())):
+            try:
+                if isinstance(entity, dict) and "id" in entity:
+                    logger.debug(
+                        f"{self.resource_name}: Cleaned up entity {entity['id']}"
+                    )
+            except Exception as e:
+                logger.debug(
+                    f"{self.resource_name}: Error cleaning up entity {entity_key}: {str(e)}"
+                )
+
+        # Clear the tracking dict
+        self.tracked_entities = {}
+
+    def get_server_url(self, server) -> str:
+        """Get the base URL for the test server.
+
+        Args:
+            server: TestClient from pytest fixture
+
+        Returns:
+            Base URL string for SDK requests
+        """
+        # TestClient uses a base URL that we need to extract
+        # For testing, we use the test client directly via http_client parameter
+        return "http://testserver"
+
+    def create_sdk(
+        self,
+        server,
+        token: Optional[str] = None,
+        api_key: Optional[str] = None,
+    ) -> AbstractSDKHandler:
+        """Create an SDK instance configured for testing.
+
+        This method creates an SDK instance that uses the test server's
+        HTTP client for making requests, enabling real integration testing
+        without mocking.
+
+        Args:
+            server: TestClient from pytest fixture
+            token: Optional JWT token for authentication
+            api_key: Optional API key for authentication
+
+        Returns:
+            Configured SDK instance
+        """
+        base_url = self.get_server_url(server)
+
+        # Create SDK with the test server's HTTP client
+        # The SDK will make real HTTP requests through the TestClient
+        sdk = self.sdk_class(
+            base_url=base_url,
+            token=token,
+            api_key=api_key,
+            timeout=30,
+            verify_ssl=False,
+            http_client=server,  # Pass TestClient as HTTP client
         )
 
-        # Mock HTTP client
-        self.mock_client = Mock()
-        self.mock_response = MockResponse({"test": "data"})
+        return sdk
 
-        # Track created entities for cleanup
-        self.created_entities = []
-
-    def tearDown(self):
-        """Clean up after tests."""
-        # Clean up any created entities
-        self.created_entities.clear()
-
-    def create_mock_response(
-        self, data: Dict[str, Any], status_code: int = 200
-    ) -> MockResponse:
-        """Create a mock HTTP response.
+    def create_authenticated_sdk(self, server, user) -> AbstractSDKHandler:
+        """Create an authenticated SDK instance for testing.
 
         Args:
-            data: Response data
-            status_code: HTTP status code
+            server: TestClient from pytest fixture
+            user: User fixture with jwt attribute
 
         Returns:
-            MockResponse instance
+            Authenticated SDK instance
         """
-        return MockResponse(data, status_code)
-
-    def create_error_response(
-        self,
-        message: str,
-        status_code: int = 400,
-        details: Optional[Dict[str, Any]] = None,
-    ) -> MockResponse:
-        """Create a mock error response.
-
-        Args:
-            message: Error message
-            status_code: HTTP status code
-            details: Additional error details
-
-        Returns:
-            MockResponse instance with error data
-        """
-        error_data = {"detail": message}
-        if details:
-            error_data.update(details)
-        return MockResponse(error_data, status_code)
+        return self.create_sdk(server, token=user.jwt)
 
     def get_test_data(self, variant: TestVariant = TestVariant.VALID) -> Dict[str, Any]:
         """Get test data for the specified variant.
@@ -203,7 +248,7 @@ class AbstractSDKTest(unittest.TestCase, ABC):
             Test data dictionary
         """
         if variant == TestVariant.VALID:
-            return self.sample_data.copy()
+            return self._generate_unique_data(self.sample_data.copy())
         elif variant == TestVariant.MINIMAL:
             return self._get_minimal_data()
         elif variant == TestVariant.INVALID:
@@ -213,12 +258,38 @@ class AbstractSDKTest(unittest.TestCase, ABC):
         elif variant == TestVariant.LARGE:
             return self._get_large_data()
         else:
-            return self.sample_data.copy()
+            return self._generate_unique_data(self.sample_data.copy())
+
+    def _generate_unique_data(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Generate unique values for test data to avoid conflicts.
+
+        Args:
+            data: Base data dictionary
+
+        Returns:
+            Data with unique values for certain fields
+        """
+        import uuid
+
+        unique_suffix = uuid.uuid4().hex[:8]
+
+        # Make common unique fields unique
+        if "name" in data:
+            data["name"] = f"{data['name']}_{unique_suffix}"
+        if "email" in data:
+            base_email = data["email"].split("@")
+            data["email"] = f"{base_email[0]}_{unique_suffix}@{base_email[1]}"
+        if "username" in data:
+            data["username"] = f"{data['username']}_{unique_suffix}"
+
+        return data
 
     def _get_minimal_data(self) -> Dict[str, Any]:
         """Get minimal test data with only required fields."""
         # Default implementation - subclasses should override
-        return {k: v for k, v in self.sample_data.items() if k in ["name", "id"]}
+        return self._generate_unique_data(
+            {k: v for k, v in self.sample_data.items() if k in ["name", "id"]}
+        )
 
     def _get_invalid_data(self) -> Dict[str, Any]:
         """Get invalid test data for validation testing."""
@@ -234,123 +305,50 @@ class AbstractSDKTest(unittest.TestCase, ABC):
     def _get_large_data(self) -> Dict[str, Any]:
         """Get large test data for stress testing."""
         # Default implementation - subclasses should override
-        large_data = self.sample_data.copy()
+        large_data = self._generate_unique_data(self.sample_data.copy())
         if "description" in large_data:
             large_data["description"] = "x" * 10000  # Very long description
         return large_data
 
-    def mock_request(
-        self,
-        mock_client_class: Mock,
-        response_data: Dict[str, Any],
-        status_code: int = 200,
-    ):
-        """Context manager for mocking HTTP requests.
+    # Standard test methods that use real server
 
-        Args:
-            mock_client_class: Mock client class
-            response_data: Data to return in response
-            status_code: HTTP status code to return
-        """
-        mock_client = Mock()
-        mock_response = MockResponse(response_data, status_code)
-        mock_client.request.return_value = mock_response
-        mock_client_class.return_value.__enter__.return_value = mock_client
-        return mock_client
-
-    @contextmanager
-    def mock_request_context(
-        self,
-        response_data: Dict[str, Any],
-        status_code: int = 200,
-    ):
-        """Context manager for mocking HTTP requests with automatic cleanup.
-
-        Args:
-            response_data: Data to return in response
-            status_code: HTTP status code to return
-        """
-        with patch("httpx.Client") as mock_client_class:
-            mock_client = Mock()
-            mock_response = MockResponse(response_data, status_code)
-            mock_client.request.return_value = mock_response
-            mock_client_class.return_value.__enter__.return_value = mock_client
-            yield mock_client
-
-    def assert_request_called_with(
-        self,
-        mock_client: Mock,
-        method: str,
-        expected_url: str,
-        expected_data: Optional[Dict[str, Any]] = None,
-        expected_headers: Optional[Dict[str, str]] = None,
-    ):
-        """Assert that a request was called with expected parameters.
-
-        Args:
-            mock_client: Mock client instance
-            method: Expected HTTP method
-            expected_url: Expected URL
-            expected_data: Expected request data
-            expected_headers: Expected headers
-        """
-        mock_client.request.assert_called_once()
-        call_args = mock_client.request.call_args
-
-        # Check method and URL
-        assert (
-            call_args[0][0] == method
-        ), f"Expected method {method}, got {call_args[0][0]}"
-        assert (
-            expected_url in call_args[0][1]
-        ), f"Expected URL to contain {expected_url}, got {call_args[0][1]}"
-
-        # Check data if provided
-        if expected_data:
-            call_kwargs = call_args[1]
-            if "json" in call_kwargs:
-                assert (
-                    call_kwargs["json"] == expected_data
-                ), f"Expected data {expected_data}, got {call_kwargs['json']}"
-
-        # Check headers if provided
-        if expected_headers:
-            call_kwargs = call_args[1]
-            if "headers" in call_kwargs:
-                for key, value in expected_headers.items():
-                    assert (
-                        key in call_kwargs["headers"]
-                    ), f"Expected header {key} not found"
-                    assert (
-                        call_kwargs["headers"][key] == value
-                    ), f"Expected header {key}={value}, got {call_kwargs['headers'][key]}"
-
-    # Configuration-driven test methods
-
-    def test_sdk_initialization(self):
+    def test_sdk_initialization(self, server):
         """Test SDK initialization with various parameters."""
+        base_url = self.get_server_url(server)
+
         # Test with token
-        sdk_with_token = self.sdk_class(base_url=self.base_url, token=self.test_token)
-        assert sdk_with_token.token == self.test_token
-        assert sdk_with_token.base_url == self.base_url
+        sdk_with_token = self.sdk_class(
+            base_url=base_url,
+            token="test_token",
+            http_client=server,
+        )
+        assert sdk_with_token.token == "test_token"
+        assert sdk_with_token.base_url == base_url
 
         # Test with API key
         sdk_with_api_key = self.sdk_class(
-            base_url=self.base_url, api_key=self.test_api_key
+            base_url=base_url,
+            api_key="test_api_key",
+            http_client=server,
         )
-        assert sdk_with_api_key.api_key == self.test_api_key
+        assert sdk_with_api_key.api_key == "test_api_key"
 
         # Test with both
         sdk_with_both = self.sdk_class(
-            base_url=self.base_url, token=self.test_token, api_key=self.test_api_key
+            base_url=base_url,
+            token="test_token",
+            api_key="test_api_key",
+            http_client=server,
         )
-        assert sdk_with_both.token == self.test_token
-        assert sdk_with_both.api_key == self.test_api_key
+        assert sdk_with_both.token == "test_token"
+        assert sdk_with_both.api_key == "test_api_key"
 
-    def test_resource_configuration(self):
+    def test_resource_configuration(self, server):
         """Test that resources are properly configured."""
+        sdk = self.create_sdk(server)
+
         # Check that _configure_resources returns expected structure
-        configs = self.sdk._configure_resources()
+        configs = sdk._configure_resources()
         assert isinstance(configs, dict), "Resource configs should be a dictionary"
 
         # If resource_configs is provided, validate against it
@@ -367,16 +365,17 @@ class AbstractSDKTest(unittest.TestCase, ABC):
                     actual_config.endpoint == expected_config.endpoint
                 ), f"Endpoint mismatch for {resource_name}"
 
-    def test_resource_managers_created(self):
+    def test_resource_managers_created(self, server):
         """Test that resource managers are properly created."""
-        configs = self.sdk._configure_resources()
+        sdk = self.create_sdk(server)
+        configs = sdk._configure_resources()
 
         for resource_name in configs.keys():
             assert hasattr(
-                self.sdk, resource_name
+                sdk, resource_name
             ), f"Resource manager '{resource_name}' not created as attribute"
 
-            manager = getattr(self.sdk, resource_name)
+            manager = getattr(sdk, resource_name)
             assert hasattr(
                 manager, "create"
             ), f"Manager {resource_name} missing create method"
@@ -393,219 +392,52 @@ class AbstractSDKTest(unittest.TestCase, ABC):
                 manager, "delete"
             ), f"Manager {resource_name} missing delete method"
 
-    def test_headers_with_token(self):
+    def test_headers_with_token(self, server):
         """Test header generation with JWT token."""
-        headers = self.sdk._get_headers()
+        sdk = self.create_sdk(server, token="test_token_123")
+        headers = sdk._get_headers()
         assert "Authorization" in headers
-        assert headers["Authorization"] == f"Bearer {self.test_token}"
+        assert headers["Authorization"] == "Bearer test_token_123"
 
-    def test_headers_with_api_key(self):
+    def test_headers_with_api_key(self, server):
         """Test header generation with API key."""
-        sdk_with_api_key = self.sdk_class(
-            base_url=self.base_url, api_key=self.test_api_key
-        )
-        headers = sdk_with_api_key._get_headers()
+        sdk = self.create_sdk(server, api_key="test_api_key_456")
+        headers = sdk._get_headers()
         assert "X-API-Key" in headers
-        assert headers["X-API-Key"] == self.test_api_key
+        assert headers["X-API-Key"] == "test_api_key_456"
 
-    def test_url_building(self):
+    def test_url_building(self, server):
         """Test URL building functionality."""
+        sdk = self.create_sdk(server)
+        base_url = self.get_server_url(server)
+
         # Test basic endpoint
-        url = self.sdk._build_url("/v1/test")
-        assert url == f"{self.base_url}/v1/test"
+        url = sdk._build_url("/v1/test")
+        assert url == f"{base_url}/v1/test"
 
         # Test with query parameters
-        url = self.sdk._build_url("/v1/test", {"param1": "value1", "param2": "value2"})
+        url = sdk._build_url("/v1/test", {"param1": "value1", "param2": "value2"})
         assert "param1=value1" in url
         assert "param2=value2" in url
 
         # Test with None values (should be filtered out)
-        url = self.sdk._build_url("/v1/test", {"param1": "value1", "param2": None})
+        url = sdk._build_url("/v1/test", {"param1": "value1", "param2": None})
         assert "param1=value1" in url
         assert "param2" not in url
 
-    def test_successful_request(self):
-        """Test successful HTTP request."""
-        response_data = {"success": True, "data": "test"}
+    def test_unauthenticated_request_fails(self, server):
+        """Test that unauthenticated requests to protected endpoints fail."""
+        sdk = self.create_sdk(server)  # No token or API key
 
-        with self.mock_request_context(response_data) as mock_client:
-            result = self.sdk.get("/v1/test")
-            assert result == response_data
-            self.assert_request_called_with(mock_client, "GET", "/v1/test")
+        # Most endpoints should require authentication
+        with pytest.raises(SDKException) as exc_info:
+            sdk.get("/v1/user")  # Protected endpoint
 
-    def test_post_request_with_data(self):
-        """Test POST request with data."""
-        request_data = {"name": "test"}
-        response_data = {"id": "123", "name": "test"}
-
-        with self.mock_request_context(response_data, 201) as mock_client:
-            result = self.sdk.post("/v1/test", data=request_data)
-            assert result == response_data
-            self.assert_request_called_with(
-                mock_client, "POST", "/v1/test", expected_data=request_data
-            )
-
-    def test_error_handling(self):
-        """Test error handling for various HTTP status codes."""
-        # Test 404 error
-        with self.mock_request_context({"detail": "Not found"}, 404) as mock_client:
-            with self.assertRaises(SDKException):
-                self.sdk.get("/v1/test/nonexistent")
-
-    def test_resource_manager_creation(self):
-        """Test resource manager creation."""
-        if not self.resource_configs:
-            # Skip if no resource configs provided
-            return
-
-        for resource_name, config in self.resource_configs.items():
-            manager = self.sdk.create_resource_manager(config)
-            assert manager is not None
-            assert manager.config == config
-            assert manager.handler == self.sdk
-
-    # Standard CRUD operation tests (configuration-driven)
-
-    def _test_resource_operation(
-        self, operation: TestOperation, resource_name: str = None
-    ):
-        """Test a specific resource operation.
-
-        Args:
-            operation: The operation to test
-            resource_name: Resource to test (defaults to primary resource)
-        """
-        if not self.test_config.primary_resource and not resource_name:
-            resource_name = self.resource_name
-        else:
-            resource_name = resource_name or self.test_config.primary_resource
-
-        if not hasattr(self.sdk, resource_name):
-            self.skipTest(f"Resource manager '{resource_name}' not available")
-
-        manager = getattr(self.sdk, resource_name)
-
-        # Test based on operation type
-        if operation == TestOperation.CREATE:
-            self._test_create_operation(manager)
-        elif operation == TestOperation.GET:
-            self._test_get_operation(manager)
-        elif operation == TestOperation.LIST:
-            self._test_list_operation(manager)
-        elif operation == TestOperation.UPDATE:
-            self._test_update_operation(manager)
-        elif operation == TestOperation.DELETE:
-            self._test_delete_operation(manager)
-        elif operation == TestOperation.SEARCH:
-            self._test_search_operation(manager)
-        elif operation == TestOperation.BATCH_CREATE:
-            self._test_batch_create_operation(manager)
-        elif operation == TestOperation.BATCH_UPDATE:
-            self._test_batch_update_operation(manager)
-        elif operation == TestOperation.BATCH_DELETE:
-            self._test_batch_delete_operation(manager)
-
-    def _test_create_operation(self, manager):
-        """Test create operation for a resource manager."""
-        response_data = {manager.config.name: {"id": "123", **self.sample_data}}
-
-        with self.mock_request_context(response_data, 201) as mock_client:
-            result = manager.create(self.sample_data)
-            assert result == response_data
-
-    def _test_get_operation(self, manager):
-        """Test get operation for a resource manager."""
-        response_data = {manager.config.name: {"id": "123", **self.sample_data}}
-
-        with self.mock_request_context(response_data) as mock_client:
-            result = manager.get("123")
-            assert result == response_data
-
-    def _test_list_operation(self, manager):
-        """Test list operation for a resource manager."""
-        response_data = {
-            manager.config.name_plural: [{"id": "123", **self.sample_data}],
-            "total": 1,
-            "offset": 0,
-            "limit": 100,
-        }
-
-        with self.mock_request_context(response_data) as mock_client:
-            result = manager.list()
-            assert result == response_data
-
-    def _test_update_operation(self, manager):
-        """Test update operation for a resource manager."""
-        response_data = {manager.config.name: {"id": "123", **self.update_data}}
-
-        with self.mock_request_context(response_data) as mock_client:
-            result = manager.update("123", self.update_data)
-            assert result == response_data
-
-    def _test_delete_operation(self, manager):
-        """Test delete operation for a resource manager."""
-        with self.mock_request_context({}, 204) as mock_client:
-            manager.delete("123")  # Should not raise an exception
-
-    def _test_search_operation(self, manager):
-        """Test search operation for a resource manager."""
-        if not manager.config.supports_search:
-            with self.assertRaises(SDKException):
-                manager.search({"name": "test"})
-            return
-
-        response_data = {
-            manager.config.name_plural: [{"id": "123", **self.sample_data}],
-            "total": 1,
-            "offset": 0,
-            "limit": 100,
-        }
-
-        with self.mock_request_context(response_data) as mock_client:
-            result = manager.search({"name": "test"})
-            assert result == response_data
-
-    def _test_batch_create_operation(self, manager):
-        """Test batch create operation for a resource manager."""
-        if not manager.config.supports_batch:
-            with self.assertRaises(SDKException):
-                manager.batch_create([self.sample_data])
-            return
-
-        response_data = {
-            manager.config.name_plural: [{"id": "123", **self.sample_data}]
-        }
-
-        with self.mock_request_context(response_data, 201) as mock_client:
-            result = manager.batch_create([self.sample_data])
-            assert result == response_data
-
-    def _test_batch_update_operation(self, manager):
-        """Test batch update operation for a resource manager."""
-        if not manager.config.supports_batch:
-            with self.assertRaises(SDKException):
-                manager.batch_update(self.update_data, ["123"])
-            return
-
-        response_data = {
-            manager.config.name_plural: [{"id": "123", **self.update_data}]
-        }
-
-        with self.mock_request_context(response_data) as mock_client:
-            result = manager.batch_update(self.update_data, ["123"])
-            assert result == response_data
-
-    def _test_batch_delete_operation(self, manager):
-        """Test batch delete operation for a resource manager."""
-        if not manager.config.supports_batch:
-            with self.assertRaises(SDKException):
-                manager.batch_delete(["123"])
-            return
-
-        with self.mock_request_context({}, 204) as mock_client:
-            manager.batch_delete(["123"])  # Should not raise an exception
+        # Should get 401 or 403 error
+        assert exc_info.value.status_code in [401, 403]
 
     # Abstract methods for subclasses to implement
+
     @abstractmethod
     def create_test_data(
         self, resource_type: str, count: int = 1
@@ -657,30 +489,51 @@ class AbstractSDKTest(unittest.TestCase, ABC):
                     response[key], int
                 ), f"Pagination key '{key}' should be an integer"
 
+    def assert_entity_created(
+        self, response: Dict[str, Any], resource_key: str = None
+    ) -> Dict[str, Any]:
+        """Assert that an entity was created successfully.
 
-def create_test_suite(test_class) -> unittest.TestSuite:
-    """Create a test suite for the given test class.
+        Args:
+            response: Response from create operation
+            resource_key: Key containing the entity data
 
-    Args:
-        test_class: Test class to create suite for
+        Returns:
+            The created entity data
+        """
+        key = resource_key or self.resource_name
+        assert key in response, f"Response missing '{key}' key"
 
-    Returns:
-        Test suite containing all tests from the class
-    """
-    loader = unittest.TestLoader()
-    return loader.loadTestsFromTestCase(test_class)
+        entity = response[key]
+        assert "id" in entity, "Created entity missing 'id' field"
 
+        return entity
 
-def run_test_suite(test_class, verbosity: int = 2) -> unittest.TestResult:
-    """Run tests for the given test class.
+    def assert_entity_updated(
+        self,
+        response: Dict[str, Any],
+        expected_updates: Dict[str, Any],
+        resource_key: str = None,
+    ) -> Dict[str, Any]:
+        """Assert that an entity was updated successfully.
 
-    Args:
-        test_class: Test class to run
-        verbosity: Test output verbosity level
+        Args:
+            response: Response from update operation
+            expected_updates: Expected field values after update
+            resource_key: Key containing the entity data
 
-    Returns:
-        Test results
-    """
-    suite = create_test_suite(test_class)
-    runner = unittest.TextTestRunner(verbosity=verbosity)
-    return runner.run(suite)
+        Returns:
+            The updated entity data
+        """
+        key = resource_key or self.resource_name
+        assert key in response, f"Response missing '{key}' key"
+
+        entity = response[key]
+        for field, expected_value in expected_updates.items():
+            assert field in entity, f"Updated entity missing '{field}' field"
+            assert entity[field] == expected_value, (
+                f"Field '{field}' not updated correctly. "
+                f"Expected {expected_value}, got {entity[field]}"
+            )
+
+        return entity

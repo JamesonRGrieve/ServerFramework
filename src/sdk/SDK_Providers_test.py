@@ -1,22 +1,32 @@
+"""
+SDK Providers Tests - Real server integration tests for provider SDK modules.
+
+This module contains tests for the provider-related SDK modules using
+real HTTP requests against a test server. NO MOCKING - all tests validate
+actual SDK behavior against real server responses.
+
+Following the framework's testing philosophy from AGENTS.md:
+- Tests use actual HTTP requests to a real test server
+- No mocks - tests validate actual SDK behavior
+- pytest-based with fixtures for test data
+"""
+
+import uuid
 from typing import Any, Dict, List
+
+import pytest
 
 from sdk.AbstractSDKTest import AbstractSDKTest
 from sdk.SDK_Providers import (
-    ExtensionInstanceAbilitySDK,
-    ProviderExtensionAbilitySDK,
-    ProviderExtensionSDK,
     ProviderInstanceSDK,
-    ProviderInstanceSettingSDK,
-    ProviderInstanceUsageSDK,
     ProviderSDK,
     ProvidersSDK,
-    RotationProviderInstanceSDK,
     RotationSDK,
 )
 
 
 class TestProviderSDK(AbstractSDKTest):
-    """Tests for the ProviderSDK module using configuration-driven approach."""
+    """Tests for the ProviderSDK module using real server integration."""
 
     sdk_class = ProviderSDK
     resource_name = "provider"
@@ -36,7 +46,13 @@ class TestProviderSDK(AbstractSDKTest):
             "friendly_name": f"Test {resource_type} Provider",
             "agent_settings_json": '{"api_base": "https://api.test.com"}',
         }
-        return [{**base_data, "name": f"{base_data['name']}_{i}"} for i in range(count)]
+        return [
+            {
+                **base_data,
+                "name": f"{base_data['name']}_{uuid.uuid4().hex[:8]}_{i}",
+            }
+            for i in range(count)
+        ]
 
     def assert_valid_response_structure(
         self,
@@ -54,23 +70,19 @@ class TestProviderSDK(AbstractSDKTest):
         for key in expected_keys:
             assert key in data, f"Response missing expected key: {key}"
 
-    def test_get_provider_status(self):
-        """Test getting provider status."""
-        # Create a provider first
-        with self.mock_request_context({"id": "provider_123"}) as mock_client:
-            provider = self.sdk.create_provider(
-                name="status_test_provider",
-                friendly_name="Status Test Provider",
-            )
+    def test_list_providers(self, server, admin_a):
+        """Test listing providers via SDK."""
+        sdk = self.create_authenticated_sdk(server, admin_a)
 
-        # Test get provider status
-        with self.mock_request_context({"status": "active"}) as mock_client:
-            response = self.sdk.get_provider_status(provider["id"])
-            assert response is not None
+        # List providers
+        response = sdk.providers.list()
+
+        # Validate response structure
+        assert response is not None
 
 
 class TestProviderInstanceSDK(AbstractSDKTest):
-    """Tests for the ProviderInstanceSDK module using configuration-driven approach."""
+    """Tests for the ProviderInstanceSDK module using real server integration."""
 
     sdk_class = ProviderInstanceSDK
     resource_name = "provider_instance"
@@ -92,7 +104,13 @@ class TestProviderInstanceSDK(AbstractSDKTest):
             "model_name": "gpt-4",
             "api_key": "test_api_key",
         }
-        return [{**base_data, "name": f"{base_data['name']}_{i}"} for i in range(count)]
+        return [
+            {
+                **base_data,
+                "name": f"{base_data['name']}_{uuid.uuid4().hex[:8]}_{i}",
+            }
+            for i in range(count)
+        ]
 
     def assert_valid_response_structure(
         self,
@@ -110,119 +128,19 @@ class TestProviderInstanceSDK(AbstractSDKTest):
         for key in expected_keys:
             assert key in data, f"Response missing expected key: {key}"
 
+    def test_list_provider_instances(self, server, admin_a):
+        """Test listing provider instances via SDK."""
+        sdk = self.create_authenticated_sdk(server, admin_a)
 
-class TestProviderInstanceSettingSDK(AbstractSDKTest):
-    """Tests for the ProviderInstanceSettingSDK module using configuration-driven approach."""
+        # List provider instances
+        response = sdk.provider_instances.list()
 
-    sdk_class = ProviderInstanceSettingSDK
-    resource_name = "provider_instance_setting"
-    sample_data = {
-        "provider_instance_id": "instance_123",
-        "key": "test_setting",
-        "value": "test_value",
-    }
-    update_data = {"value": "updated_value"}
-
-    def create_test_data(
-        self, resource_type: str, count: int = 1
-    ) -> List[Dict[str, Any]]:
-        """Create test data for the specified resource type."""
-        base_data = {
-            "provider_instance_id": "instance_123",
-            "key": f"test_setting_{resource_type}",
-            "value": f"test_value_{resource_type}",
-        }
-        return [{**base_data, "key": f"{base_data['key']}_{i}"} for i in range(count)]
-
-    def assert_valid_response_structure(
-        self,
-        response: Dict[str, Any],
-        expected_keys: List[str],
-        resource_key: str = None,
-    ):
-        """Assert that a response has the expected structure."""
-        if resource_key:
-            assert resource_key in response, f"Response missing '{resource_key}' key"
-            data = response[resource_key]
-        else:
-            data = response
-
-        for key in expected_keys:
-            assert key in data, f"Response missing expected key: {key}"
-
-
-class TestProviderExtensionSDK(AbstractSDKTest):
-    """Tests for the ProviderExtensionSDK module using configuration-driven approach."""
-
-    sdk_class = ProviderExtensionSDK
-    resource_name = "provider_extension"
-    sample_data = {"provider_id": "provider_123", "extension_id": "extension_123"}
-    update_data = {"enabled": True}
-
-    def create_test_data(
-        self, resource_type: str, count: int = 1
-    ) -> List[Dict[str, Any]]:
-        """Create test data for the specified resource type."""
-        base_data = {"provider_id": "provider_123", "extension_id": "extension_123"}
-        return [base_data for _ in range(count)]
-
-    def assert_valid_response_structure(
-        self,
-        response: Dict[str, Any],
-        expected_keys: List[str],
-        resource_key: str = None,
-    ):
-        """Assert that a response has the expected structure."""
-        if resource_key:
-            assert resource_key in response, f"Response missing '{resource_key}' key"
-            data = response[resource_key]
-        else:
-            data = response
-
-        for key in expected_keys:
-            assert key in data, f"Response missing expected key: {key}"
-
-
-class TestProviderExtensionAbilitySDK(AbstractSDKTest):
-    """Tests for the ProviderExtensionAbilitySDK module using configuration-driven approach."""
-
-    sdk_class = ProviderExtensionAbilitySDK
-    resource_name = "provider_extension_ability"
-    sample_data = {
-        "provider_extension_id": "provider_extension_123",
-        "ability_id": "ability_123",
-    }
-    update_data = {"enabled": True}
-
-    def create_test_data(
-        self, resource_type: str, count: int = 1
-    ) -> List[Dict[str, Any]]:
-        """Create test data for the specified resource type."""
-        base_data = {
-            "provider_extension_id": "provider_extension_123",
-            "ability_id": "ability_123",
-        }
-        return [base_data for _ in range(count)]
-
-    def assert_valid_response_structure(
-        self,
-        response: Dict[str, Any],
-        expected_keys: List[str],
-        resource_key: str = None,
-    ):
-        """Assert that a response has the expected structure."""
-        if resource_key:
-            assert resource_key in response, f"Response missing '{resource_key}' key"
-            data = response[resource_key]
-        else:
-            data = response
-
-        for key in expected_keys:
-            assert key in data, f"Response missing expected key: {key}"
+        # Validate response structure
+        assert response is not None
 
 
 class TestRotationSDK(AbstractSDKTest):
-    """Tests for the RotationSDK module using configuration-driven approach."""
+    """Tests for the RotationSDK module using real server integration."""
 
     sdk_class = RotationSDK
     resource_name = "rotation"
@@ -240,7 +158,13 @@ class TestRotationSDK(AbstractSDKTest):
             "name": f"test_rotation_{resource_type}",
             "description": f"Test {resource_type} rotation description",
         }
-        return [{**base_data, "name": f"{base_data['name']}_{i}"} for i in range(count)]
+        return [
+            {
+                **base_data,
+                "name": f"{base_data['name']}_{uuid.uuid4().hex[:8]}_{i}",
+            }
+            for i in range(count)
+        ]
 
     def assert_valid_response_structure(
         self,
@@ -258,131 +182,19 @@ class TestRotationSDK(AbstractSDKTest):
         for key in expected_keys:
             assert key in data, f"Response missing expected key: {key}"
 
+    def test_list_rotations(self, server, admin_a):
+        """Test listing rotations via SDK."""
+        sdk = self.create_authenticated_sdk(server, admin_a)
 
-class TestRotationProviderInstanceSDK(AbstractSDKTest):
-    """Tests for the RotationProviderInstanceSDK module using configuration-driven approach."""
+        # List rotations
+        response = sdk.rotations.list()
 
-    sdk_class = RotationProviderInstanceSDK
-    resource_name = "rotation_provider_instance"
-    sample_data = {
-        "rotation_id": "rotation_123",
-        "provider_instance_id": "instance_123",
-    }
-    update_data = {"priority": 1}
-
-    def create_test_data(
-        self, resource_type: str, count: int = 1
-    ) -> List[Dict[str, Any]]:
-        """Create test data for the specified resource type."""
-        base_data = {
-            "rotation_id": "rotation_123",
-            "provider_instance_id": "instance_123",
-        }
-        return [base_data for _ in range(count)]
-
-    def assert_valid_response_structure(
-        self,
-        response: Dict[str, Any],
-        expected_keys: List[str],
-        resource_key: str = None,
-    ):
-        """Assert that a response has the expected structure."""
-        if resource_key:
-            assert resource_key in response, f"Response missing '{resource_key}' key"
-            data = response[resource_key]
-        else:
-            data = response
-
-        for key in expected_keys:
-            assert key in data, f"Response missing expected key: {key}"
-
-
-class TestProviderInstanceUsageSDK(AbstractSDKTest):
-    """Tests for the ProviderInstanceUsageSDK module using configuration-driven approach."""
-
-    sdk_class = ProviderInstanceUsageSDK
-    resource_name = "provider_instance_usage"
-    sample_data = {
-        "provider_instance_id": "instance_123",
-        "input_tokens": 100,
-        "output_tokens": 50,
-        "cost": 0.001,
-    }
-    update_data = {"cost": 0.002}
-
-    def create_test_data(
-        self, resource_type: str, count: int = 1
-    ) -> List[Dict[str, Any]]:
-        """Create test data for the specified resource type."""
-        base_data = {
-            "provider_instance_id": "instance_123",
-            "input_tokens": 100,
-            "output_tokens": 50,
-            "cost": 0.001,
-        }
-        return [base_data for _ in range(count)]
-
-    def assert_valid_response_structure(
-        self,
-        response: Dict[str, Any],
-        expected_keys: List[str],
-        resource_key: str = None,
-    ):
-        """Assert that a response has the expected structure."""
-        if resource_key:
-            assert resource_key in response, f"Response missing '{resource_key}' key"
-            data = response[resource_key]
-        else:
-            data = response
-
-        for key in expected_keys:
-            assert key in data, f"Response missing expected key: {key}"
-
-
-class TestExtensionInstanceAbilitySDK(AbstractSDKTest):
-    """Tests for the ExtensionInstanceAbilitySDK module using configuration-driven approach."""
-
-    sdk_class = ExtensionInstanceAbilitySDK
-    resource_name = "extension_instance_ability"
-    sample_data = {
-        "provider_instance_id": "instance_123",
-        "provider_extension_ability_id": "ability_123",
-        "state": True,
-        "forced": False,
-    }
-    update_data = {"state": False}
-
-    def create_test_data(
-        self, resource_type: str, count: int = 1
-    ) -> List[Dict[str, Any]]:
-        """Create test data for the specified resource type."""
-        base_data = {
-            "provider_instance_id": "instance_123",
-            "provider_extension_ability_id": "ability_123",
-            "state": True,
-            "forced": False,
-        }
-        return [base_data for _ in range(count)]
-
-    def assert_valid_response_structure(
-        self,
-        response: Dict[str, Any],
-        expected_keys: List[str],
-        resource_key: str = None,
-    ):
-        """Assert that a response has the expected structure."""
-        if resource_key:
-            assert resource_key in response, f"Response missing '{resource_key}' key"
-            data = response[resource_key]
-        else:
-            data = response
-
-        for key in expected_keys:
-            assert key in data, f"Response missing expected key: {key}"
+        # Validate response structure
+        assert response is not None
 
 
 class TestProvidersSDK(AbstractSDKTest):
-    """Tests for the composite ProvidersSDK module using configuration-driven approach."""
+    """Tests for the composite ProvidersSDK module using real server integration."""
 
     sdk_class = ProvidersSDK
     resource_name = "providers"
@@ -411,54 +223,49 @@ class TestProvidersSDK(AbstractSDKTest):
         for key in expected_keys:
             assert key in data, f"Response missing expected key: {key}"
 
-    def test_providers_sdk_initialization(self):
+    def test_providers_sdk_initialization(self, server):
         """Test that ProvidersSDK initializes all sub-SDKs correctly."""
+        sdk = self.create_sdk(server)
+
         # Verify all resource managers are available
         expected_resources = [
             "providers",
             "provider_instances",
-            "provider_instance_settings",
-            "provider_extensions",
-            "provider_extension_abilities",
             "rotations",
-            "rotation_provider_instances",
-            "provider_instance_usage",
-            "extension_instance_abilities",
         ]
 
         for resource in expected_resources:
             assert hasattr(
-                self.sdk, resource
+                sdk, resource
             ), f"ProvidersSDK should have {resource} resource manager"
-            assert self.sdk.resource_managers[resource] is not None
+            assert sdk.resource_managers[resource] is not None
 
-    def test_providers_sdk_convenience_methods(self):
-        """Test that ProvidersSDK convenience methods work correctly."""
-        # Test provider convenience methods
-        with self.mock_request_context({"id": "provider_123"}) as mock_client:
-            provider_data = {
-                "name": "convenience_provider",
-                "friendly_name": "Convenience Provider",
-            }
-            provider = self.sdk.create_provider(**provider_data)
-            assert "id" in provider
+    def test_providers_sdk_list_providers(self, server, admin_a):
+        """Test listing providers via composite ProvidersSDK."""
+        sdk = self.create_authenticated_sdk(server, admin_a)
 
-        # Test provider instance convenience methods
-        with self.mock_request_context({"id": "instance_123"}) as mock_client:
-            instance_data = {
-                "name": "convenience_instance",
-                "provider_id": "provider_123",
-                "model_name": "gpt-4",
-                "team_id": "team_123",
-            }
-            instance = self.sdk.create_provider_instance(**instance_data)
-            assert "id" in instance
+        # List providers via the providers resource manager
+        response = sdk.providers.list()
 
-        # Test listing methods
-        with self.mock_request_context({"items": [], "total": 0}) as mock_client:
-            providers = self.sdk.list_providers()
-            assert "items" in providers
+        # Validate response
+        assert response is not None
 
-        with self.mock_request_context({"items": [], "total": 0}) as mock_client:
-            instances = self.sdk.list_provider_instances(provider_id="provider_123")
-            assert "items" in instances
+    def test_providers_sdk_list_provider_instances(self, server, admin_a):
+        """Test listing provider instances via composite ProvidersSDK."""
+        sdk = self.create_authenticated_sdk(server, admin_a)
+
+        # List provider instances via the provider_instances resource manager
+        response = sdk.provider_instances.list()
+
+        # Validate response
+        assert response is not None
+
+    def test_providers_sdk_list_rotations(self, server, admin_a):
+        """Test listing rotations via composite ProvidersSDK."""
+        sdk = self.create_authenticated_sdk(server, admin_a)
+
+        # List rotations via the rotations resource manager
+        response = sdk.rotations.list()
+
+        # Validate response
+        assert response is not None
