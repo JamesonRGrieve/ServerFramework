@@ -3081,9 +3081,13 @@ class RoleManager(AbstractBLLManager, RouterMixin):
             )
 
         # Handle both dict and object access patterns (dict when fields is specified)
-        created_by_user_id = role.get("created_by_user_id") if isinstance(role, dict) else role.created_by_user_id
+        created_by_user_id = (
+            role.get("created_by_user_id")
+            if isinstance(role, dict)
+            else role.created_by_user_id
+        )
         team_id = role.get("team_id") if isinstance(role, dict) else role.team_id
-        
+
         if created_by_user_id != self.requester.id:
             # Business logic validation: if accessing a team-specific role, validate team membership
             if team_id:
@@ -3372,7 +3376,7 @@ class UserTeamManager(AbstractBLLManager, RouterMixin):
     ) -> Any:
         """Get a user with optional included relationships."""
         options = []
-        
+
         fields = self.validate_fields(fields)
         # TODO Move generate_joins to AbstractDatabaseEntity.py
         if include:
@@ -4256,7 +4260,7 @@ class InvitationManager(AbstractBLLManager, RouterMixin):
 
         fields = self.validate_fields(fields)
         include_list = self.validate_includes(include)
-        
+
         if include_list:
             options = self.generate_joins(self.DB, include_list)
 
