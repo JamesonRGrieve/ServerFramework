@@ -182,56 +182,29 @@ class PRV_MyProvider_MyExtension(EXT_MyExtension.AbstractProvider):
 ## Provider Rotation System
 
 ### Rotation Algorithm
-The Provider Rotation System implements a hierarchical rotation strategy that progresses through provider instances based on their parentage tree:
+Hierarchical failover: tries root providers (`parent_id=None`), then progresses down hierarchy breadth-first until success or exhaustion.
 
-**Rotation Flow:**
-1. Start with root-level rotation providers (where `parent_id=None`)
-2. Attempt operation with first root provider
-3. On failure, rotate to next root provider
-4. Once all root providers exhausted, progress down parentage tree
-5. Try child providers of failed root providers
-6. Continue recursively through the hierarchy until success or exhaustion
+**Flow:**
+1. Try root providers first
+2. On failure, try their children
+3. Continue recursively until success/exhaustion
 
-**Implementation Details:**
-- Rotation providers are ordered via `_get_ordered_rotation_provider_instances()` (src/logic/BLL_Providers.py:1063-1118)
-- Algorithm prioritizes providers without parents first (parentless rotation providers)
-- After exhausting root providers, progresses to their children
-- Uses breadth-first traversal through the provider hierarchy
-- Each provider instance is tried once per rotation cycle
-- Operation succeeds if any provider in the hierarchy completes successfully
-- Operation fails only when all providers in the hierarchy have been exhausted
+**Implementation:** `_get_ordered_rotation_provider_instances()` (src/logic/BLL_Providers.py:1063-1118)
 
-**Rotation Manager Usage:**
+**Usage:**
 ```python
-# Access extension's root rotation manager
-payment_root = EXT_Payment.root
-
-if payment_root:
-    # Rotate through provider hierarchy until success
-    result = payment_root.rotate(
-        lambda instance: instance.create_customer(
-            email="user@example.com",
-            name="John Doe"
-        )
-    )
-
-    if result.get('success'):
-        # Operation succeeded with one of the providers
-        customer_data = result.get('data')
-    else:
-        # All providers in hierarchy failed
-        error = result.get('error')
+result = EXT_Payment.root.rotate(
+    lambda instance: instance.create_customer(email="user@example.com")
+)
+if result.get('success'):
+    customer_data = result['data']
 ```
 
-**Provider Hierarchy Example:**
+**Example Hierarchy:**
 ```
-Root Provider A (parent_id=None)
-├── Child Provider A1 (parent_id=A)
-└── Child Provider A2 (parent_id=A)
-
-Root Provider B (parent_id=None)
-├── Child Provider B1 (parent_id=B)
-└── Child Provider B2 (parent_id=B)
+Root A (parent_id=None)       Root B (parent_id=None)
+├── Child A1                  ├── Child B1
+└── Child A2                  └── Child B2
 
 Rotation Order: A → B → A1 → A2 → B1 → B2
 ```

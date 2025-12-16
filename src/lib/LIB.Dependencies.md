@@ -162,44 +162,31 @@ Automated resolution of dependency conflicts with intelligent priority assignmen
 Seamless integration with the extension system for dependency discovery and resolution.
 
 #### Extension Loading
-Extensions are loaded based on the `APP_EXTENSIONS` environment variable and their dependencies. The loading process follows a strict dependency order:
-
-**Loading Process:**
-1. Parse `APP_EXTENSIONS` CSV to get requested extensions
-2. Discover and validate dependencies for each extension
-3. Resolve loading order using topological sort
+Extensions load based on `APP_EXTENSIONS` environment variable:
+1. Parse CSV list of requested extensions
+2. Validate dependencies for each
+3. Resolve load order (topological sort)
 4. Load extensions in dependency order
-5. Register models, abilities, and hooks
+5. Register models, abilities, hooks
 
-**Dependency Resolution:**
-- Required extension dependencies must be satisfied
-- Optional extension dependencies can be missing without failure
-- Circular dependencies are detected and cause graceful failure
-- Missing required dependencies cause graceful failure
+**Rules:**
+- Required dependencies must exist
+- Optional dependencies can be missing
+- Circular dependencies → graceful failure
+- Missing required dependencies → graceful failure
 
-#### Graceful Failure Handling
-When an extension or its dependencies fail to load, the server should gracefully fail with clear error information:
+#### Graceful Failure
+Server halts on extension load failure with:
+- Extension name causing failure
+- Missing/problematic dependencies
+- Actionable resolution steps
 
-**Failure Conditions:**
-- Missing required extension dependencies
-- Missing required system or pip dependencies
-- Circular dependency chains
-- Import errors during extension loading
-- Model registration conflicts
-
-**Failure Behavior:**
-- Server startup halts with clear error message
-- Identifies the specific extension causing the failure
-- Lists missing or problematic dependencies
-- Provides actionable resolution steps
-- Logs detailed error information for debugging
-
-**Error Message Format:**
+**Example error:**
 ```
-Failed to load extension '{extension_name}':
-  - Missing required extension dependency: {dep_name}
-  - Missing system dependency: {sys_dep}
-  - Circular dependency detected: {chain}
+Failed to load extension 'my_extension':
+  - Missing extension dependency: other_extension
+  - Missing system dependency: postgresql
+  - Circular dependency: ext_a → ext_b → ext_a
 ```
 
 ### Testing Integration
@@ -211,20 +198,16 @@ Integration with the environment management system for configuration and validat
 ## Known Installation Issues
 
 ### pytest-dependency and stringcase
-These packages may fail to build wheels on systems with setuptools >= 58 due to deprecated `install_layout` attribute.
+Fail to build wheels on setuptools >= 58 due to deprecated `install_layout` attribute.
 
-**Issue:**
-- Error: `AttributeError: install_layout. Did you mean: 'install_platlib'?`
-- Affects: pytest-dependency, stringcase
-- Cause: Legacy setup.py incompatibility with modern setuptools
+**Error:** `AttributeError: install_layout`
 
 **Workarounds:**
-1. Use prebuilt wheels (default pip behavior): `pip install pytest-dependency stringcase`
-2. Use older setuptools in virtual environment: `pip install 'setuptools<58'` (before installing packages)
-3. Install from alternative sources if packages are critical
-4. Consider alternative packages if available
+1. Use prebuilt wheels: `pip install pytest-dependency stringcase`
+2. Downgrade setuptools in venv: `pip install 'setuptools<58'` before installing packages
+3. Find alternative packages
 
-**Note:** The framework specifies `setuptools<58` in requirements.txt to avoid this issue, but system-managed Python installations may have newer setuptools that cannot be downgraded.
+**Note:** Framework specifies `setuptools<58` in requirements.txt, but system Python may have newer versions that can't be downgraded.
 
 ## Best Practices
 

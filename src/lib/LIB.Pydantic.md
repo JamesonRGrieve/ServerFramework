@@ -46,53 +46,29 @@ Encapsulated model management system for application-specific model sets with is
 - GraphQL schema creation
 
 ### SQLAlchemy Model Generation Timing
-SQLAlchemy models are automatically generated from Pydantic models at **boot time** during the server initialization process:
+SQLAlchemy models auto-generated from Pydantic models at **boot time** via `create_sqlalchemy_model()` (src/lib/Pydantic2SQLAlchemy.py).
 
-**Generation Process:**
-1. **Application Start**: FastAPI application initialization begins
-2. **Model Discovery**: Framework discovers all BLL models using DatabaseMixin
-3. **Model Registration**: Models registered in ModelRegistry during bind phase
-4. **SQLAlchemy Generation**: Models converted to SQLAlchemy via `create_sqlalchemy_model()` (src/lib/Pydantic2SQLAlchemy.py)
-5. **Database Binding**: Generated SQLAlchemy models bound to database declarative base
-6. **Schema Creation**: Database tables created via Alembic migrations or `create_all()`
+**Boot Sequence:**
+```
+Server Start → Extension Loading → Model Discovery (DatabaseMixin)
+→ ModelRegistry Binding → SQLAlchemy Generation → DB Connection
+→ Migrations → Server Ready
+```
 
-**Key Implementation Details:**
-- Generation occurs via `DatabaseMixin.DB()` property or explicit `create_sqlalchemy_model()` calls
-- SQLAlchemy models cached in ModelRegistry for subsequent access
-- Models generated once per application instance during initialization
-- Extension models processed in extension dependency order
-- `table_comment` field from Pydantic models included in SQLAlchemy schema
-- All field types, constraints, and relationships automatically translated
+**Details:**
+- Generated via `DatabaseMixin.DB()` property or explicit `create_sqlalchemy_model()` calls
+- Cached in ModelRegistry
+- Extension models processed in dependency order
+- `table_comment`, field types, constraints, relationships automatically translated
 
-**Access Pattern:**
+**Access:**
 ```python
-# Pydantic model with DatabaseMixin
 class BLL_User(DatabaseMixin):
     table_comment = "User accounts"
     email: str
     name: str
 
-# SQLAlchemy model generated at boot
-# Accessible via: BLL_User.DB or model_registry.get_db_model(BLL_User)
-```
-
-**Boot Sequence:**
-```
-Server Start
-    ↓
-Extension Loading (ordered by dependencies)
-    ↓
-Model Discovery (DatabaseMixin models)
-    ↓
-ModelRegistry Binding
-    ↓
-SQLAlchemy Generation (Pydantic2SQLAlchemy.py)
-    ↓
-Database Connection
-    ↓
-Migration/Schema Creation
-    ↓
-Server Ready
+# Access: BLL_User.DB or model_registry.get_db_model(BLL_User)
 ```
 
 ### NetworkMixin (`NetworkMixin`)

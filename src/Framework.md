@@ -98,50 +98,36 @@ The framework follows a strict layered architecture with clear separation of con
 ## Framework Design Philosophy
 
 ### Extension-Only Implementation Pattern
-A core principle of this framework is that **any implementation should be achieved by ONLY creating one or more new folders in the `extensions/` directory**. This ensures that updates to the core framework can be merged without conflicts.
+**Core principle:** All custom implementations go in `extensions/` directory only. This enables conflict-free framework updates.
 
-**Key Benefits:**
-- **Zero-Conflict Updates**: Core framework updates never conflict with custom implementations
-- **Clean Separation**: Custom code completely separated from framework code
-- **Version Control Safety**: Core framework and custom extensions maintain independent histories
-- **Modular Architecture**: All domain logic packaged as isolated, reusable extensions
-- **Easy Maintenance**: Extensions can be added, removed, or updated independently
+**Benefits:**
+- Zero-conflict updates when merging framework changes
+- Clean separation between framework and custom code
+- Modular, isolated extensions
 
-**Implementation Guidelines:**
-1. **Never modify core framework files** - All customization goes in `extensions/`
-2. **Create new extension folders** - Each feature/domain gets its own extension directory
-3. **Use extension patterns** - Leverage EXT_*, BLL_*, DB_*, EP_*, PRV_* patterns
-4. **Maintain extension independence** - Extensions should be self-contained modules
-5. **Follow extension structure** - Use standard extension file organization
+**Rules:**
+- ✅ Create new folders in `extensions/`
+- ✅ Use `@extension_model` to extend existing models
+- ✅ Register hooks in extensions
+- ✅ Extension-specific migrations in `extensions/{name}/versions/`
+- ❌ Avoid modifying `src/lib/`, `src/database/`, `src/logic/`, `src/endpoints/`
+- ❌ Avoid modifying core migrations
 
-**Extension Structure Example:**
+**Structure:**
 ```
-extensions/
-└── my_feature/                # Your custom implementation
-    ├── EXT_MyFeature.py       # Extension definition
-    ├── BLL_MyModel.py         # Business logic and Pydantic models
-    ├── EP_MyEndpoints.py      # API endpoints (or use RouterMixin)
-    ├── PRV_MyProvider.py      # External service provider (if needed)
-    └── versions/              # Extension-specific migrations
-        └── 001_initial.py
+extensions/my_feature/
+├── EXT_MyFeature.py       # Extension definition
+├── BLL_MyModel.py         # Business logic + Pydantic models
+├── EP_MyEndpoints.py      # API endpoints (or use RouterMixin)
+├── PRV_MyProvider.py      # External service provider
+└── versions/001_initial.py  # Migrations
 ```
-
-**What This Means:**
-- ✅ Add new extensions in `extensions/` directory
-- ✅ Extend existing models using `@extension_model` decorator
-- ✅ Register hooks in extensions for cross-cutting concerns
-- ✅ Create extension-specific migrations in extension `versions/` folder
-- ❌ Avoid modifying files in `src/lib/`, `src/database/`, `src/logic/`, `src/endpoints/`
-- ❌ Avoid direct modifications to core migrations
 
 **Update Strategy:**
-- Fork/branch the core framework for your implementation (expected pattern)
-- Keep all custom code in `extensions/` directory only
-- When framework updates are released, merge them into your fork
-- **Zero merge conflicts** if you only modified/added files in `extensions/`
-- **Merge conflicts only occur** if you modified core framework files
-
-This design ensures that your custom implementations remain isolated from framework updates, enabling seamless upgrades while preserving all custom functionality. By keeping customizations exclusively in extensions, framework updates can be merged without conflicts.
+1. Fork/branch framework for your implementation
+2. Keep all custom code in `extensions/` only
+3. Merge framework updates into your fork
+4. Result: Zero conflicts if only `extensions/` modified
 
 ## Development Principles
 
