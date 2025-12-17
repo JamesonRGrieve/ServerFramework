@@ -581,6 +581,10 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
             details="Users and sessions are not retrievable by ID.",
         ),
         SkipThisTest(
+            name="test_GET_422_invalid_includes",
+            details="Users and sessions are not retrievable by ID.",
+        ),
+        SkipThisTest(
             name="test_GET_422_unknown_query_param",
             details="Users and sessions are not retrievable by ID.",
         ),

@@ -257,6 +257,140 @@ def _apply_field_projection_to_entity(
     return {key: value for key, value in entity.items() if key in allowed_keys}
 
 
+def _get_valid_includes_for_model(
+    model_class: Type[BaseModel], model_registry: Optional[Any] = None
+) -> Set[str]:
+    """
+    Get the set of valid include names for a model based on its fields.
+
+    Valid includes are derived from:
+    1. Fields ending with '_id' (the relationship name without '_id')
+    2. Fields ending with '_user' patterns (common relationship patterns)
+    3. Plural forms of relationship names
+    4. extra_includes class variable on the model (for reverse/virtual relationships)
+    5. Inverse relationships discovered via model registry scanning
+
+    Args:
+        model_class: The Pydantic model class to analyze
+        model_registry: Optional ModelRegistry for discovering inverse relationships
+
+    Returns:
+        Set of valid include names
+    """
+    valid_includes: Set[str] = set()
+
+    if not hasattr(model_class, "model_fields"):
+        return valid_includes
+
+    for field_name in model_class.model_fields.keys():
+        # Fields ending with _id indicate a relationship
+        if field_name.endswith("_id"):
+            relationship_name = field_name[:-3]  # Remove '_id'
+            valid_includes.add(relationship_name)
+            # Also add plural form for collection relationships
+            valid_includes.add(inflection.plural(relationship_name))
+
+        # Fields ending with _user_id have special handling
+        if field_name.endswith("_user_id"):
+            # e.g., created_by_user_id -> created_by_user
+            user_relationship = field_name[:-3]  # Remove '_id'
+            valid_includes.add(user_relationship)
+
+    # Also check for Reference class if it exists
+    if hasattr(model_class, "Reference"):
+        reference_class = getattr(model_class, "Reference")
+        for attr_name in dir(reference_class):
+            if not attr_name.startswith("_"):
+                attr = getattr(reference_class, attr_name, None)
+                if attr is not None and hasattr(attr, "__name__"):
+                    if attr.__name__.endswith("Model"):
+                        # Convert ModelName to snake_case
+                        include_name = stringcase.snakecase(
+                            attr.__name__.replace("Model", "")
+                        )
+                        valid_includes.add(include_name)
+                        valid_includes.add(attr_name.lower())
+
+    # Check for extra_includes class variable (for reverse/virtual relationships)
+    if hasattr(model_class, "extra_includes"):
+        extra = getattr(model_class, "extra_includes", None)
+        if extra:
+            if isinstance(extra, (list, tuple, set, frozenset)):
+                valid_includes.update(extra)
+            elif isinstance(extra, str):
+                valid_includes.add(extra)
+
+    # Magic: Discover inverse relationships via model registry scanning
+    if model_registry and hasattr(model_registry, "bound_models"):
+        # Get this model's name in snake_case (e.g., TeamModel -> team)
+        model_name = model_class.__name__
+        if model_name.endswith("Model"):
+            model_name = model_name[:-5]  # Remove 'Model' suffix
+        model_name_snake = stringcase.snakecase(model_name)
+        fk_pattern = f"{model_name_snake}_id"
+
+        # Scan all bound models for foreign keys pointing to this model
+        for bound_model in model_registry.bound_models:
+            if bound_model is model_class:
+                continue  # Skip self
+            if not hasattr(bound_model, "model_fields"):
+                continue
+
+            for field_name in bound_model.model_fields.keys():
+                if field_name == fk_pattern:
+                    # Found a model with FK to this model - add as valid include
+                    other_model_name = bound_model.__name__
+                    if other_model_name.endswith("Model"):
+                        other_model_name = other_model_name[:-5]
+                    other_name_snake = stringcase.snakecase(other_model_name)
+                    # Add plural form (e.g., InviteeModel -> invitees)
+                    valid_includes.add(inflection.plural(other_name_snake))
+                    # Also add singular form
+                    valid_includes.add(other_name_snake)
+
+    return valid_includes
+
+
+def _validate_includes(
+    include_param: Optional[List[str]],
+    model_class: Type[BaseModel],
+    resource_name: str,
+    model_registry: Optional[Any] = None,
+) -> None:
+    """
+    Validate that requested includes are valid relationships for the model.
+
+    Args:
+        include_param: List of include names from the request
+        model_class: The target model class
+        resource_name: Name of the resource for error messages
+        model_registry: Optional ModelRegistry for discovering inverse relationships
+
+    Raises:
+        HTTPException: 422 if any includes are invalid
+    """
+    if not include_param:
+        return
+
+    valid_includes = _get_valid_includes_for_model(model_class, model_registry)
+
+    # If we couldn't determine valid includes, skip validation (let BLL handle it)
+    if not valid_includes:
+        return
+
+    invalid_includes = [inc for inc in include_param if inc not in valid_includes]
+
+    if invalid_includes:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": f"Invalid includes requested: {', '.join(invalid_includes)}",
+                "invalid_includes": invalid_includes,
+                "valid_includes": sorted(list(valid_includes)),
+            },
+        )
+
+
 def create_query_model_dependency(
     model_cls: Type[BaseModel],
 ) -> Callable[[Request], BaseModel]:
@@ -1408,7 +1542,7 @@ def _normalize_query_list(value: Any) -> Optional[List[str]]:
 
     - If value is None -> None
     - If value is a string -> split on commas, strip whitespace, dedupe preserving order
-    - If value is a list/tuple -> coerce items to str, strip, dedupe
+    - If value is a list/tuple -> split each item on commas, strip, dedupe
     Returns None if result is empty.
     """
     if value is None:
@@ -1420,12 +1554,13 @@ def _normalize_query_list(value: Any) -> Optional[List[str]]:
         for item in value:
             if item is None:
                 continue
-            s = str(item).strip()
-            if not s:
-                continue
-            if s not in seen:
-                seen.append(s)
-                out.append(s)
+            # Split each item on commas in case it's "provider,team" format
+            item_str = str(item)
+            parts = [p.strip() for p in item_str.split(",") if p.strip()]
+            for s in parts:
+                if s not in seen:
+                    seen.append(s)
+                    out.append(s)
         return out if out else None
     # If it's a string, split on commas
     if isinstance(value, str):
@@ -1641,7 +1776,12 @@ def register_route(
                             },
                         )
 
-                result = get_manager(manager, manager_property).get(
+                # Validate includes against model relationships
+                actual_manager = get_manager(manager, manager_property)
+                registry = getattr(actual_manager, "model_registry", None)
+                _validate_includes(include_param, target_model, resource_name, registry)
+
+                result = actual_manager.get(
                     id=id, include=include_param, fields=fields_param
                 )
 
@@ -1844,7 +1984,12 @@ def register_route(
                             },
                         )
 
-                results = get_manager(manager, manager_property).list(
+                # Validate includes against model relationships
+                actual_manager = get_manager(manager, manager_property)
+                registry = getattr(actual_manager, "model_registry", None)
+                _validate_includes(include_param, target_model, resource_name, registry)
+
+                results = actual_manager.list(
                     include=include_param,
                     fields=fields_param,
                     offset=query_params.offset or 0,
@@ -2613,7 +2758,14 @@ def register_route(
                 if not actual_sort_order:
                     actual_sort_order = "asc"
 
-                search_results = get_manager(manager, manager_property).search(
+                # Validate includes against model relationships
+                actual_manager = get_manager(manager, manager_property)
+                registry = getattr(actual_manager, "model_registry", None)
+                _validate_includes(
+                    actual_include, target_model, resource_name, registry
+                )
+
+                search_results = actual_manager.search(
                     include=actual_include,
                     fields=actual_fields,
                     offset=actual_offset,
