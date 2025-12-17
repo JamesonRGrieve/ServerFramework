@@ -36,24 +36,24 @@ def _venv():
     pyproject_file = src_dir / "pyproject.toml"
     requirements_file = root_dir / "requirements.txt"
 
-    # Check which package manager is available (prefer conda > uv > pip)
-    use_conda = shutil.which("conda") is not None
+    # Check which package manager is available (prefer uv > conda > pip)
     use_uv = shutil.which("uv") is not None
+    use_conda = shutil.which("conda") is not None
 
     # If we're not in a virtual environment, create one and restart
     if sys.prefix == sys.base_prefix:
         if not venv_dir.exists():
             logger.debug(f"Creating virtual environment at {venv_dir}")
             try:
-                if use_conda:
+                if use_uv:
+                    logger.debug("Using uv for faster virtual environment creation...")
+                    subprocess.run(["uv", "venv", str(venv_dir)], check=True)
+                elif use_conda:
                     logger.debug("Using conda for virtual environment creation...")
                     subprocess.run(
                         ["conda", "create", "-p", str(venv_dir), "python", "-y"],
                         check=True,
                     )
-                elif use_uv:
-                    logger.debug("Using uv for faster virtual environment creation...")
-                    subprocess.run(["uv", "venv", str(venv_dir)], check=True)
                 else:
                     venv.create(venv_dir, with_pip=True)
             except Exception as e:
