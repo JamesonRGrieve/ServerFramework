@@ -33,9 +33,11 @@ def _venv():
     src_dir = current_file_path.parent
     root_dir = src_dir.parent
     venv_dir = root_dir / ".venv"
+    pyproject_file = src_dir / "pyproject.toml"
     requirements_file = root_dir / "requirements.txt"
 
-    # Check if uv is available
+    # Check which package manager is available (prefer conda > uv > pip)
+    use_conda = shutil.which("conda") is not None
     use_uv = shutil.which("uv") is not None
 
     # If we're not in a virtual environment, create one and restart
@@ -43,7 +45,13 @@ def _venv():
         if not venv_dir.exists():
             logger.debug(f"Creating virtual environment at {venv_dir}")
             try:
-                if use_uv:
+                if use_conda:
+                    logger.debug("Using conda for virtual environment creation...")
+                    subprocess.run(
+                        ["conda", "create", "-p", str(venv_dir), "python", "-y"],
+                        check=True,
+                    )
+                elif use_uv:
                     logger.debug("Using uv for faster virtual environment creation...")
                     subprocess.run(["uv", "venv", str(venv_dir)], check=True)
                 else:
@@ -63,7 +71,45 @@ def _venv():
     # We're now in the virtual environment, install requirements
     logger.debug("Running in virtual environment, checking requirements...")
 
-    if requirements_file.exists():
+    # Prefer pyproject.toml if it exists, otherwise fall back to requirements.txt
+    if pyproject_file.exists():
+        logger.debug(f"pyproject.toml found at {pyproject_file}, installing...")
+        try:
+            # Install from pyproject.toml using pip install -e . (editable install)
+            # Note: conda doesn't directly support pyproject.toml, so we use pip within the env
+            if use_uv:
+                logger.debug("Using uv for faster package installation...")
+                result = subprocess.run(
+                    ["uv", "pip", "install", "-e", str(src_dir)],
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                )
+            else:
+                result = subprocess.run(
+                    [
+                        sys.executable,
+                        "-m",
+                        "pip",
+                        "install",
+                        "-e",
+                        str(src_dir),
+                    ],
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                )
+
+            from lib.Logging import logger
+
+            logger.info("Dependencies from pyproject.toml installed successfully!")
+        except subprocess.CalledProcessError as e:
+            logger.debug(f"Failed to install from pyproject.toml: {e.stderr}")
+            return False
+        except Exception as e:
+            logger.debug(f"Error installing from pyproject.toml: {e}")
+            return False
+    elif requirements_file.exists():
         logger.debug("Requirements file found, installing...")
         try:
             if use_uv:
@@ -99,7 +145,9 @@ def _venv():
             logger.debug(f"Error installing requirements.txt: {e}")
             return False
     else:
-        logger.debug(f"Requirements file not found at {requirements_file}")
+        logger.debug(
+            f"No pyproject.toml at {pyproject_file} or requirements.txt at {requirements_file}"
+        )
 
     logger.debug("Requirements complete, configuring PATH...")
     setup_python_path()
