@@ -1,0 +1,34 @@
+[tool.pytest.ini_options]
+testpaths = ["src"]
+python_files = "*_test.py"
+addopts = "-v -ra -s --order-dependencies --import-mode=importlib"
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "session"
+
+markers = [
+    "db: Database tests",
+    "bll: Business logic tests",
+    "ep: Endpoint tests",
+    "gql: GraphQL tests",
+    "sdk: SDK tests",
+    "user: User management tests",
+    "team: Team management tests",
+    "providers: Provider-related tests",
+    "extensions: Extension management tests",
+    "seed: Data seeding tests",
+    "auth: Authentication tests",
+    "migration: Migration system tests",
+    "basic: Basic migration functionality tests",
+    "core: Core migration tests",
+    "extension: Extension migration tests",
+    "complex: Complex migration scenario tests",
+    "regenerate: Migration regeneration tests",
+    "mfa: Multi-factor authentication tests",
+    "payment: Payment system tests",
+    "synchronize: Synchronization tests",
+    "mock: Mock-based tests",
+    "real: Real database tests",
+    "stripe: Stripe payment provider tests",
+    "timeout: Test timeout configuration",
+    "dependency: Test dependencies (pytest-dependency)",
+]
