@@ -1241,8 +1241,8 @@ def get_auth_dependency(auth_type: AuthType) -> Optional[Any]:
     elif auth_type == AuthType.API_KEY:
 
         def api_key_auth(
+            request: Request,
             x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
-            request=None,
         ):
             from logic.BLL_Auth import UserManager
 
@@ -3058,6 +3058,26 @@ def create_router_from_manager(
     route_auth_overrides: Dict[RouteType, AuthType] = (
         manager_class.route_auth_overrides or {}
     )
+
+    # System entity auto-configuration: if BaseModel.is_system_entity=True,
+    # automatically require API key authentication for write operations
+    base_model = getattr(manager_class, "BaseModel", None) or getattr(
+        manager_class, "_model", None
+    )
+    is_system_entity = getattr(base_model, "is_system_entity", False) if base_model else False
+    if is_system_entity:
+        write_routes = [
+            RouteType.CREATE,
+            RouteType.UPDATE,
+            RouteType.DELETE,
+            RouteType.BATCH_UPDATE,
+            RouteType.BATCH_DELETE,
+        ]
+        # Only override if not already explicitly set
+        for write_route in write_routes:
+            if write_route not in route_auth_overrides:
+                route_auth_overrides[write_route] = AuthType.API_KEY
+
     custom_routes: List[CustomRouteConfig] = manager_class.custom_routes or []
     nested_resources: Dict[str, NestedResourceConfig] = (
         manager_class.nested_resources or {}
