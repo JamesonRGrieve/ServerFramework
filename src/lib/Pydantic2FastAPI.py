@@ -3064,7 +3064,9 @@ def create_router_from_manager(
     base_model = getattr(manager_class, "BaseModel", None) or getattr(
         manager_class, "_model", None
     )
-    is_system_entity = getattr(base_model, "is_system_entity", False) if base_model else False
+    is_system_entity = (
+        getattr(base_model, "is_system_entity", False) if base_model else False
+    )
     if is_system_entity:
         write_routes = [
             RouteType.CREATE,
