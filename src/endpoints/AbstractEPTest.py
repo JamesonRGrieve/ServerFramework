@@ -18,6 +18,7 @@ from typing import (
     Union,
     get_args,
     get_origin,
+    get_type_hints,
 )
 
 import pytest
@@ -147,6 +148,17 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
     searchable_fields: List[str] = ["name"]
     search_example_value: str = None
 
+    # Default filters to include in search requests (for entities with required search fields)
+    # Override in subclass to add entity-specific required fields
+    # Format: {"field_name": default_value} - values are used when the field is not being tested
+    # These fields will be automatically added to search payloads when not already present
+    search_default_filters: Dict[str, Any] = {}
+
+    # Response format validation
+    # When True, enforces standard {resource_name_plural: [...]} format for list responses
+    # When False (default), accepts legacy formats with warnings for backward compatibility
+    strict_response_format: bool = False
+
     # Endpoint nesting configuration
     DEFAULT_NESTING_CONFIG: Dict[str, int] = {
         "LIST": 0,
@@ -165,7 +177,13 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
     # Flag for system entities that require API key
     system_entity: bool = False
 
-    # Flag for RBAC tests
+    # Scope flags for access control tests
+    # user_scoped: Resources are owned by individual users (e.g., user profiles, sessions)
+    # team_scoped: Resources are owned by teams (e.g., team settings, roles)
+    user_scoped: bool = False
+    team_scoped: bool = False
+
+    # Flag for RBAC tests - requires admin role to create/modify
     requires_admin: bool = False
 
     # Tests to skip - moved from xfail decorators
@@ -1500,7 +1518,9 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         self._assert_response_status(
             response, 200, "GET", self.get_list_endpoint(path_parent_ids)
         )
-        self.tracked_entities[save_key] = self._assert_entities_in_response(response)
+        self.tracked_entities[save_key] = self._assert_entities_in_response(
+            response, strict=self.strict_response_format
+        )
         return self.tracked_entities[save_key]
 
     # @pytest.mark.dependency(depends=["test_POST_201"])
@@ -1621,7 +1641,7 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         self, server: Any, admin_a: Any, user_b: Any, team_a: Any
     ):
         """Test that non-member cannot list resources created under a team they don't belong to."""
-        if not hasattr(self, "team_scoped") or not self.team_scoped:
+        if not self.team_scoped:
             pytest.skip("Entity not team-scoped")
 
         # Admin A creates entity under team A
@@ -1635,8 +1655,10 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
             headers=self._get_appropriate_headers(user_b.jwt),
         )
 
-        # Depending on the API design, this might return an empty list (200) or 403/404
-        # We'll check that the entity isn't in the result if 200
+        # Per Framework.md error handling pattern:
+        # - 200 with empty/filtered list is acceptable (entity simply not visible)
+        # - 404 is acceptable (prevents information leakage about resource existence)
+        # Note: 403 should NOT be returned here as it reveals the team exists
         if response.status_code == 200:
             data = response.json()
             entities = []
@@ -1650,10 +1672,10 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
                 self.tracked_entities["team_protected_test"]["id"] not in entity_ids
             ), "Entity should not be visible to non-team member"
         else:
-            assert response.status_code in [
-                403,
-                404,
-            ], f"Expected 403/404 for unauthorized access, got {response.status_code}"
+            # 404 prevents information leakage about whether resources exist
+            assert (
+                response.status_code == 404
+            ), f"Expected 404 for unauthorized access (prevents info leakage), got {response.status_code}"
 
     # @pytest.mark.dependency(depends=["test_POST_201"])
     def test_GET_200_id_via_parent_team(
@@ -1689,7 +1711,7 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         self, server: Any, admin_a: Any, user_b: Any, team_a: Any
     ):
         """Test that non-member cannot view a resource created under a team they don't belong to."""
-        if not hasattr(self, "team_scoped") or not self.team_scoped:
+        if not self.team_scoped:
             pytest.skip("Entity not team-scoped")
 
         # Admin A creates entity under team A
@@ -1703,10 +1725,10 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
             headers=self._get_appropriate_headers(user_b.jwt),
         )
 
-        assert response.status_code in [
-            403,
-            404,
-        ], f"Expected 403/404 for unauthorized access, got {response.status_code}"
+        # 404 prevents information leakage about whether resources exist
+        assert (
+            response.status_code == 404
+        ), f"Expected 404 for unauthorized access (prevents info leakage), got {response.status_code}"
 
     def test_GET_404_nonexistent(self, server: Any, admin_a: Any):
         """Test that API returns 404 for nonexistent resource."""
@@ -1728,7 +1750,7 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         self, server: Any, admin_a: Any, user_b: Any, team_a: Any
     ):
         """Test that users cannot see each other's resources if not sharing a team."""
-        if not hasattr(self, "user_scoped") or not self.user_scoped:
+        if not self.user_scoped:
             pytest.skip("Entity not user-scoped")
 
         # Admin A creates entity
@@ -1742,10 +1764,10 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
             headers=self._get_appropriate_headers(user_b.jwt),
         )
 
-        assert response.status_code in [
-            403,
-            404,
-        ], f"Expected 403/404 for unauthorized access, got {response.status_code}"
+        # 404 prevents information leakage about whether resources exist
+        assert (
+            response.status_code == 404
+        ), f"Expected 404 for unauthorized access (prevents info leakage), got {response.status_code}"
 
     def test_GET_401(self, server: Any):
         """Test that GET endpoint requires authentication."""
@@ -2323,7 +2345,7 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         self, server: Any, admin_a: Any, user_b: Any, team_a: Any
     ):
         """Test that users cannot update each other's resources."""
-        if not hasattr(self, "user_scoped") or not self.user_scoped:
+        if not self.user_scoped:
             pytest.skip("Entity not user-scoped")
 
         # Admin A creates entity
@@ -2344,10 +2366,10 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
             headers=self._get_appropriate_headers(user_b.jwt),
         )
 
-        assert response.status_code in [
-            403,
-            404,
-        ], f"Expected 403/404 for unauthorized update, got {response.status_code}"
+        # 404 prevents information leakage about whether resources exist
+        assert (
+            response.status_code == 404
+        ), f"Expected 404 for unauthorized update (prevents info leakage), got {response.status_code}"
 
     def test_PUT_404_nonexistent(self, server: Any, admin_a: Any):
         """Test that API returns 404 for nonexistent resource (PUT)."""
@@ -2490,7 +2512,7 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         self, server: Any, admin_a: Any, user_b: Any, team_a: Any
     ):
         """Test that users cannot delete each other's resources."""
-        if not hasattr(self, "user_scoped") or not self.user_scoped:
+        if not self.user_scoped:
             pytest.skip("Entity not user-scoped")
 
         # Admin A creates entity
@@ -2504,10 +2526,10 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
             headers=self._get_appropriate_headers(user_b.jwt),
         )
 
-        assert response.status_code in [
-            403,
-            404,
-        ], f"Expected 403/404 for unauthorized delete, got {response.status_code}"
+        # 404 prevents information leakage about whether resources exist
+        assert (
+            response.status_code == 404
+        ), f"Expected 404 for unauthorized delete (prevents info leakage), got {response.status_code}"
 
     def test_DELETE_404_nonexistent(self, server: Any, admin_a: Any):
         """Test that API returns 404 for nonexistent resource (DELETE)."""
@@ -2776,14 +2798,19 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         return entity
 
     def _assert_entities_in_response(
-        self, response: Any, entity_type: Optional[str] = None
+        self, response: Any, entity_type: Optional[str] = None, strict: bool = False
     ) -> List[Dict[str, Any]]:
         """
         Assert that entities are present in the response.
 
+        Per Framework.md RORO pattern, responses should follow a consistent format:
+        - Standard format: {resource_name_plural: [...]}
+        - Legacy formats (deprecated): raw list [], {"items": [...]}
+
         Args:
             response: Response object from request
             entity_type: Optional type to validate for each entity
+            strict: If True, only accept standard {resource_name_plural: [...]} format
 
         Returns:
             List of entity dictionaries
@@ -2796,14 +2823,42 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         except json.JSONDecodeError:
             raise AssertionError(f"Invalid JSON response: {response.text}")
 
-        # Extract entities from response
+        # Extract entities from response - prefer standard format
         entities = None
+        response_format = None
+
+        # Standard format: {resource_name_plural: [...]}
         if self.resource_name_plural in data:
             entities = data[self.resource_name_plural]
+            response_format = "standard"
+        # Legacy format: raw list (deprecated)
         elif isinstance(data, list):
             entities = data
+            response_format = "raw_list"
+            if strict:
+                raise AssertionError(
+                    f"Response uses deprecated raw list format. "
+                    f"Expected: {{{self.resource_name_plural}: [...]}}"
+                )
+            else:
+                logger.warning(
+                    f"Response uses deprecated raw list format for {self.entity_name}. "
+                    f"Prefer: {{{self.resource_name_plural}: [...]}}"
+                )
+        # Legacy format: {"items": [...]} (deprecated)
         elif "items" in data:
             entities = data["items"]
+            response_format = "items"
+            if strict:
+                raise AssertionError(
+                    f"Response uses deprecated 'items' format. "
+                    f"Expected: {{{self.resource_name_plural}: [...]}}"
+                )
+            else:
+                logger.warning(
+                    f"Response uses deprecated 'items' format for {self.entity_name}. "
+                    f"Prefer: {{{self.resource_name_plural}: [...]}}"
+                )
 
         # Allow empty lists or None as valid responses when there are no entities
         if entities is None:
@@ -3323,7 +3378,9 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
             self.get_search_endpoint(path_parent_ids),
             request_payload,
         )
-        self.tracked_entities[save_key] = self._assert_entities_in_response(response)
+        self.tracked_entities[save_key] = self._assert_entities_in_response(
+            response, strict=self.strict_response_format
+        )
 
         return self.tracked_entities[save_key]
 
@@ -3406,30 +3463,25 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
             if entity["description"]:
                 search_payload["description"] = {"eq": entity["description"]}
 
-        # Handle special case: AbilityModel.Search requires 'meta' field and inherits extension_id
-        if self.entity_name == "ability":
-            # Add meta field if not the field being tested
-            if search_field != "meta" and "meta" not in search_payload:
-                search_payload["meta"] = entity.get("meta", False)
+        # Apply search_default_filters for entities with required search fields
+        # This replaces hardcoded entity-specific logic with a declarative approach
+        for filter_field, default_value in self.search_default_filters.items():
+            # Skip if this is the field being tested or if it's already in the payload
+            if filter_field == search_field or filter_field in search_payload:
+                continue
 
-            # AbilityModel.Search inherits from ExtensionModel.Reference.ID.Search
-            # which requires extension_id field. Add it from the created entity.
-            if (
-                search_field != "extension_id"
-                and "extension_id" not in search_payload
-                and "extension_id" in entity
-            ):
-                search_payload["extension_id"] = {"eq": entity["extension_id"]}
-
-        # Handle special case: ProviderModel.Search includes a 'system' field
-        if self.entity_name == "provider":
-            # Add system field if not the field being tested
-            if (
-                search_field != "system"
-                and "system" not in search_payload
-                and "system" in entity
-            ):
-                search_payload["system"] = entity.get("system", False)
+            # Use entity value if available, otherwise use the default
+            if filter_field in entity:
+                entity_value = entity[filter_field]
+                # For foreign key fields (ending in _id), wrap in eq operator
+                if filter_field.endswith("_id"):
+                    search_payload[filter_field] = {"eq": entity_value}
+                else:
+                    # For boolean/scalar fields, use value directly
+                    search_payload[filter_field] = entity_value
+            elif default_value is not None:
+                # Use the default value from search_default_filters
+                search_payload[filter_field] = default_value
 
         # Debug: Log the search payload
         logger.debug(f"Search payload being sent: {search_payload}")
@@ -3538,21 +3590,50 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
                 f"Expected only: {expected_fields} (plus allowed core fields: {allowed_extra_fields})"
             )
 
-    # Add the boolean fields list and helper method
-    boolean_fields = [
+    # Fallback boolean fields for when model introspection is not available
+    # These are common boolean field names used across entities
+    _fallback_boolean_fields = [
         "is_deleted",
         "encrypted",
         "is_active",
         "is_system",
         "is_public",
-        "positive",
-        "meta",  # Added for ability entities
-        "system",  # Added for provider entities
     ]
 
     def _is_boolean_field(self, field_name: str) -> bool:
-        """Check if a field is a boolean type."""
-        return field_name in self.boolean_fields
+        """
+        Check if a field is a boolean type using model introspection.
+
+        This method uses the Pydantic-first approach to determine field types
+        from the model's type hints rather than maintaining a hardcoded list.
+
+        Falls back to a small list of common boolean field names if the model
+        class is not available or introspection fails.
+        """
+        # Try to introspect from class_under_test (the Pydantic model)
+        if self.class_under_test is not None:
+            try:
+                type_hints = get_type_hints(self.class_under_test)
+                if field_name in type_hints:
+                    field_type = type_hints[field_name]
+
+                    # Handle Optional[bool] and Union[bool, None]
+                    origin = get_origin(field_type)
+                    if origin is Union or (
+                        hasattr(origin, "__class__") and origin is UnionType
+                    ):
+                        args = get_args(field_type)
+                        # Check if any of the union args is bool (handles Optional[bool])
+                        return bool in args
+
+                    # Direct bool type
+                    return field_type is bool
+            except Exception:
+                # If introspection fails, fall back to the static list
+                pass
+
+        # Fallback to common boolean field names
+        return field_name in self._fallback_boolean_fields
 
     def _filter_assert(self, tracked_index: str):
         """Assert that filter results are valid."""
@@ -3595,7 +3676,9 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         self._assert_response_status(
             response, 200, "GET filter", self.get_list_endpoint(path_parent_ids)
         )
-        self.tracked_entities[save_key] = self._assert_entities_in_response(response)
+        self.tracked_entities[save_key] = self._assert_entities_in_response(
+            response, strict=self.strict_response_format
+        )
 
         return self.tracked_entities[save_key]
 
