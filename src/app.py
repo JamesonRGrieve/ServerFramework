@@ -609,7 +609,9 @@ def build_app(model_registry: ModelRegistry):
         # For regular validation errors (field validation, type validation, etc.), return 422
         # These include errors like: string_type, int_type, missing, etc.
         # Use make_json_serializable to handle any non-serializable objects in error context
-        return JSONResponse(status_code=422, content={"detail": make_json_serializable(exc.errors())})
+        return JSONResponse(
+            status_code=422, content={"detail": make_json_serializable(exc.errors())}
+        )
 
     if env("REST").strip().lower() == "true":
         # Build routers using the model registry
