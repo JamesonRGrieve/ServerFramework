@@ -503,47 +503,44 @@ def build_app(model_registry: ModelRegistry):
             status_code=400, content={"detail": "Invalid JSON syntax in request body"}
         )
 
+    def make_json_serializable(obj):
+        """Recursively convert objects to JSON-serializable format."""
+        if isinstance(obj, (str, int, float, bool, type(None))):
+            return obj
+        elif hasattr(obj, "model_dump"):
+            # Pydantic model
+            try:
+                return obj.model_dump(mode="json")
+            except:
+                return str(obj)
+        elif isinstance(obj, dict):
+            # Recursively handle dicts
+            return {k: make_json_serializable(v) for k, v in obj.items()}
+        elif isinstance(obj, (list, tuple, set)):
+            # Recursively handle iterables
+            return [make_json_serializable(item) for item in obj]
+        elif hasattr(obj, "__dict__"):
+            # Other objects with __dict__
+            try:
+                # Try to get a dict representation
+                if hasattr(obj, "to_dict"):
+                    return obj.to_dict()
+                elif hasattr(obj, "dict"):
+                    return obj.dict()
+                else:
+                    # Last resort - convert to string
+                    return str(obj)
+            except:
+                return str(obj)
+        else:
+            # Fallback to string representation
+            return str(obj)
+
     # Add exception handler for HTTPException to ensure JSON serializable details
     @app.exception_handler(HTTPException)
     async def http_exception_handler(request: Request, exc: HTTPException):
         # Ensure the detail is JSON serializable
-        detail = exc.detail
-
-        def make_json_serializable(obj):
-            """Recursively convert objects to JSON-serializable format."""
-            if isinstance(obj, (str, int, float, bool, type(None))):
-                return obj
-            elif hasattr(obj, "model_dump"):
-                # Pydantic model
-                try:
-                    return obj.model_dump(mode="json")
-                except:
-                    return str(obj)
-            elif isinstance(obj, dict):
-                # Recursively handle dicts
-                return {k: make_json_serializable(v) for k, v in obj.items()}
-            elif isinstance(obj, (list, tuple, set)):
-                # Recursively handle iterables
-                return [make_json_serializable(item) for item in obj]
-            elif hasattr(obj, "__dict__"):
-                # Other objects with __dict__
-                try:
-                    # Try to get a dict representation
-                    if hasattr(obj, "to_dict"):
-                        return obj.to_dict()
-                    elif hasattr(obj, "dict"):
-                        return obj.dict()
-                    else:
-                        # Last resort - convert to string
-                        return str(obj)
-                except:
-                    return str(obj)
-            else:
-                # Fallback to string representation
-                return str(obj)
-
-        # Convert detail to JSON-serializable format
-        detail = make_json_serializable(detail)
+        detail = make_json_serializable(exc.detail)
 
         return JSONResponse(
             status_code=exc.status_code, content={"detail": detail}, headers=exc.headers
@@ -611,7 +608,8 @@ def build_app(model_registry: ModelRegistry):
 
         # For regular validation errors (field validation, type validation, etc.), return 422
         # These include errors like: string_type, int_type, missing, etc.
-        return JSONResponse(status_code=422, content={"detail": exc.errors()})
+        # Use make_json_serializable to handle any non-serializable objects in error context
+        return JSONResponse(status_code=422, content={"detail": make_json_serializable(exc.errors())})
 
     if env("REST").strip().lower() == "true":
         # Build routers using the model registry
