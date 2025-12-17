@@ -1542,7 +1542,7 @@ def _normalize_query_list(value: Any) -> Optional[List[str]]:
 
     - If value is None -> None
     - If value is a string -> split on commas, strip whitespace, dedupe preserving order
-    - If value is a list/tuple -> coerce items to str, strip, dedupe
+    - If value is a list/tuple -> split each item on commas, strip, dedupe
     Returns None if result is empty.
     """
     if value is None:
@@ -1554,12 +1554,13 @@ def _normalize_query_list(value: Any) -> Optional[List[str]]:
         for item in value:
             if item is None:
                 continue
-            s = str(item).strip()
-            if not s:
-                continue
-            if s not in seen:
-                seen.append(s)
-                out.append(s)
+            # Split each item on commas in case it's "provider,team" format
+            item_str = str(item)
+            parts = [p.strip() for p in item_str.split(",") if p.strip()]
+            for s in parts:
+                if s not in seen:
+                    seen.append(s)
+                    out.append(s)
         return out if out else None
     # If it's a string, split on commas
     if isinstance(value, str):
