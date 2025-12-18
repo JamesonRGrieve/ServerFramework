@@ -5,6 +5,7 @@ Handles initialization, creation, applying, and management of migrations.
 """
 
 import argparse
+import errno
 import os
 import shutil
 import subprocess
@@ -2016,7 +2017,7 @@ class {class_name}(Base):
             f"Database environment: TYPE={self.db_info['type']}, NAME={self.db_info['name']}"
         )
 
-        # Use atomic file locking to ensure only one process runs migrations at a time
+        # Use file locking to ensure only one process runs migrations at a time
         # The lock file is database-specific to allow different test databases to run in parallel
         db_name = (
             self.db_info.get("name", "default").replace("/", "_").replace("\\", "_")
@@ -2026,20 +2027,55 @@ class {class_name}(Base):
         wait_count = 0
         max_wait_count = 600  # 60 seconds timeout
 
-        # Acquire lock using atomic file creation (O_CREAT | O_EXCL is atomic on all platforms)
+        # Use flock() on Unix for reliable advisory locking
+        # This is more reliable than O_EXCL which may not be atomic on all filesystems
+        try:
+            import fcntl
+            has_flock = True
+        except ImportError:
+            has_flock = False
+
+        # Acquire lock
         while wait_count < max_wait_count:
             try:
-                # O_CREAT | O_EXCL: Create file only if it doesn't exist (atomic operation)
-                lock_fd = os.open(
-                    str(lock_file_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY
-                )
+                if has_flock:
+                    # On Unix: Open/create file, then use flock for exclusive lock
+                    lock_fd = os.open(
+                        str(lock_file_path), os.O_CREAT | os.O_RDWR, 0o644
+                    )
+                    # Try to acquire exclusive non-blocking lock
+                    fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                else:
+                    # On Windows: Use O_EXCL for atomic creation
+                    lock_fd = os.open(
+                        str(lock_file_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY
+                    )
                 # Successfully acquired lock
                 if wait_count > 0:
                     logger.debug(
                         f"Acquired migration lock after {wait_count * 0.1:.1f}s wait"
                     )
                 break
-            except FileExistsError:
+            except (BlockingIOError, OSError) as e:
+                # BlockingIOError: flock couldn't acquire lock (EWOULDBLOCK)
+                # OSError with EEXIST: O_EXCL failed because file exists
+                # OSError with EAGAIN/EWOULDBLOCK: flock failed
+                if isinstance(e, OSError) and e.errno not in (errno.EEXIST, errno.EAGAIN, errno.EWOULDBLOCK):
+                    # This is a different error, re-raise it
+                    if lock_fd is not None:
+                        try:
+                            os.close(lock_fd)
+                        except Exception:
+                            pass
+                        lock_fd = None
+                    raise
+                # Lock is held by another process - close fd if we opened one
+                if lock_fd is not None:
+                    try:
+                        os.close(lock_fd)
+                    except Exception:
+                        pass
+                    lock_fd = None
                 # Lock file exists, another process is running migrations
                 if wait_count == 0:
                     logger.debug(
@@ -2054,17 +2090,19 @@ class {class_name}(Base):
                         f"Still waiting for migration lock (waited {wait_count * 0.1:.1f}s)..."
                     )
 
-                # Check for stale lock file (older than 5 minutes)
-                try:
-                    if lock_file_path.exists():
-                        lock_age = time.time() - lock_file_path.stat().st_mtime
-                        if lock_age > 300:  # 5 minutes
-                            logger.warning(
-                                f"Removing stale migration lock file (age: {lock_age:.0f}s)"
-                            )
-                            lock_file_path.unlink(missing_ok=True)
-                except Exception:
-                    pass  # Ignore errors checking lock age
+                # Check for stale lock file on Windows (older than 5 minutes)
+                # On Unix with flock, stale locks are automatically released when process dies
+                if not has_flock:
+                    try:
+                        if lock_file_path.exists():
+                            lock_age = time.time() - lock_file_path.stat().st_mtime
+                            if lock_age > 300:  # 5 minutes
+                                logger.warning(
+                                    f"Removing stale migration lock file (age: {lock_age:.0f}s)"
+                                )
+                                lock_file_path.unlink(missing_ok=True)
+                    except Exception:
+                        pass  # Ignore errors checking lock age
 
         if wait_count >= max_wait_count:
             logger.error(
@@ -2212,16 +2250,20 @@ class {class_name}(Base):
             return True
 
         finally:
-            # Release the migration lock - ALWAYS close fd before deleting file (important for Windows)
+            # Release the migration lock
+            # For flock: closing fd automatically releases the lock
+            # For Windows O_EXCL: must close fd then delete file
             if lock_fd is not None:
                 try:
                     os.close(lock_fd)
                 except Exception:
                     pass
-            try:
-                lock_file_path.unlink(missing_ok=True)
-            except Exception:
-                pass
+                # On Windows (no flock), delete the lock file
+                if not has_flock:
+                    try:
+                        lock_file_path.unlink(missing_ok=True)
+                    except Exception:
+                        pass
 
     def _normalize_path(self, path):
         """Normalize a path to avoid duplicated segments like /path/src/src/..."""
