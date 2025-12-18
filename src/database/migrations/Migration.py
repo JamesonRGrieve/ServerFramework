@@ -15,21 +15,6 @@ import time
 
 import stringcase
 
-# Cross-platform file locking for migration synchronization
-try:
-    import fcntl
-
-    HAS_FCNTL = True
-except ImportError:
-    HAS_FCNTL = False
-
-try:
-    import msvcrt
-
-    HAS_MSVCRT = True
-except ImportError:
-    HAS_MSVCRT = False
-
 # Get the current file's directory
 current_file_dir = Path(__file__).resolve().parent
 template_dir = current_file_dir / "template"
@@ -45,8 +30,8 @@ from lib.Logging import logger
 class MigrationFileLock:
     """
     Cross-platform file lock for synchronizing migration operations.
-    Uses fcntl on Unix and msvcrt on Windows.
-    Falls back to a PID-based lock if neither is available.
+    Uses atomic file creation (O_CREAT | O_EXCL) with PID-based stale detection.
+    This approach is simpler and more reliable than fcntl/msvcrt locking.
     """
 
     def __init__(self, lock_path: Path, timeout: float = 60.0):
@@ -59,7 +44,6 @@ class MigrationFileLock:
         """
         self.lock_path = Path(lock_path)
         self.timeout = timeout
-        self._fd = None
         self._locked = False
 
     def __enter__(self):
@@ -75,18 +59,38 @@ class MigrationFileLock:
         if pid <= 0:
             return False
         try:
-            # On Unix, sending signal 0 checks if process exists
+            # On Unix, sending signal 0 checks if process exists without sending a signal
             os.kill(pid, 0)
             return True
-        except (OSError, ProcessLookupError):
+        except ProcessLookupError:
+            # Process does not exist
             return False
-        except Exception:
-            # On Windows or other platforms, assume alive if we can't check
+        except PermissionError:
+            # Process exists but we don't have permission to signal it
             return True
+        except OSError:
+            # Other OS error - assume process doesn't exist
+            return False
 
-    def _check_and_clean_stale_lock(self) -> bool:
+    def _read_lock_pid(self) -> int:
         """
-        Check if the lock file is stale (owner process is dead) and clean it up.
+        Read the PID from the lock file.
+
+        Returns:
+            The PID if readable, -1 otherwise
+        """
+        try:
+            with open(self.lock_path, "r") as f:
+                content = f.read().strip()
+                if content:
+                    return int(content.split()[0])
+        except (IOError, OSError, ValueError):
+            pass
+        return -1
+
+    def _try_clean_stale_lock(self) -> bool:
+        """
+        Check if the lock file is stale and clean it up if so.
 
         Returns:
             True if a stale lock was cleaned up, False otherwise
@@ -94,32 +98,27 @@ class MigrationFileLock:
         if not self.lock_path.exists():
             return False
 
-        try:
-            # Read the PID from the lock file
-            with open(self.lock_path, "r") as f:
-                content = f.read().strip()
-                if not content:
-                    # Empty lock file - stale
-                    self.lock_path.unlink()
-                    logger.debug("Removed empty migration lock file")
-                    return True
+        pid = self._read_lock_pid()
 
-                pid = int(content.split()[0])
-                if not self._is_process_alive(pid):
-                    # Process is dead - stale lock
-                    self.lock_path.unlink()
-                    logger.debug(
-                        f"Removed stale migration lock (PID {pid} no longer exists)"
-                    )
-                    return True
-        except (ValueError, IOError, OSError) as e:
-            # Can't read/parse lock file - try to remove it
+        if pid <= 0:
+            # Invalid/empty lock file - remove it
             try:
                 self.lock_path.unlink()
-                logger.debug(f"Removed unreadable migration lock: {e}")
+                logger.debug("Removed invalid migration lock file")
                 return True
-            except Exception:
-                pass
+            except (OSError, IOError):
+                return False
+
+        if not self._is_process_alive(pid):
+            # Process is dead - stale lock
+            try:
+                self.lock_path.unlink()
+                logger.debug(
+                    f"Removed stale migration lock (PID {pid} no longer exists)"
+                )
+                return True
+            except (OSError, IOError):
+                return False
 
         return False
 
@@ -135,146 +134,55 @@ class MigrationFileLock:
 
         start_time = time.time()
         wait_logged = False
-
-        # First, check for and clean up any stale locks
-        self._check_and_clean_stale_lock()
+        my_pid = os.getpid()
 
         while True:
+            # First, try to clean up any stale locks
+            self._try_clean_stale_lock()
+
             try:
-                if HAS_FCNTL:
-                    # Unix-style locking
-                    try:
-                        # Open or create the lock file
-                        self._fd = open(self.lock_path, "a+")
-                        fcntl.flock(self._fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                        self._locked = True
-                        # Write PID to lock file for debugging
-                        self._fd.seek(0)
-                        self._fd.truncate()
-                        self._fd.write(f"{os.getpid()}\n")
-                        self._fd.flush()
-                        if wait_logged:
-                            logger.debug(
-                                f"Migration lock acquired after {time.time() - start_time:.1f}s"
-                            )
-                        return True
-                    except (IOError, OSError) as e:
-                        # Lock is held by another process
-                        if self._fd:
-                            self._fd.close()
-                            self._fd = None
-                        # Check for stale lock periodically
-                        if self._check_and_clean_stale_lock():
-                            continue
-
-                elif HAS_MSVCRT:
-                    # Windows-style locking
-                    try:
-                        self._fd = open(self.lock_path, "a+")
-                        msvcrt.locking(self._fd.fileno(), msvcrt.LK_NBLCK, 1)
-                        self._locked = True
-                        # Write PID to lock file for debugging
-                        self._fd.seek(0)
-                        self._fd.truncate()
-                        self._fd.write(f"{os.getpid()}\n")
-                        self._fd.flush()
-                        if wait_logged:
-                            logger.debug(
-                                f"Migration lock acquired after {time.time() - start_time:.1f}s"
-                            )
-                        return True
-                    except (IOError, OSError):
-                        # Lock is held by another process
-                        if self._fd:
-                            self._fd.close()
-                            self._fd = None
-                        # Check for stale lock periodically
-                        if self._check_and_clean_stale_lock():
-                            continue
-
-                else:
-                    # Fallback: PID-based locking using atomic file creation
-                    exclusive_path = Path(str(self.lock_path) + ".exclusive")
-                    try:
-                        # Try to create lock file exclusively
-                        fd = os.open(
-                            str(exclusive_path),
-                            os.O_CREAT | os.O_EXCL | os.O_WRONLY,
-                        )
-                        os.write(fd, f"{os.getpid()}\n".encode())
-                        os.close(fd)
-                        self._locked = True
-                        if wait_logged:
-                            logger.debug(
-                                f"Migration lock acquired after {time.time() - start_time:.1f}s"
-                            )
-                        return True
-                    except FileExistsError:
-                        # Lock file exists, check if stale
-                        if exclusive_path.exists():
-                            try:
-                                with open(exclusive_path, "r") as f:
-                                    content = f.read().strip()
-                                    if content:
-                                        pid = int(content.split()[0])
-                                        if not self._is_process_alive(pid):
-                                            exclusive_path.unlink()
-                                            logger.debug(
-                                                f"Removed stale fallback lock (PID {pid})"
-                                            )
-                                            continue
-                                    else:
-                                        exclusive_path.unlink()
-                                        continue
-                            except (ValueError, IOError, OSError):
-                                # Can't read lock, check age
-                                try:
-                                    age = time.time() - exclusive_path.stat().st_mtime
-                                    if age > self.timeout:
-                                        exclusive_path.unlink()
-                                        logger.warning(
-                                            f"Removed old migration lock (age: {age:.1f}s)"
-                                        )
-                                        continue
-                                except (OSError, IOError):
-                                    pass
-
-                # Check timeout
-                elapsed = time.time() - start_time
-                if elapsed >= self.timeout:
-                    raise TimeoutError(
-                        f"Could not acquire migration lock within {self.timeout}s"
-                    )
-
-                # Log waiting status once
-                if not wait_logged:
+                # Try to create the lock file atomically
+                # O_CREAT | O_EXCL ensures atomic creation - fails if file exists
+                fd = os.open(
+                    str(self.lock_path),
+                    os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                    0o644,
+                )
+                # Write our PID to the lock file
+                os.write(fd, f"{my_pid}\n".encode())
+                os.close(fd)
+                self._locked = True
+                if wait_logged:
                     logger.debug(
-                        "Waiting for migration lock (another migration in progress)..."
+                        f"Migration lock acquired after {time.time() - start_time:.1f}s"
                     )
-                    wait_logged = True
+                return True
 
-                # Wait before retrying
-                time.sleep(0.2)
+            except FileExistsError:
+                # Lock file already exists - check if it's stale
+                # (The stale check at the top of the loop will handle this on next iteration)
+                pass
 
-            except TimeoutError:
-                raise
-            except Exception as e:
-                if self._fd:
-                    try:
-                        self._fd.close()
-                    except Exception:
-                        pass
-                    self._fd = None
-                logger.warning(f"Error acquiring migration lock: {e}")
+            except (IOError, OSError) as e:
+                logger.warning(f"Error creating migration lock file: {e}")
 
-                # Check timeout
-                elapsed = time.time() - start_time
-                if elapsed >= self.timeout:
-                    raise TimeoutError(
-                        f"Could not acquire migration lock within {self.timeout}s: {e}"
-                    )
+            # Check timeout
+            elapsed = time.time() - start_time
+            if elapsed >= self.timeout:
+                owner_pid = self._read_lock_pid()
+                raise TimeoutError(
+                    f"Could not acquire migration lock within {self.timeout}s "
+                    f"(held by PID {owner_pid})"
+                )
 
-                time.sleep(0.2)
+            # Log waiting status once
+            if not wait_logged:
+                owner_pid = self._read_lock_pid()
+                logger.debug(f"Waiting for migration lock (held by PID {owner_pid})...")
+                wait_logged = True
+
+            # Wait before retrying - use small sleep to be responsive
+            time.sleep(0.1)
 
     def release(self) -> None:
         """Release the file lock."""
@@ -282,31 +190,13 @@ class MigrationFileLock:
             return
 
         try:
-            if HAS_FCNTL and self._fd:
-                fcntl.flock(self._fd.fileno(), fcntl.LOCK_UN)
-            elif HAS_MSVCRT and self._fd:
-                try:
-                    self._fd.seek(0)
-                    msvcrt.locking(self._fd.fileno(), msvcrt.LK_UNLCK, 1)
-                except (IOError, OSError):
-                    pass
-            else:
-                # Fallback: remove exclusive lock file
-                exclusive_path = Path(str(self.lock_path) + ".exclusive")
-                if exclusive_path.exists():
-                    try:
-                        exclusive_path.unlink()
-                    except (OSError, IOError):
-                        pass
-        except Exception as e:
-            logger.warning(f"Error releasing migration lock: {e}")
+            # Only remove the lock file if we own it
+            current_pid = self._read_lock_pid()
+            if current_pid == os.getpid():
+                self.lock_path.unlink()
+        except (OSError, IOError) as e:
+            logger.debug(f"Could not remove migration lock file: {e}")
         finally:
-            if self._fd:
-                try:
-                    self._fd.close()
-                except Exception:
-                    pass
-                self._fd = None
             self._locked = False
 
     def is_locked(self) -> bool:
