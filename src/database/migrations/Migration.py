@@ -2029,14 +2029,18 @@ class {class_name}(Base):
             try:
                 # Try to create the lock file atomically
                 # O_CREAT | O_EXCL ensures this fails if file already exists
-                fd = os.open(str(lock_file_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+                fd = os.open(
+                    str(lock_file_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644
+                )
                 os.write(fd, f"{os.getpid()}\n".encode())
                 os.close(fd)
                 break  # Successfully acquired lock
             except FileExistsError:
                 # Lock file exists - another process is running migrations
                 if not wait_logged:
-                    logger.debug(f"Waiting for migration lock ({lock_file_path.name})...")
+                    logger.debug(
+                        f"Waiting for migration lock ({lock_file_path.name})..."
+                    )
                     wait_logged = True
                 time.sleep(0.1)
             except (IOError, OSError) as e:
@@ -2049,7 +2053,9 @@ class {class_name}(Base):
                 lock_file_path.unlink()
                 logger.warning("Forcefully removed stuck migration lock file")
                 # Try once more to acquire after cleanup
-                fd = os.open(str(lock_file_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+                fd = os.open(
+                    str(lock_file_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644
+                )
                 os.write(fd, f"{os.getpid()}\n".encode())
                 os.close(fd)
             except Exception as e:
@@ -2057,12 +2063,16 @@ class {class_name}(Base):
                 return False
 
         if wait_logged:
-            logger.debug(f"Migration lock acquired after {time.time() - start_time:.1f}s")
+            logger.debug(
+                f"Migration lock acquired after {time.time() - start_time:.1f}s"
+            )
 
         try:
             # Refresh configured extensions to pick up any environment changes
             self.configured_extensions = extensions or self._get_configured_extensions()
-            logger.debug(f"Running migrations for extensions: {self.configured_extensions}")
+            logger.debug(
+                f"Running migrations for extensions: {self.configured_extensions}"
+            )
             logger.debug(f"Running {command} for core migrations")
             core_result = self.run_alembic_command(command, target)
 
@@ -2095,7 +2105,9 @@ class {class_name}(Base):
                     extension_migrations.append((ext_name, versions_dir))
                 else:
                     # Directory structure needs to be created
-                    success, dir_path = self.ensure_extension_versions_directory(ext_name)
+                    success, dir_path = self.ensure_extension_versions_directory(
+                        ext_name
+                    )
                     if success:
                         extension_migrations.append((ext_name, dir_path))
 
@@ -2145,7 +2157,9 @@ class {class_name}(Base):
 
                 # Check if there are any migration files in the versions directory
                 migration_files = list(versions_dir.glob("*.py"))
-                migration_files = [f for f in migration_files if f.name != "__init__.py"]
+                migration_files = [
+                    f for f in migration_files if f.name != "__init__.py"
+                ]
 
                 if not migration_files:
                     # No migration files found - create one if it's an upgrade command
