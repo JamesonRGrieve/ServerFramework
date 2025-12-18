@@ -16,6 +16,7 @@
 non*.txt
 prompt
 **/alembic.ini
+**/.migration_*.lock
 venv/
 .coverage
 **/*.stackdump

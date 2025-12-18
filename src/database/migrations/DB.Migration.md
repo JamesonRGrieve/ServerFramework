@@ -330,6 +330,16 @@ A log file is generated/appended to in `src/database/migrations` whenever a migr
 - **Progress Reporting**: More detailed progress information
 - **Error Recovery**: Improved handling of common migration failure scenarios
 
+### Concurrent Execution Safety
+The migration system uses atomic file locking to ensure safe concurrent execution:
+
+- **Atomic Lock Acquisition**: Uses `os.O_CREAT | os.O_EXCL` flags for atomic file creation, which is atomic on all platforms (Unix and Windows)
+- **Database-Specific Locks**: Lock files are named `.migration_{db_name}.lock` allowing different databases to run migrations in parallel
+- **Stale Lock Detection**: Locks older than 5 minutes are automatically removed to recover from crashed processes
+- **Proper Cleanup**: Lock files are always released in a finally block, with file descriptors closed before deletion (important for Windows)
+
+This ensures that when multiple test workers or processes try to run migrations simultaneously, only one will proceed at a time while others wait their turn.
+
 These architectural improvements maintain all functionality while making the codebase more maintainable, robust, and easier to troubleshoot.
 
 ## Common Issues
