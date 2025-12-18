@@ -108,7 +108,9 @@ class MigrationFileLock:
                 if not self._is_process_alive(pid):
                     # Process is dead - stale lock
                     self.lock_path.unlink()
-                    logger.debug(f"Removed stale migration lock (PID {pid} no longer exists)")
+                    logger.debug(
+                        f"Removed stale migration lock (PID {pid} no longer exists)"
+                    )
                     return True
         except (ValueError, IOError, OSError) as e:
             # Can't read/parse lock file - try to remove it
@@ -217,7 +219,9 @@ class MigrationFileLock:
                                         pid = int(content.split()[0])
                                         if not self._is_process_alive(pid):
                                             exclusive_path.unlink()
-                                            logger.debug(f"Removed stale fallback lock (PID {pid})")
+                                            logger.debug(
+                                                f"Removed stale fallback lock (PID {pid})"
+                                            )
                                             continue
                                     else:
                                         exclusive_path.unlink()
@@ -228,7 +232,9 @@ class MigrationFileLock:
                                     age = time.time() - exclusive_path.stat().st_mtime
                                     if age > self.timeout:
                                         exclusive_path.unlink()
-                                        logger.warning(f"Removed old migration lock (age: {age:.1f}s)")
+                                        logger.warning(
+                                            f"Removed old migration lock (age: {age:.1f}s)"
+                                        )
                                         continue
                                 except (OSError, IOError):
                                     pass
@@ -2305,7 +2311,9 @@ class {class_name}(Base):
 
         try:
             migration_lock.acquire()
-            logger.debug(f"Acquired migration lock for {db_name}, proceeding with migrations")
+            logger.debug(
+                f"Acquired migration lock for {db_name}, proceeding with migrations"
+            )
         except TimeoutError as e:
             logger.error(f"Failed to acquire migration lock for {db_name}: {e}")
             return False
@@ -2313,7 +2321,9 @@ class {class_name}(Base):
         try:
             # Refresh configured extensions to pick up any environment changes
             self.configured_extensions = extensions or self._get_configured_extensions()
-            logger.debug(f"Running migrations for extensions: {self.configured_extensions}")
+            logger.debug(
+                f"Running migrations for extensions: {self.configured_extensions}"
+            )
             logger.debug(f"Running {command} for core migrations")
             core_result = self.run_alembic_command(command, target)
 
@@ -2346,7 +2356,9 @@ class {class_name}(Base):
                     extension_migrations.append((ext_name, versions_dir))
                 else:
                     # Directory structure needs to be created
-                    success, dir_path = self.ensure_extension_versions_directory(ext_name)
+                    success, dir_path = self.ensure_extension_versions_directory(
+                        ext_name
+                    )
                     if success:
                         extension_migrations.append((ext_name, dir_path))
 
@@ -2396,7 +2408,9 @@ class {class_name}(Base):
 
                 # Check if there are any migration files in the versions directory
                 migration_files = list(versions_dir.glob("*.py"))
-                migration_files = [f for f in migration_files if f.name != "__init__.py"]
+                migration_files = [
+                    f for f in migration_files if f.name != "__init__.py"
+                ]
 
                 if not migration_files:
                     # No migration files found - create one if it's an upgrade command
