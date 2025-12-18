@@ -313,10 +313,9 @@ A log file is generated/appended to in `src/database/migrations` whenever a migr
 - **Cleanup Guarantee**: Resource cleanup now occurs even when operations fail
 
 ### Thread-Safe Migration Execution
-- **Atomic File Locking**: The migration system uses atomic file creation (`O_CREAT | O_EXCL`) to prevent race conditions when multiple processes/threads attempt to run migrations simultaneously. This approach is cross-platform and more reliable than OS-specific locking mechanisms.
+- **Atomic File Locking**: The migration system uses atomic file creation (`O_CREAT | O_EXCL`) to prevent race conditions when multiple processes/threads attempt to run migrations simultaneously
 - **Database-Specific Locks**: Lock files are named `.migration.{db_name}.lock` to allow parallel migrations for different databases while preventing concurrent migrations on the same database
-- **Stale Lock Detection**: Locks include the owning process PID, and stale locks (from crashed processes) are automatically detected and cleaned up
-- **Timeout Handling**: If the lock cannot be acquired within 60 seconds, the operation fails gracefully with an error message
+- **Timeout Handling**: If the lock cannot be acquired within 60 seconds, the system attempts to force-remove stuck locks and retry
 - **Automatic Lock Release**: The lock is always released in a `finally` block, ensuring cleanup even on exceptions
 
 ### Centralized Configuration
