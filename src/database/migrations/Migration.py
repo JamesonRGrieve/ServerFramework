@@ -27,183 +27,6 @@ if str(src_path) not in sys.path:
 from lib.Logging import logger
 
 
-class MigrationFileLock:
-    """
-    Cross-platform file lock for synchronizing migration operations.
-    Uses atomic file creation (O_CREAT | O_EXCL) with PID-based stale detection.
-    This approach is simpler and more reliable than fcntl/msvcrt locking.
-    """
-
-    def __init__(self, lock_path: Path, timeout: float = 60.0):
-        """
-        Initialize the file lock.
-
-        Args:
-            lock_path: Path to the lock file
-            timeout: Maximum time to wait for the lock in seconds
-        """
-        self.lock_path = Path(lock_path)
-        self.timeout = timeout
-        self._locked = False
-
-    def __enter__(self):
-        self.acquire()
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.release()
-        return False
-
-    def _is_process_alive(self, pid: int) -> bool:
-        """Check if a process with the given PID is still running."""
-        if pid <= 0:
-            return False
-        try:
-            # On Unix, sending signal 0 checks if process exists without sending a signal
-            os.kill(pid, 0)
-            return True
-        except ProcessLookupError:
-            # Process does not exist
-            return False
-        except PermissionError:
-            # Process exists but we don't have permission to signal it
-            return True
-        except OSError:
-            # Other OS error - assume process doesn't exist
-            return False
-
-    def _read_lock_pid(self) -> int:
-        """
-        Read the PID from the lock file.
-
-        Returns:
-            The PID if readable, -1 otherwise
-        """
-        try:
-            with open(self.lock_path, "r") as f:
-                content = f.read().strip()
-                if content:
-                    return int(content.split()[0])
-        except (IOError, OSError, ValueError):
-            pass
-        return -1
-
-    def _try_clean_stale_lock(self) -> bool:
-        """
-        Check if the lock file is stale and clean it up if so.
-
-        Returns:
-            True if a stale lock was cleaned up, False otherwise
-        """
-        if not self.lock_path.exists():
-            return False
-
-        pid = self._read_lock_pid()
-
-        if pid <= 0:
-            # Invalid/empty lock file - remove it
-            try:
-                self.lock_path.unlink()
-                logger.debug("Removed invalid migration lock file")
-                return True
-            except (OSError, IOError):
-                return False
-
-        if not self._is_process_alive(pid):
-            # Process is dead - stale lock
-            try:
-                self.lock_path.unlink()
-                logger.debug(
-                    f"Removed stale migration lock (PID {pid} no longer exists)"
-                )
-                return True
-            except (OSError, IOError):
-                return False
-
-        return False
-
-    def acquire(self) -> bool:
-        """
-        Acquire the file lock, waiting up to timeout seconds.
-
-        Returns:
-            True if lock was acquired, raises TimeoutError otherwise
-        """
-        # Ensure parent directory exists
-        self.lock_path.parent.mkdir(parents=True, exist_ok=True)
-
-        start_time = time.time()
-        wait_logged = False
-        my_pid = os.getpid()
-
-        while True:
-            # First, try to clean up any stale locks
-            self._try_clean_stale_lock()
-
-            try:
-                # Try to create the lock file atomically
-                # O_CREAT | O_EXCL ensures atomic creation - fails if file exists
-                fd = os.open(
-                    str(self.lock_path),
-                    os.O_CREAT | os.O_EXCL | os.O_WRONLY,
-                    0o644,
-                )
-                # Write our PID to the lock file
-                os.write(fd, f"{my_pid}\n".encode())
-                os.close(fd)
-                self._locked = True
-                if wait_logged:
-                    logger.debug(
-                        f"Migration lock acquired after {time.time() - start_time:.1f}s"
-                    )
-                return True
-
-            except FileExistsError:
-                # Lock file already exists - check if it's stale
-                # (The stale check at the top of the loop will handle this on next iteration)
-                pass
-
-            except (IOError, OSError) as e:
-                logger.warning(f"Error creating migration lock file: {e}")
-
-            # Check timeout
-            elapsed = time.time() - start_time
-            if elapsed >= self.timeout:
-                owner_pid = self._read_lock_pid()
-                raise TimeoutError(
-                    f"Could not acquire migration lock within {self.timeout}s "
-                    f"(held by PID {owner_pid})"
-                )
-
-            # Log waiting status once
-            if not wait_logged:
-                owner_pid = self._read_lock_pid()
-                logger.debug(f"Waiting for migration lock (held by PID {owner_pid})...")
-                wait_logged = True
-
-            # Wait before retrying - use small sleep to be responsive
-            time.sleep(0.1)
-
-    def release(self) -> None:
-        """Release the file lock."""
-        if not self._locked:
-            return
-
-        try:
-            # Only remove the lock file if we own it
-            current_pid = self._read_lock_pid()
-            if current_pid == os.getpid():
-                self.lock_path.unlink()
-        except (OSError, IOError) as e:
-            logger.debug(f"Could not remove migration lock file: {e}")
-        finally:
-            self._locked = False
-
-    def is_locked(self) -> bool:
-        """Check if this instance holds the lock."""
-        return self._locked
-
-
 # Define default templates as dictionaries
 def get_script_py_mako_template():
     """Get the script.py.mako template from file or fallback to default"""
@@ -2193,27 +2016,53 @@ class {class_name}(Base):
             f"Database environment: TYPE={self.db_info['type']}, NAME={self.db_info['name']}"
         )
 
-        # Use proper file locking to ensure only one process/thread runs migrations at a time
-        # Lock file includes database name to allow parallel migrations for different databases
+        # Use atomic file creation to ensure only one process runs migrations at a time
+        # This fixes the TOCTOU race condition in the original polling-based approach
         db_name = self.db_info.get("name", "default").replace(".", "_")
         lock_file_path = self.paths["src_dir"] / f".migration.{db_name}.lock"
-        migration_lock = MigrationFileLock(lock_file_path, timeout=60.0)
 
-        try:
-            migration_lock.acquire()
-            logger.debug(
-                f"Acquired migration lock for {db_name}, proceeding with migrations"
-            )
-        except TimeoutError as e:
-            logger.error(f"Failed to acquire migration lock for {db_name}: {e}")
-            return False
+        start_time = time.time()
+        timeout = 60.0  # 60 seconds timeout
+        wait_logged = False
+
+        while time.time() - start_time < timeout:
+            try:
+                # Try to create the lock file atomically
+                # O_CREAT | O_EXCL ensures this fails if file already exists
+                fd = os.open(str(lock_file_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+                os.write(fd, f"{os.getpid()}\n".encode())
+                os.close(fd)
+                break  # Successfully acquired lock
+            except FileExistsError:
+                # Lock file exists - another process is running migrations
+                if not wait_logged:
+                    logger.debug(f"Waiting for migration lock ({lock_file_path.name})...")
+                    wait_logged = True
+                time.sleep(0.1)
+            except (IOError, OSError) as e:
+                logger.warning(f"Error creating migration lock: {e}")
+                time.sleep(0.1)
+        else:
+            # Timeout - try to clean up potentially stuck lock file
+            logger.error(f"Timeout waiting for migration lock after {timeout}s")
+            try:
+                lock_file_path.unlink()
+                logger.warning("Forcefully removed stuck migration lock file")
+                # Try once more to acquire after cleanup
+                fd = os.open(str(lock_file_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+                os.write(fd, f"{os.getpid()}\n".encode())
+                os.close(fd)
+            except Exception as e:
+                logger.error(f"Failed to acquire migration lock: {e}")
+                return False
+
+        if wait_logged:
+            logger.debug(f"Migration lock acquired after {time.time() - start_time:.1f}s")
 
         try:
             # Refresh configured extensions to pick up any environment changes
             self.configured_extensions = extensions or self._get_configured_extensions()
-            logger.debug(
-                f"Running migrations for extensions: {self.configured_extensions}"
-            )
+            logger.debug(f"Running migrations for extensions: {self.configured_extensions}")
             logger.debug(f"Running {command} for core migrations")
             core_result = self.run_alembic_command(command, target)
 
@@ -2246,9 +2095,7 @@ class {class_name}(Base):
                     extension_migrations.append((ext_name, versions_dir))
                 else:
                     # Directory structure needs to be created
-                    success, dir_path = self.ensure_extension_versions_directory(
-                        ext_name
-                    )
+                    success, dir_path = self.ensure_extension_versions_directory(ext_name)
                     if success:
                         extension_migrations.append((ext_name, dir_path))
 
@@ -2298,9 +2145,7 @@ class {class_name}(Base):
 
                 # Check if there are any migration files in the versions directory
                 migration_files = list(versions_dir.glob("*.py"))
-                migration_files = [
-                    f for f in migration_files if f.name != "__init__.py"
-                ]
+                migration_files = [f for f in migration_files if f.name != "__init__.py"]
 
                 if not migration_files:
                     # No migration files found - create one if it's an upgrade command
@@ -2346,11 +2191,12 @@ class {class_name}(Base):
                 return False
 
             return True
-
         finally:
             # Always release the lock, even if an exception occurred
-            migration_lock.release()
-            logger.debug("Released migration lock")
+            try:
+                lock_file_path.unlink()
+            except (OSError, IOError):
+                pass
 
     def _normalize_path(self, path):
         """Normalize a path to avoid duplicated segments like /path/src/src/..."""
