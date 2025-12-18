@@ -56,7 +56,7 @@ class TestTeamEndpoints(AbstractEPTest):
         invalid_data: bool = False,
     ) -> Dict[str, Any]:
         """Create a payload for team creation."""
-        if not name:
+        if name is None:
             name = self.faker.company()
 
         if invalid_data:

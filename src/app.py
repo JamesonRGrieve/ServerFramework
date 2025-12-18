@@ -33,10 +33,12 @@ def _venv():
     src_dir = current_file_path.parent
     root_dir = src_dir.parent
     venv_dir = root_dir / ".venv"
+    pyproject_file = src_dir / "pyproject.toml"
     requirements_file = root_dir / "requirements.txt"
 
-    # Check if uv is available
+    # Check which package manager is available (prefer uv > conda > pip)
     use_uv = shutil.which("uv") is not None
+    use_conda = shutil.which("conda") is not None
 
     # If we're not in a virtual environment, create one and restart
     if sys.prefix == sys.base_prefix:
@@ -46,6 +48,12 @@ def _venv():
                 if use_uv:
                     logger.debug("Using uv for faster virtual environment creation...")
                     subprocess.run(["uv", "venv", str(venv_dir)], check=True)
+                elif use_conda:
+                    logger.debug("Using conda for virtual environment creation...")
+                    subprocess.run(
+                        ["conda", "create", "-p", str(venv_dir), "python", "-y"],
+                        check=True,
+                    )
                 else:
                     venv.create(venv_dir, with_pip=True)
             except Exception as e:
@@ -63,7 +71,45 @@ def _venv():
     # We're now in the virtual environment, install requirements
     logger.debug("Running in virtual environment, checking requirements...")
 
-    if requirements_file.exists():
+    # Prefer pyproject.toml if it exists, otherwise fall back to requirements.txt
+    if pyproject_file.exists():
+        logger.debug(f"pyproject.toml found at {pyproject_file}, installing...")
+        try:
+            # Install from pyproject.toml using pip install -e . (editable install)
+            # Note: conda doesn't directly support pyproject.toml, so we use pip within the env
+            if use_uv:
+                logger.debug("Using uv for faster package installation...")
+                result = subprocess.run(
+                    ["uv", "pip", "install", "-e", str(src_dir)],
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                )
+            else:
+                result = subprocess.run(
+                    [
+                        sys.executable,
+                        "-m",
+                        "pip",
+                        "install",
+                        "-e",
+                        str(src_dir),
+                    ],
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                )
+
+            from lib.Logging import logger
+
+            logger.info("Dependencies from pyproject.toml installed successfully!")
+        except subprocess.CalledProcessError as e:
+            logger.debug(f"Failed to install from pyproject.toml: {e.stderr}")
+            return False
+        except Exception as e:
+            logger.debug(f"Error installing from pyproject.toml: {e}")
+            return False
+    elif requirements_file.exists():
         logger.debug("Requirements file found, installing...")
         try:
             if use_uv:
@@ -99,7 +145,9 @@ def _venv():
             logger.debug(f"Error installing requirements.txt: {e}")
             return False
     else:
-        logger.debug(f"Requirements file not found at {requirements_file}")
+        logger.debug(
+            f"No pyproject.toml at {pyproject_file} or requirements.txt at {requirements_file}"
+        )
 
     logger.debug("Requirements complete, configuring PATH...")
     setup_python_path()
@@ -503,47 +551,44 @@ def build_app(model_registry: ModelRegistry):
             status_code=400, content={"detail": "Invalid JSON syntax in request body"}
         )
 
+    def make_json_serializable(obj):
+        """Recursively convert objects to JSON-serializable format."""
+        if isinstance(obj, (str, int, float, bool, type(None))):
+            return obj
+        elif hasattr(obj, "model_dump"):
+            # Pydantic model
+            try:
+                return obj.model_dump(mode="json")
+            except:
+                return str(obj)
+        elif isinstance(obj, dict):
+            # Recursively handle dicts
+            return {k: make_json_serializable(v) for k, v in obj.items()}
+        elif isinstance(obj, (list, tuple, set)):
+            # Recursively handle iterables
+            return [make_json_serializable(item) for item in obj]
+        elif hasattr(obj, "__dict__"):
+            # Other objects with __dict__
+            try:
+                # Try to get a dict representation
+                if hasattr(obj, "to_dict"):
+                    return obj.to_dict()
+                elif hasattr(obj, "dict"):
+                    return obj.dict()
+                else:
+                    # Last resort - convert to string
+                    return str(obj)
+            except:
+                return str(obj)
+        else:
+            # Fallback to string representation
+            return str(obj)
+
     # Add exception handler for HTTPException to ensure JSON serializable details
     @app.exception_handler(HTTPException)
     async def http_exception_handler(request: Request, exc: HTTPException):
         # Ensure the detail is JSON serializable
-        detail = exc.detail
-
-        def make_json_serializable(obj):
-            """Recursively convert objects to JSON-serializable format."""
-            if isinstance(obj, (str, int, float, bool, type(None))):
-                return obj
-            elif hasattr(obj, "model_dump"):
-                # Pydantic model
-                try:
-                    return obj.model_dump(mode="json")
-                except:
-                    return str(obj)
-            elif isinstance(obj, dict):
-                # Recursively handle dicts
-                return {k: make_json_serializable(v) for k, v in obj.items()}
-            elif isinstance(obj, (list, tuple, set)):
-                # Recursively handle iterables
-                return [make_json_serializable(item) for item in obj]
-            elif hasattr(obj, "__dict__"):
-                # Other objects with __dict__
-                try:
-                    # Try to get a dict representation
-                    if hasattr(obj, "to_dict"):
-                        return obj.to_dict()
-                    elif hasattr(obj, "dict"):
-                        return obj.dict()
-                    else:
-                        # Last resort - convert to string
-                        return str(obj)
-                except:
-                    return str(obj)
-            else:
-                # Fallback to string representation
-                return str(obj)
-
-        # Convert detail to JSON-serializable format
-        detail = make_json_serializable(detail)
+        detail = make_json_serializable(exc.detail)
 
         return JSONResponse(
             status_code=exc.status_code, content={"detail": detail}, headers=exc.headers
@@ -611,7 +656,10 @@ def build_app(model_registry: ModelRegistry):
 
         # For regular validation errors (field validation, type validation, etc.), return 422
         # These include errors like: string_type, int_type, missing, etc.
-        return JSONResponse(status_code=422, content={"detail": exc.errors()})
+        # Use make_json_serializable to handle any non-serializable objects in error context
+        return JSONResponse(
+            status_code=422, content={"detail": make_json_serializable(exc.errors())}
+        )
 
     if env("REST").strip().lower() == "true":
         # Build routers using the model registry

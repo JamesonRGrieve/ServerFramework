@@ -2124,6 +2124,9 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
             server, admin_a.jwt, admin_a.id, team_a.id, key="update_for_fields"
         )
 
+        # For system entities, use ROOT_API_KEY to modify ROOT-created entities
+        api_key = env("ROOT_API_KEY") if self.system_entity else None
+
         # Get the entity to update
         entity = self.tracked_entities["update_for_fields"]
         entity_id = entity["id"]
@@ -2166,7 +2169,7 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         response = server.put(
             endpoint,
             json=request_data,
-            headers=self._get_appropriate_headers(admin_a.jwt),
+            headers=self._get_appropriate_headers(admin_a.jwt, api_key),
         )
 
         print(f"Response JSON: {response.json()}")
@@ -3462,8 +3465,8 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
             server, admin_a.jwt, admin_a.id, team_a.id, key=f"search_field_{field_name}"
         )
 
-        # Prepare search data with fields parameter for response filtering
-        search_data = {"fields": [field_name], "limit": 10, "offset": 0}
+        # Prepare search payload wrapped in entity name (like _search does)
+        search_payload = {self.entity_name: {}}
 
         # Extract parent IDs for the endpoint
         path_parent_ids = {}
@@ -3476,9 +3479,13 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
                     ):
                         path_parent_ids[parent.path_key] = parent_id
 
+        # Build query string with fields parameter (like _search does)
+        query_params = [f"fields={field_name}", "limit=10"]
+        query_string = f"?{'&'.join(query_params)}"
+
         response = server.post(
-            self.get_search_endpoint(path_parent_ids),
-            json=search_data,
+            f"{self.get_search_endpoint(path_parent_ids)}{query_string}",
+            json=search_payload,
             headers=self._get_appropriate_headers(admin_a.jwt),
         )
 
