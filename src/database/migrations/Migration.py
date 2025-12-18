@@ -15,6 +15,21 @@ import time
 
 import stringcase
 
+# Cross-platform file locking for migration synchronization
+try:
+    import fcntl
+
+    HAS_FCNTL = True
+except ImportError:
+    HAS_FCNTL = False
+
+try:
+    import msvcrt
+
+    HAS_MSVCRT = True
+except ImportError:
+    HAS_MSVCRT = False
+
 # Get the current file's directory
 current_file_dir = Path(__file__).resolve().parent
 template_dir = current_file_dir / "template"
@@ -25,6 +40,272 @@ if str(src_path) not in sys.path:
     sys.path.insert(0, str(src_path))
 
 from lib.Logging import logger
+
+
+class MigrationFileLock:
+    """
+    Cross-platform file lock for synchronizing migration operations.
+    Uses fcntl on Unix and msvcrt on Windows.
+    Falls back to a PID-based lock if neither is available.
+    """
+
+    def __init__(self, lock_path: Path, timeout: float = 60.0):
+        """
+        Initialize the file lock.
+
+        Args:
+            lock_path: Path to the lock file
+            timeout: Maximum time to wait for the lock in seconds
+        """
+        self.lock_path = Path(lock_path)
+        self.timeout = timeout
+        self._fd = None
+        self._locked = False
+
+    def __enter__(self):
+        self.acquire()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.release()
+        return False
+
+    def _is_process_alive(self, pid: int) -> bool:
+        """Check if a process with the given PID is still running."""
+        if pid <= 0:
+            return False
+        try:
+            # On Unix, sending signal 0 checks if process exists
+            os.kill(pid, 0)
+            return True
+        except (OSError, ProcessLookupError):
+            return False
+        except Exception:
+            # On Windows or other platforms, assume alive if we can't check
+            return True
+
+    def _check_and_clean_stale_lock(self) -> bool:
+        """
+        Check if the lock file is stale (owner process is dead) and clean it up.
+
+        Returns:
+            True if a stale lock was cleaned up, False otherwise
+        """
+        if not self.lock_path.exists():
+            return False
+
+        try:
+            # Read the PID from the lock file
+            with open(self.lock_path, "r") as f:
+                content = f.read().strip()
+                if not content:
+                    # Empty lock file - stale
+                    self.lock_path.unlink()
+                    logger.debug("Removed empty migration lock file")
+                    return True
+
+                pid = int(content.split()[0])
+                if not self._is_process_alive(pid):
+                    # Process is dead - stale lock
+                    self.lock_path.unlink()
+                    logger.debug(f"Removed stale migration lock (PID {pid} no longer exists)")
+                    return True
+        except (ValueError, IOError, OSError) as e:
+            # Can't read/parse lock file - try to remove it
+            try:
+                self.lock_path.unlink()
+                logger.debug(f"Removed unreadable migration lock: {e}")
+                return True
+            except Exception:
+                pass
+
+        return False
+
+    def acquire(self) -> bool:
+        """
+        Acquire the file lock, waiting up to timeout seconds.
+
+        Returns:
+            True if lock was acquired, raises TimeoutError otherwise
+        """
+        # Ensure parent directory exists
+        self.lock_path.parent.mkdir(parents=True, exist_ok=True)
+
+        start_time = time.time()
+        wait_logged = False
+
+        # First, check for and clean up any stale locks
+        self._check_and_clean_stale_lock()
+
+        while True:
+            try:
+                if HAS_FCNTL:
+                    # Unix-style locking
+                    try:
+                        # Open or create the lock file
+                        self._fd = open(self.lock_path, "a+")
+                        fcntl.flock(self._fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        self._locked = True
+                        # Write PID to lock file for debugging
+                        self._fd.seek(0)
+                        self._fd.truncate()
+                        self._fd.write(f"{os.getpid()}\n")
+                        self._fd.flush()
+                        if wait_logged:
+                            logger.debug(
+                                f"Migration lock acquired after {time.time() - start_time:.1f}s"
+                            )
+                        return True
+                    except (IOError, OSError) as e:
+                        # Lock is held by another process
+                        if self._fd:
+                            self._fd.close()
+                            self._fd = None
+                        # Check for stale lock periodically
+                        if self._check_and_clean_stale_lock():
+                            continue
+
+                elif HAS_MSVCRT:
+                    # Windows-style locking
+                    try:
+                        self._fd = open(self.lock_path, "a+")
+                        msvcrt.locking(self._fd.fileno(), msvcrt.LK_NBLCK, 1)
+                        self._locked = True
+                        # Write PID to lock file for debugging
+                        self._fd.seek(0)
+                        self._fd.truncate()
+                        self._fd.write(f"{os.getpid()}\n")
+                        self._fd.flush()
+                        if wait_logged:
+                            logger.debug(
+                                f"Migration lock acquired after {time.time() - start_time:.1f}s"
+                            )
+                        return True
+                    except (IOError, OSError):
+                        # Lock is held by another process
+                        if self._fd:
+                            self._fd.close()
+                            self._fd = None
+                        # Check for stale lock periodically
+                        if self._check_and_clean_stale_lock():
+                            continue
+
+                else:
+                    # Fallback: PID-based locking using atomic file creation
+                    exclusive_path = Path(str(self.lock_path) + ".exclusive")
+                    try:
+                        # Try to create lock file exclusively
+                        fd = os.open(
+                            str(exclusive_path),
+                            os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                        )
+                        os.write(fd, f"{os.getpid()}\n".encode())
+                        os.close(fd)
+                        self._locked = True
+                        if wait_logged:
+                            logger.debug(
+                                f"Migration lock acquired after {time.time() - start_time:.1f}s"
+                            )
+                        return True
+                    except FileExistsError:
+                        # Lock file exists, check if stale
+                        if exclusive_path.exists():
+                            try:
+                                with open(exclusive_path, "r") as f:
+                                    content = f.read().strip()
+                                    if content:
+                                        pid = int(content.split()[0])
+                                        if not self._is_process_alive(pid):
+                                            exclusive_path.unlink()
+                                            logger.debug(f"Removed stale fallback lock (PID {pid})")
+                                            continue
+                                    else:
+                                        exclusive_path.unlink()
+                                        continue
+                            except (ValueError, IOError, OSError):
+                                # Can't read lock, check age
+                                try:
+                                    age = time.time() - exclusive_path.stat().st_mtime
+                                    if age > self.timeout:
+                                        exclusive_path.unlink()
+                                        logger.warning(f"Removed old migration lock (age: {age:.1f}s)")
+                                        continue
+                                except (OSError, IOError):
+                                    pass
+
+                # Check timeout
+                elapsed = time.time() - start_time
+                if elapsed >= self.timeout:
+                    raise TimeoutError(
+                        f"Could not acquire migration lock within {self.timeout}s"
+                    )
+
+                # Log waiting status once
+                if not wait_logged:
+                    logger.debug(
+                        "Waiting for migration lock (another migration in progress)..."
+                    )
+                    wait_logged = True
+
+                # Wait before retrying
+                time.sleep(0.2)
+
+            except TimeoutError:
+                raise
+            except Exception as e:
+                if self._fd:
+                    try:
+                        self._fd.close()
+                    except Exception:
+                        pass
+                    self._fd = None
+                logger.warning(f"Error acquiring migration lock: {e}")
+
+                # Check timeout
+                elapsed = time.time() - start_time
+                if elapsed >= self.timeout:
+                    raise TimeoutError(
+                        f"Could not acquire migration lock within {self.timeout}s: {e}"
+                    )
+
+                time.sleep(0.2)
+
+    def release(self) -> None:
+        """Release the file lock."""
+        if not self._locked:
+            return
+
+        try:
+            if HAS_FCNTL and self._fd:
+                fcntl.flock(self._fd.fileno(), fcntl.LOCK_UN)
+            elif HAS_MSVCRT and self._fd:
+                try:
+                    self._fd.seek(0)
+                    msvcrt.locking(self._fd.fileno(), msvcrt.LK_UNLCK, 1)
+                except (IOError, OSError):
+                    pass
+            else:
+                # Fallback: remove exclusive lock file
+                exclusive_path = Path(str(self.lock_path) + ".exclusive")
+                if exclusive_path.exists():
+                    try:
+                        exclusive_path.unlink()
+                    except (OSError, IOError):
+                        pass
+        except Exception as e:
+            logger.warning(f"Error releasing migration lock: {e}")
+        finally:
+            if self._fd:
+                try:
+                    self._fd.close()
+                except Exception:
+                    pass
+                self._fd = None
+            self._locked = False
+
+    def is_locked(self) -> bool:
+        """Check if this instance holds the lock."""
+        return self._locked
 
 
 # Define default templates as dictionaries
@@ -2016,174 +2297,156 @@ class {class_name}(Base):
             f"Database environment: TYPE={self.db_info['type']}, NAME={self.db_info['name']}"
         )
 
-        # Wait for alembic.ini to not exist before proceeding
-        # This ensures only one thread runs migrations at a time
-        alembic_ini_path = self.paths["src_dir"] / "alembic.ini"
-        wait_count = 0
-        max_wait_count = 600  # 60 seconds timeout
+        # Use proper file locking to ensure only one process/thread runs migrations at a time
+        # Lock file includes database name to allow parallel migrations for different databases
+        db_name = self.db_info.get("name", "default").replace(".", "_")
+        lock_file_path = self.paths["src_dir"] / f".migration.{db_name}.lock"
+        migration_lock = MigrationFileLock(lock_file_path, timeout=60.0)
 
-        while alembic_ini_path.exists() and wait_count < max_wait_count:
-            if wait_count == 0:
-                logger.debug(
-                    f"Waiting for alembic.ini to be released by another thread..."
-                )
-            wait_count += 1
-
-            time.sleep(0.1)  # Sleep for 100ms
-
-            # Log progress every 5 seconds
-            if wait_count % 50 == 0:
-                logger.debug(
-                    f"Still waiting for alembic.ini (waited {wait_count * 0.1:.1f}s)..."
-                )
-
-        if wait_count >= max_wait_count:
-            logger.error(
-                f"Timeout waiting for alembic.ini after {wait_count * 0.1:.1f}s - file may be stuck"
-            )
-            # Try to clean up the stuck file
-            try:
-                alembic_ini_path.unlink()
-                logger.warning(f"Forcefully removed stuck alembic.ini file")
-            except Exception as e:
-                logger.error(f"Failed to remove stuck alembic.ini: {e}")
-                return False
-        elif wait_count > 0:
-            logger.debug(
-                f"alembic.ini is now available after {wait_count * 0.1:.1f}s wait"
-            )
-
-        # Refresh configured extensions to pick up any environment changes
-        self.configured_extensions = extensions or self._get_configured_extensions()
-        logger.debug(f"Running migrations for extensions: {self.configured_extensions}")
-        logger.debug(f"Running {command} for core migrations")
-        core_result = self.run_alembic_command(command, target)
-
-        if not core_result:
-            logger.error(f"Core migrations {command} failed")
+        try:
+            migration_lock.acquire()
+            logger.debug(f"Acquired migration lock for {db_name}, proceeding with migrations")
+        except TimeoutError as e:
+            logger.error(f"Failed to acquire migration lock for {db_name}: {e}")
             return False
 
-        extension_migrations = []
+        try:
+            # Refresh configured extensions to pick up any environment changes
+            self.configured_extensions = extensions or self._get_configured_extensions()
+            logger.debug(f"Running migrations for extensions: {self.configured_extensions}")
+            logger.debug(f"Running {command} for core migrations")
+            core_result = self.run_alembic_command(command, target)
 
-        # First, check which extensions actually have BLL models
-        for ext_name in self.configured_extensions:
-            extension_dir = self.paths["extensions_dir"] / ext_name
-            db_model_files = list(extension_dir.glob("BLL_*.py"))
+            if not core_result:
+                logger.error(f"Core migrations {command} failed")
+                return False
 
-            if not db_model_files:
+            extension_migrations = []
+
+            # First, check which extensions actually have BLL models
+            for ext_name in self.configured_extensions:
+                extension_dir = self.paths["extensions_dir"] / ext_name
+                db_model_files = list(extension_dir.glob("BLL_*.py"))
+
+                if not db_model_files:
+                    logger.debug(
+                        f"Skipping extension '{ext_name}' - no BLL_*.py files found"
+                    )
+                    continue
+
                 logger.debug(
-                    f"Skipping extension '{ext_name}' - no BLL_*.py files found"
+                    f"Found BLL models for extension '{ext_name}': {[f.name for f in db_model_files]}"
                 )
-                continue
 
-            logger.debug(
-                f"Found BLL models for extension '{ext_name}': {[f.name for f in db_model_files]}"
-            )
+                # Check for migrations directory
+                migrations_dir = extension_dir / "migrations"
+                versions_dir = migrations_dir / self._get_versions_directory_name()
 
-            # Check for migrations directory
-            migrations_dir = extension_dir / "migrations"
-            versions_dir = migrations_dir / self._get_versions_directory_name()
+                if versions_dir.exists():
+                    extension_migrations.append((ext_name, versions_dir))
+                else:
+                    # Directory structure needs to be created
+                    success, dir_path = self.ensure_extension_versions_directory(ext_name)
+                    if success:
+                        extension_migrations.append((ext_name, dir_path))
 
-            if versions_dir.exists():
-                extension_migrations.append((ext_name, versions_dir))
-            else:
-                # Directory structure needs to be created
-                success, dir_path = self.ensure_extension_versions_directory(ext_name)
-                if success:
-                    extension_migrations.append((ext_name, dir_path))
+            failed_extensions = []
+            for extension_name, versions_dir in extension_migrations:
+                logger.debug(f"Running migrations for extension: {extension_name}")
 
-        failed_extensions = []
-        for extension_name, versions_dir in extension_migrations:
-            logger.debug(f"Running migrations for extension: {extension_name}")
+                # Check if the versions directory actually exists and has migration files
+                if not versions_dir.exists():
+                    # No versions directory exists - need to create initial migration for upgrade
+                    if command == "upgrade":
+                        extension_dir = self.paths["extensions_dir"] / extension_name
+                        db_model_files = list(extension_dir.glob("BLL_*.py"))
 
-            # Check if the versions directory actually exists and has migration files
-            if not versions_dir.exists():
-                # No versions directory exists - need to create initial migration for upgrade
-                if command == "upgrade":
-                    extension_dir = self.paths["extensions_dir"] / extension_name
-                    db_model_files = list(extension_dir.glob("BLL_*.py"))
-
-                    if db_model_files:
+                        if db_model_files:
+                            logger.debug(
+                                f"Creating initial migration for extension {extension_name}"
+                            )
+                            created = self.create_extension_migration(
+                                extension_name, "Initial migration", auto=True
+                            )
+                            if not created:
+                                logger.warning(
+                                    f"Could not automatically create initial migration for {extension_name}. Skipping upgrade."
+                                )
+                                failed_extensions.append(extension_name)
+                                continue
+                        else:
+                            logger.debug(
+                                f"Skipping migration for extension {extension_name} as no BLL_*.py files found."
+                            )
+                            continue
+                    else:
+                        # For other commands like downgrade/history, skip if no versions exist
                         logger.debug(
-                            f"Creating initial migration for extension {extension_name}"
+                            f"Skipping '{command}' for extension {extension_name} as no migrations exist."
+                        )
+                        continue
+
+                # Re-check if versions dir exists after potential creation attempt
+                if not versions_dir.exists():
+                    logger.warning(
+                        f"Versions directory {versions_dir} still not found for extension {extension_name}, skipping."
+                    )
+                    failed_extensions.append(extension_name)
+                    continue
+
+                # Check if there are any migration files in the versions directory
+                migration_files = list(versions_dir.glob("*.py"))
+                migration_files = [f for f in migration_files if f.name != "__init__.py"]
+
+                if not migration_files:
+                    # No migration files found - create one if it's an upgrade command
+                    if command == "upgrade":
+                        logger.debug(
+                            f"No migration files found for extension {extension_name}, creating initial migration"
                         )
                         created = self.create_extension_migration(
                             extension_name, "Initial migration", auto=True
                         )
                         if not created:
                             logger.warning(
-                                f"Could not automatically create initial migration for {extension_name}. Skipping upgrade."
+                                f"Could not create initial migration for {extension_name}. Skipping upgrade."
                             )
                             failed_extensions.append(extension_name)
                             continue
                     else:
                         logger.debug(
-                            f"Skipping migration for extension {extension_name} as no BLL_*.py files found."
+                            f"No migration files found for extension {extension_name}, skipping {command}."
                         )
                         continue
-                else:
-                    # For other commands like downgrade/history, skip if no versions exist
-                    logger.debug(
-                        f"Skipping '{command}' for extension {extension_name} as no migrations exist."
-                    )
-                    continue
 
-            # Re-check if versions dir exists after potential creation attempt
-            if not versions_dir.exists():
-                logger.warning(
-                    f"Versions directory {versions_dir} still not found for extension {extension_name}, skipping."
-                )
-                failed_extensions.append(extension_name)
-                continue
-
-            # Check if there are any migration files in the versions directory
-            migration_files = list(versions_dir.glob("*.py"))
-            migration_files = [f for f in migration_files if f.name != "__init__.py"]
-
-            if not migration_files:
-                # No migration files found - create one if it's an upgrade command
-                if command == "upgrade":
-                    logger.debug(
-                        f"No migration files found for extension {extension_name}, creating initial migration"
-                    )
-                    created = self.create_extension_migration(
-                        extension_name, "Initial migration", auto=True
-                    )
-                    if not created:
-                        logger.warning(
-                            f"Could not create initial migration for {extension_name}. Skipping upgrade."
-                        )
-                        failed_extensions.append(extension_name)
-                        continue
-                else:
-                    logger.debug(
-                        f"No migration files found for extension {extension_name}, skipping {command}."
-                    )
-                    continue
-
-            # Now run the migration command for this extension
-            # For upgrade --all, we want to ensure all pending migrations are applied
-            logger.debug(
-                f"About to run extension migration: extension={extension_name}, command={command}, target={target}"
-            )
-            success = self.run_extension_migration(extension_name, command, target)
-            if not success:
-                logger.error(
-                    f"Migration {command} failed for extension {extension_name}"
-                )
-                failed_extensions.append(extension_name)
-            else:
+                # Now run the migration command for this extension
+                # For upgrade --all, we want to ensure all pending migrations are applied
                 logger.debug(
-                    f"Migration {command} completed successfully for extension {extension_name}"
+                    f"About to run extension migration: extension={extension_name}, command={command}, target={target}"
                 )
+                success = self.run_extension_migration(extension_name, command, target)
+                if not success:
+                    logger.error(
+                        f"Migration {command} failed for extension {extension_name}"
+                    )
+                    failed_extensions.append(extension_name)
+                else:
+                    logger.debug(
+                        f"Migration {command} completed successfully for extension {extension_name}"
+                    )
 
-        if failed_extensions:
-            logger.error(
-                f"Migration failed for extensions: {', '.join(failed_extensions)}"
-            )
-            return False
+            if failed_extensions:
+                logger.error(
+                    f"Migration failed for extensions: {', '.join(failed_extensions)}"
+                )
+                return False
 
-        return True
+            return True
+
+        finally:
+            # Always release the lock, even if an exception occurred
+            migration_lock.release()
+            logger.debug("Released migration lock")
 
     def _normalize_path(self, path):
         """Normalize a path to avoid duplicated segments like /path/src/src/..."""

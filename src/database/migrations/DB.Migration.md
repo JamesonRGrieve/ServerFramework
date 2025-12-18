@@ -312,6 +312,13 @@ A log file is generated/appended to in `src/database/migrations` whenever a migr
 - **Transaction Safety**: Better handling of database transaction failures
 - **Cleanup Guarantee**: Resource cleanup now occurs even when operations fail
 
+### Thread-Safe Migration Execution
+- **Cross-Platform File Locking**: The migration system uses proper file locking (fcntl on Unix, msvcrt on Windows) to prevent race conditions when multiple processes/threads attempt to run migrations simultaneously
+- **Database-Specific Locks**: Lock files are named `.migration.{db_name}.lock` to allow parallel migrations for different databases while preventing concurrent migrations on the same database
+- **Stale Lock Detection**: Locks include the owning process PID, and stale locks (from crashed processes) are automatically detected and cleaned up
+- **Timeout Handling**: If the lock cannot be acquired within 60 seconds, the operation fails gracefully with an error message
+- **Automatic Lock Release**: The lock is always released in a `finally` block, ensuring cleanup even on exceptions
+
 ### Centralized Configuration
 - **Centralized State**: All configuration is managed by the MigrationManager
 - **Environment Variable Handling**: More robust parsing of environment variables
