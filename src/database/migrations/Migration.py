@@ -2031,6 +2031,7 @@ class {class_name}(Base):
         # This is more reliable than O_EXCL which may not be atomic on all filesystems
         try:
             import fcntl
+
             has_flock = True
         except ImportError:
             has_flock = False
@@ -2060,7 +2061,11 @@ class {class_name}(Base):
                 # BlockingIOError: flock couldn't acquire lock (EWOULDBLOCK)
                 # OSError with EEXIST: O_EXCL failed because file exists
                 # OSError with EAGAIN/EWOULDBLOCK: flock failed
-                if isinstance(e, OSError) and e.errno not in (errno.EEXIST, errno.EAGAIN, errno.EWOULDBLOCK):
+                if isinstance(e, OSError) and e.errno not in (
+                    errno.EEXIST,
+                    errno.EAGAIN,
+                    errno.EWOULDBLOCK,
+                ):
                     # This is a different error, re-raise it
                     if lock_fd is not None:
                         try:
