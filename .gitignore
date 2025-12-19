@@ -28,3 +28,5 @@ src/**/.cursorrules
 .vscode
 .idea
 *.egg-info/
+*.migration.lock
+.migration.lock
