@@ -14,6 +14,7 @@ from pathlib import Path
 import time
 
 import stringcase
+from filelock import FileLock, Timeout
 
 # Get the current file's directory
 current_file_dir = Path(__file__).resolve().parent
@@ -2016,174 +2017,163 @@ class {class_name}(Base):
             f"Database environment: TYPE={self.db_info['type']}, NAME={self.db_info['name']}"
         )
 
-        # Wait for alembic.ini to not exist before proceeding
-        # This ensures only one thread runs migrations at a time
-        alembic_ini_path = self.paths["src_dir"] / "alembic.ini"
-        wait_count = 0
-        max_wait_count = 600  # 60 seconds timeout
+        # Use a proper file lock to ensure only one process runs migrations at a time
+        # This prevents race conditions when multiple pytest workers try to run migrations simultaneously
+        lock_file_path = self.paths["src_dir"] / ".migration.lock"
+        lock = FileLock(lock_file_path, timeout=120)  # 120 seconds timeout
 
-        while alembic_ini_path.exists() and wait_count < max_wait_count:
-            if wait_count == 0:
-                logger.debug(
-                    f"Waiting for alembic.ini to be released by another thread..."
-                )
-            wait_count += 1
-
-            time.sleep(0.1)  # Sleep for 100ms
-
-            # Log progress every 5 seconds
-            if wait_count % 50 == 0:
-                logger.debug(
-                    f"Still waiting for alembic.ini (waited {wait_count * 0.1:.1f}s)..."
-                )
-
-        if wait_count >= max_wait_count:
+        try:
+            logger.debug(f"Attempting to acquire migration lock at {lock_file_path}")
+            lock.acquire()
+            logger.debug("Migration lock acquired successfully")
+        except Timeout:
             logger.error(
-                f"Timeout waiting for alembic.ini after {wait_count * 0.1:.1f}s - file may be stuck"
+                f"Timeout waiting for migration lock after 120s - another process may be stuck"
             )
-            # Try to clean up the stuck file
-            try:
-                alembic_ini_path.unlink()
-                logger.warning(f"Forcefully removed stuck alembic.ini file")
-            except Exception as e:
-                logger.error(f"Failed to remove stuck alembic.ini: {e}")
-                return False
-        elif wait_count > 0:
-            logger.debug(
-                f"alembic.ini is now available after {wait_count * 0.1:.1f}s wait"
-            )
-
-        # Refresh configured extensions to pick up any environment changes
-        self.configured_extensions = extensions or self._get_configured_extensions()
-        logger.debug(f"Running migrations for extensions: {self.configured_extensions}")
-        logger.debug(f"Running {command} for core migrations")
-        core_result = self.run_alembic_command(command, target)
-
-        if not core_result:
-            logger.error(f"Core migrations {command} failed")
             return False
 
-        extension_migrations = []
-
-        # First, check which extensions actually have BLL models
-        for ext_name in self.configured_extensions:
-            extension_dir = self.paths["extensions_dir"] / ext_name
-            db_model_files = list(extension_dir.glob("BLL_*.py"))
-
-            if not db_model_files:
-                logger.debug(
-                    f"Skipping extension '{ext_name}' - no BLL_*.py files found"
-                )
-                continue
-
+        try:
+            # Refresh configured extensions to pick up any environment changes
+            self.configured_extensions = extensions or self._get_configured_extensions()
             logger.debug(
-                f"Found BLL models for extension '{ext_name}': {[f.name for f in db_model_files]}"
+                f"Running migrations for extensions: {self.configured_extensions}"
             )
+            logger.debug(f"Running {command} for core migrations")
+            core_result = self.run_alembic_command(command, target)
 
-            # Check for migrations directory
-            migrations_dir = extension_dir / "migrations"
-            versions_dir = migrations_dir / self._get_versions_directory_name()
+            if not core_result:
+                logger.error(f"Core migrations {command} failed")
+                return False
 
-            if versions_dir.exists():
-                extension_migrations.append((ext_name, versions_dir))
-            else:
-                # Directory structure needs to be created
-                success, dir_path = self.ensure_extension_versions_directory(ext_name)
-                if success:
-                    extension_migrations.append((ext_name, dir_path))
+            extension_migrations = []
 
-        failed_extensions = []
-        for extension_name, versions_dir in extension_migrations:
-            logger.debug(f"Running migrations for extension: {extension_name}")
+            # First, check which extensions actually have BLL models
+            for ext_name in self.configured_extensions:
+                extension_dir = self.paths["extensions_dir"] / ext_name
+                db_model_files = list(extension_dir.glob("BLL_*.py"))
 
-            # Check if the versions directory actually exists and has migration files
-            if not versions_dir.exists():
-                # No versions directory exists - need to create initial migration for upgrade
-                if command == "upgrade":
-                    extension_dir = self.paths["extensions_dir"] / extension_name
-                    db_model_files = list(extension_dir.glob("BLL_*.py"))
+                if not db_model_files:
+                    logger.debug(
+                        f"Skipping extension '{ext_name}' - no BLL_*.py files found"
+                    )
+                    continue
 
-                    if db_model_files:
+                logger.debug(
+                    f"Found BLL models for extension '{ext_name}': {[f.name for f in db_model_files]}"
+                )
+
+                # Check for migrations directory
+                migrations_dir = extension_dir / "migrations"
+                versions_dir = migrations_dir / self._get_versions_directory_name()
+
+                if versions_dir.exists():
+                    extension_migrations.append((ext_name, versions_dir))
+                else:
+                    # Directory structure needs to be created
+                    success, dir_path = self.ensure_extension_versions_directory(
+                        ext_name
+                    )
+                    if success:
+                        extension_migrations.append((ext_name, dir_path))
+
+            failed_extensions = []
+            for extension_name, versions_dir in extension_migrations:
+                logger.debug(f"Running migrations for extension: {extension_name}")
+
+                # Check if the versions directory actually exists and has migration files
+                if not versions_dir.exists():
+                    # No versions directory exists - need to create initial migration for upgrade
+                    if command == "upgrade":
+                        extension_dir = self.paths["extensions_dir"] / extension_name
+                        db_model_files = list(extension_dir.glob("BLL_*.py"))
+
+                        if db_model_files:
+                            logger.debug(
+                                f"Creating initial migration for extension {extension_name}"
+                            )
+                            created = self.create_extension_migration(
+                                extension_name, "Initial migration", auto=True
+                            )
+                            if not created:
+                                logger.warning(
+                                    f"Could not automatically create initial migration for {extension_name}. Skipping upgrade."
+                                )
+                                failed_extensions.append(extension_name)
+                                continue
+                        else:
+                            logger.debug(
+                                f"Skipping migration for extension {extension_name} as no BLL_*.py files found."
+                            )
+                            continue
+                    else:
+                        # For other commands like downgrade/history, skip if no versions exist
                         logger.debug(
-                            f"Creating initial migration for extension {extension_name}"
+                            f"Skipping '{command}' for extension {extension_name} as no migrations exist."
+                        )
+                        continue
+
+                # Re-check if versions dir exists after potential creation attempt
+                if not versions_dir.exists():
+                    logger.warning(
+                        f"Versions directory {versions_dir} still not found for extension {extension_name}, skipping."
+                    )
+                    failed_extensions.append(extension_name)
+                    continue
+
+                # Check if there are any migration files in the versions directory
+                migration_files = list(versions_dir.glob("*.py"))
+                migration_files = [
+                    f for f in migration_files if f.name != "__init__.py"
+                ]
+
+                if not migration_files:
+                    # No migration files found - create one if it's an upgrade command
+                    if command == "upgrade":
+                        logger.debug(
+                            f"No migration files found for extension {extension_name}, creating initial migration"
                         )
                         created = self.create_extension_migration(
                             extension_name, "Initial migration", auto=True
                         )
                         if not created:
                             logger.warning(
-                                f"Could not automatically create initial migration for {extension_name}. Skipping upgrade."
+                                f"Could not create initial migration for {extension_name}. Skipping upgrade."
                             )
                             failed_extensions.append(extension_name)
                             continue
                     else:
                         logger.debug(
-                            f"Skipping migration for extension {extension_name} as no BLL_*.py files found."
+                            f"No migration files found for extension {extension_name}, skipping {command}."
                         )
                         continue
-                else:
-                    # For other commands like downgrade/history, skip if no versions exist
-                    logger.debug(
-                        f"Skipping '{command}' for extension {extension_name} as no migrations exist."
-                    )
-                    continue
 
-            # Re-check if versions dir exists after potential creation attempt
-            if not versions_dir.exists():
-                logger.warning(
-                    f"Versions directory {versions_dir} still not found for extension {extension_name}, skipping."
-                )
-                failed_extensions.append(extension_name)
-                continue
-
-            # Check if there are any migration files in the versions directory
-            migration_files = list(versions_dir.glob("*.py"))
-            migration_files = [f for f in migration_files if f.name != "__init__.py"]
-
-            if not migration_files:
-                # No migration files found - create one if it's an upgrade command
-                if command == "upgrade":
-                    logger.debug(
-                        f"No migration files found for extension {extension_name}, creating initial migration"
-                    )
-                    created = self.create_extension_migration(
-                        extension_name, "Initial migration", auto=True
-                    )
-                    if not created:
-                        logger.warning(
-                            f"Could not create initial migration for {extension_name}. Skipping upgrade."
-                        )
-                        failed_extensions.append(extension_name)
-                        continue
-                else:
-                    logger.debug(
-                        f"No migration files found for extension {extension_name}, skipping {command}."
-                    )
-                    continue
-
-            # Now run the migration command for this extension
-            # For upgrade --all, we want to ensure all pending migrations are applied
-            logger.debug(
-                f"About to run extension migration: extension={extension_name}, command={command}, target={target}"
-            )
-            success = self.run_extension_migration(extension_name, command, target)
-            if not success:
-                logger.error(
-                    f"Migration {command} failed for extension {extension_name}"
-                )
-                failed_extensions.append(extension_name)
-            else:
+                # Now run the migration command for this extension
+                # For upgrade --all, we want to ensure all pending migrations are applied
                 logger.debug(
-                    f"Migration {command} completed successfully for extension {extension_name}"
+                    f"About to run extension migration: extension={extension_name}, command={command}, target={target}"
                 )
+                success = self.run_extension_migration(extension_name, command, target)
+                if not success:
+                    logger.error(
+                        f"Migration {command} failed for extension {extension_name}"
+                    )
+                    failed_extensions.append(extension_name)
+                else:
+                    logger.debug(
+                        f"Migration {command} completed successfully for extension {extension_name}"
+                    )
 
-        if failed_extensions:
-            logger.error(
-                f"Migration failed for extensions: {', '.join(failed_extensions)}"
-            )
-            return False
+            if failed_extensions:
+                logger.error(
+                    f"Migration failed for extensions: {', '.join(failed_extensions)}"
+                )
+                return False
 
-        return True
+            return True
+        finally:
+            # Always release the lock, even if an exception occurred
+            lock.release()
+            logger.debug("Migration lock released")
 
     def _normalize_path(self, path):
         """Normalize a path to avoid duplicated segments like /path/src/src/..."""
