@@ -160,7 +160,8 @@ def discover_core_seed_items():
         from lib.Pydantic import ModelRegistry
 
         # Create temporary registry and database manager for discovery
-        temp_db_manager = DatabaseManager()
+        # Use test prefix to avoid touching production database
+        temp_db_manager = DatabaseManager("test.seed_discovery")
         temp_db_manager.init_engine_config()
         temp_registry = ModelRegistry(database_manager=temp_db_manager)
 
@@ -255,7 +256,8 @@ def discover_extension_seed_items():
             return [], {}
 
         # Create temporary registry and database manager for discovery
-        temp_db_manager = DatabaseManager()
+        # Use test prefix to avoid touching production database
+        temp_db_manager = DatabaseManager("test.seed_discovery")
         temp_db_manager.init_engine_config()
         temp_registry = ModelRegistry(database_manager=temp_db_manager)
 
@@ -669,7 +671,8 @@ class TestSeedDataGeneration:
 
                 return Result()
 
-        db_manager = DatabaseManager()
+        # Use test prefix to avoid touching production database
+        db_manager = DatabaseManager("test.placeholder_resolution")
 
         # Test legacy format
         legacy_item = {

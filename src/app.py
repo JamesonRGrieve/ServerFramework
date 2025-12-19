@@ -421,7 +421,10 @@ def build_app(model_registry: ModelRegistry):
         db_mgr = getattr(app.state, "DB", None)
         if db_mgr is None:
             # Fallback: create a default instance if not attached
-            db_mgr = DatabaseManager()
+            # Use test prefix if running in pytest to avoid touching production database
+            import os
+            db_prefix = "test.lifespan_fallback" if os.environ.get("PYTEST_CURRENT_TEST") else ""
+            db_mgr = DatabaseManager(db_prefix)
             db_mgr.init_engine_config()
         db_mgr.init_worker()
         try:
