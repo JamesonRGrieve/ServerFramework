@@ -14,6 +14,7 @@ from pathlib import Path
 import time
 
 import stringcase
+from filelock import FileLock, Timeout
 
 # Get the current file's directory
 current_file_dir = Path(__file__).resolve().parent
@@ -2016,45 +2017,41 @@ class {class_name}(Base):
             f"Database environment: TYPE={self.db_info['type']}, NAME={self.db_info['name']}"
         )
 
-        # Wait for alembic.ini to not exist before proceeding
-        # This ensures only one thread runs migrations at a time
-        alembic_ini_path = self.paths["src_dir"] / "alembic.ini"
-        wait_count = 0
-        max_wait_count = 600  # 60 seconds timeout
+        # Use a proper file lock to ensure only one process runs migrations at a time
+        # This is critical for pytest-xdist parallel test execution
+        lock_file_path = self.paths["src_dir"] / ".migration.lock"
+        lock = FileLock(str(lock_file_path), timeout=120)  # 120 second timeout
 
-        while alembic_ini_path.exists() and wait_count < max_wait_count:
-            if wait_count == 0:
-                logger.debug(
-                    f"Waiting for alembic.ini to be released by another thread..."
-                )
-            wait_count += 1
-
-            time.sleep(0.1)  # Sleep for 100ms
-
-            # Log progress every 5 seconds
-            if wait_count % 50 == 0:
-                logger.debug(
-                    f"Still waiting for alembic.ini (waited {wait_count * 0.1:.1f}s)..."
-                )
-
-        if wait_count >= max_wait_count:
+        try:
+            logger.debug(f"Acquiring migration lock at {lock_file_path}...")
+            lock.acquire()
+            logger.debug("Migration lock acquired successfully")
+        except Timeout:
             logger.error(
-                f"Timeout waiting for alembic.ini after {wait_count * 0.1:.1f}s - file may be stuck"
+                f"Timeout waiting for migration lock after 120s - another process may be stuck"
             )
-            # Try to clean up the stuck file
-            try:
-                alembic_ini_path.unlink()
-                logger.warning(f"Forcefully removed stuck alembic.ini file")
-            except Exception as e:
-                logger.error(f"Failed to remove stuck alembic.ini: {e}")
-                return False
-        elif wait_count > 0:
-            logger.debug(
-                f"alembic.ini is now available after {wait_count * 0.1:.1f}s wait"
-            )
+            return False
 
-        # Refresh configured extensions to pick up any environment changes
-        self.configured_extensions = extensions or self._get_configured_extensions()
+        try:
+            # Clean up any leftover alembic.ini from previous runs
+            alembic_ini_path = self.paths["src_dir"] / "alembic.ini"
+            if alembic_ini_path.exists():
+                try:
+                    alembic_ini_path.unlink()
+                    logger.debug("Cleaned up leftover alembic.ini before migration")
+                except Exception as e:
+                    logger.warning(f"Could not clean up leftover alembic.ini: {e}")
+
+            # Refresh configured extensions to pick up any environment changes
+            self.configured_extensions = extensions or self._get_configured_extensions()
+            return self._run_all_migrations_internal(command, target)
+        finally:
+            # Always release the lock
+            lock.release()
+            logger.debug("Migration lock released")
+
+    def _run_all_migrations_internal(self, command, target="head"):
+        """Internal method to run migrations (called while holding the lock)"""
         logger.debug(f"Running migrations for extensions: {self.configured_extensions}")
         logger.debug(f"Running {command} for core migrations")
         core_result = self.run_alembic_command(command, target)
