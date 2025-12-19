@@ -2035,7 +2035,9 @@ class {class_name}(Base):
         try:
             # Refresh configured extensions to pick up any environment changes
             self.configured_extensions = extensions or self._get_configured_extensions()
-            logger.debug(f"Running migrations for extensions: {self.configured_extensions}")
+            logger.debug(
+                f"Running migrations for extensions: {self.configured_extensions}"
+            )
             logger.debug(f"Running {command} for core migrations")
             core_result = self.run_alembic_command(command, target)
 
@@ -2068,7 +2070,9 @@ class {class_name}(Base):
                     extension_migrations.append((ext_name, versions_dir))
                 else:
                     # Directory structure needs to be created
-                    success, dir_path = self.ensure_extension_versions_directory(ext_name)
+                    success, dir_path = self.ensure_extension_versions_directory(
+                        ext_name
+                    )
                     if success:
                         extension_migrations.append((ext_name, dir_path))
 
@@ -2118,7 +2122,9 @@ class {class_name}(Base):
 
                 # Check if there are any migration files in the versions directory
                 migration_files = list(versions_dir.glob("*.py"))
-                migration_files = [f for f in migration_files if f.name != "__init__.py"]
+                migration_files = [
+                    f for f in migration_files if f.name != "__init__.py"
+                ]
 
                 if not migration_files:
                     # No migration files found - create one if it's an upgrade command
