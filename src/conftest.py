@@ -630,7 +630,9 @@ def create_test_extension_server(extension_names):
     # Use first extension name for database prefix
     # This creates test.{extension_name}.database.db instead of random files
     first_extension = (
-        extension_names[0] if isinstance(extension_names, list) else extension_names.split(",")[0]
+        extension_names[0]
+        if isinstance(extension_names, list)
+        else extension_names.split(",")[0]
     ).strip()
     db_prefix = f"test.{first_extension}"
 
