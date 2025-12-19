@@ -9,7 +9,7 @@
 ### DO NOT, EVER, UNDER ANY CIRCUMSTANCE:
 - Make assumptions, respond with "is likely", "probably" or "might be".
 - Use frame-local or thread-local variables instead of passing data via parameters.
-- Skip a failing test instead of fixing the root issue.
+- Skip a failing test instead of fixing the root issue causing the failure.
 - Fix broken functionality and keep the broken functionality as a fallback instead of just implementing proper functionality.
 - Re-implement existing functionality in a second location to bypass it instead of fixing the original implementation.
 - Use bandaid fixes instead of fixing the core functionality.
