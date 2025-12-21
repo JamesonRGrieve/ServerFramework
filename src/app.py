@@ -423,7 +423,12 @@ def build_app(model_registry: ModelRegistry):
             # Fallback: create a default instance if not attached
             # Use test prefix if running in pytest to avoid touching production database
             import os
-            db_prefix = "test.lifespan_fallback" if os.environ.get("PYTEST_CURRENT_TEST") else ""
+
+            db_prefix = (
+                "test.lifespan_fallback"
+                if os.environ.get("PYTEST_CURRENT_TEST")
+                else ""
+            )
             db_mgr = DatabaseManager(db_prefix)
             db_mgr.init_engine_config()
         db_mgr.init_worker()
