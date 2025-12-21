@@ -9,6 +9,7 @@ jobs:
     uses: JamesonRGrieve/Workflows/.github/workflows/run-branch-test.yml@main
     with:
       target_branch: ${{ github.base_ref }}
+      parallel_workers: 1
     secrets:
       DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
       DISCORD_USER_MAP: ${{ secrets.DISCORD_USER_MAP }}
