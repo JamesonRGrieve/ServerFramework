@@ -1705,10 +1705,13 @@ class ModelRegistry(AbstractRegistry):
             self.database_manager = database_manager
         elif not self.database_manager:
             # Create a default instance if none provided
+            # Use test prefix to avoid touching production database
+            # (production code always provides a database_manager via app.instance())
             from database.DatabaseManager import DatabaseManager
 
-            self.database_manager = DatabaseManager()
-            self.database_manager.init_engine_config()
+            # DatabaseManager.__init__ already calls init_engine_config(db_prefix)
+            # so we don't need to call it again here
+            self.database_manager = DatabaseManager("test.registry_fallback")
 
         # Phase 1: Process extensions
         self._process_extensions()
