@@ -360,12 +360,12 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         headers = {}
 
         # For system entities, automatically use API key for write operations
-        # unless skip_auto_api_key is True (for testing error cases)
+        # unless skip_auto_api_key is True (for testing error cases or read verifications)
         if self.system_entity and not skip_auto_api_key:
             effective_api_key = api_key or env("ROOT_API_KEY")
             headers["X-API-Key"] = effective_api_key
         elif jwt_token:
-            # Use JWT auth for non-system entities or when testing error cases
+            # Use JWT auth for non-system entities or when skip_auto_api_key is True
             headers["Authorization"] = f"Bearer {jwt_token}"
 
         return headers
@@ -2450,9 +2450,12 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
                         path_parent_ids[f"{parent.name}_id"] = parent_id
 
         # Verify the entity is gone
+        # For system entities, when jwt_token is provided explicitly (without api_key),
+        # use JWT to verify soft-deleted entities aren't visible to normal users
+        skip_auto_api_key = jwt_token is not None and api_key is None
         response = server.get(
             self.get_detail_endpoint(entity["id"], path_parent_ids),
-            headers=self._get_appropriate_headers(jwt_token, api_key),
+            headers=self._get_appropriate_headers(jwt_token, api_key, skip_auto_api_key),
         )
         assert (
             response.status_code == 404
