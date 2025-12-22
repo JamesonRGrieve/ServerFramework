@@ -2279,8 +2279,7 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         )
         response_data = response.json()
         assert "detail" in response_data
-        assert "message" in response_data["detail"]
-        assert "must contain array data" in response_data["detail"]["message"]
+        assert "must contain array data" in response_data["detail"]
 
     def test_PUT_422_singular_with_plural(self, server: Any, admin_a: Any, team_a: Any):
         """Test updating with singular key containing array data fails validation."""
@@ -2291,15 +2290,8 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         entity = self._create(server, admin_a.jwt, admin_a.id, key="put_format_test2")
 
         # Introduce invalid data by wrapping the payload in an array under the singular key
-        payload = {
-            "name": f"Updated {self.faker.word()}",
-            "friendly_name": "Updated Friendly Name",
-            "team_id": entity["team_id"],
-            "mfa_count": 2,
-            "password_change_frequency_days": 180,
-        }
-
-        invalid_payload = {self.entity_name: [payload]}
+        update_data = {self.string_field_to_update: f"Updated {self.faker.word()}"}
+        invalid_payload = {self.entity_name: [update_data]}
 
         # Send the request
         endpoint = self.get_update_endpoint(entity["id"], {})
@@ -3474,7 +3466,14 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         )
 
         # Prepare search payload wrapped in entity name (like _search does)
-        search_payload = {self.entity_name: {}}
+        # Search by id to find the entity we just created
+        inner_payload = {"id": {"eq": entity["id"]}}
+
+        # Handle special case: AbilityModel.Search requires 'meta' field
+        if self.entity_name == "ability":
+            inner_payload["meta"] = entity.get("meta", False)
+
+        search_payload = {self.entity_name: inner_payload}
 
         # Extract parent IDs for the endpoint
         path_parent_ids = {}
@@ -3504,9 +3503,8 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
             self.get_search_endpoint(path_parent_ids),
         )
 
-        # Extract the search results from response
-        response_data = response.json()
-        entities = response_data.get("entities", [])
+        # Extract the search results from response using the standard method
+        entities = self._assert_entities_in_response(response)
 
         # Track for cleanup
         self.tracked_entities[f"search_field_{field_name}_results"] = entities

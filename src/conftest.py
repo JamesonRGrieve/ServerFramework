@@ -359,6 +359,8 @@ def isolated_server():
     Create an isolated server for individual test functions.
     Each test gets a completely fresh environment with its own database and model registry.
     Use this for tests that need complete isolation from other tests.
+
+    Note: Uses test.isolated.database.db to avoid creating random database files.
     """
     # Clear all registry caches to prevent conflicts
     from lib.Pydantic2SQLAlchemy import clear_registry_cache
@@ -366,13 +368,10 @@ def isolated_server():
     clear_registry_cache()
     logger.debug("Cleared registry caches for isolated server")
 
-    import uuid
-
     from app import instance
 
-    # Create unique database prefix for this test
-    test_id = uuid.uuid4().hex[:8]
-    db_prefix = f"test_isolated_{test_id}"
+    # Use static prefix for isolated tests to avoid random database files
+    db_prefix = "test.isolated"
 
     app = instance(db_prefix=db_prefix, extensions="")
     test_client = TestClient(app)
@@ -401,6 +400,8 @@ def isolated_extension_server():
         def test_with_payment_extension(isolated_extension_server):
             server = isolated_extension_server("payment")
             # Test with only payment extension loaded
+
+    Note: Uses test.{extension_name}.database.db naming convention.
     """
 
     def _create_server(extensions: str = ""):
@@ -412,13 +413,12 @@ def isolated_extension_server():
             f"Cleared registry caches for extension server with extensions: {extensions}"
         )
 
-        import uuid
-
         from app import instance
 
-        # Create unique database prefix for this test
-        test_id = uuid.uuid4().hex[:8]
-        db_prefix = f"test_ext_{test_id}"
+        # Use extension name for database prefix (first extension if multiple)
+        # This creates test.{extension_name}.database.db instead of random files
+        first_extension = extensions.split(",")[0].strip() if extensions else "isolated"
+        db_prefix = f"test.{first_extension}"
 
         return TestClient(instance(db_prefix=db_prefix, extensions=extensions))
 
@@ -615,18 +615,26 @@ def bind_test_models(registry, *models):
 
 
 def create_test_extension_server(extension_names):
-    """Helper function to create a test server with specific extensions."""
-    import uuid
+    """Helper function to create a test server with specific extensions.
 
+    Note: Uses test.{extension_name}.database.db naming convention.
+    """
     from app import instance
 
-    test_id = uuid.uuid4().hex[:8]
-    db_prefix = f"test_ext_{test_id}"
     extensions = (
         ",".join(extension_names)
         if isinstance(extension_names, list)
         else extension_names
     )
+
+    # Use first extension name for database prefix
+    # This creates test.{extension_name}.database.db instead of random files
+    first_extension = (
+        extension_names[0]
+        if isinstance(extension_names, list)
+        else extension_names.split(",")[0]
+    ).strip()
+    db_prefix = f"test.{first_extension}"
 
     return TestClient(instance(db_prefix=db_prefix, extensions=extensions))
 

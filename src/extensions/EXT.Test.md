@@ -19,7 +19,7 @@ This class provides a framework for testing the initialization, dependency manag
 - **Hook and Ability Testing**: Verifies the registration and execution mechanisms for hooks (`register_hook`, `trigger_hook`) and abilities (`execute_ability`, `_get_ability_args`).
 - **Comprehensive Mocking**: Uses extensive mocking to isolate extension functionality and test various configuration scenarios.
 
-Extensions provide metadata and static functionality to organize and structure import orders. The actual loading of DB tables, BLL managers, EP routers, and providers is handled automatically by the import system.
+Extensions provide metadata and static functionality to organize and structure import orders. The actual loading of database tables, BLL managers, EP routers, and providers is handled automatically by the import system.
 
 ## Test Architecture
 
