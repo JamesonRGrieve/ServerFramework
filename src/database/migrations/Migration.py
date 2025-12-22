@@ -2030,16 +2030,21 @@ class {class_name}(Base):
 
         # Use a proper file lock to ensure only one process runs migrations at a time
         # This prevents race conditions when multiple pytest workers try to run migrations simultaneously
-        lock_file_path = self.paths["src_dir"] / ".migration.lock"
+        # Make the lock file database-specific so different workers with different databases don't block each other
+        db_name_safe = self.db_info['name'].replace('/', '_').replace('\\', '_').replace(':', '_')
+        lock_file_path = self.paths["src_dir"] / f".migration.{db_name_safe}.lock"
         lock = FileLock(lock_file_path, timeout=120)  # 120 seconds timeout
 
         try:
-            logger.debug(f"Attempting to acquire migration lock at {lock_file_path}")
+            worker_id = os.environ.get("PYTEST_XDIST_WORKER", "main")
+            logger.debug(f"[Worker {worker_id}] Attempting to acquire migration lock at {lock_file_path}")
             lock.acquire()
-            logger.debug("Migration lock acquired successfully")
+            logger.debug(f"[Worker {worker_id}] Migration lock acquired successfully")
         except Timeout:
+            worker_id = os.environ.get("PYTEST_XDIST_WORKER", "main")
             logger.error(
-                f"Timeout waiting for migration lock after 120s - another process may be stuck"
+                f"[Worker {worker_id}] Timeout waiting for migration lock at {lock_file_path} after 120s - "
+                f"db={self.db_info['name']}"
             )
             return False
 
@@ -2049,11 +2054,11 @@ class {class_name}(Base):
             logger.debug(
                 f"Running migrations for extensions: {self.configured_extensions}"
             )
-            logger.debug(f"Running {command} for core migrations")
+            logger.debug(f"[Worker {worker_id}] Running {command} for core migrations on db={self.db_info['name']}")
             core_result = self.run_alembic_command(command, target)
 
             if not core_result:
-                logger.error(f"Core migrations {command} failed")
+                logger.error(f"[Worker {worker_id}] Core migrations {command} failed for db={self.db_info['name']}")
                 return False
 
             extension_migrations = []
