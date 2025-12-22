@@ -4,6 +4,27 @@ This document outlines BLL-specific patterns and conventions.
 
 > **Common Patterns**: For CRUD model patterns, error handling, and configuration patterns shared across all layers, see [Framework.md](../Framework.md#common-patterns-across-layers).
 
+## File Organization
+
+**Important**: Pydantic models and their corresponding managers coexist in the same `BLL_*.py` file. This co-location ensures:
+- Clear ownership and discoverability
+- Easier maintenance and refactoring
+- Automatic model registration during manager import
+
+```python
+# BLL_Auth.py - Contains BOTH model and manager
+class UserModel(ApplicationModel, DatabaseMixin):
+    """Pydantic model for User entity."""
+    email: str = Field(..., description="User email")
+    # ... other fields
+
+class UserManager(AbstractBLLManager, RouterMixin):
+    """Manager for User operations."""
+    _model = UserModel
+    prefix: ClassVar[Optional[str]] = "/v1/user"
+    # ... manager configuration
+```
+
 ## Manager Class Patterns
 
 ### Standard Manager Structure

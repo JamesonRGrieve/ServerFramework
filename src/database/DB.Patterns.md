@@ -41,6 +41,30 @@ class UserModel(ApplicationModel, DatabaseMixin):
 User = UserModel.DB(db_manager.Base)  # Generated SQLAlchemy model
 ```
 
+### Table Name Generation
+
+The `__tablename__` is automatically generated from the model class name using the following algorithm:
+
+1. **Remove suffix**: Strip "Model" or "Manager" suffix from class name
+2. **Convert to snake_case**: Transform PascalCase to snake_case
+3. **Pluralize**: Convert to plural form
+
+**Examples:**
+| Model Class Name | Generated `__tablename__` |
+|------------------|---------------------------|
+| `UserModel` | `users` |
+| `ProviderInstanceModel` | `provider_instances` |
+| `TeamMemberModel` | `team_members` |
+| `APIKeyModel` | `api_keys` |
+
+**Custom Table Names**: Override the default by defining `__tablename__` explicitly:
+```python
+class UserModel(ApplicationModel, DatabaseMixin):
+    __tablename__: ClassVar[str] = "custom_users_table"  # Explicit override
+```
+
+For models to be recognized as database models by the extension system, they must include `DatabaseMixin` and either define `__tablename__` or `table_comment`.
+
 ## Core Database Patterns
 
 ### Mixin Composition Pattern

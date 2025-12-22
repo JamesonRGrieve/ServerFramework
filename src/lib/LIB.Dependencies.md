@@ -44,6 +44,38 @@ Framework extension dependencies with loading order resolution.
 - Version compatibility checking
 - Integration with extension registry
 
+**The `optional` Flag:**
+The `optional` property on `EXT_Dependency` controls loading behavior:
+
+- `optional=False` (default): The extension **will not load** if this dependency is missing. Required dependencies must be present for the extension to be enabled.
+- `optional=True`: The extension **will still load** even if this dependency is missing. Optional dependencies are skipped during loading order resolution.
+
+```python
+class MyExtension(AbstractStaticExtension):
+    dependencies = Dependencies(
+        ext=[
+            EXT_Dependency(
+                name="auth",
+                friendly_name="Authentication Extension",
+                optional=False,  # Required - MyExtension won't load without auth
+                reason="Required for user authentication"
+            ),
+            EXT_Dependency(
+                name="analytics",
+                friendly_name="Analytics Extension",
+                optional=True,  # Optional - MyExtension loads even without analytics
+                reason="Enables usage tracking features when available"
+            ),
+        ]
+    )
+```
+
+**Behavior during extension loading:**
+1. Topological sort orders extensions by required dependencies only
+2. Optional dependencies are not considered for load order
+3. If a required dependency is missing → graceful failure with error message
+4. If an optional dependency is missing → extension loads with reduced functionality
+
 ### Package Manager Abstraction
 
 #### AbstractPackageManager

@@ -7,11 +7,51 @@ This document provides comprehensive guidance on using the enhanced BLL hook sys
 The BLL hook system allows you to execute custom code before or after any method on BLL manager classes. The system supports:
 
 - **Class-level hooks (`ClassName`)**: Apply to ALL methods of a manager class
-- **Method-specific hooks (`ClassName.method_name`)**: Target individual methods  
+- **Method-specific hooks (`ClassName.method_name`)**: Target individual methods
 - **Timing control**: Execute before or after method execution
 - **Priority ordering**: Control execution order with numeric priorities
 - **Conditional execution**: Use conditions to control when hooks run
 - **Type safety**: Full TypeScript-like type annotations and IDE support
+
+## Hook Path Format (Extension Hooks)
+
+For extension-based hooks registered via the extension system, hooks are identified by a 5-element tuple called `HookPath`:
+
+```python
+HookPath = Tuple[str, str, str, str, str]  # (layer, domain, entity, function, time)
+```
+
+**Components:**
+| Position | Name | Description | Examples |
+|----------|------|-------------|----------|
+| 0 | `layer` | The framework layer | `"BLL"`, `"DB"`, `"EP"` |
+| 1 | `domain` | The domain/module area | `"Auth"`, `"Providers"`, `"Seed"` |
+| 2 | `entity` | The target entity/model | `"UserModel"`, `"ProviderModel"` |
+| 3 | `function` | The function/operation | `"create"`, `"before_seed_model"`, `"inject_seed_data"` |
+| 4 | `time` | Execution timing | `"before"`, `"after"` |
+
+**Example - Extension Hook Registration:**
+```python
+class EXT_MyExtension(AbstractStaticExtension):
+    # Hooks are stored in a dict mapping HookPath to list of callables
+    _hooks: Dict[HookPath, List[Callable]] = {}
+
+    @classmethod
+    def register_hook(cls):
+        # Register a hook for database seeding
+        hook_path = ("DB", "Seed", "UserModel", "inject_seed_data", "before")
+        cls._hooks[hook_path] = [cls.inject_user_seed_data]
+
+    @staticmethod
+    def inject_user_seed_data(seed_list, model_class, session):
+        """Add custom seed data for users."""
+        seed_list.append({"email": "extension@example.com"})
+```
+
+**Common Hook Paths:**
+- `("DB", "Seed", "UserModel", "before_seed_model", "before")` - Before seeding users
+- `("DB", "Seed", "UserModel", "after_seed_model", "after")` - After seeding users
+- `("BLL", "Auth", "UserManager", "create", "before")` - Before user creation
 
 ## Hook Registration Patterns
 

@@ -12,6 +12,23 @@ The SDK follows a modular design pattern with these key components:
 - **SDK**: Central entry point that instantiates and provides access to all modules
 - **Module handlers**: Specialized classes for different API domains (Auth, Providers, Extensions, etc.)
 
+## Endpoint Paths
+
+SDK endpoints correspond to BLL manager `RouterMixin` configuration. Each manager class defines its `prefix` ClassVar that determines the API endpoint path:
+
+```python
+# BLL Manager configuration
+class UserManager(AbstractBLLManager, RouterMixin):
+    prefix: ClassVar[Optional[str]] = "/v1/user"
+    # Results in endpoints like /v1/user, /v1/user/{id}, etc.
+
+class ProviderExtensionAbilityManager(AbstractBLLManager, RouterMixin):
+    prefix: ClassVar[Optional[str]] = "/v1/extension/ability/provider"
+    # Results in endpoints like /v1/extension/ability/provider, etc.
+```
+
+**Note**: Ability-related endpoints follow an extension-centric naming convention (`/v1/extension/ability/provider`) rather than a provider-centric one (`/v1/provider/ability`). This reflects the architectural decision that abilities are managed through the extension system.
+
 ```
 SDK (main entry point)
 ├── AbstractSDKHandler (base functionality)
