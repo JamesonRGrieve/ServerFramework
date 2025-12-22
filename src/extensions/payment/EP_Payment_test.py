@@ -110,6 +110,18 @@ class TestPayment_UserAndSessionEndpoints(
             details="Not implemented yet",
         ),
         SkipThisTest(
+            name="test_GET_422_list_fields_invalid",
+            details="User entity does not have a standard LIST endpoint",
+        ),
+        SkipThisTest(
+            name="test_GET_422_list_invalid_sort_by",
+            details="User entity does not have a standard LIST endpoint",
+        ),
+        SkipThisTest(
+            name="test_GET_422_list_invalid_sort_order",
+            details="User entity does not have a standard LIST endpoint",
+        ),
+        SkipThisTest(
             name="test_PUT_404_other_user",
             details="PUT does not support update by user_id",
         ),

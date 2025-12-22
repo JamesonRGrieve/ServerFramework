@@ -617,6 +617,18 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
             details="Not implemented yet",
         ),
         SkipThisTest(
+            name="test_GET_422_list_fields_invalid",
+            details="User entity does not have a standard LIST endpoint",
+        ),
+        SkipThisTest(
+            name="test_GET_422_list_invalid_sort_by",
+            details="User entity does not have a standard LIST endpoint",
+        ),
+        SkipThisTest(
+            name="test_GET_422_list_invalid_sort_order",
+            details="User entity does not have a standard LIST endpoint",
+        ),
+        SkipThisTest(
             name="test_POST_200_search",
             details="Does not support search",
         ),

@@ -780,11 +780,10 @@ class UserManager(AbstractBLLManager, RouterMixin):
                     ip = request.client["host"]
                 else:
                     ip = None
-        host = request.headers.get("Host")
-        scheme = request.headers.get("X-Forwarded-Proto", "http")
-        server = None
-        if host:
-            server = f"{scheme}://{host}"
+            host = request.headers.get("Host")
+            scheme = request.headers.get("X-Forwarded-Proto", "http")
+            if host:
+                server = f"{scheme}://{host}"
         db_manager = model_registry.DB
         if db_manager is None:
             raise ValueError("db_manager is required for auth")

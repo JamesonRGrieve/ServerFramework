@@ -715,65 +715,44 @@ class MigrationManager:
         return self.paths["src_dir"] / "alembic.ini"
 
     def ensure_alembic_ini_exists(self):
-        """Make sure alembic.ini exists, creating it if necessary"""
-        # First check if the file exists at the expected location
+        """Make sure alembic.ini exists, creating it if necessary.
+
+        When running in parallel (pytest-xdist), always creates a unique temporary
+        file to avoid race conditions between workers.
+        """
+        # Always create a unique temporary file for this migration run
+        # This prevents race conditions when multiple workers run migrations simultaneously
+        worker_id = os.environ.get("PYTEST_XDIST_WORKER")
+
+        if worker_id is not None or self.test_mode or hasattr(self, "db_info"):
+            # Create a worker-specific temporary alembic.ini
+            config_dict = get_default_alembic_ini_dict(
+                self.test_mode, self.database_dir_name
+            )
+            config_dict["alembic"]["sqlalchemy.url"] = self.db_info["url"]
+            config_content = dict_to_ini(config_dict)
+
+            # Use database name in temp file name for debugging
+            db_name_safe = (
+                self.db_info["name"]
+                .replace("/", "_")
+                .replace("\\", "_")
+                .replace(":", "_")
+                .replace(".", "_")
+            )
+            temp_path = self.create_temp_file(
+                config_content,
+                suffix=f".{db_name_safe}.ini",
+                directory=self.paths["src_dir"],
+            )
+            logger.debug(
+                f"Created worker-specific alembic.ini at {temp_path} for db={self.db_info['name']}"
+            )
+            return temp_path
+
+        # For non-test, non-parallel runs, use the standard alembic.ini
         if self.alembic_ini_path.exists():
             logger.debug(f"Using existing alembic.ini at {self.alembic_ini_path}")
-
-            # If we're in test mode or using custom DB info, we need to update the database URL
-            if self.test_mode or hasattr(self, "db_info"):
-                try:
-                    # Read the existing file
-                    with open(self.alembic_ini_path, "r") as f:
-                        content = f.read()
-
-                    # Update the database URL in the content
-                    lines = content.split("\n")
-                    updated_lines = []
-                    for line in lines:
-                        if line.strip().startswith("sqlalchemy.url"):
-                            updated_lines.append(
-                                f"sqlalchemy.url = {self.db_info['url']}"
-                            )
-                            logger.debug(
-                                f"Updated sqlalchemy.url to: {self.db_info['url']}"
-                            )
-                        elif (
-                            line.strip().startswith("version_locations")
-                            and self.test_mode
-                        ):
-                            # Update version_locations for test mode - use parameterized database directory
-                            updated_lines.append(
-                                f"version_locations = %(here)s/{self.database_dir_name}/migrations/test_versions"
-                            )
-                            logger.debug("Updated version_locations for test mode")
-                        else:
-                            updated_lines.append(line)
-
-                    # Write the updated content back
-                    updated_content = "\n".join(updated_lines)
-                    with open(self.alembic_ini_path, "w") as f:
-                        f.write(updated_content)
-
-                    logger.debug("Updated existing alembic.ini with test configuration")
-                except Exception as e:
-                    logger.warning(
-                        f"Could not update existing alembic.ini: {e}, creating temporary file"
-                    )
-                    # If we can't update the existing file, create a temporary one
-                    config_dict = get_default_alembic_ini_dict(
-                        self.test_mode, self.database_dir_name
-                    )
-                    config_dict["alembic"]["sqlalchemy.url"] = self.db_info["url"]
-                    config_content = dict_to_ini(config_dict)
-                    temp_path = self.create_temp_file(
-                        config_content,
-                        suffix=".ini",
-                        directory=self.paths["src_dir"],
-                    )
-                    logger.debug(f"Created temporary alembic.ini at {temp_path}")
-                    return temp_path
-
             return self.alembic_ini_path
 
         # Create a new alembic.ini file if it doesn't exist
@@ -1107,10 +1086,21 @@ class MigrationManager:
             finally:
                 if script_template_dst and script_template_dst.exists():
                     self.cleanup_file(script_template_dst)
-                # Always clean up alembic.ini after the command completes
-                if self.alembic_ini_path.exists():
-                    self.alembic_ini_path.unlink()
-                    logger.debug(f"Deleted alembic.ini at {self.alembic_ini_path}")
+                # Clean up the alembic.ini file that was actually used (may be temp file)
+                alembic_ini_to_cleanup = (
+                    Path(alembic_ini_path)
+                    if isinstance(alembic_ini_path, str)
+                    else alembic_ini_path
+                )
+                if (
+                    alembic_ini_to_cleanup.exists()
+                    and alembic_ini_to_cleanup != self.alembic_ini_path
+                ):
+                    # Only delete if it's a temp file (not the shared alembic.ini)
+                    alembic_ini_to_cleanup.unlink()
+                    logger.debug(
+                        f"Deleted temp alembic.ini at {alembic_ini_to_cleanup}"
+                    )
                 os.chdir(original_dir)
                 delattr(self, "_operation_in_progress")  # Remove the operation flag
         except Exception as e:
@@ -2030,16 +2020,25 @@ class {class_name}(Base):
 
         # Use a proper file lock to ensure only one process runs migrations at a time
         # This prevents race conditions when multiple pytest workers try to run migrations simultaneously
-        lock_file_path = self.paths["src_dir"] / ".migration.lock"
+        # Make the lock file database-specific so different workers with different databases don't block each other
+        db_name_safe = (
+            self.db_info["name"].replace("/", "_").replace("\\", "_").replace(":", "_")
+        )
+        lock_file_path = self.paths["src_dir"] / f".migration.{db_name_safe}.lock"
         lock = FileLock(lock_file_path, timeout=120)  # 120 seconds timeout
 
         try:
-            logger.debug(f"Attempting to acquire migration lock at {lock_file_path}")
+            worker_id = os.environ.get("PYTEST_XDIST_WORKER", "main")
+            logger.debug(
+                f"[Worker {worker_id}] Attempting to acquire migration lock at {lock_file_path}"
+            )
             lock.acquire()
-            logger.debug("Migration lock acquired successfully")
+            logger.debug(f"[Worker {worker_id}] Migration lock acquired successfully")
         except Timeout:
+            worker_id = os.environ.get("PYTEST_XDIST_WORKER", "main")
             logger.error(
-                f"Timeout waiting for migration lock after 120s - another process may be stuck"
+                f"[Worker {worker_id}] Timeout waiting for migration lock at {lock_file_path} after 120s - "
+                f"db={self.db_info['name']}"
             )
             return False
 
@@ -2049,11 +2048,15 @@ class {class_name}(Base):
             logger.debug(
                 f"Running migrations for extensions: {self.configured_extensions}"
             )
-            logger.debug(f"Running {command} for core migrations")
+            logger.debug(
+                f"[Worker {worker_id}] Running {command} for core migrations on db={self.db_info['name']}"
+            )
             core_result = self.run_alembic_command(command, target)
 
             if not core_result:
-                logger.error(f"Core migrations {command} failed")
+                logger.error(
+                    f"[Worker {worker_id}] Core migrations {command} failed for db={self.db_info['name']}"
+                )
                 return False
 
             extension_migrations = []

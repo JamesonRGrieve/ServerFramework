@@ -1241,26 +1241,36 @@ def get_auth_dependency(auth_type: AuthType) -> Optional[Any]:
     elif auth_type == AuthType.API_KEY:
 
         def api_key_auth(
+            request: Request,
+            authorization: str = Header(None),
             x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
-            request=None,
         ):
             from logic.BLL_Auth import UserManager
 
-            if not x_api_key:
+            if x_api_key:
+                # API key provided - authenticate with it
+                model_registry = (
+                    getattr(request.app.state, "model_registry", None)
+                    if request
+                    else None
+                )
+                return UserManager.auth(
+                    model_registry=model_registry,
+                    authorization=f"Bearer {x_api_key}",
+                    request=request,
+                )
+            elif authorization:
+                # JWT provided but API key required - forbidden
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="API key required for this operation",
                 )
-
-            model_registry = (
-                getattr(request.app.state, "model_registry", None) if request else None
-            )
-
-            return UserManager.auth(
-                model_registry=model_registry,
-                authorization=f"Bearer {x_api_key}",
-                request=request,
-            )
+            else:
+                # No auth provided at all - unauthorized
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="No authentication provided.",
+                )
 
         return Depends(api_key_auth)
 
@@ -1989,6 +1999,31 @@ def register_route(
                 registry = getattr(actual_manager, "model_registry", None)
                 _validate_includes(include_param, target_model, resource_name, registry)
 
+                # Validate sort_by field if provided
+                sort_by_param = query_params.sort_by
+                if sort_by_param:
+                    valid_fields = set(target_model.model_fields.keys())
+                    if sort_by_param not in valid_fields:
+                        raise HTTPException(
+                            status_code=422,
+                            detail={
+                                "error": f"Invalid field for sort_by: {sort_by_param}",
+                                "invalid_fields": [sort_by_param],
+                                "valid_fields": sorted(list(valid_fields)),
+                            },
+                        )
+
+                # Validate sort_order if provided
+                sort_order_param = query_params.sort_order
+                if sort_order_param and sort_order_param.lower() not in ("asc", "desc"):
+                    raise HTTPException(
+                        status_code=422,
+                        detail={
+                            "error": f"Invalid sort_order: {sort_order_param}. Must match pattern ^(asc|desc)$",
+                            "validation_error": f"sort_order must be 'asc' or 'desc', got '{sort_order_param}'",
+                        },
+                    )
+
                 results = actual_manager.list(
                     include=include_param,
                     fields=fields_param,
@@ -2157,6 +2192,11 @@ def register_route(
                 if resource_name_plural in body:
                     # Handle batch creation
                     items_data = body.get(resource_name_plural)
+                    if not isinstance(items_data, list):
+                        raise HTTPException(
+                            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                            detail=f"Format mismatch: plural key '{resource_name_plural}' must contain array data",
+                        )
                     items = []
                     for item in items_data:
                         item_data = item.dict() if hasattr(item, "dict") else item
@@ -2758,6 +2798,32 @@ def register_route(
                 if not actual_sort_order:
                     actual_sort_order = "asc"
 
+                # Validate sort_by field if provided
+                if actual_sort_by:
+                    valid_fields = set(target_model.model_fields.keys())
+                    if actual_sort_by not in valid_fields:
+                        raise HTTPException(
+                            status_code=422,
+                            detail={
+                                "error": f"Invalid field for sort_by: {actual_sort_by}",
+                                "invalid_fields": [actual_sort_by],
+                                "valid_fields": sorted(list(valid_fields)),
+                            },
+                        )
+
+                # Validate sort_order if provided
+                if actual_sort_order and actual_sort_order.lower() not in (
+                    "asc",
+                    "desc",
+                ):
+                    raise HTTPException(
+                        status_code=422,
+                        detail={
+                            "error": f"Invalid sort_order: {actual_sort_order}. Must match pattern ^(asc|desc)$",
+                            "validation_error": f"sort_order must be 'asc' or 'desc', got '{actual_sort_order}'",
+                        },
+                    )
+
                 # Validate includes against model relationships
                 actual_manager = get_manager(manager, manager_property)
                 registry = getattr(actual_manager, "model_registry", None)
@@ -3058,6 +3124,28 @@ def create_router_from_manager(
     route_auth_overrides: Dict[RouteType, AuthType] = (
         manager_class.route_auth_overrides or {}
     )
+
+    # System entity auto-configuration: if BaseModel.is_system_entity=True,
+    # automatically require API key authentication for write operations
+    base_model = getattr(manager_class, "BaseModel", None) or getattr(
+        manager_class, "_model", None
+    )
+    is_system_entity = (
+        getattr(base_model, "is_system_entity", False) if base_model else False
+    )
+    if is_system_entity:
+        write_routes = [
+            RouteType.CREATE,
+            RouteType.UPDATE,
+            RouteType.DELETE,
+            RouteType.BATCH_UPDATE,
+            RouteType.BATCH_DELETE,
+        ]
+        # Only override if not already explicitly set
+        for write_route in write_routes:
+            if write_route not in route_auth_overrides:
+                route_auth_overrides[write_route] = AuthType.API_KEY
+
     custom_routes: List[CustomRouteConfig] = manager_class.custom_routes or []
     nested_resources: Dict[str, NestedResourceConfig] = (
         manager_class.nested_resources or {}

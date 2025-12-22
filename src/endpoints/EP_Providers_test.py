@@ -1007,10 +1007,6 @@ class TestProviderInstanceSettingsEndpoints(AbstractEPTest):
             name="test_GET_200_list",
             details="Provider instance settings require filtering by provider instance",
         ),
-        SkipThisTest(
-            name="test_POST_422_plural_with_singular",
-            details="Plural key with singular data validation returns 500 instead of 422 (needs investigation)",
-        ),
     ]
 
     create_fields = {

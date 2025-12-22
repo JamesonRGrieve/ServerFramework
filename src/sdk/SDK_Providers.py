@@ -171,7 +171,7 @@ class ProviderInstanceSDK(AbstractSDKHandler):
             "provider_instances": ResourceConfig(
                 name="provider_instance",
                 name_plural="provider_instances",
-                endpoint="/v1/provider_instance",
+                endpoint="/v1/provider/instance",
                 required_fields=["name", "provider_id"],
                 supports_search=True,
                 supports_batch=True,
@@ -251,27 +251,27 @@ class ProviderInstanceSDK(AbstractSDKHandler):
 
     def get_provider_instance_status(self, instance_id: str) -> Dict[str, Any]:
         """Get provider instance status."""
-        return self._request("GET", f"/v1/provider_instance/{instance_id}/status")
+        return self._request("GET", f"/v1/provider/instance/{instance_id}/status")
 
     def get_provider_instance_config(self, instance_id: str) -> Dict[str, Any]:
         """Get provider instance configuration."""
-        return self._request("GET", f"/v1/provider_instance/{instance_id}/config")
+        return self._request("GET", f"/v1/provider/instance/{instance_id}/config")
 
     def update_provider_instance_config(
         self, instance_id: str, config: Dict[str, Any]
     ) -> Dict[str, Any]:
         """Update provider instance configuration."""
         return self._request(
-            "PATCH", f"/v1/provider_instance/{instance_id}/config", data=config
+            "PATCH", f"/v1/provider/instance/{instance_id}/config", data=config
         )
 
     def enable_provider_instance(self, instance_id: str) -> Dict[str, Any]:
         """Enable a provider instance."""
-        return self._request("POST", f"/v1/provider_instance/{instance_id}/enable")
+        return self._request("POST", f"/v1/provider/instance/{instance_id}/enable")
 
     def disable_provider_instance(self, instance_id: str) -> Dict[str, Any]:
         """Disable a provider instance."""
-        return self._request("POST", f"/v1/provider_instance/{instance_id}/disable")
+        return self._request("POST", f"/v1/provider/instance/{instance_id}/disable")
 
     def get_provider_instance_metrics(
         self, instance_id: str, start_date: str = None, end_date: str = None
@@ -283,7 +283,7 @@ class ProviderInstanceSDK(AbstractSDKHandler):
         if end_date:
             params["end_date"] = end_date
         return self._request(
-            "GET", f"/v1/provider_instance/{instance_id}/metrics", query_params=params
+            "GET", f"/v1/provider/instance/{instance_id}/metrics", query_params=params
         )
 
     def get_provider_instance_logs(
@@ -292,7 +292,7 @@ class ProviderInstanceSDK(AbstractSDKHandler):
         """Get provider instance logs."""
         params = {"limit": limit, "offset": offset}
         return self._request(
-            "GET", f"/v1/provider_instance/{instance_id}/logs", query_params=params
+            "GET", f"/v1/provider/instance/{instance_id}/logs", query_params=params
         )
 
     def batch_update_provider_instances(
@@ -323,7 +323,7 @@ class ProviderInstanceSettingSDK(AbstractSDKHandler):
             "provider_instance_settings": ResourceConfig(
                 name="provider_instance_setting",
                 name_plural="provider_instance_settings",
-                endpoint="/v1/provider_instance_setting",
+                endpoint="/v1/provider/instance/setting",
                 required_fields=["provider_instance_id", "key", "value"],
                 supports_search=False,
                 supports_batch=False,
@@ -399,7 +399,7 @@ class ProviderExtensionSDK(AbstractSDKHandler):
             "provider_extensions": ResourceConfig(
                 name="provider_extension",
                 name_plural="provider_extensions",
-                endpoint="/v1/provider_extension",
+                endpoint="/v1/provider/extension",
                 required_fields=["provider_id", "extension_id"],
                 supports_search=True,
                 supports_batch=False,
@@ -478,7 +478,7 @@ class ProviderExtensionAbilitySDK(AbstractSDKHandler):
             "provider_extension_abilities": ResourceConfig(
                 name="provider_extension_ability",
                 name_plural="provider_extension_abilities",
-                endpoint="/v1/provider_extension_ability",
+                endpoint="/v1/extension/ability/provider",
                 required_fields=["provider_extension_id", "ability_id"],
                 supports_search=False,
                 supports_batch=False,
@@ -639,7 +639,7 @@ class RotationProviderInstanceSDK(AbstractSDKHandler):
             "rotation_provider_instances": ResourceConfig(
                 name="rotation_provider_instance",
                 name_plural="rotation_provider_instances",
-                endpoint="/v1/rotation_provider_instance",
+                endpoint="/v1/rotation/provider/instance",
                 required_fields=["rotation_id", "provider_instance_id"],
                 supports_search=False,
                 supports_batch=False,
@@ -718,7 +718,7 @@ class ProviderInstanceUsageSDK(AbstractSDKHandler):
             "provider_instance_usage": ResourceConfig(
                 name="provider_instance_usage",
                 name_plural="provider_instance_usage",
-                endpoint="/v1/provider_instance_usage",
+                endpoint="/v1/provider/instance/usage",
                 required_fields=["provider_instance_id"],
                 supports_search=True,
                 supports_batch=False,
@@ -804,7 +804,7 @@ class ExtensionInstanceAbilitySDK(AbstractSDKHandler):
             "extension_instance_abilities": ResourceConfig(
                 name="extension_instance_ability",
                 name_plural="extension_instance_abilities",
-                endpoint="/v1/extension_instance_ability",
+                endpoint="/v1/extension/ability/provider/instance",
                 required_fields=[
                     "provider_instance_id",
                     "provider_extension_ability_id",
@@ -906,7 +906,7 @@ class ProvidersSDK(AbstractSDKHandler):
             "provider_instances": ResourceConfig(
                 name="provider_instance",
                 name_plural="provider_instances",
-                endpoint="/v1/provider_instance",
+                endpoint="/v1/provider/instance",
                 required_fields=["name", "provider_id"],
                 supports_search=True,
                 supports_batch=True,
@@ -915,7 +915,7 @@ class ProvidersSDK(AbstractSDKHandler):
             "provider_instance_settings": ResourceConfig(
                 name="provider_instance_setting",
                 name_plural="provider_instance_settings",
-                endpoint="/v1/provider_instance_setting",
+                endpoint="/v1/provider/instance/setting",
                 required_fields=["provider_instance_id", "key", "value"],
                 supports_search=False,
                 supports_batch=False,
@@ -924,7 +924,7 @@ class ProvidersSDK(AbstractSDKHandler):
             "provider_extensions": ResourceConfig(
                 name="provider_extension",
                 name_plural="provider_extensions",
-                endpoint="/v1/provider_extension",
+                endpoint="/v1/provider/extension",
                 required_fields=["provider_id", "extension_id"],
                 supports_search=True,
                 supports_batch=False,
@@ -933,7 +933,7 @@ class ProvidersSDK(AbstractSDKHandler):
             "provider_extension_abilities": ResourceConfig(
                 name="provider_extension_ability",
                 name_plural="provider_extension_abilities",
-                endpoint="/v1/provider_extension_ability",
+                endpoint="/v1/extension/ability/provider",
                 required_fields=["provider_extension_id", "ability_id"],
                 supports_search=False,
                 supports_batch=False,
@@ -950,7 +950,7 @@ class ProvidersSDK(AbstractSDKHandler):
             "rotation_provider_instances": ResourceConfig(
                 name="rotation_provider_instance",
                 name_plural="rotation_provider_instances",
-                endpoint="/v1/rotation_provider_instance",
+                endpoint="/v1/rotation/provider/instance",
                 required_fields=["rotation_id", "provider_instance_id"],
                 supports_search=False,
                 supports_batch=False,
@@ -959,7 +959,7 @@ class ProvidersSDK(AbstractSDKHandler):
             "provider_instance_usage": ResourceConfig(
                 name="provider_instance_usage",
                 name_plural="provider_instance_usage",
-                endpoint="/v1/provider_instance_usage",
+                endpoint="/v1/provider/instance/usage",
                 required_fields=["provider_instance_id"],
                 supports_search=True,
                 supports_batch=False,
@@ -968,7 +968,7 @@ class ProvidersSDK(AbstractSDKHandler):
             "extension_instance_abilities": ResourceConfig(
                 name="extension_instance_ability",
                 name_plural="extension_instance_abilities",
-                endpoint="/v1/extension_instance_ability",
+                endpoint="/v1/extension/ability/provider/instance",
                 required_fields=[
                     "provider_instance_id",
                     "provider_extension_ability_id",

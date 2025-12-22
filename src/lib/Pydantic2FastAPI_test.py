@@ -80,7 +80,7 @@ class TestNetworkModel:
         tests: List[TestModel]
 
 
-class TestManager(RouterMixin, AbstractBLLManager):
+class TestManager(AbstractBLLManager, RouterMixin):
     __test__ = False
     """Test manager with RouterMixin."""
 

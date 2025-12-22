@@ -331,8 +331,8 @@ Base = db_manager.Base
 class UserModel(DatabaseMixin):
     email: Optional[str] = Field(description="User's email address")
 
-# Lazy generation with caching
-User = UserModel.DB  # Automatically uses db_manager.Base
+# Lazy generation with caching - always pass declarative Base
+User = UserModel.DB(db_manager.Base)
 ```
 
 **Benefits:**
@@ -581,7 +581,7 @@ def test_user_model_generation():
     assert user.email == "test@example.com"
     
     # Test generated SQLAlchemy model
-    User = UserModel.DB
+    User = UserModel.DB(test_db.Base)
     assert hasattr(User, "email")
     assert User.__tablename__ == "users"
     
