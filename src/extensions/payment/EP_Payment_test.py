@@ -127,6 +127,14 @@ class TestPayment_UserAndSessionEndpoints(
             name="test_POST_200_search_includes",
             details="User search is restricted for privacy/security reasons - users should not be searchable globally",
         ),
+        SkipThisTest(
+            name="test_GET_200_list_fields",
+            details="User listing is user-scoped - each user can only see themselves, so cannot return 3 entities",
+        ),
+        SkipThisTest(
+            name="test_GET_200_list_includes",
+            details="User listing is user-scoped - each user can only see themselves, so cannot return 3 entities",
+        ),
     ]
 
     def create_payload(
