@@ -183,18 +183,19 @@ class TestEXTAuthMFA(AbstractEXTTest):
         # Check if pyotp is actually available and verify the validation matches reality
         try:
             import pyotp
+
             pyotp_installed = True
         except ImportError:
             pyotp_installed = False
 
         if pyotp_installed:
-            assert len(pyotp_issues) == 0, (
-                "PyOTP is installed, so no pyotp issues should be reported"
-            )
+            assert (
+                len(pyotp_issues) == 0
+            ), "PyOTP is installed, so no pyotp issues should be reported"
         else:
-            assert len(pyotp_issues) > 0, (
-                "PyOTP is not installed, so pyotp issue should be reported"
-            )
+            assert (
+                len(pyotp_issues) > 0
+            ), "PyOTP is not installed, so pyotp issue should be reported"
 
     def test_has_ability(self):
         """Test has_ability method"""
