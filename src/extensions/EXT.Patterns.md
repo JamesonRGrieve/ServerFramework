@@ -4,7 +4,7 @@ This document describes extension-specific patterns and architecture.
 
 > **Common Patterns**: For CRUD model patterns, error handling, and configuration patterns shared across all layers, see [Framework.md](../Framework.md#common-patterns-across-layers).
 
-Extensions are the primary mechanism for extending server functionality in AGInfrastructure. They provide **static functionality, metadata organization, and component integration** through automated loading systems. Extensions are implemented as **static/abstract classes** that coordinate the loading of database models, business logic managers, endpoints, and providers through file naming conventions.
+Extensions are the primary mechanism for extending server functionality in ServerFramework. They provide **static functionality, metadata organization, and component integration** through automated loading systems. Extensions are implemented as **static/abstract classes** that coordinate the loading of database models, business logic managers, endpoints, and providers through file naming conventions.
 
 ## Table of Contents
 1. [Extension Architecture](#extension-architecture)
