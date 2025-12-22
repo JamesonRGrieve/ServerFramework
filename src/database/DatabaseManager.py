@@ -217,12 +217,20 @@ class DatabaseManager:
             self.init_engine_config()
 
     @classmethod
-    def get_instance(cls) -> "DatabaseManager":
-        """Get or create the singleton instance with thread-safe double-checked locking."""
+    def get_instance(cls, db_prefix: str = "") -> "DatabaseManager":
+        """Get or create the singleton instance with thread-safe double-checked locking.
+
+        Args:
+            db_prefix: Optional database prefix. If not provided and running in pytest,
+                      uses 'test.singleton' to avoid touching production database.
+        """
         if cls._instance is None:
             with cls._lock:
                 if cls._instance is None:
-                    cls._instance = cls()
+                    # Use test prefix if running in pytest and no prefix provided
+                    if not db_prefix and os.environ.get("PYTEST_CURRENT_TEST"):
+                        db_prefix = "test.singleton"
+                    cls._instance = cls(db_prefix)
         return cls._instance
 
     def init_engine_config(

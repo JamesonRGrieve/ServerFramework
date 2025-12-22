@@ -27,30 +27,58 @@ logger.debug(f"Running env.py in {'EXTENSION' if is_extension_mode else 'CORE'} 
 # Setup paths and import Base
 paths = MigrationManager.env_setup_python_path(current_file)
 
-try:
-    # Import DatabaseManager module and get Base from it
-    db_manager_module = MigrationManager.env_import_module_safely(
-        "database.DatabaseManager", "Failed to import DatabaseManager"
-    )
-    if db_manager_module:
-        # Get DatabaseManager class and create instance to access Base
-        DatabaseManager = getattr(db_manager_module, "DatabaseManager", None)
-        if DatabaseManager:
-            db_mgr = DatabaseManager()
-            db_mgr.init_engine_config()
-            Base = db_mgr.Base
+# Lazy initialization of DatabaseManager and Base to avoid creating
+# database files at import time (which would create production database during tests)
+_db_mgr = None
+_Base = None
+
+
+def _get_db_manager():
+    """Get or create the DatabaseManager instance lazily."""
+    global _db_mgr
+    if _db_mgr is None:
+        db_manager_module = MigrationManager.env_import_module_safely(
+            "database.DatabaseManager", "Failed to import DatabaseManager"
+        )
+        if db_manager_module:
+            DatabaseManager = getattr(db_manager_module, "DatabaseManager", None)
+            if DatabaseManager:
+                # DatabaseManager.__init__ already calls init_engine_config()
+                # and will read DATABASE_NAME from environment (which is set by
+                # MigrationManager.get_common_env_vars for test databases)
+                _db_mgr = DatabaseManager()
+            else:
+                raise ImportError("Could not find DatabaseManager class in module")
         else:
-            raise ImportError("Could not find DatabaseManager class in module")
-    else:
-        raise ImportError("Could not import DatabaseManager module")
+            raise ImportError("Could not import DatabaseManager module")
+    return _db_mgr
 
-    if not Base:
-        raise ImportError("Could not get Base from DatabaseManager")
 
-    logger.debug("Base imported successfully from DatabaseManager")
-except ImportError as e:
-    logger.error(f"Failed to import Base: {e}")
-    raise ImportError("Could not import Base after multiple attempts")
+def _get_base():
+    """Get the SQLAlchemy Base lazily."""
+    global _Base
+    if _Base is None:
+        db_mgr = _get_db_manager()
+        _Base = db_mgr.Base
+        if not _Base:
+            raise ImportError("Could not get Base from DatabaseManager")
+        logger.debug("Base imported successfully from DatabaseManager")
+    return _Base
+
+
+# For backwards compatibility, expose Base as a property that triggers lazy loading
+class _LazyBase:
+    """Lazy loader for Base to avoid import-time database creation."""
+
+    def __getattr__(self, name):
+        return getattr(_get_base(), name)
+
+    @property
+    def metadata(self):
+        return _get_base().metadata
+
+
+Base = _LazyBase()
 
 
 def import_all_models():

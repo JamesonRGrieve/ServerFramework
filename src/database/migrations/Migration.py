@@ -613,8 +613,10 @@ class MigrationManager:
         if self._db_manager is None:
             from database.DatabaseManager import DatabaseManager
 
-            self._db_manager = DatabaseManager()
-            self._db_manager.init_engine_config()
+            # Use test prefix in test mode to avoid touching production database
+            # DatabaseManager.__init__ already calls init_engine_config(db_prefix)
+            db_prefix = "test.migration" if self.test_mode else ""
+            self._db_manager = DatabaseManager(db_prefix)
         return self._db_manager
 
     def _get_versions_directory_name(self):
@@ -904,6 +906,15 @@ class MigrationManager:
         }
         if extension_name:
             env["ALEMBIC_EXTENSION"] = extension_name
+
+        # Pass database configuration to subprocess to ensure test databases are used
+        # This is critical because subprocess doesn't inherit patched os.environ from tests
+        if self.db_info:
+            if "name" in self.db_info:
+                env["DATABASE_NAME"] = self.db_info["name"]
+            if "type" in self.db_info:
+                env["DATABASE_TYPE"] = self.db_info["type"]
+
         return env
 
     def run_subprocess(self, cmd, env=None, capture_output=True):

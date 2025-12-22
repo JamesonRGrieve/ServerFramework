@@ -19,6 +19,7 @@ prompt
 venv/
 .coverage
 **/*.stackdump
+**/.migration.lock
 ./issues.ps1
 src/extensions/**/__init__.py
 src/extensions/**/env.py
