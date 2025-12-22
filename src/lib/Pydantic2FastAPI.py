@@ -2797,7 +2797,10 @@ def register_route(
                         )
 
                 # Validate sort_order if provided
-                if actual_sort_order and actual_sort_order.lower() not in ("asc", "desc"):
+                if actual_sort_order and actual_sort_order.lower() not in (
+                    "asc",
+                    "desc",
+                ):
                     raise HTTPException(
                         status_code=422,
                         detail={
