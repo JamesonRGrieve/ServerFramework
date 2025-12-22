@@ -3035,7 +3035,9 @@ def register_custom_route(
 
                 # Map body to expected parameters
                 if "registration_data" in sig.parameters:
-                    method_args["registration_data"] = body.get("user", body) if isinstance(body, dict) else body
+                    method_args["registration_data"] = (
+                        body.get("user", body) if isinstance(body, dict) else body
+                    )
                 elif "login_data" in sig.parameters:
                     method_args["login_data"] = body
                 elif "body" in sig.parameters:
@@ -3085,12 +3087,16 @@ def register_custom_route(
             ):
                 if "ResponsePlural" in custom_route.response_model:
                     # Extract model name from response_model string (e.g., "UserTeamModel.Network.ResponsePlural")
-                    model_name = custom_route.response_model.split(".")[0].replace("Model", "")
+                    model_name = custom_route.response_model.split(".")[0].replace(
+                        "Model", ""
+                    )
                     resource_name_plural = stringcase.snakecase(model_name) + "s"
                     return {resource_name_plural: result}
                 elif "ResponseSingle" in custom_route.response_model:
                     # Extract model name from response_model string
-                    model_name = custom_route.response_model.split(".")[0].replace("Model", "")
+                    model_name = custom_route.response_model.split(".")[0].replace(
+                        "Model", ""
+                    )
                     resource_name = stringcase.snakecase(model_name)
                     return {resource_name: result}
 
@@ -3396,7 +3402,9 @@ def create_router_from_manager(
 
             # Create a wrapper that gets the nested manager
             # Use function factory to capture custom_route and manager_property correctly
-            def create_nested_endpoint(custom_route_inner, manager_property_inner, resource_name_inner):
+            def create_nested_endpoint(
+                custom_route_inner, manager_property_inner, resource_name_inner
+            ):
                 async def nested_endpoint(request: Request):
                     parent_id = request.path_params[f"{resource_name_inner}_id"]
                     manager_factory = create_manager_factory(
@@ -3407,10 +3415,14 @@ def create_router_from_manager(
                     nested_manager = getattr(parent_manager, manager_property_inner)
 
                     # Try to get the function from nested manager first, then parent manager
-                    method_func: Callable = getattr(nested_manager, custom_route_inner.function, None)
+                    method_func: Callable = getattr(
+                        nested_manager, custom_route_inner.function, None
+                    )
                     if method_func is None:
                         # Function is on the parent manager (e.g., revoke_all_invitations on TeamManager)
-                        method_func = getattr(parent_manager, custom_route_inner.function)
+                        method_func = getattr(
+                            parent_manager, custom_route_inner.function
+                        )
 
                     # Handle request body for POST/PUT/PATCH
                     if request.method in ["POST", "PUT", "PATCH"]:
@@ -3421,9 +3433,12 @@ def create_router_from_manager(
                             return method_func(parent_id)
                     else:
                         return method_func(parent_id)
+
                 return nested_endpoint
 
-            nested_endpoint = create_nested_endpoint(custom_route, manager_property, resource_name)
+            nested_endpoint = create_nested_endpoint(
+                custom_route, manager_property, resource_name
+            )
 
             # Register the nested custom route
             nested_method_value: str = (
