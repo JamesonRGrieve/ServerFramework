@@ -49,7 +49,7 @@ def _wait_for_db_ready(ready_file: Path, lock_file: Path, timeout: int = 120) ->
     # Try to acquire lock
     lock_fd = None
     try:
-        lock_fd = open(lock_file, 'w')
+        lock_fd = open(lock_file, "w")
         # Try non-blocking lock first
         try:
             fcntl.flock(lock_fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -109,10 +109,12 @@ def pytest_configure(config):
         try:
             if _LOCK_DIR.exists():
                 import shutil
+
                 shutil.rmtree(_LOCK_DIR, ignore_errors=True)
             _LOCK_DIR.mkdir(exist_ok=True)
         except Exception:
             pass
+
 
 # IMPORTANT: Set APP_EXTENSIONS BEFORE any application imports
 # Don't set globally - let fixtures handle environment isolation
