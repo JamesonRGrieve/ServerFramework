@@ -44,6 +44,38 @@ Framework extension dependencies with loading order resolution.
 - Version compatibility checking
 - Integration with extension registry
 
+**The `optional` Flag:**
+The `optional` field on `EXT_Dependency` (inherited from base `Dependency` class) controls how missing dependencies are handled:
+
+- **`optional=False` (default)**: The dependency is **required**. If the depended-upon extension is not loaded, the extension loading will fail gracefully with an error message identifying the missing dependency.
+- **`optional=True`**: The dependency is **optional**. If the depended-upon extension is not loaded, the dependent extension will still load. The extension should handle the absence of the optional dependency gracefully.
+
+**Behavior in Loading Order Resolution:**
+During topological sorting to determine extension load order:
+- **Required dependencies** (`optional=False`) are included in the dependency graph and must be resolved
+- **Optional dependencies** (`optional=True`) are **skipped** during load order resolution, meaning they don't affect the loading sequence
+
+**Example:**
+```python
+class MyExtension(AbstractStaticExtension):
+    dependencies = Dependencies(
+        ext=[
+            EXT_Dependency(
+                name="core_extension",
+                friendly_name="Core Extension",
+                optional=False,  # Required - must be loaded first
+                reason="Provides base functionality"
+            ),
+            EXT_Dependency(
+                name="analytics",
+                friendly_name="Analytics Extension",
+                optional=True,  # Optional - nice to have but not required
+                reason="Enables usage tracking if available"
+            ),
+        ]
+    )
+```
+
 ### Package Manager Abstraction
 
 #### AbstractPackageManager
