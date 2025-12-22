@@ -1989,6 +1989,31 @@ def register_route(
                 registry = getattr(actual_manager, "model_registry", None)
                 _validate_includes(include_param, target_model, resource_name, registry)
 
+                # Validate sort_by field if provided
+                sort_by_param = query_params.sort_by
+                if sort_by_param:
+                    valid_fields = set(target_model.model_fields.keys())
+                    if sort_by_param not in valid_fields:
+                        raise HTTPException(
+                            status_code=422,
+                            detail={
+                                "error": f"Invalid field for sort_by: {sort_by_param}",
+                                "invalid_fields": [sort_by_param],
+                                "valid_fields": sorted(list(valid_fields)),
+                            },
+                        )
+
+                # Validate sort_order if provided
+                sort_order_param = query_params.sort_order
+                if sort_order_param and sort_order_param.lower() not in ("asc", "desc"):
+                    raise HTTPException(
+                        status_code=422,
+                        detail={
+                            "error": f"Invalid sort_order: {sort_order_param}. Must match pattern ^(asc|desc)$",
+                            "validation_error": f"sort_order must be 'asc' or 'desc', got '{sort_order_param}'",
+                        },
+                    )
+
                 results = actual_manager.list(
                     include=include_param,
                     fields=fields_param,
@@ -2762,6 +2787,32 @@ def register_route(
                 )
                 if not actual_sort_order:
                     actual_sort_order = "asc"
+
+                # Validate sort_by field if provided
+                if actual_sort_by:
+                    valid_fields = set(target_model.model_fields.keys())
+                    if actual_sort_by not in valid_fields:
+                        raise HTTPException(
+                            status_code=422,
+                            detail={
+                                "error": f"Invalid field for sort_by: {actual_sort_by}",
+                                "invalid_fields": [actual_sort_by],
+                                "valid_fields": sorted(list(valid_fields)),
+                            },
+                        )
+
+                # Validate sort_order if provided
+                if actual_sort_order and actual_sort_order.lower() not in (
+                    "asc",
+                    "desc",
+                ):
+                    raise HTTPException(
+                        status_code=422,
+                        detail={
+                            "error": f"Invalid sort_order: {actual_sort_order}. Must match pattern ^(asc|desc)$",
+                            "validation_error": f"sort_order must be 'asc' or 'desc', got '{actual_sort_order}'",
+                        },
+                    )
 
                 # Validate includes against model relationships
                 actual_manager = get_manager(manager, manager_property)

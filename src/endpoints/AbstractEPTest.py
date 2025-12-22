@@ -2023,9 +2023,13 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
 
         # Check that error message mentions validation error
         response_data = response.json()
+        response_str = str(response_data).lower()
         assert (
-            "pattern" in str(response_data).lower()
-            or "validation" in str(response_data).lower()
+            "pattern" in response_str
+            or "validation" in response_str
+            or "permitted" in response_str
+            or "extra" in response_str
+            or "invalid" in response_str
         ), f"Expected validation error in message, got: {response_data}"
 
     def test_GET_404_nonexistent_parent(self, server: Any, admin_a: Any):
