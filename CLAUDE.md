@@ -22,10 +22,17 @@
 ### Documentation Guidelines:
 - Markdown documentation should be concise and written in a manner in which you could reconstruct the described code therefrom with 95% accuracy but with minimal snippets. It should be a clear architectural summary, not usage examples (that's what Swagger and Strawberry are for).
 
+## Installing Dependencies
+Install all dependencies with:
+
+```bash
+pip install -e ./src[dev] --force-reinstall --break-system-packages --ignore-installed
+```
+
 ## Running Tests
 When presented with a "_test" file, run the file using the command:
 
-`source ./.venv.linux/bin/activate && python -m pytest (your test path) -v --lf` 
+`source ./.venv.linux/bin/activate && python -m pytest (your test path) -v --lf`
 
 and repair any deficiencies starting with the easiest, most common or "lowest hanging fruit".
 

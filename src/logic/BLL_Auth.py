@@ -1393,6 +1393,12 @@ class UserManager(AbstractBLLManager, RouterMixin):
 
         # Check if registration_data is not a dict (malformed JSON might parse to other types)
         if not isinstance(registration_data, dict):
+            # If it's a list, this is likely singular key with array data (format mismatch)
+            if isinstance(registration_data, list):
+                raise HTTPException(
+                    status_code=422,
+                    detail="Format mismatch: singular key 'user' cannot contain array data",
+                )
             raise HTTPException(
                 status_code=400,
                 detail=f"Invalid JSON format - expected object, got {type(registration_data).__name__}",
@@ -3121,9 +3127,10 @@ class RoleManager(AbstractBLLManager, RouterMixin):
         )
 
         if len(user_teams) == 0:
+            # Return 404 instead of 403 to prevent information leakage about team existence
             raise HTTPException(
-                status_code=403,
-                detail=f"User {user_id} is not a member of team {team_id}",
+                status_code=404,
+                detail="Team not found",
             )
         elif len(user_teams) > 1:
             raise HTTPException(
