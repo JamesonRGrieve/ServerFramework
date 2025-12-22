@@ -3474,7 +3474,14 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         )
 
         # Prepare search payload wrapped in entity name (like _search does)
-        search_payload = {self.entity_name: {}}
+        # Search by id to find the entity we just created
+        inner_payload = {"id": {"eq": entity["id"]}}
+
+        # Handle special case: AbilityModel.Search requires 'meta' field
+        if self.entity_name == "ability":
+            inner_payload["meta"] = entity.get("meta", False)
+
+        search_payload = {self.entity_name: inner_payload}
 
         # Extract parent IDs for the endpoint
         path_parent_ids = {}
@@ -3504,9 +3511,8 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
             self.get_search_endpoint(path_parent_ids),
         )
 
-        # Extract the search results from response
-        response_data = response.json()
-        entities = response_data.get("entities", [])
+        # Extract the search results from response using the standard method
+        entities = self._assert_entities_in_response(response)
 
         # Track for cleanup
         self.tracked_entities[f"search_field_{field_name}_results"] = entities

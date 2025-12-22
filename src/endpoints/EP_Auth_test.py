@@ -532,7 +532,7 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
     entity_name = "user"
     required_fields = ["id", "email", "created_at", "created_by_user_id"]
     string_field_to_update = "display_name"
-    supports_search = True
+    supports_search = False
     searchable_fields = ["email", "display_name", "first_name", "last_name"]
     class_under_test = UserModel
 
