@@ -79,9 +79,8 @@ class TestExampleExtension(EXT_Example.ServerMixin):
     # Extension's ServerMixin provides isolated test environment
     # No need to specify extension_class - it's bound to the ServerMixin
 
-    # Expected abilities and abilities
+    # Expected abilities
     expected_abilities: List[str] = ["do_example_thing", "process_data"]
-    expected_abilities: List[str] = ["example_ability", "data_processing"]
 
     # Expected dependencies declared by the extension class
     expected_dependencies = Dependencies([

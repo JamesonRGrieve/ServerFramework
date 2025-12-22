@@ -26,7 +26,6 @@ Documentation can also be viewed directly in your text editor or GitHub, though 
 
 ### Core Library Components
 - **[src/lib/LIB.Overview.md](../src/lib/LIB.Overview.md)** - Library components overview and integration
-- **[src/lib/LIB.Environment.md](../src/lib/LIB.Environment.md)** - Configuration and environment management
 - **[src/lib/LIB.Dependencies.md](../src/lib/LIB.Dependencies.md)** - System, Python, and extension dependency management
 - **[src/lib/LIB.Pydantic.md](../src/lib/LIB.Pydantic.md)** - Model utilities and registry management
 - **[src/lib/LIB.Pydantic2FastAPI.md](../src/lib/LIB.Pydantic2FastAPI.md)** - Automatic FastAPI router generation
@@ -52,14 +51,13 @@ Documentation can also be viewed directly in your text editor or GitHub, though 
 ### Endpoint Layer
 - **[src/endpoints/EP.Patterns.md](../src/endpoints/EP.Patterns.md)** - API endpoint patterns and usage
 - **[src/endpoints/EP.Abstraction.md](../src/endpoints/EP.Abstraction.md)** - Abstract endpoint router
-- **[src/endpoints/EP.ExampleFactory.md](../src/endpoints/EP.ExampleFactory.md)** - Automatic example generation
 - **[src/endpoints/EP.GQL.md](../src/endpoints/EP.GQL.md)** - GraphQL integration
 - **[src/endpoints/EP.Schema.md](../src/endpoints/EP.Schema.md)** - API schema patterns
 - **[src/endpoints/EP.Test.md](../src/endpoints/EP.Test.md)** - Endpoint testing patterns
 
 ### Extension System
-- **[src/extensions/EXT.md](../src/extensions/EXT.md)** - Extension system architecture
-- **[src/extensions/PRV.md](../src/extensions/PRV.md)** - Provider rotation system
+- **[src/extensions/EXT.Patterns.md](../src/extensions/EXT.Patterns.md)** - Extension system architecture
+- **[src/extensions/PRV.Patterns.md](../src/extensions/PRV.Patterns.md)** - Provider rotation system
 
 ### Migration System
 - **[src/database/migrations/DB.Migrations.md](../src/database/migrations/DB.Migrations.md)** - Database migration patterns
