@@ -926,7 +926,12 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         )
 
         response_data = response.json()
-        created_entity = response_data[self.entity_name]
+        # Handle both wrapped (e.g., {"user": {...}}) and unwrapped (direct entity data) responses
+        if self.entity_name in response_data:
+            created_entity = response_data[self.entity_name]
+        else:
+            # Response contains entity data directly (e.g., registration endpoint)
+            created_entity = response_data
 
         if "id" in created_entity:
             self.tracked_entities[f"post_field_{field_name}"] = created_entity
