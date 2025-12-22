@@ -2887,7 +2887,9 @@ class TestInvitationEndpoints(AbstractEPTest):
         response = server.delete(
             delete_endpoint, headers=self._get_appropriate_headers(test_user.jwt)
         )
-        self._assert_response_status(response, 204, "DELETE team invitations", delete_endpoint)
+        self._assert_response_status(
+            response, 204, "DELETE team invitations", delete_endpoint
+        )
 
         # Verify invitations are deleted
         list_endpoint = f"/v1/team/{team_id}/invitation"
