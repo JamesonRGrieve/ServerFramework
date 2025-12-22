@@ -2,7 +2,7 @@
 
 This document outlines service-specific patterns and conventions.
 
-> **Common Patterns**: For CRUD model patterns, error handling, and configuration patterns shared across all layers, see [Framework.md](../Framework.md#common-patterns-across-layers).
+> **Common Patterns**: For CRUD model patterns, error handling, and configuration patterns shared across layers, see [Framework.md](../Framework.md#common-patterns-across-layers).
 
 ## Core Service Architecture
 
