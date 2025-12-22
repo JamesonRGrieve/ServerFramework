@@ -2455,7 +2455,9 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         skip_auto_api_key = jwt_token is not None and api_key is None
         response = server.get(
             self.get_detail_endpoint(entity["id"], path_parent_ids),
-            headers=self._get_appropriate_headers(jwt_token, api_key, skip_auto_api_key),
+            headers=self._get_appropriate_headers(
+                jwt_token, api_key, skip_auto_api_key
+            ),
         )
         assert (
             response.status_code == 404
