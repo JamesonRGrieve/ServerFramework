@@ -733,13 +733,21 @@ class MigrationManager:
             config_content = dict_to_ini(config_dict)
 
             # Use database name in temp file name for debugging
-            db_name_safe = self.db_info['name'].replace('/', '_').replace('\\', '_').replace(':', '_').replace('.', '_')
+            db_name_safe = (
+                self.db_info["name"]
+                .replace("/", "_")
+                .replace("\\", "_")
+                .replace(":", "_")
+                .replace(".", "_")
+            )
             temp_path = self.create_temp_file(
                 config_content,
                 suffix=f".{db_name_safe}.ini",
                 directory=self.paths["src_dir"],
             )
-            logger.debug(f"Created worker-specific alembic.ini at {temp_path} for db={self.db_info['name']}")
+            logger.debug(
+                f"Created worker-specific alembic.ini at {temp_path} for db={self.db_info['name']}"
+            )
             return temp_path
 
         # For non-test, non-parallel runs, use the standard alembic.ini
@@ -1079,11 +1087,20 @@ class MigrationManager:
                 if script_template_dst and script_template_dst.exists():
                     self.cleanup_file(script_template_dst)
                 # Clean up the alembic.ini file that was actually used (may be temp file)
-                alembic_ini_to_cleanup = Path(alembic_ini_path) if isinstance(alembic_ini_path, str) else alembic_ini_path
-                if alembic_ini_to_cleanup.exists() and alembic_ini_to_cleanup != self.alembic_ini_path:
+                alembic_ini_to_cleanup = (
+                    Path(alembic_ini_path)
+                    if isinstance(alembic_ini_path, str)
+                    else alembic_ini_path
+                )
+                if (
+                    alembic_ini_to_cleanup.exists()
+                    and alembic_ini_to_cleanup != self.alembic_ini_path
+                ):
                     # Only delete if it's a temp file (not the shared alembic.ini)
                     alembic_ini_to_cleanup.unlink()
-                    logger.debug(f"Deleted temp alembic.ini at {alembic_ini_to_cleanup}")
+                    logger.debug(
+                        f"Deleted temp alembic.ini at {alembic_ini_to_cleanup}"
+                    )
                 os.chdir(original_dir)
                 delattr(self, "_operation_in_progress")  # Remove the operation flag
         except Exception as e:
@@ -2004,13 +2021,17 @@ class {class_name}(Base):
         # Use a proper file lock to ensure only one process runs migrations at a time
         # This prevents race conditions when multiple pytest workers try to run migrations simultaneously
         # Make the lock file database-specific so different workers with different databases don't block each other
-        db_name_safe = self.db_info['name'].replace('/', '_').replace('\\', '_').replace(':', '_')
+        db_name_safe = (
+            self.db_info["name"].replace("/", "_").replace("\\", "_").replace(":", "_")
+        )
         lock_file_path = self.paths["src_dir"] / f".migration.{db_name_safe}.lock"
         lock = FileLock(lock_file_path, timeout=120)  # 120 seconds timeout
 
         try:
             worker_id = os.environ.get("PYTEST_XDIST_WORKER", "main")
-            logger.debug(f"[Worker {worker_id}] Attempting to acquire migration lock at {lock_file_path}")
+            logger.debug(
+                f"[Worker {worker_id}] Attempting to acquire migration lock at {lock_file_path}"
+            )
             lock.acquire()
             logger.debug(f"[Worker {worker_id}] Migration lock acquired successfully")
         except Timeout:
@@ -2027,11 +2048,15 @@ class {class_name}(Base):
             logger.debug(
                 f"Running migrations for extensions: {self.configured_extensions}"
             )
-            logger.debug(f"[Worker {worker_id}] Running {command} for core migrations on db={self.db_info['name']}")
+            logger.debug(
+                f"[Worker {worker_id}] Running {command} for core migrations on db={self.db_info['name']}"
+            )
             core_result = self.run_alembic_command(command, target)
 
             if not core_result:
-                logger.error(f"[Worker {worker_id}] Core migrations {command} failed for db={self.db_info['name']}")
+                logger.error(
+                    f"[Worker {worker_id}] Core migrations {command} failed for db={self.db_info['name']}"
+                )
                 return False
 
             extension_migrations = []

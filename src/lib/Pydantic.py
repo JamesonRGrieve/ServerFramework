@@ -1780,10 +1780,17 @@ class ModelRegistry(AbstractRegistry):
         )
         if not result:
             import os
+
             worker_id = os.environ.get("PYTEST_XDIST_WORKER", "main")
-            db_info_str = f"db_name={custom_db_info['name']}, db_type={custom_db_info['type']}"
-            logger.error(f"Failed to apply migrations. Worker={worker_id}, {db_info_str}, Result={result}")
-            raise Exception(f"Failed to apply migrations. Worker={worker_id}, {db_info_str}")
+            db_info_str = (
+                f"db_name={custom_db_info['name']}, db_type={custom_db_info['type']}"
+            )
+            logger.error(
+                f"Failed to apply migrations. Worker={worker_id}, {db_info_str}, Result={result}"
+            )
+            raise Exception(
+                f"Failed to apply migrations. Worker={worker_id}, {db_info_str}"
+            )
         logger.info(f"Successfully verified database migrations for {db_name}")
 
         configure_mappers()
