@@ -12,7 +12,7 @@ ENV PYTHONUNBUFFERED=1 \
     CHROMIUM_PATH=/usr/bin/chromium \
     CHROMIUM_FLAGS=--no-sandbox
 
-# Install dependencies in a single layer to reduce image size
+# Install dependencies in a single layer to reduce image sizes
 RUN set -eux && \
     apt-get update && \
     apt-get upgrade -y && \
