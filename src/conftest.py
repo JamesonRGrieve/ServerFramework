@@ -104,6 +104,7 @@ def pytest_sessionfinish(session, exitstatus):
                 except OSError:
                     pass
 
+
 # Add project root and src directories to path
 if str(src_path) not in sys.path:
     sys.path.insert(0, str(src_path))
@@ -366,7 +367,9 @@ def mock_server():
     worker_id = os.environ.get("PYTEST_XDIST_WORKER", "main")
     db_prefix = f"mock.{worker_id}"
 
-    logger.debug(f"Worker {worker_id}: Setting up mock server with db_prefix={db_prefix}")
+    logger.debug(
+        f"Worker {worker_id}: Setting up mock server with db_prefix={db_prefix}"
+    )
 
     # Clear all registry caches to prevent conflicts during test setup
     from lib.Pydantic2SQLAlchemy import clear_registry_cache
