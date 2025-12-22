@@ -10,7 +10,7 @@ The framework follows a strict layered architecture with clear separation of con
 - **Library Layer (`lib/`)**: Foundation utilities for configuration, dependencies, model management, and logging
 - **Database Layer (`DB_*.py`)**: SQLAlchemy models automatically generated from Pydantic schemas with declarative base isolation
 - **Business Logic Layer (`BLL_*.py`)**: Pydantic-first schema design with comprehensive CRUD operations and hook support
-- **Endpoint Layer (`EP_*.py`)**: Automatic FastAPI router generation from BLL managers with authentication and documentation
+- **Endpoint Layer (abstracted via `RouterMixin`)**: FastAPI routers are automatically generated from BLL managers that inherit `RouterMixin`. While `EP_*.py` files exist (primarily for endpoint tests), the actual endpoint logic is abstracted into the BLL layer. Managers configure their endpoints through class variables like `prefix`, `tags`, and `auth_type`.
 - **Extension System (`EXT_*.py`)**: Modular plugin architecture with auto-discovery and isolated migrations
 - **Provider System (`PRV_*.py`)**: External API integration with failover support and rotation capabilities
 

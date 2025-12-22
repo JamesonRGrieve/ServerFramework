@@ -534,6 +534,34 @@ with db_manager.get_db() as session:
     user = session.query(User).filter(User.email == "test@example.com").first()
 ```
 
+### Table Name Convention
+
+When `__tablename__` is not explicitly specified, the framework automatically generates it using this convention:
+
+1. **Remove suffix**: Strip "Model" or "Manager" suffix from the class name
+2. **Convert to snake_case**: Transform PascalCase to snake_case
+3. **Pluralize**: Apply English pluralization rules
+
+**Examples:**
+| Pydantic Model | Generated `__tablename__` |
+|----------------|--------------------------|
+| `UserModel` | `users` |
+| `ProviderInstanceModel` | `provider_instances` |
+| `TeamModel` | `teams` |
+| `ExtensionAbilityModel` | `extension_abilities` |
+
+**Override**: To specify a custom table name, define `__tablename__` as a class variable:
+```python
+class UserModel(ApplicationModel, DatabaseMixin):
+    __tablename__: ClassVar[str] = "custom_users_table"
+```
+
+Or use `table_comment` which will use the default naming but add a comment:
+```python
+class UserModel(ApplicationModel, DatabaseMixin):
+    table_comment: ClassVar[str] = "User accounts table"
+```
+
 **Benefits:**
 - Single source of truth (Pydantic model)
 - Automatic SQLAlchemy generation

@@ -149,6 +149,16 @@ Additionally, resources may have custom actions like:
 - `uninstall_extension()`
 - `revoke_all_invitations()`
 
+## Endpoint Path Conventions
+
+SDK endpoint paths are derived from BLL manager `prefix` class variables. Common patterns:
+
+- **Core resources**: `/v1/{resource}` (e.g., `/v1/user`, `/v1/provider`)
+- **Resource instances**: `/v1/{resource}/instance` (e.g., `/v1/provider/instance`)
+- **Extension abilities**: `/v1/extension/ability/{provider}` (extension-centric, not provider-centric)
+
+**Note**: Provider ability endpoints follow an extension-centric naming convention where the path is `/v1/extension/ability/provider` rather than `/v1/provider/ability`. This reflects the architectural relationship where abilities are defined by extensions and implemented by providers.
+
 ## Pagination
 
 List operations support pagination parameters:
