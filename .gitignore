@@ -30,3 +30,4 @@ src/**/.cursorrules
 .idea
 *.egg-info/
 **/.migration.lock
+.pytest_worker_locks/

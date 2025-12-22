@@ -1,5 +1,8 @@
 import base64
+import fcntl
+import os
 import sys
+import time
 import uuid
 from pathlib import Path
 from types import NoneType
@@ -9,6 +12,107 @@ import pytest
 from faker import Faker
 from fastapi.testclient import TestClient
 from pydantic import BaseModel as PydanticBaseModel
+
+# ============================================================================
+# pytest-xdist Worker Coordination
+# ============================================================================
+# When running with pytest-xdist (-n 8), each worker independently runs
+# session-scoped fixtures. This causes race conditions when multiple workers
+# try to run database migrations simultaneously. The solution:
+# 1. Use a file lock to ensure only one worker runs migrations
+# 2. Other workers wait for a "ready" marker file before proceeding
+# ============================================================================
+
+_LOCK_DIR = Path(__file__).parent.parent / ".pytest_worker_locks"
+_TEST_DB_LOCK = _LOCK_DIR / "test_db.lock"
+_TEST_DB_READY = _LOCK_DIR / "test_db.ready"
+_MOCK_DB_LOCK = _LOCK_DIR / "mock_db.lock"
+_MOCK_DB_READY = _LOCK_DIR / "mock_db.ready"
+
+
+def _wait_for_db_ready(ready_file: Path, lock_file: Path, timeout: int = 120) -> bool:
+    """
+    Wait for database to be ready, or acquire lock to set it up.
+    Returns True if this process should set up the database, False if already ready.
+    """
+    _LOCK_DIR.mkdir(exist_ok=True)
+
+    # If ready file exists and is recent (within 10 minutes), DB is ready
+    if ready_file.exists():
+        try:
+            age = time.time() - ready_file.stat().st_mtime
+            if age < 600:  # 10 minutes
+                return False  # Already ready, don't set up
+        except OSError:
+            pass
+
+    # Try to acquire lock
+    lock_fd = None
+    try:
+        lock_fd = open(lock_file, 'w')
+        # Try non-blocking lock first
+        try:
+            fcntl.flock(lock_fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            # We got the lock - we're responsible for setup
+            # Check again if ready (another process might have finished)
+            if ready_file.exists():
+                try:
+                    age = time.time() - ready_file.stat().st_mtime
+                    if age < 600:
+                        fcntl.flock(lock_fd.fileno(), fcntl.LOCK_UN)
+                        lock_fd.close()
+                        return False  # Already ready
+                except OSError:
+                    pass
+            # We need to set up - keep the lock
+            return True
+        except BlockingIOError:
+            # Lock is held by another process - wait for ready file
+            start_time = time.time()
+            while time.time() - start_time < timeout:
+                if ready_file.exists():
+                    try:
+                        age = time.time() - ready_file.stat().st_mtime
+                        if age < 600:
+                            return False  # Ready now
+                    except OSError:
+                        pass
+                time.sleep(0.5)
+            # Timeout - try to proceed anyway
+            return False
+    except Exception:
+        # On any error, try to proceed with setup
+        return True
+    finally:
+        if lock_fd and not lock_fd.closed:
+            # Only close if we're not setting up (setup will close after marking ready)
+            pass
+
+
+def _mark_db_ready(ready_file: Path, lock_file: Path):
+    """Mark database as ready and release lock."""
+    try:
+        ready_file.write_text(str(time.time()))
+    except Exception:
+        pass
+    # Release the lock by removing lock file (other processes will create new ones)
+    try:
+        lock_file.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
+def pytest_configure(config):
+    """Clean up stale lock files at the start of a test run."""
+    # Only the master process should clean up (not workers)
+    if not hasattr(config, "workerinput"):
+        try:
+            if _LOCK_DIR.exists():
+                import shutil
+                shutil.rmtree(_LOCK_DIR, ignore_errors=True)
+            _LOCK_DIR.mkdir(exist_ok=True)
+        except Exception:
+            pass
 
 # IMPORTANT: Set APP_EXTENSIONS BEFORE any application imports
 # Don't set globally - let fixtures handle environment isolation
@@ -276,6 +380,9 @@ def mock_server():
     Note: This fixture is for core system tests. Extension tests should use
     AbstractEXTTest.extension_server for proper isolation.
     """
+    # Worker coordination: ensure only one worker sets up the database
+    should_setup = _wait_for_db_ready(_MOCK_DB_READY, _MOCK_DB_LOCK)
+
     # Clear all registry caches to prevent conflicts during test setup
     from lib.Pydantic2SQLAlchemy import clear_registry_cache
 
@@ -290,7 +397,16 @@ def mock_server():
     # All workers will share this same database
     from app import instance
 
-    yield TestClient(instance(db_prefix="mock", extensions=""))
+    try:
+        app = instance(db_prefix="mock", extensions="")
+        if should_setup:
+            _mark_db_ready(_MOCK_DB_READY, _MOCK_DB_LOCK)
+        yield TestClient(app)
+    except Exception as e:
+        # On error, still mark ready to unblock other workers (they'll get their own error)
+        if should_setup:
+            _mark_db_ready(_MOCK_DB_READY, _MOCK_DB_LOCK)
+        raise
 
 
 @pytest.fixture(scope="session")
@@ -303,6 +419,9 @@ def server():
     Note: This fixture is for core system tests. Extension tests should use
     AbstractEXTTest.extension_server for proper isolation.
     """
+    # Worker coordination: ensure only one worker sets up the database
+    should_setup = _wait_for_db_ready(_TEST_DB_READY, _TEST_DB_LOCK)
+
     # Clear all registry caches to prevent conflicts during test setup
     from lib.Pydantic2SQLAlchemy import clear_registry_cache
 
@@ -317,7 +436,16 @@ def server():
     # All workers will share this same database
     from app import instance
 
-    app = instance(db_prefix="test", extensions="")
+    try:
+        app = instance(db_prefix="test", extensions="")
+        if should_setup:
+            _mark_db_ready(_TEST_DB_READY, _TEST_DB_LOCK)
+    except Exception as e:
+        # On error, still mark ready to unblock other workers (they'll get their own error)
+        if should_setup:
+            _mark_db_ready(_TEST_DB_READY, _TEST_DB_LOCK)
+        raise
+
     test_client = TestClient(app)
 
     yield test_client
