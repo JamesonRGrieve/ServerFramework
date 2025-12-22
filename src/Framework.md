@@ -10,7 +10,7 @@ The framework follows a strict layered architecture with clear separation of con
 - **Library Layer (`lib/`)**: Foundation utilities for configuration, dependencies, model management, and logging
 - **Database Layer (`DB_*.py`)**: SQLAlchemy models automatically generated from Pydantic schemas with declarative base isolation
 - **Business Logic Layer (`BLL_*.py`)**: Pydantic-first schema design with comprehensive CRUD operations and hook support
-- **Endpoint Layer (`EP_*.py`)**: Automatic FastAPI router generation from BLL managers with authentication and documentation
+- **Endpoint Layer (abstracted via `RouterMixin`)**: FastAPI routers are automatically generated from BLL managers that inherit `RouterMixin`. While `EP_*.py` files exist (primarily for endpoint tests), the actual endpoint logic is abstracted into the BLL layer. Managers configure their endpoints through class variables like `prefix`, `tags`, and `auth_type`.
 - **Extension System (`EXT_*.py`)**: Modular plugin architecture with auto-discovery and isolated migrations
 - **Provider System (`PRV_*.py`)**: External API integration with failover support and rotation capabilities
 
@@ -21,6 +21,32 @@ The framework follows a strict layered architecture with clear separation of con
 - **Model Registry Pattern**: Isolated model management allowing multiple applications with different model sets
 - **Automatic Router Generation**: BLL managers with RouterMixin eliminate manual endpoint creation
 - **Extension Isolation**: Each extension maintains independent migrations and configuration
+
+### ModelRegistry Lifecycle
+
+The `ModelRegistry` is the central hub for model management and database access:
+
+1. **Creation**: ModelRegistry is instantiated during app startup in `app.py`
+2. **Storage**: Stored on `app.state.model_registry` for global access
+3. **Injection**: Injected into endpoint handlers via FastAPI dependencies
+4. **Manager Access**: BLL managers receive it as their first constructor parameter (`model_registry`)
+
+```python
+# App startup
+model_registry = ModelRegistry(app_instance=app, database_manager=db_manager)
+app.state.model_registry = model_registry
+
+# Endpoint handler receives via dependency injection
+async def endpoint_handler(model_registry = Depends(get_model_registry)):
+    manager = UserManager(model_registry, requester_id=user_id)
+    return manager.get(id=target_id)
+
+# Manager usage
+class UserManager(AbstractBLLManager, RouterMixin):
+    def __init__(self, model_registry, requester_id: str, **kwargs):
+        # model_registry provides database access via model_registry.DB
+        # and model transformations via model_registry.apply(Model)
+```
 
 ### Common Patterns Across Layers
 
@@ -136,7 +162,7 @@ Extensions and services use consistent configuration:
 - ✅ Create new folders in `extensions/`
 - ✅ Use `@extension_model` to extend existing models
 - ✅ Register hooks in extensions
-- ✅ Extension-specific migrations in `extensions/{name}/versions/`
+- ✅ Extension-specific migrations in `extensions/{name}/migrations/`
 - ❌ Avoid modifying `src/lib/`, `src/database/`, `src/logic/`, `src/endpoints/`
 - ❌ Avoid modifying core migrations
 

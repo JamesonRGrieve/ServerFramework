@@ -13,6 +13,13 @@ Unlike traditional testing frameworks that rely heavily on mocks and stubs, this
 - **Parallel Execution**: Advanced isolation allows tests to run concurrently using pytest async/threading
 - **Deterministic Results**: Real implementations with controlled environments ensure consistent results
 
+**Philosophy Clarification**: The "no mocking" philosophy applies to:
+- BLL manager tests (use real database)
+- Endpoint tests (use real server + database)
+- Extension tests (use isolated real environments)
+
+Unit testing of pure utility functions (SQL filter generation, permission calculations) may use mocks for isolation, as these test pure logic without side effects.
+
 ### Architectural Test Patterns
 The testing framework mirrors the main architecture with specialized abstract base classes:
 

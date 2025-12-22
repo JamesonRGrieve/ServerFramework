@@ -7,11 +7,38 @@ This document provides comprehensive guidance on using the enhanced BLL hook sys
 The BLL hook system allows you to execute custom code before or after any method on BLL manager classes. The system supports:
 
 - **Class-level hooks (`ClassName`)**: Apply to ALL methods of a manager class
-- **Method-specific hooks (`ClassName.method_name`)**: Target individual methods  
+- **Method-specific hooks (`ClassName.method_name`)**: Target individual methods
 - **Timing control**: Execute before or after method execution
 - **Priority ordering**: Control execution order with numeric priorities
 - **Conditional execution**: Use conditions to control when hooks run
 - **Type safety**: Full TypeScript-like type annotations and IDE support
+
+### Extension Hook Path Format
+
+For extension-based hooks (registered via the `@hook` decorator from `AbstractStaticExtension`), the hook path is a 5-tuple structure:
+
+```python
+HookPath = Tuple[str, str, str, str, str]
+# Components: (layer, domain, entity, function, time)
+```
+
+| Component | Description | Examples |
+|-----------|-------------|----------|
+| **layer** | The architectural layer | `"BLL"`, `"DB"`, `"EP"` |
+| **domain** | The operation domain | `"Seed"`, `"CRUD"`, `"Auth"` |
+| **entity** | The target entity/model | `"UserModel"`, `"ProviderModel"` |
+| **function** | The specific function/action | `"before_seed_model"`, `"inject_seed_data"` |
+| **time** | Execution timing | `"before"`, `"after"` |
+
+**Example:**
+```python
+@hook("DB", "Seed", "UserModel", "inject_seed_data", "before")
+def inject_user_seed_data(seed_list, model_class, session):
+    """Hook path: ("DB", "Seed", "UserModel", "inject_seed_data", "before")"""
+    seed_list.append({"name": "Extension User", "email": "ext@example.com"})
+```
+
+This hook path format enables precise targeting of hooks to specific operations across the framework's layers.
 
 ## Hook Registration Patterns
 
