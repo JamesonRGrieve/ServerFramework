@@ -1242,25 +1242,35 @@ def get_auth_dependency(auth_type: AuthType) -> Optional[Any]:
 
         def api_key_auth(
             request: Request,
+            authorization: str = Header(None),
             x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
         ):
             from logic.BLL_Auth import UserManager
 
-            if not x_api_key:
+            if x_api_key:
+                # API key provided - authenticate with it
+                model_registry = (
+                    getattr(request.app.state, "model_registry", None)
+                    if request
+                    else None
+                )
+                return UserManager.auth(
+                    model_registry=model_registry,
+                    authorization=f"Bearer {x_api_key}",
+                    request=request,
+                )
+            elif authorization:
+                # JWT provided but API key required - forbidden
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="API key required for this operation",
                 )
-
-            model_registry = (
-                getattr(request.app.state, "model_registry", None) if request else None
-            )
-
-            return UserManager.auth(
-                model_registry=model_registry,
-                authorization=f"Bearer {x_api_key}",
-                request=request,
-            )
+            else:
+                # No auth provided at all - unauthorized
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="No authentication provided.",
+                )
 
         return Depends(api_key_auth)
 
