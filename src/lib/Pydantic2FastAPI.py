@@ -2157,6 +2157,11 @@ def register_route(
                 if resource_name_plural in body:
                     # Handle batch creation
                     items_data = body.get(resource_name_plural)
+                    if not isinstance(items_data, list):
+                        raise HTTPException(
+                            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                            detail=f"Format mismatch: plural key '{resource_name_plural}' must contain array data",
+                        )
                     items = []
                     for item in items_data:
                         item_data = item.dict() if hasattr(item, "dict") else item
