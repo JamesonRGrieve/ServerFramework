@@ -344,16 +344,28 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         )
 
     def _get_appropriate_headers(
-        self, jwt_token: Optional[str], api_key: Optional[str] = None
+        self,
+        jwt_token: Optional[str] = None,
+        api_key: Optional[str] = None,
+        skip_auto_api_key: bool = False,
     ) -> Dict[str, str]:
-        """Get the appropriate headers for API requests."""
+        """Get the appropriate headers for API requests.
+
+        Args:
+            jwt_token: JWT token for authentication
+            api_key: API key for system entity authentication
+            skip_auto_api_key: If True, don't auto-add API key for system entities
+                              (used for testing 403 error cases)
+        """
         headers = {}
 
-        # For system entities with API key, use only API key auth (not JWT)
-        if self.system_entity and api_key:
-            headers["X-API-Key"] = api_key
+        # For system entities, automatically use API key for write operations
+        # unless skip_auto_api_key is True (for testing error cases or read verifications)
+        if self.system_entity and not skip_auto_api_key:
+            effective_api_key = api_key or env("ROOT_API_KEY")
+            headers["X-API-Key"] = effective_api_key
         elif jwt_token:
-            # Use JWT auth for non-system entities or when no API key provided
+            # Use JWT auth for non-system entities or when skip_auto_api_key is True
             headers["Authorization"] = f"Bearer {jwt_token}"
 
         return headers
@@ -2448,9 +2460,14 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
                         path_parent_ids[f"{parent.name}_id"] = parent_id
 
         # Verify the entity is gone
+        # For system entities, when jwt_token is provided explicitly (without api_key),
+        # use JWT to verify soft-deleted entities aren't visible to normal users
+        skip_auto_api_key = jwt_token is not None and api_key is None
         response = server.get(
             self.get_detail_endpoint(entity["id"], path_parent_ids),
-            headers=self._get_appropriate_headers(jwt_token, api_key),
+            headers=self._get_appropriate_headers(
+                jwt_token, api_key, skip_auto_api_key
+            ),
         )
         assert (
             response.status_code == 404
@@ -2626,7 +2643,7 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         response = server.post(
             self.get_create_endpoint(path_parent_ids),
             json=payload,
-            headers=self._get_appropriate_headers(admin_a.jwt),
+            headers=self._get_appropriate_headers(admin_a.jwt, skip_auto_api_key=True),
         )
 
         assert (
@@ -2651,7 +2668,7 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         # Try to delete without API key
         response = server.delete(
             self.get_delete_endpoint(entity["id"], {}),
-            headers=self._get_appropriate_headers(admin_a.jwt),
+            headers=self._get_appropriate_headers(admin_a.jwt, skip_auto_api_key=True),
         )
 
         assert (
