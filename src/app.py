@@ -671,8 +671,16 @@ def build_app(model_registry: ModelRegistry):
 
     if env("REST").strip().lower() == "true":
         # Build routers using the model registry
+        # Sort routers by prefix length (longest first) to ensure more specific routes
+        # are matched before less specific ones (e.g., /v1/provider/instance/setting
+        # should be matched before /v1/provider/instance/{id})
+        sorted_routers = sorted(
+            model_registry.ep_routers.items(),
+            key=lambda x: len(getattr(x[1], "prefix", "") or ""),
+            reverse=True,
+        )
 
-        for manager_name, router in model_registry.ep_routers.items():
+        for manager_name, router in sorted_routers:
             try:
                 app.include_router(router)
             except Exception as e:
