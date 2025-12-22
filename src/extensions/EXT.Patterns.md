@@ -662,7 +662,13 @@ class PRV_Stripe(EXT_Payment.AbstractProvider):
 ```
 
 This pattern keeps all external-related code (models, managers, providers) in the same file for better organization.
-    
+
+External models typically include format conversion methods:
+
+```python
+class Stripe_CustomerModel(AbstractExternalModel):
+    """External model with format conversion methods."""
+
     @classmethod
     def to_external_format(cls, internal_data: Dict[str, Any]) -> Dict[str, Any]:
         """Convert internal data format to Stripe API format."""
@@ -671,17 +677,17 @@ This pattern keeps all external-related code (models, managers, providers) in th
             "name": internal_data.get("name"),
             "metadata": internal_data.get("metadata", {})
         }
-    
+
     @classmethod
     def from_external_format(cls, external_data: Dict[str, Any]) -> Dict[str, Any]:
         """Convert Stripe API format to internal data format."""
         return {
             "id": external_data.get("id"),
-            "email": external_data.get("email"), 
+            "email": external_data.get("email"),
             "name": external_data.get("name"),
             "created_at": external_data.get("created")
         }
-    
+
     @staticmethod
     def create_via_provider(provider_instance, **kwargs) -> Dict[str, Any]:
         """Create customer via Stripe provider."""
@@ -1306,7 +1312,7 @@ class MyEntityManager(AbstractBLLManager):
 from lib.Pydantic2FastAPI import RouterMixin, AuthType
 from logic.AbstractLogicManager import AbstractBLLManager
 
-class MyEntityManager(RouterMixin, AbstractBLLManager):
+class MyEntityManager(AbstractBLLManager, RouterMixin):
     prefix: ClassVar[str] = "/v1/my-extension"
     tags: ClassVar[List[str]] = ["My Extension"]
     auth_type: ClassVar[AuthType] = AuthType.JWT
