@@ -119,8 +119,8 @@ disallow_incomplete_defs = true
 testpaths = ["."]
 python_files = "*_test.py"
 addopts = "-v -ra -s --order-dependencies --import-mode=importlib"
-asyncio_mode = "auto"
-asyncio_default_fixture_loop_scope = "session"
+asyncio_mode = "strict"
+asyncio_default_fixture_loop_scope = "function"
 
 markers = [
     "db: Database tests",
