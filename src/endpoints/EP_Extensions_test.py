@@ -164,6 +164,13 @@ class TestAbilityEndpoints(AbstractEPTest):
     # Mark as system entity since abilities can only be created by system users
     system_entity = True
 
+    # AbilityModel.Search requires 'meta' field and inherits extension_id
+    # These are automatically added to search payloads when not being tested
+    search_default_filters = {
+        "meta": False,
+        "extension_id": None,  # Will use entity value when available
+    }
+
     # Define parent entities - abilities require an extension
     parent_entities = [
         ParentEntity(
