@@ -96,7 +96,28 @@ test_config: ClassOfTestsConfig = ClassOfTestsConfig(
 - Tests each field/operator combination automatically based on model field types
 - Validates search results contain expected entities
 - Supports string, numeric, date, and boolean field search operations
-- Uses `generate_search_test_parameters()` to auto-discover testable field/operator combinations
+- Uses `generate_search_test_parameters()` class method to auto-discover testable field/operator combinations
+
+**Parametrization Mechanism:**
+The `test_search` method uses pytest's parametrize decorator with the `generate_search_test_parameters()` class method. This method introspects the BLL model's fields and generates all valid (field, operator) combinations based on field types:
+
+```python
+@pytest.mark.parametrize(
+    "search_field,search_operator",
+    generate_search_test_parameters.__func__(None)  # Called at class definition time
+)
+def test_search(self, admin_a, team_a, server, model_registry, search_field, search_operator):
+    # Test implementation
+```
+
+The `generate_search_test_parameters()` method:
+1. Inspects the model's `__annotations__` to find field types
+2. Maps each field type to supported operators:
+   - `str` → `["value", "eq", "inc", "sw", "ew"]`
+   - `int`/`float` → `["value", "eq", "neq", "lt", "gt", "lteq", "gteq"]`
+   - `datetime` → `["after", "before", "eq", "on"]`
+   - `bool` → `["value", "eq"]`
+3. Returns a list of `(field_name, operator)` tuples for pytest to parametrize
 
 #### `test_update(admin_a, team_a)`
 - Depends on `test_create`

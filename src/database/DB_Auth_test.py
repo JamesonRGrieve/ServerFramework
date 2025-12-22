@@ -56,7 +56,7 @@ class TestUser(AbstractDBTest):
         "first_name": "Updated",
         "last_name": "Name",
     }
-    unique_field = "email"
+    unique_fields = ["email"]
     # def test_get_with_permission(self):
     #     """Test retrieving a UserModel entity with explicit permission."""
     #     # UserModel entities have a different permission model than other entities
@@ -239,7 +239,7 @@ class TestTeam(AbstractDBTest):
         "name": "Updated TeamModel",
         "description": "Updated TeamModel description",
     }
-    unique_field = "name"
+    unique_fields = ["name"]
 
 
 class TestMetadataUserOnly(AbstractDBTest):
@@ -310,7 +310,7 @@ class TestRole(AbstractDBTest):
         "mfa_count": 2,
         "password_change_frequency_days": 180,
     }
-    unique_field = "name"
+    unique_fields = ["name"]
 
 
 class TestUserTeam(AbstractDBTest):
@@ -343,7 +343,7 @@ class TestInvitation(AbstractDBTest):
         "code": lambda: f"updated_invitation_code_{uuid.uuid4()}",
         "max_uses": 10,
     }
-    unique_field = "code"
+    unique_fields = ["code"]
 
 
 class TestInvitee(AbstractDBTest):
@@ -420,7 +420,7 @@ class TestSession(AbstractDBTest):
         "last_activity": datetime.now(),
         "is_active": False,
     }
-    unique_field = "session_key"
+    unique_fields = ["session_key"]
 
 
 class TestRateLimitPolicy(AbstractDBTest):
@@ -437,4 +437,4 @@ class TestRateLimitPolicy(AbstractDBTest):
         "max_requests": 200,
         "scope": "ip",
     }
-    unique_field = "name"
+    unique_fields = ["name"]

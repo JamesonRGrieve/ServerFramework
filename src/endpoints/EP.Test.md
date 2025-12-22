@@ -143,16 +143,37 @@ System entities auto-test:
 
 ## Skipping Tests
 
+Tests can be skipped using the `_skip_tests` class attribute with `SkipThisTest` entries:
+
 ```python
 _skip_tests = [
     SkipThisTest(
-        name="test_POST_201_batch",
+        name="test_GET_200_list_pagination",
         reason=SkipReason.NOT_IMPLEMENTED,
-        details="Batch not implemented",
-        gh_issue_number=42
+        details="Pagination not yet implemented",
+    ),
+    SkipThisTest(
+        name="test_GET_200_filter",
+        reason=SkipReason.NOT_IMPLEMENTED,
+        details="Filtering not yet implemented",
+    ),
+    SkipThisTest(
+        name="test_POST_400_null_parents",
+        reason=SkipReason.NOT_IMPLEMENTED,
+        details="Null parents not yet implemented",
+        gh_issue_number=26
     ),
 ]
 ```
+
+**Currently Skipped in AbstractEPTest:**
+| Test | Reason | GitHub Issue |
+|------|--------|--------------|
+| `test_GET_200_list_pagination` | Pagination not yet implemented | - |
+| `test_POST_200_search_pagination` | Search pagination not yet implemented | - |
+| `test_GET_200_filter` | Filtering not yet implemented | - |
+| `test_POST_400_null_parents` | Null parents not yet implemented | #26 |
+| `test_POST_404_nonexistent_parent` | Null parents not yet implemented | #26 |
 
 | SkipReason        | When                      |
 | ----------------- | ------------------------- |

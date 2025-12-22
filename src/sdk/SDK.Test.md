@@ -48,12 +48,13 @@ class TestYourModule(AbstractSDKTest):
         "name": "Updated Entity",
     }
 
+    # Required abstract method implementations
     def create_test_data(self, resource_type: str, count: int = 1):
-        """Create test data for the specified resource type."""
+        """@abstractmethod - Create test data for the specified resource type."""
         return [{"name": f"test_{i}"} for i in range(count)]
 
     def assert_valid_response_structure(self, response, expected_keys, resource_key=None):
-        """Assert that a response has the expected structure."""
+        """@abstractmethod - Assert that a response has the expected structure."""
         if resource_key:
             assert resource_key in response
         for key in expected_keys:
@@ -68,12 +69,21 @@ class TestYourModule(AbstractSDKTest):
 
 ## Required Overrides
 
+### Class Attributes
+
 | Attribute | Type | Description |
 |-----------|------|-------------|
 | `sdk_class` | Type[AbstractSDKHandler] | The SDK class being tested |
 | `resource_name` | str | Primary resource name being tested |
 | `sample_data` | Dict[str, Any] | Sample data for creating test entities |
 | `update_data` | Dict[str, Any] | Sample data for updating test entities |
+
+### Abstract Methods (must be implemented)
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `create_test_data` | `(resource_type: str, count: int = 1) -> List[Dict]` | Create test data for the specified resource type |
+| `assert_valid_response_structure` | `(response: Dict, expected_keys: List[str], resource_key: str = None)` | Assert response has expected structure |
 
 ## Optional Overrides
 
