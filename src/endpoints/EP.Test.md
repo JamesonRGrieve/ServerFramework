@@ -157,12 +157,6 @@ _skip_tests = [
         reason=SkipReason.NOT_IMPLEMENTED,
         details="Filtering not yet implemented",
     ),
-    SkipThisTest(
-        name="test_POST_422_null_parents",
-        reason=SkipReason.NOT_IMPLEMENTED,
-        details="Null parents not yet implemented",
-        gh_issue_number=26
-    ),
 ]
 ```
 
@@ -172,8 +166,7 @@ _skip_tests = [
 | `test_GET_200_list_pagination` | Pagination not yet implemented | - |
 | `test_POST_200_search_pagination` | Search pagination not yet implemented | - |
 | `test_GET_200_filter` | Filtering not yet implemented | - |
-| `test_POST_422_null_parents` | Null parents not yet implemented | #26 |
-| `test_POST_404_nonexistent_parent` | Null parents not yet implemented | #26 |
+| `test_POST_404_nonexistent_parent` | Nonexistent parent validation not yet implemented | #26 |
 
 | SkipReason        | When                      |
 | ----------------- | ------------------------- |

@@ -204,15 +204,9 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
             details="Filtering not yet implemented",
         ),
         SkipThisTest(
-            name="test_POST_422_null_parents",
-            reason=SkipReason.NOT_IMPLEMENTED,
-            details="Null parents not yet implemented",
-            gh_issue_number=26,
-        ),
-        SkipThisTest(
             name="test_POST_404_nonexistent_parent",
             reason=SkipReason.NOT_IMPLEMENTED,
-            details="Null parents not yet implemented",
+            details="Nonexistent parent validation not yet implemented",
             gh_issue_number=26,
         ),
     ]
