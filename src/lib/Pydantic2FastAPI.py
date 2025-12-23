@@ -3075,12 +3075,38 @@ def register_custom_route(
             # Extract path parameters
             path_params = dict(request.path_params)
 
+            # Build method arguments, including query params for methods that accept them
+            method_args = dict(path_params)
+
+            # Check if method accepts 'fields' parameter and extract from query params
+            sig = inspect.signature(method_func)
+            if "fields" in sig.parameters:
+                fields_raw = request.query_params.get("fields")
+                if fields_raw:
+                    # Handle comma-separated or repeated params
+                    fields_list = [
+                        f.strip()
+                        for f in fields_raw.split(",")
+                        if f.strip()
+                    ]
+                    method_args["fields"] = fields_list if fields_list else None
+
             # Handle request body for POST/PUT/PATCH
             if request.method in ["POST", "PUT", "PATCH"]:
                 body = await request.json()
-                result = method_func(**path_params, body=body)
+                result = method_func(**method_args, body=body)
             else:
-                result = method_func(**path_params)
+                result = method_func(**method_args)
+
+            # Wrap result if needed (same logic as static routes)
+            if custom_route.response_model and isinstance(
+                custom_route.response_model, str
+            ):
+                if "ResponseSingle" in custom_route.response_model:
+                    resource_name = stringcase.snakecase(
+                        manager_class.__name__.replace("Manager", "")
+                    )
+                    return {resource_name: result}
 
             return result
 
