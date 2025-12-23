@@ -231,11 +231,14 @@ Permission roles with hierarchy and security policies.
 **Fields:**
 - `name`: str - Role identifier/code (from NameMixinModel)
 - `friendly_name`: Optional[str] - Display name
-- `team_id`: Optional[str] - Team scope (from TeamReferenceModel.Optional)
+- `team_id`: Optional[str] - Team scope (from TeamReferenceModel.Optional). Required for API-created roles; system roles (seeded) may have null team_id.
 - `parent_id`: str - Role hierarchy (from ParentMixinModel)
 - `mfa_count`: int - Required MFA verifications
 - `password_change_frequency_days`: int - Password policy
 - `expires_at`: Optional[datetime] - Role expiration
+
+**Validation:**
+- API role creation requires `team_id` to be provided (returns 400 if null)
 
 ### PermissionModel
 Granular resource permissions.
@@ -261,6 +264,10 @@ Team invitation management.
 - `code`: Optional[str] - Public invitation code
 - `max_uses`: Optional[int] - Usage limit
 - `expires_at`: Optional[datetime] - Invitation expiration
+
+**Validation:**
+- `team_id` and `role_id` must both be provided together, or both omitted for app-level invitations
+- Explicitly setting both to null is rejected (returns 400); omit both fields for app-level invitations
 
 ### InviteeModel
 Specific invitation recipients.

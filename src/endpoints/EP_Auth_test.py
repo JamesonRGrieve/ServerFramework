@@ -1815,25 +1815,28 @@ class TestRoleEndpoints(AbstractEPTest):
         """Create a payload for role creation."""
         role_name = name or f"Role {self.faker.word()}"
 
+        # Determine team_id: parent_ids takes precedence when key is explicitly present
+        resolved_team_id = parent_ids["team_id"] if parent_ids and "team_id" in parent_ids else team_id
+
         if invalid_data:
             # Invalid data for validation tests
             return {
                 "name": 12345,  # Number instead of string
                 "friendly_name": True,  # Boolean instead of string
-                "team_id": team_id or parent_ids.get("team_id") if parent_ids else None,
+                "team_id": resolved_team_id,
             }
         elif minimal:
             # Only required fields
             return {
                 "name": role_name,
-                "team_id": team_id or parent_ids.get("team_id") if parent_ids else None,
+                "team_id": resolved_team_id,
             }
         else:
             # Full payload
             return {
                 "name": role_name,
                 "friendly_name": stringcase.titlecase(role_name),
-                "team_id": team_id or parent_ids.get("team_id") if parent_ids else None,
+                "team_id": resolved_team_id,
                 "mfa_count": 1,
                 "password_change_frequency_days": 90,
             }
@@ -2283,6 +2286,10 @@ class TestInvitationEndpoints(AbstractEPTest):
         invalid_data: bool = False,
     ) -> Dict[str, Any]:
         """Create a payload for invitation creation."""
+        # Determine parent IDs: parent_ids takes precedence when key is explicitly present
+        resolved_team_id = parent_ids["team_id"] if parent_ids and "team_id" in parent_ids else team_id
+        resolved_role_id = parent_ids["role_id"] if parent_ids and "role_id" in parent_ids else env("USER_ROLE_ID")
+
         if invalid_data:
             # Invalid data for validation tests - make it truly invalid
             # NOTE: We want valid parent entities but invalid other fields
@@ -2302,14 +2309,14 @@ class TestInvitationEndpoints(AbstractEPTest):
         elif minimal:
             # Only required fields for team-based invitation
             return {
-                "team_id": team_id or parent_ids.get("team_id") if parent_ids else None,
-                "role_id": env("USER_ROLE_ID"),
+                "team_id": resolved_team_id,
+                "role_id": resolved_role_id,
             }
         else:
             # Full payload with optional fields
             return {
-                "team_id": team_id or parent_ids.get("team_id") if parent_ids else None,
-                "role_id": env("USER_ROLE_ID"),
+                "team_id": resolved_team_id,
+                "role_id": resolved_role_id,
                 "code": f"TEST{uuid.uuid4().hex[:8].upper()}",
                 "max_uses": 5,
             }

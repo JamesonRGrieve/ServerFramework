@@ -3133,8 +3133,13 @@ class RoleManager(AbstractBLLManager, RouterMixin):
 
     def create_validation(self, entity):
         """Validate role creation."""
-        # First, check if the team exists (if team_id is provided)
-        # Team existence validation is handled by the database layer
+        # First, validate that team_id is provided (required for user-created roles)
+        # System roles with team_id=None can only be created through seeding, not the API
+        if entity.team_id is None:
+            raise HTTPException(
+                status_code=400,
+                detail="team_id is required for role creation",
+            )
 
         # Second, check if parent role exists and is accessible
         if entity.parent_id:
@@ -3895,6 +3900,20 @@ class InvitationModel(
             """Validate that if team_id or role_id is provided, both must be provided"""
             has_team = self.team_id is not None
             has_role = self.role_id is not None
+
+            # Check if fields were explicitly set to null (not just omitted)
+            # This rejects explicit {"team_id": null, "role_id": null} while allowing
+            # omitted fields for app-level invitations
+            team_explicitly_set = "team_id" in self.model_fields_set
+            role_explicitly_set = "role_id" in self.model_fields_set
+
+            if team_explicitly_set and role_explicitly_set and not has_team and not has_role:
+                from fastapi import HTTPException
+
+                raise HTTPException(
+                    status_code=400,
+                    detail="team_id and role_id cannot both be explicitly set to null",
+                )
 
             if has_team != has_role:
                 from fastapi import HTTPException
