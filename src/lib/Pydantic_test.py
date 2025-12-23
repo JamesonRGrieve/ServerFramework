@@ -11,9 +11,9 @@ from pydantic import BaseModel, Field
 
 # Add parent directory to sys.path to import Pydantic
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from lib.Logging import logger
 from lib.Pydantic import ModelRegistry, PydanticUtility, obj_to_dict
 from lib.Pydantic2SQLAlchemy import DatabaseMixin
-from lib.Logging import logger
 
 # Access the utility functions from PydanticUtility
 # Instead of importing functions directly that might not exist as standalone functions
@@ -489,7 +489,6 @@ class TestPydantic(unittest.TestCase):
         model = self.utility.find_model_by_name("nonexistent")
         self.assertIsNone(model)
 
-    @pytest.mark.xfail(reason="GQL tests in dev")
     def test_generate_unique_type_name(self):
         """Test generate_unique_type_name method."""
         # Test basic type name generation
