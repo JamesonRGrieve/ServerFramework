@@ -3445,10 +3445,12 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
                 # Use the default value from search_default_filters
                 search_payload[filter_field] = default_value
 
-        # Add ID filter for operators that may match many entities (like sw, ew, inc)
+        # Add ID filter for operators that may match many entities (like sw, ew, inc, before, after)
         # This ensures the specific entity is found while still testing the operator functionality
         # The operator being tested will still be validated (if broken, the search would fail)
-        if search_operator in ["sw", "ew", "inc"] and "id" in entity:
+        # Date operators (before, after) are included because they match all entities before/after a date,
+        # which can exceed the 1000 result limit and cause the target entity to be missed
+        if search_operator in ["sw", "ew", "inc", "before", "after"] and "id" in entity:
             search_payload["id"] = {"eq": entity["id"]}
 
         # Debug: Log the search payload
