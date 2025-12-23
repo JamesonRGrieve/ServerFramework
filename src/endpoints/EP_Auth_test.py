@@ -2397,10 +2397,14 @@ class TestInvitationEndpoints(AbstractEPTest):
         assert invitation["code"] is not None
         assert len(invitation["code"]) == 8  # Auto-generated codes are 8 characters
 
-    def test_POST_400_team_invitation_missing_role(
+    def test_POST_422_team_invitation_missing_role(
         self, server: Any, admin_a: Any, team_a: Any
     ) -> None:
-        """Test that team invitations require both team_id and role_id."""
+        """Test that team invitations require both team_id and role_id.
+
+        Missing required fields returns 422 (well-formed JSON but semantically invalid),
+        not 400 (which is for malformed JSON syntax).
+        """
         # Test with team_id but no role_id
         payload = {
             "invitation": {
@@ -2414,7 +2418,7 @@ class TestInvitationEndpoints(AbstractEPTest):
             endpoint, json=payload, headers=self._get_appropriate_headers(admin_a.jwt)
         )
         self._assert_response_status(
-            response, 400, "POST team invitation missing role", endpoint, payload
+            response, 422, "POST team invitation missing role", endpoint, payload
         )
 
         # Test with role_id but no team_id for app-level
@@ -2430,7 +2434,7 @@ class TestInvitationEndpoints(AbstractEPTest):
             endpoint, json=payload, headers=self._get_appropriate_headers(admin_a.jwt)
         )
         self._assert_response_status(
-            response, 400, "POST app invitation with role", endpoint, payload
+            response, 422, "POST app invitation with role", endpoint, payload
         )
 
     def test_GET_200_list_email_invitations_for_team(
