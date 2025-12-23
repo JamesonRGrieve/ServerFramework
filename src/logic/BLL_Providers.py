@@ -373,9 +373,10 @@ class ProviderExtensionManager(AbstractBLLManager, RouterMixin):
 
     def create_validation(self, entity):
         """Validate provider extension creation - check that provider and extension exist."""
+        # Use ROOT_ID to bypass permission filtering for pure existence checks
         if entity.provider_id:
             provider = ProviderModel.DB(self.model_registry.DB.manager.Base).get(
-                requester_id=self.requester.id,
+                requester_id=env("ROOT_ID"),
                 model_registry=self.model_registry,
                 id=entity.provider_id,
             )
@@ -384,7 +385,7 @@ class ProviderExtensionManager(AbstractBLLManager, RouterMixin):
 
         if entity.extension_id:
             extension = ExtensionModel.DB(self.model_registry.DB.manager.Base).get(
-                requester_id=self.requester.id,
+                requester_id=env("ROOT_ID"),
                 model_registry=self.model_registry,
                 id=entity.extension_id,
             )
@@ -430,11 +431,12 @@ class ProviderExtensionAbilityManager(AbstractBLLManager, RouterMixin):
 
     def create_validation(self, entity):
         """Validate provider extension ability creation - check that provider extension and ability exist."""
+        # Use ROOT_ID to bypass permission filtering for pure existence checks
         if entity.provider_extension_id:
             provider_extension = ProviderExtensionModel.DB(
                 self.model_registry.DB.manager.Base
             ).get(
-                requester_id=self.requester.id,
+                requester_id=env("ROOT_ID"),
                 model_registry=self.model_registry,
                 id=entity.provider_extension_id,
             )
@@ -445,7 +447,7 @@ class ProviderExtensionAbilityManager(AbstractBLLManager, RouterMixin):
 
         if entity.ability_id:
             ability = AbilityModel.DB(self.model_registry.DB.manager.Base).get(
-                requester_id=self.requester.id,
+                requester_id=env("ROOT_ID"),
                 model_registry=self.model_registry,
                 id=entity.ability_id,
             )
@@ -669,9 +671,10 @@ class ProviderInstanceManager(AbstractBLLManager, RouterMixin):
 
     def create_validation(self, entity):
         """Validate provider instance creation - check that provider exists."""
+        # Use ROOT_ID to bypass permission filtering for pure existence checks
         if entity.provider_id:
             provider = ProviderModel.DB(self.model_registry.DB.manager.Base).get(
-                requester_id=self.requester.id,
+                requester_id=env("ROOT_ID"),
                 model_registry=self.model_registry,
                 id=entity.provider_id,
             )
@@ -786,12 +789,12 @@ class ProviderInstanceSettingManager(AbstractBLLManager, RouterMixin):
                 status_code=400,
                 detail="Setting key is required",
             )
-        # Check that provider instance exists
+        # Check that provider instance exists (use ROOT_ID to bypass permission filtering)
         if entity.provider_instance_id:
             provider_instance = ProviderInstanceModel.DB(
                 self.model_registry.DB.manager.Base
             ).get(
-                requester_id=self.requester.id,
+                requester_id=env("ROOT_ID"),
                 model_registry=self.model_registry,
                 id=entity.provider_instance_id,
             )
@@ -1397,10 +1400,11 @@ class RotationProviderInstanceManager(AbstractBLLManager, RouterMixin):
 
     def create_validation(self, entity):
         """Validate rotation provider instance creation - check that rotation and provider instance exist."""
+        # Use ROOT_ID to bypass permission filtering for pure existence checks
         # Check that rotation exists
         if entity.rotation_id:
             rotation = RotationModel.DB(self.model_registry.DB.manager.Base).get(
-                requester_id=self.requester.id,
+                requester_id=env("ROOT_ID"),
                 model_registry=self.model_registry,
                 id=entity.rotation_id,
             )
@@ -1412,7 +1416,7 @@ class RotationProviderInstanceManager(AbstractBLLManager, RouterMixin):
             provider_instance = ProviderInstanceModel.DB(
                 self.model_registry.DB.manager.Base
             ).get(
-                requester_id=self.requester.id,
+                requester_id=env("ROOT_ID"),
                 model_registry=self.model_registry,
                 id=entity.provider_instance_id,
             )

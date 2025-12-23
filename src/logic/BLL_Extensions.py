@@ -396,9 +396,10 @@ class AbilityManager(AbstractBLLManager, RouterMixin):
 
     def create_validation(self, entity):
         """Validate ability creation - check that extension exists."""
+        # Use ROOT_ID to bypass permission filtering for pure existence checks
         if entity.extension_id:
             extension = ExtensionModel.DB(self.model_registry.DB.manager.Base).get(
-                requester_id=self.requester.id,
+                requester_id=env("ROOT_ID"),
                 model_registry=self.model_registry,
                 id=entity.extension_id,
             )
