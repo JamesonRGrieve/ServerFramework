@@ -1314,13 +1314,77 @@ class ModelRegistry(AbstractRegistry):
             ),
         }
 
-        # Add team_id as optional filter if model has team_id field
+        # Add model fields as optional filter parameters
+        # This allows filtering like GET /entity?id=xxx&name=yyy
         model_fields = getattr(model, "model_fields", {})
-        if "team_id" in model_fields:
-            list_annotations["team_id"] = Optional[str]
-            list_attrs["team_id"] = Field(
-                None, description="Filter by team ID"
-            )
+
+        # Define types that are safe for query parameter filtering
+        # These are simple scalar types that can be easily parsed from query strings
+        def is_filterable_type(field_type) -> bool:
+            """Check if a field type is suitable for query parameter filtering."""
+            # Get the origin type for generic types (e.g., Optional[str] -> Union)
+            origin = get_origin(field_type)
+
+            # Handle Optional types (Union[X, None])
+            if origin is Union:
+                args = get_args(field_type)
+                # Check if it's Optional (Union with None)
+                non_none_args = [arg for arg in args if arg is not type(None)]
+                if len(non_none_args) == 1:
+                    # It's Optional[X], check the inner type
+                    return is_filterable_type(non_none_args[0])
+                return False
+
+            # Handle List types - not filterable via simple query params
+            if origin in (list, List):
+                return False
+
+            # Handle Dict types - not filterable via simple query params
+            if origin in (dict, Dict):
+                return False
+
+            # Simple scalar types that are safe for filtering
+            filterable_types = (str, int, float, bool)
+
+            # Check if it's a simple filterable type
+            if field_type in filterable_types:
+                return True
+
+            # Check for string subclasses (like UUID which is often str)
+            try:
+                if isinstance(field_type, type) and issubclass(field_type, str):
+                    return True
+            except TypeError:
+                pass
+
+            return False
+
+        for field_name_inner, field_info in model_fields.items():
+            # Skip fields that are already defined (like offset, limit, etc.)
+            if field_name_inner in list_annotations:
+                continue
+
+            field_type = field_info.annotation
+
+            # Only add filterable types
+            if is_filterable_type(field_type):
+                # Make the field Optional for filtering
+                if get_origin(field_type) is Union:
+                    # Already Optional, use as-is
+                    list_annotations[field_name_inner] = field_type
+                else:
+                    # Wrap in Optional
+                    list_annotations[field_name_inner] = Optional[field_type]
+
+                # Add Field with description
+                field_description = (
+                    field_info.description
+                    if field_info.description
+                    else f"Filter by {field_name_inner}"
+                )
+                list_attrs[field_name_inner] = Field(
+                    None, description=field_description
+                )
 
         list_attrs["__annotations__"] = list_annotations
         network_attrs["LIST"] = type(
