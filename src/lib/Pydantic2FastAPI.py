@@ -3032,6 +3032,11 @@ def register_custom_route(
 
             # Handle request body for POST/PUT/PATCH
             if request.method in ["POST", "PUT", "PATCH"]:
+                # Check if body parameters are required
+                requires_body = any(
+                    p in sig.parameters
+                    for p in ["registration_data", "login_data", "body"]
+                )
                 try:
                     body = await request.json()
 
@@ -3045,16 +3050,19 @@ def register_custom_route(
                     else:
                         method_args.update(body)
                 except json.JSONDecodeError:
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Invalid JSON syntax in request body",
-                    )
+                    # Only raise error for malformed JSON if body is required
+                    if requires_body:
+                        raise HTTPException(
+                            status_code=400,
+                            detail="Invalid JSON syntax in request body",
+                        )
                 except Exception:
-                    # For other errors (like empty body), provide a 400 response
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Invalid or missing request body",
-                    )
+                    # For other errors (like empty body), only error if body is required
+                    if requires_body:
+                        raise HTTPException(
+                            status_code=400,
+                            detail="Invalid or missing request body",
+                        )
 
             # Add path parameters
             method_args.update(dict(request.path_params))
