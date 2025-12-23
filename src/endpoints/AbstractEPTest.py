@@ -3438,6 +3438,12 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
                 # Use the default value from search_default_filters
                 search_payload[filter_field] = default_value
 
+        # Add ID filter for operators that may match many entities (like sw, ew, inc)
+        # This ensures the specific entity is found while still testing the operator functionality
+        # The operator being tested will still be validated (if broken, the search would fail)
+        if search_operator in ["sw", "ew", "inc"] and "id" in entity:
+            search_payload["id"] = {"eq": entity["id"]}
+
         # Debug: Log the search payload
         logger.debug(f"Search payload being sent: {search_payload}")
 
