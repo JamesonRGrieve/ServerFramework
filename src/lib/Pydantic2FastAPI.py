@@ -3461,11 +3461,15 @@ def generate_routers_from_model_registry(model_registry) -> Dict[str, APIRouter]
     """
     Generate routers for all models in the model registry using Model.Manager pattern.
 
+    Routers are sorted by prefix length (longest first) to ensure more specific routes
+    are registered before less specific ones. This prevents route conflicts like
+    /v1/provider/instance/{id} matching /v1/provider/instance/setting.
+
     Args:
         model_registry: Model registry instance
 
     Returns:
-        Dict mapping manager names to their routers
+        Dict mapping manager names to their routers, ordered by prefix length (longest first)
     """
     routers: Dict[str, APIRouter] = {}
 
@@ -3509,4 +3513,18 @@ def generate_routers_from_model_registry(model_registry) -> Dict[str, APIRouter]
         else:
             logger.debug(f"Model {model_name} does not have a Manager attribute")
 
-    return routers
+    # Sort routers by prefix length (longest first) to ensure more specific routes
+    # are registered before less specific ones in FastAPI.
+    # This prevents route conflicts like /v1/provider/instance/{id} matching
+    # /v1/provider/instance/setting (where "setting" would be interpreted as {id}).
+    def get_router_prefix_length(item):
+        manager_name, router = item
+        # Get the prefix from the router, default to empty string if not found
+        prefix = getattr(router, "prefix", "") or ""
+        return len(prefix)
+
+    sorted_routers = dict(
+        sorted(routers.items(), key=get_router_prefix_length, reverse=True)
+    )
+
+    return sorted_routers
