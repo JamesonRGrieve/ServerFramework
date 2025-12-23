@@ -3039,8 +3039,17 @@ def register_custom_route(
                         method_args["body"] = body
                     else:
                         method_args.update(body)
-                except:
-                    pass
+                except json.JSONDecodeError:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Invalid JSON syntax in request body",
+                    )
+                except Exception:
+                    # For other errors (like empty body), provide a 400 response
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Invalid or missing request body",
+                    )
 
             # Add path parameters
             method_args.update(dict(request.path_params))

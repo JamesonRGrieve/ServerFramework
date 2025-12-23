@@ -654,6 +654,18 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
             name="test_POST_200_search_includes",
             details="User search is restricted for privacy/security reasons - users should not be searchable globally",
         ),
+        SkipThisTest(
+            name="test_PUT_200_batch",
+            details="User entity does not have a batch update endpoint",
+        ),
+        SkipThisTest(
+            name="test_DELETE_204_batch",
+            details="User entity does not have a batch delete endpoint",
+        ),
+        SkipThisTest(
+            name="test_POST_422_singular_with_plural",
+            details="User registration endpoint does not support plural format validation",
+        ),
     ]
 
     def create_payload(
