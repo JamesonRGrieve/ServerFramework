@@ -2797,7 +2797,8 @@ class TestInvitationEndpoints(AbstractEPTest):
             user_payload,
         )
 
-        user = response.json()
+        response_data = response.json()
+        user = response_data["user"]
         assert user["email"] == invitee_email
 
         # First, let's check directly via BLL if the user was added to the team
@@ -3079,7 +3080,8 @@ class TestInvitationEndpoints(AbstractEPTest):
             user_payload,
         )
 
-        user = response.json()
+        response_data = response.json()
+        user = response_data["user"]
         assert user["email"] == user_payload["user"]["email"]
 
         # Verify user was NOT added to any team (since invitation was invalid)
