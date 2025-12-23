@@ -3143,7 +3143,19 @@ class RoleManager(AbstractBLLManager, RouterMixin):
                 detail="team_id is required for role creation",
             )
 
-        # Second, check if parent role exists and is accessible
+        # Second, check if team exists (use ROOT_ID to bypass permission checks)
+        # This ensures we return 404 only for genuinely non-existent teams,
+        # not for teams the user can't access (which should return 403 later)
+        if entity.team_id:
+            team = TeamModel.DB(self.model_registry.DB.manager.Base).get(
+                requester_id=env("ROOT_ID"),
+                model_registry=self.model_registry,
+                id=entity.team_id,
+            )
+            if not team:
+                raise HTTPException(status_code=404, detail="Team not found")
+
+        # Third, check if parent role exists and is accessible
         if entity.parent_id:
             try:
                 parent_role = self.DB.get(
@@ -4118,11 +4130,26 @@ class InvitationManager(AbstractBLLManager, RouterMixin):
                 status_code=400, detail="team_id and role_id must both be provided"
             )
 
-        # Check if team exists (handled by database constraints)
+        # Check if team exists (use ROOT_ID to bypass permission checks)
+        # This ensures we return 404 only for genuinely non-existent entities
+        if entity.team_id:
+            team = TeamModel.DB(self.model_registry.DB.manager.Base).get(
+                requester_id=env("ROOT_ID"),
+                model_registry=self.model_registry,
+                id=entity.team_id,
+            )
+            if not team:
+                raise HTTPException(status_code=404, detail="Team not found")
 
-        # Check if role exists (handled by database constraints)
-
-        # Check if inviter exists - handled by database constraints
+        # Check if role exists (use ROOT_ID to bypass permission checks)
+        if entity.role_id:
+            role = RoleModel.DB(self.model_registry.DB.manager.Base).get(
+                requester_id=env("ROOT_ID"),
+                model_registry=self.model_registry,
+                id=entity.role_id,
+            )
+            if not role:
+                raise HTTPException(status_code=404, detail="Role not found")
 
     def create(self, **kwargs):
         """Create an invitation with auto-generated code if needed"""

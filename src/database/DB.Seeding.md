@@ -22,11 +22,15 @@ The database seeding system provides enterprise-grade automatic database populat
 ## How It Works
 
 ### 1. Model Discovery
-The seeding system uses the ModelRegistry to discover Pydantic models that have database counterparts:
+The seeding system uses the ModelRegistry to discover Pydantic models that have database counterparts. The main seeding entry point is `ModelRegistry._seed()`, which coordinates the process and calls helper functions from `StaticSeeder.py`:
 
 ```python
-# ModelRegistry handles model discovery and dependency ordering
-# StaticSeeder provides helper functions for placeholder resolution
+# Main entry point: ModelRegistry._seed() handles:
+# - Model discovery and dependency ordering
+# - Iteration over models in dependency order
+# - Calling seed_model() for each model
+
+# StaticSeeder provides helper functions used by ModelRegistry._seed()
 from database.StaticSeeder import seed_model, _resolve_placeholder_fields
 
 # Helper functions for entity lookup
@@ -292,17 +296,29 @@ def seed_model(model_class, session, db_manager, model_registry=None):
     for item in seed_list:
         # Resolve placeholders like _provider_name, _extension_name
         resolved_item = _resolve_placeholder_fields(item, session, model_class.__name__, db_manager)
-        
+
+        # Determine field to check for existence (priority: id > name > email)
+        if "id" in resolved_item:
+            check_field = "id"
+        else:
+            check_field = next((k for k in ["name", "email"] if k in resolved_item), None)
+
         # Check if item already exists
-        if resolved_item and not model_class.exists(env("ROOT_ID"), db=session, 
-                                                   db_manager=db_manager, 
-                                                   **{check_field: resolved_item[check_field]}):
-            # Create new item
+        if resolved_item and check_field and not model_class.exists(
+            env("ROOT_ID"), model_registry, **{check_field: resolved_item[check_field]}
+        ):
+            # Create new item - check pydantic_model.seed_creator_id first
             creator_id = env("SYSTEM_ID")
-            if hasattr(model_class, "seed_creator_id"):
-                creator_id = env(model_class.seed_creator_id)
-            
-            model_class.create(creator_id, db=session, return_type="db", **resolved_item)
+            if pydantic_model and hasattr(pydantic_model, "seed_creator_id"):
+                creator_id = pydantic_model.seed_creator_id
+
+            if hasattr(model_class, "create"):
+                model_class.create(creator_id, model_registry, return_type="db", **resolved_item)
+            else:
+                # Fallback to direct SQLAlchemy creation for models without create method
+                new_instance = model_class(**resolved_item)
+                session.add(new_instance)
+                session.flush()
     
     # 5. Trigger after_seed_model hook
     AbstractStaticExtension.trigger_hook("DB", "Seed", model_class.__name__, 

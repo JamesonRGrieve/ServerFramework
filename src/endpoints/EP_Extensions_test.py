@@ -214,9 +214,7 @@ class TestAbilityEndpoints(AbstractEPTest):
         # Add extension_id from parent_ids if provided
         if parent_ids and "extension_id" in parent_ids:
             payload["extension_id"] = parent_ids["extension_id"]
-        else:
-            # Fallback to SYSTEM_ID if no parent provided
-            payload["extension_id"] = env("SYSTEM_ID")
+        # If no parent_ids provided, leave extension_id out - framework will create one
 
         return payload
 

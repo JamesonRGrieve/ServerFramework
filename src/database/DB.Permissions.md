@@ -31,9 +31,9 @@ TEMPLATE_ID = env("TEMPLATE_ID")  # Template resources, shareable by all
 ```
 
 **Access Rules:**
-- **ROOT_ID records**: Only accessible by ROOT_ID
-- **SYSTEM_ID records**: Viewable by all, modifiable by ROOT_ID/SYSTEM_ID only
-- **TEMPLATE_ID records**: Viewable/copyable/executable/shareable by all, modifiable by ROOT_ID/SYSTEM_ID only
+- **ROOT_ID records**: Only accessible by ROOT_ID (records with `user_id` or `created_by_user_id` equal to ROOT_ID are completely inaccessible to other users)
+- **SYSTEM_ID records**: Viewable by all users when `minimum_role` is `None` or `"user"` (i.e., VIEW-level access), but only modifiable (EDIT/DELETE) by ROOT_ID/SYSTEM_ID. The `can_access_system_record()` function implements this nuanced check - regular users get read access automatically for basic permission levels.
+- **TEMPLATE_ID records**: Viewable/copyable/executable/shareable by all users when `minimum_role` is `None` or `"user"`, modifiable by ROOT_ID/SYSTEM_ID only
 
 ## Permission Models
 
@@ -66,8 +66,11 @@ Hierarchical role system with inheritance.
 ```python
 def _get_role_hierarchy_map(db: Session) -> dict:
     """Build role hierarchy with caching for performance"""
-    # Caches role hierarchy for 5 minutes
+    # Caches role hierarchy for 5 minutes (300 seconds TTL)
     # Maps role names to hierarchy levels
+    # Testing support: When cache is valid, a "valid" key is injected
+    # into the cache dict (_get_role_hierarchy_map._cache["valid"] = True)
+    # to allow tests to verify cache hit behavior
 ```
 
 ### Team Structure
@@ -141,6 +144,7 @@ def generate_permission_filter(
 
 **Filter Components:**
 - **Ownership Filter**: `resource.user_id == user_id` OR `resource.created_by_user_id == user_id`
+  - **Exception**: The `invitations` and `Invitees` tables are explicitly excluded from ownership-based filtering. These tables use their own specialized permission logic (see Invitation Models section) rather than standard ownership checks, as invitation visibility is determined by team membership and invitee relationships rather than direct ownership.
 - **Team Filter**: `resource.team_id IN (accessible_team_ids)`
 - **Permission Filter**: `EXISTS(SELECT 1 FROM permissions WHERE ...)`
 - **System Filter**: Special handling for system-flagged tables

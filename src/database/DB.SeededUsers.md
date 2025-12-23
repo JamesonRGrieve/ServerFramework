@@ -46,7 +46,11 @@ if record.deleted_at and user_id != env("ROOT_ID"):
 **Usage Pattern:**
 ```python
 # System entities are viewable by all, modifiable by system users only
-if cls.system and required_level in [PermissionType.EDIT, PermissionType.DELETE]:
+if cls.system:
+    # VIEW operations are explicitly granted to all users
+    if required_level == PermissionType.VIEW:
+        return (PermissionResult.GRANTED, None)
+    # All other operations (EDIT, DELETE, EXECUTE, COPY, SHARE) require system users
     if user_id not in [env("ROOT_ID"), env("SYSTEM_ID")]:
         return (PermissionResult.DENIED, "System entity modification requires elevated privileges")
 ```
@@ -86,7 +90,7 @@ def is_root_id(user_id: str) -> bool:
     """Check if user_id matches ROOT_ID"""
     return user_id == env("ROOT_ID")
 
-def is_system_id(user_id: str) -> bool:
+def is_any_internal_id(user_id: str) -> bool:
     """Check if user_id matches SYSTEM_ID"""
     return user_id == env("SYSTEM_ID")
 
@@ -125,7 +129,7 @@ def user_can_create_referenced_entity(cls, user_id, db, **kwargs):
         return True
         
     # SYSTEM_ID can create system/public resources
-    if is_system_id(user_id) and cls.system:
+    if is_any_internal_id(user_id) and cls.system:
         return True
         
     # TEMPLATE_ID can create template resources

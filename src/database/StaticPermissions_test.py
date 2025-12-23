@@ -16,9 +16,9 @@ from database.StaticPermissions import (
     PermissionType,
     can_access_system_record,
     check_permission,
+    is_any_internal_id,
     is_root_id,
     is_system_id,
-    is_system_user_id,
     is_template_id,
 )
 from lib.Environment import env
@@ -260,11 +260,11 @@ class TestSystemIDs:
         assert is_root_id(TEMPLATE_ID) is False
         assert is_root_id(create_uuid()) is False
 
-    def test_is_system_user_id(self):
-        assert is_system_user_id(SYSTEM_ID) is True
-        assert is_system_user_id(ROOT_ID) is False
-        assert is_system_user_id(TEMPLATE_ID) is False
-        assert is_system_user_id(create_uuid()) is False
+    def test_is_system_id(self):
+        assert is_system_id(SYSTEM_ID) is True
+        assert is_system_id(ROOT_ID) is False
+        assert is_system_id(TEMPLATE_ID) is False
+        assert is_system_id(create_uuid()) is False
 
     def test_is_template_id(self):
         assert is_template_id(TEMPLATE_ID) is True
@@ -272,11 +272,11 @@ class TestSystemIDs:
         assert is_template_id(SYSTEM_ID) is False
         assert is_template_id(create_uuid()) is False
 
-    def test_is_system_id(self):
-        assert is_system_id(ROOT_ID) is True
-        assert is_system_id(SYSTEM_ID) is True
-        assert is_system_id(TEMPLATE_ID) is True
-        assert is_system_id(create_uuid()) is False
+    def test_is_any_internal_id(self):
+        assert is_any_internal_id(ROOT_ID) is True
+        assert is_any_internal_id(SYSTEM_ID) is True
+        assert is_any_internal_id(TEMPLATE_ID) is True
+        assert is_any_internal_id(create_uuid()) is False
 
 
 # Test system record access
@@ -1463,7 +1463,7 @@ class TestNullChecks:
 
         # Use our check_permission_wrapper which we can patch more easily
         with patch("database.StaticPermissions.is_root_id", return_value=False), patch(
-            "database.StaticPermissions.is_system_user_id", return_value=False
+            "database.StaticPermissions.is_system_id", return_value=False
         ), patch(
             "database.StaticPermissions.exists",
             return_value=mock_db.query.return_value.exists.return_value,
@@ -1498,7 +1498,7 @@ class TestNullChecks:
 
         # Use our check_permission_wrapper which we can patch more easily
         with patch("database.StaticPermissions.is_root_id", return_value=False), patch(
-            "database.StaticPermissions.is_system_user_id", return_value=False
+            "database.StaticPermissions.is_system_id", return_value=False
         ), patch(
             "database.StaticPermissions.exists",
             return_value=mock_db.query.return_value.exists.return_value,

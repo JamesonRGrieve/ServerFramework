@@ -371,6 +371,27 @@ class ProviderExtensionManager(AbstractBLLManager, RouterMixin):
             )
         return self._ability
 
+    def create_validation(self, entity):
+        """Validate provider extension creation - check that provider and extension exist."""
+        # Use ROOT_ID to bypass permission filtering for pure existence checks
+        if entity.provider_id:
+            provider = ProviderModel.DB(self.model_registry.DB.manager.Base).get(
+                requester_id=env("ROOT_ID"),
+                model_registry=self.model_registry,
+                id=entity.provider_id,
+            )
+            if not provider:
+                raise HTTPException(status_code=404, detail="Provider not found")
+
+        if entity.extension_id:
+            extension = ExtensionModel.DB(self.model_registry.DB.manager.Base).get(
+                requester_id=env("ROOT_ID"),
+                model_registry=self.model_registry,
+                id=entity.extension_id,
+            )
+            if not extension:
+                raise HTTPException(status_code=404, detail="Extension not found")
+
 
 class ProviderExtensionAbilityModel(
     ApplicationModel, UpdateMixinModel, metaclass=ModelMeta
@@ -407,6 +428,31 @@ class ProviderExtensionAbilityManager(AbstractBLLManager, RouterMixin):
     auth_type: ClassVar[AuthType] = AuthType.JWT
     factory_params: ClassVar[List[str]] = ["target_id", "target_team_id"]
     auth_dependency: ClassVar[Optional[str]] = "api_key_auth"
+
+    def create_validation(self, entity):
+        """Validate provider extension ability creation - check that provider extension and ability exist."""
+        # Use ROOT_ID to bypass permission filtering for pure existence checks
+        if entity.provider_extension_id:
+            provider_extension = ProviderExtensionModel.DB(
+                self.model_registry.DB.manager.Base
+            ).get(
+                requester_id=env("ROOT_ID"),
+                model_registry=self.model_registry,
+                id=entity.provider_extension_id,
+            )
+            if not provider_extension:
+                raise HTTPException(
+                    status_code=404, detail="Provider extension not found"
+                )
+
+        if entity.ability_id:
+            ability = AbilityModel.DB(self.model_registry.DB.manager.Base).get(
+                requester_id=env("ROOT_ID"),
+                model_registry=self.model_registry,
+                id=entity.ability_id,
+            )
+            if not ability:
+                raise HTTPException(status_code=404, detail="Ability not found")
 
 
 class ProviderInstanceModel(
@@ -623,6 +669,18 @@ class ProviderInstanceManager(AbstractBLLManager, RouterMixin):
             )
         return self._ability
 
+    def create_validation(self, entity):
+        """Validate provider instance creation - check that provider exists."""
+        # Use ROOT_ID to bypass permission filtering for pure existence checks
+        if entity.provider_id:
+            provider = ProviderModel.DB(self.model_registry.DB.manager.Base).get(
+                requester_id=env("ROOT_ID"),
+                model_registry=self.model_registry,
+                id=entity.provider_id,
+            )
+            if not provider:
+                raise HTTPException(status_code=404, detail="Provider not found")
+
 
 class ProviderInstanceUsageModel(
     ApplicationModel,
@@ -731,7 +789,19 @@ class ProviderInstanceSettingManager(AbstractBLLManager, RouterMixin):
                 status_code=400,
                 detail="Setting key is required",
             )
-        # Database constraints ensure referenced provider instance exists.
+        # Check that provider instance exists (use ROOT_ID to bypass permission filtering)
+        if entity.provider_instance_id:
+            provider_instance = ProviderInstanceModel.DB(
+                self.model_registry.DB.manager.Base
+            ).get(
+                requester_id=env("ROOT_ID"),
+                model_registry=self.model_registry,
+                id=entity.provider_instance_id,
+            )
+            if not provider_instance:
+                raise HTTPException(
+                    status_code=404, detail="Provider instance not found"
+                )
 
 
 class ProviderInstanceExtensionAbilityModel(
@@ -1329,7 +1399,31 @@ class RotationProviderInstanceManager(AbstractBLLManager, RouterMixin):
         return self._rotation
 
     def create_validation(self, entity):
-        # Database constraints ensure referenced rotation exists.
+        """Validate rotation provider instance creation - check that rotation and provider instance exist."""
+        # Use ROOT_ID to bypass permission filtering for pure existence checks
+        # Check that rotation exists
+        if entity.rotation_id:
+            rotation = RotationModel.DB(self.model_registry.DB.manager.Base).get(
+                requester_id=env("ROOT_ID"),
+                model_registry=self.model_registry,
+                id=entity.rotation_id,
+            )
+            if not rotation:
+                raise HTTPException(status_code=404, detail="Rotation not found")
+
+        # Check that provider instance exists
+        if entity.provider_instance_id:
+            provider_instance = ProviderInstanceModel.DB(
+                self.model_registry.DB.manager.Base
+            ).get(
+                requester_id=env("ROOT_ID"),
+                model_registry=self.model_registry,
+                id=entity.provider_instance_id,
+            )
+            if not provider_instance:
+                raise HTTPException(
+                    status_code=404, detail="Provider instance not found"
+                )
 
         # Prevent circular parent relationships
         if entity.parent_id == entity.rotation_id:
@@ -1337,7 +1431,6 @@ class RotationProviderInstanceManager(AbstractBLLManager, RouterMixin):
                 status_code=400,
                 detail="A rotation provider instance cannot be its own parent",
             )
-        # Database constraints ensure referenced provider instance exists.
 
 
 ProviderModel.Manager = ProviderManager

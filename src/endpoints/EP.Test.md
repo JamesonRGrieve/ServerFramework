@@ -166,7 +166,6 @@ _skip_tests = [
 | `test_GET_200_list_pagination` | Pagination not yet implemented | - |
 | `test_POST_200_search_pagination` | Search pagination not yet implemented | - |
 | `test_GET_200_filter` | Filtering not yet implemented | - |
-| `test_POST_404_nonexistent_parent` | Nonexistent parent validation not yet implemented | #26 |
 
 | SkipReason        | When                      |
 | ----------------- | ------------------------- |

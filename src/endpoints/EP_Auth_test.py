@@ -7,7 +7,7 @@ import faker
 import pytest
 import stringcase
 
-from AbstractTest import ParentEntity, SkipReason, SkipThisTest
+from AbstractTest import ParentEntity, SkipThisTest
 from endpoints.AbstractEPTest import AbstractEPTest, HttpMethod, StatusCode
 from lib.Environment import env
 from lib.Logging import logger
@@ -617,6 +617,10 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
             details="Not implemented yet",
         ),
         SkipThisTest(
+            name="test_GET_200_filter",
+            details="User entity does not have a standard LIST endpoint",
+        ),
+        SkipThisTest(
             name="test_GET_422_list_fields_invalid",
             details="User entity does not have a standard LIST endpoint",
         ),
@@ -641,18 +645,28 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
             details="Registrations must be performed over REST",
         ),
         SkipThisTest(
-            name="test_GET_401_verify_jwt_empty",
-            reason=SkipReason.NOT_IMPLEMENTED,
-            details="Open Issue #46",
-            gh_issue_number=46,
-        ),
-        SkipThisTest(
             name="test_POST_200_search",
             details="User search is restricted for privacy/security reasons - users should not be searchable globally",
         ),
         SkipThisTest(
             name="test_POST_200_search_includes",
             details="User search is restricted for privacy/security reasons - users should not be searchable globally",
+        ),
+        SkipThisTest(
+            name="test_GET_200_list_pagination",
+            details="User entity does not have a standard LIST endpoint",
+        ),
+        SkipThisTest(
+            name="test_POST_200_search_pagination",
+            details="User search is restricted for privacy/security reasons - users should not be searchable globally",
+        ),
+        SkipThisTest(
+            name="test_PUT_200_batch",
+            details="Users cannot be batch updated",
+        ),
+        SkipThisTest(
+            name="test_DELETE_204_batch",
+            details="Users cannot be batch deleted",
         ),
     ]
 
@@ -1681,14 +1695,10 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
         user = response_data[self.entity_name]
 
         # Verify the returned user contains the requested field
-        assert (
-            field_name in user
-        ), f"Response user should contain field '{field_name}'"
+        assert field_name in user, f"Response user should contain field '{field_name}'"
 
         # Verify the user returned is the requesting user
-        assert (
-            user.get("id") == admin_a.id
-        ), "Should return the requesting user"
+        assert user.get("id") == admin_a.id, "Should return the requesting user"
 
     # TODO Future parameterization.
     # @pytest.mark.parametrize(
@@ -1848,7 +1858,9 @@ class TestRoleEndpoints(AbstractEPTest):
         role_name = name or f"Role {self.faker.word()}"
 
         # Determine team_id: parent_ids takes precedence when key is explicitly present
-        resolved_team_id = parent_ids["team_id"] if parent_ids and "team_id" in parent_ids else team_id
+        resolved_team_id = (
+            parent_ids["team_id"] if parent_ids and "team_id" in parent_ids else team_id
+        )
 
         if invalid_data:
             # Invalid data for validation tests
@@ -2319,8 +2331,14 @@ class TestInvitationEndpoints(AbstractEPTest):
     ) -> Dict[str, Any]:
         """Create a payload for invitation creation."""
         # Determine parent IDs: parent_ids takes precedence when key is explicitly present
-        resolved_team_id = parent_ids["team_id"] if parent_ids and "team_id" in parent_ids else team_id
-        resolved_role_id = parent_ids["role_id"] if parent_ids and "role_id" in parent_ids else env("USER_ROLE_ID")
+        resolved_team_id = (
+            parent_ids["team_id"] if parent_ids and "team_id" in parent_ids else team_id
+        )
+        resolved_role_id = (
+            parent_ids["role_id"]
+            if parent_ids and "role_id" in parent_ids
+            else env("USER_ROLE_ID")
+        )
 
         if invalid_data:
             # Invalid data for validation tests - make it truly invalid

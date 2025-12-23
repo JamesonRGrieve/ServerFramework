@@ -1970,10 +1970,23 @@ def register_route(
                     parent_id = request["path_params"][parent_param_name]
                     search_params[parent_param_name] = parent_id
 
-                # Add team_id filter if provided in query params
-                team_id_param = getattr(query_params, "team_id", None)
-                if team_id_param:
-                    search_params["team_id"] = team_id_param
+                # Reserved query parameters that are not filter fields
+                reserved_params = {
+                    "include",
+                    "fields",
+                    "offset",
+                    "limit",
+                    "sort_by",
+                    "sort_order",
+                }
+
+                # Add filter fields from query params to search_params
+                # These are model fields added to the LIST model for filtering
+                for field_name in type(query_params).model_fields.keys():
+                    if field_name not in reserved_params:
+                        field_value = getattr(query_params, field_name, None)
+                        if field_value is not None:
+                            search_params[field_name] = field_value
 
                 include_param = _normalize_query_list(
                     getattr(query_params, "include", None)
@@ -3075,12 +3088,38 @@ def register_custom_route(
             # Extract path parameters
             path_params = dict(request.path_params)
 
+            # Build method arguments, including query params for methods that accept them
+            method_args = dict(path_params)
+
+            # Check if method accepts 'fields' parameter and extract from query params
+            sig = inspect.signature(method_func)
+            if "fields" in sig.parameters:
+                fields_raw = request.query_params.get("fields")
+                if fields_raw:
+                    # Handle comma-separated or repeated params
+                    fields_list = [
+                        f.strip()
+                        for f in fields_raw.split(",")
+                        if f.strip()
+                    ]
+                    method_args["fields"] = fields_list if fields_list else None
+
             # Handle request body for POST/PUT/PATCH
             if request.method in ["POST", "PUT", "PATCH"]:
                 body = await request.json()
-                result = method_func(**path_params, body=body)
+                result = method_func(**method_args, body=body)
             else:
-                result = method_func(**path_params)
+                result = method_func(**method_args)
+
+            # Wrap result if needed (same logic as static routes)
+            if custom_route.response_model and isinstance(
+                custom_route.response_model, str
+            ):
+                if "ResponseSingle" in custom_route.response_model:
+                    resource_name = stringcase.snakecase(
+                        manager_class.__name__.replace("Manager", "")
+                    )
+                    return {resource_name: result}
 
             return result
 

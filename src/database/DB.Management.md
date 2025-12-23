@@ -55,10 +55,11 @@ Base = db_manager.Base
 Consolidated database connectivity and engine setup with multi-database support.
 
 **Supported Databases:**
-- SQLite (with regex support and WAL mode optimization)
-- PostgreSQL (with asyncpg support)
-- MariaDB
-- MSSQL
+- SQLite (with regex support, WAL mode optimization, and aiosqlite async support)
+- PostgreSQL (with asyncpg async support)
+- MySQL (with aiomysql async support)
+- MariaDB (with aiomysql async support)
+- MSSQL (with aioodbc async support)
 
 **Key Functions:**
 - `get_database_info()`: Centralized database configuration
@@ -128,9 +129,15 @@ Database type determined by `DATABASE_TYPE` environment variable:
 
 ### Connection Strings
 - **SQLite**: `sqlite:///path/to/database.db` (always uses forward slashes, even on Windows)
-- **PostgreSQL**: `postgresql://user:pass@host:port/dbname`
-- **Async PostgreSQL**: `postgresql+asyncpg://user:pass@host:port/dbname`
 - **SQLite Async**: `sqlite+aiosqlite:///path/to/database.db`
+- **PostgreSQL**: `postgresql://user:pass@host:port/dbname`
+- **PostgreSQL Async**: `postgresql+asyncpg://user:pass@host:port/dbname`
+- **MySQL**: `mysql://user:pass@host:port/dbname`
+- **MySQL Async**: `mysql+aiomysql://user:pass@host:port/dbname`
+- **MariaDB**: `mariadb://user:pass@host:port/dbname`
+- **MariaDB Async**: `mariadb+aiomysql://user:pass@host:port/dbname`
+- **MSSQL**: `mssql://user:pass@host:port/dbname`
+- **MSSQL Async**: `mssql+aioodbc://user:pass@host:port/dbname`
 
 ### Environment Variables
 - `DATABASE_TYPE`: Database type (sqlite/postgresql/mysql/mssql)
@@ -202,11 +209,18 @@ Support for database name prefixes to create isolated environments:
 - `test.integration`: Creates `test.integration.database_name`
 - `test.migration`: Creates `test.migration.database_name`
 
+**Prefix Nesting Prevention:**
+The `get_database_info()` function automatically prevents double-prefixing. If the database name already starts with the requested prefix, it won't be applied again. For example:
+- Request prefix `test` on `my_db` → `test.my_db`
+- Request prefix `test` on `test.my_db` → `test.my_db` (no double-prefix)
+
+This ensures that nested calls or re-initialization don't create invalid database names like `test.test.database_name`.
+
 ## Performance Considerations
 
 ### Connection Pooling
-- **PostgreSQL**: 20 pool size, 10 max overflow
-- **SQLite**: No pooling (single connection per thread)
+- **PostgreSQL**: 20 pool size, 30 max overflow
+- **SQLite**: 10 pool size, 20 max overflow (with `check_same_thread=False` and 30s timeout)
 - Pre-ping health checks for connection validation
 - Pool recycling every 3600 seconds
 
@@ -267,10 +281,16 @@ Schema changes managed via Alembic migrations:
 - Extension migrations: `extensions/{name}/migrations/versions/`
 
 ### Extension Migrations
-Each extension has isolated migrations folder scaffolded by Alembic:
+Each extension has isolated migrations folder scaffolded by Alembic. Use the `--extension` flag with the Migration.py CLI:
 ```bash
 # Generate extension migration
-ALEMBIC_EXTENSION=my_extension alembic revision --autogenerate -m "description"
+python -m database.migrations.Migration revision --extension my_extension -m "description"
+
+# Upgrade a specific extension
+python -m database.migrations.Migration upgrade --extension my_extension
+
+# Upgrade core and all extensions
+python -m database.migrations.Migration upgrade --all
 ```
 
 **Resolution Order:**
@@ -281,11 +301,13 @@ ALEMBIC_EXTENSION=my_extension alembic revision --autogenerate -m "description"
 **Structure:**
 ```
 extensions/my_extension/
+├── BLL_*.py              # Extension business logic models
 └── migrations/
-    ├── env.py              # Extension-specific Alembic env
     └── versions/
         └── xxx_initial.py  # Migration files
 ```
+
+Note: The `env.py` and `script.py.mako` files are temporarily copied from core migrations during extension migration operations and cleaned up afterward.
 
 **@extension_model Fields:**
 - Fields injected via `@extension_model` require manual migration creation
