@@ -3174,8 +3174,16 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         self._batch_update(server, admin_a.jwt, admin_a.id, team_a.id)
         self._batch_update_assert("batch_update_result")
 
-    def _batch_delete_assert(self, tracked_index: str, server: Any, jwt_token: str):
+    def _batch_delete_assert(
+        self,
+        tracked_index: str,
+        server: Any,
+        jwt_token: str = None,
+        api_key: str = None,
+    ):
         """Assert that entities were batch deleted successfully."""
+        if jwt_token is None and api_key is None:
+            raise ValueError("Either jwt_token or api_key must be provided")
         entities = self.tracked_entities[tracked_index]
         assertion_index = f"{self.entity_name} / {tracked_index}"
 
@@ -3192,10 +3200,15 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
                         path_parent_ids[f"{parent.name}_id"] = parent_id
 
         # Verify each entity is gone
+        # For system entities, when jwt_token is provided explicitly (without api_key),
+        # use JWT to verify soft-deleted entities aren't visible to normal users
+        skip_auto_api_key = jwt_token is not None and api_key is None
         for entity in entities:
             response = server.get(
                 self.get_detail_endpoint(entity["id"], path_parent_ids),
-                headers=self._get_appropriate_headers(jwt_token),
+                headers=self._get_appropriate_headers(
+                    jwt_token, api_key, skip_auto_api_key
+                ),
             )
             assert (
                 response.status_code == 404
