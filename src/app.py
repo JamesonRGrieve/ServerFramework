@@ -631,23 +631,24 @@ def build_app(model_registry: ModelRegistry):
             ]
 
             # Check for JSON parsing error messages from the JSON parser
+            # Be specific to avoid catching Pydantic validation errors like "Input should be..."
             json_parsing_error_messages = [
                 "JSON decode error",
                 "Invalid JSON",
                 "Expecting property name enclosed in double quotes",
-                "Expecting value",
+                "Expecting value:",  # More specific - actual JSON parser message includes colon
                 "Invalid control character",
                 "Unterminated string",
-                "Extra data",
+                "Extra data:",  # More specific - actual JSON parser message includes colon
                 "Expecting ',' delimiter",
                 "Expecting ':' delimiter",
                 "Invalid \\escape",
-                "Expecting",  # General JSON parsing errors from json.loads
                 "JSONDecodeError",
             ]
 
             # Also check if the error location suggests JSON parsing (root level, no field path)
             # JSON parsing errors typically have empty or very short location paths
+            # Note: "body" is NOT a JSON parse location - it's a Pydantic validation location
             is_json_parse_location = len(error_loc) == 0 or (
                 len(error_loc) == 1 and error_loc[0] == "__root__"
             )
