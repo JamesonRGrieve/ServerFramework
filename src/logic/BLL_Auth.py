@@ -2311,7 +2311,7 @@ class TeamManager(AbstractBLLManager, RouterMixin):
                 "InvitationManager",
             ),
             # child_network_model_cls will be inferred from the manager
-            "routes_to_register": ["get", "list", "create", "search"],
+            "routes_to_register": ["get", "list", "create", "search", "update", "batch_update"],
             "custom_routes": [
                 {
                     "path": "",
@@ -2355,6 +2355,8 @@ class TeamManager(AbstractBLLManager, RouterMixin):
                 "get",
                 "update",
                 "delete",
+                "batch_update",
+                "batch_delete",
             ],
         },
     }
