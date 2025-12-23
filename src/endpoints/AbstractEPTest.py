@@ -204,7 +204,7 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
             details="Filtering not yet implemented",
         ),
         SkipThisTest(
-            name="test_POST_400_null_parents",
+            name="test_POST_422_null_parents",
             reason=SkipReason.NOT_IMPLEMENTED,
             details="Null parents not yet implemented",
             gh_issue_number=26,
@@ -995,7 +995,7 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
                 "Expected validation error for invalid minimal data, but entity was created"
             )
 
-    def test_POST_400_null_parents(self, server: Any, admin_a: Any, team_a: Any):
+    def test_POST_422_null_parents(self, server: Any, admin_a: Any, team_a: Any):
         """Test creating a new entity with null values for non-nullable parent fields fails validation."""
         if not self.parent_entities or not any(
             not p.nullable for p in self.parent_entities
@@ -1039,9 +1039,9 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
             headers=self._get_appropriate_headers(admin_a.jwt),
         )
 
-        # Null non-nullable parents should return 400 (bad request structure)
-        assert response.status_code == 400, (
-            f"Null non-nullable parents should return 400, got {response.status_code}. "
+        # Null non-nullable parents should return 422 (Pydantic validation error)
+        assert response.status_code == 422, (
+            f"Null non-nullable parents should return 422, got {response.status_code}. "
             f"Response: {response.text}"
         )
 
@@ -2989,7 +2989,7 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
             response.status_code == 422
         ), "Should receive 422 validation error for invalid minimal batch data"
 
-    def test_POST_400_batch_null_parents(self, server: Any, admin_a: Any, team_a: Any):
+    def test_POST_422_batch_null_parents(self, server: Any, admin_a: Any, team_a: Any):
         """Test batch creation with null values for non-nullable parent fields fails validation."""
         if not self.parent_entities or not any(
             not p.nullable for p in self.parent_entities
@@ -3020,9 +3020,9 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
             headers=self._get_appropriate_headers(admin_a.jwt),
         )
 
-        # Null non-nullable parents should return 400 (bad request structure)
-        assert response.status_code == 400, (
-            f"Null non-nullable parents should return 400, got {response.status_code}. "
+        # Null non-nullable parents should return 422 (Pydantic validation error)
+        assert response.status_code == 422, (
+            f"Null non-nullable parents should return 422, got {response.status_code}. "
             f"Response: {response.text}"
         )
 
