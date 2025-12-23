@@ -1970,6 +1970,11 @@ def register_route(
                     parent_id = request["path_params"][parent_param_name]
                     search_params[parent_param_name] = parent_id
 
+                # Add team_id filter if provided in query params
+                team_id_param = getattr(query_params, "team_id", None)
+                if team_id_param:
+                    search_params["team_id"] = team_id_param
+
                 include_param = _normalize_query_list(
                     getattr(query_params, "include", None)
                 )
