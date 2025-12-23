@@ -2581,7 +2581,7 @@ class TeamManager(AbstractBLLManager, RouterMixin):
                 user = user_manager.get(id=record.user_id)
                 record.user = user
 
-        return result
+        return {"user_teams": result}
 
     def patch_role(self, team_id: str, user_id: str, body: Dict[str, Any]):
         """Update a user's role within a team (custom route method)"""
