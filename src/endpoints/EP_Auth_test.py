@@ -654,6 +654,22 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
             name="test_POST_200_search_includes",
             details="User search is restricted for privacy/security reasons - users should not be searchable globally",
         ),
+        SkipThisTest(
+            name="test_GET_200_list_pagination",
+            details="User entity does not have a standard LIST endpoint",
+        ),
+        SkipThisTest(
+            name="test_POST_200_search_pagination",
+            details="User search is restricted for privacy/security reasons - users should not be searchable globally",
+        ),
+        SkipThisTest(
+            name="test_PUT_200_batch",
+            details="Users cannot be batch updated",
+        ),
+        SkipThisTest(
+            name="test_DELETE_204_batch",
+            details="Users cannot be batch deleted",
+        ),
     ]
 
     def create_payload(
