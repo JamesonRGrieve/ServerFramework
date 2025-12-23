@@ -293,7 +293,20 @@ class DatabaseManager:
                 "pool_pre_ping": True,
                 "pool_recycle": 3600,
             }
-            async_url = database_uri.replace("postgresql://", "postgresql+asyncpg://")
+            # Generate async URL based on database type
+            if database_type == "postgresql":
+                async_url = database_uri.replace(
+                    "postgresql://", "postgresql+asyncpg://"
+                )
+            elif database_type == "mysql":
+                async_url = database_uri.replace("mysql://", "mysql+aiomysql://")
+            elif database_type == "mariadb":
+                async_url = database_uri.replace("mariadb://", "mariadb+aiomysql://")
+            elif database_type == "mssql":
+                async_url = database_uri.replace("mssql://", "mssql+aioodbc://")
+            else:
+                # Fallback for any other type - use the sync URL
+                async_url = database_uri
             self.async_engine_config = {
                 "url": async_url,
                 "pool_size": 20,
