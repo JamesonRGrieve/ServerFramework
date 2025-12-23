@@ -1658,6 +1658,39 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
         result = data["data"]["deleteUser"]
         assert result is True, "Delete should return True"
 
+    def test_GET_200_list_fields(
+        self, server: Any, admin_a: Any, team_a: Any, field_name: str
+    ):
+        """Override: User list endpoint returns only the requesting user.
+
+        The base user list endpoint (without providing a team) only returns the
+        requesting user, so we apply fields filtering to only that user.
+        """
+        # Request list with only the specific field - for users, this returns the current user
+        endpoint = f"/v1/user?fields={field_name}"
+        response = server.get(
+            endpoint, headers=self._get_appropriate_headers(admin_a.jwt)
+        )
+
+        self._assert_response_status(response, 200, "GET user with fields", endpoint)
+
+        response_data = response.json()
+        assert (
+            self.entity_name in response_data
+        ), f"Response should contain '{self.entity_name}' key"
+
+        user = response_data[self.entity_name]
+
+        # Verify the returned user contains the requested field
+        assert (
+            field_name in user
+        ), f"Response user should contain field '{field_name}'"
+
+        # Verify the user returned is the requesting user
+        assert (
+            user.get("id") == admin_a.id
+        ), "Should return the requesting user"
+
     # TODO Future parameterization.
     # @pytest.mark.parametrize(
     #     "endpoint,method,status_code,description",
