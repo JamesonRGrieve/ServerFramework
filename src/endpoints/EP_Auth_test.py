@@ -543,6 +543,9 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
     # Include session-related tables in related entities
     related_entities = ["sessions", "credentials", "metadata"]
 
+    # Track created entities for cleanup
+    _created_entities = []
+
     create_fields = {
         "email": lambda: f"user_{uuid.uuid4().hex[:8]}@example.com",
         "display_name": lambda: faker.unique.user_name().upper(),

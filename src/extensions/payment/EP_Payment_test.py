@@ -245,15 +245,16 @@ class TestPayment_UserAndSessionEndpoints(
 
         # Extract user from response and verify structure
         response_data = response.json()
-        assert "id" in response_data, "User should have an ID"
-        assert "email" in response_data, "User should have an email"
+        user = response_data[self.entity_name]
+        assert "id" in user, "User should have an ID"
+        assert "email" in user, "User should have an email"
 
         # Verify payment extension field is present
         assert (
-            "external_payment_id" in response_data
+            "external_payment_id" in user
         ), "User should have external_payment_id field"
         assert (
-            response_data["external_payment_id"] == "abc321"
+            user["external_payment_id"] == "abc321"
         ), "Payment ID should have the value of 'abc321'."
 
     def test_PUT_200_with_payment_field(
@@ -276,9 +277,9 @@ class TestPayment_UserAndSessionEndpoints(
         )
         self._assert_response_status(response, 200, "PUT", endpoint, payload)
 
-        # Verify payment field was updated - handle both wrapped and unwrapped response
+        # Verify payment field was updated
         response_data = response.json()
-        user = response_data.get(self.entity_name, response_data)
+        user = response_data[self.entity_name]
         assert user["external_payment_id"] == payment_id, "Payment ID should be updated"
         assert (
             user["display_name"] == "Updated with Payment"
@@ -295,9 +296,9 @@ class TestPayment_UserAndSessionEndpoints(
         )
         self._assert_response_status(response, 200, "GET current user", endpoint)
 
-        # Verify payment extension field is present - handle both wrapped and unwrapped response
+        # Verify payment extension field is present
         response_data = response.json()
-        user = response_data.get(self.entity_name, response_data)
+        user = response_data[self.entity_name]
         assert (
             "external_payment_id" in user
         ), "User should have external_payment_id field"
@@ -517,9 +518,9 @@ class TestPayment_UserAndSessionEndpoints(
             create_response, 201, "POST create user", "/v1/user"
         )
 
-        # Verify the user was created with the payment field - handle both wrapped and unwrapped response
+        # Verify the user was created with the payment field
         response_data = create_response.json()
-        user = response_data.get("user", response_data)
+        user = response_data["user"]
         assert user["external_payment_id"] == "cus_search_test_customer"
 
     def _generate_jwt_for_user(self, user_data: Dict[str, Any]) -> str:
