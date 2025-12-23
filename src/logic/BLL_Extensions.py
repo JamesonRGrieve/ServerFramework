@@ -344,7 +344,7 @@ class AbilityModel(
         NameMixinModel.Search,
         ExtensionModel.Reference.ID.Search,
     ):
-        meta: Optional[bool]
+        meta: Optional[bool] = None
         friendly_name: Optional[StringSearchModel] = None
 
 

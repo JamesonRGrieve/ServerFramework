@@ -2579,7 +2579,7 @@ class TeamManager(AbstractBLLManager, RouterMixin):
                 user = user_manager.get(id=record.user_id)
                 record.user = user
 
-        return result
+        return {"user_teams": result}
 
     def patch_role(self, team_id: str, user_id: str, body: Dict[str, Any]):
         """Update a user's role within a team (custom route method)"""
@@ -3137,7 +3137,7 @@ class RoleManager(AbstractBLLManager, RouterMixin):
         # System roles with team_id=None can only be created through seeding, not the API
         if entity.team_id is None:
             raise HTTPException(
-                status_code=400,
+                status_code=422,
                 detail="team_id is required for role creation",
             )
 
@@ -3911,7 +3911,7 @@ class InvitationModel(
                 from fastapi import HTTPException
 
                 raise HTTPException(
-                    status_code=400,
+                    status_code=422,
                     detail="team_id and role_id cannot both be explicitly set to null",
                 )
 
@@ -3919,7 +3919,7 @@ class InvitationModel(
                 from fastapi import HTTPException
 
                 raise HTTPException(
-                    status_code=400,
+                    status_code=422,
                     detail="team_id and role_id must both be provided together, or both be null for app-level invitations",
                 )
             return self

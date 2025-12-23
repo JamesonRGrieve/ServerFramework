@@ -238,7 +238,7 @@ Permission roles with hierarchy and security policies.
 - `expires_at`: Optional[datetime] - Role expiration
 
 **Validation:**
-- API role creation requires `team_id` to be provided (returns 400 if null)
+- API role creation requires `team_id` to be provided (returns 422 if null)
 
 ### PermissionModel
 Granular resource permissions.
@@ -267,7 +267,7 @@ Team invitation management.
 
 **Validation:**
 - `team_id` and `role_id` must both be provided together, or both omitted for app-level invitations
-- Explicitly setting both to null is rejected (returns 400); omit both fields for app-level invitations
+- Explicitly setting both to null is rejected (returns 422); omit both fields for app-level invitations
 
 ### InviteeModel
 Specific invitation recipients.
