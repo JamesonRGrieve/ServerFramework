@@ -46,7 +46,11 @@ if record.deleted_at and user_id != env("ROOT_ID"):
 **Usage Pattern:**
 ```python
 # System entities are viewable by all, modifiable by system users only
-if cls.system and required_level in [PermissionType.EDIT, PermissionType.DELETE]:
+if cls.system:
+    # VIEW operations are explicitly granted to all users
+    if required_level == PermissionType.VIEW:
+        return (PermissionResult.GRANTED, None)
+    # All other operations (EDIT, DELETE, EXECUTE, COPY, SHARE) require system users
     if user_id not in [env("ROOT_ID"), env("SYSTEM_ID")]:
         return (PermissionResult.DENIED, "System entity modification requires elevated privileges")
 ```
