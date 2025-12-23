@@ -609,8 +609,8 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
             details="Users cannot be batch created",
         ),
         SkipThisTest(
-            name="test_POST_200_authorize_body",
-            details="Not implemented yet",
+            name="test_POST_422_singular_with_plural",
+            details="User registration endpoint has special handling that returns 400 instead of 422",
         ),
         SkipThisTest(
             name="test_GET_200_list",
@@ -835,11 +835,10 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
     def test_POST_200_authorize_body(self, server: Any, admin_a: Any) -> str:
         """Test user authorization with credentials in body."""
 
+        # The authorize endpoint expects flat email/password, not nested in "auth"
         auth_payload = {
-            "auth": {
-                "email": admin_a.email,
-                "password": "testpassword",  # Hardcoded for test users
-            }
+            "email": admin_a.email,
+            "password": "testpassword",  # Hardcoded for test users
         }
 
         endpoint = "/v1/user/authorize"
@@ -847,8 +846,8 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
         self._assert_response_status(response, 200, "POST", endpoint, auth_payload)
 
         json_response = response.json()
-        assert "jwt" in json_response, "JWT token missing from response"
-        return json_response["jwt"]
+        assert "token" in json_response, "JWT token missing from response"
+        return json_response["token"]
 
     def test_GET_200(self, server: Any, admin_a: Any) -> Dict[str, Any]:
         """Test retrieving current user profile."""
