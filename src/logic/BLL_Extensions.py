@@ -1,6 +1,7 @@
 from typing import Any, ClassVar, Dict, List, Optional
 
 import stringcase
+from fastapi import HTTPException
 from pydantic import BaseModel, Field
 
 from lib.Environment import env
@@ -392,6 +393,17 @@ class AbilityManager(AbstractBLLManager, RouterMixin):
             target_team_id=target_team_id,
             model_registry=model_registry,
         )
+
+    def create_validation(self, entity):
+        """Validate ability creation - check that extension exists."""
+        if entity.extension_id:
+            extension = ExtensionModel.DB(self.model_registry.DB.manager.Base).get(
+                requester_id=self.requester.id,
+                model_registry=self.model_registry,
+                id=entity.extension_id,
+            )
+            if not extension:
+                raise HTTPException(status_code=404, detail="Extension not found")
 
 
 ExtensionModel.Manager = ExtensionManager
