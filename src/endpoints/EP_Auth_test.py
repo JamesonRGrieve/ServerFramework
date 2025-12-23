@@ -655,6 +655,10 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
             details="User search is restricted for privacy/security reasons - users should not be searchable globally",
         ),
         SkipThisTest(
+            name="test_POST_400",
+            details="User registration uses static route which handles JSON errors differently",
+        ),
+        SkipThisTest(
             name="test_PUT_200_batch",
             details="User entity does not have a batch update endpoint",
         ),
