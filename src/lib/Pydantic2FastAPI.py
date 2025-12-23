@@ -3377,18 +3377,32 @@ def create_router_from_manager(
             else:
                 custom_route = custom_route_config
 
-            # Create a wrapper that gets the nested manager
-            async def nested_endpoint(request: Request, **kwargs):
-                parent_id = request.path_params[f"{resource_name}_id"]
-                manager_factory = create_manager_factory(
-                    manager_class, model_registry, auth_type
-                )
-                request_info = await get_request_info(request)
-                parent_manager = manager_factory(request=request_info)
-                nested_manager = getattr(parent_manager, manager_property)
+            # Create a factory function to properly capture variables in closure
+            def create_nested_endpoint(
+                route_function: str,
+                res_name: str,
+                mgr_class: Type,
+            ):
+                async def nested_endpoint(request: Request):
+                    parent_id = request.path_params[f"{res_name}_id"]
+                    factory = create_manager_factory(
+                        mgr_class, model_registry, auth_type
+                    )
+                    request_info = await get_request_info(request)
+                    parent_manager = factory(request=request_info)
 
-                method_func: Callable = getattr(nested_manager, custom_route.function)
-                return method_func(parent_id, **kwargs)
+                    # Call method on parent manager (where nested custom routes are defined)
+                    method_func: Callable = getattr(parent_manager, route_function)
+                    return method_func(parent_id)
+
+                return nested_endpoint
+
+            # Create endpoint with captured values
+            nested_endpoint = create_nested_endpoint(
+                custom_route.function,
+                resource_name,
+                manager_class,
+            )
 
             # Register the nested custom route
             nested_method_value: str = (
