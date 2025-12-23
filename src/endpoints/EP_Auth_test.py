@@ -7,7 +7,7 @@ import faker
 import pytest
 import stringcase
 
-from AbstractTest import ParentEntity, SkipReason, SkipThisTest
+from AbstractTest import ParentEntity, SkipThisTest
 from endpoints.AbstractEPTest import AbstractEPTest, HttpMethod, StatusCode
 from lib.Environment import env
 from lib.Logging import logger
@@ -609,10 +609,6 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
             details="Users cannot be batch created",
         ),
         SkipThisTest(
-            name="test_POST_200_authorize_body",
-            details="Not implemented yet",
-        ),
-        SkipThisTest(
             name="test_GET_200_list",
             details="Not implemented yet",
         ),
@@ -639,12 +635,6 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
         SkipThisTest(
             name="test_GQL_mutation_create",
             details="Registrations must be performed over REST",
-        ),
-        SkipThisTest(
-            name="test_GET_401_verify_jwt_empty",
-            reason=SkipReason.NOT_IMPLEMENTED,
-            details="Open Issue #46",
-            gh_issue_number=46,
         ),
         SkipThisTest(
             name="test_POST_200_search",
@@ -1682,14 +1672,10 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
         user = response_data[self.entity_name]
 
         # Verify the returned user contains the requested field
-        assert (
-            field_name in user
-        ), f"Response user should contain field '{field_name}'"
+        assert field_name in user, f"Response user should contain field '{field_name}'"
 
         # Verify the user returned is the requesting user
-        assert (
-            user.get("id") == admin_a.id
-        ), "Should return the requesting user"
+        assert user.get("id") == admin_a.id, "Should return the requesting user"
 
     # TODO Future parameterization.
     # @pytest.mark.parametrize(
@@ -1849,7 +1835,9 @@ class TestRoleEndpoints(AbstractEPTest):
         role_name = name or f"Role {self.faker.word()}"
 
         # Determine team_id: parent_ids takes precedence when key is explicitly present
-        resolved_team_id = parent_ids["team_id"] if parent_ids and "team_id" in parent_ids else team_id
+        resolved_team_id = (
+            parent_ids["team_id"] if parent_ids and "team_id" in parent_ids else team_id
+        )
 
         if invalid_data:
             # Invalid data for validation tests
@@ -2320,8 +2308,14 @@ class TestInvitationEndpoints(AbstractEPTest):
     ) -> Dict[str, Any]:
         """Create a payload for invitation creation."""
         # Determine parent IDs: parent_ids takes precedence when key is explicitly present
-        resolved_team_id = parent_ids["team_id"] if parent_ids and "team_id" in parent_ids else team_id
-        resolved_role_id = parent_ids["role_id"] if parent_ids and "role_id" in parent_ids else env("USER_ROLE_ID")
+        resolved_team_id = (
+            parent_ids["team_id"] if parent_ids and "team_id" in parent_ids else team_id
+        )
+        resolved_role_id = (
+            parent_ids["role_id"]
+            if parent_ids and "role_id" in parent_ids
+            else env("USER_ROLE_ID")
+        )
 
         if invalid_data:
             # Invalid data for validation tests - make it truly invalid

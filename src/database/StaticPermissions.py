@@ -30,7 +30,7 @@ SYSTEM_ID = env("SYSTEM_ID")
 TEMPLATE_ID = env("TEMPLATE_ID")
 
 
-def is_system_id(user_id: str) -> bool:
+def is_any_internal_id(user_id: str) -> bool:
     """Check if the user ID is any of the system IDs."""
     return user_id in (ROOT_ID, SYSTEM_ID, TEMPLATE_ID)
 
@@ -40,7 +40,7 @@ def is_root_id(user_id: str) -> bool:
     return user_id == ROOT_ID
 
 
-def is_system_user_id(user_id: str) -> bool:
+def is_system_id(user_id: str) -> bool:
     """Check if the user ID is the SYSTEM_ID."""
     return user_id == SYSTEM_ID
 
@@ -314,7 +314,7 @@ def check_permission_table_access(user_id, cls, db, operation=None, **kwargs):
     if is_root_id(user_id):
         return (True, None)  # ROOT_ID can manage all permissions
 
-    if is_system_user_id(user_id):
+    if is_system_id(user_id):
         return (True, None)  # SYSTEM_ID can also manage all permissions
 
     # Check if the user can manage permissions for this resource
@@ -425,7 +425,7 @@ def can_manage_permissions(
     if is_root_id(user_id):
         return (True, None)  # ROOT_ID can manage all permissions
 
-    if is_system_user_id(user_id):
+    if is_system_id(user_id):
         return (True, None)  # SYSTEM_ID can also manage all permissions
 
     # Validate resource_type to prevent injection
@@ -754,7 +754,7 @@ def check_permission(
             if required_level == PermissionType.VIEW:
                 return (PermissionResult.GRANTED, None)
             # For all other operations, only allow system users
-            if not (is_root_id(user_id) or is_system_user_id(user_id)):
+            if not (is_root_id(user_id) or is_system_id(user_id)):
                 return (
                     PermissionResult.DENIED,
                     f"User {user_id} cannot modify system table {record_cls.__name__}",
@@ -786,7 +786,7 @@ def check_permission(
             if required_level == PermissionType.VIEW:
                 return (PermissionResult.GRANTED, None)
             # For other operations, only ROOT_ID and SYSTEM_ID
-            if not (is_root_id(user_id) or is_system_user_id(user_id)):
+            if not (is_root_id(user_id) or is_system_id(user_id)):
                 return (
                     PermissionResult.DENIED,
                     f"User {user_id} cannot modify records created by SYSTEM_ID",
@@ -806,7 +806,7 @@ def check_permission(
             ]:
                 return (PermissionResult.GRANTED, None)
             # For edit/delete, only ROOT_ID and SYSTEM_ID can modify
-            if not (is_root_id(user_id) or is_system_user_id(user_id)):
+            if not (is_root_id(user_id) or is_system_id(user_id)):
                 return (
                     PermissionResult.DENIED,
                     f"User {user_id} cannot modify records created by TEMPLATE_ID",
@@ -1276,7 +1276,7 @@ def generate_permission_filter(
         if required_permission_level == PermissionType.VIEW:
             return true()  # Allow all users to view system entities
         # For all other operations, only allow system users
-        if not (is_root_id(user_id) or is_system_user_id(user_id)):
+        if not (is_root_id(user_id) or is_system_id(user_id)):
             return false()  # Non-system users can't modify system-flagged tables
 
     # Create a unique suffix for the CTE based on resource class name and a unique identifier
@@ -1378,14 +1378,14 @@ def generate_permission_filter(
 
         # SYSTEM_ID records viewable by all, but only modifiable by ROOT_ID and SYSTEM_ID
         if resource_db_cls.user_id == SYSTEM_ID:
-            if not (is_root_id(user_id) or is_system_user_id(user_id)):
+            if not (is_root_id(user_id) or is_system_id(user_id)):
                 if required_permission_level != PermissionType.VIEW:
                     return false()
 
         # TEMPLATE_ID records viewable, copyable, executable, shareable by all
         # but only modifiable (EDIT/DELETE) by ROOT_ID and SYSTEM_ID
         if resource_db_cls.user_id == TEMPLATE_ID:
-            if not (is_root_id(user_id) or is_system_user_id(user_id)):
+            if not (is_root_id(user_id) or is_system_id(user_id)):
                 if required_permission_level in [
                     PermissionType.EDIT,
                     PermissionType.DELETE,
@@ -1402,14 +1402,14 @@ def generate_permission_filter(
 
         # SYSTEM_ID created records viewable by all, but only modifiable by ROOT_ID and SYSTEM_ID
         if resource_db_cls.created_by_user_id == SYSTEM_ID:
-            if not (is_root_id(user_id) or is_system_user_id(user_id)):
+            if not (is_root_id(user_id) or is_system_id(user_id)):
                 if required_permission_level != PermissionType.VIEW:
                     return false()
 
         # TEMPLATE_ID created records viewable, copyable, executable, shareable by all
         # but only modifiable (EDIT/DELETE) by ROOT_ID and SYSTEM_ID
         if resource_db_cls.created_by_user_id == TEMPLATE_ID:
-            if not (is_root_id(user_id) or is_system_user_id(user_id)):
+            if not (is_root_id(user_id) or is_system_id(user_id)):
                 if required_permission_level in [
                     PermissionType.EDIT,
                     PermissionType.DELETE,
@@ -1722,7 +1722,7 @@ def user_has_read_access(
         PermissionType,
         check_permission,
         is_root_id,
-        is_system_user_id,
+        is_system_id,
     )
 
     # ROOT_ID can access everything
@@ -1730,7 +1730,7 @@ def user_has_read_access(
         return True
 
     # SYSTEM_ID can access most things
-    if is_system_user_id(user_id):
+    if is_system_id(user_id):
         return True
 
     # If record is a string (ID), retrieve the actual record

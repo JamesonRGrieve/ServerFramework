@@ -86,7 +86,7 @@ def is_root_id(user_id: str) -> bool:
     """Check if user_id matches ROOT_ID"""
     return user_id == env("ROOT_ID")
 
-def is_system_id(user_id: str) -> bool:
+def is_any_internal_id(user_id: str) -> bool:
     """Check if user_id matches SYSTEM_ID"""
     return user_id == env("SYSTEM_ID")
 
@@ -125,7 +125,7 @@ def user_can_create_referenced_entity(cls, user_id, db, **kwargs):
         return True
         
     # SYSTEM_ID can create system/public resources
-    if is_system_id(user_id) and cls.system:
+    if is_any_internal_id(user_id) and cls.system:
         return True
         
     # TEMPLATE_ID can create template resources

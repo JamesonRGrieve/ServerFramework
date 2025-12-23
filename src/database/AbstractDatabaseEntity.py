@@ -635,8 +635,8 @@ class BaseMixin:
             PermissionResult,
             PermissionType,
             check_permission,
+            is_any_internal_id,
             is_root_id,
-            is_system_id,
         )
 
         # Use the provided database session and manager
@@ -657,7 +657,7 @@ class BaseMixin:
 
         # Check system flag - only ROOT_ID and SYSTEM_ID can access system-flagged tables
         if hasattr(cls, "system") and getattr(cls, "system", False):
-            if not is_system_id(user_id):
+            if not is_any_internal_id(user_id):
                 return False
 
         # Check for records created by ROOT_ID - only ROOT_ID can access them
@@ -749,7 +749,7 @@ class BaseMixin:
         from database.StaticPermissions import (
             check_access_to_all_referenced_entities,
             is_root_id,
-            is_system_user_id,
+            is_system_id,
             user_can_create_referenced_entity,
         )
 
@@ -759,7 +759,7 @@ class BaseMixin:
 
         # Check system flag - only ROOT_ID and SYSTEM_ID can create in system-flagged tables
         if hasattr(cls, "system") and getattr(cls, "system", False):
-            return is_root_id(user_id) or is_system_user_id(user_id)
+            return is_root_id(user_id) or is_system_id(user_id)
 
         # Check if user has access to all referenced entities
         can_access, missing_entity = check_access_to_all_referenced_entities(
@@ -790,7 +790,7 @@ class BaseMixin:
             PermissionResult,
             PermissionType,
             is_root_id,
-            is_system_user_id,
+            is_system_id,
         )
 
         # Extract db and db_manager from kwargs (injected by decorator)
@@ -802,7 +802,7 @@ class BaseMixin:
 
         # Check system flag - only ROOT_ID and SYSTEM_ID can create in system-flagged tables
         if hasattr(cls, "system") and getattr(cls, "system", False):
-            if not (is_root_id(requester_id) or is_system_user_id(requester_id)):
+            if not (is_root_id(requester_id) or is_system_id(requester_id)):
                 raise HTTPException(
                     status_code=403,
                     detail=f"Only system users can create {cls.__name__} records",
@@ -1297,9 +1297,9 @@ class UpdateMixin:
         from database.StaticPermissions import (
             PermissionResult,
             PermissionType,
+            is_any_internal_id,
             is_root_id,
             is_system_id,
-            is_system_user_id,
         )
 
         # Extract db and db_manager from kwargs (injected by decorator)
@@ -1354,7 +1354,7 @@ class UpdateMixin:
 
         # Check for system flag - only ROOT_ID and SYSTEM_ID can modify system-flagged tables
         if hasattr(cls, "system") and getattr(cls, "system", False):
-            if not (is_root_id(requester_id) or is_system_user_id(requester_id)):
+            if not (is_root_id(requester_id) or is_system_id(requester_id)):
                 raise HTTPException(
                     status_code=403,
                     detail=f"Only system users can modify {cls.__name__} records",
@@ -1371,7 +1371,7 @@ class UpdateMixin:
                 )
 
             if entity.created_by_user_id == env("SYSTEM_ID") and not (
-                is_root_id(requester_id) or is_system_user_id(requester_id)
+                is_root_id(requester_id) or is_system_id(requester_id)
             ):
                 raise HTTPException(
                     status_code=403,
@@ -1448,9 +1448,9 @@ class UpdateMixin:
         from database.StaticPermissions import (
             PermissionResult,
             PermissionType,
+            is_any_internal_id,
             is_root_id,
             is_system_id,
-            is_system_user_id,
         )
 
         # Extract db and db_manager from kwargs (injected by decorator)
@@ -1501,7 +1501,7 @@ class UpdateMixin:
 
         # Check for system flag - only ROOT_ID and SYSTEM_ID can delete from system-flagged tables
         if hasattr(cls, "system") and getattr(cls, "system", False):
-            if not (is_root_id(requester_id) or is_system_user_id(requester_id)):
+            if not (is_root_id(requester_id) or is_system_id(requester_id)):
                 raise HTTPException(
                     status_code=403,
                     detail=f"Only system users can delete {cls.__name__} records",
@@ -1518,7 +1518,7 @@ class UpdateMixin:
                 )
 
             if entity.created_by_user_id == env("SYSTEM_ID") and not (
-                is_root_id(requester_id) or is_system_user_id(requester_id)
+                is_root_id(requester_id) or is_system_id(requester_id)
             ):
                 raise HTTPException(
                     status_code=403,
@@ -1528,7 +1528,7 @@ class UpdateMixin:
             if (
                 entity.created_by_user_id is not None
                 and entity.created_by_user_id != requester_id
-                and not (is_root_id(requester_id) or is_system_user_id(requester_id))
+                and not (is_root_id(requester_id) or is_system_id(requester_id))
             ):
                 raise HTTPException(
                     status_code=403,
