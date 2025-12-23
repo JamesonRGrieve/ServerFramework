@@ -1970,6 +1970,11 @@ def register_route(
                     parent_id = request["path_params"][parent_param_name]
                     search_params[parent_param_name] = parent_id
 
+                # Add team_id filter if provided in query params
+                team_id_param = getattr(query_params, "team_id", None)
+                if team_id_param:
+                    search_params["team_id"] = team_id_param
+
                 include_param = _normalize_query_list(
                     getattr(query_params, "include", None)
                 )
@@ -3386,18 +3391,32 @@ def create_router_from_manager(
             else:
                 custom_route = custom_route_config
 
-            # Create a wrapper that gets the nested manager
-            async def nested_endpoint(request: Request, **kwargs):
-                parent_id = request.path_params[f"{resource_name}_id"]
-                manager_factory = create_manager_factory(
-                    manager_class, model_registry, auth_type
-                )
-                request_info = await get_request_info(request)
-                parent_manager = manager_factory(request=request_info)
-                nested_manager = getattr(parent_manager, manager_property)
+            # Create a factory function to properly capture variables in closure
+            def create_nested_endpoint(
+                route_function: str,
+                res_name: str,
+                mgr_class: Type,
+            ):
+                async def nested_endpoint(request: Request):
+                    parent_id = request.path_params[f"{res_name}_id"]
+                    factory = create_manager_factory(
+                        mgr_class, model_registry, auth_type
+                    )
+                    request_info = await get_request_info(request)
+                    parent_manager = factory(request=request_info)
 
-                method_func: Callable = getattr(nested_manager, custom_route.function)
-                return method_func(parent_id, **kwargs)
+                    # Call method on parent manager (where nested custom routes are defined)
+                    method_func: Callable = getattr(parent_manager, route_function)
+                    return method_func(parent_id)
+
+                return nested_endpoint
+
+            # Create endpoint with captured values
+            nested_endpoint = create_nested_endpoint(
+                custom_route.function,
+                resource_name,
+                manager_class,
+            )
 
             # Register the nested custom route
             nested_method_value: str = (
@@ -3470,11 +3489,15 @@ def generate_routers_from_model_registry(model_registry) -> Dict[str, APIRouter]
     """
     Generate routers for all models in the model registry using Model.Manager pattern.
 
+    Routers are sorted by prefix length (longest first) to ensure more specific routes
+    are registered before less specific ones. This prevents route conflicts like
+    /v1/provider/instance/{id} matching /v1/provider/instance/setting.
+
     Args:
         model_registry: Model registry instance
 
     Returns:
-        Dict mapping manager names to their routers
+        Dict mapping manager names to their routers, ordered by prefix length (longest first)
     """
     routers: Dict[str, APIRouter] = {}
 
@@ -3518,4 +3541,18 @@ def generate_routers_from_model_registry(model_registry) -> Dict[str, APIRouter]
         else:
             logger.debug(f"Model {model_name} does not have a Manager attribute")
 
-    return routers
+    # Sort routers by prefix length (longest first) to ensure more specific routes
+    # are registered before less specific ones in FastAPI.
+    # This prevents route conflicts like /v1/provider/instance/{id} matching
+    # /v1/provider/instance/setting (where "setting" would be interpreted as {id}).
+    def get_router_prefix_length(item):
+        manager_name, router = item
+        # Get the prefix from the router, default to empty string if not found
+        prefix = getattr(router, "prefix", "") or ""
+        return len(prefix)
+
+    sorted_routers = dict(
+        sorted(routers.items(), key=get_router_prefix_length, reverse=True)
+    )
+
+    return sorted_routers

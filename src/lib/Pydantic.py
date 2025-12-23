@@ -1291,30 +1291,42 @@ class ModelRegistry(AbstractRegistry):
         )
 
         # LIST class - for list/pagination query parameters
+        # Build annotations and class attributes for LIST
+        list_annotations = {
+            "offset": int,
+            "limit": int,
+            "sort_by": Optional[str],
+            "sort_order": Optional[str],
+        }
+        list_attrs = {
+            "__module__": model.__module__,
+            "offset": Field(
+                0, ge=0, description="Number of items to skip for pagination"
+            ),
+            "limit": Field(
+                1000, ge=1, le=1000, description="Maximum number of items to return"
+            ),
+            "sort_by": Field(None, description="Field to sort results by"),
+            "sort_order": Field(
+                "asc",
+                pattern="^(asc|desc)$",
+                description="Sort direction (asc or desc)",
+            ),
+        }
+
+        # Add team_id as optional filter if model has team_id field
+        model_fields = getattr(model, "model_fields", {})
+        if "team_id" in model_fields:
+            list_annotations["team_id"] = Optional[str]
+            list_attrs["team_id"] = Field(
+                None, description="Filter by team ID"
+            )
+
+        list_attrs["__annotations__"] = list_annotations
         network_attrs["LIST"] = type(
             "LIST",
             (BaseNetworkModel,),
-            {
-                "__annotations__": {
-                    "offset": int,
-                    "limit": int,
-                    "sort_by": Optional[str],
-                    "sort_order": Optional[str],
-                },
-                "__module__": model.__module__,
-                "offset": Field(
-                    0, ge=0, description="Number of items to skip for pagination"
-                ),
-                "limit": Field(
-                    1000, ge=1, le=1000, description="Maximum number of items to return"
-                ),
-                "sort_by": Field(None, description="Field to sort results by"),
-                "sort_order": Field(
-                    "asc",
-                    pattern="^(asc|desc)$",
-                    description="Sort direction (asc or desc)",
-                ),
-            },
+            list_attrs,
         )
 
         # ResponseSingle class - wraps the base model

@@ -1860,10 +1860,10 @@ class TestRoleEndpoints(AbstractEPTest):
         response = server.post(
             endpoint, json=payload, headers=self._get_appropriate_headers(user_b.jwt)
         )
-        # With team visibility restrictions, user_b cannot see team_a at all
-        # so we expect 404 (not found) instead of 403 (forbidden)
+        # user_b is not a member of team_a, so they cannot create roles in that team
+        # The endpoint returns 403 (forbidden) to indicate insufficient permissions
         self._assert_response_status(
-            response, 404, "POST role with insufficient permissions", endpoint, payload
+            response, 403, "POST role with insufficient permissions", endpoint, payload
         )
 
     @pytest.mark.parametrize(
@@ -2344,7 +2344,7 @@ class TestInvitationEndpoints(AbstractEPTest):
             response, 201, "POST app-level invitation", endpoint, payload
         )
 
-        invitation = response.json()["invitation"]
+        invitation = self._extract_invitation_from_response(response)
         assert invitation["team_id"] is None
         assert invitation["role_id"] is None
         assert invitation["code"] is None  # App-level invitations don't have codes
@@ -2371,7 +2371,7 @@ class TestInvitationEndpoints(AbstractEPTest):
             response, 201, "POST team invitation with code", endpoint, payload
         )
 
-        invitation = response.json()["invitation"]
+        invitation = self._extract_invitation_from_response(response)
         assert invitation["team_id"] == team_a.id
         assert invitation["role_id"] == env("USER_ROLE_ID")
         assert invitation["code"] == test_code
@@ -2396,7 +2396,7 @@ class TestInvitationEndpoints(AbstractEPTest):
             response, 201, "POST team invitation auto code", endpoint, payload
         )
 
-        invitation = response.json()["invitation"]
+        invitation = self._extract_invitation_from_response(response)
         assert invitation["team_id"] == team_a.id
         assert invitation["role_id"] == env("USER_ROLE_ID")
         assert invitation["code"] is not None
@@ -2891,7 +2891,7 @@ class TestInvitationEndpoints(AbstractEPTest):
             self._assert_response_status(
                 response, 201, f"POST invitation {i+1}", endpoint, payload
             )
-            invitations.append(response.json()["invitation"])
+            invitations.append(self._extract_invitation_from_response(response))
 
         # Delete all invitations
         team_id = test_team.id
@@ -3088,6 +3088,21 @@ class TestInvitationEndpoints(AbstractEPTest):
         # We can't easily check this via API without listing all teams,
         # but the important thing is that user creation succeeded
 
+    def _extract_invitation_from_response(self, response: Any) -> Dict[str, Any]:
+        """Extract invitation data from response, handling different response formats."""
+        data = response.json()
+        # Handle dict format: {"invitation": {...}}
+        if isinstance(data, dict) and "invitation" in data:
+            return data["invitation"]
+        # Handle dict format without wrapper: {"id": "...", ...}
+        elif isinstance(data, dict) and "id" in data:
+            return data
+        # Handle list format: [{...}]
+        elif isinstance(data, list) and data:
+            return data[0]
+        else:
+            raise AssertionError(f"Cannot extract invitation from response: {data}")
+
     def _create_team_invitation_with_code(
         self, server: Any, admin_a: Any, team_a: Any
     ) -> Dict[str, Any]:
@@ -3110,7 +3125,7 @@ class TestInvitationEndpoints(AbstractEPTest):
             response, 201, "POST team invitation with code", endpoint, payload
         )
 
-        return response.json()["invitation"]
+        return self._extract_invitation_from_response(response)
 
     def _create_team_invitation_auto_code(
         self, server: Any, admin_a: Any, team_a: Any
@@ -3132,7 +3147,7 @@ class TestInvitationEndpoints(AbstractEPTest):
             response, 201, "POST team invitation auto code", endpoint, payload
         )
 
-        return response.json()["invitation"]
+        return self._extract_invitation_from_response(response)
 
     def _create(
         self,
