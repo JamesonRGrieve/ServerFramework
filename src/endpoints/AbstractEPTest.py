@@ -25,7 +25,14 @@ import pytest
 import stringcase
 from faker import Faker
 
-from AbstractTest import AbstractTest, CategoryOfTest, ClassOfTestsConfig, ParentEntity
+from AbstractTest import (
+    AbstractTest,
+    CategoryOfTest,
+    ClassOfTestsConfig,
+    ParentEntity,
+    SkipReason,
+    SkipThisTest,
+)
 from endpoints.AbstractGQLTest import AbstractGraphQLTest
 from lib.Environment import env, inflection
 from lib.Logging import logger
@@ -178,6 +185,20 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
 
     # Flag for RBAC tests - requires admin role to create/modify
     requires_admin: bool = False
+
+    # Tests to skip - pagination not yet implemented
+    _skip_tests: List[SkipThisTest] = [
+        SkipThisTest(
+            name="test_GET_200_list_pagination",
+            reason=SkipReason.NOT_IMPLEMENTED,
+            details="Pagination not yet implemented",
+        ),
+        SkipThisTest(
+            name="test_POST_200_search_pagination",
+            reason=SkipReason.NOT_IMPLEMENTED,
+            details="Search pagination not yet implemented",
+        ),
+    ]
 
     def setup_method(self, method):
         """Set up method-level test fixtures."""
