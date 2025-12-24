@@ -746,28 +746,67 @@ class AbstractBLLTest(AbstractTest):
         return entity_data
 
     def _apply_search_validation_patterns(self, entity_data, admin_a, team_a):
-        """Apply common validation patterns that child classes typically override for."""
+        """
+        Apply common validation patterns that child classes typically override for.
+
+        This method automatically handles common entity patterns to reduce the need
+        for test_search overrides in child classes. Patterns are applied in order
+        of specificity.
+
+        Patterns handled:
+        1. Session-like entities: user_id must equal requester
+        2. Credential-like entities: user_id must equal requester
+        3. Invitation-like entities: set user_id and team_id appropriately
+        4. Metadata-like entities: need user_id OR team_id
+        5. Entities with required user_id field but no parent entities
+
+        To add custom patterns, subclasses can override this method and call super().
+        """
+        model_name = ""
+        if hasattr(self.class_under_test, "BaseModel"):
+            model_name = getattr(self.class_under_test.BaseModel, "__name__", "")
+        elif hasattr(self.class_under_test, "__name__"):
+            model_name = self.class_under_test.__name__
 
         # Pattern 1: Session-like entities (user_id must equal requester)
-        if (
-            hasattr(self.class_under_test, "BaseModel")
-            and hasattr(self.class_under_test.BaseModel, "__name__")
-            and "Session" in self.class_under_test.BaseModel.__name__
-        ):
+        # Matches: SessionManager, UserSessionManager, etc.
+        if "Session" in model_name:
             entity_data["user_id"] = admin_a.id
             return entity_data
 
-        # Pattern 2: Metadata-like entities (need user_id OR team_id)
-        if (
-            hasattr(self.class_under_test, "BaseModel")
-            and hasattr(self.class_under_test.BaseModel, "__name__")
-            and "Metadata" in self.class_under_test.BaseModel.__name__
-        ):
+        # Pattern 2: Credential-like entities (user_id must equal requester)
+        # Matches: UserCredentialManager, CredentialManager, etc.
+        if "Credential" in model_name:
+            if not entity_data.get("user_id"):
+                entity_data["user_id"] = admin_a.id
+            return entity_data
+
+        # Pattern 3: Invitation-like entities (need proper user_id and team_id)
+        # Matches: InvitationManager, InviteeManager, etc.
+        if "Invitation" in model_name or "Invitee" in model_name:
+            if not entity_data.get("user_id"):
+                entity_data["user_id"] = admin_a.id
+            if not entity_data.get("team_id") and team_a is not None:
+                entity_data["team_id"] = team_a.id
+            return entity_data
+
+        # Pattern 4: Metadata-like entities (need user_id OR team_id)
+        # Matches: MetadataManager, UserMetadataManager, TeamMetadataManager, etc.
+        if "Metadata" in model_name:
             if not entity_data.get("user_id") and not entity_data.get("team_id"):
                 entity_data["user_id"] = admin_a.id
             return entity_data
 
-        # Pattern 3: Entities with required user_id but no ownership rules
+        # Pattern 5: Permission-like entities (need role_id or user_id)
+        # Matches: PermissionManager, RolePermissionManager, etc.
+        if "Permission" in model_name:
+            if not entity_data.get("user_id"):
+                entity_data["user_id"] = admin_a.id
+            return entity_data
+
+        # Pattern 6: Entities with required user_id field but no parent entities
+        # This is a fallback pattern for entities that need user_id but aren't
+        # explicitly handled above
         if hasattr(self.class_under_test, "BaseModel"):
             model_create_class = getattr(
                 self.class_under_test.BaseModel, "Create", None
@@ -777,7 +816,10 @@ class AbstractBLLTest(AbstractTest):
                 if (
                     hasattr(model_create_class, "user_id")
                     and not entity_data.get("user_id")
-                    and not hasattr(self, "parent_entities")
+                    and (
+                        not hasattr(self, "parent_entities")
+                        or not self.parent_entities
+                    )
                 ):
                     entity_data["user_id"] = admin_a.id
 

@@ -9,9 +9,16 @@ import pytest
 from AbstractTest import AbstractTest
 from conftest import (
     add_user_to_team,
+    create_admin_a_fixture,
+    create_admin_b_fixture,
+    create_mod_b_fixture,
+    create_mod_b_role_fixture,
     create_role,
     create_team,
+    create_team_a_fixture,
+    create_team_b_fixture,
     create_user,
+    create_user_b_fixture,
     generate_test_email,
 )
 from extensions.AbstractExtensionProvider import AbstractStaticExtension
@@ -94,61 +101,38 @@ class ExtensionServerMixin:
 
     @pytest.fixture(scope="module")
     def admin_a(self, server):
-        """Admin user for team_a"""
-        return create_user(
-            server,
-            email=generate_test_email("admin_a"),
-            last_name="AdminA",
-        )
+        """Admin user for team_a - uses centralized fixture factory."""
+        return create_admin_a_fixture(server)
 
     @pytest.fixture(scope="module")
     def team_a(self, server, admin_a):
-        """Create team_a for testing"""
-        return create_team(server, admin_a.id, name="Team A")
+        """Create team_a for testing - uses centralized fixture factory."""
+        return create_team_a_fixture(server, admin_a)
 
     @pytest.fixture(scope="module")
     def admin_b(self, server):
-        """Admin user for team_b"""
-        return create_user(
-            server,
-            email=generate_test_email("admin_b"),
-            last_name="AdminB",
-        )
+        """Admin user for team_b - uses centralized fixture factory."""
+        return create_admin_b_fixture(server)
 
     @pytest.fixture(scope="module")
     def team_b(self, server, admin_b):
-        """Create team_b for testing"""
-        return create_team(server, admin_b.id, name="Team B")
+        """Create team_b for testing - uses centralized fixture factory."""
+        return create_team_b_fixture(server, admin_b)
 
     @pytest.fixture(scope="module")
     def user_b(self, server, team_b):
-        """Regular user for team_b"""
-        user = create_user(
-            server, email=generate_test_email("user_b"), last_name="UserB"
-        )
-        add_user_to_team(server, user.id, team_b.id, env("USER_ROLE_ID"))
-        return user
+        """Regular user for team_b - uses centralized fixture factory."""
+        return create_user_b_fixture(server, team_b)
 
     @pytest.fixture(scope="module")
     def mod_b_role(self, server, admin_a, team_b):
-        """Moderator role for team_b"""
-        return create_role(
-            server,
-            admin_a.id,
-            team_b.id,
-            name="mod_b",
-            friendly_name="Moderator B",
-            parent_id=env("USER_ROLE_ID"),
-        )
+        """Moderator role for team_b - uses centralized fixture factory."""
+        return create_mod_b_role_fixture(server, admin_a, team_b)
 
     @pytest.fixture(scope="module")
     def mod_b(self, server, admin_b, team_b, mod_b_role):
-        """Moderator user for team_b"""
-        user = create_user(server, email=generate_test_email("mod_b"), last_name="ModB")
-        add_user_to_team(
-            server, user.id, team_b.id, mod_b_role.id, requester_id=admin_b.id
-        )
-        return user
+        """Moderator user for team_b - uses centralized fixture factory."""
+        return create_mod_b_fixture(server, admin_b, team_b, mod_b_role)
 
     @pytest.fixture(scope="module")
     def model_registry(self, server):

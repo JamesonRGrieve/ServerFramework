@@ -5,7 +5,6 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import pytest
-from faker import Faker
 from fastapi import HTTPException
 from loguru import logger
 
@@ -16,6 +15,7 @@ from AbstractTest import (
     SkipReason,
     SkipThisTest,
 )
+from conftest import FieldGenerators, faker  # Use centralized faker and generators
 from lib.Environment import env
 from logic.AbstractBLLTest import AbstractBLLTest
 from logic.BLL_Auth import (
@@ -35,8 +35,7 @@ from logic.BLL_Auth import (
 # Set default test configuration for all test classes
 AbstractBLLTest.test_config = ClassOfTestsConfig(categories=[CategoryOfTest.LOGIC])
 
-# Initialize faker for generating test data once
-faker = Faker()
+# Note: faker is imported from conftest for centralized test data generation
 
 
 def create_test_user(model_registry, **kwargs):
@@ -73,12 +72,13 @@ def _get_test_dependency_name():
 
 class TestUserManager(AbstractBLLTest):
     class_under_test = UserManager
+    # Using centralized FieldGenerators for common patterns
     create_fields = {
-        "email": lambda: f"test_{faker.word()}_{faker.random_int()}@example.com",
-        "username": lambda: f"user_{faker.word()}_{faker.random_int()}",
-        "display_name": lambda: faker.name(),
-        "first_name": lambda: faker.first_name(),
-        "last_name": lambda: faker.last_name(),
+        "email": FieldGenerators.email(),
+        "username": FieldGenerators.username(),
+        "display_name": FieldGenerators.display_name(),
+        "first_name": FieldGenerators.first_name(),
+        "last_name": FieldGenerators.last_name(),
         "password": "Test1234!",
     }
     update_fields = {
@@ -266,10 +266,11 @@ class TestUserManager(AbstractBLLTest):
 
 class TestTeamManager(AbstractBLLTest):
     class_under_test = TeamManager
+    # Using centralized FieldGenerators for common patterns
     create_fields = {
-        "name": f"Test Team {faker.word()}",
-        "description": faker.sentence(),
-        "encryption_key": faker.uuid4(),
+        "name": FieldGenerators.unique_name("Team"),
+        "description": FieldGenerators.sentence(),
+        "encryption_key": FieldGenerators.encryption_key(),
     }
     update_fields = {
         "name": f"Updated Team {faker.word()}",
@@ -327,9 +328,10 @@ class TestTeamManager(AbstractBLLTest):
 
 class TestRoleManager(AbstractBLLTest):
     class_under_test = RoleManager
+    # Using centralized FieldGenerators for common patterns
     create_fields = {
-        "name": f"Test Role {faker.word()}",
-        "friendly_name": f"Test Friendly Role {faker.word()}",
+        "name": FieldGenerators.unique_name("Role"),
+        "friendly_name": FieldGenerators.unique_name("Friendly Role"),
         "mfa_count": 1,
         "password_change_frequency_days": 90,
     }
@@ -385,10 +387,11 @@ class TestMetadataManager(AbstractBLLTest):
     """Test the unified MetadataManager"""
 
     class_under_test = MetadataManager
+    # Using centralized FieldGenerators for common patterns
     create_fields = {
         "user_id": None,  # Will be set in test_create
-        "key": f"test_key_{faker.word()}",
-        "value": faker.sentence(),
+        "key": FieldGenerators.key("test_key"),
+        "value": FieldGenerators.sentence(),
     }
     update_fields = {
         "value": "Updated Test Value",

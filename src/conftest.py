@@ -13,6 +13,98 @@ from fastapi.testclient import TestClient
 from filelock import FileLock, Timeout
 from pydantic import BaseModel as PydanticBaseModel
 
+# =============================================================================
+# CENTRALIZED TEST DATA GENERATORS
+# =============================================================================
+# These utilities reduce code duplication across test files by providing
+# reusable field generators for common test data patterns.
+# =============================================================================
+
+# Shared Faker instance - import this instead of creating new instances
+# Usage: from conftest import faker
+faker = Faker()
+
+
+class FieldGenerators:
+    """
+    Centralized field generator utilities for test data creation.
+
+    Usage in test classes:
+        from conftest import FieldGenerators
+
+        class TestMyEntity(AbstractBLLTest):
+            create_fields = {
+                "email": FieldGenerators.email(),
+                "name": FieldGenerators.unique_name("Entity"),
+                "username": FieldGenerators.username(),
+            }
+    """
+
+    @staticmethod
+    def email(prefix: str = "test") -> callable:
+        """Generate a unique test email address."""
+        return lambda: f"{prefix}_{faker.word()}_{faker.random_int()}@example.com"
+
+    @staticmethod
+    def unique_name(entity_type: str = "Test") -> callable:
+        """Generate a unique entity name."""
+        return lambda: f"{entity_type} {faker.word()} {faker.random_int()}"
+
+    @staticmethod
+    def username(prefix: str = "user") -> callable:
+        """Generate a unique username."""
+        return lambda: f"{prefix}_{faker.word()}_{faker.random_int()}"
+
+    @staticmethod
+    def uuid_string() -> callable:
+        """Generate a UUID string."""
+        return lambda: str(uuid.uuid4())
+
+    @staticmethod
+    def sentence() -> callable:
+        """Generate a random sentence."""
+        return lambda: faker.sentence()
+
+    @staticmethod
+    def word() -> callable:
+        """Generate a random word."""
+        return lambda: faker.word()
+
+    @staticmethod
+    def company() -> callable:
+        """Generate a company name."""
+        return lambda: faker.company()
+
+    @staticmethod
+    def first_name() -> callable:
+        """Generate a first name."""
+        return lambda: faker.first_name()
+
+    @staticmethod
+    def last_name() -> callable:
+        """Generate a last name."""
+        return lambda: faker.last_name()
+
+    @staticmethod
+    def display_name() -> callable:
+        """Generate a display name (full name)."""
+        return lambda: faker.name()
+
+    @staticmethod
+    def code(prefix: str = "CODE") -> callable:
+        """Generate an invitation-style code."""
+        return lambda: f"{prefix}_{uuid.uuid4().hex[:8].upper()}"
+
+    @staticmethod
+    def key(prefix: str = "key") -> callable:
+        """Generate a unique key string."""
+        return lambda: f"{prefix}_{faker.word()}_{faker.random_int()}"
+
+    @staticmethod
+    def encryption_key() -> callable:
+        """Generate a UUID-based encryption key."""
+        return lambda: str(faker.uuid4())
+
 # IMPORTANT: Set APP_EXTENSIONS BEFORE any application imports
 # Don't set globally - let fixtures handle environment isolation
 # This allows both core tests (APP_EXTENSIONS="") and extension tests (APP_EXTENSIONS="ext_name") to work independently
@@ -925,5 +1017,74 @@ def user_c(server, team_c, admin_p):
     )
     add_user_to_team(
         server, user.id, team_c.id, env("USER_ROLE_ID"), requester_id=admin_p.id
+    )
+    return user
+
+
+# =============================================================================
+# FIXTURE FACTORIES FOR EXTENSION TESTING
+# =============================================================================
+# These factory functions generate common test fixtures for extension tests.
+# They reduce code duplication in ExtensionServerMixin and allow extensions
+# to reuse the same fixture creation logic with different scopes.
+# =============================================================================
+
+
+def create_admin_a_fixture(server):
+    """Factory function to create admin_a user fixture."""
+    return create_user(
+        server,
+        email=generate_test_email("admin_a"),
+        last_name="AdminA",
+    )
+
+
+def create_team_a_fixture(server, admin_a):
+    """Factory function to create team_a fixture."""
+    return create_team(server, admin_a.id, name="Team A")
+
+
+def create_admin_b_fixture(server):
+    """Factory function to create admin_b user fixture."""
+    return create_user(
+        server,
+        email=generate_test_email("admin_b"),
+        last_name="AdminB",
+    )
+
+
+def create_team_b_fixture(server, admin_b):
+    """Factory function to create team_b fixture."""
+    return create_team(server, admin_b.id, name="Team B")
+
+
+def create_user_b_fixture(server, team_b):
+    """Factory function to create user_b fixture."""
+    user = create_user(
+        server, email=generate_test_email("user_b"), last_name="UserB"
+    )
+    add_user_to_team(server, user.id, team_b.id, env("USER_ROLE_ID"))
+    return user
+
+
+def create_mod_b_role_fixture(server, admin_a, team_b):
+    """Factory function to create mod_b_role fixture."""
+    return create_role(
+        server,
+        admin_a.id,
+        team_b.id,
+        name="mod_b",
+        friendly_name="Moderator B",
+        parent_id=env("USER_ROLE_ID"),
+    )
+
+
+def create_mod_b_fixture(server, admin_b, team_b, mod_b_role):
+    """Factory function to create mod_b fixture."""
+    user = create_user(
+        server, email=generate_test_email("mod_b"), last_name="ModB"
+    )
+    add_user_to_team(
+        server, user.id, team_b.id, mod_b_role.id, requester_id=admin_b.id
     )
     return user
