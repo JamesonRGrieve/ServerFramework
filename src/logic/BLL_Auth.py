@@ -1354,10 +1354,7 @@ class UserManager(AbstractBLLManager, RouterMixin):
         )
 
     @staticmethod
-    @static_route(
-        "", method="POST", auth_type=AuthType.NONE, status_code=201,
-        response_model="UserModel.ResponseSingle"
-    )
+    @static_route("", method="POST", auth_type=AuthType.NONE, status_code=201)
     def register(
         registration_data: dict,
         model_registry,
