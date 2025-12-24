@@ -143,6 +143,18 @@ class TestEntity(AbstractBLLTest):
 - Start: `python src/app.py`
 - Tests: `pytest` (markers: `-m db`, `-m bll`, `-m ep`, `-m auth`)
 - Format: `black src/`
+- Type check: `mypy src/`
+
+## Authentication & Authorization
+- **JWT-based authentication** with root API key for mutation of system entities
+- **Role-based permissions** with team-scoped role hierarchies
+- **System entities** require root API key for write operations
+- **User context** automatically injected into all BLL operations
+
+## Database Operations
+- Migrations applied automatically on startup
+- Multi-database support: PostgreSQL, SQLite, MariaDB, MSSQL, Vector databases
+- Each DatabaseManager instance has its own declarative base
 
 ## Error Handling
 - 400: Validation errors, malformed requests
