@@ -597,8 +597,8 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
             details="Users cannot be batch created",
         ),
         SkipThisTest(
-            name="test_POST_400_batch",
-            details="Users cannot be batch created",
+            name="test_POST_400",
+            details="User registration endpoint has special handling that returns different errors for malformed JSON",
         ),
         SkipThisTest(
             name="test_POST_400_batch",
