@@ -91,8 +91,8 @@ def is_root_id(user_id: str) -> bool:
     return user_id == env("ROOT_ID")
 
 def is_any_internal_id(user_id: str) -> bool:
-    """Check if user_id matches SYSTEM_ID"""
-    return user_id == env("SYSTEM_ID")
+    """Check if user_id matches any system ID (ROOT_ID, SYSTEM_ID, or TEMPLATE_ID)"""
+    return user_id in (ROOT_ID, SYSTEM_ID, TEMPLATE_ID)
 
 def is_template_id(user_id: str) -> bool:
     """Check if user_id matches TEMPLATE_ID"""

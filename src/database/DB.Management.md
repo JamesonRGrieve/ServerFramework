@@ -69,7 +69,7 @@ Consolidated database connectivity and engine setup with multi-database support.
 
 **Features:**
 - Dynamic database configuration from environment variables
-- Connection pooling (20 pool size, 10 max overflow for PostgreSQL)
+- Connection pooling (20 pool size, 30 max overflow for PostgreSQL)
 - Automatic SQLite database file creation
 - Database-specific declarative base management
 - Thread-safe session management with automatic cleanup

@@ -1148,7 +1148,7 @@ from logic.AbstractLogicManager import AbstractBLLManager, ApplicationModel, Dat
 class MyEntityModel(ApplicationModel, DatabaseMixin):
     name: str = Field(..., description="Entity name")
     table_comment: str = "My extension entities"
-    # The .DB property with SQLAlchemy model is automatically created
+    # The .DB() classmethod with SQLAlchemy model is automatically created
 
 class MyEntityManager(AbstractBLLManager):
     Model = MyEntityModel
@@ -1207,7 +1207,7 @@ class MyDatabaseModel(ApplicationModel, DatabaseMixin):
     custom_field: str = Field(..., description="Custom field")
     table_comment: str = "Extension database table"
     
-    # The DatabaseMixin automatically creates a .DB property with the SQLAlchemy model
+    # The DatabaseMixin automatically creates a .DB() classmethod with the SQLAlchemy model
 ```
 
 ## Creating an Extension
