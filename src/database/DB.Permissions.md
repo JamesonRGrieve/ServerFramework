@@ -88,8 +88,14 @@ Central permission validation function:
 
 ```python
 def check_permission(
-    user_id, record_cls, record_id, db, declarative_base,
-    required_level=None, minimum_role=None, db_manager=None
+    user_id,           # User requesting access
+    record_cls,        # Model class to check
+    record_id,         # Record ID to check
+    db,                # Database session
+    declarative_base,  # Required: SQLAlchemy declarative base (e.g., db_manager.Base)
+    required_level=None,
+    minimum_role=None,
+    db_manager=None
 ):
     """
     Comprehensive permission check with:

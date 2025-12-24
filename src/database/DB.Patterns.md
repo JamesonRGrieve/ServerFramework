@@ -32,7 +32,7 @@ class UserModel(ApplicationModel, DatabaseMixin):
     # Table configuration
     table_comment: ClassVar[str] = "User accounts"
 
-    # The .DB property automatically creates SQLAlchemy model with:
+    # The .DB() classmethod automatically creates SQLAlchemy model with:
     # - UUID primary key (String type for SQLite compatibility)
     # - created_at, created_by_user_id timestamps
     # - All Pydantic fields converted to SQLAlchemy columns
@@ -167,7 +167,7 @@ class UserModel:
     email: Optional[str] = Field(description="User's email address")
 
     # Inherits Create, Update, Search from parent or defines them
-    # DatabaseMixin automatically generates SQLAlchemy model via .DB property
+    # DatabaseMixin automatically generates SQLAlchemy model via .DB() classmethod
 ```
 
 **Database Benefits:**
@@ -486,7 +486,13 @@ class DatabaseMixin:
                 return declarative_base._pydantic_models[registry_key]
 
         # Generate the SQLAlchemy model and cache it
-        sqlalchemy_model = create_sqlalchemy_model(cls, model_registry, base_model=declarative_base)
+        sqlalchemy_model = create_sqlalchemy_model(
+            cls,
+            model_registry,
+            tablename=None,        # Optional: override auto-generated table name
+            table_comment=None,    # Optional: custom table comment
+            base_model=declarative_base
+        )
         declarative_base._pydantic_models[registry_key] = sqlalchemy_model
 
         return sqlalchemy_model

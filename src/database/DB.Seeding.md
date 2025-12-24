@@ -423,9 +423,9 @@ logging.getLogger("database.StaticSeeder").setLevel(logging.DEBUG)
 **Symptom**: Expected extensions not found in seed data
 **Solution**: Check extension module naming and ensure they inherit from `AbstractStaticExtension`
 
-#### 5. DB Property Access Errors
-**Symptom**: TypeError about calling DB property without base parameter
-**Solution**: Ensure all `.DB` calls include the declarative base: `model.DB(db_manager.Base)`
+#### 5. DB() Classmethod Access Errors
+**Symptom**: TypeError about calling DB() classmethod without base parameter
+**Solution**: Ensure all `.DB()` calls include the declarative base: `model.DB(db_manager.Base)`
 
 ### Diagnostic Commands
 ```python
