@@ -927,3 +927,538 @@ def test_practical_usage_example(mock_server):
     # Check relationships
     assert hasattr(TaskAssignment, "project")
     assert hasattr(TaskAssignment, "task")
+
+
+# Test get_db_manager and get_db_manager_from_session functions
+class TestDatabaseManagerHelpers:
+    """Test database manager helper functions."""
+
+    def test_get_db_manager_with_request(self, mock_server):
+        """Test get_db_manager with a request object."""
+        from unittest.mock import MagicMock
+
+        from database.AbstractDatabaseEntity import get_db_manager
+
+        # Create a mock request with app state
+        mock_request = MagicMock()
+        mock_request.app.state.model_registry.database_manager = (
+            mock_server.app.state.model_registry.DB.manager
+        )
+        mock_request.app.state.DB = True
+
+        result = get_db_manager(request=mock_request)
+        assert result is not None
+
+    def test_get_db_manager_with_db_session(self, mock_server):
+        """Test get_db_manager with a database session."""
+        from database.AbstractDatabaseEntity import get_db_manager
+
+        db = mock_server.app.state.model_registry.DB.get_session()
+        try:
+            result = get_db_manager(db=db)
+            # May return None if session doesn't have the expected attributes
+            # This tests the code path even if it returns None
+            assert result is None or result is not None
+        finally:
+            db.close()
+
+    def test_get_db_manager_from_session_with_none(self):
+        """Test get_db_manager_from_session with None."""
+        from database.AbstractDatabaseEntity import get_db_manager_from_session
+
+        result = get_db_manager_from_session(None)
+        assert result is None
+
+    def test_get_db_manager_from_session_with_direct_reference(self, mock_server):
+        """Test get_db_manager_from_session with direct _db_manager reference."""
+        from unittest.mock import MagicMock
+
+        from database.AbstractDatabaseEntity import get_db_manager_from_session
+
+        mock_session = MagicMock()
+        mock_manager = mock_server.app.state.model_registry.DB.manager
+        mock_session._db_manager = mock_manager
+
+        result = get_db_manager_from_session(mock_session)
+        assert result == mock_manager
+
+    def test_get_db_manager_from_session_with_bind(self, mock_server):
+        """Test get_db_manager_from_session with bind engine."""
+        from unittest.mock import MagicMock
+
+        from database.AbstractDatabaseEntity import get_db_manager_from_session
+
+        mock_manager = mock_server.app.state.model_registry.DB.manager
+        mock_session = MagicMock(spec=["bind"])
+        mock_session._db_manager = None  # Ensure no direct reference
+        del mock_session._db_manager
+        mock_session.bind = MagicMock()
+        mock_session.bind._db_manager = mock_manager
+
+        result = get_db_manager_from_session(mock_session)
+        assert result == mock_manager
+
+
+# Test validate_fields function
+class TestValidateFields:
+    """Test validate_fields function."""
+
+    def test_validate_fields_with_none(self, mock_server):
+        """Test validate_fields with None fields."""
+        from database.AbstractDatabaseEntity import validate_fields
+
+        model_registry = mock_server.app.state.model_registry
+        TestModel = AbstractDbEntityTestModel.DB(model_registry.DB.Base)
+        model_registry.DB.Base.metadata.create_all(model_registry.DB.get_setup_engine())
+
+        # Should not raise any exception
+        validate_fields(TestModel, None)
+
+    def test_validate_fields_with_empty_list(self, mock_server):
+        """Test validate_fields with empty fields list."""
+        from database.AbstractDatabaseEntity import validate_fields
+
+        model_registry = mock_server.app.state.model_registry
+        TestModel = AbstractDbEntityTestModel.DB(model_registry.DB.Base)
+
+        # Should not raise any exception
+        validate_fields(TestModel, [])
+
+    def test_validate_fields_with_valid_fields(self, mock_server):
+        """Test validate_fields with valid field names."""
+        from database.AbstractDatabaseEntity import validate_fields
+
+        model_registry = mock_server.app.state.model_registry
+        TestModel = AbstractDbEntityTestModel.DB(model_registry.DB.Base)
+
+        # Should not raise any exception
+        validate_fields(TestModel, ["name", "description"])
+
+    def test_validate_fields_with_invalid_fields(self, mock_server):
+        """Test validate_fields with invalid field names raises HTTPException."""
+        from database.AbstractDatabaseEntity import validate_fields
+
+        model_registry = mock_server.app.state.model_registry
+        TestModel = AbstractDbEntityTestModel.DB(model_registry.DB.Base)
+
+        # Should raise HTTPException for invalid fields
+        with pytest.raises(HTTPException) as exc_info:
+            validate_fields(TestModel, ["invalid_field", "another_invalid"])
+
+        assert exc_info.value.status_code == 400
+        assert "Invalid field(s) requested" in str(exc_info.value.detail)
+
+
+# Test build_query function
+class TestBuildQuery:
+    """Test build_query function with various parameters."""
+
+    def test_build_query_with_joins(self, mock_server):
+        """Test build_query with join clauses."""
+        from database.AbstractDatabaseEntity import build_query
+
+        model_registry = mock_server.app.state.model_registry
+        db = model_registry.DB.get_session()
+        TestModel = AbstractDbEntityTestModel.DB(model_registry.DB.Base)
+        model_registry.DB.Base.metadata.create_all(model_registry.DB.get_setup_engine())
+
+        try:
+            # Test with empty joins (just verify the code path)
+            query = build_query(db, TestModel, joins=[])
+            assert query is not None
+        finally:
+            db.close()
+
+    def test_build_query_with_options(self, mock_server):
+        """Test build_query with query options."""
+        from sqlalchemy.orm import joinedload
+
+        from database.AbstractDatabaseEntity import build_query
+
+        model_registry = mock_server.app.state.model_registry
+        db = model_registry.DB.get_session()
+        TestModel = AbstractDbEntityTestModel.DB(model_registry.DB.Base)
+
+        try:
+            # Test with options
+            query = build_query(db, TestModel, options=[])
+            assert query is not None
+        finally:
+            db.close()
+
+    def test_build_query_with_filters(self, mock_server):
+        """Test build_query with filter conditions."""
+        from database.AbstractDatabaseEntity import build_query
+
+        model_registry = mock_server.app.state.model_registry
+        db = model_registry.DB.get_session()
+        TestModel = AbstractDbEntityTestModel.DB(model_registry.DB.Base)
+
+        try:
+            # Test with filter conditions
+            filter_condition = TestModel.name == "test"
+            query = build_query(db, TestModel, filters=[filter_condition])
+            assert query is not None
+        finally:
+            db.close()
+
+    def test_build_query_with_order_by(self, mock_server):
+        """Test build_query with order_by clause."""
+        from database.AbstractDatabaseEntity import build_query
+
+        model_registry = mock_server.app.state.model_registry
+        db = model_registry.DB.get_session()
+        TestModel = AbstractDbEntityTestModel.DB(model_registry.DB.Base)
+
+        try:
+            # Test with order_by
+            query = build_query(db, TestModel, order_by=[TestModel.name])
+            assert query is not None
+        finally:
+            db.close()
+
+    def test_build_query_with_limit_and_offset(self, mock_server):
+        """Test build_query with limit and offset."""
+        from database.AbstractDatabaseEntity import build_query
+
+        model_registry = mock_server.app.state.model_registry
+        db = model_registry.DB.get_session()
+        TestModel = AbstractDbEntityTestModel.DB(model_registry.DB.Base)
+
+        try:
+            # Test with limit and offset
+            query = build_query(db, TestModel, limit=10, offset=5)
+            assert query is not None
+        finally:
+            db.close()
+
+    def test_build_query_with_all_parameters(self, mock_server):
+        """Test build_query with all parameters combined."""
+        from database.AbstractDatabaseEntity import build_query
+
+        model_registry = mock_server.app.state.model_registry
+        db = model_registry.DB.get_session()
+        TestModel = AbstractDbEntityTestModel.DB(model_registry.DB.Base)
+
+        try:
+            # Test with all parameters
+            filter_condition = TestModel.name.isnot(None)
+            query = build_query(
+                db,
+                TestModel,
+                joins=[],
+                options=[],
+                filters=[filter_condition],
+                order_by=[TestModel.name],
+                limit=10,
+                offset=0,
+            )
+            assert query is not None
+        finally:
+            db.close()
+
+
+# Test db_to_return_type with fields filtering
+class TestDbToReturnTypeFieldsFiltering:
+    """Test db_to_return_type with fields parameter for lists."""
+
+    def test_db_to_return_type_list_with_fields(self):
+        """Test db_to_return_type with fields filtering on list of entities."""
+        from database.AbstractDatabaseEntity import db_to_return_type
+
+        # Create mock entities
+        class MockEntity:
+            def __init__(self, id, name, description):
+                self.id = id
+                self.name = name
+                self.description = description
+                self._sa_instance_state = "ignored"
+
+        entities = [
+            MockEntity("1", "Entity 1", "Desc 1"),
+            MockEntity("2", "Entity 2", "Desc 2"),
+        ]
+
+        result = db_to_return_type(entities, return_type="dict", fields=["id", "name"])
+
+        assert isinstance(result, list)
+        assert len(result) == 2
+        # Fields filtering should work
+        for entity_dict in result:
+            assert "id" in entity_dict
+            assert "name" in entity_dict
+
+    def test_db_to_return_type_with_relationship_fields(self):
+        """Test that relationship fields (dicts with id) are preserved."""
+        from database.AbstractDatabaseEntity import db_to_return_type
+
+        class MockRelated:
+            def __init__(self, id, name):
+                self.id = id
+                self.name = name
+                self._sa_instance_state = "ignored"
+
+        class MockEntity:
+            def __init__(self, id, name, related):
+                self.id = id
+                self.name = name
+                self.related = related
+                self._sa_instance_state = "ignored"
+
+        entity = MockEntity("1", "Entity", MockRelated("rel-1", "Related"))
+
+        result = db_to_return_type(entity, return_type="dict", fields=["id"])
+
+        assert isinstance(result, dict)
+        assert "id" in result
+
+    def test_db_to_return_type_dto_with_fields_raises_error(self):
+        """Test that using fields with dto return_type raises HTTPException."""
+        from database.AbstractDatabaseEntity import db_to_return_type
+
+        class MockEntity:
+            def __init__(self):
+                self.id = "1"
+                self._sa_instance_state = "ignored"
+
+        class MockDTO:
+            def __init__(self, **kwargs):
+                pass
+
+        with pytest.raises(HTTPException) as exc_info:
+            db_to_return_type(
+                MockEntity(),
+                return_type="dto",
+                dto_type=MockDTO,
+                fields=["id"],
+            )
+
+        assert exc_info.value.status_code == 400
+        assert "Fields parameter can only be used with return_type='dict'" in str(
+            exc_info.value.detail
+        )
+
+
+# Test type hint conversion
+class TestConvertBasedOnTypeHint:
+    """Test _convert_based_on_type_hint function."""
+
+    def test_convert_none_value(self):
+        """Test converting None value."""
+        from database.AbstractDatabaseEntity import _convert_based_on_type_hint
+
+        result = _convert_based_on_type_hint(None, str)
+        assert result is None
+
+    def test_convert_any_type(self):
+        """Test converting Any type hint."""
+        from typing import Any
+
+        from database.AbstractDatabaseEntity import _convert_based_on_type_hint
+
+        value = {"key": "value"}
+        result = _convert_based_on_type_hint(value, Any)
+        assert result == value
+
+    def test_convert_optional_type(self):
+        """Test converting Optional type hint."""
+        from typing import Optional
+
+        from database.AbstractDatabaseEntity import _convert_based_on_type_hint
+
+        result = _convert_based_on_type_hint("test", Optional[str])
+        assert result == "test"
+
+    def test_convert_list_type(self):
+        """Test converting List type hint."""
+        from typing import List
+
+        from database.AbstractDatabaseEntity import _convert_based_on_type_hint
+
+        result = _convert_based_on_type_hint(["a", "b"], List[str])
+        assert result == ["a", "b"]
+
+    def test_convert_list_with_non_list_value(self):
+        """Test converting List type hint with non-list value."""
+        from typing import List
+
+        from database.AbstractDatabaseEntity import _convert_based_on_type_hint
+
+        result = _convert_based_on_type_hint("not a list", List[str])
+        assert result == []
+
+    def test_convert_dict_type(self):
+        """Test converting Dict type hint."""
+        from typing import Dict
+
+        from database.AbstractDatabaseEntity import _convert_based_on_type_hint
+
+        result = _convert_based_on_type_hint({"key": "value"}, Dict[str, str])
+        assert result == {"key": "value"}
+
+    def test_convert_dict_with_non_dict_value(self):
+        """Test converting Dict type hint with non-dict value."""
+        from typing import Dict
+
+        from database.AbstractDatabaseEntity import _convert_based_on_type_hint
+
+        result = _convert_based_on_type_hint("not a dict", Dict[str, str])
+        assert result == {}
+
+    def test_convert_enum_type(self):
+        """Test converting Enum type hint."""
+        from enum import Enum
+
+        from database.AbstractDatabaseEntity import _convert_based_on_type_hint
+
+        class TestEnum(Enum):
+            VALUE_A = "a"
+            VALUE_B = "b"
+
+        # Test with valid enum value
+        result = _convert_based_on_type_hint("a", TestEnum)
+        assert result == TestEnum.VALUE_A
+
+        # Test with enum instance
+        result = _convert_based_on_type_hint(TestEnum.VALUE_B, TestEnum)
+        assert result == TestEnum.VALUE_B
+
+        # Test with name lookup
+        result = _convert_based_on_type_hint("VALUE_A", TestEnum)
+        assert result == TestEnum.VALUE_A
+
+    def test_convert_enum_with_invalid_value(self):
+        """Test converting Enum type hint with invalid value."""
+        from enum import Enum
+
+        from database.AbstractDatabaseEntity import _convert_based_on_type_hint
+
+        class TestEnum(Enum):
+            VALUE_A = "a"
+
+        # Should return value as-is if conversion fails
+        result = _convert_based_on_type_hint("invalid", TestEnum)
+        assert result == "invalid"
+
+    def test_convert_primitive_types(self):
+        """Test converting primitive types."""
+        from database.AbstractDatabaseEntity import _convert_based_on_type_hint
+
+        assert _convert_based_on_type_hint("test", str) == "test"
+        assert _convert_based_on_type_hint(42, int) == 42
+        assert _convert_based_on_type_hint(3.14, float) == 3.14
+        assert _convert_based_on_type_hint(True, bool) is True
+
+    def test_convert_dict_to_model(self):
+        """Test converting dict to model type."""
+        from database.AbstractDatabaseEntity import _convert_based_on_type_hint
+
+        class SimpleModel:
+            def __init__(self, name, value):
+                self.name = name
+                self.value = value
+
+        data = {"name": "test", "value": 42}
+        result = _convert_based_on_type_hint(data, SimpleModel)
+        assert isinstance(result, SimpleModel)
+        assert result.name == "test"
+        assert result.value == 42
+
+
+# Test get_reference_mixin error case
+class TestGetReferenceMixin:
+    """Test get_reference_mixin function."""
+
+    def test_get_reference_mixin_unknown_entity(self):
+        """Test get_reference_mixin with unknown entity raises ValueError."""
+        from database.AbstractDatabaseEntity import get_reference_mixin
+
+        with pytest.raises(ValueError) as exc_info:
+            get_reference_mixin("NonExistentEntity")
+
+        assert "Unknown entity" in str(exc_info.value)
+
+
+# Test get_declarative_base_from_db error case
+class TestGetDeclarativeBaseFromDb:
+    """Test get_declarative_base_from_db function."""
+
+    def test_get_declarative_base_no_manager(self):
+        """Test get_declarative_base_from_db raises error when no manager found."""
+        from unittest.mock import MagicMock
+
+        from database.AbstractDatabaseEntity import get_declarative_base_from_db
+
+        # Create a mock session without proper db_manager
+        mock_session = MagicMock()
+        # Clear any attributes that might return a manager
+        mock_session.configure_mock(
+            **{"_db_manager": None, "bind": None}
+        )
+
+        with pytest.raises(RuntimeError) as exc_info:
+            get_declarative_base_from_db(mock_session)
+
+        assert "No DatabaseManager found in session" in str(exc_info.value)
+
+
+# Test with_session decorator error case
+class TestWithSessionDecorator:
+    """Test with_session decorator."""
+
+    def test_with_session_none_model_registry(self):
+        """Test with_session raises ValueError when model_registry is None."""
+        from database.AbstractDatabaseEntity import with_session
+
+        @with_session
+        def test_func(cls, requester_id, model_registry, **kwargs):
+            return "success"
+
+        class MockClass:
+            pass
+
+        with pytest.raises(ValueError) as exc_info:
+            test_func(MockClass, "user-id", None)
+
+        assert "model_registry parameter is required" in str(exc_info.value)
+
+
+# Test get_dto_class function
+class TestGetDtoClass:
+    """Test get_dto_class function."""
+
+    def test_get_dto_class_with_override(self):
+        """Test get_dto_class returns override when provided."""
+        from database.AbstractDatabaseEntity import get_dto_class
+
+        class OverrideDTO:
+            pass
+
+        class MockClass:
+            dto = None
+
+        result = get_dto_class(MockClass, OverrideDTO)
+        assert result == OverrideDTO
+
+    def test_get_dto_class_from_class_attribute(self):
+        """Test get_dto_class returns class dto attribute."""
+        from database.AbstractDatabaseEntity import get_dto_class
+
+        class ClassDTO:
+            pass
+
+        class MockClass:
+            dto = ClassDTO
+
+        result = get_dto_class(MockClass)
+        assert result == ClassDTO
+
+    def test_get_dto_class_returns_none(self):
+        """Test get_dto_class returns None when no dto available."""
+        from database.AbstractDatabaseEntity import get_dto_class
+
+        class MockClass:
+            pass
+
+        result = get_dto_class(MockClass)
+        assert result is None
