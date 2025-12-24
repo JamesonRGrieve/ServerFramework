@@ -233,8 +233,10 @@ self.verify_permission_checks(entity_id, allowed_users, denied_users)
 ## Test Configuration
 
 ### Test Dependencies
-Tests are marked with pytest dependencies to ensure proper execution order:
+Tests can be marked with pytest dependencies to ensure proper execution order. Note that test dependencies are currently disabled in the codebase to allow for parallel test execution:
 ```python
+# Test dependencies are optional and currently disabled
+# To enable sequential ordering, uncomment the dependency decorator:
 # @pytest.mark.dependency(depends=["test_CRUD_create"])
 def test_CRUD_get(self, admin_a, team_a, return_type):
 ```

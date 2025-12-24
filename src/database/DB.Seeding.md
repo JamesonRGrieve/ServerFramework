@@ -236,24 +236,26 @@ def seed_data(cls) -> List[Dict[str, Any]]:
 ## Seeding Workflow
 
 ### 1. Initialization
+The main seeding entry point is `ModelRegistry._seed()`, which coordinates the seeding process. There is no standalone `seed()` function in `StaticSeeder.py` - all seeding orchestration happens through the ModelRegistry:
+
 ```python
-def seed(db_manager: DatabaseManager, extensions_list: str = "", model_registry=None):
-    """Main seeding entry point."""
+# In ModelRegistry class
+def _seed(self):
+    """Main seeding entry point in ModelRegistry."""
     logger.debug("Starting database seeding process...")
-    
-    # Load and initialize extensions before seeding
-    _load_extensions(extensions_list)
-    
+
     # Get database session
-    session = db_manager.get_session()
-    
-    # Get models that need seeding from ModelRegistry
-    models_to_seed = get_all_models(db_manager, extensions_list, model_registry)
-    
-    # Seed each model in dependency order
+    session = self.db_manager.get_session()
+
+    # Get models that need seeding, sorted by dependencies
+    models_to_seed = self._get_models_in_dependency_order()
+
+    # Seed each model in dependency order using StaticSeeder helper
     for model in models_to_seed:
-        seed_model(model, session, db_manager, model_registry)
+        seed_model(model, session, self.db_manager, self)
 ```
+
+The `seed_model()` helper function from `StaticSeeder.py` handles individual model seeding:
 
 ### 2. Model Seeding Process
 ```python

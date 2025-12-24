@@ -78,7 +78,7 @@ Extensions and services use consistent configuration:
 ## Database Layer
 
 ### Management
-- **DatabaseManager**: Thread-safe connection pooling with multi-database support (PostgreSQL, SQLite, MariaDB, MSSQL, Vector)
+- **DatabaseManager**: Thread-safe connection pooling with multi-database support (PostgreSQL, SQLite, MySQL, MariaDB, MSSQL)
 - **Declarative Base Isolation**: Each DatabaseManager instance maintains separate declarative base
 - **Migration System**: Alembic-based with core and extension-specific migrations, automatic dependency resolution
 

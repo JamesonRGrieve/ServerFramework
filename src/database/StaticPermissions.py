@@ -284,7 +284,9 @@ def find_create_permission_reference_chain(cls, db, visited=None):
         )
 
 
-def check_permission_table_access(user_id, cls, db, operation=None, **kwargs):
+def check_permission_table_access(
+    user_id, cls, db, declarative_base=None, operation=None, **kwargs
+):
     """
     Special permission check for the Permission table.
     Users need SHARE permission or admin access to the resource they're trying to manage permissions for.
@@ -293,6 +295,7 @@ def check_permission_table_access(user_id, cls, db, operation=None, **kwargs):
         user_id: The ID of the user to check
         cls: The model class being checked (should be Permission)
         db: Database session
+        declarative_base: SQLAlchemy declarative base for model resolution
         operation: The operation being performed (create, update, delete)
         **kwargs: Permission properties, including resource_type and resource_id
 
@@ -318,11 +321,13 @@ def check_permission_table_access(user_id, cls, db, operation=None, **kwargs):
         return (True, None)  # SYSTEM_ID can also manage all permissions
 
     # Check if the user can manage permissions for this resource
-    return can_manage_permissions(user_id, resource_type, resource_id, db, operation)
+    return can_manage_permissions(
+        user_id, resource_type, resource_id, db, declarative_base, operation
+    )
 
 
 def check_access_to_all_referenced_entities(
-    user_id, cls, db, minimum_role=None, **kwargs
+    user_id, cls, db, declarative_base=None, minimum_role=None, **kwargs
 ):
     """
     Check if the user has access to all referenced entities specified by foreign keys.
@@ -332,6 +337,7 @@ def check_access_to_all_referenced_entities(
         user_id: The ID of the user to check
         cls: The model class
         db: Database session
+        declarative_base: SQLAlchemy declarative base for model resolution
         minimum_role: Minimum role name required
         **kwargs: Foreign key values to check
 
@@ -342,7 +348,7 @@ def check_access_to_all_referenced_entities(
     # Special handling for Permission table
     if cls.__name__ == "Permission":  # Use name check
         can_access, error_msg = check_permission_table_access(
-            user_id, cls, db, **kwargs
+            user_id, cls, db, declarative_base=declarative_base, **kwargs
         )
         if not can_access:
             return (
@@ -392,7 +398,12 @@ def check_access_to_all_referenced_entities(
         # Check if user has access to this record using the optimized check
         # Defaulting to VIEW access unless minimum_role is specified
         access_result, error_msg = check_permission(
-            user_id, ref_model, ref_id, db, minimum_role
+            user_id,
+            ref_model,
+            ref_id,
+            db,
+            declarative_base,
+            minimum_role=minimum_role,
         )
 
         if access_result == PermissionResult.NOT_FOUND:
@@ -405,7 +416,7 @@ def check_access_to_all_referenced_entities(
 
 
 def can_manage_permissions(
-    user_id, resource_type, resource_id, db, operation_type=None
+    user_id, resource_type, resource_id, db, declarative_base=None, operation_type=None
 ):
     """
     Check if a user can manage permissions for a resource.
@@ -416,6 +427,7 @@ def can_manage_permissions(
         resource_type: The table name (string) of the resource type to check
         resource_id: The ID of the resource to check
         db: Database session
+        declarative_base: SQLAlchemy declarative base for model resolution
         operation_type: Type of operation (create, edit, delete)
 
     Returns:
@@ -511,7 +523,12 @@ def can_manage_permissions(
 
     # Check for explicit SHARE permission using check_permission
     result, _ = check_permission(
-        user_id, model_class, resource_id, db, PermissionType.SHARE
+        user_id,
+        model_class,
+        resource_id,
+        db,
+        declarative_base,
+        required_level=PermissionType.SHARE,
     )
     if result == PermissionResult.GRANTED:
         return (True, None)
@@ -519,17 +536,20 @@ def can_manage_permissions(
     # Check if the user has EDIT permission to the resource
     if user_can_edit(user_id, model_class, resource_id, db):
         # For deletion, check if they have DELETE permission as well
-        if (
-            operation_type == "delete"
-            and not check_permission(
-                user_id, model_class, resource_id, db, PermissionType.DELETE
-            )[0]
-            == PermissionResult.GRANTED
-        ):
-            return (
-                False,
-                f"User {user_id} does not have DELETE permission for {resource_type} {resource_id}",
+        if operation_type == "delete":
+            delete_result, _ = check_permission(
+                user_id,
+                model_class,
+                resource_id,
+                db,
+                declarative_base,
+                required_level=PermissionType.DELETE,
             )
+            if delete_result != PermissionResult.GRANTED:
+                return (
+                    False,
+                    f"User {user_id} does not have DELETE permission for {resource_type} {resource_id}",
+                )
         return (True, None)
 
     return (
@@ -722,7 +742,23 @@ def check_permission(
                 required_level = PermissionType.VIEW
 
         # Get the SQLAlchemy model for the record class
-        record_db_cls = record_cls.DB(declarative_base)
+        # Handle both Pydantic models (with .DB() method) and SQLAlchemy models (with __tablename__)
+        if hasattr(record_cls, "__tablename__"):
+            # Already a SQLAlchemy model - use directly
+            record_db_cls = record_cls
+        elif hasattr(record_cls, "DB") and callable(getattr(record_cls, "DB", None)):
+            # Pydantic model - call .DB() to get SQLAlchemy model
+            if declarative_base is None:
+                return (
+                    PermissionResult.ERROR,
+                    f"declarative_base is required when passing Pydantic model {record_cls.__name__}",
+                )
+            record_db_cls = record_cls.DB(declarative_base)
+        else:
+            return (
+                PermissionResult.ERROR,
+                f"Invalid record class: {record_cls} - must be a Pydantic model with .DB() method or SQLAlchemy model",
+            )
 
         # Check if the record exists at all
         record_exists = db.query(exists().where(record_db_cls.id == record_id)).scalar()

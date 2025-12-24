@@ -89,12 +89,12 @@ Central permission validation function:
 ```python
 def check_permission(
     user_id,           # User requesting access
-    record_cls,        # Model class to check
+    record_cls,        # Model class to check (Pydantic model with .DB() method, OR SQLAlchemy model)
     record_id,         # Record ID to check
     db,                # Database session
-    declarative_base,  # Required: SQLAlchemy declarative base (e.g., db_manager.Base)
-    required_level=None,
-    minimum_role=None,
+    declarative_base,  # Required for Pydantic models; optional if passing SQLAlchemy model directly
+    required_level=None,  # Specific PermissionType required (takes precedence over minimum_role)
+    minimum_role=None,    # Minimum role: 'user' -> VIEW, 'admin' -> EDIT, 'superadmin' -> SHARE
     db_manager=None
 ):
     """
@@ -104,6 +104,10 @@ def check_permission(
     - Permission table lookups
     - Role hierarchy validation
     - Database manager integration
+
+    Note: record_cls can be either:
+    - A Pydantic model class with DatabaseMixin (has .DB() method) - requires declarative_base
+    - A SQLAlchemy model class (has __tablename__) - declarative_base can be None
     """
     
     # ROOT_ID has universal access
@@ -160,7 +164,11 @@ Advanced recursive CTE implementation with depth limiting and optimization:
 
 ```python
 def _get_admin_accessible_team_ids_cte(
-    user_id: str, db: Session, max_depth: int = 5
+    user_id: str,
+    db: Session,
+    declarative_base,           # Required: SQLAlchemy declarative base (e.g., db_manager.Base)
+    max_depth: int = 5,
+    unique_suffix: str = "",    # Optional: Suffix for CTE naming to avoid conflicts in complex queries
 ) -> CTE:
     """
     Generate optimized recursive CTE with:
