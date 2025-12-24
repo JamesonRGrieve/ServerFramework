@@ -139,39 +139,6 @@ class TestPayment_UserAndSessionEndpoints(
             name="test_POST_200_search_includes",
             details="User search is restricted for privacy/security reasons - users should not be searchable globally",
         ),
-        # Additional skips for tests not applicable to user endpoint
-        SkipThisTest(
-            name="test_POST_400",
-            details="User registration endpoint handles malformed JSON differently",
-        ),
-        SkipThisTest(
-            name="test_POST_400_batch",
-            details="Users cannot be batch created",
-        ),
-        SkipThisTest(
-            name="test_GET_200_list_fields",
-            details="User entity does not have a standard LIST endpoint",
-        ),
-        SkipThisTest(
-            name="test_POST_422_singular_with_plural",
-            details="User registration endpoint returns 400 for invalid format",
-        ),
-        SkipThisTest(
-            name="test_PUT_200_batch",
-            details="Users cannot be batch updated",
-        ),
-        SkipThisTest(
-            name="test_DELETE_204_batch",
-            details="Users cannot be batch deleted",
-        ),
-        SkipThisTest(
-            name="test_GET_200_search_fields",
-            details="User search is restricted for privacy/security reasons",
-        ),
-        SkipThisTest(
-            name="test_GET_422_invalid_includes",
-            details="Users and sessions are not retrievable by ID.",
-        ),
     ]
 
     def create_payload(
@@ -245,16 +212,15 @@ class TestPayment_UserAndSessionEndpoints(
 
         # Extract user from response and verify structure
         response_data = response.json()
-        user = response_data[self.entity_name]
-        assert "id" in user, "User should have an ID"
-        assert "email" in user, "User should have an email"
+        assert "id" in response_data, "User should have an ID"
+        assert "email" in response_data, "User should have an email"
 
         # Verify payment extension field is present
         assert (
-            "external_payment_id" in user
+            "external_payment_id" in response_data
         ), "User should have external_payment_id field"
         assert (
-            user["external_payment_id"] == "abc321"
+            response_data["external_payment_id"] == "abc321"
         ), "Payment ID should have the value of 'abc321'."
 
     def test_PUT_200_with_payment_field(
@@ -482,10 +448,11 @@ class TestPayment_UserAndSessionEndpoints(
         )
 
         # Try to login - hook should be called
-        # Login endpoint expects email and password at top level, not wrapped
         auth_payload = {
-            "email": user_data["email"],
-            "password": user_data["password"],
+            "auth": {
+                "email": user_data["email"],
+                "password": user_data["password"],
+            }
         }
 
         login_response = server.post("/v1/user/authorize", json=auth_payload)
@@ -495,8 +462,7 @@ class TestPayment_UserAndSessionEndpoints(
             # We can't easily assert the hook was called in integration tests,
             # but we can verify the login succeeded with payment extension active
             response_data = login_response.json()
-            # Login returns token, user, and other fields - not wrapped in session
-            assert "token" in response_data or "user" in response_data, "Should return auth data"
+            assert "session" in response_data, "Should return auth session"
 
         # Test that hook function exists and is callable
         from extensions.payment.BLL_Payment import validate_subscription_on_login

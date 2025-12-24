@@ -3121,16 +3121,6 @@ def register_custom_route(
                     )
                     return {resource_name: result}
 
-            # Wrap result if needed (consistent with static route handling)
-            if custom_route.response_model and isinstance(
-                custom_route.response_model, str
-            ):
-                if "ResponseSingle" in custom_route.response_model:
-                    resource_name = stringcase.snakecase(
-                        manager_class.__name__.replace("Manager", "")
-                    )
-                    return {resource_name: result}
-
             return result
 
     # Register the route
