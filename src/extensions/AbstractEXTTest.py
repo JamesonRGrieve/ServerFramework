@@ -2,9 +2,11 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 from typing import Any, Dict, Set, Type, TypeVar
 
 import pytest
+from filelock import FileLock, Timeout
 
 from AbstractTest import AbstractTest
 from conftest import (
@@ -13,6 +15,7 @@ from conftest import (
     create_team,
     create_user,
     generate_test_email,
+    _initialize_db_with_lock,
 )
 from extensions.AbstractExtensionProvider import AbstractStaticExtension
 from lib.Dependencies import Dependencies
@@ -65,27 +68,34 @@ class ExtensionServerMixin:
 
     @pytest.fixture(scope="module")
     def server(self):
-        """Create an isolated test server for the extension."""
+        """
+        Create a test server for the extension.
+
+        Uses a static test.{extension_name}.database.db shared across all workers.
+        File locking ensures only one worker initializes the database.
+        """
         if not self.extension_class:
             pytest.skip("extension_class not defined, test cannot run")
-
-        from lib.Pydantic2SQLAlchemy import clear_registry_cache
-
-        clear_registry_cache()
-        logger.debug(
-            f"Cleared registry caches for extension {self.extension_class.name}"
-        )
 
         from fastapi.testclient import TestClient
 
         extension_name = self.extension_class.name.lower()
         test_db_prefix = f"test.{extension_name}"
         extension_list = extension_name
-        try:
-            from app import instance
 
-            app = instance(db_prefix=test_db_prefix, extensions=extension_list)
-            client = TestClient(app)
+        def _create_extension_server():
+            from lib.Pydantic2SQLAlchemy import clear_registry_cache
+            clear_registry_cache()
+            logger.debug(
+                f"Creating extension server for {extension_name}"
+            )
+
+            from app import instance
+            return TestClient(instance(db_prefix=test_db_prefix, extensions=extension_list))
+
+        try:
+            # Use locking to ensure database is initialized only once
+            client = _initialize_db_with_lock(f"test_{extension_name}", _create_extension_server)
             yield client
         except ImportError as e:
             pytest.skip(f"FastAPI dependencies not available: {e}")

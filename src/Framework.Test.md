@@ -39,9 +39,16 @@ The testing framework mirrors the main architecture with specialized abstract ba
 - **Seeding Validation**: Seed data integrity and dependency resolution testing
 
 ### Database Isolation
-- **Extension Permutation Databases**: Each extension permutation gets its own isolated database instance
-- **Automatic Cleanup**: Database teardown after extension test suite completion
-- **Transaction Rollback**: Transaction isolation within test suites where applicable
+The test framework uses a minimal set of shared databases for efficiency:
+
+- **Core Test Database** (`test.core.database.db`): Used by core system tests with no extensions
+- **Scratch Database** (`test.scratch.database.db`): Used for testing static functionality that doesn't involve actual system entities
+- **Extension Databases** (`test.{extension_name}.database.db`): One database per extension, containing migrations for that extension and its dependencies
+
+**Key Features:**
+- **Static Database Names**: No per-worker database multiplication - all workers share the same databases
+- **File Locking**: Database initialization is coordinated across xdist workers using file locks
+- **Automatic Cleanup**: Lock files are cleaned up after test run completion
 - **Schema Consistency**: Validation of schema generation from Pydantic models
 
 ## Business Logic Layer Testing
@@ -87,12 +94,13 @@ The testing framework mirrors the main architecture with specialized abstract ba
 ## Extension System Testing
 
 ### AbstractEXTTest
-Configuration-driven extension testing with isolated test servers.
+Configuration-driven extension testing with shared test servers.
 
-**Isolation:**
+**Database Architecture:**
 - Each extension: dedicated database `test.{extension_name}.database.db`
+- One database per extension, shared across all xdist workers
+- File locking ensures only one worker initializes each database
 - Server loads only that extension + dependencies via `APP_EXTENSIONS`
-- Automatic cleanup after suite
 
 **Usage:**
 ```python
@@ -232,8 +240,11 @@ pytest -l
 ### Common Test Fixtures
 
 Standard fixtures available across all test layers:
-- **server**: Test server instance with isolated environment
-- **db**: Database session for test operations
+- **server**: Core test server using `test.core` database (session-scoped, shared across workers)
+- **mock_server**: Separate mock server using `mock.core` database (session-scoped, shared across workers)
+- **isolated_server**: Scratch server using `test.scratch` database (function-scoped, for static functionality tests)
+- **isolated_extension_server**: Factory fixture that creates extension-specific servers using `test.{extension_name}` database
+- **db**: Database session for test operations (function-scoped with automatic cleanup)
 - **model_registry**: Pydantic model registry instance
 - **admin_a**, **admin_b**: Admin user instances for testing
 - **user_a**, **user_b**: Regular user instances for testing

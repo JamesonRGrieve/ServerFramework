@@ -88,19 +88,18 @@ def pytest_sessionfinish(session, exitstatus):
 
     # Only the controller or single-process run should clean up
     if worker_id is None:
-        cleanup_files = [
-            src_path / ".pytest_db_init.lock",
-            src_path / ".pytest_db_ready",
-            src_path / ".pytest_mock_db_init.lock",
-            src_path / ".pytest_mock_db_ready",
-            src_path / ".pytest_server_db_init.lock",
-            src_path / ".pytest_server_db_ready",
+        # Clean up all pytest lock and ready files using glob pattern
+        import glob as glob_module
+
+        lock_patterns = [
+            str(src_path / ".pytest_*_db_init.lock"),
+            str(src_path / ".pytest_*_db_ready"),
         ]
 
-        for f in cleanup_files:
-            if f.exists():
+        for pattern in lock_patterns:
+            for filepath in glob_module.glob(pattern):
                 try:
-                    f.unlink()
+                    Path(filepath).unlink()
                 except OSError:
                     pass
 
@@ -353,84 +352,129 @@ def pytest_generate_tests(metafunc):
 # Database setup is now handled automatically by the app instance
 
 
+# =============================================================================
+# DATABASE COORDINATION UTILITIES
+# =============================================================================
+# These utilities ensure safe database initialization across xdist workers.
+# Each database is initialized exactly once, with other workers waiting.
+# =============================================================================
+
+
+def _get_db_lock_files(db_name: str):
+    """Get lock and ready file paths for a database."""
+    safe_name = db_name.replace(".", "_")
+    lock_file = src_path / f".pytest_{safe_name}_db_init.lock"
+    ready_file = src_path / f".pytest_{safe_name}_db_ready"
+    return lock_file, ready_file
+
+
+def _wait_for_db_ready(db_name: str, timeout: float = 180.0):
+    """Wait for a database to be ready (initialized by another worker)."""
+    _, ready_file = _get_db_lock_files(db_name)
+    start_time = time.time()
+    while not ready_file.exists():
+        if time.time() - start_time > timeout:
+            raise TimeoutError(f"Timeout waiting for {db_name} database to be ready")
+        time.sleep(0.1)
+    return True
+
+
+def _initialize_db_with_lock(db_name: str, init_func, timeout: float = 180.0):
+    """
+    Initialize a database with file locking to ensure only one worker does it.
+
+    Args:
+        db_name: Name of the database (used for lock file naming)
+        init_func: Function that creates and returns the test client
+        timeout: Maximum time to wait for lock/ready
+
+    Returns:
+        TestClient for the initialized app
+    """
+    lock_file, ready_file = _get_db_lock_files(db_name)
+    lock = FileLock(lock_file, timeout=timeout)
+
+    try:
+        # Try to acquire lock with a short timeout first
+        with lock.acquire(timeout=0.5):
+            # We got the lock - check if already initialized
+            if ready_file.exists():
+                # Already initialized, just create the client
+                return init_func()
+
+            # We're the initializing worker
+            logger.debug(f"Worker initializing database: {db_name}")
+            client = init_func()
+
+            # Mark as ready for other workers
+            ready_file.touch()
+            logger.debug(f"Database {db_name} initialized and marked ready")
+            return client
+    except Timeout:
+        # Another worker is initializing - wait for ready file
+        logger.debug(f"Waiting for database {db_name} to be initialized by another worker")
+        _wait_for_db_ready(db_name, timeout)
+        # Now safe to create our client
+        return init_func()
+
+
 @pytest.fixture(scope="session")
 def mock_server():
     """
-    Get a server for testing.
-    This fixture handles database setup through the normal app initialization.
-    Each xdist worker gets its own database to avoid conflicts.
+    Get a mock server for testing scenarios that need a separate database.
+
+    Uses a static 'mock.core' database shared across all workers.
+    File locking ensures only one worker initializes the database.
 
     Note: This fixture is for core system tests. Extension tests should use
     AbstractEXTTest.extension_server for proper isolation.
     """
-    # Each xdist worker gets its own database to avoid migration conflicts
-    worker_id = os.environ.get("PYTEST_XDIST_WORKER", "main")
-    db_prefix = f"mock.{worker_id}"
+    db_prefix = "mock.core"
 
-    logger.debug(
-        f"Worker {worker_id}: Setting up mock server with db_prefix={db_prefix}"
-    )
+    def _create_mock_server():
+        from lib.Pydantic2SQLAlchemy import clear_registry_cache
+        clear_registry_cache()
 
-    # Clear all registry caches to prevent conflicts during test setup
-    from lib.Pydantic2SQLAlchemy import clear_registry_cache
+        setup_python_path()
 
-    clear_registry_cache()
-    logger.debug("Cleared all registry caches before server setup")
+        from app import instance
+        return TestClient(instance(db_prefix=db_prefix, extensions=""))
 
-    # Follow the same initialization process as app.py
-    logger.debug("Setting up Python path...")
-    setup_python_path()
-
-    # Use the new instance function with worker-specific prefix and no extensions
-    from app import instance
-
-    app = instance(db_prefix=db_prefix, extensions="")
-
-    logger.debug(f"Worker {worker_id}: Mock server initialization complete")
-
-    yield TestClient(app)
+    logger.debug(f"Setting up mock server with db_prefix={db_prefix}")
+    yield _initialize_db_with_lock("mock_core", _create_mock_server)
 
 
 @pytest.fixture(scope="session")
 def server():
     """
-    Get a server for testing.
-    This fixture handles database setup through the normal app initialization.
-    Each xdist worker gets its own database to avoid conflicts.
+    Get a server for testing core functionality (no extensions).
+
+    Uses a static 'test.core' database shared across all workers.
+    File locking ensures only one worker initializes the database.
 
     Note: This fixture is for core system tests. Extension tests should use
     AbstractEXTTest.extension_server for proper isolation.
     """
-    # Each xdist worker gets its own database to avoid migration conflicts
-    worker_id = os.environ.get("PYTEST_XDIST_WORKER", "main")
-    db_prefix = f"test.{worker_id}"
+    db_prefix = "test.core"
 
-    logger.debug(f"Worker {worker_id}: Setting up server with db_prefix={db_prefix}")
+    def _create_server():
+        from lib.Pydantic2SQLAlchemy import clear_registry_cache
+        clear_registry_cache()
 
-    # Clear all registry caches to prevent conflicts during test setup
-    from lib.Pydantic2SQLAlchemy import clear_registry_cache
+        setup_python_path()
 
-    clear_registry_cache()
-    logger.debug("Cleared all registry caches before server setup")
+        from app import instance
+        return TestClient(instance(db_prefix=db_prefix, extensions=""))
 
-    # Follow the same initialization process as app.py
-    logger.debug("Setting up Python path...")
-    setup_python_path()
-
-    # Use the new instance function with worker-specific prefix and no extensions
-    from app import instance
-
-    app = instance(db_prefix=db_prefix, extensions="")
-    test_client = TestClient(app)
-
-    logger.debug(f"Worker {worker_id}: Server initialization complete")
+    logger.debug(f"Setting up server with db_prefix={db_prefix}")
+    test_client = _initialize_db_with_lock("test_core", _create_server)
 
     yield test_client
 
     # Cleanup after all tests are done
     try:
-        if hasattr(app.state, "DB"):
-            db_manager = app.state.model_registry.database_manager
+        if hasattr(test_client.app.state, "DB"):
+            db_manager = test_client.app.state.model_registry.database_manager
             if hasattr(db_manager, "cleanup_thread"):
                 db_manager.cleanup_thread()
             if hasattr(db_manager, "dispose_all"):
@@ -462,32 +506,30 @@ def db(model_registry):
 def isolated_server():
     """
     Create an isolated server for individual test functions.
-    Each test gets a completely fresh environment with its own database and model registry.
-    Use this for tests that need complete isolation from other tests.
+    Uses a shared 'test.scratch' database for testing static functionality
+    that doesn't involve actual system entities requiring isolation.
 
-    Note: Uses test.isolated.{worker_id}.database.db to avoid database conflicts across xdist workers.
+    Note: Uses test.scratch database shared across all workers.
+    For tests that modify data, use transaction rollback within the test.
     """
-    # Clear all registry caches to prevent conflicts
-    from lib.Pydantic2SQLAlchemy import clear_registry_cache
+    db_prefix = "test.scratch"
 
-    clear_registry_cache()
-    logger.debug("Cleared registry caches for isolated server")
+    def _create_scratch_server():
+        from lib.Pydantic2SQLAlchemy import clear_registry_cache
+        clear_registry_cache()
 
-    from app import instance
+        from app import instance
+        return TestClient(instance(db_prefix=db_prefix, extensions=""))
 
-    # Use worker-specific prefix for isolated tests to avoid conflicts across xdist workers
-    worker_id = os.environ.get("PYTEST_XDIST_WORKER", "main")
-    db_prefix = f"test.isolated.{worker_id}"
-
-    app = instance(db_prefix=db_prefix, extensions="")
-    test_client = TestClient(app)
+    # Use locking to ensure database is initialized
+    test_client = _initialize_db_with_lock("test_scratch", _create_scratch_server)
 
     yield test_client
 
     # Cleanup after test is done
     try:
-        if hasattr(app.state, "DB"):
-            db_manager = app.state.model_registry.database_manager
+        if hasattr(test_client.app.state, "DB"):
+            db_manager = test_client.app.state.model_registry.database_manager
             if hasattr(db_manager, "cleanup_thread"):
                 db_manager.cleanup_thread()
             if hasattr(db_manager, "dispose_all"):
@@ -507,29 +549,26 @@ def isolated_extension_server():
             server = isolated_extension_server("payment")
             # Test with only payment extension loaded
 
-    Note: Uses test.{extension_name}.{worker_id}.database.db naming convention
-    to avoid conflicts across xdist workers.
+    Note: Uses test.{extension_name}.database.db naming convention.
+    One database per extension, shared across all workers.
     """
-    # Get worker ID for database isolation
-    worker_id = os.environ.get("PYTEST_XDIST_WORKER", "main")
 
     def _create_server(extensions: str = ""):
-        # Clear all registry caches to prevent conflicts
-        from lib.Pydantic2SQLAlchemy import clear_registry_cache
+        first_extension = extensions.split(",")[0].strip() if extensions else "scratch"
+        db_prefix = f"test.{first_extension}"
 
-        clear_registry_cache()
-        logger.debug(
-            f"Cleared registry caches for extension server with extensions: {extensions}"
-        )
+        def _create_ext_server():
+            from lib.Pydantic2SQLAlchemy import clear_registry_cache
+            clear_registry_cache()
+            logger.debug(
+                f"Creating extension server with extensions: {extensions}"
+            )
 
-        from app import instance
+            from app import instance
+            return TestClient(instance(db_prefix=db_prefix, extensions=extensions))
 
-        # Use extension name and worker ID for database prefix
-        # This creates test.{extension_name}.{worker_id}.database.db instead of random files
-        first_extension = extensions.split(",")[0].strip() if extensions else "isolated"
-        db_prefix = f"test.{first_extension}.{worker_id}"
-
-        return TestClient(instance(db_prefix=db_prefix, extensions=extensions))
+        # Use locking to ensure database is initialized
+        return _initialize_db_with_lock(f"test_{first_extension}", _create_ext_server)
 
     return _create_server
 
@@ -727,17 +766,14 @@ def create_test_extension_server(extension_names):
     """Helper function to create a test server with specific extensions.
 
     Note: Uses test.{extension_name}.database.db naming convention.
+    One database per extension, shared across all workers.
     """
-    from app import instance
-
     extensions = (
         ",".join(extension_names)
         if isinstance(extension_names, list)
         else extension_names
     )
 
-    # Use first extension name for database prefix
-    # This creates test.{extension_name}.database.db instead of random files
     first_extension = (
         extension_names[0]
         if isinstance(extension_names, list)
@@ -745,7 +781,15 @@ def create_test_extension_server(extension_names):
     ).strip()
     db_prefix = f"test.{first_extension}"
 
-    return TestClient(instance(db_prefix=db_prefix, extensions=extensions))
+    def _create_ext_server():
+        from lib.Pydantic2SQLAlchemy import clear_registry_cache
+        clear_registry_cache()
+
+        from app import instance
+        return TestClient(instance(db_prefix=db_prefix, extensions=extensions))
+
+    # Use locking to ensure database is initialized
+    return _initialize_db_with_lock(f"test_{first_extension}", _create_ext_server)
 
 
 @pytest.fixture(scope="session")

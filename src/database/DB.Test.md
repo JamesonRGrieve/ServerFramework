@@ -219,8 +219,15 @@ self.verify_permission_checks(entity_id, allowed_users, denied_users)
 ```
 
 ### Test Isolation
-- Transaction-based isolation for database tests
-- Automatic cleanup of created entities
+The framework uses a minimal set of shared databases for efficiency:
+
+- **Core Test Database** (`test.core.database.db`): Used by core system tests
+- **Scratch Database** (`test.scratch.database.db`): Used for static functionality tests
+- **Extension Databases** (`test.{extension_name}.database.db`): One per extension
+
+**Isolation Mechanisms:**
+- File locking for database initialization across xdist workers
+- Automatic cleanup of created entities within tests
 - Unique field generation to prevent conflicts
 - Session management with proper rollback
 
