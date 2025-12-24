@@ -20,7 +20,6 @@ from lib.Pydantic2SQLAlchemy import (
     UpdateMixinModel,
     clear_registry_cache,
     create_sqlalchemy_model,
-    set_base_model,
 )
 
 
@@ -43,9 +42,6 @@ class TestPydantic2SQLAlchemyReal(unittest.TestCase):
         cls.TestBase = cls.db_manager.Base
         cls.engine = cls.db_manager.get_setup_engine()
         cls.Session = sessionmaker(bind=cls.engine)
-
-        # Set the base model for testing
-        set_base_model(cls.TestBase)
 
     def setUp(self):
         """Set up each test."""

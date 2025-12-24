@@ -236,17 +236,8 @@ def clear_registry_cache() -> None:
     )
 
 
-def set_base_model(base_model: Any) -> None:
-    """
-    DEPRECATED: This function used singleton pattern which is not allowed.
-    Pass base_model parameter directly to create_sqlalchemy_model instead.
-    """
-    from lib.Logging import logger
-
-    logger.warning(
-        "set_base_model is deprecated - pass base_model parameter directly to create_sqlalchemy_model"
-    )
-
+# Note: set_base_model function removed - was deprecated singleton pattern
+# Pass base_model parameter directly to create_sqlalchemy_model instead
 
 # Note: register_model function removed - models now use isolated ModelRegistry from app state
 

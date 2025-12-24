@@ -312,16 +312,16 @@ def _translate_pydantic_validators(pydantic_model, class_dict):
 ## Database Management Integration Patterns
 
 ### Enterprise Database Manager Pattern
-**Purpose**: Production-grade database management with multi-process support and comprehensive session handling.
+**Purpose**: Production-grade database management with multi-process support and comprehensive session handling via dependency injection.
 
 ```python
-# Get singleton database manager instance
-db_manager = DatabaseManager()
+# Get database manager via dependency injection (e.g., from app.state.model_registry)
+db_manager = app.state.model_registry.database_manager
 
 # Parent process initialization
 db_manager.init_engine_config()
 
-# Worker process initialization  
+# Worker process initialization
 db_manager.init_worker()
 
 # Each manager instance maintains isolated declarative base
@@ -338,7 +338,7 @@ User = UserModel.DB(db_manager.Base)
 **Benefits:**
 - Database-specific declarative bases
 - Consolidated configuration management
-- Thread-safe singleton access
+- Dependency injection for testability
 - Isolated testing support
 
 ### Isolated Database Instance Pattern
@@ -459,29 +459,50 @@ class AbstractBLLManager:
 ## Performance Patterns
 
 ### Lazy Model Generation Pattern
-**Purpose**: Generate SQLAlchemy models only when needed.
+**Purpose**: Generate SQLAlchemy models only when needed using the `DatabaseMixin.DB()` classmethod.
 
 ```python
-class DatabaseDescriptor:
-    def __get__(self, obj, objtype=None):
-        """Lazy generation of SQLAlchemy models"""
-        if objtype is None:
-            return self
-            
-        # Check cache first
-        if objtype.__name__ not in DatabaseMixin._db_cache:
-            # Generate model on first access
-            sqlalchemy_model = create_sqlalchemy_model(objtype)
-            DatabaseMixin._db_cache[objtype.__name__] = sqlalchemy_model
-            
-        return DatabaseMixin._db_cache[objtype.__name__]
+class DatabaseMixin:
+    """Mixin for Pydantic models that provides access to SQLAlchemy models."""
+
+    @classmethod
+    def DB(cls, declarative_base):
+        """
+        Get or create the SQLAlchemy model for this Pydantic model.
+        Models are cached per declarative base to prevent regeneration.
+
+        Args:
+            declarative_base: The SQLAlchemy declarative base to use
+
+        Returns:
+            The SQLAlchemy model class corresponding to this Pydantic model
+        """
+        # Create a registry key based on the model and declarative base
+        registry_key = f"{cls.__module__}.{cls.__name__}"
+
+        # Check if we already have this model cached in the declarative base
+        if hasattr(declarative_base, "_pydantic_models"):
+            if registry_key in declarative_base._pydantic_models:
+                return declarative_base._pydantic_models[registry_key]
+
+        # Generate the SQLAlchemy model and cache it
+        sqlalchemy_model = create_sqlalchemy_model(cls, model_registry, base_model=declarative_base)
+        declarative_base._pydantic_models[registry_key] = sqlalchemy_model
+
+        return sqlalchemy_model
+```
+
+**Usage:**
+```python
+# Access the SQLAlchemy model via the DB() classmethod
+User = UserModel.DB(db_manager.Base)
 ```
 
 **Benefits:**
 - Models generated only when needed
-- Caching prevents regeneration
-- Memory efficient
-- Fast subsequent access
+- Caching per declarative base prevents regeneration
+- Supports multiple database instances with isolated caches
+- Fast subsequent access via registry lookup
 
 ### Dependency Resolution Pattern
 **Purpose**: Handle model dependencies during generation.
@@ -536,11 +557,22 @@ with db_manager.get_db() as session:
 
 ### Table Name Convention
 
-When `__tablename__` is not explicitly specified, the framework automatically generates it using this convention:
+When `__tablename__` is not explicitly specified, the framework automatically generates it using `default_name_processor.generate_resource_name()` from `lib.AbstractPydantic2`:
 
-1. **Remove suffix**: Strip "Model" or "Manager" suffix from the class name
-2. **Convert to snake_case**: Transform PascalCase to snake_case
-3. **Pluralize**: Apply English pluralization rules
+```python
+# Implementation in Pydantic2SQLAlchemy.py
+from lib.AbstractPydantic2 import default_name_processor
+
+if not tablename:
+    tablename = default_name_processor.generate_resource_name(
+        pydantic_model.__name__, use_plural=True
+    )
+```
+
+The `generate_resource_name()` function applies these transformations:
+1. **Extract base name**: Strip "Model" or "Manager" suffix via `NameProcessor.extract_base_name()`
+2. **Convert to snake_case**: Transform PascalCase to snake_case using `stringcase.snakecase()`
+3. **Pluralize**: Apply English pluralization via `inflection.plural()`
 
 **Examples:**
 | Pydantic Model | Generated `__tablename__` |

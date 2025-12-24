@@ -7,7 +7,7 @@ import stringcase
 from fastapi.testclient import TestClient
 
 from lib.Logging import logger
-from lib.Pydantic2SQLAlchemy import clear_registry_cache, set_base_model
+from lib.Pydantic2SQLAlchemy import clear_registry_cache
 
 
 class AbstractMigrationTest(ABC):
@@ -101,8 +101,7 @@ class AbstractMigrationTest(ABC):
 
             db_manager = self.isolated_server.app.state.model_registry.database_manager
             Base = db_manager.Base
-            set_base_model(Base)
-            logger.debug("Successfully set Base from isolated database manager")
+            logger.debug("Successfully obtained Base from isolated database manager")
 
             # Ensure the model registry is properly available and committed
             if hasattr(self.isolated_server.app.state, "model_registry"):
@@ -118,11 +117,10 @@ class AbstractMigrationTest(ABC):
             else:
                 logger.warning("No model registry found on isolated server")
         except Exception as e:
-            logger.warning(f"Could not set Base from isolated manager: {e}")
+            logger.warning(f"Could not obtain Base from isolated manager: {e}")
             from sqlalchemy.orm import declarative_base
 
             Base = declarative_base()
-            set_base_model(Base)
 
         # Configure database info for migration manager with semantic naming
         # Use the semantic name directly for the database file
