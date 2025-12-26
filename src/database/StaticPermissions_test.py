@@ -382,15 +382,17 @@ class TestPermissionChecks:
         resource_id = test_records["resource_id"]
         regular_user_id = test_records["regular_user_id"]
 
-        # Setup mock DB to return None (resource not found)
+        # Setup mock DB to return False for exists check and None for the record query
+        mock_db.query.return_value.scalar.return_value = False
         mock_db.query.return_value.filter.return_value.first.return_value = None
 
         # Test using the actual check_permission function with mocked database
+        # ResourceForTest is a valid SQLAlchemy model (has __tablename__), so it should work
         result, _ = check_permission(
             regular_user_id, ResourceForTest, resource_id, mock_db, Base
         )
-        # Since ResourceForTest doesn't have a DB attribute, it returns ERROR instead of NOT_FOUND
-        assert result == PermissionResult.ERROR
+        # With the exists check returning False, we expect NOT_FOUND
+        assert result == PermissionResult.NOT_FOUND
 
 
 # Test permission references
