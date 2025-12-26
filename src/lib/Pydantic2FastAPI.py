@@ -2034,6 +2034,8 @@ def register_route(
                     fields=fields_param,
                     offset=query_params.offset or 0,
                     limit=query_params.limit or 100,
+                    page=getattr(query_params, "page", None),
+                    pageSize=getattr(query_params, "page_size", None),
                     sort_by=query_params.sort_by,
                     sort_order=query_params.sort_order or "asc",
                     **search_params,

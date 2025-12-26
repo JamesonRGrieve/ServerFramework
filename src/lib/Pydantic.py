@@ -1295,6 +1295,8 @@ class ModelRegistry(AbstractRegistry):
         list_annotations = {
             "offset": int,
             "limit": int,
+            "page": Optional[int],
+            "page_size": Optional[int],
             "sort_by": Optional[str],
             "sort_order": Optional[str],
         }
@@ -1305,6 +1307,16 @@ class ModelRegistry(AbstractRegistry):
             ),
             "limit": Field(
                 1000, ge=1, le=1000, description="Maximum number of items to return"
+            ),
+            "page": Field(
+                None, ge=1, description="Page number for pagination (1-indexed)"
+            ),
+            "page_size": Field(
+                None,
+                ge=1,
+                le=1000,
+                alias="pageSize",
+                description="Number of items per page",
             ),
             "sort_by": Field(None, description="Field to sort results by"),
             "sort_order": Field(
