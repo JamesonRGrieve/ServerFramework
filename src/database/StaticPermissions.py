@@ -1441,6 +1441,19 @@ def generate_permission_filter(
             )
             conditions.append(users_on_accessible_teams)
 
+            # Non-root, non-system users (i.e. all real accounts) are visible
+            # for VIEW so authenticated callers can resolve identifiers
+            # surfaced through related entities (extension hooks validating
+            # entity.user_id, manager-layer cross-references, etc). Edit and
+            # delete still go through the manager-layer self-only checks.
+            conditions.append(
+                and_(
+                    resource_db_cls.id != ROOT_ID,
+                    resource_db_cls.id != SYSTEM_ID,
+                    resource_db_cls.id != TEMPLATE_ID,
+                )
+            )
+
     # Special Table Logic for Teams
     if resource_db_cls.__tablename__ == "teams":
         team_conditions = []
