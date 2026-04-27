@@ -178,6 +178,56 @@ class TestUserManager(AbstractBLLTest):
             model_registry=model_registry,
         )
 
+    def test_update(self, admin_a, team_a, server, model_registry):
+        """Override: Users self-set created_by_user_id, so the only non-root
+        caller able to update a User record is the user themselves."""
+        self.server = server
+        self.model_registry = model_registry
+        self._create(
+            admin_a.id,
+            team_a.id,
+            "update",
+            server=server,
+            model_registry=model_registry,
+        )
+        new_user_id = self.tracked_entities["update"].id
+        updated_fields = self._update(
+            new_user_id, team_a.id, model_registry=model_registry
+        )
+        self._update_assert("update_result", updated_fields)
+
+    def test_get(self, admin_a, team_a, server, model_registry):
+        """Override: Users self-set created_by_user_id, so the only non-root
+        caller able to read an arbitrary User record is the user themselves."""
+        self.server = server
+        self.model_registry = model_registry
+        self._create(
+            admin_a.id,
+            team_a.id,
+            "get",
+            server=server,
+            model_registry=model_registry,
+        )
+        new_user_id = self.tracked_entities["get"].id
+        self._get(new_user_id, team_a.id, model_registry=model_registry)
+        self._get_assert("get_result")
+
+    def test_list(self, admin_a, team_a, server, model_registry):
+        """Override: Users are not visible to non-root callers across the
+        whole table; list as ROOT_ID for the underlying ORM list test."""
+        self.server = server
+        self.model_registry = model_registry
+        for key in ("list_1", "list_2", "list_3"):
+            self._create(
+                admin_a.id,
+                team_a.id,
+                key,
+                server=server,
+                model_registry=model_registry,
+            )
+        self._list(env("ROOT_ID"), team_a.id, model_registry=model_registry)
+        self._list_assert("list_result")
+
     def test_create_closed(self, server, model_registry):
         """Test user registration fails when REGISTRATION_MODE is 'closed'."""
         from fastapi import HTTPException
