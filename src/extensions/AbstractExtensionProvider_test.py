@@ -1370,3 +1370,60 @@ class TestExtensionRegistryMethods:
         assert len(names) == 2
         assert "test_extension" in names
         assert "test_system_component" in names
+
+
+# ----------------------------------------------------------------------
+# Security: extension-load explicit-deny tests.
+#
+# A sloppy or malicious operator who sets APP_EXTENSIONS to a path or
+# a name that resolves outside extensions/ must NOT be able to import
+# arbitrary modules. These tests assert the loader rejects such inputs
+# rather than silently following them.
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.security
+class TestExtensionLoadDeniesPathTraversal:
+    """The extension loader must reject names that resolve outside extensions/."""
+
+    @pytest.mark.parametrize(
+        "bad_name",
+        [
+            "../../../etc/passwd",
+            "..\\..\\windows\\system32",
+            "/absolute/path/extension",
+            "extension; rm -rf /",
+            "extension\x00null_byte",
+            "extension/../../../etc",
+        ],
+    )
+    def test_register_extension_rejects_unsafe_name(self, bad_name):
+        """Names containing path-traversal markers must raise, not import."""
+        registry = ExtensionRegistry("")
+
+        class BadExtension(AbstractStaticExtension):
+            name = bad_name
+            description = "should never load"
+
+        with pytest.raises(Exception):
+            registry.register_extension(BadExtension)
+
+
+@pytest.mark.security
+class TestExtensionRegistryDeniesOverride:
+    """Registering two extensions with the same name must not silently win."""
+
+    def test_duplicate_extension_name_rejected(self):
+        registry = ExtensionRegistry("")
+
+        class Ext1(AbstractStaticExtension):
+            name = "duplicate_name_test"
+            description = "first"
+
+        class Ext2(AbstractStaticExtension):
+            name = "duplicate_name_test"
+            description = "second"
+
+        registry.register_extension(Ext1)
+        with pytest.raises(Exception):
+            registry.register_extension(Ext2)

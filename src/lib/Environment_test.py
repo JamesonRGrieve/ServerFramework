@@ -300,5 +300,58 @@ class TestEnvironmentIntegration(TestMixin):
             self.assertEqual(test_settings.APP_NAME, "Server")  # Default value
 
 
+# ----------------------------------------------------------------------
+# Security: explicit-deny / negative-path tests for production defaults.
+# These assert that obviously-insecure defaults are not silently
+# accepted when the runtime is `ENVIRONMENT=production`.
+# Most are EXPECTED FAIL today — surfacing the gap is the point.
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.security
+class TestProductionDefaultsAreFailClosed(TestMixin):
+    """A production deployment must refuse insecure defaults at start-up."""
+
+    def test_root_api_key_default_rejected_in_production(
+        self, clean_environment, monkeypatch
+    ):
+        """ROOT_API_KEY="n0ne" in production must fail validation.
+
+        EXPECTED FAIL today — Environment.py:40 default is the literal
+        string "n0ne" and there is no production-mode guard.
+        """
+        monkeypatch.setenv("ENVIRONMENT", "production")
+        monkeypatch.setenv("ROOT_API_KEY", "n0ne")
+        with pytest.raises(Exception):
+            AppSettings.model_validate(os.environ)
+
+    def test_jwt_secret_required_in_production(
+        self, clean_environment, monkeypatch
+    ):
+        """JWT_SECRET unset/empty in production must fail validation.
+
+        EXPECTED FAIL today — JWT_SECRET has no production-mode guard.
+        """
+        monkeypatch.setenv("ENVIRONMENT", "production")
+        monkeypatch.setenv("JWT_SECRET", "")
+        with pytest.raises(Exception):
+            AppSettings.model_validate(os.environ)
+
+    def test_allowed_domains_wildcard_rejected_in_production(
+        self, clean_environment, monkeypatch
+    ):
+        """ALLOWED_DOMAINS="*" combined with credentials must fail in production.
+
+        EXPECTED FAIL today — Environment.py:42 default is "*" and there is
+        no production-mode guard. With CORS allow_credentials=True (app.py:456)
+        the browser CORS spec rejects `*` anyway, but the framework should
+        explicitly fail-closed instead of relying on browser behaviour.
+        """
+        monkeypatch.setenv("ENVIRONMENT", "production")
+        monkeypatch.setenv("ALLOWED_DOMAINS", "*")
+        with pytest.raises(Exception):
+            AppSettings.model_validate(os.environ)
+
+
 if __name__ == "__main__":
     pytest.main([__file__])

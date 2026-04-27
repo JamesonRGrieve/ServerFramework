@@ -712,3 +712,102 @@ class TestEnumHandling(AbstractPydanticTestMixin):
         finally:
             # Restore original behavior
             TestEnumWithIssue.__iter__ = original_iter
+
+
+# ----------------------------------------------------------------------
+# Security: explicit-deny / negative-path GraphQL tests.
+#
+# These run against the live `server` fixture so they exercise the actual
+# Strawberry schema, not a hand-rolled mock.  Most are EXPECTED FAIL today
+# because Pydantic2Strawberry.py:250 builds the schema with no depth or
+# introspection limits.  Surfacing the gaps is the point.
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.security
+@pytest.mark.gql
+class TestGraphQLDenyPaths:
+    """Negative-path tests for the auto-generated Strawberry schema."""
+
+    GQL_PATH = "/graphql"
+
+    def _post(self, server, body, headers=None):
+        return server.post(
+            self.GQL_PATH, json={"query": body}, headers=headers or {}
+        )
+
+    def test_unauthenticated_query_rejected(self, server):
+        """A query without an Authorization header must not leak data."""
+        # `users` is a representative team-scoped collection; any team-scoped
+        # type works.
+        response = self._post(server, "{ users { id email } }")
+        # GraphQL conventionally returns 200 with `errors`. Accept either.
+        if response.status_code == 200:
+            body = response.json()
+            assert "errors" in body or body.get("data") in (None, {}), (
+                "Unauthenticated GraphQL query must not return data"
+            )
+        else:
+            assert response.status_code in (
+                401,
+                403,
+            ), f"Got {response.status_code}"
+
+    def test_introspection_disabled_in_production(self, server, monkeypatch):
+        """`__schema` introspection must be disabled when ENVIRONMENT=production.
+
+        EXPECTED FAIL today — Pydantic2Strawberry.py builds the schema with
+        introspection always on.
+        """
+        monkeypatch.setenv("ENVIRONMENT", "production")
+        response = self._post(server, "{ __schema { types { name } } }")
+        if response.status_code == 200:
+            body = response.json()
+            # If data is non-empty, introspection succeeded — fail.
+            data = body.get("data") or {}
+            assert (
+                "__schema" not in data
+            ), "GraphQL introspection must be disabled in production"
+
+    def test_query_depth_limit_enforced(self, server, admin_a):
+        """A maliciously-deep query must be rejected, not OOM the server.
+
+        EXPECTED FAIL today — no depth/complexity limit is configured.
+        """
+        # Build a 30-level nested query.  ``users { teams { users { ... } } }``
+        depth = 30
+        nested = "id"
+        for _ in range(depth):
+            nested = f"users {{ teams {{ {nested} }} }}"
+        body = "{ " + nested + " }"
+        response = self._post(
+            server,
+            body,
+            headers={"Authorization": f"Bearer {admin_a.jwt}"},
+        )
+        if response.status_code == 200:
+            data = response.json()
+            assert "errors" in data, (
+                f"30-level nested query must be rejected by depth-limit; "
+                f"got data={data.get('data') is not None}"
+            )
+
+    def test_secret_field_not_queryable(self, server, admin_a):
+        """A field named `password_hash` (or similar) must not be queryable."""
+        response = self._post(
+            server,
+            "{ user(id: \"%s\") { id passwordHash } }" % admin_a.id,
+            headers={"Authorization": f"Bearer {admin_a.jwt}"},
+        )
+        # Either schema rejects the field outright (errors) or returns null.
+        if response.status_code == 200:
+            data = response.json()
+            errors = data.get("errors") or []
+            field_unknown = any(
+                "passwordHash" in (e.get("message") or "") for e in errors
+            )
+            user_blob = (data.get("data") or {}).get("user") or {}
+            assert field_unknown or user_blob.get("passwordHash") in (
+                None,
+                "",
+            ), "GraphQL response must not surface password_hash"

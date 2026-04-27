@@ -284,6 +284,103 @@ class TestUserManager(AbstractBLLTest):
         # TODO we also need these tests in registration EP tests
         # TODO we also need these tests in invitation acceptance EP tests
 
+    # ------------------------------------------------------------------
+    # Security: BLL-layer explicit-deny tests for UserManager.
+    # ------------------------------------------------------------------
+
+    @pytest.mark.security
+    @pytest.mark.auth
+    def test_soft_deleted_user_cannot_login(self, admin_a, server, model_registry):
+        """A user whose `deleted_at` is set must not be able to authenticate."""
+        from logic.BLL_Auth import UserModel
+
+        email = f"softdel_{uuid.uuid4().hex[:8]}@example.com"
+        password = "Test1234!"
+        UserManager.register(
+            {
+                "email": email,
+                "password": password,
+                "first_name": "SoftDel",
+                "last_name": "User",
+            },
+            model_registry,
+        )
+
+        # Soft-delete the user directly on the DB.
+        with model_registry.database_manager.get_session() as db:
+            UserDB = UserModel.DB(model_registry.database_manager.Base)
+            user_row = db.query(UserDB).filter(UserDB.email == email).first()
+            assert user_row is not None
+            user_row.deleted_at = datetime.now(timezone.utc)
+            db.commit()
+
+        # Attempt to login should fail.
+        response = server.post(
+            "/v1/user/authorize",
+            json={"email": email, "password": password},
+        )
+        assert response.status_code in (401, 403, 404), (
+            f"Soft-deleted user must not authenticate; got {response.status_code}"
+        )
+
+    @pytest.mark.security
+    @pytest.mark.auth
+    def test_inactive_user_cannot_login(self, server, model_registry):
+        """A user whose `active=False` must not authenticate."""
+        from logic.BLL_Auth import UserModel
+
+        email = f"inactive_{uuid.uuid4().hex[:8]}@example.com"
+        password = "Test1234!"
+        UserManager.register(
+            {
+                "email": email,
+                "password": password,
+                "first_name": "Inactive",
+                "last_name": "User",
+            },
+            model_registry,
+        )
+        with model_registry.database_manager.get_session() as db:
+            UserDB = UserModel.DB(model_registry.database_manager.Base)
+            user_row = db.query(UserDB).filter(UserDB.email == email).first()
+            assert user_row is not None
+            user_row.active = False
+            db.commit()
+
+        response = server.post(
+            "/v1/user/authorize",
+            json={"email": email, "password": password},
+        )
+        assert response.status_code in (401, 403), (
+            f"Inactive user must not authenticate; got {response.status_code}"
+        )
+
+    @pytest.mark.security
+    @pytest.mark.auth
+    def test_register_ignores_caller_supplied_id(self, model_registry):
+        """`register` must not honour a client-supplied `id`; server assigns it."""
+        attacker_uuid = str(uuid.uuid4())
+        user_data = {
+            "id": attacker_uuid,
+            "email": f"id_spoof_{uuid.uuid4().hex[:8]}@example.com",
+            "password": "Test1234!",
+            "first_name": "Spoof",
+            "last_name": "Test",
+        }
+        result = UserManager.register(user_data, model_registry)
+        # The server MUST issue a new id, not honour the caller-supplied one.
+        if isinstance(result, dict):
+            assigned_id = result.get("id") or (
+                result.get("user", {}) or {}
+            ).get("id")
+        else:
+            assigned_id = getattr(result, "id", None)
+        assert assigned_id, "register must return an id"
+        assert assigned_id != attacker_uuid, (
+            "Mass-assignment: register honoured client-supplied id "
+            "(audit-field invariant violated)"
+        )
+
 
 class TestTeamManager(AbstractBLLTest):
     class_under_test = TeamManager
@@ -654,6 +751,66 @@ class TestSessionManager(AbstractBLLTest):
             f"Entity not found when searching {search_field} with operator '{search_operator}' "
             f"and value '{search_value}' (type: {type(search_value).__name__}). Found {len(results)} results."
         )
+
+    # ------------------------------------------------------------------
+    # Security: BLL-layer explicit-deny tests for SessionManager.
+    # ------------------------------------------------------------------
+
+    @pytest.mark.security
+    @pytest.mark.auth
+    def test_session_key_is_high_entropy(self, admin_a, team_a, model_registry):
+        """Generated session_key must be unguessable: 1k samples must all be unique."""
+        manager = self.class_under_test(
+            requester_id=admin_a.id,
+            target_team_id=team_a.id,
+            model_registry=model_registry,
+        )
+        keys = set()
+        for _ in range(1000):
+            session = manager.create(
+                user_id=admin_a.id,
+                session_key=f"session_{uuid.uuid4().hex}",
+                jwt_issued_at=datetime.now(timezone.utc),
+                last_activity=datetime.now(timezone.utc),
+                expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
+            )
+            sk = getattr(session, "session_key", None) or session["session_key"]
+            assert sk not in keys, "Duplicate session_key in 1000 samples"
+            assert len(sk) >= 16, f"session_key too short: {len(sk)} chars"
+            keys.add(sk)
+
+    @pytest.mark.security
+    @pytest.mark.auth
+    def test_user_cannot_revoke_other_users_session(
+        self, admin_a, admin_b, model_registry
+    ):
+        """admin_a must not be able to revoke admin_b's session."""
+        # Create a session owned by admin_b.
+        with SessionManager(
+            requester_id=admin_b.id, model_registry=model_registry
+        ) as mgr_b:
+            session_b = mgr_b.create(
+                user_id=admin_b.id,
+                session_key=f"cross_user_{uuid.uuid4().hex}",
+                jwt_issued_at=datetime.now(timezone.utc),
+                last_activity=datetime.now(timezone.utc),
+                expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
+            )
+            session_b_id = getattr(session_b, "id", None) or session_b["id"]
+
+        # admin_a tries to revoke it.
+        with SessionManager(
+            requester_id=admin_a.id, model_registry=model_registry
+        ) as mgr_a:
+            with pytest.raises(HTTPException) as exc_info:
+                mgr_a.delete(id=session_b_id)
+            assert exc_info.value.status_code in (
+                403,
+                404,
+            ), (
+                f"Cross-user session revoke must reject; got "
+                f"{exc_info.value.status_code}"
+            )
 
 
 class TestInvitationManager(AbstractBLLTest):

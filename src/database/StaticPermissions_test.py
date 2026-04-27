@@ -1647,3 +1647,76 @@ def test_invited_user_sees_child_and_parent_team(model_registry, use_invitee):
 
     assert "Invitation Child" in team_names
     assert "Invitation Parent" in team_names
+
+
+# ----------------------------------------------------------------------
+# Security: explicit-deny / negative-path permission tests.
+#
+# These assert that the static-permission layer rejects spoofed identities
+# and treats null ownership as denied for non-root users.
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.security
+class TestPermissionSpoofingDenied:
+    """A user_id passed to check_permission is trusted by the caller; these
+    tests assert the permission layer itself does not amplify privileges
+    beyond the user's actual standing in the DB."""
+
+    def test_permission_filter_with_unknown_user_returns_no_rows(
+        self, mock_db, test_records
+    ):
+        """A user_id that is not any of root/system/template and has no
+        team/permission rows must produce an exclusionary filter."""
+        from database.StaticPermissions import generate_permission_filter
+
+        ResourceForTest = test_records["ResourceForTest"]
+        unknown_user = create_uuid()
+        # No mock setup for permissions/teams — the user has nothing.
+
+        try:
+            filter_expr = generate_permission_filter(
+                unknown_user, ResourceForTest, mock_db, Base
+            )
+        except Exception:
+            # If the function raises for a missing user, that's also "deny".
+            return
+
+        # The filter must not be `True` (i.e. allow all). Either it is
+        # `False`, an empty disjunction, or a non-trivial expression.
+        assert filter_expr is not True, (
+            "generate_permission_filter returned `True` for an unknown user "
+            "(which would expose every row). Permission layer must default "
+            "to deny."
+        )
+
+    def test_check_permission_denies_when_record_has_null_team_for_non_root(
+        self, mock_db, test_records
+    ):
+        """A non-root user must NOT be granted access to a resource whose
+        `user_id` and `team_id` are both NULL (no clear ownership)."""
+        from database.StaticPermissions import PermissionResult
+
+        ResourceForTest = test_records["ResourceForTest"]
+        resource_id = test_records["resource_id"]
+        regular_user_id = test_records["regular_user_id"]
+
+        # Mock a record with null ownership.
+        mock_record = MagicMock()
+        mock_record.user_id = None
+        mock_record.team_id = None
+        mock_record.created_by_user_id = None
+        mock_db.query.return_value.filter.return_value.first.return_value = (
+            mock_record
+        )
+
+        result, _ = check_permission(
+            regular_user_id, ResourceForTest, resource_id, mock_db, Base
+        )
+        # The acceptable outcomes for a fully-anonymous record are DENIED,
+        # NOT_FOUND, or ERROR. GRANTED would be a privilege-escalation gap.
+        assert result != PermissionResult.GRANTED, (
+            "check_permission returned GRANTED for a record with NULL "
+            "user_id and NULL team_id to a non-root user. Permission layer "
+            "must default to deny."
+        )

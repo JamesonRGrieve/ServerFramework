@@ -304,3 +304,113 @@ class TestMultifactorRecoveryCodeManager(AbstractBLLTest, ExtensionServerMixin):
 
         assert len(recovery_codes) == 2
         assert all(not rc.is_used for rc in recovery_codes)
+
+    # ------------------------------------------------------------------
+    # Security: explicit-deny / negative-path MFA tests.
+    # ------------------------------------------------------------------
+
+    @pytest.mark.security
+    @pytest.mark.mfa
+    def test_recovery_code_one_time_use(self, admin_a, model_registry):
+        """A recovery code accepted once must be rejected on replay."""
+        mfa_manager = MultifactorMethodManager(
+            requester_id=admin_a.id, model_registry=model_registry
+        )
+        mfa_method = mfa_manager.create(
+            user_id=admin_a.id,
+            method_type=MultifactorMethodType.TOTP,
+        )
+        rec_manager = MultifactorRecoveryCodeManager(
+            requester_id=admin_a.id, model_registry=model_registry
+        )
+        codes = rec_manager.generate_recovery_codes(mfa_method.id, count=2)
+        # `generate_recovery_codes` returns the cleartext codes once.
+        first_code = codes[0] if isinstance(codes, list) else None
+        if first_code is None:
+            pytest.skip("Recovery-code generator did not return cleartext codes")
+
+        # First use must succeed.
+        assert rec_manager.verify_recovery_code(mfa_method.id, first_code) is True
+
+        # Replay must fail.
+        replay = rec_manager.verify_recovery_code(mfa_method.id, first_code)
+        assert replay is False, (
+            "Recovery code accepted on replay; one-time-use flag is not "
+            "enforced by MultifactorRecoveryCodeManager.verify_recovery_code."
+        )
+
+    @pytest.mark.security
+    @pytest.mark.mfa
+    def test_recovery_code_high_entropy(self, admin_a, model_registry):
+        """Recovery codes must be high-entropy and unique across a sample."""
+        mfa_manager = MultifactorMethodManager(
+            requester_id=admin_a.id, model_registry=model_registry
+        )
+        mfa_method = mfa_manager.create(
+            user_id=admin_a.id,
+            method_type=MultifactorMethodType.TOTP,
+        )
+        rec_manager = MultifactorRecoveryCodeManager(
+            requester_id=admin_a.id, model_registry=model_registry
+        )
+        seen = set()
+        for _ in range(20):
+            batch = rec_manager.generate_recovery_codes(mfa_method.id, count=5)
+            if not isinstance(batch, list):
+                pytest.skip("Recovery-code generator did not return cleartext codes")
+            for code in batch:
+                assert code not in seen, "Duplicate recovery code in 100-sample batch"
+                assert len(code) >= 10, f"Recovery code too short: {len(code)}"
+                seen.add(code)
+
+    @pytest.mark.security
+    @pytest.mark.mfa
+    def test_totp_replay_rejected(self, admin_a, model_registry):
+        """A valid TOTP code must NOT verify a second time within the same window.
+
+        EXPECTED FAIL today — pyotp.TOTP.verify() does not track used codes,
+        and BLL_Auth_MFA.py:328 has no per-(method, code) replay table.
+        """
+        import pyotp
+
+        mfa_manager = MultifactorMethodManager(
+            requester_id=admin_a.id, model_registry=model_registry
+        )
+        mfa_method = mfa_manager.create(
+            user_id=admin_a.id,
+            method_type=MultifactorMethodType.TOTP,
+        )
+        secret = mfa_method.totp_secret
+        code = pyotp.TOTP(secret).now()
+
+        first = mfa_manager.verify_totp_code(secret, code)
+        replay = mfa_manager.verify_totp_code(secret, code)
+        assert first is True, "First TOTP verification must succeed"
+        assert replay is False, (
+            "TOTP code accepted on replay within the same window. "
+            "BLL_Auth_MFA.py needs a per-(method, time-step) used-codes table."
+        )
+
+    @pytest.mark.security
+    @pytest.mark.mfa
+    def test_totp_rejects_far_future_code(self, admin_a, model_registry):
+        """A TOTP code from far outside the valid window must be rejected."""
+        import pyotp
+        import time
+
+        mfa_manager = MultifactorMethodManager(
+            requester_id=admin_a.id, model_registry=model_registry
+        )
+        mfa_method = mfa_manager.create(
+            user_id=admin_a.id,
+            method_type=MultifactorMethodType.TOTP,
+        )
+        secret = mfa_method.totp_secret
+
+        # Generate a code 5 minutes in the future.
+        future_code = pyotp.TOTP(secret).at(int(time.time()) + 300)
+        accepted = mfa_manager.verify_totp_code(secret, future_code)
+        assert accepted is False, (
+            "TOTP code from 5 minutes in the future was accepted; "
+            "valid_window=1 (30s drift) should reject it."
+        )
