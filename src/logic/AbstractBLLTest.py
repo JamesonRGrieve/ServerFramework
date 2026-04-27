@@ -635,6 +635,11 @@ class AbstractBLLTest(AbstractTest):
             )
             self._search_test_entity = manager.create(**entity_data)
             self.tracked_entities["search_target"] = self._search_test_entity
+            # Remember the effective requester so the search query below runs as
+            # the same user that owns the entity. Without this, user-scoped
+            # entities (e.g. MFA methods) become invisible to admin_a under
+            # the strict permission filter.
+            self._search_effective_requester_id = effective_requester_id
 
         entity = self._search_test_entity
         logger.debug(
@@ -670,8 +675,13 @@ class AbstractBLLTest(AbstractTest):
             # Nested operator syntax
             search_criteria = {search_field: {search_operator: search_value}}
 
-        # Perform search
-        requester_id = env("SYSTEM_ID") if self.is_system_entity else admin_a.id
+        # Perform search using the same effective requester that created the
+        # entity (typically the entity's user_id for user-scoped models).
+        requester_id = getattr(
+            self,
+            "_search_effective_requester_id",
+            env("SYSTEM_ID") if self.is_system_entity else admin_a.id,
+        )
         manager = self.class_under_test(
             requester_id=requester_id,
             target_team_id=team_a.id,
