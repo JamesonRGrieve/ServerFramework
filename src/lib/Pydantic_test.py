@@ -491,18 +491,16 @@ class TestPydantic(unittest.TestCase):
 
     def test_generate_unique_type_name(self):
         """Test generate_unique_type_name method."""
-        # Test basic type name generation
+        # The "Model" suffix is stripped to produce a GraphQL-friendly base name.
         type_name = self.utility.generate_unique_type_name(MockTestModel)
-        expected_name = (
-            f"{MockTestModel.__module__.replace('.', '_')}_{MockTestModel.__name__}"
-        )
+        expected_name = "MockTest"
         self.assertEqual(type_name, expected_name)
 
-        # Test with suffix
-        type_name = self.utility.generate_unique_type_name(MockTestModel, "Input")
-        self.assertEqual(type_name, f"{expected_name}_Input")
+        # Suffix is appended (without separator) to the base name.
+        suffixed = self.utility.generate_unique_type_name(MockTestModel, "Input")
+        self.assertEqual(suffixed, f"{expected_name}Input")
 
-        # Test caching
+        # Caching: a repeated call with the same model returns the same name.
         cached_name = self.utility.generate_unique_type_name(MockTestModel)
         self.assertEqual(cached_name, expected_name)
 

@@ -154,6 +154,61 @@ class TestUser(AbstractDBTest):
         self._ORM_create()
         self._create_assert("ORM_create")
 
+    # User records self-set ``created_by_user_id`` to the new user's id (see
+    # AbstractDatabaseEntity.create), so the test creator (admin_a) has no
+    # permission claim on the resulting record. Override the inherited CRUD
+    # tests to operate as the new user themselves (or as ROOT for list).
+    @pytest.mark.parametrize("return_type", sorted(["dict", "db", "model"]))
+    def test_CRUD_get(self, server, admin_a, team_a, return_type):
+        self.db = (
+            server.app.state.model_registry.database_manager.get_session()
+            if not self.db
+            else self.db
+        )
+        self._server = server
+        self.model_registry = server.app.state.model_registry
+        self.ensure_model(server)
+        self._CRUD_create("dict", admin_a.id, team_a.id, "CRUD_get")
+        new_user_id = self.tracked_entities["CRUD_get"]["id"]
+        self._CRUD_get(return_type, new_user_id, team_a.id)
+        self._get_assert("CRUD_get_" + return_type)
+
+    @pytest.mark.parametrize("return_type", sorted(["dict", "db", "model"]))
+    def test_CRUD_list(self, server, admin_a, team_a, return_type):
+        self.db = (
+            server.app.state.model_registry.database_manager.get_session()
+            if not self.db
+            else self.db
+        )
+        self._server = server
+        self.model_registry = server.app.state.model_registry
+        self.ensure_model(server)
+        # Use ROOT_ID for User listing: arbitrary cross-user visibility is not
+        # granted to non-root callers, but the underlying ORM list is what's
+        # under test here.
+        self._CRUD_create("dict", env("ROOT_ID"), team_a.id, "CRUD_list_1")
+        self._CRUD_create("dict", env("ROOT_ID"), team_a.id, "CRUD_list_2")
+        self._CRUD_create("dict", env("ROOT_ID"), team_a.id, "CRUD_list_3")
+        self._CRUD_list(return_type, env("ROOT_ID"), team_a.id)
+        self._list_assert("CRUD_list_" + return_type)
+
+    @pytest.mark.parametrize("return_type", sorted(["dict", "db", "model"]))
+    def test_CRUD_update(self, server, admin_a, team_a, return_type):
+        self.db = (
+            server.app.state.model_registry.database_manager.get_session()
+            if not self.db
+            else self.db
+        )
+        self._server = server
+        self.model_registry = server.app.state.model_registry
+        self.ensure_model(server)
+        if not hasattr(self.sqlalchemy_model, "updated_at"):
+            pytest.skip("No ability to update.")
+        self._CRUD_create("dict", admin_a.id, team_a.id, "CRUD_update")
+        new_user_id = self.tracked_entities["CRUD_update"]["id"]
+        updated_fields = self._CRUD_update(return_type, new_user_id, team_a.id)
+        self._update_assert("CRUD_update_" + return_type, updated_fields)
+
     # @pytest.mark.dependency(depends=["test_CRUD_create"])
     def test_CRUD_delete(self, db, server, model_registry, admin_a, team_a):
         self.db = db

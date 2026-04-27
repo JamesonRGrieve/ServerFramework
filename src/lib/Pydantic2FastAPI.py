@@ -1976,6 +1976,8 @@ def register_route(
                     "fields",
                     "offset",
                     "limit",
+                    "page",
+                    "pageSize",
                     "sort_by",
                     "sort_order",
                 }
@@ -2042,11 +2044,21 @@ def register_route(
                         },
                     )
 
+                page_param = getattr(query_params, "page", None)
+                page_size_param = getattr(query_params, "pageSize", None)
+
+                if page_param is not None and page_size_param is not None:
+                    list_limit = page_size_param
+                    list_offset = (page_param - 1) * page_size_param
+                else:
+                    list_limit = query_params.limit or 100
+                    list_offset = query_params.offset or 0
+
                 results = actual_manager.list(
                     include=include_param,
                     fields=fields_param,
-                    offset=query_params.offset or 0,
-                    limit=query_params.limit or 100,
+                    offset=list_offset,
+                    limit=list_limit,
                     sort_by=query_params.sort_by,
                     sort_order=query_params.sort_order or "asc",
                     **search_params,
@@ -3045,20 +3057,24 @@ def register_custom_route(
 
             # Handle request body for POST/PUT/PATCH
             if request.method in ["POST", "PUT", "PATCH"]:
-                try:
-                    body = await request.json()
+                raw_body = await request.body()
+                if raw_body:
+                    try:
+                        body = json.loads(raw_body)
+                    except json.JSONDecodeError:
+                        raise HTTPException(
+                            status_code=400, detail="Invalid JSON body"
+                        )
 
                     # Map body to expected parameters
                     if "registration_data" in sig.parameters:
                         method_args["registration_data"] = body.get("user", body)
                     elif "login_data" in sig.parameters:
-                        method_args["login_data"] = body
+                        method_args["login_data"] = body.get("auth", body)
                     elif "body" in sig.parameters:
                         method_args["body"] = body
                     else:
                         method_args.update(body)
-                except:
-                    pass
 
             # Add path parameters
             method_args.update(dict(request.path_params))
