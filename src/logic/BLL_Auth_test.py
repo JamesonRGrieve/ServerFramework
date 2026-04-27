@@ -178,6 +178,27 @@ class TestUserManager(AbstractBLLTest):
             model_registry=model_registry,
         )
 
+    # User records self-set ``created_by_user_id`` to the new user's id (see
+    # AbstractDatabaseEntity.create), so admin_a has no permission claim on
+    # the resulting record. Override the inherited test to drive the update
+    # as the new user themselves, mirroring the DB-layer override pattern.
+    def test_update(self, admin_a, team_a, server, model_registry):
+        """Override: Test updating a user entity as the user themselves."""
+        self.server = server
+        self.model_registry = model_registry
+        self._create(
+            admin_a.id,
+            team_a.id,
+            "update",
+            server=server,
+            model_registry=model_registry,
+        )
+        new_user_id = self.tracked_entities["update"].id
+        updated_fields = self._update(
+            new_user_id, team_a.id, model_registry=model_registry
+        )
+        self._update_assert("update_result", updated_fields)
+
     def test_create_closed(self, server, model_registry):
         """Test user registration fails when REGISTRATION_MODE is 'closed'."""
         from fastapi import HTTPException
@@ -2673,8 +2694,12 @@ class TestPermissionManager(AbstractBLLTest):
         # Ensure team_id and role_id are not present
         create_data.pop("team_id", None)
         create_data.pop("role_id", None)
+        # Create as the target user so the row is self-owned. The strict
+        # permission filter hides ROOT-created records from non-ROOT viewers,
+        # which would otherwise prevent the target user from listing their own
+        # permission grants.
         manager = self.class_under_test(
-            requester_id=env("ROOT_ID"), model_registry=self.model_registry
+            requester_id=user_id, model_registry=self.model_registry
         )
         return manager.create(**create_data)
 
