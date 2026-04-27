@@ -27,6 +27,7 @@ src/extensions/**/env.py
 **/logs
 src/**/.cursorrules
 **/temp.*
+**/tmp*.ini
 .vscode
 .idea
 *.egg-info/

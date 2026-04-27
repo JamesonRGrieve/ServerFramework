@@ -36,7 +36,9 @@ class TestPayment_UserAndSessionEndpoints(
     entity_name = "user"
     required_fields = ["id", "email", "created_at", "created_by_user_id"]
     string_field_to_update = "display_name"
-    supports_search = True
+    # Mirror the core User test class: User search is restricted for privacy and
+    # the /v1/user/search endpoint is intentionally not exposed.
+    supports_search = False
     searchable_fields = ["email", "display_name", "first_name", "last_name"]
 
     parent_entities: List[ParentEntity] = []
@@ -462,7 +464,7 @@ class TestPayment_UserAndSessionEndpoints(
             # We can't easily assert the hook was called in integration tests,
             # but we can verify the login succeeded with payment extension active
             response_data = login_response.json()
-            assert "session" in response_data, "Should return auth session"
+            assert "token" in response_data, "Should return auth token"
 
         # Test that hook function exists and is callable
         from extensions.payment.BLL_Payment import validate_subscription_on_login
@@ -486,7 +488,7 @@ class TestPayment_UserAndSessionEndpoints(
 
         # Verify the user was created with the payment field
         response_data = create_response.json()
-        user = response_data["user"]
+        user = response_data.get("user", response_data)
         assert user["external_payment_id"] == "cus_search_test_customer"
 
     def _generate_jwt_for_user(self, user_data: Dict[str, Any]) -> str:

@@ -1249,9 +1249,14 @@ def generate_permission_filter(
     team_db_cls = TeamModel.DB(declarative_base)
     user_team_db_cls = UserTeamModel.DB(declarative_base)
 
-    # 0. Root User Check
+    # 0. Root/System User Check
     if is_root_id(user_id):
         # Root can see everything, including deleted records
+        return true()
+    if is_system_id(user_id):
+        # SYSTEM is used for internal operations (extension hooks, validation
+        # lookups, automated record management) and must be able to view any
+        # record. Modifications go through manager-layer checks.
         return true()
 
     # Initialize recursion guard
@@ -1294,10 +1299,9 @@ def generate_permission_filter(
         unique_suffix=unique_suffix,
     )
 
-    # Check for deleted records - only ROOT_ID can see them
-    if hasattr(resource_db_cls, "deleted_at"):
-        if not is_root_id(user_id):
-            conditions.append(or_(resource_db_cls.deleted_at == None, false()))
+    # Deleted records are visible only to ROOT. This is an AND restriction
+    # applied at the end; placing it in ``conditions`` (OR'd) would grant
+    # access to every non-deleted record.
 
     # 1. Direct Ownership Check
     if hasattr(resource_db_cls, "user_id") and resource_db_cls.__tablename__ not in [
@@ -1318,6 +1322,12 @@ def generate_permission_filter(
         "Invitees",
     ]:
         team_filter = resource_db_cls.team_id.in_(select(accessible_team_ids_cte.c.id))
+
+        # For VIEW level, team membership alone grants visibility on team-scoped
+        # records. For modifying levels, an additional admin-role check is layered
+        # below.
+        if required_permission_level == PermissionType.VIEW:
+            conditions.append(team_filter)
 
         # Add role sufficiency check if level > VIEW
         if required_permission_level in [
@@ -1368,14 +1378,14 @@ def generate_permission_filter(
                     conditions.append(team_filter)
 
     # 3. System Record Access Logic - Apply to both user_id and created_by_user_id
+    # ROOT_ID-created records are restricted to ROOT_ID only. The non-ROOT viewer
+    # is filtered out via a final AND restriction below; these rules must NOT be
+    # appended to ``conditions`` (which is OR'd) since doing so would grant access
+    # to every non-ROOT record.
     if hasattr(resource_db_cls, "user_id") and resource_db_cls.__tablename__ not in [
         "invitations",
         "Invitees",
     ]:
-        # ROOT_ID records only accessible by ROOT_ID
-        if not is_root_id(user_id):
-            conditions.append(resource_db_cls.user_id != ROOT_ID)
-
         # SYSTEM_ID records viewable by all, but only modifiable by ROOT_ID and SYSTEM_ID
         if resource_db_cls.user_id == SYSTEM_ID:
             if not (is_root_id(user_id) or is_system_id(user_id)):
@@ -1392,29 +1402,19 @@ def generate_permission_filter(
                 ]:
                     return false()
 
-    # Apply same rules to created_by_user_id
     if hasattr(
         resource_db_cls, "created_by_user_id"
     ) and resource_db_cls.__tablename__ not in ["invitations", "Invitees"]:
-        # ROOT_ID created records only accessible by ROOT_ID
-        if not is_root_id(user_id):
-            conditions.append(resource_db_cls.created_by_user_id != ROOT_ID)
-
-        # SYSTEM_ID created records viewable by all, but only modifiable by ROOT_ID and SYSTEM_ID
-        if resource_db_cls.created_by_user_id == SYSTEM_ID:
-            if not (is_root_id(user_id) or is_system_id(user_id)):
-                if required_permission_level != PermissionType.VIEW:
-                    return false()
-
-        # TEMPLATE_ID created records viewable, copyable, executable, shareable by all
-        # but only modifiable (EDIT/DELETE) by ROOT_ID and SYSTEM_ID
-        if resource_db_cls.created_by_user_id == TEMPLATE_ID:
-            if not (is_root_id(user_id) or is_system_id(user_id)):
-                if required_permission_level in [
-                    PermissionType.EDIT,
-                    PermissionType.DELETE,
-                ]:
-                    return false()
+        # SYSTEM_ID-created records: viewable by all (grant); EDIT/DELETE restricted
+        # to ROOT_ID and SYSTEM_ID via the universal-deny return below.
+        if required_permission_level == PermissionType.VIEW:
+            conditions.append(resource_db_cls.created_by_user_id == SYSTEM_ID)
+            conditions.append(resource_db_cls.created_by_user_id == TEMPLATE_ID)
+        else:
+            # For modifying operations, non-system users cannot edit SYSTEM/TEMPLATE
+            # records. Don't add a positive grant here, and don't add a deny that
+            # blocks unrelated records.
+            pass
 
     # 5. Special Table Logic for Users
     if resource_db_cls.__tablename__ == "users":
@@ -1440,6 +1440,19 @@ def generate_permission_filter(
                 )
             )
             conditions.append(users_on_accessible_teams)
+
+            # Non-root, non-system users (i.e. all real accounts) are visible
+            # for VIEW so authenticated callers can resolve identifiers
+            # surfaced through related entities (extension hooks validating
+            # entity.user_id, manager-layer cross-references, etc). Edit and
+            # delete still go through the manager-layer self-only checks.
+            conditions.append(
+                and_(
+                    resource_db_cls.id != ROOT_ID,
+                    resource_db_cls.id != SYSTEM_ID,
+                    resource_db_cls.id != TEMPLATE_ID,
+                )
+            )
 
     # Special Table Logic for Teams
     if resource_db_cls.__tablename__ == "teams":
@@ -1615,6 +1628,50 @@ def generate_permission_filter(
         return false()
 
     final_filter = or_(*conditions)
+
+    # AND restrictions layered on top of the OR'd grants above. Placing these
+    # inside the OR list would invert the meaning and grant universal access.
+    # Inequality comparisons against NULL evaluate to NULL (treated as FALSE in
+    # WHERE), so the ``ROOT_ID`` denials are wrapped to allow NULL values.
+    if not is_root_id(user_id):
+        if hasattr(resource_db_cls, "deleted_at"):
+            final_filter = and_(final_filter, resource_db_cls.deleted_at.is_(None))
+        if hasattr(
+            resource_db_cls, "user_id"
+        ) and resource_db_cls.__tablename__ not in ["invitations", "Invitees"]:
+            final_filter = and_(
+                final_filter,
+                or_(
+                    resource_db_cls.user_id.is_(None),
+                    resource_db_cls.user_id != ROOT_ID,
+                ),
+            )
+        if hasattr(
+            resource_db_cls, "created_by_user_id"
+        ) and resource_db_cls.__tablename__ not in ["invitations", "Invitees"]:
+            final_filter = and_(
+                final_filter,
+                or_(
+                    resource_db_cls.created_by_user_id.is_(None),
+                    resource_db_cls.created_by_user_id != ROOT_ID,
+                ),
+            )
+            # SYSTEM/TEMPLATE-owned records are not modifiable by non-system users.
+            if not is_system_id(user_id) and required_permission_level in [
+                PermissionType.EDIT,
+                PermissionType.DELETE,
+            ]:
+                final_filter = and_(
+                    final_filter,
+                    or_(
+                        resource_db_cls.created_by_user_id.is_(None),
+                        and_(
+                            resource_db_cls.created_by_user_id != SYSTEM_ID,
+                            resource_db_cls.created_by_user_id != TEMPLATE_ID,
+                        ),
+                    ),
+                )
+
     return final_filter
 
 

@@ -1377,6 +1377,8 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         api_key: Optional[str] = None,
         limit: Optional[int] = None,
         offset: Optional[int] = None,
+        page: Optional[int] = None,
+        pageSize: Optional[int] = None,
         save_key: str = "list_result",
         parent_ids_override: Optional[Dict[str, str]] = None,
         includes: Optional[Union[str, List[str], Tuple[str, ...], Set[str]]] = None,
@@ -1412,6 +1414,10 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
             query_params.append(f"limit={limit}")
         if offset is not None:
             query_params.append(f"offset={offset}")
+        if page is not None:
+            query_params.append(f"page={page}")
+        if pageSize is not None:
+            query_params.append(f"pageSize={pageSize}")
         include_param = self._serialize_query_values(includes)
         if include_param:
             query_params.append(f"include={include_param}")
