@@ -1649,11 +1649,21 @@ def generate_permission_filter(
         if hasattr(
             resource_db_cls, "created_by_user_id"
         ) and resource_db_cls.__tablename__ not in ["invitations", "Invitees"]:
+            # ROOT-created records are restricted from non-ROOT viewers, EXCEPT
+            # when the row has direct user_id ownership pointing at the viewer.
+            # This covers records that ROOT legitimately creates on behalf of a
+            # specific user (e.g. a credential created during a root-driven
+            # password reset) — without this exception, the viewer would be
+            # locked out of their own user-scoped row.
+            allow_viewer_owned = []
+            if hasattr(resource_db_cls, "user_id"):
+                allow_viewer_owned.append(resource_db_cls.user_id == user_id)
             final_filter = and_(
                 final_filter,
                 or_(
                     resource_db_cls.created_by_user_id.is_(None),
                     resource_db_cls.created_by_user_id != ROOT_ID,
+                    *allow_viewer_owned,
                 ),
             )
             # SYSTEM/TEMPLATE-owned records are not modifiable by non-system users.

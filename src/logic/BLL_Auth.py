@@ -1657,9 +1657,12 @@ class UserManager(AbstractBLLManager, RouterMixin):
                     value=str(value),
                 )
 
-        # Create credentials for the user
+        # Create credentials for the user. The user owns and self-creates their
+        # own credential row so that the strict permission filter (which hides
+        # ROOT-created records from non-ROOT viewers) does not block the user
+        # from listing/editing their own credential during password change.
         credentials_manager = UserCredentialManager(
-            requester_id=root_id,
+            requester_id=user.id,
             target_id=user.id,
             model_registry=model_registry,
         )

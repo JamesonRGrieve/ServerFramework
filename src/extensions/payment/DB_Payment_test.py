@@ -96,12 +96,18 @@ class TestPayment_User(CoreUserTests, ExtensionServerMixin):
         # Verify NULL is handled correctly
         assert created_user["external_payment_id"] is None
 
+        # User records self-set ``created_by_user_id`` to the new user's id, so
+        # admin_a has no permission claim on the row. Drive the update as the
+        # new user themselves, mirroring the override pattern in the DB-layer
+        # ``test_CRUD_update``.
+        new_user_id = created_user["id"]
+
         # Update to a value and back to NULL
         data = {"external_payment_id": "cus_temp_customer"}
 
         updated_user = self._CRUD_update(
             "dict",
-            admin_a.id,
+            new_user_id,
             team_a.id,
             update_data=data,
         )
@@ -111,7 +117,7 @@ class TestPayment_User(CoreUserTests, ExtensionServerMixin):
         data_null = {"external_payment_id": None}
         updated_user_null = self._CRUD_update(
             "dict",
-            admin_a.id,
+            new_user_id,
             team_a.id,
             update_data=data_null,
         )
