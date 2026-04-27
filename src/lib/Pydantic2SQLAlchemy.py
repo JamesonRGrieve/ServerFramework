@@ -189,6 +189,39 @@ def clear_registry_cache() -> None:
     if hasattr(DatabaseMixin, "_db_cache"):
         DatabaseMixin._db_cache.clear()
 
+    # Roll back any in-place model extensions previously applied. Without this,
+    # an extension run earlier in the test session (e.g. payment adding
+    # ``external_payment_id`` to UserModel) leaves the target Pydantic class
+    # mutated, so a subsequent extension test whose database lacks that column
+    # fails on the very first User query. ``_extension_snapshots`` is recorded
+    # by ``_apply_model_extension`` before the first mutation.
+    try:
+        snapshots = globals().get("_extension_snapshots") or {}
+        for target_model, snapshot in list(snapshots.items()):
+            try:
+                if "annotations" in snapshot:
+                    target_model.__annotations__ = dict(snapshot["annotations"])
+                if "model_fields" in snapshot and hasattr(
+                    target_model, "model_fields"
+                ):
+                    target_model.model_fields = dict(snapshot["model_fields"])
+                added_attrs = snapshot.get("added_attributes", [])
+                for attr_name in added_attrs:
+                    if attr_name in target_model.__dict__:
+                        delattr(target_model, attr_name)
+                if hasattr(target_model, "model_rebuild"):
+                    try:
+                        target_model.model_rebuild(force=True)
+                    except Exception:
+                        pass
+            except Exception as e:
+                logger.debug(
+                    f"Failed to restore extension snapshot for {target_model}: {e}"
+                )
+        snapshots.clear()
+    except Exception as e:
+        logger.debug(f"Extension snapshot restore failed: {e}")
+
     # Clear cached models from all known declarative bases
     # This approach avoids iterating through all system modules and accessing deprecated typing modules
     cleared_bases = []
@@ -1700,6 +1733,9 @@ def extension_model(
     return decorator
 
 
+_extension_snapshots: Dict[Type[BaseModel], Dict[str, Any]] = {}
+
+
 def _apply_model_extension(
     target_model: Type[BaseModel], extension_class: Type[BaseModel]
 ) -> None:
@@ -1716,6 +1752,15 @@ def _apply_model_extension(
         extension_class: The extension class containing field modifications
     """
     from lib.Logging import logger
+
+    # Snapshot the target model on first extension so test isolation can revert
+    # the in-place mutations later via ``clear_registry_cache``.
+    if target_model not in _extension_snapshots:
+        _extension_snapshots[target_model] = {
+            "annotations": dict(getattr(target_model, "__annotations__", {})),
+            "model_fields": dict(getattr(target_model, "model_fields", {})),
+            "added_attributes": [],
+        }
 
     # Get extension fields via reflection
     extension_annotations = getattr(extension_class, "__annotations__", {})
@@ -1816,6 +1861,10 @@ def _apply_model_extension(
         if not hasattr(target_model, attr_name):
             setattr(target_model, attr_name, attr_value)
             added_attributes.append(attr_name)
+            # Record the addition so test isolation can revert it.
+            snapshot = _extension_snapshots.get(target_model)
+            if snapshot is not None:
+                snapshot["added_attributes"].append(attr_name)
 
     # CRITICAL: Properly integrate extension fields into Pydantic's model structure
     if added_fields or removed_fields:
