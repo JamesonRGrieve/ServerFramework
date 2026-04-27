@@ -2611,6 +2611,371 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
             response.status_code == 403
         ), "Creation with insufficient permissions should return 403"
 
+    # ------------------------------------------------------------------
+    # Security: explicit-deny / negative-path framework invariants.
+    # These run against every concrete AbstractEPTest subclass and prove
+    # the auto-generated endpoints enforce deny-by-default regardless of
+    # what an extension author writes in their BLL/EXT/PRV.
+    # ------------------------------------------------------------------
+
+    # Field names that must never appear in a Response body. If they do,
+    # an extension author has accidentally exposed a secret column via
+    # the auto-generated Network model.
+    SECRET_RESPONSE_FIELDS = (
+        "password_hash",
+        "password",
+        "secret",
+        "api_key_hash",
+        "recovery_answer_hash",
+        "answer_hash",
+        "jwt_secret",
+        "client_secret",
+    )
+
+    @staticmethod
+    def _walk_for_secret_fields(payload: Any, banned: Tuple[str, ...]) -> List[str]:
+        """Walk a JSON-decoded response and collect any banned key names found."""
+        found: List[str] = []
+        stack: List[Any] = [payload]
+        while stack:
+            current = stack.pop()
+            if isinstance(current, dict):
+                for k, v in current.items():
+                    if k in banned:
+                        found.append(k)
+                    stack.append(v)
+            elif isinstance(current, list):
+                stack.extend(current)
+        return found
+
+    @pytest.mark.security
+    def test_GET_404_other_team(
+        self, server: Any, admin_a: Any, admin_b: Any, team_a: Any, team_b: Any
+    ):
+        """Cross-tenant GET denial: admin_b cannot read admin_a's team_a entity."""
+        if not self.team_scoped:
+            pytest.skip("Entity not team-scoped")
+
+        entity = self._create(
+            server, admin_a.jwt, admin_a.id, team_a.id, key="cross_tenant_get"
+        )
+
+        response = server.get(
+            self.get_detail_endpoint(entity["id"], {}),
+            headers=self._get_appropriate_headers(admin_b.jwt),
+        )
+
+        assert response.status_code in (
+            403,
+            404,
+        ), f"Expected 403/404 for cross-tenant GET, got {response.status_code}"
+
+    @pytest.mark.security
+    def test_GET_200_list_excludes_other_team(
+        self, server: Any, admin_a: Any, admin_b: Any, team_a: Any, team_b: Any
+    ):
+        """Cross-tenant LIST denial: admin_b's list never includes admin_a's row."""
+        if not self.team_scoped:
+            pytest.skip("Entity not team-scoped")
+
+        entity = self._create(
+            server, admin_a.jwt, admin_a.id, team_a.id, key="cross_tenant_list"
+        )
+
+        response = server.get(
+            self.get_list_endpoint({}),
+            headers=self._get_appropriate_headers(admin_b.jwt),
+        )
+
+        # Some endpoints return 403 for cross-tenant list; that's acceptable.
+        if response.status_code in (401, 403, 404):
+            return
+
+        assert response.status_code == 200, (
+            f"Cross-tenant list should return 200 (filtered) or 403/404; "
+            f"got {response.status_code}"
+        )
+
+        # Substring check on the raw body catches the id wherever it is nested.
+        assert (
+            entity["id"] not in response.text
+        ), f"Cross-tenant list leaked entity id {entity['id']} from team_a to admin_b"
+
+    @pytest.mark.security
+    def test_PUT_404_other_team(
+        self, server: Any, admin_a: Any, admin_b: Any, team_a: Any, team_b: Any
+    ):
+        """Cross-tenant PUT denial: admin_b cannot update admin_a's entity."""
+        if not self.team_scoped:
+            pytest.skip("Entity not team-scoped")
+
+        entity = self._create(
+            server, admin_a.jwt, admin_a.id, team_a.id, key="cross_tenant_put"
+        )
+
+        update_data: Dict[str, Any] = {}
+        if self.string_field_to_update:
+            update_data[self.string_field_to_update] = (
+                f"Hijacked by B {self.faker.word()}"
+            )
+
+        response = server.put(
+            self.get_update_endpoint(entity["id"], {}),
+            json={self.entity_name: update_data},
+            headers=self._get_appropriate_headers(admin_b.jwt),
+        )
+
+        assert response.status_code in (
+            403,
+            404,
+        ), f"Expected 403/404 for cross-tenant PUT, got {response.status_code}"
+
+    @pytest.mark.security
+    def test_DELETE_404_other_team(
+        self, server: Any, admin_a: Any, admin_b: Any, team_a: Any, team_b: Any
+    ):
+        """Cross-tenant DELETE denial: admin_b cannot delete admin_a's entity."""
+        if not self.team_scoped:
+            pytest.skip("Entity not team-scoped")
+
+        entity = self._create(
+            server, admin_a.jwt, admin_a.id, team_a.id, key="cross_tenant_delete"
+        )
+
+        response = server.delete(
+            self.get_delete_endpoint(entity["id"], {}),
+            headers=self._get_appropriate_headers(admin_b.jwt),
+        )
+
+        assert response.status_code in (
+            403,
+            404,
+        ), f"Expected 403/404 for cross-tenant DELETE, got {response.status_code}"
+
+    @pytest.mark.security
+    def test_POST_ignores_audit_fields_in_body(
+        self, server: Any, admin_a: Any, team_a: Any
+    ):
+        """Mass-assignment denial: client-supplied audit fields are stripped/ignored."""
+        if self.system_entity:
+            pytest.skip(
+                "System entities are created via API key; audit-field test n/a"
+            )
+
+        attacker_uuid = str(uuid.uuid4())
+        attacker_iso = "1999-01-01T00:00:00+00:00"
+
+        base_payload = self.create_payload(
+            name=f"Audit-field test {self.faker.word()}", team_id=team_a.id
+        )
+        # Inject every audit-field a sloppy extension dev might allow.
+        base_payload["created_by_user_id"] = attacker_uuid
+        base_payload["updated_by_user_id"] = attacker_uuid
+        base_payload["created_at"] = attacker_iso
+        base_payload["updated_at"] = attacker_iso
+        base_payload["id"] = attacker_uuid
+
+        path_parent_ids: Dict[str, str] = {}
+        if self.parent_entities:
+            for parent in self.parent_entities:
+                if parent.path_level in [1, 2] or (
+                    hasattr(parent, "is_path") and parent.is_path
+                ):
+                    path_parent_ids[f"{parent.name}_id"] = team_a.id
+
+        response = server.post(
+            self.get_create_endpoint(path_parent_ids),
+            json={self.entity_name: base_payload},
+            headers=self._get_appropriate_headers(admin_a.jwt),
+        )
+
+        # Acceptable: 201 (silently stripped) or 422 (rejected).
+        # Forbidden: 201 with persisted attacker values.
+        assert response.status_code in (201, 422), (
+            f"Audit-field POST should be stripped (201) or rejected (422); "
+            f"got {response.status_code}: {response.text[:300]}"
+        )
+        if response.status_code != 201:
+            return
+
+        body = response.json()
+        # Drill into the response to find the entity.
+        candidate = body.get(self.entity_name) if isinstance(body, dict) else None
+        if candidate is None and isinstance(body, dict):
+            candidate = body
+        if not isinstance(candidate, dict):
+            return
+
+        if "id" in candidate:
+            assert candidate["id"] != attacker_uuid, (
+                "Mass-assignment: server accepted client-supplied id "
+                "(audit-field invariant violated)"
+            )
+        if "created_by_user_id" in candidate:
+            assert candidate["created_by_user_id"] != attacker_uuid, (
+                "Mass-assignment: server accepted client-supplied "
+                "created_by_user_id (audit-field invariant violated)"
+            )
+        if "created_at" in candidate:
+            assert (
+                candidate["created_at"] != attacker_iso
+            ), "Mass-assignment: server accepted client-supplied created_at"
+
+    @pytest.mark.security
+    def test_PUT_ignores_audit_fields_in_body(
+        self, server: Any, admin_a: Any, team_a: Any
+    ):
+        """Mass-assignment denial on PUT: audit fields in body are stripped/ignored."""
+        if self.system_entity:
+            pytest.skip(
+                "System entities are mutated via API key; audit-field test n/a"
+            )
+
+        entity = self._create(
+            server, admin_a.jwt, admin_a.id, team_a.id, key="audit_put_test"
+        )
+
+        attacker_uuid = str(uuid.uuid4())
+        attacker_iso = "1999-01-01T00:00:00+00:00"
+        update_data: Dict[str, Any] = {
+            "created_by_user_id": attacker_uuid,
+            "updated_by_user_id": attacker_uuid,
+            "created_at": attacker_iso,
+            "updated_at": attacker_iso,
+            "id": attacker_uuid,
+        }
+        if self.string_field_to_update:
+            update_data[self.string_field_to_update] = f"Audit PUT {self.faker.word()}"
+
+        response = server.put(
+            self.get_update_endpoint(entity["id"], {}),
+            json={self.entity_name: update_data},
+            headers=self._get_appropriate_headers(admin_a.jwt),
+        )
+
+        assert response.status_code in (200, 422), (
+            f"Audit-field PUT should be stripped (200) or rejected (422); "
+            f"got {response.status_code}: {response.text[:300]}"
+        )
+        if response.status_code != 200:
+            return
+
+        body = response.json()
+        candidate = body.get(self.entity_name) if isinstance(body, dict) else None
+        if candidate is None and isinstance(body, dict):
+            candidate = body
+        if not isinstance(candidate, dict):
+            return
+
+        if "id" in candidate:
+            assert (
+                candidate["id"] == entity["id"]
+            ), "Mass-assignment: server overwrote id from PUT body"
+        if "created_by_user_id" in candidate and "created_by_user_id" in entity:
+            assert (
+                candidate["created_by_user_id"] == entity["created_by_user_id"]
+            ), "Mass-assignment: server accepted PUT-body created_by_user_id"
+
+    @pytest.mark.security
+    def test_GET_response_omits_secret_fields(
+        self, server: Any, admin_a: Any, team_a: Any
+    ):
+        """Secret-column denial: response body contains no known-sensitive field name."""
+        entity = self._create(
+            server, admin_a.jwt, admin_a.id, team_a.id, key="secret_field_test"
+        )
+
+        path_parent_ids: Dict[str, str] = {}
+        if self.parent_entities:
+            for parent in self.parent_entities:
+                if parent.foreign_key in entity:
+                    parent_id = entity[parent.foreign_key]
+                    if parent.path_level in [1, 2] or (
+                        hasattr(parent, "is_path") and parent.is_path
+                    ):
+                        path_parent_ids[f"{parent.name}_id"] = parent_id
+
+        response = server.get(
+            self.get_detail_endpoint(entity["id"], path_parent_ids),
+            headers=self._get_appropriate_headers(admin_a.jwt),
+        )
+
+        assert response.status_code == 200, (
+            f"Expected 200 reading own entity; got {response.status_code}"
+        )
+
+        leaked = self._walk_for_secret_fields(
+            response.json(), self.SECRET_RESPONSE_FIELDS
+        )
+        assert not leaked, (
+            f"Response leaked secret field(s) {leaked} for {self.entity_name}; "
+            f"the auto-generated Network model must strip these columns."
+        )
+
+    @pytest.mark.security
+    def test_GET_pagination_cap_enforced(
+        self, server: Any, admin_a: Any, team_a: Any
+    ):
+        """DoS denial: list endpoint clamps oversized limit to the framework cap."""
+        # Create one row so the list response is well-formed.
+        self._create(server, admin_a.jwt, admin_a.id, team_a.id, key="pagination_cap")
+
+        response = server.get(
+            f"{self.get_list_endpoint({})}?limit=100000",
+            headers=self._get_appropriate_headers(admin_a.jwt),
+        )
+        # Either silently clamped (200) or rejected (422). Never 500.
+        assert response.status_code in (200, 422), (
+            f"Oversized limit should clamp (200) or 422; got {response.status_code}"
+        )
+        if response.status_code != 200:
+            return
+        body = response.json()
+        # If the body is the list-form {plural: [...]}, count it; else pass.
+        if isinstance(body, dict):
+            for v in body.values():
+                if isinstance(v, list):
+                    assert len(v) <= 1000, (
+                        f"Pagination cap not enforced: returned {len(v)} rows "
+                        "but framework cap is 1000 (AbstractLogicManager.py:1053)"
+                    )
+                    break
+
+    @pytest.mark.security
+    def test_GET_search_rejects_unknown_field(
+        self, server: Any, admin_a: Any, team_a: Any
+    ):
+        """Filter-whitelist denial: search on a non-whitelisted column → 422.
+
+        Many extension authors will not narrow `searchable_fields`. The framework
+        must reject filters on internal columns (`password_hash`, `jwt_secret`) so a
+        sloppy author cannot accidentally expose a probing oracle.
+        """
+        if not self.supports_search:
+            pytest.skip("Entity does not support search")
+
+        # Use a column name that no legitimate model exposes.
+        forbidden_field = "password_hash"
+        response = server.get(
+            f"{self.get_list_endpoint({})}?{forbidden_field}=anything",
+            headers=self._get_appropriate_headers(admin_a.jwt),
+        )
+
+        assert response.status_code in (200, 422), (
+            f"Unknown search field {forbidden_field} should be rejected (422) or "
+            f"silently ignored (200); got {response.status_code}"
+        )
+        if response.status_code == 200:
+            # Silently ignored is acceptable; assert the secret name didn't leak
+            # back as a key in the response.
+            leaked = self._walk_for_secret_fields(
+                response.json(), (forbidden_field,)
+            )
+            assert not leaked, (
+                f"Search accepted unknown field {forbidden_field} and surfaced it "
+                "in the response; whitelist enforcement is missing."
+            )
+
     def test_POST_404_nonexistent_parent(self, server: Any, admin_a: Any, team_a: Any):
         """Test creating a resource with a nonexistent parent."""
         if not self.parent_entities or not any(

@@ -1279,3 +1279,121 @@ def test_encode_query_values_trims_and_deduplicates():
         == "team.members"
     )
     assert AbstractEPTest._serialize_query_values(None) is None
+
+
+# ----------------------------------------------------------------------
+# Security: framework-invariant tests for the auto-generated REST surface.
+#
+# The "sloppy extension developer" axis. A vanilla BLL manager with no
+# special config must produce endpoints that are deny-by-default, with
+# no audit-field writability and no secret-column response leakage.
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.security
+class TestAutoGenerationInvariants:
+    """Invariants the framework must enforce regardless of extension code."""
+
+    # The model_registry session-scoped fixture from src/conftest.py provides
+    # the live registry already populated by all loaded extensions.
+
+    AUDIT_FIELDS_BANNED_ON_INPUT = (
+        "id",
+        "created_at",
+        "updated_at",
+        "deleted_at",
+        "created_by_user_id",
+        "updated_by_user_id",
+        "deleted_by_user_id",
+    )
+
+    SECRET_FIELDS_BANNED_ON_OUTPUT = (
+        "password_hash",
+        "secret",
+        "api_key_hash",
+        "recovery_answer_hash",
+        "answer_hash",
+        "jwt_secret",
+        "client_secret",
+    )
+
+    def test_create_schemas_strip_audit_fields(self, model_registry):
+        """A `Create` Network model must not expose audit fields as writable.
+
+        EXPECTED FAIL on any model whose `.Create` schema includes audit
+        fields — that is the gap surfaced by this test.
+        """
+        violations: List[str] = []
+        for model_name, registered in model_registry.models.items():
+            create_cls = getattr(registered, "Create", None)
+            if create_cls is None or not hasattr(create_cls, "model_fields"):
+                continue
+            for banned in self.AUDIT_FIELDS_BANNED_ON_INPUT:
+                if banned in create_cls.model_fields:
+                    violations.append(f"{model_name}.Create exposes '{banned}'")
+
+        assert not violations, (
+            "Auto-generated Create schemas must not expose audit fields. "
+            f"Violations:\n  - " + "\n  - ".join(violations)
+        )
+
+    def test_update_schemas_strip_audit_fields(self, model_registry):
+        """An `Update` Network model must not expose audit fields as writable."""
+        violations: List[str] = []
+        for model_name, registered in model_registry.models.items():
+            update_cls = getattr(registered, "Update", None)
+            if update_cls is None or not hasattr(update_cls, "model_fields"):
+                continue
+            for banned in self.AUDIT_FIELDS_BANNED_ON_INPUT:
+                if banned in update_cls.model_fields:
+                    violations.append(f"{model_name}.Update exposes '{banned}'")
+
+        assert not violations, (
+            "Auto-generated Update schemas must not expose audit fields. "
+            f"Violations:\n  - " + "\n  - ".join(violations)
+        )
+
+    def test_response_schemas_omit_secret_fields(self, model_registry):
+        """Response/Network models must never expose secret-name columns.
+
+        Catches a sloppy DB model that defines `password_hash` etc. without
+        also stripping it from the auto-generated Network model.
+        """
+        violations: List[str] = []
+        for model_name, registered in model_registry.models.items():
+            for response_attr in ("Response", "Network"):
+                response_cls = getattr(registered, response_attr, None)
+                if response_cls is None or not hasattr(
+                    response_cls, "model_fields"
+                ):
+                    continue
+                for banned in self.SECRET_FIELDS_BANNED_ON_OUTPUT:
+                    if banned in response_cls.model_fields:
+                        violations.append(
+                            f"{model_name}.{response_attr} exposes "
+                            f"secret field '{banned}'"
+                        )
+
+        assert not violations, (
+            "Auto-generated Response/Network models must not expose secret "
+            "columns. Violations:\n  - " + "\n  - ".join(violations)
+        )
+
+    def test_x_forwarded_for_not_trusted_without_proxy_config(self, server):
+        """Untrusted X-Forwarded-For must not be accepted as the client IP.
+
+        EXPECTED FAIL today — Pydantic2FastAPI.py:3048 reads X-Forwarded-For
+        unconditionally and prefers it over `request.client.host`. The
+        framework should require a `TRUSTED_PROXIES` allowlist before
+        honouring the header.
+        """
+        # The contract being tested is "the framework refuses to honour
+        # untrusted XFF". In the absence of a trusted-proxy config knob, this
+        # test asserts the env-var exists and is enforced.
+        from lib.Environment import AppSettings
+
+        assert hasattr(AppSettings, "TRUSTED_PROXIES"), (
+            "AppSettings must define TRUSTED_PROXIES so X-Forwarded-For can be "
+            "validated. Currently missing — Pydantic2FastAPI.py:3048 trusts "
+            "the header unconditionally."
+        )

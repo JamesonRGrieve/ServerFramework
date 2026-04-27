@@ -342,3 +342,56 @@ class TestStripeProvider:
             assert default_currency == env("STRIPE_CURRENCY")
         else:
             assert default_currency == "USD"  # Default fallback
+
+    # ------------------------------------------------------------------
+    # Security: webhook explicit-deny tests.
+    # ------------------------------------------------------------------
+
+    @pytest.mark.security
+    @pytest.mark.asyncio
+    async def test_process_webhook_rejects_tampered_body(self, provider_instance):
+        """A body altered after signing must be rejected."""
+        original = b'{"id": "evt_1", "type": "payment_intent.succeeded"}'
+        tampered = b'{"id": "evt_1", "type": "payment_intent.refunded"}'
+        # We don't have a valid signature for either, so use a syntactically
+        # plausible-but-wrong sig to confirm the verify path engages.
+        bogus_sig = "t=1700000000,v1=" + ("00" * 32)
+        try:
+            result = await PaymentExtensionStripeProvider.process_webhook(
+                provider_instance, tampered, bogus_sig
+            )
+            assert isinstance(result, dict)
+            assert (
+                "error" in result or not result.get("success", True)
+            ), "Tampered body must surface as error"
+        except Exception as e:
+            err = str(e).lower()
+            assert any(
+                t in err for t in ("signature", "webhook", "invalid", "verify")
+            ), f"Tampered body raised unexpected error: {e}"
+
+    @pytest.mark.security
+    @pytest.mark.asyncio
+    async def test_process_webhook_rejects_old_timestamp(self, provider_instance):
+        """A signature whose `t=` is far in the past must be rejected (replay).
+
+        EXPECTED FAIL today if the provider doesn't enforce a max
+        timestamp tolerance.
+        """
+        body = b'{"id": "evt_old", "type": "payment_intent.succeeded"}'
+        old_ts = "1000000000"  # 2001 — definitely older than any tolerance
+        old_sig = f"t={old_ts},v1=" + ("00" * 32)
+        try:
+            result = await PaymentExtensionStripeProvider.process_webhook(
+                provider_instance, body, old_sig
+            )
+            assert isinstance(result, dict)
+            assert (
+                "error" in result or not result.get("success", True)
+            ), "Old-timestamp webhook must be rejected"
+        except Exception as e:
+            err = str(e).lower()
+            assert any(
+                t in err
+                for t in ("timestamp", "tolerance", "stale", "signature")
+            ), f"Old timestamp raised unexpected error: {e}"

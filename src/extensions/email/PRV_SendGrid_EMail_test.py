@@ -349,3 +349,61 @@ class TestSendgridProvider(AbstractPRVTest):
         assert getattr(SendGrid_ContactModel, "_is_extension_model", False)
         assert getattr(SendGrid_TemplateModel, "_is_extension_model", False)
         assert getattr(SendGrid_CampaignModel, "_is_extension_model", False)
+
+    # ------------------------------------------------------------------
+    # Security: explicit-deny tests for email header injection.
+    # A sloppy caller passes user-controlled input as `subject` or
+    # `recipient`; the framework must reject CRLF sequences before
+    # they can graft additional headers (Bcc:, Reply-To:, ...).
+    # EXPECTED FAIL today — no validation visible in send_email.
+    # ------------------------------------------------------------------
+
+    @pytest.mark.security
+    @pytest.mark.asyncio
+    async def test_send_email_rejects_crlf_in_subject(self, provider_instance):
+        """A subject containing CRLF must NOT reach the SendGrid client."""
+        from extensions.email.PRV_SendGrid_EMail import SendgridProvider
+
+        crlf_subject = "Hello\r\nBcc: attacker@evil.example.com"
+        result = await SendgridProvider.send_email(
+            provider_instance,
+            recipient="user@example.com",
+            subject=crlf_subject,
+            body="<p>safe</p>",
+        )
+        # The framework must either raise or return an error string. It
+        # MUST NOT silently call out with the malicious subject.
+        assert isinstance(result, str)
+        assert (
+            "error" in result.lower()
+            or "invalid" in result.lower()
+            or "crlf" in result.lower()
+            or "header" in result.lower()
+        ), (
+            f"send_email accepted CRLF in subject (returned {result!r}); "
+            "SendgridProvider must reject newlines in subject/recipient."
+        )
+
+    @pytest.mark.security
+    @pytest.mark.asyncio
+    async def test_send_email_rejects_crlf_in_recipient(self, provider_instance):
+        """A recipient containing CRLF must be rejected."""
+        from extensions.email.PRV_SendGrid_EMail import SendgridProvider
+
+        crlf_recipient = "victim@example.com\r\nBcc: attacker@evil.example.com"
+        result = await SendgridProvider.send_email(
+            provider_instance,
+            recipient=crlf_recipient,
+            subject="hi",
+            body="<p>safe</p>",
+        )
+        assert isinstance(result, str)
+        assert (
+            "error" in result.lower()
+            or "invalid" in result.lower()
+            or "crlf" in result.lower()
+            or "address" in result.lower()
+        ), (
+            f"send_email accepted CRLF in recipient (returned {result!r}); "
+            "SendgridProvider must reject newlines in recipient."
+        )

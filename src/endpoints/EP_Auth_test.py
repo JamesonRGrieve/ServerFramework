@@ -1245,6 +1245,333 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
         # Assert response status is 401 Unauthorized
         self._assert_response_status(response, 401, "GET (empty JWT)", "/v1/user")
 
+    # ------------------------------------------------------------------
+    # Security: explicit-deny / negative-path auth tests.
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _forged_jwt(payload: Dict[str, Any], *, alg: str, key: str) -> str:
+        """Encode a JWT with arbitrary alg/key — used to forge tampered tokens."""
+        import jwt as pyjwt
+
+        return pyjwt.encode(payload, key, algorithm=alg)
+
+    @staticmethod
+    def _alg_none_jwt(payload: Dict[str, Any]) -> str:
+        """Construct a JWT with `alg: none` and no signature."""
+        import base64
+        import json as _json
+
+        def _b64(data: bytes) -> str:
+            return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+        header = _b64(_json.dumps({"alg": "none", "typ": "JWT"}).encode())
+        body = _b64(_json.dumps(payload).encode())
+        return f"{header}.{body}."
+
+    @pytest.mark.security
+    @pytest.mark.auth
+    def test_GET_401_jwt_alg_none(self, server: Any, admin_a: Any) -> None:
+        """JWT with `alg:none` (no signature) must be rejected."""
+        forged = self._alg_none_jwt(
+            {"sub": admin_a.id, "email": admin_a.email, "exp": 9999999999}
+        )
+        response = server.get(
+            "/v1", headers={"Authorization": f"Bearer {forged}"}
+        )
+        assert (
+            response.status_code == 401
+        ), f"alg:none JWT must be rejected; got {response.status_code}"
+
+    @pytest.mark.security
+    @pytest.mark.auth
+    def test_GET_401_jwt_wrong_secret(self, server: Any, admin_a: Any) -> None:
+        """JWT signed with attacker-chosen secret must be rejected."""
+        forged = self._forged_jwt(
+            {"sub": admin_a.id, "email": admin_a.email, "exp": 9999999999},
+            alg="HS256",
+            key="attacker-controlled-secret",
+        )
+        response = server.get(
+            "/v1", headers={"Authorization": f"Bearer {forged}"}
+        )
+        assert (
+            response.status_code == 401
+        ), f"JWT signed with wrong secret must be rejected; got {response.status_code}"
+
+    @pytest.mark.security
+    @pytest.mark.auth
+    def test_GET_401_jwt_expired(self, server: Any, admin_a: Any) -> None:
+        """JWT with `exp` in the past must be rejected (5min leeway accounted for)."""
+        forged = self._forged_jwt(
+            {
+                "sub": admin_a.id,
+                "email": admin_a.email,
+                "exp": 1000,
+                "iat": 500,
+            },
+            alg="HS256",
+            key=env("JWT_SECRET"),
+        )
+        response = server.get(
+            "/v1", headers={"Authorization": f"Bearer {forged}"}
+        )
+        assert (
+            response.status_code == 401
+        ), f"Expired JWT must be rejected; got {response.status_code}"
+
+    @pytest.mark.security
+    @pytest.mark.auth
+    def test_GET_401_jwt_modified_sub_claim(
+        self, server: Any, admin_a: Any
+    ) -> None:
+        """JWT whose body is rewritten without re-signing must be rejected."""
+        import base64
+        import json as _json
+
+        parts = admin_a.jwt.split(".")
+        assert len(parts) == 3, "JWT must have header.body.signature"
+
+        # Pad to make base64 decoding tolerant of stripped padding.
+        pad = lambda s: s + "=" * (-len(s) % 4)
+        body = _json.loads(base64.urlsafe_b64decode(pad(parts[1])))
+        body["sub"] = str(uuid.uuid4())  # impersonate a different user
+        new_body = (
+            base64.urlsafe_b64encode(_json.dumps(body).encode())
+            .rstrip(b"=")
+            .decode()
+        )
+        tampered = f"{parts[0]}.{new_body}.{parts[2]}"
+
+        response = server.get(
+            "/v1", headers={"Authorization": f"Bearer {tampered}"}
+        )
+        assert (
+            response.status_code == 401
+        ), f"Tampered JWT body must invalidate signature; got {response.status_code}"
+
+    @pytest.mark.security
+    @pytest.mark.auth
+    def test_GET_401_revoked_session_still_rejects_jwt(
+        self, server: Any, db: Any
+    ) -> None:
+        """JWT issued for a revoked session must not authenticate.
+
+        EXPECTED FAIL today — JWT generation in BLL_Auth.py:688-700 does not
+        embed `jti=session_key`, so revoking the session does not invalidate
+        the bearer token. Surfaces gap.
+        """
+        from conftest import create_user
+
+        test_user = create_user(
+            server=server,
+            email=f"revoke_test_{uuid.uuid4().hex[:8]}@example.com",
+            password="testpassword",
+            first_name="RevokeTest",
+            last_name="User",
+        )
+        # Pull the user's session and revoke it directly.
+        sessions = server.get(
+            "/v1/session",
+            headers=self._get_appropriate_headers(test_user.jwt),
+        ).json().get("sessions", [])
+        if not sessions:
+            pytest.skip("No session created for test_user")
+
+        session_id = sessions[0]["id"]
+        revoke = server.delete(
+            f"/v1/session/{session_id}",
+            headers=self._get_appropriate_headers(test_user.jwt),
+        )
+        assert revoke.status_code == 204, "Could not revoke session"
+
+        # The JWT issued before revocation must now be rejected.
+        response = server.get(
+            "/v1", headers=self._get_appropriate_headers(test_user.jwt)
+        )
+        assert response.status_code == 401, (
+            "JWT belonging to a revoked session must be rejected — currently "
+            "passes because JWT lacks jti binding to session_key."
+        )
+
+    @pytest.mark.security
+    @pytest.mark.auth
+    def test_POST_429_after_many_failed_logins(
+        self, server: Any, db: Any
+    ) -> None:
+        """Repeated wrong-password attempts must trigger account lockout (429)."""
+        from conftest import create_user
+
+        test_user = create_user(
+            server=server,
+            email=f"lockout_test_{uuid.uuid4().hex[:8]}@example.com",
+            password="testpassword",
+            first_name="LockoutTest",
+            last_name="User",
+        )
+
+        wrong_payload = {"email": test_user.email, "password": "definitely-wrong"}
+        # Try up to 10 attempts; the framework caps at 5 failures / 1h.
+        last_status = None
+        saw_lockout = False
+        for _ in range(10):
+            r = server.post("/v1/user/authorize", json=wrong_payload)
+            last_status = r.status_code
+            if r.status_code == 429:
+                saw_lockout = True
+                break
+            assert r.status_code == 401, (
+                f"Wrong password should be 401 until lockout; got {r.status_code}"
+            )
+
+        assert saw_lockout, (
+            f"Account must lock after repeated failures (BLL_Auth.py:1058-1079); "
+            f"last status was {last_status} after 10 attempts."
+        )
+
+    @pytest.mark.security
+    @pytest.mark.auth
+    def test_POST_no_username_enumeration_in_error(
+        self, server: Any, db: Any
+    ) -> None:
+        """Login error message must NOT distinguish 'no such user' from 'wrong password'."""
+        from conftest import create_user
+
+        test_user = create_user(
+            server=server,
+            email=f"enum_test_{uuid.uuid4().hex[:8]}@example.com",
+            password="testpassword",
+            first_name="EnumTest",
+            last_name="User",
+        )
+        wrong_pw = server.post(
+            "/v1/user/authorize",
+            json={"email": test_user.email, "password": "wrong"},
+        )
+        no_user = server.post(
+            "/v1/user/authorize",
+            json={
+                "email": f"nobody_{uuid.uuid4().hex[:8]}@example.com",
+                "password": "wrong",
+            },
+        )
+        assert (
+            wrong_pw.status_code == no_user.status_code == 401
+        ), "Both should be 401"
+        assert (
+            wrong_pw.json().get("detail") == no_user.json().get("detail")
+        ), (
+            "Error detail must be identical for nonexistent user vs wrong password "
+            "(prevents username enumeration)."
+        )
+
+    @pytest.mark.security
+    @pytest.mark.auth
+    def test_PATCH_password_requires_current_password(
+        self, server: Any, db: Any
+    ) -> None:
+        """PATCH /v1/user without `current_password` must reject."""
+        from conftest import create_user
+
+        test_user = create_user(
+            server=server,
+            email=f"pw_curr_{uuid.uuid4().hex[:8]}@example.com",
+            password="testpassword",
+            first_name="PwCurr",
+            last_name="User",
+        )
+        # Missing current_password entirely.
+        r1 = server.patch(
+            "/v1/user",
+            json={"new_password": "Strong-Password-1!"},
+            headers=self._get_appropriate_headers(test_user.jwt),
+        )
+        assert r1.status_code in (
+            400,
+            401,
+            403,
+            422,
+        ), f"PATCH without current_password should reject; got {r1.status_code}"
+
+        # Wrong current_password.
+        r2 = server.patch(
+            "/v1/user",
+            json={
+                "current_password": "incorrect",
+                "new_password": "Strong-Password-1!",
+            },
+            headers=self._get_appropriate_headers(test_user.jwt),
+        )
+        assert r2.status_code in (
+            401,
+            403,
+        ), f"Wrong current_password should reject 401/403; got {r2.status_code}"
+
+    @pytest.mark.security
+    @pytest.mark.auth
+    def test_PATCH_password_rejects_weak(self, server: Any, db: Any) -> None:
+        """Weak password must be rejected by policy.
+
+        EXPECTED FAIL today — no password strength enforcement
+        (BLL_Auth.py search shows none). Surfaces gap.
+        """
+        from conftest import create_user
+
+        test_user = create_user(
+            server=server,
+            email=f"pw_weak_{uuid.uuid4().hex[:8]}@example.com",
+            password="testpassword",
+            first_name="PwWeak",
+            last_name="User",
+        )
+        r = server.patch(
+            "/v1/user",
+            json={"current_password": "testpassword", "new_password": "a"},
+            headers=self._get_appropriate_headers(test_user.jwt),
+        )
+        assert (
+            r.status_code == 422
+        ), f"Single-char password must fail policy (422); got {r.status_code}"
+
+    @pytest.mark.security
+    @pytest.mark.auth
+    def test_DELETE_session_403_cross_user(
+        self, server: Any, db: Any
+    ) -> None:
+        """A user must not be able to delete another user's session."""
+        from conftest import create_user
+
+        user_x = create_user(
+            server=server,
+            email=f"sess_x_{uuid.uuid4().hex[:8]}@example.com",
+            password="testpassword",
+            first_name="SessX",
+            last_name="User",
+        )
+        user_y = create_user(
+            server=server,
+            email=f"sess_y_{uuid.uuid4().hex[:8]}@example.com",
+            password="testpassword",
+            first_name="SessY",
+            last_name="User",
+        )
+        x_sessions = server.get(
+            "/v1/session",
+            headers=self._get_appropriate_headers(user_x.jwt),
+        ).json().get("sessions", [])
+        if not x_sessions:
+            pytest.skip("user_x has no session to target")
+        target = x_sessions[0]["id"]
+
+        response = server.delete(
+            f"/v1/session/{target}",
+            headers=self._get_appropriate_headers(user_y.jwt),
+        )
+        assert response.status_code in (
+            403,
+            404,
+        ), f"user_y must not delete user_x's session; got {response.status_code}"
+
     def test_DELETE_204(self, server: Any, db: Any):
         """Test deleting a user with an isolated test user (does not use shared fixtures)."""
 
@@ -3285,3 +3612,115 @@ class TestInvitationEndpoints(AbstractEPTest):
                 invalid_data,
                 parent_ids_override,
             )
+
+    # ------------------------------------------------------------------
+    # Security: invitation explicit-deny / negative-path tests.
+    # ------------------------------------------------------------------
+
+    @pytest.mark.security
+    @pytest.mark.auth
+    def test_PATCH_invitation_rejected_after_already_accepted(
+        self, server: Any, admin_a: Any, team_a: Any
+    ) -> None:
+        """An invitation code accepted once must not work again."""
+        from conftest import create_user
+
+        invitation = self._create_team_invitation_auto_code(server, admin_a, team_a)
+        endpoint = f"/v1/invitation/{invitation['id']}"
+        payload = {"invitation": {"invitation_code": invitation["code"]}}
+
+        first_user = create_user(server)
+        if first_user is None:
+            pytest.skip("Failed to create first user")
+        r1 = server.patch(
+            endpoint,
+            json=payload,
+            headers=self._get_appropriate_headers(first_user.jwt),
+        )
+        assert r1.status_code == 200, f"First accept must succeed; got {r1.status_code}"
+
+        # Second user tries the same code.
+        second_user = create_user(server)
+        if second_user is None:
+            pytest.skip("Failed to create second user")
+        r2 = server.patch(
+            endpoint,
+            json=payload,
+            headers=self._get_appropriate_headers(second_user.jwt),
+        )
+        assert r2.status_code in (
+            400,
+            403,
+            404,
+            409,
+            410,
+            422,
+        ), (
+            f"Re-using a single-use invitation code must reject; got {r2.status_code}. "
+            "If max_uses>1 this is expected; tighten the test once the framework "
+            "exposes single-use semantics."
+        )
+
+    @pytest.mark.security
+    @pytest.mark.auth
+    def test_PATCH_invitation_rejected_with_invalid_code(
+        self, server: Any, admin_a: Any, team_a: Any
+    ) -> None:
+        """A made-up invitation code must not authorize team membership."""
+        from conftest import create_user
+
+        invitation = self._create_team_invitation_auto_code(server, admin_a, team_a)
+        endpoint = f"/v1/invitation/{invitation['id']}"
+        payload = {"invitation": {"invitation_code": "AAAAAAAA"}}
+
+        new_user = create_user(server)
+        if new_user is None:
+            pytest.skip("Failed to create user")
+        response = server.patch(
+            endpoint,
+            json=payload,
+            headers=self._get_appropriate_headers(new_user.jwt),
+        )
+        assert response.status_code in (
+            400,
+            403,
+            404,
+            422,
+        ), (
+            f"Made-up invitation code must be rejected; got {response.status_code}"
+        )
+
+    @pytest.mark.security
+    @pytest.mark.auth
+    def test_PATCH_invitation_rejected_for_higher_role_than_inviter(
+        self, server: Any, admin_a: Any, team_a: Any
+    ) -> None:
+        """Invitation cannot grant a role above the inviter's authority.
+
+        EXPECTED FAIL today — no explicit role-hierarchy validation visible in
+        BLL_Auth.py invitation creation. Surfaces a privilege-escalation gap.
+        """
+        # admin_a is a team admin. Try to create an invitation that grants the
+        # platform-level ROOT_ID role (which admin_a does not hold).
+        root_role_id = env("ROOT_ID")
+        payload = {
+            "invitation": {
+                "code": uuid.uuid4().hex[:8].upper(),
+                "role_id": root_role_id,
+                "max_uses": 1,
+            }
+        }
+        endpoint = f"/v1/team/{team_a.id}/invitation"
+        response = server.post(
+            endpoint,
+            json=payload,
+            headers=self._get_appropriate_headers(admin_a.jwt),
+        )
+        assert response.status_code in (
+            400,
+            403,
+            422,
+        ), (
+            f"Inviting to a role above the inviter's role must be rejected; "
+            f"got {response.status_code}: {response.text[:200]}"
+        )

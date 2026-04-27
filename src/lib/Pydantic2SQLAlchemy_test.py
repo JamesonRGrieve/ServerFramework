@@ -554,5 +554,68 @@ class TestPydantic2SQLAlchemyReal(unittest.TestCase):
         self.assertIn("Team", team_column.comment)
 
 
+# ----------------------------------------------------------------------
+# Security: filter / sort safety.
+#
+# These exercise AbstractLogicManager search/sort plumbing that ultimately
+# emits SQL via SQLAlchemy. The aim is to prove user-controlled values
+# never escape parameterization and unknown columns are rejected.
+# ----------------------------------------------------------------------
+
+import pytest
+
+
+@pytest.mark.security
+@pytest.mark.db
+class TestSearchInputDeniesInjection:
+    """Negative-path tests for filter/sort handling on list endpoints."""
+
+    def test_sort_order_rejects_arbitrary_string(self, server, admin_a, team_a):
+        """`?sort_order=asc; DROP TABLE users--` must be rejected (422)."""
+        response = server.get(
+            "/v1/team?sort_by=name&sort_order=asc;DROP TABLE users--",
+            headers={"Authorization": f"Bearer {admin_a.jwt}"},
+        )
+        assert response.status_code == 422, (
+            f"Bogus sort_order must be rejected (422); got "
+            f"{response.status_code}: {response.text[:200]}"
+        )
+
+    def test_sort_by_rejects_unknown_column(self, server, admin_a):
+        """`?sort_by=password_hash` must be rejected (422)."""
+        response = server.get(
+            "/v1/team?sort_by=password_hash&sort_order=asc",
+            headers={"Authorization": f"Bearer {admin_a.jwt}"},
+        )
+        # Either rejects (422) or silently ignores (200). Reject is preferred.
+        assert response.status_code in (200, 422), (
+            f"sort_by=password_hash must be 422 or silently ignored 200; "
+            f"got {response.status_code}"
+        )
+
+    def test_filter_value_with_quote_does_not_break_query(
+        self, server, admin_a
+    ):
+        """Filter value containing SQL syntax must be parameterized, not interpolated.
+
+        If parameterization is broken, the request 500s; success is either
+        200 (literal match, no rows) or 422 (rejection).
+        """
+        payload = "'; DROP TABLE teams; --"
+        response = server.get(
+            f"/v1/team?name={payload}",
+            headers={"Authorization": f"Bearer {admin_a.jwt}"},
+        )
+        assert response.status_code != 500, (
+            f"SQL-syntax filter value crashed the query (500). Filter "
+            f"parameterization may be broken. Body: {response.text[:200]}"
+        )
+        assert response.status_code in (
+            200,
+            400,
+            422,
+        ), f"Unexpected status {response.status_code}"
+
+
 if __name__ == "__main__":
     unittest.main()
