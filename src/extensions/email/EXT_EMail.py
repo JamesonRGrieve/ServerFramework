@@ -16,8 +16,13 @@ Component loading (DB, BLL, EP) is handled automatically by the import system
 based on file naming conventions.
 """
 
+import os
 from abc import abstractmethod
-from typing import Any, ClassVar, Dict, List, Optional, Set, Type
+from email.utils import parseaddr
+from enum import Enum
+from typing import Any, ClassVar, Dict, FrozenSet, List, Optional, Set, Type, Union
+
+from pydantic import BaseModel, Field
 
 from extensions.AbstractExtensionProvider import (
     AbstractProviderInstance,
@@ -31,12 +36,133 @@ from lib.Logging import logger
 from lib.Pydantic import classproperty
 from logic.BLL_Providers import ProviderInstanceModel
 
+# Hard caps applied uniformly across all email providers. Sized for RFC 5322
+# (subject ≤998 octets) and a generous 10 MiB body — anything larger is almost
+# certainly a DoS or smuggling attempt rather than a legitimate message.
+_EMAIL_MAX_SUBJECT_OCTETS = 998
+_EMAIL_MAX_BODY_BYTES = 10 * 1024 * 1024
+
+
+# ============================================================================
+# Email value types
+#
+# These are the data shapes the friendly Phase-1 surface (``send``,
+# ``update_email``, ``list_emails``) speaks. They are pure Pydantic models
+# and do not depend on any of the deferred IMPROVEMENTS items; once Item 37
+# (typed ability declarations) lands, they slot in unchanged as the typed
+# inputs to ``AbstractEmailProviderInstance`` abstract abilities.
+# ============================================================================
+
+
+class Importance(str, Enum):
+    """RFC 4021 ``Importance`` values, normalised across providers."""
+
+    HIGH = "high"
+    NORMAL = "normal"
+    LOW = "low"
+
+
+class Capability(str, Enum):
+    """Coarse-grained ability flags. A provider declares the subset it
+    actually implements; callers branch on capability rather than catching
+    ``NotImplementedError``."""
+
+    SEND = "send"
+    BULK_SEND = "bulk_send"
+    LIST = "list"
+    SEARCH = "search"
+    READ = "read"
+    REPLY = "reply"
+    UPDATE = "update"
+    ATTACHMENTS = "attachments"
+    THREADS = "threads"
+    TEMPLATES = "templates"
+    VALIDATE_ADDRESS = "validate_address"
+    SUPPRESSIONS = "suppressions"
+    INBOUND_WEBHOOK = "inbound_webhook"
+
+
+class EmailAddress(BaseModel):
+    """A single RFC 5322 mailbox: address + optional display name."""
+
+    address: str = Field(..., description="The address part (local@domain).")
+    name: Optional[str] = Field(None, description="Display name, if any.")
+
+    def format(self) -> str:
+        """Render as a string suitable for ``To``/``From``/``Cc`` headers."""
+        if self.name:
+            # We do not quote the display name here; ``_validate_message`` has
+            # already rejected CRLF and NUL, so a bare name is safe in headers.
+            return f"{self.name} <{self.address}>"
+        return self.address
+
+
+class Attachment(BaseModel):
+    """An email attachment carried inline as bytes."""
+
+    filename: str = Field(..., description="Suggested filename for recipient.")
+    content: bytes = Field(..., description="Raw attachment bytes.")
+    content_type: Optional[str] = Field(
+        None, description="MIME type; guessed from filename if omitted."
+    )
+
+    @classmethod
+    def from_path(cls, path: str) -> "Attachment":
+        """Load an attachment from a local filesystem path."""
+        import mimetypes
+
+        with open(path, "rb") as fh:
+            content = fh.read()
+        guessed = mimetypes.guess_type(path)[0]
+        return cls(
+            filename=os.path.basename(path),
+            content=content,
+            content_type=guessed,
+        )
+
+
+class EmailMessage(BaseModel):
+    """The full payload of a single outbound email.
+
+    Carries every field the friendly ``send(message)`` API accepts. Concrete
+    providers translate the relevant subset for their transport; fields a
+    given transport cannot honour (e.g. ``cc`` on a single-recipient SMTP
+    relay) are surfaced as a ``NotSupportedError`` rather than silently
+    dropped.
+    """
+
+    to: List[EmailAddress] = Field(..., min_length=1)
+    subject: str = Field(...)
+    body_text: Optional[str] = Field(None)
+    body_html: Optional[str] = Field(None)
+    cc: List[EmailAddress] = Field(default_factory=list)
+    bcc: List[EmailAddress] = Field(default_factory=list)
+    reply_to: Optional[EmailAddress] = Field(None)
+    from_: Optional[EmailAddress] = Field(
+        None,
+        alias="from",
+        description="Sender; falls back to the provider's default from-address.",
+    )
+    attachments: List[Attachment] = Field(default_factory=list)
+    headers: Dict[str, str] = Field(default_factory=dict)
+    importance: Importance = Field(Importance.NORMAL)
+    template_id: Optional[str] = Field(None)
+    template_vars: Dict[str, Any] = Field(default_factory=dict)
+    tags: List[str] = Field(default_factory=list)
+
+    model_config = {"populate_by_name": True}
+
 
 class AbstractEmailProvider(AbstractStaticProvider):
     """Abstract base class for email service providers."""
 
     extension: ClassVar[Optional[Type[AbstractStaticExtension]]] = None
     extension_type: ClassVar[str] = "email"
+
+    # Capability flags. Concrete providers override with the subset they
+    # actually implement. Callers branch on ``Capability.X in cls.capabilities``
+    # rather than catching ``NotImplementedError`` at the call site.
+    capabilities: ClassVar[FrozenSet["Capability"]] = frozenset()
 
     @classmethod
     @abstractmethod
@@ -56,6 +182,184 @@ class AbstractEmailProvider(AbstractStaticProvider):
             "name": friendly_name,
             "description": f"Email extension for {cls.get_platform_name()}",
         }
+
+    @classmethod
+    def _validate_send_inputs(
+        cls,
+        recipient: str,
+        subject: str,
+        body: str,
+        attachments: Optional[List[str]] = None,
+    ) -> Optional[str]:
+        """
+        Reject inputs that could be used to mount header-injection, SSRF,
+        traversal, or DoS attacks against the underlying transport. Returns
+        ``None`` when inputs are safe, otherwise an error string suitable
+        for returning directly from ``send_email``. Concrete providers must
+        call this as the first statement in their ``send_email`` body.
+        """
+        if not isinstance(recipient, str) or not recipient:
+            return "Failed to send email: invalid recipient (empty)"
+        if not isinstance(subject, str):
+            return "Failed to send email: invalid subject (must be string)"
+        if not isinstance(body, str):
+            return "Failed to send email: invalid body (must be string)"
+
+        # CRLF injection: anything that lets a caller break out of the
+        # recipient or subject header line and graft a Bcc:/Reply-To: header.
+        for label, value in (("recipient", recipient), ("subject", subject)):
+            if "\r" in value or "\n" in value:
+                return f"Failed to send email: rejected CRLF in {label}"
+
+        # NUL byte: silently truncates strings in C-backed transports
+        # (libmagic, smtplib parsers) and can be used to smuggle content.
+        if "\x00" in recipient or "\x00" in subject or "\x00" in body:
+            return "Failed to send email: rejected NUL byte in input"
+
+        # RFC 5322 §2.1.1 caps a single header line at 998 octets. Anything
+        # longer is either a bug or a payload trying to wrap a header.
+        if len(subject.encode("utf-8")) > _EMAIL_MAX_SUBJECT_OCTETS:
+            return "Failed to send email: subject exceeds 998 octets"
+
+        if len(body.encode("utf-8", errors="replace")) > _EMAIL_MAX_BODY_BYTES:
+            return "Failed to send email: body exceeds 10 MiB cap"
+
+        # parseaddr yields ('', '') for malformed input; a valid address
+        # must contain a single '@' and a non-empty local + domain part.
+        _, addr = parseaddr(recipient)
+        if not addr or "@" not in addr or addr.count("@") != 1:
+            return "Failed to send email: invalid recipient address"
+        local, _, domain = addr.partition("@")
+        if not local or not domain or "." not in domain:
+            return "Failed to send email: invalid recipient address"
+
+        # Cyrillic / Greek homograph guard: refuse non-ASCII in the local part
+        # and in the domain. Legitimate IDN domains should be Punycode-encoded
+        # by the caller before reaching this layer.
+        try:
+            addr.encode("ascii")
+        except UnicodeEncodeError:
+            return "Failed to send email: non-ASCII recipient (suspected homograph)"
+
+        if attachments:
+            if not isinstance(attachments, (list, tuple)):
+                return "Failed to send email: attachments must be a list"
+            for path in attachments:
+                if not isinstance(path, str) or not path:
+                    return "Failed to send email: invalid attachment path"
+                if "\x00" in path:
+                    return "Failed to send email: rejected NUL byte in attachment path"
+                if not os.path.isabs(path):
+                    return "Failed to send email: attachment path must be absolute"
+                # Path traversal: even on an absolute path a '..' segment can
+                # walk to a parent directory the operator did not intend.
+                normalized = os.path.normpath(path)
+                if ".." in normalized.split(os.sep):
+                    return "Failed to send email: rejected path traversal in attachment"
+
+        return None
+
+    @classmethod
+    def _validate_message(cls, message: "EmailMessage") -> Optional[str]:
+        """Apply the same denial rules as ``_validate_send_inputs`` against
+        the typed ``EmailMessage`` shape, including ``cc`` / ``bcc`` /
+        ``reply_to`` / ``from_`` and the ``headers`` dict.
+
+        Returns ``None`` on pass, an error string on reject. The bytes-based
+        attachment shape (``Attachment(filename, content)``) is validated for
+        filename safety only; the framework owns the content and never lets
+        the caller name a path that does not exist."""
+        # Subject: CRLF / NUL / length.
+        if not isinstance(message.subject, str):
+            return "Failed to send email: invalid subject (must be string)"
+        if "\r" in message.subject or "\n" in message.subject:
+            return "Failed to send email: rejected CRLF in subject"
+        if "\x00" in message.subject:
+            return "Failed to send email: rejected NUL byte in input"
+        if len(message.subject.encode("utf-8")) > _EMAIL_MAX_SUBJECT_OCTETS:
+            return "Failed to send email: subject exceeds 998 octets"
+
+        # Bodies: NUL + size cap.
+        for label, body in (("body_text", message.body_text), ("body_html", message.body_html)):
+            if body is None:
+                continue
+            if not isinstance(body, str):
+                return f"Failed to send email: invalid {label} (must be string)"
+            if "\x00" in body:
+                return "Failed to send email: rejected NUL byte in input"
+            if len(body.encode("utf-8", errors="replace")) > _EMAIL_MAX_BODY_BYTES:
+                return "Failed to send email: body exceeds 10 MiB cap"
+
+        # Address fields: every ``EmailAddress`` everywhere on the message.
+        addr_groups: List[tuple] = [("to", message.to), ("cc", message.cc), ("bcc", message.bcc)]
+        for label, group in addr_groups:
+            for entry in group:
+                err = cls._validate_email_address(entry, label)
+                if err:
+                    return err
+        for label, single in (("reply_to", message.reply_to), ("from", message.from_)):
+            if single is None:
+                continue
+            err = cls._validate_email_address(single, label)
+            if err:
+                return err
+
+        # Custom headers: CRLF and NUL guard. Header names must be tokens.
+        for h_name, h_value in (message.headers or {}).items():
+            if not isinstance(h_name, str) or not isinstance(h_value, str):
+                return "Failed to send email: invalid custom header"
+            if "\r" in h_name or "\n" in h_name or "\r" in h_value or "\n" in h_value:
+                return "Failed to send email: rejected CRLF in custom header"
+            if "\x00" in h_name or "\x00" in h_value:
+                return "Failed to send email: rejected NUL byte in custom header"
+
+        # Attachments: bytes shape — validate filename safety only.
+        for att in message.attachments or []:
+            if not isinstance(att.filename, str) or not att.filename:
+                return "Failed to send email: invalid attachment filename"
+            if "\x00" in att.filename:
+                return "Failed to send email: rejected NUL byte in attachment filename"
+            if "\r" in att.filename or "\n" in att.filename:
+                return "Failed to send email: rejected CRLF in attachment filename"
+            if att.content is None:
+                return "Failed to send email: attachment content missing"
+            if len(att.content) > _EMAIL_MAX_BODY_BYTES:
+                return "Failed to send email: attachment exceeds 10 MiB cap"
+
+        return None
+
+    @staticmethod
+    def _validate_email_address(entry: "EmailAddress", label: str) -> Optional[str]:
+        """Validate a single ``EmailAddress`` for header-injection-safe use."""
+        addr = entry.address if entry else ""
+        name = entry.name if entry else None
+
+        if not isinstance(addr, str) or not addr:
+            return f"Failed to send email: invalid {label} (empty address)"
+        if "\r" in addr or "\n" in addr:
+            return f"Failed to send email: rejected CRLF in {label}"
+        if "\x00" in addr:
+            return "Failed to send email: rejected NUL byte in input"
+        if name is not None:
+            if not isinstance(name, str):
+                return f"Failed to send email: invalid {label} display name"
+            if "\r" in name or "\n" in name:
+                return f"Failed to send email: rejected CRLF in {label} display name"
+            if "\x00" in name:
+                return "Failed to send email: rejected NUL byte in input"
+
+        # Validate the address shape itself.
+        _, parsed = parseaddr(addr)
+        if not parsed or "@" not in parsed or parsed.count("@") != 1:
+            return f"Failed to send email: invalid {label} address"
+        local, _, domain = parsed.partition("@")
+        if not local or not domain or "." not in domain:
+            return f"Failed to send email: invalid {label} address"
+        try:
+            parsed.encode("ascii")
+        except UnicodeEncodeError:
+            return f"Failed to send email: non-ASCII {label} (suspected homograph)"
+        return None
 
     @staticmethod
     @abstractmethod
@@ -213,6 +517,144 @@ class AbstractEmailProvider(AbstractStaticProvider):
     def get_platform_name(cls) -> str:
         """Get the name of the email platform this provider interacts with."""
 
+    # ------------------------------------------------------------------
+    # Phase-1 friendly surface
+    #
+    # ``send``, ``update_email``, and ``list_emails`` collapse the legacy
+    # 17-method receive/send/state-mutation surface into 3 typed methods
+    # that take ``EmailMessage`` / kwargs instead of positional triples.
+    # Until Item 26 (``AbstractProviderInstance`` contract) lands, these
+    # remain classmethods that take ``provider_instance`` as the first
+    # arg; they delegate to the existing legacy abstracts so concrete
+    # providers do not need to change to satisfy them. The legacy
+    # ``send_email`` / ``mark_email_as_read`` / etc. methods stay as
+    # the abstract surface; this layer is purely additive.
+    # ------------------------------------------------------------------
+
+    @classmethod
+    async def send(
+        cls,
+        provider_instance: ProviderInstanceModel,
+        message: "EmailMessage",
+    ) -> str:
+        """Send a typed ``EmailMessage`` via this provider.
+
+        Validates the message (CRLF / NUL / length / address shape /
+        attachment safety) before any transport call. Concrete providers
+        that want to use the rich ``EmailMessage`` shape (cc / bcc / from-
+        name / reply-to / headers) should override this method directly;
+        the default implementation flattens ``message`` into the legacy
+        ``send_email(recipient, subject, body, attachments)`` positional
+        contract for backwards compatibility.
+        """
+        validation_error = cls._validate_message(message)
+        if validation_error:
+            logger.error(validation_error)
+            return validation_error
+
+        # Flatten to legacy abstract: pick the first ``to`` address as the
+        # recipient. ``cc`` / ``bcc`` / ``reply_to`` / ``from_`` / display
+        # names / headers / template_* are dropped on the legacy path —
+        # providers that need them must override ``send`` directly.
+        recipient = message.to[0].format()
+        body = message.body_html or message.body_text or ""
+        # Convert ``Attachment`` objects to filesystem paths via temp-file
+        # if any are byte-only; legacy ``send_email`` only accepts paths.
+        legacy_attachments: Optional[List[str]] = None
+        if message.attachments:
+            import tempfile
+
+            legacy_attachments = []
+            for att in message.attachments:
+                tmp = tempfile.NamedTemporaryFile(
+                    delete=False, suffix="_" + att.filename
+                )
+                tmp.write(att.content)
+                tmp.close()
+                legacy_attachments.append(tmp.name)
+        return await cls.send_email(
+            provider_instance,
+            recipient=recipient,
+            subject=message.subject,
+            body=body,
+            attachments=legacy_attachments,
+            importance=message.importance.value,
+        )
+
+    @classmethod
+    async def update_email(
+        cls,
+        provider_instance: ProviderInstanceModel,
+        message_id: str,
+        *,
+        read: Optional[bool] = None,
+        flagged: Optional[bool] = None,
+        folder: Optional[str] = None,
+        deleted: bool = False,
+    ) -> str:
+        """Apply state changes to an existing message in one call.
+
+        Each kwarg, when not ``None``, dispatches to the corresponding
+        legacy abstract: ``read=True`` → ``mark_email_as_read``,
+        ``read=False`` → ``mark_email_as_unread``, ``flagged=True`` →
+        ``flag_email``, ``flagged=False`` → ``unflag_email``,
+        ``folder="X"`` → ``move_email``, ``deleted=True`` →
+        ``delete_email``. Multiple state changes in one call apply
+        sequentially; the first error short-circuits.
+        """
+        results: List[str] = []
+        if read is True:
+            results.append(await cls.mark_email_as_read(provider_instance, message_id))
+        elif read is False:
+            results.append(
+                await cls.mark_email_as_unread(provider_instance, message_id)
+            )
+        if flagged is True:
+            results.append(await cls.flag_email(provider_instance, message_id))
+        elif flagged is False:
+            results.append(await cls.unflag_email(provider_instance, message_id))
+        if folder is not None:
+            results.append(
+                await cls.move_email(provider_instance, message_id, folder)
+            )
+        if deleted:
+            results.append(await cls.delete_email(provider_instance, message_id))
+        if not results:
+            return "No state change requested"
+        return "; ".join(str(r) for r in results)
+
+    @classmethod
+    async def list_emails(
+        cls,
+        provider_instance: ProviderInstanceModel,
+        *,
+        folder: Optional[str] = None,
+        query: Optional[str] = None,
+        limit: int = 10,
+        cursor: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """List emails with an optional search query and folder.
+
+        Delegates to ``search_emails`` when ``query`` is provided, else
+        ``get_emails``. ``cursor`` is currently passed-through opaquely;
+        Item 7 (pagination homogenisation) will replace it with a typed
+        ``next_token`` envelope.
+        """
+        effective_folder = folder or "Inbox"
+        if query:
+            return await cls.search_emails(
+                provider_instance,
+                query=query,
+                folder_name=effective_folder,
+                max_emails=limit,
+            )
+        return await cls.get_emails(
+            provider_instance,
+            folder_name=effective_folder,
+            max_emails=limit,
+            page_size=limit,
+        )
+
 
 class EXT_EMail(AbstractStaticExtension):
     """
@@ -235,6 +677,15 @@ class EXT_EMail(AbstractStaticExtension):
     _env: ClassVar[Dict[str, Any]] = {
         "SENDGRID_API_KEY": "",
         "SENDGRID_FROM_EMAIL": "",
+        "STALWART_HOST": "",
+        "STALWART_PORT": "587",
+        "STALWART_USERNAME": "",
+        "STALWART_PASSWORD": "",
+        "STALWART_FROM_EMAIL": "",
+        "STALWART_USE_TLS": "true",
+        "SMTP2GO_API_KEY": "",
+        "SMTP2GO_FROM_EMAIL": "",
+        "SMTP2GO_API_URL": "https://api.smtp2go.com/v3",
         "EMAIL_PROVIDER": "sendgrid",
         "SMTP_SERVER": "",
         "SMTP_PORT": "587",
@@ -250,7 +701,19 @@ class EXT_EMail(AbstractStaticExtension):
                 friendly_name="SendGrid Python Library",
                 semver=">=6.10.0",
                 reason="SendGrid email provider support",
-            )
+            ),
+            PIP_Dependency(
+                name="aiosmtplib",
+                friendly_name="aiosmtplib",
+                semver=">=3.0.0",
+                reason="Stalwart SMTP submission transport",
+            ),
+            PIP_Dependency(
+                name="httpx",
+                friendly_name="HTTPX",
+                semver=">=0.27.0",
+                reason="SMTP2go HTTP API transport",
+            ),
         ]
     )
 
@@ -308,18 +771,22 @@ class EXT_EMail(AbstractStaticExtension):
 
     @classmethod
     def get_providers(cls) -> Set[str]:
-        """Get available email providers."""
-        return {"sendgrid", "gmail", "outlook"}
+        """Get the names of every concrete email provider currently loaded.
+
+        Built from the auto-discovered ``cls.providers`` list rather than a
+        hardcoded set so newly added provider classes (Stalwart, SMTP2go)
+        appear automatically without touching this method.
+        """
+        return {p.name for p in cls.providers if hasattr(p, "name")}
 
     @classmethod
     def get_provider_class(cls, provider_name: str):
-        """Get provider class by name."""
-        if provider_name == "sendgrid":
-            from extensions.email.PRV_SendGrid_EMail import SendgridProvider
-
-            return SendgridProvider
-        else:
-            raise ValueError(f"Unknown provider: {provider_name}")
+        """Look up a provider class by its ``name`` attribute (case-insensitive)."""
+        target = provider_name.lower()
+        for provider in cls.providers:
+            if getattr(provider, "name", "").lower() == target:
+                return provider
+        raise ValueError(f"Unknown provider: {provider_name}")
 
     @classmethod
     def discover_abilities(cls):

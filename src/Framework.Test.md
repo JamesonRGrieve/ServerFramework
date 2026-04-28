@@ -246,7 +246,8 @@ Standard fixtures available across all test layers:
 - Provide required overrides (class_under_test, create_fields, update_fields)
 - Use descriptive test method names indicating behavior being tested
 - Keep tests focused on single behavior or scenario
-- Use pytest.mark.dependency for tests with interdependencies
+- Use `pytest.mark.dependency` *sparingly* — only for short vertical chains where one test's failure makes the rest meaningless (e.g., `install_pip → bond → send` in provider tests). Avoid cross-file or cross-module dependency markers; they couple unrelated test files and slow failure discovery instead of expediting it.
+- Prefer parametrization over per-case test methods. Abstract security matrices (e.g., `EMAIL_SECURITY_DENY_MATRIX` in `extensions/AbstractPRVTest.py`) let new providers inherit dozens of denial tests without per-class duplication.
 
 #### Data Management
 - Use provided fixtures for consistent test data

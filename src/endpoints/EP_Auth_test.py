@@ -1454,6 +1454,33 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
 
     @pytest.mark.security
     @pytest.mark.auth
+    def test_GET_user_by_id_path_is_not_exposed(
+        self, server: Any, admin_a: Any, admin_b: Any
+    ) -> None:
+        """The framework deliberately does not expose ``/v1/user/{id}``.
+
+        Regression guard: if someone re-introduces the per-id user route, an
+        IDOR scenario opens immediately. This test must keep failing such a
+        change loudly so reviewers redesign rather than ship the leak.
+        """
+        response = server.get(
+            f"/v1/user/{admin_b.id}",
+            headers=self._get_appropriate_headers(admin_a.jwt),
+        )
+        # 404 or 405 are both acceptable — the route simply must not return
+        # admin_b's record (which would mean status 200 with a User payload).
+        assert response.status_code in (404, 405), (
+            f"/v1/user/{{id}} must not be exposed (would be IDOR); got "
+            f"{response.status_code}: {response.text[:200]}"
+        )
+        if response.status_code == 200:
+            payload = response.json()
+            assert "email" not in payload, (
+                "/v1/user/{id} returned a user record; this is an IDOR vector."
+            )
+
+    @pytest.mark.security
+    @pytest.mark.auth
     def test_POST_no_username_enumeration_in_error(
         self, server: Any, db: Any
     ) -> None:

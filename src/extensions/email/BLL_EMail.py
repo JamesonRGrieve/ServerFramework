@@ -1,5 +1,6 @@
 """
-Email extension business logic - integrates SendGrid into core Provider system
+Email extension business logic - integrates the configured email providers
+(SendGrid, Stalwart, SMTP2go) into the core Provider system.
 """
 
 from lib.Environment import env
@@ -7,43 +8,46 @@ from lib.Logging import logger
 from logic.AbstractLogicManager import HookTiming, hook_bll
 from logic.BLL_Auth import InviteeManager
 
+# Single source of truth for which email providers exist and how to detect
+# whether each is configured. Each tuple is (provider_name, friendly_name,
+# credential_env_var, from_email_env_var). Adding a new provider requires
+# only an entry here plus the corresponding PRV_ class.
+_EMAIL_PROVIDER_REGISTRY = (
+    ("SendGrid", "SendGrid Email Service", "SENDGRID_API_KEY", "SENDGRID_FROM_EMAIL"),
+    ("Stalwart", "Stalwart Mail Server", "STALWART_PASSWORD", "STALWART_FROM_EMAIL"),
+    ("SMTP2go", "SMTP2go Email Service", "SMTP2GO_API_KEY", "SMTP2GO_FROM_EMAIL"),
+)
+
 
 def register_email_providers_hook():
-    """Hook to register email providers in the core Provider table"""
+    """Hook to register every configured email provider in the core Provider table."""
     providers_to_add = []
-
-    # Only add SendGrid if it's configured
-    if env("SENDGRID_API_KEY") and env("SENDGRID_FROM_EMAIL"):
-        providers_to_add.append(
-            {"name": "SendGrid", "friendly_name": "SendGrid Email Service"}
-        )
-        logger.debug("Registering SendGrid provider via email extension hook")
-
+    for name, friendly_name, key_var, from_var in _EMAIL_PROVIDER_REGISTRY:
+        if env(key_var) and env(from_var):
+            providers_to_add.append({"name": name, "friendly_name": friendly_name})
+            logger.debug(f"Registering {name} provider via email extension hook")
     return providers_to_add
 
 
 def register_email_provider_instances_hook():
-    """Hook to register email provider instances in the core ProviderInstance table"""
+    """Hook to register a Root_<Provider> instance for every configured provider."""
     instances_to_add = []
-
-    # Create Root SendGrid instance if configured
-    sendgrid_key = env("SENDGRID_API_KEY")
-    sendgrid_email = env("SENDGRID_FROM_EMAIL")
-
-    if sendgrid_key and sendgrid_email:
-        instances_to_add.append(
-            {
-                "name": "Root_SendGrid",
-                "_provider_name": "SendGrid",  # Will be resolved to provider_id during seeding
-                "api_key": sendgrid_key,
-                "model_name": sendgrid_email,  # Store from_email in model_name field
-                "enabled": True,
-            }
-        )
-        logger.debug(
-            "Registering Root SendGrid provider instance via email extension hook"
-        )
-
+    for name, _friendly, key_var, from_var in _EMAIL_PROVIDER_REGISTRY:
+        key = env(key_var)
+        from_email = env(from_var)
+        if key and from_email:
+            instances_to_add.append(
+                {
+                    "name": f"Root_{name}",
+                    "_provider_name": name,  # Resolved to provider_id during seeding
+                    "api_key": key,
+                    "model_name": from_email,  # Carries from_email through the schema
+                    "enabled": True,
+                }
+            )
+            logger.debug(
+                f"Registering Root_{name} provider instance via email extension hook"
+            )
     return instances_to_add
 
     # @AbstractStaticExtension.db_hook("Seed", "Provider", "inject_seed_data", "before")

@@ -18,7 +18,7 @@ from extensions.AbstractExternalModel import (
     AbstractExternalModel,
     create_external_reference_model,
 )
-from extensions.email.EXT_EMail import AbstractEmailProvider
+from extensions.email.EXT_EMail import AbstractEmailProvider, Capability
 from lib.Dependencies import Dependencies, PIP_Dependency
 from lib.Environment import env
 from lib.Logging import logger
@@ -58,6 +58,11 @@ class SendgridProvider(AbstractEmailProvider):
 
     # Abilities provided by this provider
     _abilities: ClassVar[Set[str]] = {"email_send"}
+
+    # Capability flags. SendGrid is a hosted HTTP API for outbound mail
+    # only; receive-side abilities (list/read/update/threads) are not
+    # part of the API and remain stubbed at the abstract level.
+    capabilities: ClassVar = frozenset({Capability.SEND, Capability.ATTACHMENTS})
 
     # Dependencies
     dependencies: ClassVar[Dependencies] = Dependencies(
@@ -190,6 +195,13 @@ class SendgridProvider(AbstractEmailProvider):
         """
         Send an email using SendGrid.
         """
+        validation_error = cls._validate_send_inputs(
+            recipient, subject, body, attachments
+        )
+        if validation_error:
+            logger.error(validation_error)
+            return validation_error
+
         # Get bonded instance
         bonded = cls.bond_instance(provider_instance)
         if not bonded or not bonded.sdk:
@@ -1252,3 +1264,467 @@ class SendGrid_CampaignManager(AbstractExternalManager):
         except Exception as e:
             logger.error(f"Error getting campaign stats: {e}")
             return None
+
+
+# ============================================================================
+# Stalwart Provider (SMTP submission transport)
+# ============================================================================
+
+# Stalwart is an open-source mail server typically deployed self-hosted.
+# We integrate via the SMTP submission port (587 with STARTTLS) rather than
+# the JMAP API; the SMTP path is universally available across deployments
+# and depends only on aiosmtplib + the standard library's email package.
+try:
+    import aiosmtplib  # noqa: F401
+    from email.message import EmailMessage as _StalwartEmailMessage
+
+    _aiosmtplib_available = True
+except ImportError:
+    _aiosmtplib_available = False
+    import warnings
+
+    warnings.warn(
+        "aiosmtplib package missing, but in PIP_Dependencies, will likely install on run",
+        ImportWarning,
+    )
+
+
+class StalwartProvider(AbstractEmailProvider):
+    """SMTP submission provider for self-hosted Stalwart mail servers."""
+
+    name: ClassVar[str] = "stalwart"
+    version: ClassVar[str] = "1.0.0"
+    description: ClassVar[str] = "Stalwart SMTP submission email provider"
+
+    _abilities: ClassVar[Set[str]] = {"email_send"}
+
+    # Capability flags. Stalwart is a full mail server (SMTP submission +
+    # IMAP + JMAP); the SEND path is wired today via aiosmtplib. IMAP-
+    # backed receive-side abilities (LIST / READ / UPDATE / THREADS) are
+    # tracked under Item 75 of Group 26 and will light up once the typed
+    # provider-instance contract (Item 26) lands.
+    capabilities: ClassVar = frozenset({Capability.SEND, Capability.ATTACHMENTS})
+
+    dependencies: ClassVar[Dependencies] = Dependencies(
+        [
+            PIP_Dependency(
+                name="aiosmtplib",
+                friendly_name="aiosmtplib",
+                semver=">=3.0.0",
+                reason="async SMTP submission transport for Stalwart",
+            )
+        ]
+    )
+
+    _env: ClassVar[Dict[str, Any]] = {
+        "STALWART_HOST": "",
+        "STALWART_PORT": "587",
+        "STALWART_USERNAME": "",
+        "STALWART_PASSWORD": "",
+        "STALWART_FROM_EMAIL": "",
+        "STALWART_USE_TLS": "true",
+    }
+
+    @classmethod
+    def services(cls) -> List[str]:
+        return ["email", "smtp", "messaging"]
+
+    @classmethod
+    def get_platform_name(cls) -> str:
+        return "Stalwart"
+
+    @classmethod
+    def validate_config(cls, instance: Optional[ProviderInstanceModel] = None) -> bool:
+        if not _aiosmtplib_available:
+            logger.error("aiosmtplib package not available")
+            return False
+
+        host = env("STALWART_HOST")
+        username = env("STALWART_USERNAME")
+        password = env("STALWART_PASSWORD")
+        if instance is not None:
+            password = instance.api_key or password
+
+        if not host or not username or not password:
+            logger.error("Stalwart host/username/password not configured")
+            return False
+        return True
+
+    @classmethod
+    def bond_instance(
+        cls, instance: ProviderInstanceModel
+    ) -> Optional[AbstractProviderInstance_SDK]:
+        """Bond an instance by capturing its SMTP connection parameters.
+
+        For SMTP transport there is no long-lived SDK client to wrap; we
+        instead store the connection config in the SDK slot so ``send_email``
+        can open a fresh connection per send (the safe, stateless default).
+        """
+        if not _aiosmtplib_available:
+            logger.error("aiosmtplib package not available")
+            return None
+
+        try:
+            host = env("STALWART_HOST")
+            port = int(env("STALWART_PORT") or "587")
+            username = env("STALWART_USERNAME")
+            password = (instance.api_key if instance else None) or env(
+                "STALWART_PASSWORD"
+            )
+            use_tls = (env("STALWART_USE_TLS") or "true").lower() != "false"
+            from_email = env("STALWART_FROM_EMAIL")
+
+            if not host or not username or not password:
+                logger.error("Stalwart connection parameters missing")
+                return None
+
+            config = {
+                "host": host,
+                "port": port,
+                "username": username,
+                "password": password,
+                "start_tls": use_tls,
+                "from_email": from_email,
+            }
+            return AbstractProviderInstance_SDK(config)
+        except Exception as e:
+            logger.error(f"Failed to bond Stalwart instance: {e}")
+            return None
+
+    @classmethod
+    @ability(name="email_send")
+    async def send_email(
+        cls,
+        provider_instance: ProviderInstanceModel,
+        recipient: str,
+        subject: str,
+        body: str,
+        attachments: Optional[List[str]] = None,
+        importance: str = "normal",
+    ) -> str:
+        """Send an email via SMTP submission to a Stalwart server."""
+        validation_error = cls._validate_send_inputs(
+            recipient, subject, body, attachments
+        )
+        if validation_error:
+            logger.error(validation_error)
+            return validation_error
+
+        if not _aiosmtplib_available:
+            return "Failed to send email: aiosmtplib not installed"
+
+        bonded = cls.bond_instance(provider_instance)
+        if not bonded or not bonded.sdk:
+            return "Failed to send email: could not bond Stalwart instance"
+
+        config = bonded.sdk
+        from_email = (
+            (provider_instance.get_setting("from_email") if provider_instance else None)
+            or config.get("from_email")
+            or env("STALWART_FROM_EMAIL")
+        )
+        if not from_email:
+            return "Failed to send email: Stalwart from_email not configured"
+
+        try:
+            message = _StalwartEmailMessage()
+            message["From"] = from_email
+            message["To"] = recipient
+            message["Subject"] = subject
+            if "<html" in body.lower():
+                message.set_content(body, subtype="html")
+            else:
+                message.set_content(body)
+
+            if attachments:
+                for attachment_path in attachments:
+                    if not os.path.exists(attachment_path):
+                        logger.warning(f"Attachment file not found: {attachment_path}")
+                        continue
+                    with open(attachment_path, "rb") as fh:
+                        data = fh.read()
+                    file_type = (
+                        mimetypes.guess_type(attachment_path)[0]
+                        or "application/octet-stream"
+                    )
+                    maintype, _, subtype = file_type.partition("/")
+                    message.add_attachment(
+                        data,
+                        maintype=maintype or "application",
+                        subtype=subtype or "octet-stream",
+                        filename=os.path.basename(attachment_path),
+                    )
+
+            logger.debug(f"Sending Stalwart email to {recipient} from {from_email}")
+            await aiosmtplib.send(
+                message,
+                hostname=config["host"],
+                port=config["port"],
+                username=config["username"],
+                password=config["password"],
+                start_tls=config["start_tls"],
+            )
+            return f"Email sent successfully to {recipient}"
+        except Exception as e:
+            logger.error(f"Error sending Stalwart email: {e}")
+            return f"Failed to send email: {e}"
+
+    # The remaining email_* abilities are not supported by SMTP submission;
+    # mirror SendGrid's "log warning, return empty" stubs so the abstract
+    # contract is satisfied without pretending to support receive operations.
+
+    @staticmethod
+    @ability(name="email_get")
+    async def get_emails(provider_instance, folder_name="Inbox", max_emails=10, page_size=10):
+        logger.warning("Getting emails is not supported by Stalwart SMTP transport")
+        return []
+
+    @staticmethod
+    @ability(name="email_draft")
+    async def create_draft_email(provider_instance, recipient, subject, body, attachments=None, importance="normal"):
+        logger.warning("Creating drafts is not supported by Stalwart SMTP transport")
+        return "Creating draft emails is not supported by Stalwart"
+
+    @staticmethod
+    @ability(name="email_search")
+    async def search_emails(provider_instance, query, folder_name="Inbox", max_emails=10, date_range=None):
+        logger.warning("Searching emails is not supported by Stalwart SMTP transport")
+        return []
+
+    @staticmethod
+    @ability(name="email_reply")
+    async def reply_to_email(provider_instance, message_id, body, attachments=None):
+        logger.warning("Replying is not supported by Stalwart SMTP transport")
+        return "Replying to emails is not supported by Stalwart"
+
+    @staticmethod
+    @ability(name="email_delete")
+    async def delete_email(provider_instance, message_id):
+        logger.warning("Deleting is not supported by Stalwart SMTP transport")
+        return "Deleting emails is not supported by Stalwart"
+
+    @staticmethod
+    @ability(name="email_attachments")
+    async def process_attachments(provider_instance, message_id):
+        logger.warning("Processing attachments is not supported by Stalwart")
+        return []
+
+
+# ============================================================================
+# SMTP2go Provider (HTTP API transport)
+# ============================================================================
+
+try:
+    import httpx as _httpx  # noqa: F401
+
+    _httpx_available = True
+except ImportError:
+    _httpx_available = False
+    import warnings
+
+    warnings.warn(
+        "httpx package missing, but in PIP_Dependencies, will likely install on run",
+        ImportWarning,
+    )
+
+
+class Smtp2goProvider(AbstractEmailProvider):
+    """SMTP2go email provider using the hosted HTTP API."""
+
+    name: ClassVar[str] = "smtp2go"
+    version: ClassVar[str] = "1.0.0"
+    description: ClassVar[str] = "SMTP2go HTTP API email provider"
+
+    _abilities: ClassVar[Set[str]] = {"email_send"}
+
+    # Capability flags. SMTP2go is a hosted SMTP relay with an HTTP API;
+    # send-only at the inbox level. Suppression/stats/templates abilities
+    # are tracked under Item 95 of Group 26 and light up once Item 37
+    # (typed ability declarations) lands.
+    capabilities: ClassVar = frozenset({Capability.SEND, Capability.ATTACHMENTS})
+
+    dependencies: ClassVar[Dependencies] = Dependencies(
+        [
+            PIP_Dependency(
+                name="httpx",
+                friendly_name="HTTPX",
+                semver=">=0.27.0",
+                reason="HTTP client for SMTP2go API",
+            )
+        ]
+    )
+
+    _env: ClassVar[Dict[str, Any]] = {
+        "SMTP2GO_API_KEY": "",
+        "SMTP2GO_FROM_EMAIL": "",
+        "SMTP2GO_API_URL": "https://api.smtp2go.com/v3",
+    }
+
+    @classmethod
+    def services(cls) -> List[str]:
+        return ["email", "messaging", "communication"]
+
+    @classmethod
+    def get_platform_name(cls) -> str:
+        return "SMTP2go"
+
+    @classmethod
+    def validate_config(cls, instance: Optional[ProviderInstanceModel] = None) -> bool:
+        if not _httpx_available:
+            logger.error("httpx package not available")
+            return False
+        api_key = env("SMTP2GO_API_KEY")
+        if instance is not None:
+            api_key = instance.api_key or api_key
+        if not api_key:
+            logger.error("SMTP2go API key not configured")
+            return False
+        return True
+
+    @classmethod
+    def bond_instance(
+        cls, instance: ProviderInstanceModel
+    ) -> Optional[AbstractProviderInstance_SDK]:
+        if not _httpx_available:
+            logger.error("httpx package not available")
+            return None
+        try:
+            api_key = (instance.api_key if instance else None) or env("SMTP2GO_API_KEY")
+            api_url = env("SMTP2GO_API_URL") or "https://api.smtp2go.com/v3"
+            from_email = env("SMTP2GO_FROM_EMAIL")
+            if not api_key:
+                logger.error("SMTP2go API key missing")
+                return None
+            client = _httpx.AsyncClient(base_url=api_url, timeout=30.0)
+            config = {
+                "client": client,
+                "api_key": api_key,
+                "from_email": from_email,
+                "api_url": api_url,
+            }
+            return AbstractProviderInstance_SDK(config)
+        except Exception as e:
+            logger.error(f"Failed to bond SMTP2go instance: {e}")
+            return None
+
+    @classmethod
+    @ability(name="email_send")
+    async def send_email(
+        cls,
+        provider_instance: ProviderInstanceModel,
+        recipient: str,
+        subject: str,
+        body: str,
+        attachments: Optional[List[str]] = None,
+        importance: str = "normal",
+    ) -> str:
+        """Send an email via SMTP2go's /email/send REST API."""
+        validation_error = cls._validate_send_inputs(
+            recipient, subject, body, attachments
+        )
+        if validation_error:
+            logger.error(validation_error)
+            return validation_error
+
+        if not _httpx_available:
+            return "Failed to send email: httpx not installed"
+
+        bonded = cls.bond_instance(provider_instance)
+        if not bonded or not bonded.sdk:
+            return "Failed to send email: could not bond SMTP2go instance"
+
+        config = bonded.sdk
+        from_email = (
+            (provider_instance.get_setting("from_email") if provider_instance else None)
+            or config.get("from_email")
+            or env("SMTP2GO_FROM_EMAIL")
+        )
+        if not from_email:
+            return "Failed to send email: SMTP2go from_email not configured"
+
+        is_html = "<html" in body.lower()
+        payload: Dict[str, Any] = {
+            "api_key": config["api_key"],
+            "to": [recipient],
+            "sender": from_email,
+            "subject": subject,
+        }
+        if is_html:
+            payload["html_body"] = body
+        else:
+            payload["text_body"] = body
+
+        if attachments:
+            payload_attachments = []
+            for attachment_path in attachments:
+                if not os.path.exists(attachment_path):
+                    logger.warning(f"Attachment file not found: {attachment_path}")
+                    continue
+                with open(attachment_path, "rb") as fh:
+                    encoded = base64.b64encode(fh.read()).decode("ascii")
+                payload_attachments.append(
+                    {
+                        "filename": os.path.basename(attachment_path),
+                        "fileblob": encoded,
+                        "mimetype": (
+                            mimetypes.guess_type(attachment_path)[0]
+                            or "application/octet-stream"
+                        ),
+                    }
+                )
+            if payload_attachments:
+                payload["attachments"] = payload_attachments
+
+        try:
+            client: _httpx.AsyncClient = config["client"]
+            response = await client.post("/email/send", json=payload)
+            if 200 <= response.status_code < 300:
+                logger.debug(f"SMTP2go: email sent successfully to {recipient}")
+                return f"Email sent successfully to {recipient}"
+            return f"Failed to send email: {response.status_code}: {response.text}"
+        except Exception as e:
+            logger.error(f"Error sending SMTP2go email: {e}")
+            return f"Failed to send email: {e}"
+        finally:
+            try:
+                await config["client"].aclose()
+            except Exception:
+                pass
+
+    # SMTP2go is send-only — stub the rest of the abstract contract.
+
+    @staticmethod
+    @ability(name="email_get")
+    async def get_emails(provider_instance, folder_name="Inbox", max_emails=10, page_size=10):
+        logger.warning("Getting emails is not supported by SMTP2go")
+        return []
+
+    @staticmethod
+    @ability(name="email_draft")
+    async def create_draft_email(provider_instance, recipient, subject, body, attachments=None, importance="normal"):
+        logger.warning("Creating drafts is not supported by SMTP2go")
+        return "Creating draft emails is not supported by SMTP2go"
+
+    @staticmethod
+    @ability(name="email_search")
+    async def search_emails(provider_instance, query, folder_name="Inbox", max_emails=10, date_range=None):
+        logger.warning("Searching emails is not supported by SMTP2go")
+        return []
+
+    @staticmethod
+    @ability(name="email_reply")
+    async def reply_to_email(provider_instance, message_id, body, attachments=None):
+        logger.warning("Replying is not supported by SMTP2go")
+        return "Replying to emails is not supported by SMTP2go"
+
+    @staticmethod
+    @ability(name="email_delete")
+    async def delete_email(provider_instance, message_id):
+        logger.warning("Deleting is not supported by SMTP2go")
+        return "Deleting emails is not supported by SMTP2go"
+
+    @staticmethod
+    @ability(name="email_attachments")
+    async def process_attachments(provider_instance, message_id):
+        logger.warning("Processing attachments is not supported by SMTP2go")
+        return []

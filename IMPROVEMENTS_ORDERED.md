@@ -2190,3 +2190,142 @@ The work is organized into four roughly-parallel tracks once the eight Critical-
 
 The expected Critical-path completion is the gate for opening provider work; the remaining items can be landed iteratively while provider authorship begins on the now-stable foundation. Track D items are gating for the *first PyPI publish* (Item 86) and the *first production deployment* (Items 79, 81), but not for in-tree provider authorship.
 
+---
+
+# Group 26 — Email Extension Reshape (post-prereq backlog)
+
+These items capture work on the email extension's API surface that was scoped during the security-audit / Stalwart-and-SMTP2go effort but is gated on the framework primitives in Groups 1–10. Each line item names the specific upstream Items it depends on so the work can be lit up in the order the prereqs land.
+
+The Phase-1 work that did **not** require any of those prereqs (typed value models, capability flags, the friendly `send`/`update_email`/`list_emails` surface, and the `EmailMessage`-aware security mixin) shipped in `claude/security-audit-email-EqBda` ahead of this group. Everything below is the deferred remainder.
+
+## Item 88 — Email reshape: typed-error migration
+
+**Severity:** High
+**Scope:** `AbstractEmailProvider`, `SendgridProvider`, `StalwartProvider`, `Smtp2goProvider`, `AbstractEmailProviderSecurityTests`.
+**Owner area:** Email extension.
+**Prereq:** Item 1 (typed external-error hierarchy). Cross-refs Items 2 (rotation policy), 27 (health check).
+
+**Purpose.** Today every email-provider entry point returns `str` for both success and failure (`"Email sent successfully to ..."` vs `"Failed to send email: ..."`), and the security-deny tests substring-match on the result. After Item 1 lands, the email surface migrates to raise typed exceptions on failure and return `SentMessage` (id + provider + accepted-at) on success; the security mixin re-targets to `with pytest.raises(InvalidInputExternalError)` and to assert on the typed payload.
+
+**Implementation.** Map the existing failure strings produced by `_validate_send_inputs` to `InvalidInputExternalError` subclasses (`EmailHeaderInjectionError`, `EmailPayloadTooLargeError`, `EmailMalformedAddressError`, `EmailAttachmentTraversalError`). Map upstream 4xx/5xx/429/auth-failure to the canonical `InvalidInputExternalError` / `TransientExternalError` / `RateLimitExternalError` / `AuthExternalError` per Item 1. The legacy `send_email(...) -> str` contract stays as a deprecation-aliased shim that catches the new exceptions and re-stringifies for one release; new callers use `send(EmailMessage)` which raises.
+
+**Acceptance.** `pytest -m security` asserts `with pytest.raises(EmailHeaderInjectionError)` for CRLF cases, etc. The string-substring matchers are removed. SendGrid+Stalwart+SMTP2go each route at least one upstream-failure shape (401, 429, 503) into the correct typed exception, verified by integration tests gated on real credentials per Item 15.
+
+## Item 89 — Email reshape: bond to AbstractProviderInstance contract
+
+**Severity:** High
+**Scope:** `AbstractEmailProvider`, `AbstractEmailProviderInstance` (new), all three concrete providers.
+**Owner area:** Email extension.
+**Prereq:** Item 26 (explicit `AbstractProviderInstance` contract). Cross-refs Item 37 (typed Settings/abilities).
+
+**Purpose.** Phase-1 introduced friendly classmethods on `AbstractEmailProvider` (`send`, `update_email`, `list_emails`) that take `provider_instance` as a positional arg. This is correct Phase-1 shape but threaded through every call. Item 26 promotes `AbstractProviderInstance` to a real ABC; once it lands, the email extension defines `AbstractEmailProviderInstance(AbstractProviderInstance)` carrying the eight typed abilities (`send`, `send_bulk`, `list_emails`, `get_email`, `update_email`, `reply`, `download_attachment`, `list_threads`) so call sites become `bonded.send(message)` instead of `Provider.send(provider_instance, message)`.
+
+**Implementation.** `AbstractEmailProviderInstance` declares the eight abstracts and a typed `capabilities: ClassVar[FrozenSet[Capability]]` (lifted from Phase-1's class-level capability flag). `bond_instance` returns the typed instance; `_instance` is declared as a typed `ClassVar` per Item 26 and a mypy gate enforces the contract. The Phase-1 classmethods on `AbstractEmailProvider` become `@deprecated` shims that delegate to the bonded instance for one release.
+
+**Acceptance.** `mypy` rejects a concrete provider whose `bond_instance` returns a non-`AbstractEmailProviderInstance`. New callers use `bonded = Provider.bond_instance(model); await bonded.send(msg)`. The Phase-1 surface keeps working through deprecation warnings.
+
+## Item 90 — Email reshape: typed Settings, EnvSchema, Secret-marked credentials
+
+**Severity:** Medium
+**Scope:** `AbstractEmailProvider`, all three concrete providers, BLL hook registration.
+**Owner area:** Email extension / configuration.
+**Prereq:** Item 37 (typed `ProviderSettings` and ability declarations). Cross-refs Items 32 (credential vault) and 50 (sandbox/live discriminator).
+
+**Purpose.** The current `_env: Dict[str, Any]` (`SENDGRID_API_KEY`, `STALWART_PASSWORD`, `SMTP2GO_API_KEY`, etc.) is a stringly-typed dict with no Pydantic validation, no `Secret` markers, and no startup-time error when a required value is missing. After Item 37 lands, each abstract provider declares `Settings` as an inner Pydantic model, and `_env` becomes an `EnvSchema` with typed names, defaults, required flags, and `Secret`-marked sensitive values that integrate with Item 32's redaction.
+
+**Implementation.** `AbstractEmailProvider.Settings` declares the shared shape (`from_email: EmailStr`, `default_provider_name: Optional[str]`, etc.). Each concrete provider extends it: `SendgridProvider.Settings(from_email: EmailStr, api_key: Secret[str])`, `StalwartProvider.Settings(host: str, port: int = 587, username: str, password: Secret[str], use_tls: bool = True, from_email: EmailStr)`, `Smtp2goProvider.Settings(api_key: Secret[str], from_email: EmailStr, api_url: HttpUrl = "https://api.smtp2go.com/v3")`. The startup check refuses to boot if a required value is missing for any registered provider. The `BLL_EMail._EMAIL_PROVIDER_REGISTRY` tuple-loop is replaced by iterating over registered provider classes whose `Settings.is_configured()` is true.
+
+**Acceptance.** A deployment missing `SENDGRID_API_KEY` while `EMAIL_PROVIDER=sendgrid` produces a clear startup error naming the field. `Secret`-marked fields never appear in log output (Item 32 redaction). The BLL hooks no longer need a hardcoded registry tuple — the typed Settings drive registration.
+
+## Item 91 — Email reshape: idempotent send + bulk send
+
+**Severity:** High
+**Scope:** `AbstractEmailProviderInstance.send`, new `send_bulk`, all three concrete providers.
+**Owner area:** Email extension.
+**Prereq:** Item 4 (idempotency primitive), Item 12 (bulk endpoint expression). Cross-refs Item 1.
+
+**Purpose.** A 5xx retry storm sends the same invitation email twice. `EmailMessage` carries no idempotency slot today. After Item 4 lands, `send_via_provider` is decorated `@idempotent` and the framework's key derivation handles retry safety; after Item 12 lands, `send_bulk_via_provider` is added as a true batch endpoint that returns per-recipient typed errors instead of looping over single sends.
+
+**Implementation.** Decorate `send_via_provider` with `@idempotent`. Implement `send_bulk_via_provider` for SendGrid (`personalizations` array, up to 1000 recipients), SMTP2go (`to[]` array, up to 1000), Stalwart (multiple `RCPT TO` in one DATA). Each per-item rejection surfaces as a typed `InvalidInputExternalError` with the specific recipient in the error payload. Stalwart's batch path is opportunistic — most SMTP submission servers accept multiple `RCPT TO` against one `MAIL FROM`, but some enforce a single recipient; the provider declares the supported batch size and the framework falls back to a serial loop for providers that don't support batching.
+
+**Acceptance.** A 1000-recipient invitation send issues one upstream call to SendGrid/SMTP2go and surfaces 17 invalid addresses as 17 individual typed errors. A retry of `send` after a 503 carries the same idempotency key as the first attempt; the upstream returns the prior result rather than creating a duplicate.
+
+## Item 92 — Email reshape: auth-strategy adoption (Stalwart BasicAuth)
+
+**Severity:** Medium
+**Scope:** `StalwartProvider.bond_instance`, `SendgridProvider.bond_instance`, `Smtp2goProvider.bond_instance`.
+**Owner area:** Email extension.
+**Prereq:** Item 10 (pluggable AuthStrategy).
+
+**Purpose.** Today each provider's `bond_instance` reaches into env directly for credentials. Stalwart specifically bundles host/port/username/password/use_tls into a config dict that's passed by hand. After Item 10 lands, Stalwart declares `default_auth_strategy = BasicAuth` and the bonding layer resolves the credential blob through the registry; SendGrid and SMTP2go declare `default_auth_strategy = APIKeyAuth`. This unblocks a future `EXT_Auth_OAuth` from contributing `OAuth2Auth` for Workspace impersonation or Microsoft Graph without touching the email providers.
+
+**Implementation.** Each `bond_instance` calls `auth_strategy = AuthStrategyRegistry.get(instance.auth_strategy_name or cls.default_auth_strategy_name)` and passes the strategy into the bonded instance. Strategy `headers_for(requester)` is consulted by the shared HTTP client (Item 31) for SendGrid/SMTP2go; for Stalwart, the strategy yields `(username, password)` for the SMTP AUTH handshake.
+
+**Acceptance.** A `Root_Stalwart` instance with `auth_strategy_name="basic"` authenticates correctly. A future Workspace integration registers `OAuth2Auth` and a per-user `Stalwart` instance with `auth_strategy_name="oauth2"` works without modifying `StalwartProvider`.
+
+## Item 93 — Email reshape: federation translators (FieldMapping, Paginator, QueryDSL)
+
+**Severity:** Medium
+**Scope:** `AbstractEmailProviderInstance.list_emails`, `AbstractEmailProvider`-level field mappings.
+**Owner area:** Email extension.
+**Prereq:** Items 6 (FieldMapping pipeline), 7 (Pagination homogenization), 8 (Search DSL translation).
+
+**Purpose.** Phase-1's `list_emails(*, folder, query, limit, cursor)` takes a raw string cursor and a free-form query string. Once Items 6/7/8 land, this becomes typed throughout: cursors round-trip through `next_token` envelopes per Item 7, queries pass through `AbstractQueryDSLTranslator` per Item 8, and the `EmailMessage` ↔ provider DTO translation is declared via `field_mappings = [...]` per Item 6 instead of being open-coded in each `send_email` body.
+
+**Implementation.** Stalwart declares `paginator = PageTokenPaginator` (or `CursorPaginator` if JMAP) and `query_translator = IMAPSearchTranslator`. SendGrid and SMTP2go's log/messages-search endpoints declare `KeyValueTranslator`. `EmailAddress(name, address)` ↔ RFC 5322 mailbox roundtrip becomes `Compose`/`Decompose` mappings. `Importance` enum ↔ provider-specific headers becomes `EnumRemap`. Round-trip tests run automatically per Item 6's acceptance criteria.
+
+**Acceptance.** A `list_emails(query="from:alice", limit=50)` against Stalwart issues a correct IMAP `SEARCH FROM alice` command without per-provider translation code. A 200-message paged list returns `next_token` opaque cursors that round-trip cleanly across providers. Field-mapping round-trip tests pass for every declared `EmailMessage` field.
+
+## Item 94 — Email reshape: inbound webhook handlers
+
+**Severity:** Medium
+**Scope:** `EXT_EMail` webhook registration, per-provider `verify_signature`, hook fan-out into `Email_*Manager` AFTER hooks.
+**Owner area:** Email extension.
+**Prereq:** Item 5 (inbound webhook handler infrastructure).
+
+**Purpose.** SendGrid Event Webhook delivers `bounce`, `delivered`, `open`, `click`, `spam_report`, `unsubscribe` events. SMTP2go has bounce-activity webhooks. SendGrid Inbound Parse delivers received mail through HTTP POST. Stalwart can be configured to POST custom hooks on inbound mail. None of these are wired today. After Item 5 lands, each provider registers `@webhook_handler(EXT_Email, provider="sendgrid", event="bounce")` style handlers; signature verification is mandatory; events fan into the same hook bus that internal `Email_*Manager` mutations fire.
+
+**Implementation.** SendGrid: `verify_signature` checks the `ECDSA-SHA256` signature against `SENDGRID_WEBHOOK_PUBLIC_KEY`; events are dispatched on `event` field. SMTP2go: bearer-token check on `SMTP2GO_WEBHOOK_SECRET`. Stalwart: HMAC-SHA256 over body with `STALWART_WEBHOOK_SECRET`. A canonical `EmailDeliveryEvent(message_id, provider, event_type, recipient, timestamp, raw)` model normalizes the payload across providers; downstream consumers (suppression-list hook, bounce-tracking metrics, inbound-parse-routing) bind to the normalized model.
+
+**Acceptance.** A SendGrid bounce webhook hits `/webhook/email/sendgrid/bounce`, signature verifies, the canonical `EmailDeliveryEvent` fans into the AFTER-update hook chain, and a downstream consumer (e.g. Item 67's suppression list) records the bounce automatically. A signature failure produces 401 without invoking the handler.
+
+## Item 95 — Email reshape: capability ladder (validation, templates, suppression, stats)
+
+**Severity:** Medium
+**Scope:** New abilities on `AbstractEmailProviderInstance`, opt-in implementation per provider.
+**Owner area:** Email extension.
+**Prereq:** Items 26 (provider-instance contract), 37 (typed abilities), 12 (bulk for batch validate). Cross-refs Item 6 (template field mapping).
+
+**Purpose.** Beyond `send` and `list_emails`, every shipped provider has a non-trivial set of administrative abilities the framework currently ignores: pre-flight email-address validation (SendGrid `/v3/validations/email`, SMTP2go `/v3/email-validation`); server-side templates (SendGrid dynamic templates, SMTP2go templates, Stalwart local-file render); suppression-list management (SendGrid `suppression/*`, SMTP2go `bounces`/`unsubscribes`, Stalwart synth-from-queue); send statistics and history. Phase-1 surfaces none of these. Each is a typed ability, opt-in per provider via `Capability` flags.
+
+**Implementation.** Define typed abilities `validate_address`, `send_with_template`, `list_suppressions`, `add_suppression`, `remove_suppression`, `get_stats`, `list_messages` on `AbstractEmailProviderInstance`. Each provider declares the subset it supports in `capabilities`; calling an unsupported ability raises `NotSupportedError(provider, capability)` rather than silently returning empty. SendGrid's contact/template/campaign external models that already exist in `PRV_SendGrid_EMail.py` migrate to declare these abilities cleanly through Item 6's field-mapping pipeline.
+
+**Acceptance.** A caller branches on `Capability.VALIDATE_ADDRESS in bonded.capabilities` before invoking; a SendGrid+SMTP2go deployment can dedup-validate addresses in batch before send; a Stalwart-only deployment skips the validation step. Suppression-list hooks (Item 66 webhook → Item 67 add_suppression) keep `bounces` current automatically.
+
+## Item 96 — Email reshape: ops policies (rate limit, health, degradation, deadlines, residency)
+
+**Severity:** Medium
+**Scope:** Per-provider declarations; integration with rotation, health, deadline, outbox, residency primitives.
+**Owner area:** Email extension.
+**Prereq:** Items 17 (rate limit), 27 (health check), 47 (deadline propagation), 48 (degradation policy), 35 (outbox), 36 (residency). Cross-refs Items 2, 31.
+
+**Purpose.** Email-specific ops policies are declarations, not code: rate limits per upstream tier, health-check endpoint, fail-fast vs queue-and-retry per ability, residency-tagged provider instances. These light up automatically once the framework primitives land.
+
+**Implementation.** SendGrid: `rate_limit = RateLimit(rps=10, burst=20)` (free tier; configurable per instance for paid tiers). `health_check` calls `GET /v3/scopes` with the API key. SMTP2go: `rate_limit = RateLimit(rps=100, burst=200)` (paid tier default); `health_check` calls `GET /v3/stats/email_summary`. Stalwart: `rate_limit` reads the local server's submission queue limit; `health_check` performs `NOOP` over a kept SMTP connection. `degradation_policy = FailFast()` is declared on transactional abilities (`send` for invitation/password-reset/MFA contexts), `degradation_policy = QueueAndRetry()` on marketing-tagged sends. EU/US residency variants of SendGrid are declared as residency-tagged provider instances per Item 36.
+
+**Acceptance.** An invitation send during a SendGrid outage surfaces 500 fast (FailFast); a marketing send during the same outage returns 202 with a tracking id and drains from the outbox once SendGrid recovers (QueueAndRetry). A SendGrid 429 storm pauses the provider per Item 17 without rotation. A health check failure marks the provider DOWN per Item 27.
+
+## Item 97 — Email reshape: shared HTTP client routing + credential vault migration
+
+**Severity:** Medium
+**Scope:** SendGrid SDK transport hook, SMTP2go HTTP calls, Stalwart credential resolution.
+**Owner area:** Email extension.
+**Prereq:** Items 31 (ProviderHTTPClient), 32 (credential vault), 50 (sandbox/live).
+
+**Purpose.** SendGrid's SDK and SMTP2go's `httpx` calls today bypass the framework's cross-cutting HTTP layer (no shared trace propagation, no shared retry/backoff, no shared rate-limit token bucket, no shared idempotency-key injection, no shared log redaction). After Item 31 lands, both providers route through `ProviderHTTPClient`. After Item 32 lands, `SENDGRID_API_KEY` / `STALWART_PASSWORD` / `SMTP2GO_API_KEY` become `CredentialRef` resolved through OpenBao, env-var fallback, or encrypted column. Item 50's `_TEST` / `_LIVE` discriminator picks the right key per environment.
+
+**Implementation.** SendGrid SDK accepts a custom HTTP transport (the `python-http-client` underlying it has a `session` setter); replace with `ProviderHTTPClient` instance. SMTP2go is direct `httpx` already; swap for shared client. Stalwart's SMTP transport is exempt from HTTP cross-cutting (documented; SMTP submission is a long-lived TCP stream, not request/response). Credential resolution moves to per-request through `instance.api_key.resolve()` rather than per-bond. A SendGrid 401 cache-busts the credential per Item 32.
+
+**Acceptance.** A SendGrid send produces a coherent trace across the framework's tracing backend (Item 34). A SendGrid 429 is throttled by the shared token bucket without producing a 429 storm. Credentials never appear in log output. Rotating `SENDGRID_API_KEY` in OpenBao takes effect within one renewal cycle without a framework restart.
+
+
