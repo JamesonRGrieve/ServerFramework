@@ -18,7 +18,7 @@ from extensions.AbstractExternalModel import (
     AbstractExternalModel,
     create_external_reference_model,
 )
-from extensions.email.EXT_EMail import AbstractEmailProvider
+from extensions.email.EXT_EMail import AbstractEmailProvider, Capability
 from lib.Dependencies import Dependencies, PIP_Dependency
 from lib.Environment import env
 from lib.Logging import logger
@@ -58,6 +58,11 @@ class SendgridProvider(AbstractEmailProvider):
 
     # Abilities provided by this provider
     _abilities: ClassVar[Set[str]] = {"email_send"}
+
+    # Capability flags. SendGrid is a hosted HTTP API for outbound mail
+    # only; receive-side abilities (list/read/update/threads) are not
+    # part of the API and remain stubbed at the abstract level.
+    capabilities: ClassVar = frozenset({Capability.SEND, Capability.ATTACHMENTS})
 
     # Dependencies
     dependencies: ClassVar[Dependencies] = Dependencies(
@@ -1293,6 +1298,13 @@ class StalwartProvider(AbstractEmailProvider):
 
     _abilities: ClassVar[Set[str]] = {"email_send"}
 
+    # Capability flags. Stalwart is a full mail server (SMTP submission +
+    # IMAP + JMAP); the SEND path is wired today via aiosmtplib. IMAP-
+    # backed receive-side abilities (LIST / READ / UPDATE / THREADS) are
+    # tracked under Item 75 of Group 26 and will light up once the typed
+    # provider-instance contract (Item 26) lands.
+    capabilities: ClassVar = frozenset({Capability.SEND, Capability.ATTACHMENTS})
+
     dependencies: ClassVar[Dependencies] = Dependencies(
         [
             PIP_Dependency(
@@ -1524,6 +1536,12 @@ class Smtp2goProvider(AbstractEmailProvider):
     description: ClassVar[str] = "SMTP2go HTTP API email provider"
 
     _abilities: ClassVar[Set[str]] = {"email_send"}
+
+    # Capability flags. SMTP2go is a hosted SMTP relay with an HTTP API;
+    # send-only at the inbox level. Suppression/stats/templates abilities
+    # are tracked under Item 95 of Group 26 and light up once Item 37
+    # (typed ability declarations) lands.
+    capabilities: ClassVar = frozenset({Capability.SEND, Capability.ATTACHMENTS})
 
     dependencies: ClassVar[Dependencies] = Dependencies(
         [
