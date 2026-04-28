@@ -254,6 +254,108 @@ class AbstractEmailProvider(AbstractStaticProvider):
 
         return None
 
+    @classmethod
+    def _validate_message(cls, message: "EmailMessage") -> Optional[str]:
+        """Apply the same denial rules as ``_validate_send_inputs`` against
+        the typed ``EmailMessage`` shape, including ``cc`` / ``bcc`` /
+        ``reply_to`` / ``from_`` and the ``headers`` dict.
+
+        Returns ``None`` on pass, an error string on reject. The bytes-based
+        attachment shape (``Attachment(filename, content)``) is validated for
+        filename safety only; the framework owns the content and never lets
+        the caller name a path that does not exist."""
+        # Subject: CRLF / NUL / length.
+        if not isinstance(message.subject, str):
+            return "Failed to send email: invalid subject (must be string)"
+        if "\r" in message.subject or "\n" in message.subject:
+            return "Failed to send email: rejected CRLF in subject"
+        if "\x00" in message.subject:
+            return "Failed to send email: rejected NUL byte in input"
+        if len(message.subject.encode("utf-8")) > _EMAIL_MAX_SUBJECT_OCTETS:
+            return "Failed to send email: subject exceeds 998 octets"
+
+        # Bodies: NUL + size cap.
+        for label, body in (("body_text", message.body_text), ("body_html", message.body_html)):
+            if body is None:
+                continue
+            if not isinstance(body, str):
+                return f"Failed to send email: invalid {label} (must be string)"
+            if "\x00" in body:
+                return "Failed to send email: rejected NUL byte in input"
+            if len(body.encode("utf-8", errors="replace")) > _EMAIL_MAX_BODY_BYTES:
+                return "Failed to send email: body exceeds 10 MiB cap"
+
+        # Address fields: every ``EmailAddress`` everywhere on the message.
+        addr_groups: List[tuple] = [("to", message.to), ("cc", message.cc), ("bcc", message.bcc)]
+        for label, group in addr_groups:
+            for entry in group:
+                err = cls._validate_email_address(entry, label)
+                if err:
+                    return err
+        for label, single in (("reply_to", message.reply_to), ("from", message.from_)):
+            if single is None:
+                continue
+            err = cls._validate_email_address(single, label)
+            if err:
+                return err
+
+        # Custom headers: CRLF and NUL guard. Header names must be tokens.
+        for h_name, h_value in (message.headers or {}).items():
+            if not isinstance(h_name, str) or not isinstance(h_value, str):
+                return "Failed to send email: invalid custom header"
+            if "\r" in h_name or "\n" in h_name or "\r" in h_value or "\n" in h_value:
+                return "Failed to send email: rejected CRLF in custom header"
+            if "\x00" in h_name or "\x00" in h_value:
+                return "Failed to send email: rejected NUL byte in custom header"
+
+        # Attachments: bytes shape — validate filename safety only.
+        for att in message.attachments or []:
+            if not isinstance(att.filename, str) or not att.filename:
+                return "Failed to send email: invalid attachment filename"
+            if "\x00" in att.filename:
+                return "Failed to send email: rejected NUL byte in attachment filename"
+            if "\r" in att.filename or "\n" in att.filename:
+                return "Failed to send email: rejected CRLF in attachment filename"
+            if att.content is None:
+                return "Failed to send email: attachment content missing"
+            if len(att.content) > _EMAIL_MAX_BODY_BYTES:
+                return "Failed to send email: attachment exceeds 10 MiB cap"
+
+        return None
+
+    @staticmethod
+    def _validate_email_address(entry: "EmailAddress", label: str) -> Optional[str]:
+        """Validate a single ``EmailAddress`` for header-injection-safe use."""
+        addr = entry.address if entry else ""
+        name = entry.name if entry else None
+
+        if not isinstance(addr, str) or not addr:
+            return f"Failed to send email: invalid {label} (empty address)"
+        if "\r" in addr or "\n" in addr:
+            return f"Failed to send email: rejected CRLF in {label}"
+        if "\x00" in addr:
+            return "Failed to send email: rejected NUL byte in input"
+        if name is not None:
+            if not isinstance(name, str):
+                return f"Failed to send email: invalid {label} display name"
+            if "\r" in name or "\n" in name:
+                return f"Failed to send email: rejected CRLF in {label} display name"
+            if "\x00" in name:
+                return "Failed to send email: rejected NUL byte in input"
+
+        # Validate the address shape itself.
+        _, parsed = parseaddr(addr)
+        if not parsed or "@" not in parsed or parsed.count("@") != 1:
+            return f"Failed to send email: invalid {label} address"
+        local, _, domain = parsed.partition("@")
+        if not local or not domain or "." not in domain:
+            return f"Failed to send email: invalid {label} address"
+        try:
+            parsed.encode("ascii")
+        except UnicodeEncodeError:
+            return f"Failed to send email: non-ASCII {label} (suspected homograph)"
+        return None
+
     @staticmethod
     @abstractmethod
     @ability(name="email_get")
