@@ -1861,7 +1861,9 @@ class ModelRegistry(AbstractRegistry):
         }
         logger.info(f"Migration target database: {custom_db_info}")
 
-        migration_manager = MigrationManager(custom_db_info=custom_db_info)
+        migration_manager = MigrationManager(
+            custom_db_info=custom_db_info, model_registry=self
+        )
         extensions_csv = self.extension_registry.csv if self.extension_registry else ""
 
         result = migration_manager.run_all_migrations(
@@ -2217,6 +2219,50 @@ class ModelRegistry(AbstractRegistry):
             f"SQLAlchemy model creation complete. Created {len(self.db_models)} models"
         )
         logger.debug(f"Models in registry: {list(self.db_models.keys())}")
+
+        self._stamp_extension_table_ownership()
+
+    def _stamp_extension_table_ownership(self) -> None:
+        """Mark each SA table with its owning extension(s) via Table.info.
+
+        - table.info["extension"] = "<name>"   for tables defined in an
+          extension module (e.g. multifactor_methods owned by auth_mfa).
+        - table.info["extensions"] = {"<name>", ...}   for *core* tables
+          extended by extensions via @extension_model (e.g. payment adds
+          columns onto users).
+
+        Migration.py reads these to decide which tables belong to which
+        extension's autogenerate run, replacing the prior 100-line fuzzy
+        stringcase-based fallback.
+        """
+
+        def _ext_name(module_path: str) -> Optional[str]:
+            parts = (module_path or "").split(".")
+            if len(parts) >= 2 and parts[0] == "extensions":
+                return parts[1]
+            return None
+
+        for pydantic_model, sa_model in self.db_models.items():
+            table = getattr(sa_model, "__table__", None)
+            if table is None:
+                continue
+            owner = _ext_name(pydantic_model.__module__)
+            if owner:
+                table.info["extension"] = owner
+
+        for target_pydantic, extension_pydantics in self.extension_models.items():
+            sa_model = self.db_models.get(target_pydantic)
+            if sa_model is None or not hasattr(sa_model, "__table__"):
+                continue
+            extending = {
+                _ext_name(ext.__module__)
+                for ext in extension_pydantics
+                if _ext_name(ext.__module__)
+            }
+            if extending:
+                sa_model.__table__.info.setdefault("extensions", set()).update(
+                    extending
+                )
 
     def _generate_routers(self) -> None:
         """Generate FastAPI routers for bound models."""
