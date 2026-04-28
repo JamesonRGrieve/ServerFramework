@@ -1840,4 +1840,17 @@ These items capture work on the email extension's API surface that was scoped du
 
 The Phase-1 work that did **not** require any of those prereqs (typed value models, capability flags, the friendly `send`/`update_email`/`list_emails` surface, and the `EmailMessage`-aware security mixin) shipped in `claude/security-audit-email-EqBda` ahead of this group. Everything below is the deferred remainder.
 
+## Item 60 — Email reshape: typed-error migration
+
+**Severity:** High
+**Scope:** `AbstractEmailProvider`, `SendgridProvider`, `StalwartProvider`, `Smtp2goProvider`, `AbstractEmailProviderSecurityTests`.
+**Owner area:** Email extension.
+**Prereq:** Item 1 (typed external-error hierarchy). Cross-refs Items 2 (rotation policy), 27 (health check).
+
+**Purpose.** Today every email-provider entry point returns `str` for both success and failure (`"Email sent successfully to ..."` vs `"Failed to send email: ..."`), and the security-deny tests substring-match on the result. After Item 1 lands, the email surface migrates to raise typed exceptions on failure and return `SentMessage` (id + provider + accepted-at) on success; the security mixin re-targets to `with pytest.raises(InvalidInputExternalError)` and to assert on the typed payload.
+
+**Implementation.** Map the existing failure strings produced by `_validate_send_inputs` to `InvalidInputExternalError` subclasses (`EmailHeaderInjectionError`, `EmailPayloadTooLargeError`, `EmailMalformedAddressError`, `EmailAttachmentTraversalError`). Map upstream 4xx/5xx/429/auth-failure to the canonical `InvalidInputExternalError` / `TransientExternalError` / `RateLimitExternalError` / `AuthExternalError` per Item 1. The legacy `send_email(...) -> str` contract stays as a deprecation-aliased shim that catches the new exceptions and re-stringifies for one release; new callers use `send(EmailMessage)` which raises.
+
+**Acceptance.** `pytest -m security` asserts `with pytest.raises(EmailHeaderInjectionError)` for CRLF cases, etc. The string-substring matchers are removed. SendGrid+Stalwart+SMTP2go each route at least one upstream-failure shape (401, 429, 503) into the correct typed exception, verified by integration tests gated on real credentials per Item 15.
+
 
