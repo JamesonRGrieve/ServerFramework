@@ -15,6 +15,10 @@ import stringcase
 from lib.Dependencies import Dependencies
 from lib.Environment import AbstractRegistry, env
 from lib.Logging import logger
+from lib.Paths import (
+    extensions_dir as _resolve_extensions_dir,
+    src_dir as _resolve_src_dir,
+)
 from lib.Pydantic import classproperty
 from logic.BLL_Providers import ProviderInstanceModel, RotationManager
 
@@ -145,7 +149,11 @@ class ExtensionRegistry(AbstractRegistry):
                 f"/extensions/{extension_name}{path} -> {method_name}"
             )
 
-    def __init__(self, extensions_csv: str):
+    def __init__(
+        self,
+        extensions_csv: str,
+        extensions_path: Optional[str] = None,
+    ):
         import glob
         import importlib
         import inspect
@@ -170,6 +178,16 @@ class ExtensionRegistry(AbstractRegistry):
         self.extension_providers = {}  # Maps extension name to list of provider classes
         self.provider_abilities = {}  # Maps provider class to list of abilities
 
+        # Per-instance override for the extensions root. ``None`` means "use
+        # the bundled <src_dir>/extensions". Resolved through Paths so a
+        # caller-supplied path (e.g. ``serverframework.run(extensions_path=…)``)
+        # is honored without disturbing existing call sites.
+        self.extensions_path: Optional[str] = (
+            _resolve_extensions_dir(extensions_path)
+            if extensions_path is not None
+            else None
+        )
+
         # Load extensions from CSV
         if not extensions_csv:
             logger.debug("No extensions configured for registry")
@@ -183,14 +201,16 @@ class ExtensionRegistry(AbstractRegistry):
             logger.debug("No valid extension names found")
             return
 
-        # Get the source directory
-        src_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        # Resolve the extensions root once. When no override is provided this
+        # reproduces the historical ``<src_dir>/extensions`` lookup.
+        extensions_root = self._extensions_root()
+        src_dir = _resolve_src_dir()
 
         # Register each requested extension - dependencies will be handled automatically
         for extension_name in extension_names:
             try:
                 # Find the extension module
-                scope_dir = os.path.join(src_dir, "extensions", extension_name)
+                scope_dir = os.path.join(extensions_root, extension_name)
                 if not os.path.exists(scope_dir):
                     logger.warning(f"Extension directory not found: {scope_dir}")
                     continue
@@ -266,6 +286,21 @@ class ExtensionRegistry(AbstractRegistry):
                     )
             except Exception as e:
                 logger.error(f"Failed to load extension {extension_name}: {e}")
+
+    def _extensions_root(self) -> str:
+        """Resolve the extensions root for this registry instance.
+
+        Honors a per-instance ``extensions_path`` override; otherwise falls
+        back to the framework default (``<src_dir>/extensions`` or whatever
+        ``Paths.set_extensions_root`` has configured globally).
+        """
+        return _resolve_extensions_dir(self.extensions_path)
+
+    def _extension_dir(self, extension_name: str) -> str:
+        """Path to a specific extension's directory under the active root."""
+        import os
+
+        return os.path.join(self._extensions_root(), extension_name)
 
     @property
     def csv(self) -> str:
@@ -378,9 +413,9 @@ class ExtensionRegistry(AbstractRegistry):
             # Try to load the dependency extension
             try:
                 # Import the dependency extension module
-                src_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                src_dir = _resolve_src_dir()
                 dep_module_pattern = os.path.join(
-                    src_dir, "extensions", dep_name, "EXT_*.py"
+                    self._extension_dir(dep_name), "EXT_*.py"
                 )
                 dep_files = glob.glob(dep_module_pattern)
 
@@ -464,18 +499,15 @@ class ExtensionRegistry(AbstractRegistry):
                         continue
 
                 # Get the source directory to make the pattern absolute
-                src_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                src_dir = _resolve_src_dir()
 
-                # Find both BLL and PRV files in the extension directory
+                # Find both BLL and PRV files in the extension directory.
+                # Use ``_extension_dir`` so an external extensions root
+                # (set via ``extensions_path``) is honored.
+                ext_dir = self._extension_dir(extension_name)
                 file_patterns = [
-                    (
-                        "BLL",
-                        os.path.join(src_dir, f"extensions/{extension_name}/BLL_*.py"),
-                    ),
-                    (
-                        "PRV",
-                        os.path.join(src_dir, f"extensions/{extension_name}/PRV_*.py"),
-                    ),
+                    ("BLL", os.path.join(ext_dir, "BLL_*.py")),
+                    ("PRV", os.path.join(ext_dir, "PRV_*.py")),
                 ]
 
                 for file_type, pattern in file_patterns:
@@ -849,9 +881,9 @@ class ExtensionRegistry(AbstractRegistry):
         extension_name = extension_class.name
         providers = []
 
-        # Get the source directory
-        src_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        extension_dir = os.path.join(src_dir, "extensions", extension_name)
+        # Get the source directory and the (possibly overridden) extension root
+        src_dir = _resolve_src_dir()
+        extension_dir = self._extension_dir(extension_name)
 
         # Find PRV_*.py files
         pattern = os.path.join(extension_dir, "PRV_*.py")
@@ -1203,9 +1235,10 @@ class AbstractStaticExtension(
 
             providers = []
 
-            # Get extension directory
-            src_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            extension_dir = os.path.join(src_dir, "extensions", cls.name)
+            # Get extension directory through Paths so a global
+            # ``set_extensions_root`` override is honored.
+            src_dir = _resolve_src_dir()
+            extension_dir = os.path.join(_resolve_extensions_dir(), cls.name)
             extension_scope = f"extensions.{cls.name}"
 
             # Find all PRV files
@@ -1426,9 +1459,10 @@ class AbstractStaticExtension(
         import glob
         import os
 
-        # Get extension directory
-        src_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        extension_dir = os.path.join(src_dir, "extensions", cls.name)
+        # Get extension directory through Paths so a global
+        # ``set_extensions_root`` override is honored.
+        src_dir = _resolve_src_dir()
+        extension_dir = os.path.join(_resolve_extensions_dir(), cls.name)
 
         # Check for endpoints
         if glob.glob(os.path.join(extension_dir, "EP_*.py")):
@@ -1503,8 +1537,8 @@ class AbstractStaticExtension(
         import inspect
         import os
 
-        src_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        extension_dir = os.path.join(src_dir, "extensions", cls.name)
+        src_dir = _resolve_src_dir()
+        extension_dir = os.path.join(_resolve_extensions_dir(), cls.name)
         extension_scope = f"extensions.{cls.name}"
 
         for bll_file in glob.glob(os.path.join(extension_dir, "BLL_*.py")):

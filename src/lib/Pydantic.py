@@ -28,6 +28,10 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import configure_mappers
 
 from database.migrations.Migration import MigrationManager
+from lib.Paths import (
+    extensions_dir as _resolve_extensions_dir,
+    src_dir as _resolve_src_dir,
+)
 from lib.AbstractPydantic2 import (
     CacheManager,
     FieldProcessor,
@@ -2268,7 +2272,7 @@ class ModelRegistry(AbstractRegistry):
         # Cache is already initialized in __init__ via CacheManager
 
         # Get the source directory
-        src_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        src_dir = _resolve_src_dir()
 
         # Dictionary to store files by scope
         files_by_scope = {}
@@ -2296,8 +2300,10 @@ class ModelRegistry(AbstractRegistry):
                         f"Only importing from enabled extensions: {enabled_extensions}"
                     )
 
-                    # Only include enabled extension directories
-                    extensions_dir = os.path.join(src_dir, "extensions")
+                    # Only include enabled extension directories. Resolve
+                    # through Paths so a configured external extensions root
+                    # is honored.
+                    extensions_dir = _resolve_extensions_dir()
                     if os.path.exists(extensions_dir) and os.path.isdir(extensions_dir):
                         for ext_name in enabled_extensions:
                             ext_path = os.path.join(extensions_dir, ext_name)
@@ -2936,13 +2942,15 @@ class ModelRegistry(AbstractRegistry):
         import sys
 
         # Get the source directory
-        src_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        src_dir = _resolve_src_dir()
 
         imported_modules = []
 
-        # Load EP files for each extension
+        # Load EP files for each extension. Resolve through Paths so a
+        # configured external extensions root is honored.
+        extensions_root = _resolve_extensions_dir()
         for ext_name in extension_names:
-            scope_dir = os.path.join(src_dir, "extensions", ext_name)
+            scope_dir = os.path.join(extensions_root, ext_name)
             files_pattern = os.path.join(scope_dir, "EP_*.py")
             matching_files = glob.glob(files_pattern)
 
