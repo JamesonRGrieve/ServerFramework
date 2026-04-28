@@ -325,3 +325,89 @@ def test_cleanup_temporary_files_removes_temps_only(migration_manager, tmp_path)
         for f in (temp_one, temp_two):
             if f.exists():
                 f.unlink()
+
+
+# ---------- Item 24: env_is_table_owned_by_extension API ----------------
+
+
+@pytest.mark.migration
+@pytest.mark.real
+@pytest.mark.extension
+@pytest.mark.mfa
+def test_env_is_table_owned_by_extension_returns_owner_name(booted_app):
+    """Item 24's API: env_is_table_owned_by_extension(table) returns the
+    owner extension name for extension-owned tables, None for core."""
+    from database.migrations.Migration import MigrationManager
+
+    app, _ = booted_app(extensions="auth_mfa")
+    registry = app.state.model_registry
+
+    by_name = {}
+    for sa in registry.db_models.values():
+        t = getattr(sa, "__table__", None)
+        if t is not None:
+            by_name[t.name] = t
+
+    mfa = by_name.get("multifactor_methods")
+    users = by_name.get("users")
+    assert mfa is not None and users is not None
+
+    assert MigrationManager.env_is_table_owned_by_extension(mfa) == "auth_mfa"
+    assert MigrationManager.env_is_table_owned_by_extension(users) is None
+
+
+@pytest.mark.migration
+@pytest.mark.real
+@pytest.mark.extension
+@pytest.mark.payment
+def test_env_table_extenders_lists_field_injection_owners(booted_app):
+    """Item 24's adjacent helper: env_table_extenders(table) lists the
+    @extension_model decorators that injected fields into a core table.
+    Sorted for determinism."""
+    from database.migrations.Migration import MigrationManager
+
+    app, _ = booted_app(extensions="payment")
+    registry = app.state.model_registry
+
+    users = None
+    for sa in registry.db_models.values():
+        t = getattr(sa, "__table__", None)
+        if t is not None and t.name == "users":
+            users = t
+            break
+    assert users is not None
+
+    extenders = MigrationManager.env_table_extenders(users)
+    assert "payment" in extenders
+    assert extenders == sorted(extenders), "extenders must be sorted"
+
+
+# ---------- Item 24: audit-ownership CLI --------------------------------
+
+
+@pytest.mark.migration
+def test_audit_ownership_cli_lists_tables():
+    """Item 24's audit CLI: subcommand prints tab-separated rows for every
+    table with owner column ('core' or extension name) and extenders column
+    ('-' or comma-separated list). Smoke test on the parser surface; full
+    table enumeration depends on a booted registry which the integration
+    tests above already exercise."""
+    import database.migrations.Migration as mig_mod
+
+    assert hasattr(mig_mod.MigrationManager, "audit_table_ownership"), (
+        "MigrationManager.audit_table_ownership method missing"
+    )
+
+    src_dir = Path(mig_mod.__file__).resolve().parent.parent.parent
+    import subprocess
+
+    res = subprocess.run(
+        [sys.executable, str(mig_mod.__file__), "audit-ownership", "--help"],
+        cwd=str(src_dir),
+        capture_output=True,
+        text=True,
+    )
+    assert res.returncode == 0, (
+        f"audit-ownership --help failed: stderr={res.stderr!r}"
+    )
+    assert "audit" in (res.stdout + res.stderr).lower()

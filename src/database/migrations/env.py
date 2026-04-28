@@ -85,9 +85,12 @@ def import_all_models():
     """Import all database models to populate metadata for migrations."""
     logger.debug("=== STARTING import_all_models() ===")
 
-    # Get the extension name from environment if set
-    extension_name = env("ALEMBIC_EXTENSION")
-    logger.debug(f"ALEMBIC_EXTENSION environment variable: {extension_name}")
+    # Prefer the in-memory cfg attribute (set by MigrationManager since Phase 4);
+    # fall back to ALEMBIC_EXTENSION env var for legacy callers.
+    extension_name = (
+        context.config.attributes.get("extension") if context.config else None
+    ) or env("ALEMBIC_EXTENSION")
+    logger.debug(f"Extension target for env.py: {extension_name!r}")
 
     # Check if we have a ModelRegistry attached to the Base
     model_registry = getattr(Base, "_model_registry", None)
@@ -416,14 +419,18 @@ def import_all_models():
         included_tables = []
         referenced_tables = set()
 
-        # First pass: identify extension tables and their foreign key references
+        # First pass: identify extension tables and their foreign key references.
+        # A table belongs to this extension's autogenerate run if it is either
+        # owned by the extension OR extended by it via @extension_model
+        # (per IMPROVEMENTS_ORDERED.md Item 24).
         for table_name, table in Base.metadata.tables.items():
-            is_owned = MigrationManager.env_is_table_owned_by_extension(
-                table, extension_name
-            )
+            owner = MigrationManager.env_is_table_owned_by_extension(table)
+            extenders = MigrationManager.env_table_extenders(table)
+            is_owned = owner == extension_name or extension_name in extenders
 
             logger.debug(
-                f"Checking table {table_name}: is_owned_by_{extension_name} = {is_owned}"
+                f"Checking table {table_name}: owner={owner!r}, extenders={extenders} "
+                f"-> is_owned_by_{extension_name} = {is_owned}"
             )
 
             if is_owned:
