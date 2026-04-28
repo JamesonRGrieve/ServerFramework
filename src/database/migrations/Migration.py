@@ -293,6 +293,7 @@ class MigrationManager:
         extensions_dir="extensions",
         database_dir="database",
         model_registry=None,
+        test_versions_root=None,
     ):
         """Initialize the migration manager.
 
@@ -308,6 +309,14 @@ class MigrationManager:
                 different instance from the one driving commit(), so the
                 attribute lookup misses. Pass the live registry here so env.py
                 can resolve it via context.config.attributes["model_registry"].
+            test_versions_root: Optional Path. When set (and test_mode=True),
+                test-mode revision files for both core and extensions land
+                under this root rather than in src/{database,extensions/<ext>}/
+                migrations/test_versions/. This keeps src/ pristine across
+                test runs — pytest can pass tmp_path here to scope test
+                artifacts to the test's lifecycle. When None, test_versions
+                directories under the source tree are used (legacy behavior,
+                relied on by direct CLI test invocations).
         """
         # Store directory configuration
         self.extensions_dir_name = extensions_dir
@@ -326,6 +335,9 @@ class MigrationManager:
         # Initialize database manager
         self._db_manager = None
         self._model_registry = model_registry
+        self._test_versions_root = (
+            Path(test_versions_root) if test_versions_root else None
+        )
 
         # Use custom database info if provided, otherwise get from Base
         if custom_db_info:
@@ -364,6 +376,17 @@ class MigrationManager:
     def _get_versions_directory_name(self):
         """Get the appropriate versions directory name based on test mode."""
         return "test_versions" if self.test_mode else "versions"
+
+    def _resolve_core_versions_dir(self):
+        """Resolve the core (non-extension) version_locations directory.
+
+        In production this is src/database/migrations/versions/. In test mode
+        with a test_versions_root override, it's <root>/_core/versions/, so
+        the source tree stays pristine across runs. Otherwise it's the
+        in-tree test_versions/ directory (legacy CLI back-compat)."""
+        if self.test_mode and self._test_versions_root is not None:
+            return self._test_versions_root / "_core" / "versions"
+        return self.paths["migrations_dir"] / self._get_versions_directory_name()
 
     # def _setup_logging(self):
     #     """Set up logging with file and console handlers."""
@@ -526,37 +549,57 @@ class MigrationManager:
             logger.error(f"Error writing to file {file_path}: {e}")
             return False
 
-    def cleanup_temporary_files(self, extension_name=None):
-        """Clean up leftover temporary alembic .ini files from older runs.
+    def cleanup_test_artifacts(self):
+        """Remove core-side test artifacts left behind by older runs.
 
-        Phase 4 moved off subprocess + temp inis, so this method is mostly a
-        no-op now — but it stays as a safety net for any tmp*.ini files left
-        behind by pre-Phase-4 state. Note: script.py.mako under
-        migrations_dir/ is now a permanent template and is not touched."""
-        logger.debug("Sweeping leftover temporary alembic ini files")
+        Post-Phase-4 there is nothing in extension folders to clean (the
+        in-memory Alembic config path writes nothing there). The only
+        ephemera left are:
+         - in-tree test_versions/ directories under src/database/migrations
+           and src/extensions/<name>/migrations (only present for legacy
+           CLI test runs that didn't pass test_versions_root)
+         - the test SQLite file at db_info["file_path"] when test_mode and
+           the db name has "test" in it
+         - any tmp*.ini stragglers from pre-Phase-4 versions
 
-        if extension_name:
-            ext_migrations_dir = (
-                self.paths["extensions_dir"] / extension_name / "migrations"
-            )
-            if ext_migrations_dir.exists():
-                for stale in ext_migrations_dir.glob("*alembic*.ini"):
-                    self.cleanup_file(stale, f"Removed stale extension ini: {stale}")
+        Returns True regardless of whether anything was actually deleted —
+        callers use this as a best-effort sweep at end-of-run.
+        """
+        if not self.test_mode:
+            return True
 
-        for temp_file in Path(".").glob("tmp*.ini"):
-            if "alembic" in temp_file.name.lower():
-                self.cleanup_file(
-                    temp_file,
-                    f"Removed leftover tmp alembic ini: {temp_file}",
+        try:
+            core_test = self.paths["migrations_dir"] / "test_versions"
+            if core_test.exists():
+                shutil.rmtree(core_test, ignore_errors=True)
+                logger.debug(f"Removed core test_versions: {core_test}")
+
+            for ext_name in self.configured_extensions:
+                ext_test = (
+                    self.paths["extensions_dir"]
+                    / ext_name
+                    / "migrations"
+                    / "test_versions"
                 )
+                if ext_test.exists():
+                    shutil.rmtree(ext_test, ignore_errors=True)
+                    logger.debug(f"Removed extension test_versions: {ext_test}")
 
-        # Clean up the main alembic.ini if it exists and we're not in an active operation
-        if not hasattr(self, "_operation_in_progress"):
-            alembic_ini = self.paths["src_dir"] / "alembic.ini"
-            if alembic_ini.exists():
-                self.cleanup_file(alembic_ini, "Cleaned up main alembic.ini")
+            file_path = self.db_info.get("file_path") if self.db_info else None
+            db_name = self.db_info.get("name", "") if self.db_info else ""
+            if file_path and "test" in db_name.lower():
+                test_db = Path(file_path)
+                if test_db.exists():
+                    test_db.unlink()
+                    logger.debug(f"Removed test database file: {test_db}")
 
+            for stale in self.paths["src_dir"].glob("tmp*alembic*.ini"):
+                self.cleanup_file(stale, f"Removed stale tmp ini: {stale}")
+        except Exception as e:
+            logger.warning(f"cleanup_test_artifacts: {e}", exc_info=True)
+            return False
         return True
+
 
     def _make_alembic_config(self, extension_name, versions_dir):
         """Build an Alembic Config in memory.
@@ -621,7 +664,7 @@ class MigrationManager:
         if extension:
             return self.run_extension_migration(extension, command, *args)
 
-        versions_dir = self.paths["migrations_dir"] / self._get_versions_directory_name()
+        versions_dir = self._resolve_core_versions_dir()
         versions_dir.mkdir(parents=True, exist_ok=True)
         cfg = self._make_alembic_config(None, versions_dir)
 
@@ -798,8 +841,26 @@ class MigrationManager:
         cfg = self._make_alembic_config(extension_name, versions_dir)
         return self._extension_revision(cfg, extension_name, message=message, auto=auto)
 
+    def _resolve_extension_versions_dir(self, extension_name):
+        """Resolve the per-extension version_locations directory.
+
+        In production / non-test paths, this is
+            src/extensions/<name>/migrations/versions/
+        In test mode with a test_versions_root override, this is
+            <test_versions_root>/<name>/versions/
+        which keeps the source tree pristine across test runs.
+
+        Falls back to the legacy in-tree test_versions/ when no override is
+        set, preserving back-compat with direct CLI invocations of the
+        test-mode flow.
+        """
+        if self.test_mode and self._test_versions_root is not None:
+            return self._test_versions_root / extension_name / "versions"
+        ext_migrations = self.paths["extensions_dir"] / extension_name / "migrations"
+        return ext_migrations / ("test_versions" if self.test_mode else "versions")
+
     def ensure_extension_versions_directory(self, extension_name):
-        """Ensure extension has a migrations/versions directory.
+        """Ensure the per-extension version_locations directory exists.
 
         Creates only the directories — no __init__.py files anywhere. Alembic
         loads revision files by filesystem path, not via Python import, so
@@ -809,13 +870,8 @@ class MigrationManager:
         if not ext_dir.exists():
             return False, None
 
-        migrations_dir = ext_dir / "migrations"
-        migrations_dir.mkdir(exist_ok=True)
-
-        versions_dir = migrations_dir / (
-            "test_versions" if self.test_mode else "versions"
-        )
-        versions_dir.mkdir(exist_ok=True)
+        versions_dir = self._resolve_extension_versions_dir(extension_name)
+        versions_dir.mkdir(parents=True, exist_ok=True)
         return True, versions_dir
 
     def regenerate_migrations(
@@ -853,9 +909,7 @@ class MigrationManager:
             logger.debug("Regenerating core migrations")
 
             # 1. Clear core migrations directory
-            versions_dir = (
-                self.paths["migrations_dir"] / self._get_versions_directory_name()
-            )
+            versions_dir = self._resolve_core_versions_dir()
             versions_dir.mkdir(parents=True, exist_ok=True)
 
             # Count and delete migration files
@@ -1243,9 +1297,9 @@ class {class_name}(Base):
                     f"Found BLL models for extension '{ext_name}': {[f.name for f in db_model_files]}"
                 )
 
-                # Check for migrations directory
-                migrations_dir = extension_dir / "migrations"
-                versions_dir = migrations_dir / self._get_versions_directory_name()
+                # Resolve where this extension's revision files live (honors
+                # test_versions_root override).
+                versions_dir = self._resolve_extension_versions_dir(ext_name)
 
                 if versions_dir.exists():
                     extension_migrations.append((ext_name, versions_dir))
@@ -1384,52 +1438,6 @@ class {class_name}(Base):
             return default or []
         return [item.strip() for item in value.split(",") if item.strip()]
 
-    def cleanup_test_environment(self):
-        """Clean up test-specific files and directories when in test mode"""
-        if not self.test_mode:
-            return True
-
-        logger.debug("Cleaning up test environment")
-
-        try:
-            # Clean up test_versions directory in core migrations
-            test_versions_dir = self.paths["migrations_dir"] / "test_versions"
-            if test_versions_dir.exists():
-                import shutil
-
-                shutil.rmtree(test_versions_dir)
-                logger.debug(f"Removed test_versions directory: {test_versions_dir}")
-
-            # Clean up test_versions directories in all extensions
-            for ext_name in self.configured_extensions:
-                ext_dir = self.paths["extensions_dir"] / ext_name
-                if ext_dir.exists():
-                    ext_test_versions = ext_dir / "migrations" / "test_versions"
-                    if ext_test_versions.exists():
-                        import shutil
-
-                        shutil.rmtree(ext_test_versions)
-                        logger.debug(
-                            f"Removed extension test_versions directory: {ext_test_versions}"
-                        )
-
-            # Clean up test database file if it exists and is a test database
-            if (
-                self.db_info.get("file_path")
-                and "test" in self.db_info.get("name", "").lower()
-            ):
-                test_db_file = Path(self.db_info["file_path"])
-                if test_db_file.exists():
-                    test_db_file.unlink()
-                    logger.debug(f"Removed test database file: {test_db_file}")
-
-        except Exception as e:
-            logger.error(f"Error during test environment cleanup: {e}")
-            return False
-
-        return True
-
-
 def main():
     parser = argparse.ArgumentParser(description="Unified database migration tool")
     subparsers = parser.add_subparsers(dest="command", help="Migration command")
@@ -1533,9 +1541,8 @@ def main():
     # Create our migration manager
     manager = MigrationManager()
 
-    # Clean up any leftover temporary files at the start
-    extension_name = getattr(args, "extension", None)
-    manager.cleanup_temporary_files(extension_name)
+    # Sweep stale test artifacts from prior runs.
+    manager.cleanup_test_artifacts()
 
     success = False
     try:
@@ -1603,12 +1610,9 @@ def main():
 
     finally:
         try:
-            extension_name = getattr(args, "extension", None)
-            manager.cleanup_temporary_files(extension_name)
+            manager.cleanup_test_artifacts()
         except Exception as e:
             logger.warning(f"Error during final cleanup: {e}", exc_info=True)
-
-        manager.cleanup_test_environment()
 
     sys.exit(0 if success else 1)
 

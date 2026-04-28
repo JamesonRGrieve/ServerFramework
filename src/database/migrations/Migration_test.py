@@ -295,36 +295,91 @@ def test_create_cli_verb_dispatches_to_create_extension(capsys):
     )
 
 
-# ---------- cleanup_temporary_files removes only temps -------------------
+# ---------- cleanup_test_artifacts (Phase 5) -----------------------------
 
 
 @pytest.mark.migration
-def test_cleanup_temporary_files_removes_temps_only(migration_manager, tmp_path):
-    """cleanup_temporary_files deletes generated temp .ini files in src_dir but
-    must not touch a real, non-temp alembic.ini that already exists."""
-    src_dir = migration_manager.paths["src_dir"]
+def test_cleanup_test_artifacts_is_a_noop_outside_test_mode(tmp_path):
+    """Phase 5 collapsed cleanup_temporary_files + cleanup_test_environment
+    into a single cleanup_test_artifacts. Outside test_mode the method is a
+    documented no-op — it never touches production files."""
+    from database.migrations.Migration import MigrationManager
 
-    real_ini = src_dir / "alembic.ini"
-    real_pre_existed = real_ini.exists()
-    real_payload = real_ini.read_bytes() if real_pre_existed else None
+    mgr = MigrationManager(
+        test_mode=False,
+        custom_db_info={
+            "type": "sqlite",
+            "name": "production_safety_test",
+            "url": f"sqlite:///{tmp_path}/x.db",
+            "file_path": str(tmp_path / "x.db"),
+        },
+    )
+    # Place a sentinel that would be deleted by an over-eager cleanup.
+    sentinel = tmp_path / "x.db"
+    sentinel.write_bytes(b"keep me")
+    assert mgr.cleanup_test_artifacts() is True
+    assert sentinel.exists() and sentinel.read_bytes() == b"keep me"
 
-    temp_one = src_dir / "tmp_phase0_one.test_phase0.ini"
-    temp_two = src_dir / "tmp_phase0_two.test_phase0.ini"
-    temp_one.write_text("[alembic]\n")
-    temp_two.write_text("[alembic]\n")
 
-    try:
-        migration_manager.cleanup_temporary_files()
+@pytest.mark.migration
+def test_cleanup_test_artifacts_removes_test_db_in_test_mode(tmp_path):
+    """In test mode the method removes the on-disk SQLite file when the db
+    name has 'test' in it — the only side effect Phase 5 deliberately keeps,
+    since per-extension test_versions/ now route to test_versions_root and
+    no longer need an in-tree sweep when callers use that path."""
+    from database.migrations.Migration import MigrationManager
 
-        if real_pre_existed:
-            assert real_ini.exists(), "cleanup deleted the real alembic.ini"
-            assert real_ini.read_bytes() == real_payload, (
-                "cleanup mutated the real alembic.ini"
-            )
-    finally:
-        for f in (temp_one, temp_two):
-            if f.exists():
-                f.unlink()
+    db_file = tmp_path / "test.cleanup.database.db"
+    db_file.write_bytes(b"")
+    mgr = MigrationManager(
+        test_mode=True,
+        custom_db_info={
+            "type": "sqlite",
+            "name": "test.cleanup.database",
+            "url": f"sqlite:///{db_file}",
+            "file_path": str(db_file),
+        },
+    )
+    assert mgr.cleanup_test_artifacts() is True
+    assert not db_file.exists(), "test db should have been swept"
+
+
+# ---------- Phase 5: test_versions_root override -------------------------
+
+
+@pytest.mark.migration
+def test_test_versions_root_routes_extension_revisions_outside_src(
+    tmp_path, migration_db_info
+):
+    """Phase 5: passing test_versions_root keeps src/extensions pristine —
+    extension revision files land under <root>/<ext>/versions/ instead of
+    src/extensions/<ext>/migrations/test_versions/."""
+    from database.migrations.Migration import MigrationManager
+
+    src_path = Path(__file__).resolve().parent.parent.parent
+    in_tree = src_path / "extensions" / "auth_mfa" / "migrations" / "test_versions"
+    pre_in_tree = set(in_tree.glob("*.py")) if in_tree.exists() else set()
+
+    versions_root = tmp_path / "rev_root"
+    mgr = MigrationManager(
+        test_mode=True,
+        custom_db_info=migration_db_info,
+        test_versions_root=versions_root,
+    )
+
+    ok = mgr.create_extension_migration("auth_mfa", "phase5 routing", auto=True)
+    assert ok, "create_extension_migration returned False"
+
+    routed_dir = versions_root / "auth_mfa" / "versions"
+    assert routed_dir.exists(), f"routed dir not created at {routed_dir}"
+    routed_files = list(routed_dir.glob("*.py"))
+    assert routed_files, f"no revision file landed in {routed_dir}"
+
+    # In-tree test_versions should be unchanged from before this test ran.
+    after_in_tree = set(in_tree.glob("*.py")) if in_tree.exists() else set()
+    assert after_in_tree == pre_in_tree, (
+        f"test_versions_root failed to redirect: new files appeared in {in_tree}"
+    )
 
 
 # ---------- Item 24: env_is_table_owned_by_extension API ----------------
