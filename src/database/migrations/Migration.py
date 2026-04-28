@@ -7,11 +7,11 @@ Handles initialization, creation, applying, and management of migrations.
 import argparse
 import os
 import shutil
-import subprocess
 import sys
 import tempfile
-from pathlib import Path
 import time
+from pathlib import Path
+from typing import List, Optional
 
 import stringcase
 from filelock import FileLock, Timeout
@@ -26,127 +26,6 @@ if str(src_path) not in sys.path:
     sys.path.insert(0, str(src_path))
 
 from lib.Logging import logger
-
-
-# Define default templates as dictionaries
-def get_script_py_mako_template():
-    """Get the script.py.mako template from file or fallback to default"""
-    try:
-        script_py_path = template_dir / "script.py.mako"
-        if script_py_path.exists():
-            with open(script_py_path, "r") as f:
-                return f.read()
-    except Exception as e:
-        logger.warning(f"Error loading script.py.mako template: {e}")
-
-    # Default template
-    return '''"""${message}
-
-Revision ID: ${up_revision}
-Revises: ${down_revision | comma,n}
-Create Date: ${create_date}
-
-"""
-from typing import Sequence, Union
-
-from alembic import op
-import sqlalchemy as sa
-${imports if imports else ""}
-
-# revision identifiers, used by Alembic.
-revision: str = ${repr(up_revision)}
-down_revision: Union[str, None] = ${repr(down_revision)}
-branch_labels: Union[str, Sequence[str], None] = ${repr(branch_labels)}
-depends_on: Union[str, Sequence[str], None] = ${repr(depends_on)}
-
-
-def upgrade() -> None:
-    """Upgrade schema."""
-    ${upgrades if upgrades else "pass"}
-
-
-def downgrade() -> None:
-    """Downgrade schema."""
-    ${downgrades if downgrades else "pass"}
-'''
-
-
-# Standard INI file sections and options for alembic.ini
-def get_default_alembic_ini_dict(test_mode=False, database_dir="database"):
-    """Get default alembic.ini configuration as a dictionary"""
-    versions_dir_name = "test_versions" if test_mode else "versions"
-
-    return {
-        "alembic": {
-            "script_location": "database/migrations",  # Always hardcoded for infrastructure
-            "file_template": "%%(rev)s_%%(slug)s",
-            "prepend_sys_path": ".",
-            "version_locations": f"%(here)s/{database_dir}/migrations/{versions_dir_name}",  # Use parameterized database_dir
-            "version_path_separator": "os",
-            "sqlalchemy.url": "sqlite:///database.db",
-            "version_table": "alembic_version",
-        },
-        "loggers": {"keys": "root,sqlalchemy,alembic"},
-        "handlers": {"keys": "console"},
-        "formatters": {"keys": "generic"},
-        "logger_root": {"level": "INFO", "handlers": "console", "qualname": ""},
-        "logger_sqlalchemy": {
-            "level": "INFO",
-            "handlers": "console",
-            "qualname": "sqlalchemy.engine",
-        },
-        "logger_alembic": {
-            "level": "INFO",
-            "handlers": "console",
-            "qualname": "alembic",
-        },
-        "handler_console": {
-            "class": "StreamHandler",
-            "args": "(sys.stderr,)",
-            "level": "NOTSET",
-            "formatter": "generic",
-        },
-        "formatter_generic": {
-            "format": "%(levelname)-5.5s [%(name)s] %(message)s",
-            "datefmt": "%H:%M:%S",
-        },
-    }
-
-
-def get_extension_alembic_ini_dict(
-    extension_name, ext_migrations_dir, db_url, test_mode=False, database_dir="database"
-):
-    """Get extension-specific alembic.ini configuration as a dictionary"""
-    config = get_default_alembic_ini_dict(test_mode, database_dir)
-
-    # Determine the correct versions directory name
-    versions_dir_name = "test_versions" if test_mode else "versions"
-
-    # Override with extension-specific settings
-    config["alembic"].update(
-        {
-            "script_location": str(ext_migrations_dir),
-            "sqlalchemy.url": db_url,
-            "version_table": f"alembic_version_{extension_name}",
-            "branch_label": f"ext_{extension_name}",
-            "version_locations": f"{ext_migrations_dir}/{versions_dir_name}",  # Extension-specific path
-        }
-    )
-
-    return config
-
-
-def dict_to_ini(config_dict):
-    """Convert a nested dictionary to INI file format"""
-    lines = []
-
-    for section, options in config_dict.items():
-        lines.append(f"[{section}]")
-        for key, value in options.items():
-            lines.append(f"{key} = {value}")
-        lines.append("")  # Add an empty line between sections
-
-    return "\n".join(lines)
 
 
 class MigrationManager:
@@ -246,271 +125,256 @@ class MigrationManager:
             return None
 
     @staticmethod
-    def env_is_table_owned_by_extension(
-        table, extension_name, extensions_dir="extensions"
-    ):
-        """
-        Check if a table belongs to an extension based on the location of its BLL_*.py file.
-        Returns True if the table's class is defined in a file located in the extension's directory.
+    def env_is_table_owned_by_extension(table) -> Optional[str]:
+        """Return the owning extension name, or None for core tables.
 
-        Enhanced to handle model extensions where extensions can modify core tables.
+        Resolution rule (per IMPROVEMENTS_ORDERED.md Item 24):
+        1. table.info["extension"] takes precedence — set deterministically by
+           ModelRegistry._stamp_extension_table_ownership for any table whose
+           Pydantic source module lives under extensions.<name>.*
+        2. Fall back to file-path inspection of the SA model's source module
+           for tables created outside the registry path (e.g. raw alembic CLI
+           usage with no committed registry).
+
+        Note: core tables that have been *extended* by an @extension_model
+        decorator are still core-owned and return None. The extender names
+        are tracked separately in table.info["extensions"] (a set/list of
+        names); enumerate via that key, not this function.
         """
-        # Get the table class
+        owner = (table.info or {}).get("extension")
+        if owner:
+            return owner
+
+        # File-path fallback — covers tables built without ModelRegistry.
         table_class = getattr(table, "class_", None)
-        if not table_class:
-            logger.debug(f"Table {table} has no class_ attribute")
+        if table_class is None:
+            return None
+        module_name = getattr(table_class, "__module__", "") or ""
+        parts = module_name.split(".")
+        if len(parts) >= 2 and parts[0] == MigrationManager._extensions_dir_name:
+            return parts[1]
+        return None
 
-            # Check if table has extension metadata set by env.py
-            if hasattr(table, "info") and "extension" in table.info:
-                table_extension = table.info["extension"]
-                is_owned = table_extension == extension_name
-                logger.debug(
-                    f"Table {table} has extension metadata: {table_extension}, owned by {extension_name}? {is_owned}"
-                )
-                return is_owned
-            return False
+    @staticmethod
+    def env_table_extenders(table) -> List[str]:
+        """Return the list of extension names that inject fields into this
+        (core) table via @extension_model. Empty for tables with no
+        injections. Sorted for deterministic autogenerate output."""
+        raw = (table.info or {}).get("extensions") or ()
+        return sorted(raw)
 
-        # Check module name first - this handles BLL models
-        module_name = table_class.__module__
-        if module_name:
-            # Check if module name matches extension pattern for BLL files
-            ext_module_pattern = f"{extensions_dir}.{extension_name}."
-            if module_name.startswith(ext_module_pattern):
-                logger.debug(
-                    f"Table {table} belongs to extension {extension_name} by module name: {module_name}"
-                )
-                return True
+    def _compute_migration_order(self, extensions: List[str]) -> List[str]:
+        """Topologically sort extensions for FK-aware migration ordering.
 
-        # NEW: Check for model extensions - core tables that have been extended by this extension
-        if MigrationManager._is_core_table_extended_by_extension(table, extension_name):
-            logger.debug(
-                f"Table {table} is a core table extended by extension {extension_name}"
-            )
-            return True
+        Implements IMPROVEMENTS_ORDERED.md Item 49. Builds a DAG over the
+        provided extension names whose edges are the union of:
 
-        # Check if table has extension metadata set by env.py during model registration
-        if hasattr(table, "info") and "extension" in table.info:
-            table_extension = table.info["extension"]
-            is_owned = table_extension == extension_name
-            logger.debug(
-                f"Table {table} has extension metadata: {table_extension}, owned by {extension_name}? {is_owned}"
-            )
-            return is_owned
+         (a) Declared `EXT_Dependency` relationships, looked up via the
+             ExtensionRegistry attached to self._model_registry. An entry
+             ``EXT_Dependency(name="A")`` on extension B contributes the
+             edge A -> B (A migrates first).
 
-        # Check if file is in the extension's directory (fallback for non-patched modules)
-        is_in_extension_dir = False
+         (b) FK references discovered by walking Base.metadata.tables.
+             For each ForeignKey on a table owned by extension B that
+             references a table owned by extension A (where A != B),
+             contribute the edge A -> B. FK references between core
+             and extension tables don't add edges — core always migrates
+             first by structural rule (run_all_migrations sequences core
+             before extensions unconditionally).
+
+        Returns a list of extension names in a valid migration order. On a
+        cycle, raises a RuntimeError whose message names the offending
+        extensions and the FK columns that closed the cycle, plus a hint
+        toward the recommended workaround (introduce a join table owned
+        by one of the extensions).
+
+        Requires: model_registry attached and committed (so Base.metadata
+        is populated). Without this, FK discovery is a no-op and only
+        declared dependencies contribute edges — order falls back to the
+        declared-only resolution that already shipped pre-Item-49.
+        """
+        if not extensions:
+            return []
+
+        from graphlib import CycleError, TopologicalSorter
+
+        # Sort the input so unrelated extensions land in deterministic order.
+        nodes = sorted(set(extensions))
+        graph: dict = {n: set() for n in nodes}
+        # Pretty-printable provenance for cycle errors: edge -> reason.
+        provenance: dict = {}
+
+        # (a) Declared EXT_Dependency edges, if any registry is reachable.
+        registry = self._model_registry
+        ext_registry = getattr(registry, "extension_registry", None) if registry else None
+        if ext_registry is not None:
+            from lib.Dependencies import EXT_Dependency
+
+            for ext_class in getattr(ext_registry, "extensions", []):
+                ext_name = getattr(ext_class, "name", None)
+                if ext_name not in graph:
+                    continue
+                deps = getattr(ext_class, "dependencies", None)
+                if deps is None:
+                    continue
+                ext_deps = []
+                if hasattr(deps, "ext"):
+                    ext_deps = list(deps.ext)
+                elif hasattr(deps, "__iter__"):
+                    ext_deps = list(deps)
+                for dep in ext_deps:
+                    if not isinstance(dep, EXT_Dependency) or dep.optional:
+                        continue
+                    if dep.name in graph and dep.name != ext_name:
+                        graph[ext_name].add(dep.name)
+                        provenance.setdefault(
+                            (dep.name, ext_name),
+                            f"declared EXT_Dependency: {ext_name} depends on {dep.name}",
+                        )
+
+        # (b) FK-discovered edges. Reads ownership stamps written in Phase 2.
+        if registry is not None:
+            base = getattr(getattr(registry, "database_manager", None), "Base", None)
+            metadata = getattr(base, "metadata", None) if base else None
+            if metadata is not None:
+                for table_name, table in metadata.tables.items():
+                    table_owner = self.env_is_table_owned_by_extension(table)
+                    if table_owner is None or table_owner not in graph:
+                        continue
+                    for fk in table.foreign_keys:
+                        ref_table = fk.column.table
+                        ref_owner = self.env_is_table_owned_by_extension(ref_table)
+                        if (
+                            ref_owner is None
+                            or ref_owner not in graph
+                            or ref_owner == table_owner
+                        ):
+                            continue
+                        graph[table_owner].add(ref_owner)
+                        provenance.setdefault(
+                            (ref_owner, table_owner),
+                            (
+                                f"FK {table_name}.{fk.parent.name} -> "
+                                f"{ref_table.name}.{fk.column.name}"
+                            ),
+                        )
+
+        sorter = TopologicalSorter({n: list(graph[n]) for n in nodes})
         try:
-            module = sys.modules.get(module_name)
-            if not module or not hasattr(module, "__file__"):
-                logger.debug(f"Module for table {table} has no __file__ attribute")
-                return False
-
-            file_path = module.__file__
-            if not file_path:
-                logger.debug(f"File path for table {table} is empty")
-                return False
-
-            # Check if file path contains 'extensions/<extension_name>' using configurable directory name
-            # For BLL files, we look for BLL_*.py files in extension directories
-            ext_path = f"{extensions_dir}{os.path.sep}{extension_name}"
-            is_in_extension_dir = ext_path in file_path.replace("/", os.path.sep)
-
-            # Also check specifically for BLL files
-            if is_in_extension_dir and "BLL_" in file_path:
-                logger.debug(
-                    f"Table {table} file path: {file_path}, found BLL file in extension {extension_name}"
-                )
-                return True
-
-            logger.debug(
-                f"Table {table} file path: {file_path}, looking for: {ext_path}, found: {is_in_extension_dir}"
+            return list(sorter.static_order())
+        except CycleError as e:
+            cycle_nodes = e.args[1] if len(e.args) > 1 else []
+            edges_in_cycle = []
+            for i in range(len(cycle_nodes) - 1):
+                src, dst = cycle_nodes[i + 1], cycle_nodes[i]
+                reason = provenance.get((src, dst), f"{src} -> {dst}")
+                edges_in_cycle.append(reason)
+            msg = (
+                "Cross-extension migration cycle detected (Item 49). "
+                "Cycle: "
+                + " -> ".join(cycle_nodes)
+                + ". Edges: "
+                + "; ".join(edges_in_cycle)
+                + ". Resolution: introduce a join table owned by one side "
+                "rather than mutual direct FKs (see DB.Migrations.md)."
             )
+            raise RuntimeError(msg) from e
+
+    def audit_table_ownership(self) -> bool:
+        """Print a tab-separated audit of table → owner → extenders.
+
+        Boots the model registry (so info dict is populated) and walks
+        Base.metadata.tables. One line per table:
+            <table_name>\\t<owner_or_core>\\t<extenders_csv_or_->
+
+        Returns True on success.
+        """
+        try:
+            from logic import BLL_Auth, BLL_Extensions, BLL_Providers  # noqa: F401
+            from lib.Pydantic import ModelRegistry, Base
+
+            ModelRegistry().commit(extensions=os.environ.get("APP_EXTENSIONS", ""))
+
+            print("table\towner\textenders")
+            for table_name in sorted(Base.metadata.tables.keys()):
+                table = Base.metadata.tables[table_name]
+                owner = self.env_is_table_owned_by_extension(table) or "core"
+                extenders = self.env_table_extenders(table)
+                ext_col = ",".join(extenders) if extenders else "-"
+                print(f"{table_name}\t{owner}\t{ext_col}")
+            return True
         except Exception as e:
-            logger.debug(f"Error checking file path: {e}")
+            logger.error(f"audit-ownership failed: {e}", exc_info=True)
             return False
-
-        # If the table is not in the extension directory, it doesn't belong to this extension
-        if not is_in_extension_dir:
-            logger.debug(
-                f"Table {table} is not in extension directory {extension_name}"
-            )
-            return False
-
-        # Table is in extension directory - include it regardless of extend_existing
-        # The extend_existing flag is for SQLAlchemy's table creation behavior,
-        # not for determining migration ownership
-        logger.debug(f"Table {table} belongs to extension {extension_name}")
-        return True
 
     @staticmethod
     def _is_core_table_extended_by_extension(table, extension_name):
+        """Whether `extension_name` extends `table` via @extension_model.
+
+        Reads the deterministic stamp written by
+        ModelRegistry._stamp_extension_table_ownership() at commit time.
         """
-        Check if a core table has been extended by the specified extension.
-
-        This checks the model extension registry to see if any extensions from
-        the specified extension have been applied to the model that corresponds
-        to this table.
-
-        Args:
-            table: SQLAlchemy table object
-            extension_name: Name of the extension to check
-
-        Returns:
-            bool: True if the table's model has been extended by this extension
-        """
-        try:
-            from lib.Pydantic2SQLAlchemy import get_applied_extensions
-
-            # Get the table class
-            table_class = getattr(table, "class_", None)
-            if not table_class:
-                return False
-
-            # Get applied extensions registry
-            applied_extensions = get_applied_extensions()
-
-            # Look for the target model in the applied extensions
-            # The table class might be the SQLAlchemy model, we need to find the corresponding Pydantic model
-            target_model_key = None
-
-            # Try to find the Pydantic model that corresponds to this SQLAlchemy table
-            # This is a bit tricky because we need to reverse-lookup from SQLAlchemy to Pydantic
-
-            # Strategy 1: Check if the table class has a reference to the Pydantic model
-            if hasattr(table_class, "_pydantic_model"):
-                pydantic_model = table_class._pydantic_model
-                target_model_key = (
-                    f"{pydantic_model.__module__}.{pydantic_model.__name__}"
-                )
-
-            # Strategy 2: Look for a model with similar naming in the applied extensions
-            if not target_model_key:
-                table_name = getattr(table, "name", "")
-                class_name = getattr(table_class, "__name__", "")
-
-                # Try to find a matching model in applied extensions
-                for target_key in applied_extensions.keys():
-                    if (
-                        class_name in target_key
-                        or stringcase.alphanumcase(table_name).lower()
-                        in target_key.lower()
-                    ):
-                        target_model_key = target_key
-                        break
-
-            # Strategy 3: Check by module name patterns
-            if not target_model_key and table_class:
-                module_name = table_class.__module__
-                class_name = table_class.__name__
-
-                # For core models, try common patterns
-                if module_name and (
-                    "logic.BLL_" in module_name or "database.DB_" in module_name
-                ):
-                    # Try to construct the likely Pydantic model key
-                    if "logic.BLL_" in module_name:
-                        # BLL model - the table class might be named differently
-                        # Look for models that end with "Model"
-                        for target_key in applied_extensions.keys():
-                            if (
-                                target_key.startswith("logic.BLL_")
-                                and "Model" in target_key
-                            ):
-                                # Check if this could be related to our table
-                                model_part = target_key.split(".")[-1]  # Get class name
-                                if (
-                                    model_part.replace("Model", "").lower()
-                                    in class_name.lower()
-                                    or class_name.replace("DB", "").lower()
-                                    in model_part.lower()
-                                ):
-                                    target_model_key = target_key
-                                    break
-
-            if not target_model_key:
-                logger.debug(f"Could not find Pydantic model for table {table.name}")
-                return False
-
-            # Check if this target model has extensions from our extension
-            if target_model_key in applied_extensions:
-                extension_list = applied_extensions[target_model_key]
-
-                # Check if any of the applied extensions are from our extension
-                for extension_key in extension_list:
-                    if f"extensions.{extension_name}." in extension_key:
-                        logger.debug(
-                            f"Found model extension {extension_key} for table {table.name} "
-                            f"from extension {extension_name}"
-                        )
-                        return True
-
-            return False
-
-        except Exception as e:
-            logger.debug(f"Error checking model extensions for table {table.name}: {e}")
-            return False
+        return extension_name in (table.info or {}).get("extensions", set())
 
     @staticmethod
     def env_include_object(object, name, type_, reflected, compare_to, base=None):
-        """Filters objects for inclusion in migrations."""
-        # Only apply filtering to tables
+        """Filter objects for inclusion in an autogenerate run.
+
+        Resolution rule (Item 24):
+        - Extension migration: include if the table is owned by this extension
+          OR if this extension extends the (core-owned) table via @extension_model.
+        - Core migration: include if the table is not owned by any extension.
+          Extender-only annotations don't change ownership — a core table
+          extended by an extension still belongs to core's autogenerate.
+        """
         if type_ != "table":
             return True
 
-        # Get the current extension context
         from lib.Environment import env
 
-        extension_name = env("ALEMBIC_EXTENSION")
-        extensions_dir = MigrationManager._extensions_dir_name
+        extension_name = (
+            base.config.attributes.get("extension") if base and base.config else None
+        ) or env("ALEMBIC_EXTENSION")
 
-        # Log which objects we're processing with standard log level
-        logger.debug(
-            f"Processing object: {name}, type: {type_}, extension context: {extension_name}"
-        )
+        owner = MigrationManager.env_is_table_owned_by_extension(object)
+        extenders = MigrationManager.env_table_extenders(object)
 
-        # For extension migrations, we need enhanced detection
         if extension_name:
-            # For extension migrations only include tables from this extension
-            is_owned = MigrationManager.env_is_table_owned_by_extension(
-                object, extension_name, extensions_dir
-            )
-            should_include = is_owned
+            include = owner == extension_name or extension_name in extenders
             logger.debug(
-                f"Table {name} owned by {extension_name}? {is_owned} => include: {should_include}"
+                f"Table {name}: owner={owner!r}, extenders={extenders} -> "
+                f"include for ext {extension_name!r}? {include}"
             )
-            return should_include
-        else:
-            # For core migrations, include all non-extension tables
-            for app_ext in env("APP_EXTENSIONS").split(","):
-                if app_ext.strip():
-                    # If owned by any extension, exclude from core migrations
-                    if MigrationManager.env_is_table_owned_by_extension(
-                        object, app_ext.strip(), extensions_dir
-                    ):
-                        logger.debug(
-                            f"Table {name} owned by extension {app_ext} => excluding from core"
-                        )
-                        return False
+            return include
 
-            # Include in core if not claimed by any extension
-            logger.debug(
-                f"Table {name} not owned by any extension => including in core"
-            )
-            return True
+        include = owner is None
+        logger.debug(
+            f"Table {name}: owner={owner!r} -> include for core? {include}"
+        )
+        return include
 
     @staticmethod
     def env_setup_alembic_config(config):
-        """Configures Alembic settings consistently."""
-        # Set the version table name (can be customized for extensions)
+        """Resolve the version_table name for this Alembic invocation.
+
+        Preference order:
+        1. `version_table` main option set on the in-memory Config by
+           MigrationManager._make_alembic_config.
+        2. The extension name from `config.attributes["extension"]`.
+        3. The legacy ALEMBIC_EXTENSION env var (back-compat for any direct
+           `alembic` CLI invocations that bypass MigrationManager).
+        4. "alembic_version" (core).
+        """
         from lib.Environment import env
 
-        extension_name = env("ALEMBIC_EXTENSION")
+        explicit = config.get_main_option("version_table")
+        if explicit:
+            return explicit
 
-        version_table = "alembic_version"
-        if extension_name:
-            version_table = f"alembic_version_{extension_name}"
-
-        return version_table
+        extension_name = config.attributes.get("extension") or env("ALEMBIC_EXTENSION")
+        return (
+            f"alembic_version_{extension_name}" if extension_name else "alembic_version"
+        )
 
     @staticmethod
     def env_get_alembic_context_config(
@@ -539,22 +403,14 @@ class MigrationManager:
 
         return config_args
 
-    @staticmethod
-    def env_parse_csv_env_var(env_var_name, default=None):
-        """Parse a comma-separated environment variable into a list of strings."""
-        from lib.Environment import env
-
-        value = env(env_var_name)
-        if not value or value.strip() == "":
-            return default or []
-        return [item.strip() for item in value.split(",") if item.strip()]
-
     def __init__(
         self,
         test_mode=False,
         custom_db_info=None,
         extensions_dir="extensions",
         database_dir="database",
+        model_registry=None,
+        test_versions_root=None,
     ):
         """Initialize the migration manager.
 
@@ -563,6 +419,21 @@ class MigrationManager:
             custom_db_info: Custom database configuration
             extensions_dir: Directory name for extensions (relative to src_dir), defaults to "extensions"
             database_dir: Directory name for database (relative to src_dir), defaults to "database"
+            model_registry: ModelRegistry instance to thread through to env.py
+                via cfg.attributes. Required for migrations that run during
+                ModelRegistry.commit() — env.py looks up Base._model_registry
+                but the DatabaseManager attached to env.py's Base is a
+                different instance from the one driving commit(), so the
+                attribute lookup misses. Pass the live registry here so env.py
+                can resolve it via context.config.attributes["model_registry"].
+            test_versions_root: Optional Path. When set (and test_mode=True),
+                test-mode revision files for both core and extensions land
+                under this root rather than in src/{database,extensions/<ext>}/
+                migrations/test_versions/. This keeps src/ pristine across
+                test runs — pytest can pass tmp_path here to scope test
+                artifacts to the test's lifecycle. When None, test_versions
+                directories under the source tree are used (legacy behavior,
+                relied on by direct CLI test invocations).
         """
         # Store directory configuration
         self.extensions_dir_name = extensions_dir
@@ -580,6 +451,10 @@ class MigrationManager:
 
         # Initialize database manager
         self._db_manager = None
+        self._model_registry = model_registry
+        self._test_versions_root = (
+            Path(test_versions_root) if test_versions_root else None
+        )
 
         # Use custom database info if provided, otherwise get from Base
         if custom_db_info:
@@ -593,7 +468,6 @@ class MigrationManager:
                 "url": db_manager.DATABASE_URI,
             }
 
-        self.alembic_ini_path = self._find_alembic_ini()
         self.template_dir = current_file_dir / "template"
 
         if self.test_mode:
@@ -603,9 +477,6 @@ class MigrationManager:
 
         logger.debug(f"Using extensions directory: {extensions_dir}")
         logger.debug(f"Using database directory: {database_dir}")
-
-        # Track temporary files created for extensions so they can be cleaned up reliably
-        self._extension_temp_inis = {}
 
     @property
     def db_manager(self):
@@ -622,6 +493,17 @@ class MigrationManager:
     def _get_versions_directory_name(self):
         """Get the appropriate versions directory name based on test mode."""
         return "test_versions" if self.test_mode else "versions"
+
+    def _resolve_core_versions_dir(self):
+        """Resolve the core (non-extension) version_locations directory.
+
+        In production this is src/database/migrations/versions/. In test mode
+        with a test_versions_root override, it's <root>/_core/versions/, so
+        the source tree stays pristine across runs. Otherwise it's the
+        in-tree test_versions/ directory (legacy CLI back-compat)."""
+        if self.test_mode and self._test_versions_root is not None:
+            return self._test_versions_root / "_core" / "versions"
+        return self.paths["migrations_dir"] / self._get_versions_directory_name()
 
     # def _setup_logging(self):
     #     """Set up logging with file and console handlers."""
@@ -689,100 +571,6 @@ class MigrationManager:
         else:
             logger.debug(f"Using extensions from APP_EXTENSIONS: {extension_list}")
         return extension_list
-
-    def _find_alembic_ini(self):
-        """Find the alembic.ini file in various possible locations or return a suitable path for creation"""
-        from lib.Environment import env
-
-        # Look for alembic.ini in src directory and other locations
-        potential_paths = [
-            self.paths["src_dir"] / "alembic.ini",  # /src/alembic.ini
-            Path("alembic.ini"),  # Current directory
-            self.paths["root_dir"] / "alembic.ini",  # Project root
-            Path(f"/{env('APP_NAME').lower()}/src/alembic.ini"),  # Container path
-            Path("../alembic.ini"),  # One level up
-        ]
-
-        for path in potential_paths:
-            if path.exists():
-                logger.debug(f"Found alembic.ini at {path}")
-                return path
-
-        # If no existing file found, return the standard location in src directory
-        logger.debug(
-            "Could not find alembic.ini in any standard location, will create at src/alembic.ini"
-        )
-        return self.paths["src_dir"] / "alembic.ini"
-
-    def ensure_alembic_ini_exists(self):
-        """Make sure alembic.ini exists, creating it if necessary.
-
-        When running in parallel (pytest-xdist), always creates a unique temporary
-        file to avoid race conditions between workers.
-        """
-        # Always create a unique temporary file for this migration run
-        # This prevents race conditions when multiple workers run migrations simultaneously
-        worker_id = os.environ.get("PYTEST_XDIST_WORKER")
-
-        if worker_id is not None or self.test_mode or hasattr(self, "db_info"):
-            # Create a worker-specific temporary alembic.ini
-            config_dict = get_default_alembic_ini_dict(
-                self.test_mode, self.database_dir_name
-            )
-            config_dict["alembic"]["sqlalchemy.url"] = self.db_info["url"]
-            config_content = dict_to_ini(config_dict)
-
-            # Use database name in temp file name for debugging
-            db_name_safe = (
-                self.db_info["name"]
-                .replace("/", "_")
-                .replace("\\", "_")
-                .replace(":", "_")
-                .replace(".", "_")
-            )
-            temp_path = self.create_temp_file(
-                config_content,
-                suffix=f".{db_name_safe}.ini",
-                directory=self.paths["src_dir"],
-            )
-            logger.debug(
-                f"Created worker-specific alembic.ini at {temp_path} for db={self.db_info['name']}"
-            )
-            return temp_path
-
-        # For non-test, non-parallel runs, use the standard alembic.ini
-        if self.alembic_ini_path.exists():
-            logger.debug(f"Using existing alembic.ini at {self.alembic_ini_path}")
-            return self.alembic_ini_path
-
-        # Create a new alembic.ini file if it doesn't exist
-        logger.debug(f"Creating alembic.ini at {self.alembic_ini_path}")
-
-        # Get default config and update with database URL
-        config_dict = get_default_alembic_ini_dict(
-            self.test_mode, self.database_dir_name
-        )
-        config_dict["alembic"]["sqlalchemy.url"] = self.db_info["url"]
-
-        # Convert to INI content
-        config_content = dict_to_ini(config_dict)
-
-        # Write to the file location
-        if self.write_file(self.alembic_ini_path, config_content):
-            logger.debug(f"Successfully created alembic.ini at {self.alembic_ini_path}")
-            return self.alembic_ini_path
-        else:
-            # If we can't write to the specified location, create a temporary file
-            logger.warning(
-                f"Could not write to {self.alembic_ini_path}, creating temporary file"
-            )
-            temp_path = self.create_temp_file(
-                config_content,
-                suffix=".ini",
-                directory=self.paths["src_dir"],
-            )
-            logger.debug(f"Created temporary alembic.ini at {temp_path}")
-            return temp_path
 
     def debug_file_info(self, file_path):
         """Debug a file by showing its permissions, size, and other metadata."""
@@ -878,743 +666,330 @@ class MigrationManager:
             logger.error(f"Error writing to file {file_path}: {e}")
             return False
 
-    def get_common_env_vars(self, extension_name=None):
-        """Get common environment variables for subprocess execution."""
-        env = {
-            "PYTHONPATH": f"{self.paths['src_dir']}{os.pathsep}{os.environ.get('PYTHONPATH', '')}",
-        }
-        if extension_name:
-            env["ALEMBIC_EXTENSION"] = extension_name
+    def cleanup_test_artifacts(self):
+        """Remove core-side test artifacts left behind by older runs.
 
-        # Pass database configuration to subprocess to ensure test databases are used
-        # This is critical because subprocess doesn't inherit patched os.environ from tests
-        if self.db_info:
-            if "name" in self.db_info:
-                env["DATABASE_NAME"] = self.db_info["name"]
-            if "type" in self.db_info:
-                env["DATABASE_TYPE"] = self.db_info["type"]
+        Post-Phase-4 there is nothing in extension folders to clean (the
+        in-memory Alembic config path writes nothing there). The only
+        ephemera left are:
+         - in-tree test_versions/ directories under src/database/migrations
+           and src/extensions/<name>/migrations (only present for legacy
+           CLI test runs that didn't pass test_versions_root)
+         - the test SQLite file at db_info["file_path"] when test_mode and
+           the db name has "test" in it
+         - any tmp*.ini stragglers from pre-Phase-4 versions
 
-        return env
+        Returns True regardless of whether anything was actually deleted —
+        callers use this as a best-effort sweep at end-of-run.
+        """
+        if not self.test_mode:
+            return True
 
-    def run_subprocess(self, cmd, env=None, capture_output=True):
-        """Run a subprocess command with environment variables and proper output capture."""
         try:
-            combined_env = dict(os.environ)
-            if env:
-                combined_env.update(env)
+            core_test = self.paths["migrations_dir"] / "test_versions"
+            if core_test.exists():
+                shutil.rmtree(core_test, ignore_errors=True)
+                logger.debug(f"Removed core test_versions: {core_test}")
 
-            logger.debug(f"Running command: {' '.join(cmd)}")
-
-            # Use subprocess.run for better output capture
-            result = subprocess.run(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,  # Keep stderr separate to avoid mixing
-                text=True,
-                env=combined_env,
-                check=False,  # Don't raise exception on non-zero exit
-            )
-
-            # Log stderr separately if it exists
-            if result.stderr:
-                for line in result.stderr.strip().split("\n"):
-                    if line.strip():
-                        logger.debug(f"[SUBPROCESS_STDERR] {line}")
-
-            # Log stdout separately if it exists
-            if result.stdout:
-                for line in result.stdout.strip().split("\n"):
-                    if line.strip():
-                        logger.debug(f"[SUBPROCESS_STDOUT] {line}")
-
-            success = result.returncode == 0
-            if success:
-                logger.debug(
-                    f"Command completed successfully with return code {result.returncode}"
+            for ext_name in self.configured_extensions:
+                ext_test = (
+                    self.paths["extensions_dir"]
+                    / ext_name
+                    / "migrations"
+                    / "test_versions"
                 )
-            else:
-                logger.error(f"Command failed with return code {result.returncode}")
-                if result.stderr:
-                    logger.error(f"Stderr: {result.stderr}")
+                if ext_test.exists():
+                    shutil.rmtree(ext_test, ignore_errors=True)
+                    logger.debug(f"Removed extension test_versions: {ext_test}")
 
-            return result, success
+            file_path = self.db_info.get("file_path") if self.db_info else None
+            db_name = self.db_info.get("name", "") if self.db_info else ""
+            if file_path and "test" in db_name.lower():
+                test_db = Path(file_path)
+                if test_db.exists():
+                    test_db.unlink()
+                    logger.debug(f"Removed test database file: {test_db}")
 
+            for stale in self.paths["src_dir"].glob("tmp*alembic*.ini"):
+                self.cleanup_file(stale, f"Removed stale tmp ini: {stale}")
         except Exception as e:
-            # If the error is FileNotFoundError (e.g., 'alembic' not on PATH),
-            # retry by invoking the module via the current Python interpreter: `python -m alembic ...`.
-            logger.debug(f"Initial subprocess attempt failed: {e}")
-            try:
-                if (
-                    isinstance(e, FileNotFoundError)
-                    and cmd
-                    and isinstance(cmd, (list, tuple))
-                ):
-                    # Build a fallback command that uses the current Python executable to run alembic as a module
-                    fallback_cmd = [sys.executable, "-m", cmd[0]] + list(cmd[1:])
-                    logger.debug(
-                        f"Retrying with fallback command: {' '.join(fallback_cmd)}"
-                    )
-                    result = subprocess.run(
-                        fallback_cmd,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
-                        text=True,
-                        env=combined_env,
-                        check=False,
-                    )
-
-                    # Log outputs
-                    if result.stderr:
-                        for line in result.stderr.strip().split("\n"):
-                            if line.strip():
-                                logger.debug(f"[FALLBACK_SUBPROCESS_STDERR] {line}")
-                    if result.stdout:
-                        for line in result.stdout.strip().split("\n"):
-                            if line.strip():
-                                logger.debug(f"[FALLBACK_SUBPROCESS_STDOUT] {line}")
-
-                    success = result.returncode == 0
-                    if success:
-                        logger.debug(
-                            f"Fallback command completed successfully with return code {result.returncode}"
-                        )
-                        return result, True
-                    else:
-                        logger.error(
-                            f"Fallback command failed with return code {result.returncode}"
-                        )
-                        if result.stderr:
-                            logger.error(f"Fallback stderr: {result.stderr}")
-                        return result, False
-            except Exception as e2:
-                logger.error(f"Fallback subprocess attempt also failed: {e2}")
-
-            logger.error(f"Error running command {' '.join(cmd)}: {e}")
-            return None, False
-
-    def cleanup_temporary_files(self, extension_name=None):
-        """Clean up any temporary files that might remain from previous operations"""
-        logger.debug("Cleaning up temporary files before operation")
-
-        # Clean up in core migrations directory
-        core_temp_files = [
-            self.paths["migrations_dir"] / "script.py.mako",
-            self.paths["migrations_dir"] / "temp_alembic.ini",
-        ]
-
-        for file_path in core_temp_files:
-            if file_path.exists():
-                self.cleanup_file(
-                    file_path, f"Cleaned up leftover temporary file: {file_path}"
-                )
-
-        # If an extension is specified, clean up its temporary files too
-        if extension_name:
-            ext_dir = self.paths["extensions_dir"] / extension_name
-            if ext_dir.exists():
-                migrations_dir = ext_dir / "migrations"
-                if migrations_dir.exists():
-                    ext_temp_files = [
-                        migrations_dir / "temp_alembic.ini",
-                        migrations_dir / "alembic.ini",
-                    ]
-
-                    for file_path in ext_temp_files:
-                        if file_path.exists():
-                            self.cleanup_file(
-                                file_path,
-                                f"Cleaned up leftover extension temporary file: {file_path}",
-                            )
-
-        # Also find any temporary alembic ini files in the current directory
-        temp_files = Path(".").glob("tmp*.ini")
-        for temp_file in temp_files:
-            if "alembic" in temp_file.name.lower():
-                self.cleanup_file(
-                    temp_file,
-                    f"Cleaned up leftover temporary alembic ini file: {temp_file}",
-                )
-
-        # Clean up the main alembic.ini if it exists and we're not in an active operation
-        if not hasattr(self, "_operation_in_progress"):
-            alembic_ini = self.paths["src_dir"] / "alembic.ini"
-            if alembic_ini.exists():
-                self.cleanup_file(alembic_ini, "Cleaned up main alembic.ini")
-
+            logger.warning(f"cleanup_test_artifacts: {e}", exc_info=True)
+            return False
         return True
 
-    def run_alembic_command(self, command, *args, extra_env=None, extension=None):
-        """Run an alembic command."""
-        try:
-            self._operation_in_progress = True  # Mark that we're in an operation
-            self.cleanup_temporary_files(extension)
-            alembic_ini_path = self.ensure_alembic_ini_exists()
 
-            original_dir = os.getcwd()
-            os.chdir(str(self.paths["src_dir"]))
+    def _make_alembic_config(self, extension_name, versions_dir):
+        """Build an Alembic Config in memory.
 
-            rel_path = os.path.relpath(str(alembic_ini_path), self.paths["src_dir"])
-            # Normalize path for cross-platform compatibility (Windows uses backslashes)
-            rel_path = rel_path.replace("\\", "/")
-            alembic_cmd = ["alembic", "-c", rel_path, command]
-            if args:
-                alembic_cmd.extend(args)
+        `script_location` is always the shared core dir (src/database/migrations/)
+        — env.py and script.py.mako are never copied into per-extension folders.
+        Only `version_locations` and `version_table` vary by extension.
 
-            script_template_dst = None
-            try:
-                env = self.get_common_env_vars(extension)
-                if extra_env:
-                    env.update(extra_env)
+        The extension name is propagated via `cfg.attributes["extension"]`,
+        which env.py reads via `context.config.attributes`.
+        """
+        from alembic.config import Config
 
-                if command == "revision" and not extension:
-                    script_template_dst = (
-                        self.paths["migrations_dir"] / "script.py.mako"
-                    )
-                    if not self.write_file(
-                        script_template_dst, get_script_py_mako_template()
-                    ):
-                        return False
-                    logger.debug(
-                        f"Created temporary script.py.mako at {script_template_dst}"
-                    )
+        cfg = Config()  # No path argument => never writes a config file.
+        cfg.set_main_option("script_location", str(self.paths["migrations_dir"]))
+        cfg.set_main_option("sqlalchemy.url", self.db_info["url"])
+        cfg.set_main_option("version_locations", str(versions_dir))
+        cfg.set_main_option(
+            "version_table",
+            "alembic_version" if not extension_name else f"alembic_version_{extension_name}",
+        )
+        # %% escapes the % so ConfigParser doesn't try to interpolate %(rev)s
+        # at read time — Alembic substitutes at template-render time instead.
+        cfg.set_main_option("file_template", "%%(rev)s_%%(slug)s")
+        cfg.attributes["extension"] = extension_name
+        if self._model_registry is not None:
+            # See __init__ docstring: env.py's lazy-loaded Base is a separate
+            # SQLAlchemy declarative instance from the one driving commit(),
+            # so we hand off the live registry here for env.py to reuse.
+            cfg.attributes["model_registry"] = self._model_registry
+        return cfg
 
-                _, success = self.run_subprocess(alembic_cmd, env)
-                return success
-            except Exception as e:
-                logger.error(f"Error running Alembic command: {e}")
-                return False
-            finally:
-                if script_template_dst and script_template_dst.exists():
-                    self.cleanup_file(script_template_dst)
-                # Clean up the alembic.ini file that was actually used (may be temp file)
-                alembic_ini_to_cleanup = (
-                    Path(alembic_ini_path)
-                    if isinstance(alembic_ini_path, str)
-                    else alembic_ini_path
-                )
-                if (
-                    alembic_ini_to_cleanup.exists()
-                    and alembic_ini_to_cleanup != self.alembic_ini_path
-                ):
-                    # Only delete if it's a temp file (not the shared alembic.ini)
-                    alembic_ini_to_cleanup.unlink()
-                    logger.debug(
-                        f"Deleted temp alembic.ini at {alembic_ini_to_cleanup}"
-                    )
-                os.chdir(original_dir)
-                delattr(self, "_operation_in_progress")  # Remove the operation flag
-        except Exception as e:
-            logger.error(f"Error in run_alembic_command: {e}")
-            # Clean up alembic.ini on error
-            if self.alembic_ini_path and self.alembic_ini_path.exists():
-                try:
-                    self.alembic_ini_path.unlink()
-                    logger.debug(
-                        f"Deleted alembic.ini at {self.alembic_ini_path} after error"
-                    )
-                except Exception as cleanup_error:
-                    logger.warning(f"Failed to clean up alembic.ini: {cleanup_error}")
-            if hasattr(self, "_operation_in_progress"):
-                delattr(self, "_operation_in_progress")
+    def _dispatch_alembic(self, cfg, command, *args, **kwargs):
+        """Run an Alembic command via the Python API; translate raises to bool.
+
+        Returns True on success, False on failure (logged). For commands that
+        produce structured output (history, current) we still return True/False
+        — callers that need the output can inspect logs or query
+        ScriptDirectory directly.
+        """
+        from alembic import command as alembic_command
+
+        fn = getattr(alembic_command, command, None)
+        if fn is None:
+            logger.error(f"Unknown alembic command: {command}")
             return False
+        try:
+            fn(cfg, *args, **kwargs)
+            return True
+        except Exception as e:
+            logger.error(f"Alembic command '{command}' failed: {e}", exc_info=True)
+            return False
+
+    def run_alembic_command(self, command, *args, extra_env=None, extension=None):
+        """Run a core (non-extension) alembic command via the Python API.
+
+        Replaces the prior subprocess-based flow: no os.chdir, no temp
+        alembic.ini, no script.py.mako write. The shared script_location at
+        src/database/migrations/ holds the single env.py and the materialized
+        script.py.mako template.
+        """
+        if extension:
+            return self.run_extension_migration(extension, command, *args)
+
+        versions_dir = self._resolve_core_versions_dir()
+        versions_dir.mkdir(parents=True, exist_ok=True)
+        cfg = self._make_alembic_config(None, versions_dir)
+
+        if command == "upgrade":
+            target = args[0] if args else "head"
+            return self._dispatch_alembic(cfg, "upgrade", target)
+        if command == "downgrade":
+            target = args[0] if args else "-1"
+            return self._dispatch_alembic(cfg, "downgrade", target)
+        if command == "history":
+            return self._dispatch_alembic(cfg, "history")
+        if command == "current":
+            return self._dispatch_alembic(cfg, "current")
+        if command == "revision":
+            return self._dispatch_revision(cfg, args, autogenerate=False)
+        if command == "--autogenerate" or "--autogenerate" in args:
+            return self._dispatch_revision(cfg, args, autogenerate=True)
+
+        logger.error(f"Unsupported alembic command: {command} {args}")
+        return False
+
+    def _dispatch_revision(self, cfg, args, autogenerate):
+        """Parse the legacy `revision -m <msg> [--autogenerate]` arg shape and
+        dispatch to alembic.command.revision."""
+        message = None
+        auto = autogenerate
+        i = 0
+        while i < len(args):
+            a = args[i]
+            if a in ("-m", "--message"):
+                if i + 1 < len(args):
+                    message = args[i + 1]
+                    i += 2
+                    continue
+            if a == "--autogenerate":
+                auto = True
+            i += 1
+        if message is None:
+            logger.error("revision command requires --message/-m")
+            return False
+        from alembic import command as alembic_command
+
+        try:
+            alembic_command.revision(cfg, message=message, autogenerate=auto)
+            return True
+        except Exception as e:
+            logger.error(f"Alembic revision failed: {e}", exc_info=True)
+            return False
+
+    def _is_first_migration(self, cfg):
+        """Whether the version_locations directory has zero base revisions."""
+        from alembic.script import ScriptDirectory
+
+        try:
+            return len(list(ScriptDirectory.from_config(cfg).get_revisions("base"))) == 0
+        except Exception as e:
+            logger.debug(f"_is_first_migration: defaulting to True due to {e}")
+            return True
+
+    def _ensure_extension_models_loaded(self, extension_name):
+        """Make sure the extension's BLL_*.py modules are imported and bound
+        to a committed ModelRegistry, so env.py can resolve target_metadata
+        for autogenerate runs.
+
+        When commit() drives the migration, self._model_registry is already
+        set and we just trigger BLL imports for the extension. When a caller
+        invokes us directly (CLI / per-test fixtures), we bootstrap a fresh
+        registry: import core BLL files (so FK targets resolve), import the
+        extension's BLL files, and commit the registry against a Base bound
+        to db_info["url"]. The committed registry is then threaded through
+        cfg.attributes by _make_alembic_config.
+
+        Returns True if at least one BLL file exists for the extension.
+        """
+        from lib.Pydantic import ModelRegistry
+
+        ext_path = self.paths["extensions_dir"] / extension_name
+        if not ext_path.exists() or not list(ext_path.glob("BLL_*.py")):
+            logger.warning(f"No BLL_*.py files found for extension {extension_name}")
+            return False
+
+        if self._model_registry is not None:
+            ModelRegistry.from_scoped_import(
+                file_type="BLL",
+                scopes=[f"{self.extensions_dir_name}.{extension_name}"],
+            )
+            return True
+
+        # Standalone path: bootstrap a registry against an isolated Base.
+        from database.DatabaseManager import DatabaseManager
+
+        ModelRegistry.from_scoped_import(
+            file_type="BLL",
+            scopes=[
+                "logic",
+                f"{self.extensions_dir_name}.{extension_name}",
+            ],
+        )
+        registry = ModelRegistry()
+        try:
+            db_mgr = DatabaseManager()
+            registry.database_manager = db_mgr
+            db_mgr.Base._model_registry = registry
+            registry.commit()
+        except Exception as e:
+            logger.warning(
+                f"Could not commit a standalone registry for {extension_name}: {e}",
+                exc_info=True,
+            )
+            return False
+        self._model_registry = registry
+        return True
 
     def run_extension_migration(
         self, extension_name, command, target="head", auto=True
     ):
-        """Run a migration command for a specific extension."""
-        # Clean up any existing files for this specific extension first
-        self._cleanup_specific_extension_files(extension_name)
+        """Run an alembic command for a specific extension via the Python API.
 
-        success, versions_dir = self.ensure_extension_versions_directory(extension_name)
-        if not success:
+        Writes nothing to the extension folder — the only filesystem touch is
+        creating <extension>/migrations/versions/ if missing. env.py and
+        script.py.mako are taken from the shared script_location.
+        """
+        ok, versions_dir = self.ensure_extension_versions_directory(extension_name)
+        if not ok:
             return False
 
-        original_dir = os.getcwd()
-        os.chdir(str(self.paths["src_dir"]))
+        if not self._ensure_extension_models_loaded(extension_name):
+            return False
 
-        temp_ini = None
-        env_py_path = None
+        cfg = self._make_alembic_config(extension_name, versions_dir)
+
+        if command == "upgrade":
+            return self._dispatch_alembic(cfg, "upgrade", target or "head")
+        if command == "downgrade":
+            return self._dispatch_alembic(cfg, "downgrade", target or "-1")
+        if command == "history":
+            return self._dispatch_alembic(cfg, "history")
+        if command == "current":
+            return self._dispatch_alembic(cfg, "current")
+        if command == "revision":
+            return self._extension_revision(cfg, extension_name, message=None, auto=auto)
+
+        logger.error(f"Unsupported extension alembic command: {command}")
+        return False
+
+    def _extension_revision(self, cfg, extension_name, message, auto):
+        """Create a new revision file for an extension, branch-labeling it on
+        the first revision so it forms its own line of history independent
+        from core."""
+        from alembic import command as alembic_command
+
+        kwargs = {"message": message, "autogenerate": auto}
+        if self._is_first_migration(cfg):
+            kwargs["head"] = "base"
+            kwargs["branch_label"] = f"ext_{extension_name}"
         try:
-            temp_ini = self.create_extension_alembic_ini(extension_name, versions_dir)
-
-            # Create env.py specifically for this extension
-            env_py_path = versions_dir.parent / "env.py"
-            core_env_py = self.paths["migrations_dir"] / "env.py"
-            if core_env_py.exists():
-                # Delete existing env.py if it exists
-                if env_py_path.exists():
-                    env_py_path.unlink()
-                    logger.debug(f"Deleted existing env.py for {extension_name}")
-
-                # Copy core env.py to extension
-                shutil.copy2(core_env_py, env_py_path)
-                logger.debug(f"Created env.py for extension {extension_name}")
-
-            from lib.Pydantic import ModelRegistry
-
-            # Load extension BLL models
-            ext_path = self.paths["extensions_dir"] / extension_name
-            bll_model_files = list(ext_path.glob("BLL_*.py"))
-            if not bll_model_files:
-                logger.warning(
-                    f"No BLL_*.py files found for extension {extension_name}"
-                )
-                return False
-
-            # Import BLL files from the extension
-            ModelRegistry.from_scoped_import(
-                file_type="BLL",
-                scopes=[f"{self.extensions_dir_name}.{extension_name}"],
-            )
-
-            rel_temp_ini = os.path.relpath(str(temp_ini), self.paths["src_dir"])
-
-            # Handle different commands
-            if command == "revision":
-                # Check if this is the first migration for revision command
-                alembic_history_cmd = ["alembic", "-c", rel_temp_ini, "history"]
-                result_history, _ = self.run_subprocess(
-                    alembic_history_cmd,
-                    self.get_common_env_vars(extension_name),
-                    capture_output=True,
-                )
-
-                is_first_migration = (
-                    not result_history
-                    or not result_history.stdout
-                    or "->" not in result_history.stdout
-                )
-                branch_label = f"ext_{extension_name}"
-
-                alembic_cmd = ["alembic", "-c", rel_temp_ini, "revision"]
-                if auto:
-                    alembic_cmd.append("--autogenerate")
-
-                if is_first_migration:
-                    alembic_cmd.extend(
-                        ["--head", "base", "--branch-label", branch_label]
-                    )
-
-                result, success = self.run_subprocess(
-                    alembic_cmd, self.get_common_env_vars(extension_name)
-                )
-                return success
-
-            else:
-                # Handle other commands like upgrade, downgrade, current, history
-                alembic_cmd = ["alembic", "-c", rel_temp_ini, command]
-
-                # Add target argument for upgrade/downgrade commands
-                if command in ["upgrade", "downgrade"] and target:
-                    alembic_cmd.append(target)
-                    logger.debug(
-                        f"Extension {extension_name}: Running {command} to target '{target}'"
-                    )
-
-                logger.debug(
-                    f"Extension {extension_name}: Command = {' '.join(alembic_cmd)}"
-                )
-                result, success = self.run_subprocess(
-                    alembic_cmd, self.get_common_env_vars(extension_name)
-                )
-
-                # For commands that return output (like current, history), return the result
-                if command in ["current", "history"] and result:
-                    return result
-
-                return success
-
+            alembic_command.revision(cfg, **kwargs)
+            return True
         except Exception as e:
-            logger.error(f"Error running extension migration: {e}")
+            logger.error(
+                f"Alembic revision for extension {extension_name} failed: {e}",
+                exc_info=True,
+            )
             return False
-        finally:
-            # Clean up files for this specific extension at the end
-            self._cleanup_specific_extension_files(extension_name)
-            os.chdir(original_dir)
 
     def create_extension_migration(self, extension_name, message, auto=True):
-        """Create a migration for a specific extension."""
-        # Clean up any existing files for this specific extension first
-        self._cleanup_specific_extension_files(extension_name)
-
-        success, versions_dir = self.ensure_extension_versions_directory(extension_name)
-        if not success:
+        """Create a new revision for an extension. Same in-process Python API
+        path as run_extension_migration's revision branch."""
+        ok, versions_dir = self.ensure_extension_versions_directory(extension_name)
+        if not ok:
             return False
-
-        original_dir = os.getcwd()
-        os.chdir(str(self.paths["src_dir"]))
-
-        temp_ini = None
-        env_py_path = None
-        script_template_path = None
-
-        try:
-            temp_ini = self.create_extension_alembic_ini(extension_name, versions_dir)
-
-            # Create env.py specifically for this extension
-            env_py_path = versions_dir.parent / "env.py"
-            core_env_py = self.paths["migrations_dir"] / "env.py"
-            if core_env_py.exists():
-                # Delete existing env.py if it exists
-                if env_py_path.exists():
-                    env_py_path.unlink()
-                    logger.debug(f"Deleted existing env.py for {extension_name}")
-
-                # Copy core env.py to extension
-                shutil.copy2(core_env_py, env_py_path)
-                logger.debug(f"Created env.py for extension {extension_name}")
-
-            # Create script.py.mako template for extension
-            script_template_path = versions_dir.parent / "script.py.mako"
-            if script_template_path.exists():
-                script_template_path.unlink()
-                logger.debug(f"Deleted existing script.py.mako for {extension_name}")
-
-            if not self.write_file(script_template_path, get_script_py_mako_template()):
-                return False
-            logger.debug(f"Created script.py.mako for extension {extension_name}")
-
-            from lib.Pydantic import ModelRegistry
-
-            # Load extension BLL models
-            ext_path = self.paths["extensions_dir"] / extension_name
-            bll_model_files = list(ext_path.glob("BLL_*.py"))
-            if not bll_model_files:
-                logger.warning(
-                    f"No BLL_*.py files found for extension {extension_name}"
-                )
-                return False
-
-            # Import BLL files from the extension
-            ModelRegistry.from_scoped_import(
-                file_type="BLL",
-                scopes=[f"{self.extensions_dir_name}.{extension_name}"],
-            )
-
-            rel_temp_ini = os.path.relpath(str(temp_ini), self.paths["src_dir"])
-            alembic_history_cmd = ["alembic", "-c", rel_temp_ini, "history"]
-            result_history, _ = self.run_subprocess(
-                alembic_history_cmd,
-                self.get_common_env_vars(extension_name),
-                capture_output=True,
-            )
-
-            is_first_migration = (
-                not result_history
-                or not result_history.stdout
-                or "->" not in result_history.stdout
-            )
-            branch_label = f"ext_{extension_name}"
-
-            alembic_cmd = ["alembic", "-c", rel_temp_ini, "revision", "-m", message]
-            if auto:
-                alembic_cmd.append("--autogenerate")
-
-            if is_first_migration:
-                alembic_cmd.extend(["--head", "base", "--branch-label", branch_label])
-
-            # Run the alembic command
-            logger.debug(f"Running alembic command: {' '.join(alembic_cmd)}")
-            result, success = self.run_subprocess(
-                alembic_cmd, self.get_common_env_vars(extension_name)
-            )
-
-            return success
-        except Exception as e:
-            logger.error(f"Error creating extension migration: {e}")
+        if not self._ensure_extension_models_loaded(extension_name):
             return False
-        finally:
-            # Clean up files for this specific extension at the end
-            self._cleanup_specific_extension_files(extension_name)
-            os.chdir(original_dir)
+        cfg = self._make_alembic_config(extension_name, versions_dir)
+        return self._extension_revision(cfg, extension_name, message=message, auto=auto)
 
-    def create_extension_alembic_ini(self, extension_name, extension_versions_dir):
-        """Create a completely customized alembic.ini for an extension"""
-        ext_migrations_dir = extension_versions_dir.parent
+    def _resolve_extension_versions_dir(self, extension_name):
+        """Resolve the per-extension version_locations directory.
 
-        # Prepare configuration dictionary
-        config_dict = get_extension_alembic_ini_dict(
-            extension_name,
-            ext_migrations_dir,
-            self.db_info["url"],
-            self.test_mode,
-            self.database_dir_name,
-        )
+        In production / non-test paths, this is
+            src/extensions/<name>/migrations/versions/
+        In test mode with a test_versions_root override, this is
+            <test_versions_root>/<name>/versions/
+        which keeps the source tree pristine across test runs.
 
-        # Convert to INI format
-        config_content = dict_to_ini(config_dict)
-
-        # Write to a temporary file located alongside the extension migrations
-        temp_file_path = self.create_temp_file(
-            config_content,
-            suffix=".ini",
-            directory=ext_migrations_dir,
-        )
-
-        self._extension_temp_inis.setdefault(extension_name, set()).add(temp_file_path)
-        logger.debug(
-            f"Created dedicated extension alembic.ini at {temp_file_path} for {extension_name}"
-        )
-
-        # For debugging, log the configuration
-        logger.debug(f"Extension alembic.ini configuration:\n{config_content}")
-
-        return temp_file_path
+        Falls back to the legacy in-tree test_versions/ when no override is
+        set, preserving back-compat with direct CLI invocations of the
+        test-mode flow.
+        """
+        if self.test_mode and self._test_versions_root is not None:
+            return self._test_versions_root / extension_name / "versions"
+        ext_migrations = self.paths["extensions_dir"] / extension_name / "migrations"
+        return ext_migrations / ("test_versions" if self.test_mode else "versions")
 
     def ensure_extension_versions_directory(self, extension_name):
-        """Ensure extension has a migrations/versions directory."""
+        """Ensure the per-extension version_locations directory exists.
+
+        Creates only the directories — no __init__.py files anywhere. Alembic
+        loads revision files by filesystem path, not via Python import, so
+        these directories are not Python packages.
+        """
         ext_dir = self.paths["extensions_dir"] / extension_name
         if not ext_dir.exists():
             return False, None
 
-        # Create root extension __init__.py if it doesn't exist (needed for imports)
-        ext_init_file = ext_dir / "__init__.py"
-        if not ext_init_file.exists():
-            ext_init_file.touch()
-            logger.debug(f"Created root __init__.py for extension {extension_name}")
-
-        # Create migrations directory
-        migrations_dir = ext_dir / "migrations"
-        migrations_dir.mkdir(exist_ok=True)
-
-        # Create versions directory inside migrations
-        if self.test_mode:
-            versions_dir = migrations_dir / "test_versions"
-        else:
-            versions_dir = migrations_dir / "versions"
-
-        versions_dir.mkdir(exist_ok=True)
-
-        # Create __init__.py in both migrations and versions directories
-        (migrations_dir / "__init__.py").touch()
-        (versions_dir / "__init__.py").touch()
-
-        logger.debug(f"Ensured extension versions directory at {versions_dir}")
+        versions_dir = self._resolve_extension_versions_dir(extension_name)
+        versions_dir.mkdir(parents=True, exist_ok=True)
         return True, versions_dir
-
-    def _cleanup_specific_extension_files(self, extension_name):
-        """Clean up temporary files for ONE specific extension only."""
-        logger.debug(f"Cleaning up files for extension: {extension_name}")
-
-        ext_dir = self.paths["extensions_dir"] / extension_name
-        if not ext_dir.exists():
-            return
-
-        migrations_dir = ext_dir / "migrations"
-        if not migrations_dir.exists():
-            return
-
-        # Remove any tracked temporary alembic.ini files created for this extension
-        temp_ini_paths = getattr(self, "_extension_temp_inis", {}).pop(
-            extension_name, set()
-        )
-        for temp_ini in temp_ini_paths:
-            self.cleanup_file(
-                temp_ini,
-                f"Removed temporary alembic.ini for extension {extension_name}: {temp_ini}",
-            )
-
-        # Files to clean up
-        cleanup_files = [
-            migrations_dir / "alembic.ini",
-            migrations_dir / "env.py",
-            migrations_dir / "script.py.mako",
-            migrations_dir / "__init__.py",
-        ]
-
-        # Clean up files in migrations directory
-        for file_path in cleanup_files:
-            if file_path.exists():
-                try:
-                    file_path.unlink()
-                    logger.debug(
-                        f"Removed {file_path.name} for extension {extension_name}"
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to remove {file_path}: {e}")
-
-        # Clean up __init__.py in versions directories
-        for versions_subdir in ["versions", "test_versions"]:
-            versions_dir = migrations_dir / versions_subdir
-            if versions_dir.exists():
-                versions_init = versions_dir / "__init__.py"
-                if versions_init.exists():
-                    try:
-                        versions_init.unlink()
-                        logger.debug(
-                            f"Removed __init__.py from {versions_subdir} for extension {extension_name}"
-                        )
-                    except Exception as e:
-                        logger.warning(f"Failed to remove {versions_init}: {e}")
-
-        # Clean up root extension __init__.py if it was created during migration operations
-        root_init = ext_dir / "__init__.py"
-        if root_init.exists():
-            try:
-                content = root_init.read_text().strip()
-                # Only remove if it looks like it was created by migration system
-                if not content or content.startswith("# Extension:"):
-                    root_init.unlink()
-                    logger.debug(
-                        f"Removed root __init__.py for extension {extension_name}"
-                    )
-            except Exception as e:
-                logger.warning(
-                    f"Failed to remove root __init__.py for {extension_name}: {e}"
-                )
-
-    def cleanup_extension_files(self):
-        """Clean up temporary files and resources for an extension"""
-        logger.debug("Cleaning up temporary extension files")
-
-        # Files to clean up for extensions - these are temporary files created during migration operations
-        cleanup_patterns = ["alembic.ini", "env.py", "script.py.mako"]
-
-        # Clean up in all extension directories
-        for ext_name in self.configured_extensions:
-            # Get extension directory using configurable path
-            possible_ext_dirs = [
-                self.paths["extensions_dir"] / ext_name,
-                Path("extensions") / ext_name,  # Fallback for compatibility
-                self.paths["root_dir"] / self.extensions_dir_name / ext_name,
-                Path(f"src/{self.extensions_dir_name}") / ext_name,
-            ]
-
-            for ext_dir in possible_ext_dirs:
-                if not ext_dir.exists():
-                    continue
-
-                ext_migrations_dir = ext_dir / "migrations"
-                if not ext_migrations_dir.exists():
-                    continue
-
-                logger.debug(f"Cleaning up files in {ext_migrations_dir}")
-                for pattern in cleanup_patterns:
-                    file_path = ext_migrations_dir / pattern
-                    if file_path.exists():
-                        try:
-                            file_path.unlink()
-                            logger.debug(f"Removed {pattern} at {file_path}")
-                        except Exception as e:
-                            logger.warning(f"Failed to clean up {file_path}: {e}")
-
-                # AGGRESSIVE CLEANUP: Remove ALL __init__.py files created during migration operations
-                # Remove __init__.py from migrations directory
-                migrations_init = ext_migrations_dir / "__init__.py"
-                if migrations_init.exists():
-                    try:
-                        migrations_init.unlink()
-                        logger.debug(
-                            f"Removed migrations __init__.py at {migrations_init}"
-                        )
-                    except Exception as e:
-                        logger.warning(f"Failed to clean up {migrations_init}: {e}")
-
-                # Remove __init__.py from versions directories (both regular and test)
-                for versions_subdir in ["versions", "test_versions"]:
-                    versions_dir = ext_migrations_dir / versions_subdir
-                    if versions_dir.exists():
-                        versions_init = versions_dir / "__init__.py"
-                        if versions_init.exists():
-                            try:
-                                versions_init.unlink()
-                                logger.debug(
-                                    f"Removed versions __init__.py at {versions_init}"
-                                )
-                            except Exception as e:
-                                logger.warning(
-                                    f"Failed to clean up {versions_init}: {e}"
-                                )
-
-                # AGGRESSIVE CLEANUP: Remove root extension __init__.py if it was created during migration operations
-                # Remove it regardless of content since migration operations shouldn't create permanent __init__.py files
-                root_init = ext_dir / "__init__.py"
-                if root_init.exists():
-                    try:
-                        # Read content to log what we're removing
-                        content = root_init.read_text().strip()
-                        root_init.unlink()
-                        logger.debug(
-                            f"Removed root __init__.py at {root_init} (content: {content[:50]}...)"
-                        )
-                    except Exception as e:
-                        logger.warning(
-                            f"Failed to clean up root __init__.py {root_init}: {e}"
-                        )
-
-        # Also clean up any temporary INI files in the current directory
-        temp_files = Path(".").glob("tmp*.ini")
-        for temp_file in temp_files:
-            if "alembic" in temp_file.name.lower():
-                try:
-                    temp_file.unlink()
-                    logger.debug(f"Removed temporary file: {temp_file}")
-                except Exception as e:
-                    logger.warning(f"Failed to clean up {temp_file}: {e}")
-
-        # Clean up the main alembic.ini if it exists and we're not in an active operation
-        if not hasattr(self, "_operation_in_progress"):
-            alembic_ini = self.paths["src_dir"] / "alembic.ini"
-            if alembic_ini.exists():
-                self.cleanup_file(alembic_ini, "Cleaned up main alembic.ini")
-
-        return True
-
-    def cleanup_all_extension_files(self, extension_list=None):
-        """Clean up all files for specific extensions, including root __init__.py files.
-        This is more aggressive than cleanup_extension_files and should be used for test cleanup.
-        """
-        extension_list = extension_list or []
-
-        logger.debug(f"Performing complete cleanup for extensions: {extension_list}")
-
-        for ext_name in extension_list:
-            possible_ext_dirs = [
-                self.paths["extensions_dir"] / ext_name,
-                Path("extensions") / ext_name,  # Fallback for compatibility
-                self.paths["root_dir"] / self.extensions_dir_name / ext_name,
-                Path(f"src/{self.extensions_dir_name}") / ext_name,
-            ]
-
-            for ext_dir in possible_ext_dirs:
-                if ext_dir.exists():
-                    try:
-                        import shutil
-
-                        shutil.rmtree(ext_dir)
-                        logger.debug(
-                            f"Completely removed extension directory: {ext_dir}"
-                        )
-                    except Exception as e:
-                        logger.warning(
-                            f"Failed to remove extension directory {ext_dir}: {e}"
-                        )
-
-                        # Try to remove individual files if rmtree fails
-                        try:
-                            for file_path in ext_dir.rglob("*"):
-                                if file_path.is_file():
-                                    file_path.unlink()
-
-                            # Remove empty directories
-                            for dir_path in sorted(
-                                ext_dir.rglob("*"), key=lambda x: str(x), reverse=True
-                            ):
-                                if dir_path.is_dir() and not any(dir_path.iterdir()):
-                                    dir_path.rmdir()
-
-                            # Finally remove the root extension directory if empty
-                            if ext_dir.exists() and not any(ext_dir.iterdir()):
-                                ext_dir.rmdir()
-                                logger.debug(
-                                    f"Removed extension directory after manual cleanup: {ext_dir}"
-                                )
-                        except Exception as e2:
-                            logger.error(
-                                f"Manual cleanup also failed for {ext_name}: {e2}"
-                            )
-
-        return True
 
     def regenerate_migrations(
         self, extension_name=None, all_extensions=False, message=None
@@ -1627,26 +1002,31 @@ class MigrationManager:
 
         logger.debug(f"Using message: {message}")
 
-        # NUKE THE DATABASE - We're starting from scratch
-        logger.debug("Deleting existing database to start fresh")
-        db_path = self.paths["database_dir"] / "database.db"
-        if db_path.exists():
-            try:
-                db_path.unlink()
-                logger.debug(f"Successfully deleted database: {db_path}")
-            except Exception as e:
-                logger.warning(f"Failed to delete database {db_path}: {e}")
+        # NUKE THE DATABASE - We're starting from scratch.
+        # Use db_info["file_path"] so test/parametrized DBs delete the right file.
+        # Postgres has no file_path; skip the delete in that case (tables are
+        # dropped by the migration, not the file).
+        file_path = self.db_info.get("file_path") if self.db_info else None
+        if file_path:
+            db_path = Path(file_path)
+            logger.debug(f"Deleting existing database to start fresh: {db_path}")
+            if db_path.exists():
+                try:
+                    db_path.unlink()
+                    logger.debug(f"Successfully deleted database: {db_path}")
+                except Exception as e:
+                    logger.warning(f"Failed to delete database {db_path}: {e}")
+            else:
+                logger.debug(f"Database file {db_path} does not exist, skipping deletion")
         else:
-            logger.debug(f"Database file {db_path} does not exist, skipping deletion")
+            logger.debug("No db_info file_path set; skipping pre-regenerate DB delete")
 
         # Handle core migrations first
         if not extension_name or all_extensions:
             logger.debug("Regenerating core migrations")
 
             # 1. Clear core migrations directory
-            versions_dir = (
-                self.paths["migrations_dir"] / self._get_versions_directory_name()
-            )
+            versions_dir = self._resolve_core_versions_dir()
             versions_dir.mkdir(parents=True, exist_ok=True)
 
             # Count and delete migration files
@@ -1717,10 +1097,7 @@ class MigrationManager:
 
                 logger.debug(f"Successfully regenerated migrations for {ext_name}")
 
-            # Clean up extension temporary files after all extensions are processed
-            if extensions_to_process:
-                self.cleanup_extension_files()
-                logger.debug("Cleaned up extension temporary files after regeneration")
+            # Phase 4 eliminated per-extension temporary files; nothing to clean.
 
         return True
 
@@ -1877,29 +1254,8 @@ class {class_name}(Base):
                 f"Error creating extension {extension_name}: {e}", exc_info=True
             )
             return False
-        finally:
-            # Clean up temporary files manually
-            try:
-                extensions_dir = self.paths["extensions_dir"]
-                ext_dir = extensions_dir / extension_name
-                migrations_dir = ext_dir / "migrations"
-
-                if migrations_dir.exists():
-                    temp_files = [
-                        migrations_dir / "alembic.ini",
-                        migrations_dir / "env.py",
-                        migrations_dir / "script.py.mako",
-                    ]
-
-                    for file_path in temp_files:
-                        self.cleanup_file(
-                            file_path, f"Cleaning up temporary file {file_path}"
-                        )
-            except Exception as e:
-                logger.error(f"Error during final cleanup: {e}", exc_info=True)
-
-            # Also run the standard cleanup
-            self.cleanup_extension_files()
+        # Phase 4 eliminated per-extension temporary files; nothing to clean
+        # in a finally block.
 
     def _ensure_extension_in_env_var(self, extension_name):
         """Ensure an extension is in the APP_EXTENSIONS environment variable"""
@@ -1908,21 +1264,6 @@ class {class_name}(Base):
             extensions.append(extension_name)
 
         return ",".join(extensions)
-
-    def update_extension_config(self, extension_name):
-        """Update the extension configuration - DEPRECATED
-
-        This function is kept for backward compatibility but doesn't do anything.
-        Extensions are now configured via the APP_EXTENSIONS environment variable.
-        """
-        # Function is kept for backward compatibility
-        logger.debug(
-            f"NOTICE: Extension '{extension_name}' needs to be added to APP_EXTENSIONS environment variable."
-        )
-        logger.debug(
-            "Please update your environment variables to include this extension for migrations to work correctly."
-        )
-        return True
 
     def debug_environment(self):
         """Show debug information about the environment"""
@@ -1965,13 +1306,10 @@ class {class_name}(Base):
         for name, path in self.paths.items():
             logger.debug(f"{name}: {path}")
 
-        # Alembic configuration
+        # Alembic configuration is built in-memory via _make_alembic_config —
+        # there is no on-disk alembic.ini to inspect.
         logger.debug("--- ALEMBIC CONFIG ---")
-        logger.debug(f"Alembic ini path: {self.alembic_ini_path}")
-        if self.alembic_ini_path.exists():
-            logger.debug("Alembic ini exists: Yes")
-        else:
-            logger.debug("Alembic ini exists: No")
+        logger.debug("Alembic config: in-memory (no on-disk alembic.ini)")
 
         # Extensions
         logger.debug("--- EXTENSIONS ---")
@@ -2045,8 +1383,16 @@ class {class_name}(Base):
         try:
             # Refresh configured extensions to pick up any environment changes
             self.configured_extensions = extensions or self._get_configured_extensions()
+            try:
+                self.configured_extensions = self._compute_migration_order(
+                    list(self.configured_extensions)
+                )
+            except RuntimeError:
+                # Cycle errors must surface to the operator — re-raise.
+                raise
             logger.debug(
-                f"Running migrations for extensions: {self.configured_extensions}"
+                f"Running migrations for extensions (toposorted): "
+                f"{self.configured_extensions}"
             )
             logger.debug(
                 f"[Worker {worker_id}] Running {command} for core migrations on db={self.db_info['name']}"
@@ -2076,9 +1422,9 @@ class {class_name}(Base):
                     f"Found BLL models for extension '{ext_name}': {[f.name for f in db_model_files]}"
                 )
 
-                # Check for migrations directory
-                migrations_dir = extension_dir / "migrations"
-                versions_dir = migrations_dir / self._get_versions_directory_name()
+                # Resolve where this extension's revision files live (honors
+                # test_versions_root override).
+                versions_dir = self._resolve_extension_versions_dir(ext_name)
 
                 if versions_dir.exists():
                     extension_migrations.append((ext_name, versions_dir))
@@ -2217,52 +1563,6 @@ class {class_name}(Base):
             return default or []
         return [item.strip() for item in value.split(",") if item.strip()]
 
-    def cleanup_test_environment(self):
-        """Clean up test-specific files and directories when in test mode"""
-        if not self.test_mode:
-            return True
-
-        logger.debug("Cleaning up test environment")
-
-        try:
-            # Clean up test_versions directory in core migrations
-            test_versions_dir = self.paths["migrations_dir"] / "test_versions"
-            if test_versions_dir.exists():
-                import shutil
-
-                shutil.rmtree(test_versions_dir)
-                logger.debug(f"Removed test_versions directory: {test_versions_dir}")
-
-            # Clean up test_versions directories in all extensions
-            for ext_name in self.configured_extensions:
-                ext_dir = self.paths["extensions_dir"] / ext_name
-                if ext_dir.exists():
-                    ext_test_versions = ext_dir / "migrations" / "test_versions"
-                    if ext_test_versions.exists():
-                        import shutil
-
-                        shutil.rmtree(ext_test_versions)
-                        logger.debug(
-                            f"Removed extension test_versions directory: {ext_test_versions}"
-                        )
-
-            # Clean up test database file if it exists and is a test database
-            if (
-                self.db_info.get("file_path")
-                and "test" in self.db_info.get("name", "").lower()
-            ):
-                test_db_file = Path(self.db_info["file_path"])
-                if test_db_file.exists():
-                    test_db_file.unlink()
-                    logger.debug(f"Removed test database file: {test_db_file}")
-
-        except Exception as e:
-            logger.error(f"Error during test environment cleanup: {e}")
-            return False
-
-        return True
-
-
 def main():
     parser = argparse.ArgumentParser(description="Unified database migration tool")
     subparsers = parser.add_subparsers(dest="command", help="Migration command")
@@ -2303,16 +1603,6 @@ def main():
         help="Create an empty migration file without auto-generating content.",
     )
     revision_parser.set_defaults(autogenerate=True)
-    revision_parser.add_argument(
-        "--regenerate",
-        action="store_true",
-        help="Delete all existing migrations and regenerate",
-    )
-    revision_parser.add_argument(
-        "--all",
-        action="store_true",
-        help="With --regenerate: regenerate all extensions after core",
-    )
 
     history_parser = subparsers.add_parser(
         "history", help="Show migration version history"
@@ -2326,17 +1616,6 @@ def main():
     )
     current_parser.add_argument(
         "--extension", help="Show current version for a specific extension"
-    )
-
-    init_parser = subparsers.add_parser(
-        "init", help="Initialize migration structure for an extension"
-    )
-    init_parser.add_argument("extension", help="Extension to initialize")
-    init_parser.add_argument(
-        "--skip-model", action="store_true", help="Skip creating sample model"
-    )
-    init_parser.add_argument(
-        "--skip-migrate", action="store_true", help="Skip migration creation"
     )
 
     create_parser = subparsers.add_parser(
@@ -2354,6 +1633,15 @@ def main():
 
     debug_parser = subparsers.add_parser(
         "debug", help="Show detailed debug information"
+    )
+
+    # Audit table ownership (Item 24)
+    subparsers.add_parser(
+        "audit-ownership",
+        help=(
+            "List every table and its owning extension (or 'core'). "
+            "Field-injection extenders are listed in the third column."
+        ),
     )
 
     # Add separate regenerate command
@@ -2378,9 +1666,8 @@ def main():
     # Create our migration manager
     manager = MigrationManager()
 
-    # Clean up any leftover temporary files at the start
-    extension_name = getattr(args, "extension", None)
-    manager.cleanup_temporary_files(extension_name)
+    # Sweep stale test artifacts from prior runs.
+    manager.cleanup_test_artifacts()
 
     success = False
     try:
@@ -2395,33 +1682,14 @@ def main():
                 success = manager.run_alembic_command(args.command, args.target)
 
         elif args.command == "revision":
-            if args.regenerate:
-                success = manager.regenerate_migrations(
-                    extension_name=args.extension,
-                    all_extensions=args.all,
-                    message=args.message,
-                )
+            if not args.message:
+                logger.error("--message is required for new revisions")
+                success = False
             elif args.extension:
-                if not args.message:
-                    if args.regenerate:
-                        args.message = "initial schema"
-                    else:
-                        logger.debug(
-                            "Error: --message is required for new non-regenerated revisions"
-                        )
-                        sys.exit(1)
                 success = manager.create_extension_migration(
                     args.extension, args.message, args.autogenerate
                 )
             else:
-                if not args.message:
-                    if args.regenerate:
-                        args.message = "initial schema"
-                    else:
-                        logger.debug(
-                            "Error: --message is required for new non-regenerated revisions"
-                        )
-                        sys.exit(1)
                 cmd = ["revision"]
                 if args.autogenerate:
                     cmd.append("--autogenerate")
@@ -2440,19 +1708,15 @@ def main():
             else:
                 success = manager.run_alembic_command("current")
 
-        elif args.command == "init":
-            success = manager.create_extension(
-                args.extension,
-                skip_model=args.skip_model,
-                skip_migrate=args.skip_migrate,
-            )
-
         elif args.command == "create":
             success = manager.create_extension(
                 args.extension,
                 skip_model=args.skip_model,
                 skip_migrate=args.skip_migrate,
             )
+
+        elif args.command == "audit-ownership":
+            success = manager.audit_table_ownership()
 
         elif args.command == "debug":
             manager.debug_environment()
@@ -2467,27 +1731,15 @@ def main():
 
         else:
             parser.print_help()
-            sys.exit(1)
+            success = False
 
-        sys.exit(0 if success else 1)
-
-    finally:  # FIXME: This code is unreachable
-        # Ensure cleanup runs regardless of success/failure
+    finally:
         try:
-            # Clean up only the specific extension being worked on
-            extension_name = getattr(args, "extension", None)
-            if extension_name:
-                manager._cleanup_specific_extension_files(extension_name)
-                logger.debug(f"Final cleanup for extension {extension_name} completed")
-            else:
-                # For core operations, just clean up general temporary files
-                manager.cleanup_temporary_files()
-                logger.debug("Final cleanup of temporary files completed")
+            manager.cleanup_test_artifacts()
         except Exception as e:
             logger.warning(f"Error during final cleanup: {e}", exc_info=True)
 
-        # Clean up test environment
-        manager.cleanup_test_environment()
+    sys.exit(0 if success else 1)
 
 
 if __name__ == "__main__":
