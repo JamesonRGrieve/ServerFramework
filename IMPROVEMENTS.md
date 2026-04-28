@@ -1272,8 +1272,78 @@ What L7 cannot solve is **session stickiness driven by application-level context
 
 ---
 
+## Third-round audit additions
 
+A subsequent gap-spotting pass surfaced infrastructure primitives the framework needs that the first two rounds did not call out, plus the two authentication doors-open items the user explicitly requested. Items 53–57 are the gap items; items 58–59 are the auth extensions, each captured as a single line item that specifies *both* the framework provisions required to leave the door open and the extension implementation that walks through it.
 
+---
+
+## Item 53 — Advisory locking primitive
+
+**Severity:** Medium
+**Scope:** New `AdvisoryLock` abstraction, Postgres advisory-lock backend, Redis-based fallback, integration with quota decrement, outbox claim, and other critical sections.
+**Owner area:** Database / concurrency.
+
+**Purpose.** Several existing items reference the need to serialize concurrent operations on a logical resource: Item 19's atomic quota decrement, Item 35's outbox claim (one drain worker per entry), Item 14's row-level lock during link-field write-back, and an unspecified set of singleton-resource updates in extensions. Today the framework does not provide a canonical advisory-lock primitive, so each of these reaches for a different mechanism — Postgres `SELECT ... FOR UPDATE`, application-level `threading.Lock`, ad-hoc `UPDATE ... WHERE` patterns. The result is incorrect under concurrency in subtle ways: the application lock does not serialize across processes; the row lock holds a transaction open longer than necessary; the conditional update misses concurrent readers. A single canonical primitive closes the gap and pulls every critical-section caller onto one well-tested implementation.
+
+**Current state.** No framework primitive. Each caller rolls their own locking.
+
+**Target state.** `acquire_lock(name: str, timeout: Optional[float] = None) -> AdvisoryLock` is the canonical call, with `AdvisoryLock` usable as a context manager (`async with acquire_lock("outbox.claim:{entry_id}"): ...`). Two backends ship: the default uses Postgres's `pg_advisory_lock` family (transaction-scoped or session-scoped per declaration); the Redis backend uses a Redlock-style implementation for deployments that prefer to keep the database load down. Lock identifiers are namespaced by extension. The outbox drain (Item 35), the quota decrement (Item 19), and the link-field write-back (Item 14) all migrate to use this primitive rather than reinventing.
+
+**Implementation notes.** Postgres advisory locks come in two flavors — session-level and transaction-level. The framework default is transaction-level for safety (auto-released on commit/rollback), with session-level available for explicit cross-transaction locks. The Redis backend uses a fencing token to detect lock-holder failure mid-operation. Lock acquisition has a configurable timeout and raises `LockTimeoutError` on exhaustion rather than blocking forever. The framework instruments lock acquisition with metrics (`advisory_lock_wait_seconds{name}`, `advisory_lock_held_seconds{name}`) so contention is visible to operators.
+
+**Acceptance criteria.** A BLL author writing a critical section calls `async with acquire_lock("payment.subscription_renew:{user_id}"): ...` and gets cross-process serialization without choosing a backend or writing lock-management code. The outbox drain claims an entry under this primitive and never produces concurrent processing of the same entry. Lock-wait metrics are visible in the standard observability backends (Item 34).
+
+**Dependencies.** Cross-references Items 14, 19, 34, 35.
+
+---
+
+## Item 54 — Read-replica routing for read-only operations
+
+**Severity:** Medium
+**Scope:** Database session binding, BLL method annotations, request-context routing.
+**Owner area:** Database / scaling.
+
+**Purpose.** Read-heavy workloads (list endpoints, dashboards, search) eventually outgrow a single primary database. Read-replicas are the standard escape valve, but only if the framework can route read-only operations to a replica without each extension manually selecting a session. Today every BLL method binds the primary session by default; an extension that wants replica routing has to reach into the session-management layer, which violates the no-touch-the-core principle. A first-class routing primitive lets extensions opt their reads onto replicas without bespoke session code.
+
+**Current state.** Single primary session bound for every request. No replica concept.
+
+**Target state.** Two complementary opt-in mechanisms:
+
+- **Method-level annotation.** A `@read_only` decorator on BLL methods declares the method is safe to route to a replica. The framework's session binder consults the annotation at method dispatch and binds a replica session when one is configured, falling back to primary when no replica is configured or when the request is inside a write-transaction (a `@read_only` method called from within a write context still binds primary, since cross-session reads inside a transaction would lose read-after-write consistency).
+- **Request-context flag.** A `RequestContext.read_only: bool` flag forces all session binding within the request to use replicas. Useful for dedicated read-only endpoints (a public catalog browse, a metrics export) where every operation under the request is known-safe.
+
+The framework supports configuring a pool of replicas with simple round-robin selection between them; advanced load shaping is delegated to HAProxy or the database's own load balancer per Item 3.
+
+**Implementation notes.** Read-after-write consistency is the trap: a write committed to primary may not be visible on a replica for tens or hundreds of milliseconds. The framework's transaction tracking ensures that within a single logical request, once any write has occurred against primary, subsequent reads in the same request bind primary regardless of `@read_only` annotation. The fallback policy is explicit: read-only mode requested with no replica configured is a deployment-config-only fallback to primary (with a warn-once log), not a runtime error. Replica health is consulted before binding; an unhealthy replica is removed from rotation per a configurable health-check interval.
+
+**Acceptance criteria.** A list endpoint's BLL method annotated `@read_only` routes to a replica when configured, and falls back cleanly to primary when no replica is configured. A write followed by a read within the same logical request binds primary for the read, preserving read-after-write consistency. Replica failure removes that replica from rotation without affecting unrelated requests.
+
+**Dependencies.** Independent. Cross-references Items 3 (L7 load shaping), 34 (health and routing metrics).
+
+---
+
+## Item 55 — Tenant data-isolation primitives
+
+**Severity:** Medium
+**Scope:** Postgres Row-Level Security policies, session GUC variables, tenant-scoped model declarations.
+**Owner area:** Multi-tenancy / security.
+
+**Purpose.** Item 36 covers data residency at the provider-instance level (which Stripe account does this user's traffic go to); it does not cover row-level data isolation at the database level (which rows can this user even see). Today every tenant-scoped query relies on the BLL author remembering to filter by `team_id` — a pattern that works under code review but inevitably leaks under refactoring, custom queries, raw SQL, or simple typos. A single missed filter clause is a cross-tenant data exposure. The framework needs a defense-in-depth primitive that enforces isolation at the database layer, regardless of what the application code does.
+
+**Current state.** Tenant filtering is by convention. No row-level enforcement.
+
+**Target state.** Tenant-scoped models declare themselves via a `TenantScopedMixin` that adds `team_id` (or a configurable tenant-key field) and registers a Postgres Row-Level Security policy at table-creation migration time. The session binder sets `app.current_team_id` as a Postgres GUC variable on every connection; the RLS policy filters reads and writes by matching `team_id = current_setting('app.current_team_id')::uuid`. A missing or unset GUC variable causes the policy to return zero rows, so an unauthenticated session or a forgotten tenant-context bind sees nothing rather than seeing everything.
+
+System-level operations (admin endpoints, cross-tenant reporting, the framework's own internal operations) bind a privileged session that bypasses the RLS policy via a Postgres role with `BYPASSRLS`. The privilege boundary is at the session-bind layer, not at individual queries — there is no way to selectively bypass RLS for a single query without binding a privileged session, by design.
+
+**Implementation notes.** Postgres RLS is well-supported and battle-tested but has known costs: queries on RLS-protected tables get a planner overhead, and policy expressions must be `STABLE` or simpler for the planner to optimize. The framework's policy template is the simplest possible (`USING (team_id = current_setting(...)::uuid)`) so the planner cost is predictable. Migration of an existing application to RLS is non-trivial: a phased rollout (RLS in `WARN` mode logging policy violations without enforcing, then `ENFORCE` mode) is documented. The framework includes a startup check that verifies every `TenantScopedMixin`-tagged table has an enforced RLS policy and refuses to start otherwise — the policy and the mixin must agree.
+
+**Acceptance criteria.** A `TenantScopedMixin`-tagged model declared at extension load time produces a corresponding Postgres RLS policy in the migration. A query against the model from a session with `app.current_team_id` set returns only matching rows; a query from a session without the setting returns zero rows. A privileged session (admin, reporting) bypasses RLS via a separate role; no in-application code can selectively bypass RLS without binding the privileged session.
+
+**Dependencies.** Cross-references Item 36 (residency, distinct concern), Item 49 (migration ordering — RLS policies are migration artifacts subject to FK-aware ordering).
+
+---
 
 
 
