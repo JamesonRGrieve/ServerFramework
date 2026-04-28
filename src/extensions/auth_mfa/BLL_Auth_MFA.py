@@ -325,11 +325,44 @@ class MultifactorMethodManager(AbstractBLLManager, RouterMixin):
 
         return base64.b32encode(secret_bytes).decode("utf-8")
 
-    # Process-local replay-protection set: (secret_fingerprint, code).
-    # A real deployment should back this with Redis or a DB column so it
-    # survives restarts and is shared across workers. The in-memory store
-    # is sufficient to defeat the obvious replay-within-window case.
-    _USED_TOTP_CODES: ClassVar[set] = set()
+    # Process-local replay-protection cache: keyed on (secret_fingerprint, code)
+    # with a 120s TTL — comfortably longer than the 60s drift window we accept
+    # via pyotp's ``valid_window=1``. A multi-instance deployment still needs
+    # a shared store (Redis / DB row); see TODO below. Entries auto-expire so
+    # the set cannot grow unbounded under sustained traffic.
+    # TODO(security): replace with a Redis/DB-backed store for horizontal
+    # deployments — process-local memory is sufficient only for single-worker.
+    _TOTP_REPLAY_TTL_SECONDS: ClassVar[int] = 120
+    _TOTP_REPLAY_MAX_ENTRIES: ClassVar[int] = 10000
+
+    @classmethod
+    def _replay_cache(cls):
+        """Lazily create the shared TTL cache used for TOTP replay protection."""
+        cache = getattr(cls, "_USED_TOTP_CACHE", None)
+        if cache is None:
+            try:
+                from cachetools import TTLCache
+
+                cache = TTLCache(
+                    maxsize=cls._TOTP_REPLAY_MAX_ENTRIES,
+                    ttl=cls._TOTP_REPLAY_TTL_SECONDS,
+                )
+            except ImportError:
+                # Fall back to a plain dict if cachetools is unavailable; the
+                # entries will not auto-expire but replay rejection still works.
+                cache = {}
+            cls._USED_TOTP_CACHE = cache
+        return cache
+
+    @classmethod
+    def _record_used_totp(cls, secret_fingerprint: str, code: str) -> None:
+        """Remember that a (secret, code) pair has been accepted."""
+        cls._replay_cache()[(secret_fingerprint, code)] = True
+
+    @classmethod
+    def _is_totp_replayed(cls, secret_fingerprint: str, code: str) -> bool:
+        """Return True if this (secret, code) pair has already been used."""
+        return (secret_fingerprint, code) in cls._replay_cache()
 
     def verify_totp_code(
         self,
@@ -356,14 +389,13 @@ class MultifactorMethodManager(AbstractBLLManager, RouterMixin):
 
             # Replay check: same (secret, code) pair must not be re-used.
             # We key on a SHA-256 fingerprint of the secret so the raw
-            # secret is never stored in the replay set.
+            # secret is never stored in the replay cache.
             import hashlib
 
             fingerprint = hashlib.sha256(secret.encode()).hexdigest()
-            replay_key = (fingerprint, code)
-            if replay_key in self._USED_TOTP_CODES:
+            if self._is_totp_replayed(fingerprint, code):
                 return False
-            self._USED_TOTP_CODES.add(replay_key)
+            self._record_used_totp(fingerprint, code)
             return True
         except Exception as e:
             logger.error(f"Error verifying TOTP code: {e}")

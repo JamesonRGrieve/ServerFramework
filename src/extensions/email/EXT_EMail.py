@@ -16,7 +16,9 @@ Component loading (DB, BLL, EP) is handled automatically by the import system
 based on file naming conventions.
 """
 
+import os
 from abc import abstractmethod
+from email.utils import parseaddr
 from typing import Any, ClassVar, Dict, List, Optional, Set, Type
 
 from extensions.AbstractExtensionProvider import (
@@ -30,6 +32,12 @@ from lib.Environment import env
 from lib.Logging import logger
 from lib.Pydantic import classproperty
 from logic.BLL_Providers import ProviderInstanceModel
+
+# Hard caps applied uniformly across all email providers. Sized for RFC 5322
+# (subject ≤998 octets) and a generous 10 MiB body — anything larger is almost
+# certainly a DoS or smuggling attempt rather than a legitimate message.
+_EMAIL_MAX_SUBJECT_OCTETS = 998
+_EMAIL_MAX_BODY_BYTES = 10 * 1024 * 1024
 
 
 class AbstractEmailProvider(AbstractStaticProvider):
@@ -56,6 +64,82 @@ class AbstractEmailProvider(AbstractStaticProvider):
             "name": friendly_name,
             "description": f"Email extension for {cls.get_platform_name()}",
         }
+
+    @classmethod
+    def _validate_send_inputs(
+        cls,
+        recipient: str,
+        subject: str,
+        body: str,
+        attachments: Optional[List[str]] = None,
+    ) -> Optional[str]:
+        """
+        Reject inputs that could be used to mount header-injection, SSRF,
+        traversal, or DoS attacks against the underlying transport. Returns
+        ``None`` when inputs are safe, otherwise an error string suitable
+        for returning directly from ``send_email``. Concrete providers must
+        call this as the first statement in their ``send_email`` body.
+        """
+        if not isinstance(recipient, str) or not recipient:
+            return "Failed to send email: invalid recipient (empty)"
+        if not isinstance(subject, str):
+            return "Failed to send email: invalid subject (must be string)"
+        if not isinstance(body, str):
+            return "Failed to send email: invalid body (must be string)"
+
+        # CRLF injection: anything that lets a caller break out of the
+        # recipient or subject header line and graft a Bcc:/Reply-To: header.
+        for label, value in (("recipient", recipient), ("subject", subject)):
+            if "\r" in value or "\n" in value:
+                return f"Failed to send email: rejected CRLF in {label}"
+
+        # NUL byte: silently truncates strings in C-backed transports
+        # (libmagic, smtplib parsers) and can be used to smuggle content.
+        if "\x00" in recipient or "\x00" in subject or "\x00" in body:
+            return "Failed to send email: rejected NUL byte in input"
+
+        # RFC 5322 §2.1.1 caps a single header line at 998 octets. Anything
+        # longer is either a bug or a payload trying to wrap a header.
+        if len(subject.encode("utf-8")) > _EMAIL_MAX_SUBJECT_OCTETS:
+            return "Failed to send email: subject exceeds 998 octets"
+
+        if len(body.encode("utf-8", errors="replace")) > _EMAIL_MAX_BODY_BYTES:
+            return "Failed to send email: body exceeds 10 MiB cap"
+
+        # parseaddr yields ('', '') for malformed input; a valid address
+        # must contain a single '@' and a non-empty local + domain part.
+        _, addr = parseaddr(recipient)
+        if not addr or "@" not in addr or addr.count("@") != 1:
+            return "Failed to send email: invalid recipient address"
+        local, _, domain = addr.partition("@")
+        if not local or not domain or "." not in domain:
+            return "Failed to send email: invalid recipient address"
+
+        # Cyrillic / Greek homograph guard: refuse non-ASCII in the local part
+        # and in the domain. Legitimate IDN domains should be Punycode-encoded
+        # by the caller before reaching this layer.
+        try:
+            addr.encode("ascii")
+        except UnicodeEncodeError:
+            return "Failed to send email: non-ASCII recipient (suspected homograph)"
+
+        if attachments:
+            if not isinstance(attachments, (list, tuple)):
+                return "Failed to send email: attachments must be a list"
+            for path in attachments:
+                if not isinstance(path, str) or not path:
+                    return "Failed to send email: invalid attachment path"
+                if "\x00" in path:
+                    return "Failed to send email: rejected NUL byte in attachment path"
+                if not os.path.isabs(path):
+                    return "Failed to send email: attachment path must be absolute"
+                # Path traversal: even on an absolute path a '..' segment can
+                # walk to a parent directory the operator did not intend.
+                normalized = os.path.normpath(path)
+                if ".." in normalized.split(os.sep):
+                    return "Failed to send email: rejected path traversal in attachment"
+
+        return None
 
     @staticmethod
     @abstractmethod
@@ -235,6 +319,15 @@ class EXT_EMail(AbstractStaticExtension):
     _env: ClassVar[Dict[str, Any]] = {
         "SENDGRID_API_KEY": "",
         "SENDGRID_FROM_EMAIL": "",
+        "STALWART_HOST": "",
+        "STALWART_PORT": "587",
+        "STALWART_USERNAME": "",
+        "STALWART_PASSWORD": "",
+        "STALWART_FROM_EMAIL": "",
+        "STALWART_USE_TLS": "true",
+        "SMTP2GO_API_KEY": "",
+        "SMTP2GO_FROM_EMAIL": "",
+        "SMTP2GO_API_URL": "https://api.smtp2go.com/v3",
         "EMAIL_PROVIDER": "sendgrid",
         "SMTP_SERVER": "",
         "SMTP_PORT": "587",
@@ -250,7 +343,19 @@ class EXT_EMail(AbstractStaticExtension):
                 friendly_name="SendGrid Python Library",
                 semver=">=6.10.0",
                 reason="SendGrid email provider support",
-            )
+            ),
+            PIP_Dependency(
+                name="aiosmtplib",
+                friendly_name="aiosmtplib",
+                semver=">=3.0.0",
+                reason="Stalwart SMTP submission transport",
+            ),
+            PIP_Dependency(
+                name="httpx",
+                friendly_name="HTTPX",
+                semver=">=0.27.0",
+                reason="SMTP2go HTTP API transport",
+            ),
         ]
     )
 
@@ -308,18 +413,22 @@ class EXT_EMail(AbstractStaticExtension):
 
     @classmethod
     def get_providers(cls) -> Set[str]:
-        """Get available email providers."""
-        return {"sendgrid", "gmail", "outlook"}
+        """Get the names of every concrete email provider currently loaded.
+
+        Built from the auto-discovered ``cls.providers`` list rather than a
+        hardcoded set so newly added provider classes (Stalwart, SMTP2go)
+        appear automatically without touching this method.
+        """
+        return {p.name for p in cls.providers if hasattr(p, "name")}
 
     @classmethod
     def get_provider_class(cls, provider_name: str):
-        """Get provider class by name."""
-        if provider_name == "sendgrid":
-            from extensions.email.PRV_SendGrid_EMail import SendgridProvider
-
-            return SendgridProvider
-        else:
-            raise ValueError(f"Unknown provider: {provider_name}")
+        """Look up a provider class by its ``name`` attribute (case-insensitive)."""
+        target = provider_name.lower()
+        for provider in cls.providers:
+            if getattr(provider, "name", "").lower() == target:
+                return provider
+        raise ValueError(f"Unknown provider: {provider_name}")
 
     @classmethod
     def discover_abilities(cls):

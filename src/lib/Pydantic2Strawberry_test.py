@@ -799,7 +799,8 @@ class TestGraphQLDenyPaths:
     def test_query_depth_limit_enforced(self, server, admin_a):
         """A maliciously-deep query must be rejected, not OOM the server.
 
-        EXPECTED FAIL today — no depth/complexity limit is configured.
+        Backed by ``QueryDepthLimiter`` wired into ``Pydantic2Strawberry.create_schema``.
+        ``GQL_DEPTH`` defaults to 10; a 30-level nested query is well over that.
         """
         # Build a 30-level nested query.  ``users { teams { users { ... } } }``
         depth = 30

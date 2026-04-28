@@ -250,7 +250,7 @@ class TestMultifactorRecoveryCodeManager(AbstractBLLTest, ExtensionServerMixin):
         assert len(codes) == 5
         assert all(isinstance(code, str) for code in codes)
         assert all("-" in code for code in codes)  # Codes should have dashes
-        assert all(len(code) == 9 for code in codes)  # XXXX-XXXX format
+        assert all(len(code) == 11 for code in codes)  # XXXXX-XXXXX format
 
     def test_verify_recovery_code(self, admin_a, team_a, model_registry):
         """Test verifying a recovery code"""
@@ -368,8 +368,9 @@ class TestMultifactorRecoveryCodeManager(AbstractBLLTest, ExtensionServerMixin):
     def test_totp_replay_rejected(self, admin_a, model_registry):
         """A valid TOTP code must NOT verify a second time within the same window.
 
-        EXPECTED FAIL today — pyotp.TOTP.verify() does not track used codes,
-        and BLL_Auth_MFA.py:328 has no per-(method, code) replay table.
+        Backed by the class-level ``_USED_TOTP_CACHE`` (TTLCache) in
+        ``BLL_Auth_MFA.py``; entries auto-expire after 120s but persist for the
+        full 60s drift window we accept.
         """
         import pyotp
 
@@ -389,6 +390,38 @@ class TestMultifactorRecoveryCodeManager(AbstractBLLTest, ExtensionServerMixin):
         assert replay is False, (
             "TOTP code accepted on replay within the same window. "
             "BLL_Auth_MFA.py needs a per-(method, time-step) used-codes table."
+        )
+
+    @pytest.mark.security
+    @pytest.mark.mfa
+    def test_totp_replay_persists_across_manager_instances(
+        self, admin_a, model_registry
+    ):
+        """Replay protection must be class-scoped, not instance-scoped.
+
+        Two separate ``MultifactorMethodManager`` objects must not be able to
+        accept the same code each. Otherwise an attacker who can race two
+        request handlers in the same process would replay successfully.
+        """
+        import pyotp
+
+        manager_a = MultifactorMethodManager(
+            requester_id=admin_a.id, model_registry=model_registry
+        )
+        manager_b = MultifactorMethodManager(
+            requester_id=admin_a.id, model_registry=model_registry
+        )
+        method = manager_a.create(
+            user_id=admin_a.id,
+            method_type=MultifactorMethodType.TOTP,
+        )
+        secret = method.totp_secret
+        code = pyotp.TOTP(secret).now()
+
+        assert manager_a.verify_totp_code(secret, code) is True
+        assert manager_b.verify_totp_code(secret, code) is False, (
+            "Replay protection must be shared across manager instances; "
+            "the cache must live on the class, not on each instance."
         )
 
     @pytest.mark.security

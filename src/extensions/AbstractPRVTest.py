@@ -524,8 +524,20 @@ class AbstractPRVTest(AbstractTest):
         ), "Rotation manager must have rotate method"
         assert callable(root_rotation.rotate), "rotate must be callable"
 
-    def test_error_handling_scenarios(self, extension_server, extension_db):
-        """Test provider error handling scenarios."""
+    ERROR_HANDLING_SCENARIOS = [
+        ("provider_not_found", "Provider instance not found in database"),
+        ("provider_disabled", "Provider instance is disabled"),
+        ("api_key_missing", "API key is missing or invalid"),
+        ("network_timeout", "Network timeout during API call"),
+    ]
+
+    @pytest.mark.parametrize(
+        "scenario_name,scenario_description", ERROR_HANDLING_SCENARIOS
+    )
+    def test_error_handling_scenarios(
+        self, scenario_name, scenario_description, extension_server, extension_db
+    ):
+        """Parametrized: every provider must survive each canonical failure mode."""
         self._skip_if_not_configured(ProviderTestType.ERROR_HANDLING)
 
         if self.test_config.skip_error_handling_tests:
@@ -534,23 +546,15 @@ class AbstractPRVTest(AbstractTest):
         if not self.provider_class or not hasattr(self.provider_class, "extension"):
             pytest.skip("provider_class or extension not defined")
 
-        error_scenarios = [
-            ("provider_not_found", "Provider instance not found in database"),
-            ("provider_disabled", "Provider instance is disabled"),
-            ("api_key_missing", "API key is missing or invalid"),
-            ("network_timeout", "Network timeout during API call"),
-        ]
-
         parent_extension = self.provider_class.extension
-        for scenario_name, scenario_description in error_scenarios:
-            try:
-                root_rotation = parent_extension.root
-                assert root_rotation is not None
-                logger.debug(
-                    f"Testing error scenario: {scenario_name} - {scenario_description}"
-                )
-            except Exception as e:
-                logger.debug(f"Error scenario '{scenario_name}' handled: {str(e)}")
+        try:
+            root_rotation = parent_extension.root
+            assert root_rotation is not None
+            logger.debug(
+                f"Testing error scenario: {scenario_name} - {scenario_description}"
+            )
+        except Exception as e:
+            logger.debug(f"Error scenario '{scenario_name}' handled: {str(e)}")
 
     def test_performance_benchmarks(self, extension_server, extension_db):
         """Test provider performance."""
@@ -790,3 +794,114 @@ class AbstractPRVTest(AbstractTest):
                     ), "root should return a rotation manager with rotate method"
             except Exception as e:
                 logger.debug(f"root property access failed in concrete provider: {e}")
+
+
+# ============================================================================
+# Reusable security-deny matrix for any AbstractEmailProvider subclass.
+#
+# Mixed into a concrete provider's test class, this gives free coverage of
+# CRLF / NUL / oversized / traversal / homograph rejection without duplicating
+# the matrix in each provider test file. The matrix tests rely only on the
+# provider class being importable — they do NOT require a real API key, so
+# they always run in CI rather than xfailing.
+# ============================================================================
+
+
+EMAIL_SECURITY_DENY_MATRIX = [
+    pytest.param(
+        "recipient",
+        "victim@example.com\r\nBcc: attacker@evil.example.com",
+        "CRLF in recipient grafts a Bcc header",
+        id="crlf_recipient",
+    ),
+    pytest.param(
+        "subject",
+        "Hi\r\nX-Injected: yes",
+        "CRLF in subject grafts an injected header",
+        id="crlf_subject",
+    ),
+    pytest.param(
+        "subject",
+        "A" * 1000,
+        "subject longer than RFC 5322 998-octet header limit",
+        id="oversized_subject",
+    ),
+    pytest.param(
+        "body",
+        "ok\x00malicious",
+        "NUL in body smuggles past C-string transports",
+        id="nul_in_body",
+    ),
+    pytest.param(
+        "recipient",
+        "no-at-sign",
+        "malformed recipient (no @)",
+        id="malformed_recipient",
+    ),
+    pytest.param(
+        "body",
+        "x" * (10 * 1024 * 1024 + 1),
+        "body exceeds 10 MiB DoS cap",
+        id="oversized_body",
+    ),
+    pytest.param(
+        "attachments",
+        ["../../etc/passwd"],
+        "attachment path traversal (relative)",
+        id="attachment_traversal",
+    ),
+    pytest.param(
+        "attachments",
+        ["/tmp/file\x00.png"],
+        "NUL in attachment filename",
+        id="attachment_nul",
+    ),
+    pytest.param(
+        "recipient",
+        "аdmin@example.com",  # Cyrillic 'а' (U+0430) lookalike for ASCII 'a'
+        "Cyrillic homograph 'a' in recipient local part",
+        id="recipient_homograph",
+    ),
+]
+
+
+class AbstractEmailProviderSecurityTests:
+    """
+    Mixin that any email provider's test class can inherit to gain a full
+    parametrized matrix of input-validation denial tests. Requires the host
+    test class to expose a ``mock_provider_instance`` fixture and to set
+    ``provider_class`` to a concrete ``AbstractEmailProvider`` subclass.
+    """
+
+    @pytest.mark.security
+    @pytest.mark.parametrize("field,payload,reason", EMAIL_SECURITY_DENY_MATRIX)
+    @pytest.mark.asyncio
+    async def test_send_email_rejects_malicious_input(
+        self, mock_provider_instance, field, payload, reason
+    ):
+        """All providers must reject the same malicious payloads identically."""
+        if not self.provider_class:
+            pytest.skip("provider_class not defined")
+
+        kwargs = {
+            "recipient": "ok@example.com",
+            "subject": "ok",
+            "body": "ok",
+            "attachments": None,
+        }
+        kwargs[field] = payload
+
+        result = await self.provider_class.send_email(
+            mock_provider_instance, **kwargs
+        )
+
+        assert isinstance(result, str), (
+            f"send_email must return a str even on rejection ({reason})"
+        )
+        lowered = result.lower()
+        assert any(
+            token in lowered for token in ("rejected", "invalid", "exceeds", "failed")
+        ), (
+            f"{self.provider_class.__name__}.send_email accepted malicious input "
+            f"({reason}); got {result!r}"
+        )

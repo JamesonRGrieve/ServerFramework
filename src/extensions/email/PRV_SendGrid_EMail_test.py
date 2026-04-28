@@ -5,12 +5,18 @@ from typing import List
 import pytest
 
 from AbstractTest import CategoryOfTest, ClassOfTestsConfig, SkipThisTest
-from extensions.AbstractPRVTest import AbstractPRVTest
-from extensions.email.PRV_SendGrid_EMail import SendgridProvider
+from extensions.AbstractPRVTest import (
+    AbstractEmailProviderSecurityTests,
+    AbstractPRVTest,
+)
+from extensions.email.PRV_SendGrid_EMail import (
+    SendgridProvider,
+    Smtp2goProvider,
+    StalwartProvider,
+)
 from lib.Dependencies import check_pip_dependencies, install_pip_dependencies
 from lib.Environment import env
 from logic.BLL_Providers import ProviderInstanceModel
-import pytest
 
 
 # Provide lightweight placeholders for extension-level fixtures that are not available
@@ -28,10 +34,37 @@ def extension_db():
     return None
 
 
-class TestSendgridProvider(AbstractPRVTest):
+class _MockProviderInstance:
+    """
+    Lightweight stand-in for a real ProviderInstanceModel. Security tests
+    only need an object that can hold an api_key and a get_setting method;
+    they must not require live SDK credentials, otherwise the deny matrix
+    silently xfails on every CI run that lacks API keys.
+    """
+
+    def __init__(self, api_key: str = "test-fake-key", from_email: str = "from@example.com"):
+        self.id = "mock-provider-instance"
+        self.api_key = api_key
+        self.provider_id = "mock"
+        self.name = "Mock Email Provider Instance"
+        self._settings = {"from_email": from_email}
+
+    def get_setting(self, key, default=None):
+        return self._settings.get(key, default)
+
+
+@pytest.fixture
+def mock_provider_instance():
+    """Provider instance fixture for security tests; never hits a real API."""
+    return _MockProviderInstance()
+
+
+class TestSendgridProvider(AbstractPRVTest, AbstractEmailProviderSecurityTests):
     """
     Test suite for SendGrid email provider.
     Tests provider initialization, email sending, and SendGrid API integration.
+    Inherits the parametrized security-deny matrix from
+    ``AbstractEmailProviderSecurityTests`` — those tests run without an API key.
     """
 
     # Configure the test class
@@ -350,60 +383,92 @@ class TestSendgridProvider(AbstractPRVTest):
         assert getattr(SendGrid_TemplateModel, "_is_extension_model", False)
         assert getattr(SendGrid_CampaignModel, "_is_extension_model", False)
 
-    # ------------------------------------------------------------------
-    # Security: explicit-deny tests for email header injection.
-    # A sloppy caller passes user-controlled input as `subject` or
-    # `recipient`; the framework must reject CRLF sequences before
-    # they can graft additional headers (Bcc:, Reply-To:, ...).
-    # EXPECTED FAIL today — no validation visible in send_email.
-    # ------------------------------------------------------------------
 
-    @pytest.mark.security
-    @pytest.mark.asyncio
-    async def test_send_email_rejects_crlf_in_subject(self, provider_instance):
-        """A subject containing CRLF must NOT reach the SendGrid client."""
-        from extensions.email.PRV_SendGrid_EMail import SendgridProvider
+# ============================================================================
+# Stalwart provider tests (SMTP submission transport)
+# ============================================================================
 
-        crlf_subject = "Hello\r\nBcc: attacker@evil.example.com"
-        result = await SendgridProvider.send_email(
-            provider_instance,
-            recipient="user@example.com",
-            subject=crlf_subject,
-            body="<p>safe</p>",
-        )
-        # The framework must either raise or return an error string. It
-        # MUST NOT silently call out with the malicious subject.
-        assert isinstance(result, str)
-        assert (
-            "error" in result.lower()
-            or "invalid" in result.lower()
-            or "crlf" in result.lower()
-            or "header" in result.lower()
-        ), (
-            f"send_email accepted CRLF in subject (returned {result!r}); "
-            "SendgridProvider must reject newlines in subject/recipient."
-        )
 
-    @pytest.mark.security
-    @pytest.mark.asyncio
-    async def test_send_email_rejects_crlf_in_recipient(self, provider_instance):
-        """A recipient containing CRLF must be rejected."""
-        from extensions.email.PRV_SendGrid_EMail import SendgridProvider
+class TestStalwartProvider(AbstractPRVTest, AbstractEmailProviderSecurityTests):
+    """Test suite for the Stalwart email provider.
 
-        crlf_recipient = "victim@example.com\r\nBcc: attacker@evil.example.com"
-        result = await SendgridProvider.send_email(
-            provider_instance,
-            recipient=crlf_recipient,
-            subject="hi",
-            body="<p>safe</p>",
-        )
-        assert isinstance(result, str)
-        assert (
-            "error" in result.lower()
-            or "invalid" in result.lower()
-            or "crlf" in result.lower()
-            or "address" in result.lower()
-        ), (
-            f"send_email accepted CRLF in recipient (returned {result!r}); "
-            "SendgridProvider must reject newlines in recipient."
-        )
+    The security-deny matrix is inherited and runs against a mock provider
+    instance, so the 9 negative-path tests do not require a real SMTP host.
+    """
+
+    provider_class = StalwartProvider
+    extension_id = "email"
+
+    class _TestConfigAdapter:
+        def __init__(self, provider_conf, categories=None):
+            self.categories = categories or [CategoryOfTest.EXTENSION]
+            self.timeout = None
+            self.parallel = False
+            self.cleanup = True
+            self.gh_action_skip = False
+            self.test_types = provider_conf.test_types
+            self.expected_abilities = provider_conf.expected_abilities
+            self.expected_services = provider_conf.expected_services
+            self.expected_dependencies = provider_conf.expected_dependencies
+            self.performance_thresholds = provider_conf.performance_thresholds
+            self.skip_rotation_tests = provider_conf.skip_rotation_tests
+            self.skip_performance_tests = provider_conf.skip_performance_tests
+            self.skip_error_handling_tests = provider_conf.skip_error_handling_tests
+
+    test_config = _TestConfigAdapter(AbstractPRVTest.basic_config())
+    expected_services = ["email", "smtp"]
+    _skip_tests: List[SkipThisTest] = []
+
+    def test_provider_metadata(self):
+        assert StalwartProvider.name == "stalwart"
+        assert StalwartProvider.get_platform_name() == "Stalwart"
+
+    def test_provider_env_vars(self):
+        env_vars = StalwartProvider._env
+        for required in ("STALWART_HOST", "STALWART_USERNAME", "STALWART_PASSWORD"):
+            assert required in env_vars
+
+
+# ============================================================================
+# SMTP2go provider tests (HTTP API transport)
+# ============================================================================
+
+
+class TestSmtp2goProvider(AbstractPRVTest, AbstractEmailProviderSecurityTests):
+    """Test suite for the SMTP2go email provider.
+
+    SMTP2go uses an HTTP-API transport, similar to SendGrid; the security-deny
+    matrix is inherited and runs against a mock provider instance.
+    """
+
+    provider_class = Smtp2goProvider
+    extension_id = "email"
+
+    class _TestConfigAdapter:
+        def __init__(self, provider_conf, categories=None):
+            self.categories = categories or [CategoryOfTest.EXTENSION]
+            self.timeout = None
+            self.parallel = False
+            self.cleanup = True
+            self.gh_action_skip = False
+            self.test_types = provider_conf.test_types
+            self.expected_abilities = provider_conf.expected_abilities
+            self.expected_services = provider_conf.expected_services
+            self.expected_dependencies = provider_conf.expected_dependencies
+            self.performance_thresholds = provider_conf.performance_thresholds
+            self.skip_rotation_tests = provider_conf.skip_rotation_tests
+            self.skip_performance_tests = provider_conf.skip_performance_tests
+            self.skip_error_handling_tests = provider_conf.skip_error_handling_tests
+
+    test_config = _TestConfigAdapter(AbstractPRVTest.basic_config())
+    expected_services = ["email", "messaging"]
+    _skip_tests: List[SkipThisTest] = []
+
+    def test_provider_metadata(self):
+        assert Smtp2goProvider.name == "smtp2go"
+        assert Smtp2goProvider.get_platform_name() == "SMTP2go"
+
+    def test_provider_env_vars(self):
+        env_vars = Smtp2goProvider._env
+        for required in ("SMTP2GO_API_KEY", "SMTP2GO_FROM_EMAIL", "SMTP2GO_API_URL"):
+            assert required in env_vars

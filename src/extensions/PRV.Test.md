@@ -736,3 +736,28 @@ def test_provider_configuration_in_extension_context(self):
     assert hasattr(provider, "bond_instance")
     assert hasattr(provider, "_abilities")
 ``` 
+
+## Reusable Security Mixins
+
+Provider test files can inherit parametrized security-deny matrices from `AbstractPRVTest.py`. The mixin pattern lets every concrete provider gain identical denial coverage without duplicating tests per class.
+
+### `AbstractEmailProviderSecurityTests`
+
+Email-specific mixin that exercises a 9-row matrix (CRLF, NUL, oversized payload, traversal, homograph, malformed address) against any subclass of `AbstractEmailProvider`:
+
+```python
+class TestSendgridProvider(AbstractPRVTest, AbstractEmailProviderSecurityTests):
+    provider_class = SendgridProvider
+    # mixin contributes: test_send_email_rejects_malicious_input[recipient-CRLF-...] etc.
+```
+
+The mixin requires the host class to expose a `mock_provider_instance` fixture so the deny tests run without a live API key. **Do not gate denial tests on real credentials**: an env-conditional xfail silently masks regressions.
+
+### Adding a new mixin
+
+1. Define a `<NAME>_DENY_MATRIX` list of `(field, payload, reason)` tuples.
+2. Wrap a parametrized test method in a mixin class.
+3. Document the mixin here and in `Framework.Test.md`.
+4. Inherit from the mixin in every provider's test class.
+
+A 9-row matrix × 3 providers replaces ~150 lines of hand-rolled tests with one parametrize block; new providers automatically pick up the same coverage.

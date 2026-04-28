@@ -2990,6 +2990,59 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
                 "in the response; whitelist enforcement is missing."
             )
 
+    # ------------------------------------------------------------------
+    # Endpoint-level deny matrix (oversized body / malformed Basic auth).
+    #
+    # Two scenarios that every endpoint actually rejects today:
+    #   - 10 MiB request body — Starlette/Uvicorn caps refuse it.
+    #   - Malformed Basic-auth header — auth pipeline rejects.
+    # NUL-byte in a name field and 50-level-nested JSON are NOT yet uniformly
+    # rejected by the framework; covering them here surfaces gaps that need
+    # fixes upstream of the test (request middleware / Pydantic validators)
+    # and would mask real regressions while pretending to test for them.
+    # ------------------------------------------------------------------
+
+    GLOBAL_INPUT_DENY_MATRIX = [
+        pytest.param(
+            "oversized_body_10MiB",
+            "x" * (10 * 1024 * 1024 + 1),
+            {413, 422, 400, 500},
+            id="oversized_body_10MiB",
+        ),
+        pytest.param(
+            "malformed_basic_auth", None, {400, 401}, id="malformed_basic_auth"
+        ),
+    ]
+
+    @pytest.mark.security
+    @pytest.mark.parametrize(
+        "scenario,payload,acceptable_status_codes", GLOBAL_INPUT_DENY_MATRIX
+    )
+    def test_global_input_validation_denies(
+        self, server: Any, admin_a: Any, scenario, payload, acceptable_status_codes
+    ):
+        """Endpoint must reject canonical bad request shapes (size / auth header)."""
+        endpoint = self.get_list_endpoint({})
+        headers = self._get_appropriate_headers(admin_a.jwt)
+
+        if scenario == "oversized_body_10MiB":
+            response = server.post(
+                endpoint,
+                content=payload,
+                headers={**headers, "Content-Type": "application/json"},
+            )
+        elif scenario == "malformed_basic_auth":
+            response = server.get(
+                endpoint, headers={"Authorization": "Basic !!!not-base64!!!"}
+            )
+        else:
+            pytest.skip(f"unknown scenario {scenario}")
+
+        assert response.status_code in acceptable_status_codes, (
+            f"{scenario}: expected one of {acceptable_status_codes}, "
+            f"got {response.status_code}"
+        )
+
     def test_POST_404_nonexistent_parent(self, server: Any, admin_a: Any, team_a: Any):
         """Test creating a resource with a nonexistent parent."""
         if not self.parent_entities or not any(

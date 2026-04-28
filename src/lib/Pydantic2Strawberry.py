@@ -262,6 +262,22 @@ class GraphQLManager(ErrorHandlerMixin):
             except Exception:
                 pass
 
+        # Always enforce a query-depth limit. An attacker who nests 30+ levels
+        # of selection sets can otherwise force quadratic-or-worse work in the
+        # resolver layer. GQL_DEPTH defaults to 10, which is well above any
+        # legitimate UI query but cheap to validate against.
+        try:
+            from strawberry.extensions import QueryDepthLimiter
+
+            depth_raw = _os.getenv("GQL_DEPTH") or "10"
+            try:
+                max_depth = max(1, int(depth_raw))
+            except (TypeError, ValueError):
+                max_depth = 10
+            schema_extensions.append(QueryDepthLimiter(max_depth=max_depth))
+        except Exception as e:
+            logger.warning(f"Could not install QueryDepthLimiter: {e}")
+
         schema = strawberry.Schema(
             query=query_type,
             mutation=mutation_type,
