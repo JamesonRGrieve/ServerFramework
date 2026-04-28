@@ -483,6 +483,77 @@ def test_extension_folder_stays_clean_after_full_cycle(booted_app):
     )
 
 
+# ---------- Phase 6: FK-aware migration ordering (Item 49) --------------
+
+
+@pytest.mark.migration
+def test_compute_migration_order_returns_input_when_no_edges(migration_manager):
+    """With no FK edges and no model_registry attached, the toposort
+    falls back to alphabetical ordering of the input — deterministic
+    and stable across runs."""
+    order = migration_manager._compute_migration_order(["beta", "alpha", "gamma"])
+    assert order == ["alpha", "beta", "gamma"]
+
+
+@pytest.mark.migration
+def test_compute_migration_order_handles_empty_input(migration_manager):
+    """Empty input is a valid no-op."""
+    assert migration_manager._compute_migration_order([]) == []
+
+
+@pytest.mark.migration
+@pytest.mark.real
+@pytest.mark.extension
+def test_compute_migration_order_respects_fk_edges(booted_app):
+    """When a real registry is committed and one extension's table has an
+    FK into another extension's table, the implicit dependency must show
+    up in the toposort even without an explicit EXT_Dependency. Smoke
+    test: with auth_mfa loaded, the result must include auth_mfa exactly
+    once — registry attachment + toposort don't crash on the real graph."""
+    from database.migrations.Migration import MigrationManager
+
+    app, _ = booted_app(extensions="auth_mfa")
+    mgr = MigrationManager(model_registry=app.state.model_registry)
+    order = mgr._compute_migration_order(["auth_mfa"])
+    assert order == ["auth_mfa"]
+
+
+@pytest.mark.migration
+def test_compute_migration_order_cycle_error_names_extensions(monkeypatch, migration_manager):
+    """A cycle in the dependency graph must raise a RuntimeError that
+    names both extensions. Stub out the registry + metadata to inject a
+    synthetic A<->B cycle without needing real model definitions."""
+    from sqlalchemy import Column, ForeignKey, Integer, MetaData, Table
+    from database.migrations.Migration import MigrationManager
+
+    md = MetaData()
+    a = Table("a_thing", md, Column("id", Integer, primary_key=True),
+              Column("b_id", Integer, ForeignKey("b_thing.id")))
+    b = Table("b_thing", md, Column("id", Integer, primary_key=True),
+              Column("a_id", Integer, ForeignKey("a_thing.id")))
+    a.info["extension"] = "ext_a"
+    b.info["extension"] = "ext_b"
+
+    class _FakeBase:
+        metadata = md
+
+    class _FakeDBM:
+        Base = _FakeBase
+
+    class _FakeRegistry:
+        database_manager = _FakeDBM
+        extension_registry = None
+
+    migration_manager._model_registry = _FakeRegistry()
+
+    with pytest.raises(RuntimeError) as exc_info:
+        migration_manager._compute_migration_order(["ext_a", "ext_b"])
+    msg = str(exc_info.value)
+    assert "ext_a" in msg and "ext_b" in msg
+    assert "cycle" in msg.lower()
+    assert "join table" in msg.lower(), "error message should hint the workaround"
+
+
 # ---------- Item 24: audit-ownership CLI --------------------------------
 
 
