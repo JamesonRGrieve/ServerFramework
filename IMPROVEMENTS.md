@@ -1345,8 +1345,52 @@ System-level operations (admin endpoints, cross-tenant reporting, the framework'
 
 ---
 
+## Item 56 — Audit log retention and archival
 
+**Severity:** Medium
+**Scope:** `meta_logging` extension, retention policy declarations, scheduled archival service.
+**Owner area:** Compliance / observability.
 
+**Purpose.** The `meta_logging` extension produces structured audit logs but does not document a retention policy, an archival mechanism, or a deletion contract. For deployments subject to GDPR, HIPAA, SOC 2, or similar regimes, indefinite retention is non-compliant — and so is uncontrolled deletion, since audit trails frequently must be preserved for regulator-defined windows even when the underlying user data is deleted. The framework needs a first-class retention contract so deployments can express the regulatory regime once and have the audit subsystem honor it, rather than every deployment reinventing retention as cron jobs.
+
+**Current state.** No retention policy. No archival contract. Audit logs accumulate indefinitely.
+
+**Target state.** Each audit event class declares a retention window via `retention: ClassVar[RetentionPolicy]`. The policy carries a window (`30d`, `1y`, `7y`, `forever`), an archival target (S3, GCS, on-disk, none), and a `legal_hold: Optional[str]` field for operations that put a class on indefinite hold pending a regulatory action. A scheduled `RetentionService` (built on Item 28's `ScheduledService` flavor) runs nightly: events past their window are first archived to the configured target as compressed, integrity-checked artifacts, then purged from the live audit table. The archival step is non-skippable for events with non-`none` archival targets — the purge step refuses to run if archival did not succeed for any event in the batch.
+
+The audit subsystem itself emits an audit event for each retention pass: how many events were archived, how many purged, the cryptographic digest of the archived artifact. This is the audit-of-the-audit and is itself subject to its own (typically `forever`) retention policy. Together, archival digests and the retention-pass audit trail give a regulator-defensible chain: every audit record can be shown to have been preserved within its window and retired according to declared policy, with verifiable archival on the other side.
+
+**Implementation notes.** The archival target is pluggable per Item 43's object-storage abstract. Archives are written in a stable, consumer-friendly format (JSONL or Parquet) so a regulator can be handed an artifact that a third-party tool can read without framework knowledge. Legal hold is a runtime override that prevents purge regardless of retention window; releasing a hold requires a separate audit event and an admin-level operation. Time-zone handling for window expiration is documented (UTC, with a per-deployment override).
+
+**Acceptance criteria.** An `AuthLoginEvent` declared with `retention=RetentionPolicy(window="1y", archive_to="s3://bucket/audit/")` is archived to S3 one year after creation and then purged from the live table; the archived artifact has a verifiable integrity digest recorded in the retention-pass audit trail. A class under legal hold is preserved past its window until the hold is explicitly released. The retention service runs on schedule, surviving process restarts without missed-window gaps.
+
+**Dependencies.** Cross-references Items 28 (scheduled service), 43 (object-storage abstract for archival target).
+
+---
+
+## Item 57 — Background job priority and per-tenant fairness
+
+**Severity:** Medium
+**Scope:** `QueueConsumerService` (Item 28), outbox (Item 35), event-bus consumers (Item 42), per-tenant queue partitioning.
+**Owner area:** Background processing / multi-tenancy.
+
+**Purpose.** Item 28 introduces queue-consumer services and Item 35 introduces the outbox, but neither addresses fairness across tenants under load. A noisy tenant submitting ten thousand jobs will starve a quiet tenant's single job from being processed for an indefinite window, since a single FIFO queue gives the noisy tenant a structural advantage. Worse, an outage in a downstream provider (Stripe is degraded) backs up a single tenant's jobs in the queue and leaves every other tenant waiting behind them. The framework needs a fairness primitive so that bounded-latency processing is achievable per tenant regardless of other tenants' load.
+
+**Current state.** FIFO across all tenants. No fairness, no priority lanes.
+
+**Target state.** Two complementary mechanisms:
+
+- **Per-tenant fair queuing.** The queue-consumer service partitions work by tenant key (typically `team_id`) and drains partitions in round-robin or weighted-fair order. A single tenant's backlog is bounded above by its own throughput; a tenant with no submitted jobs is not penalized for another tenant's backlog. Configuration is at the consumer level: the consumer declares a `tenant_key_resolver: Callable[[Job], str]` and the framework's scheduler enforces fairness.
+- **Priority lanes.** Jobs declare a priority class — `high` (transactional, user-blocking, e.g. password resets), `normal` (default, e.g. send a marketing email), `low` (batch, e.g. nightly reconciliation). Within a tenant's partition, lanes drain in priority order; across tenants, fair-share enforces equal treatment within each lane. A high-priority job from any tenant runs before a low-priority job from any tenant; among same-lane jobs, fairness applies.
+
+The combination delivers bounded-latency for high-priority work regardless of low-priority backlog, and bounded fairness across tenants regardless of any one tenant's load. Optional preemption (cancelling a low-priority job mid-execution to free a worker for a high-priority job) is offered but disabled by default — the additional complexity is rarely worth the gain unless workloads are very mixed.
+
+**Implementation notes.** Per-tenant fair queuing is implemented via virtual-time scheduling (Weighted Fair Queuing) at the worker level rather than physical queue partitioning, so there is no proliferation of database queues. The fairness primitive is independent of the underlying queue store (Postgres-as-queue, Redis Streams, SQS) — it lives in the consumer's dispatch layer. Cross-process consumers coordinate via a small per-consumer state store (Redis or a dedicated table) to avoid one process unfairly draining one tenant. Metrics: `queue_wait_seconds{tenant_id, lane}` histogram lets operators see fairness in practice.
+
+**Acceptance criteria.** A tenant submitting ten thousand `normal`-lane jobs does not delay another tenant's single `normal`-lane job by more than the configured fairness bound (typically a few seconds). A `high`-lane job from any tenant runs before any pending `low`-lane jobs, regardless of tenant. Fairness metrics are visible in the standard observability backends.
+
+**Dependencies.** Cross-references Items 28 (queue-consumer service), 35 (outbox is the canonical source of work for many deployments), 42 (event-bus consumers participate in the same fairness model).
+
+---
 
 
 
