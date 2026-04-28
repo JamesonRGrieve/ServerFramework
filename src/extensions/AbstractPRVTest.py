@@ -905,3 +905,72 @@ class AbstractEmailProviderSecurityTests:
             f"{self.provider_class.__name__}.send_email accepted malicious input "
             f"({reason}); got {result!r}"
         )
+
+    @pytest.mark.security
+    @pytest.mark.asyncio
+    async def test_send_message_rejects_crlf_in_to(self, mock_provider_instance):
+        """The friendly ``send(EmailMessage)`` path enforces the same denials."""
+        if not self.provider_class:
+            pytest.skip("provider_class not defined")
+        from extensions.email.EXT_EMail import EmailAddress, EmailMessage
+
+        msg = EmailMessage(
+            to=[EmailAddress(address="victim@x.com\r\nBcc: bad@y.com")],
+            subject="ok",
+            body_text="ok",
+        )
+        result = await self.provider_class.send(mock_provider_instance, msg)
+        assert "rejected" in result.lower() and "crlf" in result.lower(), (
+            f"{self.provider_class.__name__}.send accepted CRLF in to: {result!r}"
+        )
+
+    @pytest.mark.security
+    @pytest.mark.asyncio
+    async def test_send_message_rejects_crlf_in_custom_header(
+        self, mock_provider_instance
+    ):
+        """Custom headers must be CRLF-clean — a header-injection vector
+        the legacy ``send_email`` positional API has no slot for."""
+        if not self.provider_class:
+            pytest.skip("provider_class not defined")
+        from extensions.email.EXT_EMail import EmailAddress, EmailMessage
+
+        msg = EmailMessage(
+            to=[EmailAddress(address="ok@example.com")],
+            subject="ok",
+            body_text="ok",
+            headers={"X-Foo": "bar\r\nX-Bcc: bad@example.com"},
+        )
+        result = await self.provider_class.send(mock_provider_instance, msg)
+        assert "rejected" in result.lower(), (
+            f"{self.provider_class.__name__}.send accepted CRLF in custom "
+            f"header: {result!r}"
+        )
+
+    @pytest.mark.security
+    @pytest.mark.asyncio
+    async def test_send_message_rejects_crlf_in_display_name(
+        self, mock_provider_instance
+    ):
+        """Display names ride the same line as the address; a CRLF in the
+        name part is a header-injection vector identical to one in the
+        address part."""
+        if not self.provider_class:
+            pytest.skip("provider_class not defined")
+        from extensions.email.EXT_EMail import EmailAddress, EmailMessage
+
+        msg = EmailMessage(
+            to=[
+                EmailAddress(
+                    address="ok@example.com",
+                    name="Alice\r\nBcc: bad@example.com",
+                )
+            ],
+            subject="ok",
+            body_text="ok",
+        )
+        result = await self.provider_class.send(mock_provider_instance, msg)
+        assert "rejected" in result.lower(), (
+            f"{self.provider_class.__name__}.send accepted CRLF in display "
+            f"name: {result!r}"
+        )
