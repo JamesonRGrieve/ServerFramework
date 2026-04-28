@@ -1,12 +1,12 @@
 import os
 from abc import ABC
-from typing import Any, Dict, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 from urllib.parse import urlparse
 
 import tldextract
 from dotenv import load_dotenv
 from inflect import engine
-from pydantic import BaseModel, create_model, field_validator
+from pydantic import BaseModel, create_model, field_validator, model_validator
 
 load_dotenv()
 
@@ -38,8 +38,13 @@ class AppSettings(BaseModel):
     APP_EXTENSIONS: str = "email,auth_mfa,database,meta_logging,payment"
 
     ROOT_API_KEY: str = "n0ne"
+    JWT_SECRET: str = ""
     SERVER_URI: str = "http://localhost:1996"
     ALLOWED_DOMAINS: str = "*"
+    # Comma-separated list of trusted-proxy CIDRs/IPs from which the
+    # framework will honour X-Forwarded-For. Empty = do not trust the
+    # header. Set to a real proxy CIDR (e.g. "10.0.0.0/8") in production.
+    TRUSTED_PROXIES: str = ""
 
     DATABASE_TYPE: str = "sqlite"
     DATABASE_NAME: Optional[str] = "database"
@@ -85,6 +90,37 @@ class AppSettings(BaseModel):
             log_level = info.data.get("LOG_LEVEL", "DEBUG")
             return "5" if str(log_level).lower() == "debug" else "20"
         return v
+
+    @model_validator(mode="after")
+    def _enforce_production_fail_closed(self):
+        """In ENVIRONMENT=production, refuse insecure defaults.
+
+        - ROOT_API_KEY must not be the unset-default sentinel "n0ne".
+        - JWT_SECRET must be non-empty.
+        - ALLOWED_DOMAINS wildcard "*" is not acceptable when paired with
+          credentialed CORS (the rest of the framework currently sets
+          allow_credentials=True).
+        These checks short-circuit application start-up rather than rely on
+        runtime checks scattered through the auth path.
+        """
+        if self.ENVIRONMENT != "production":
+            return self
+        problems: List[str] = []
+        if (self.ROOT_API_KEY or "").strip() in ("", "n0ne"):
+            problems.append(
+                "ROOT_API_KEY is unset or left at the default 'n0ne'"
+            )
+        if not (self.JWT_SECRET or "").strip():
+            problems.append("JWT_SECRET is empty")
+        if (self.ALLOWED_DOMAINS or "").strip() == "*":
+            problems.append(
+                "ALLOWED_DOMAINS='*' is not allowed in production"
+            )
+        if problems:
+            raise ValueError(
+                "Insecure production configuration: " + "; ".join(problems)
+            )
+        return self
 
     model_config = {"env_file": ".env", "case_sensitive": True, "extra": "ignore"}
 

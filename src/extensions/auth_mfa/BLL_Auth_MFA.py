@@ -325,6 +325,12 @@ class MultifactorMethodManager(AbstractBLLManager, RouterMixin):
 
         return base64.b32encode(secret_bytes).decode("utf-8")
 
+    # Process-local replay-protection set: (secret_fingerprint, code).
+    # A real deployment should back this with Redis or a DB column so it
+    # survives restarts and is shared across workers. The in-memory store
+    # is sufficient to defeat the obvious replay-within-window case.
+    _USED_TOTP_CODES: ClassVar[set] = set()
+
     def verify_totp_code(
         self,
         secret: str,
@@ -333,16 +339,32 @@ class MultifactorMethodManager(AbstractBLLManager, RouterMixin):
         digits: int = 6,
         period: int = 30,
     ) -> bool:
-        """Verify a TOTP code against a secret"""
+        """Verify a TOTP code against a secret.
+
+        Replay-protected: a code that has already been accepted for the
+        same secret within the current window is rejected on subsequent
+        attempts. Drift tolerance is one 30-second window (60s total).
+        """
         try:
             import pyotp
 
             totp = pyotp.TOTP(
                 secret, digest=algorithm.lower(), digits=digits, interval=period
             )
-            return totp.verify(
-                code, valid_window=1
-            )  # Allow 1 period window for clock drift
+            if not totp.verify(code, valid_window=1):
+                return False
+
+            # Replay check: same (secret, code) pair must not be re-used.
+            # We key on a SHA-256 fingerprint of the secret so the raw
+            # secret is never stored in the replay set.
+            import hashlib
+
+            fingerprint = hashlib.sha256(secret.encode()).hexdigest()
+            replay_key = (fingerprint, code)
+            if replay_key in self._USED_TOTP_CODES:
+                return False
+            self._USED_TOTP_CODES.add(replay_key)
+            return True
         except Exception as e:
             logger.error(f"Error verifying TOTP code: {e}")
             return False
@@ -471,16 +493,20 @@ class MultifactorRecoveryCodeManager(AbstractBLLManager):
     def generate_recovery_codes(
         self, multifactormethod_id: str, count: int = 10
     ) -> List[str]:
-        """Generate recovery codes for an MFA method"""
+        """Generate recovery codes for an MFA method.
+
+        Format: ``XXXXX-XXXXX`` (10 alphanumeric chars + dash). 36^10 ≈
+        3.7×10^15 combinations — well beyond brute-force given the MFA
+        attempt rate-limit at the verify path.
+        """
         codes = []
 
         for _ in range(count):
-            # Generate 8-character alphanumeric code with dash in middle (XXXX-XXXX format)
             first_part = "".join(
-                secrets.choice(string.ascii_uppercase + string.digits) for _ in range(4)
+                secrets.choice(string.ascii_uppercase + string.digits) for _ in range(5)
             )
             second_part = "".join(
-                secrets.choice(string.ascii_uppercase + string.digits) for _ in range(4)
+                secrets.choice(string.ascii_uppercase + string.digits) for _ in range(5)
             )
             code = f"{first_part}-{second_part}"
             codes.append(code)

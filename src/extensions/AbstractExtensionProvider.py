@@ -272,6 +272,12 @@ class ExtensionRegistry(AbstractRegistry):
         """Get CSV string of extension names in dependency order."""
         return ",".join(ext_class.name for ext_class in self.extensions)
 
+    # Extension names must be safe Python module identifiers — letters,
+    # digits, underscores. Anything else (path separators, dots, shell
+    # metacharacters, control characters) is rejected outright before the
+    # name reaches importlib or the filesystem.
+    _SAFE_EXTENSION_NAME = __import__("re").compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
     def register_extension(self, extension_class: Type["AbstractStaticExtension"]):
         """Register a static extension class and automatically handle recursive dependencies."""
         import inspect
@@ -280,8 +286,30 @@ class ExtensionRegistry(AbstractRegistry):
 
         extension_name = extension_class.name
 
-        # Skip if already registered
-        if extension_name in self._extension_name_map:
+        # Reject names that could resolve outside the extensions/ tree or
+        # otherwise break the loader. Path-traversal markers, shell
+        # metacharacters, and null bytes are not legal Python identifiers
+        # and have no business being an extension name.
+        if not isinstance(extension_name, str) or not self._SAFE_EXTENSION_NAME.match(
+            extension_name
+        ):
+            raise ValueError(
+                f"Refusing to register extension with unsafe name "
+                f"{extension_name!r}: must match [A-Za-z_][A-Za-z0-9_]*"
+            )
+
+        # An extension already registered under this name must NOT be
+        # silently replaced by a second class — that is a privilege-
+        # confusion vector. The caller has to remove the existing entry
+        # explicitly first.
+        existing = self._extension_name_map.get(extension_name)
+        if existing is not None and existing is not extension_class:
+            raise ValueError(
+                f"Extension name {extension_name!r} is already registered "
+                f"by {existing!r}; refusing to override with "
+                f"{extension_class!r}"
+            )
+        if existing is extension_class:
             logger.debug(f"Extension {extension_name} already registered")
             return
 

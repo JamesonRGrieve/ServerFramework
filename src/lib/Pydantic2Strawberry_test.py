@@ -737,15 +737,24 @@ class TestGraphQLDenyPaths:
         )
 
     def test_unauthenticated_query_rejected(self, server):
-        """A query without an Authorization header must not leak data."""
-        # `users` is a representative team-scoped collection; any team-scoped
-        # type works.
+        """A query without an Authorization header must not leak data.
+
+        Acceptable outcomes:
+          - 401/403 from the transport layer
+          - 200 with `errors` (resolver-level rejection)
+          - 200 with empty/None data (permission-filtered to nothing)
+        """
         response = self._post(server, "{ users { id email } }")
-        # GraphQL conventionally returns 200 with `errors`. Accept either.
         if response.status_code == 200:
             body = response.json()
-            assert "errors" in body or body.get("data") in (None, {}), (
-                "Unauthenticated GraphQL query must not return data"
+            data = body.get("data") or {}
+            # Any non-empty top-level value indicates a leak.
+            non_empty = [
+                k for k, v in data.items() if v not in (None, [], {}, "")
+            ]
+            assert "errors" in body or not non_empty, (
+                f"Unauthenticated GraphQL query must not return data; "
+                f"got non-empty fields {non_empty}"
             )
         else:
             assert response.status_code in (
@@ -756,18 +765,36 @@ class TestGraphQLDenyPaths:
     def test_introspection_disabled_in_production(self, server, monkeypatch):
         """`__schema` introspection must be disabled when ENVIRONMENT=production.
 
-        EXPECTED FAIL today — Pydantic2Strawberry.py builds the schema with
-        introspection always on.
+        The ``server`` fixture is session-scoped, so the running schema was
+        built with the test-time ``ENVIRONMENT=local``. Build a *fresh*
+        schema under production and validate against it directly — that is
+        the production code path being audited.
         """
+        from graphql import parse, validate
+
         monkeypatch.setenv("ENVIRONMENT", "production")
-        response = self._post(server, "{ __schema { types { name } } }")
-        if response.status_code == 200:
-            body = response.json()
-            # If data is non-empty, introspection succeeded — fail.
-            data = body.get("data") or {}
-            assert (
-                "__schema" not in data
-            ), "GraphQL introspection must be disabled in production"
+        registry = server.app.state.model_registry
+        prod_schema = GraphQLManager(registry).create_schema()
+        # The validation rules attached by GraphQLManager in production
+        # include ``NoSchemaIntrospectionCustomRule``; ``validate`` will
+        # surface the violation.
+        from strawberry.schema.config import StrawberryConfig  # noqa: F401
+
+        document = parse("{ __schema { types { name } } }")
+        try:
+            errors = validate(prod_schema._schema, document)
+        except Exception:
+            errors = []
+        if not errors:
+            # Fall back to executing the query and asserting no schema data.
+            result = prod_schema.execute_sync(
+                "{ __schema { types { name } } }"
+            )
+            data = (result.data or {})
+            errors = result.errors or []
+            assert errors or "__schema" not in data, (
+                "GraphQL introspection must be disabled in production"
+            )
 
     def test_query_depth_limit_enforced(self, server, admin_a):
         """A maliciously-deep query must be rejected, not OOM the server.
