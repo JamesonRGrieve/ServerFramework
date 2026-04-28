@@ -414,6 +414,7 @@ class MigrationManager:
         custom_db_info=None,
         extensions_dir="extensions",
         database_dir="database",
+        model_registry=None,
     ):
         """Initialize the migration manager.
 
@@ -422,6 +423,13 @@ class MigrationManager:
             custom_db_info: Custom database configuration
             extensions_dir: Directory name for extensions (relative to src_dir), defaults to "extensions"
             database_dir: Directory name for database (relative to src_dir), defaults to "database"
+            model_registry: ModelRegistry instance to thread through to env.py
+                via cfg.attributes. Required for migrations that run during
+                ModelRegistry.commit() — env.py looks up Base._model_registry
+                but the DatabaseManager attached to env.py's Base is a
+                different instance from the one driving commit(), so the
+                attribute lookup misses. Pass the live registry here so env.py
+                can resolve it via context.config.attributes["model_registry"].
         """
         # Store directory configuration
         self.extensions_dir_name = extensions_dir
@@ -439,6 +447,7 @@ class MigrationManager:
 
         # Initialize database manager
         self._db_manager = None
+        self._model_registry = model_registry
 
         # Use custom database info if provided, otherwise get from Base
         if custom_db_info:
@@ -907,6 +916,11 @@ class MigrationManager:
         # at read time — Alembic substitutes at template-render time instead.
         cfg.set_main_option("file_template", "%%(rev)s_%%(slug)s")
         cfg.attributes["extension"] = extension_name
+        if self._model_registry is not None:
+            # See __init__ docstring: env.py's lazy-loaded Base is a separate
+            # SQLAlchemy declarative instance from the one driving commit(),
+            # so we hand off the live registry here for env.py to reuse.
+            cfg.attributes["model_registry"] = self._model_registry
         return cfg
 
     def _dispatch_alembic(self, cfg, command, *args, **kwargs):
@@ -1002,19 +1016,57 @@ class MigrationManager:
             return True
 
     def _ensure_extension_models_loaded(self, extension_name):
-        """Make sure the extension's BLL_*.py modules are imported into the
-        running process. Returns True if at least one BLL file exists for the
-        extension; otherwise the extension is skipped."""
+        """Make sure the extension's BLL_*.py modules are imported and bound
+        to a committed ModelRegistry, so env.py can resolve target_metadata
+        for autogenerate runs.
+
+        When commit() drives the migration, self._model_registry is already
+        set and we just trigger BLL imports for the extension. When a caller
+        invokes us directly (CLI / per-test fixtures), we bootstrap a fresh
+        registry: import core BLL files (so FK targets resolve), import the
+        extension's BLL files, and commit the registry against a Base bound
+        to db_info["url"]. The committed registry is then threaded through
+        cfg.attributes by _make_alembic_config.
+
+        Returns True if at least one BLL file exists for the extension.
+        """
         from lib.Pydantic import ModelRegistry
 
         ext_path = self.paths["extensions_dir"] / extension_name
         if not ext_path.exists() or not list(ext_path.glob("BLL_*.py")):
             logger.warning(f"No BLL_*.py files found for extension {extension_name}")
             return False
+
+        if self._model_registry is not None:
+            ModelRegistry.from_scoped_import(
+                file_type="BLL",
+                scopes=[f"{self.extensions_dir_name}.{extension_name}"],
+            )
+            return True
+
+        # Standalone path: bootstrap a registry against an isolated Base.
+        from database.DatabaseManager import DatabaseManager
+
         ModelRegistry.from_scoped_import(
             file_type="BLL",
-            scopes=[f"{self.extensions_dir_name}.{extension_name}"],
+            scopes=[
+                "logic",
+                f"{self.extensions_dir_name}.{extension_name}",
+            ],
         )
+        registry = ModelRegistry()
+        try:
+            db_mgr = DatabaseManager()
+            registry.database_manager = db_mgr
+            db_mgr.Base._model_registry = registry
+            registry.commit()
+        except Exception as e:
+            logger.warning(
+                f"Could not commit a standalone registry for {extension_name}: {e}",
+                exc_info=True,
+            )
+            return False
+        self._model_registry = registry
         return True
 
     def run_extension_migration(

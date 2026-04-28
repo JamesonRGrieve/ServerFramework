@@ -1861,7 +1861,9 @@ class ModelRegistry(AbstractRegistry):
         }
         logger.info(f"Migration target database: {custom_db_info}")
 
-        migration_manager = MigrationManager(custom_db_info=custom_db_info)
+        migration_manager = MigrationManager(
+            custom_db_info=custom_db_info, model_registry=self
+        )
         extensions_csv = self.extension_registry.csv if self.extension_registry else ""
 
         result = migration_manager.run_all_migrations(
