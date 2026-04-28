@@ -1832,3 +1832,12 @@ The expected critical-path completion is the gate for opening provider work; the
 
 The pip-package conversion items (P1–P9) form an independent track keyed to `claude/pip-package-conversion-wO0OQ`. P1 is the keystone of that track; see the dependency graph in Group 21.
 
+---
+
+# Group 22 — Email Extension Reshape (post-prereq backlog)
+
+These items capture work on the email extension's API surface that was scoped during the security-audit / Stalwart-and-SMTP2go effort but is gated on the framework primitives in Groups 1–10. Each line item names the specific upstream Items it depends on so the work can be lit up in the order the prereqs land.
+
+The Phase-1 work that did **not** require any of those prereqs (typed value models, capability flags, the friendly `send`/`update_email`/`list_emails` surface, and the `EmailMessage`-aware security mixin) shipped in `claude/security-audit-email-EqBda` ahead of this group. Everything below is the deferred remainder.
+
+
