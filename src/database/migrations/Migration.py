@@ -7,7 +7,6 @@ Handles initialization, creation, applying, and management of migrations.
 import argparse
 import os
 import shutil
-import subprocess
 import sys
 import tempfile
 import time
@@ -27,127 +26,6 @@ if str(src_path) not in sys.path:
     sys.path.insert(0, str(src_path))
 
 from lib.Logging import logger
-
-
-# Define default templates as dictionaries
-def get_script_py_mako_template():
-    """Get the script.py.mako template from file or fallback to default"""
-    try:
-        script_py_path = template_dir / "script.py.mako"
-        if script_py_path.exists():
-            with open(script_py_path, "r") as f:
-                return f.read()
-    except Exception as e:
-        logger.warning(f"Error loading script.py.mako template: {e}")
-
-    # Default template
-    return '''"""${message}
-
-Revision ID: ${up_revision}
-Revises: ${down_revision | comma,n}
-Create Date: ${create_date}
-
-"""
-from typing import Sequence, Union
-
-from alembic import op
-import sqlalchemy as sa
-${imports if imports else ""}
-
-# revision identifiers, used by Alembic.
-revision: str = ${repr(up_revision)}
-down_revision: Union[str, None] = ${repr(down_revision)}
-branch_labels: Union[str, Sequence[str], None] = ${repr(branch_labels)}
-depends_on: Union[str, Sequence[str], None] = ${repr(depends_on)}
-
-
-def upgrade() -> None:
-    """Upgrade schema."""
-    ${upgrades if upgrades else "pass"}
-
-
-def downgrade() -> None:
-    """Downgrade schema."""
-    ${downgrades if downgrades else "pass"}
-'''
-
-
-# Standard INI file sections and options for alembic.ini
-def get_default_alembic_ini_dict(test_mode=False, database_dir="database"):
-    """Get default alembic.ini configuration as a dictionary"""
-    versions_dir_name = "test_versions" if test_mode else "versions"
-
-    return {
-        "alembic": {
-            "script_location": "database/migrations",  # Always hardcoded for infrastructure
-            "file_template": "%%(rev)s_%%(slug)s",
-            "prepend_sys_path": ".",
-            "version_locations": f"%(here)s/{database_dir}/migrations/{versions_dir_name}",  # Use parameterized database_dir
-            "version_path_separator": "os",
-            "sqlalchemy.url": "sqlite:///database.db",
-            "version_table": "alembic_version",
-        },
-        "loggers": {"keys": "root,sqlalchemy,alembic"},
-        "handlers": {"keys": "console"},
-        "formatters": {"keys": "generic"},
-        "logger_root": {"level": "INFO", "handlers": "console", "qualname": ""},
-        "logger_sqlalchemy": {
-            "level": "INFO",
-            "handlers": "console",
-            "qualname": "sqlalchemy.engine",
-        },
-        "logger_alembic": {
-            "level": "INFO",
-            "handlers": "console",
-            "qualname": "alembic",
-        },
-        "handler_console": {
-            "class": "StreamHandler",
-            "args": "(sys.stderr,)",
-            "level": "NOTSET",
-            "formatter": "generic",
-        },
-        "formatter_generic": {
-            "format": "%(levelname)-5.5s [%(name)s] %(message)s",
-            "datefmt": "%H:%M:%S",
-        },
-    }
-
-
-def get_extension_alembic_ini_dict(
-    extension_name, ext_migrations_dir, db_url, test_mode=False, database_dir="database"
-):
-    """Get extension-specific alembic.ini configuration as a dictionary"""
-    config = get_default_alembic_ini_dict(test_mode, database_dir)
-
-    # Determine the correct versions directory name
-    versions_dir_name = "test_versions" if test_mode else "versions"
-
-    # Override with extension-specific settings
-    config["alembic"].update(
-        {
-            "script_location": str(ext_migrations_dir),
-            "sqlalchemy.url": db_url,
-            "version_table": f"alembic_version_{extension_name}",
-            "branch_label": f"ext_{extension_name}",
-            "version_locations": f"{ext_migrations_dir}/{versions_dir_name}",  # Extension-specific path
-        }
-    )
-
-    return config
-
-
-def dict_to_ini(config_dict):
-    """Convert a nested dictionary to INI file format"""
-    lines = []
-
-    for section, options in config_dict.items():
-        lines.append(f"[{section}]")
-        for key, value in options.items():
-            lines.append(f"{key} = {value}")
-        lines.append("")  # Add an empty line between sections
-
-    return "\n".join(lines)
 
 
 class MigrationManager:
@@ -461,7 +339,6 @@ class MigrationManager:
                 "url": db_manager.DATABASE_URI,
             }
 
-        self.alembic_ini_path = self._find_alembic_ini()
         self.template_dir = current_file_dir / "template"
 
         if self.test_mode:
@@ -471,9 +348,6 @@ class MigrationManager:
 
         logger.debug(f"Using extensions directory: {extensions_dir}")
         logger.debug(f"Using database directory: {database_dir}")
-
-        # Track temporary files created for extensions so they can be cleaned up reliably
-        self._extension_temp_inis = {}
 
     @property
     def db_manager(self):
@@ -557,100 +431,6 @@ class MigrationManager:
         else:
             logger.debug(f"Using extensions from APP_EXTENSIONS: {extension_list}")
         return extension_list
-
-    def _find_alembic_ini(self):
-        """Find the alembic.ini file in various possible locations or return a suitable path for creation"""
-        from lib.Environment import env
-
-        # Look for alembic.ini in src directory and other locations
-        potential_paths = [
-            self.paths["src_dir"] / "alembic.ini",  # /src/alembic.ini
-            Path("alembic.ini"),  # Current directory
-            self.paths["root_dir"] / "alembic.ini",  # Project root
-            Path(f"/{env('APP_NAME').lower()}/src/alembic.ini"),  # Container path
-            Path("../alembic.ini"),  # One level up
-        ]
-
-        for path in potential_paths:
-            if path.exists():
-                logger.debug(f"Found alembic.ini at {path}")
-                return path
-
-        # If no existing file found, return the standard location in src directory
-        logger.debug(
-            "Could not find alembic.ini in any standard location, will create at src/alembic.ini"
-        )
-        return self.paths["src_dir"] / "alembic.ini"
-
-    def ensure_alembic_ini_exists(self):
-        """Make sure alembic.ini exists, creating it if necessary.
-
-        When running in parallel (pytest-xdist), always creates a unique temporary
-        file to avoid race conditions between workers.
-        """
-        # Always create a unique temporary file for this migration run
-        # This prevents race conditions when multiple workers run migrations simultaneously
-        worker_id = os.environ.get("PYTEST_XDIST_WORKER")
-
-        if worker_id is not None or self.test_mode or hasattr(self, "db_info"):
-            # Create a worker-specific temporary alembic.ini
-            config_dict = get_default_alembic_ini_dict(
-                self.test_mode, self.database_dir_name
-            )
-            config_dict["alembic"]["sqlalchemy.url"] = self.db_info["url"]
-            config_content = dict_to_ini(config_dict)
-
-            # Use database name in temp file name for debugging
-            db_name_safe = (
-                self.db_info["name"]
-                .replace("/", "_")
-                .replace("\\", "_")
-                .replace(":", "_")
-                .replace(".", "_")
-            )
-            temp_path = self.create_temp_file(
-                config_content,
-                suffix=f".{db_name_safe}.ini",
-                directory=self.paths["src_dir"],
-            )
-            logger.debug(
-                f"Created worker-specific alembic.ini at {temp_path} for db={self.db_info['name']}"
-            )
-            return temp_path
-
-        # For non-test, non-parallel runs, use the standard alembic.ini
-        if self.alembic_ini_path.exists():
-            logger.debug(f"Using existing alembic.ini at {self.alembic_ini_path}")
-            return self.alembic_ini_path
-
-        # Create a new alembic.ini file if it doesn't exist
-        logger.debug(f"Creating alembic.ini at {self.alembic_ini_path}")
-
-        # Get default config and update with database URL
-        config_dict = get_default_alembic_ini_dict(
-            self.test_mode, self.database_dir_name
-        )
-        config_dict["alembic"]["sqlalchemy.url"] = self.db_info["url"]
-
-        # Convert to INI content
-        config_content = dict_to_ini(config_dict)
-
-        # Write to the file location
-        if self.write_file(self.alembic_ini_path, config_content):
-            logger.debug(f"Successfully created alembic.ini at {self.alembic_ini_path}")
-            return self.alembic_ini_path
-        else:
-            # If we can't write to the specified location, create a temporary file
-            logger.warning(
-                f"Could not write to {self.alembic_ini_path}, creating temporary file"
-            )
-            temp_path = self.create_temp_file(
-                config_content,
-                suffix=".ini",
-                directory=self.paths["src_dir"],
-            )
-            logger.debug(f"Created temporary alembic.ini at {temp_path}")
-            return temp_path
 
     def debug_file_info(self, file_path):
         """Debug a file by showing its permissions, size, and other metadata."""
@@ -745,120 +525,6 @@ class MigrationManager:
         except Exception as e:
             logger.error(f"Error writing to file {file_path}: {e}")
             return False
-
-    def get_common_env_vars(self, extension_name=None):
-        """Get common environment variables for subprocess execution."""
-        env = {
-            "PYTHONPATH": f"{self.paths['src_dir']}{os.pathsep}{os.environ.get('PYTHONPATH', '')}",
-        }
-        if extension_name:
-            env["ALEMBIC_EXTENSION"] = extension_name
-
-        # Pass database configuration to subprocess to ensure test databases are used
-        # This is critical because subprocess doesn't inherit patched os.environ from tests
-        if self.db_info:
-            if "name" in self.db_info:
-                env["DATABASE_NAME"] = self.db_info["name"]
-            if "type" in self.db_info:
-                env["DATABASE_TYPE"] = self.db_info["type"]
-
-        return env
-
-    def run_subprocess(self, cmd, env=None, capture_output=True):
-        """Run a subprocess command with environment variables and proper output capture."""
-        try:
-            combined_env = dict(os.environ)
-            if env:
-                combined_env.update(env)
-
-            logger.debug(f"Running command: {' '.join(cmd)}")
-
-            # Use subprocess.run for better output capture
-            result = subprocess.run(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,  # Keep stderr separate to avoid mixing
-                text=True,
-                env=combined_env,
-                check=False,  # Don't raise exception on non-zero exit
-            )
-
-            # Log stderr separately if it exists
-            if result.stderr:
-                for line in result.stderr.strip().split("\n"):
-                    if line.strip():
-                        logger.debug(f"[SUBPROCESS_STDERR] {line}")
-
-            # Log stdout separately if it exists
-            if result.stdout:
-                for line in result.stdout.strip().split("\n"):
-                    if line.strip():
-                        logger.debug(f"[SUBPROCESS_STDOUT] {line}")
-
-            success = result.returncode == 0
-            if success:
-                logger.debug(
-                    f"Command completed successfully with return code {result.returncode}"
-                )
-            else:
-                logger.error(f"Command failed with return code {result.returncode}")
-                if result.stderr:
-                    logger.error(f"Stderr: {result.stderr}")
-
-            return result, success
-
-        except Exception as e:
-            # If the error is FileNotFoundError (e.g., 'alembic' not on PATH),
-            # retry by invoking the module via the current Python interpreter: `python -m alembic ...`.
-            logger.debug(f"Initial subprocess attempt failed: {e}")
-            try:
-                if (
-                    isinstance(e, FileNotFoundError)
-                    and cmd
-                    and isinstance(cmd, (list, tuple))
-                ):
-                    # Build a fallback command that uses the current Python executable to run alembic as a module
-                    fallback_cmd = [sys.executable, "-m", cmd[0]] + list(cmd[1:])
-                    logger.debug(
-                        f"Retrying with fallback command: {' '.join(fallback_cmd)}"
-                    )
-                    result = subprocess.run(
-                        fallback_cmd,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
-                        text=True,
-                        env=combined_env,
-                        check=False,
-                    )
-
-                    # Log outputs
-                    if result.stderr:
-                        for line in result.stderr.strip().split("\n"):
-                            if line.strip():
-                                logger.debug(f"[FALLBACK_SUBPROCESS_STDERR] {line}")
-                    if result.stdout:
-                        for line in result.stdout.strip().split("\n"):
-                            if line.strip():
-                                logger.debug(f"[FALLBACK_SUBPROCESS_STDOUT] {line}")
-
-                    success = result.returncode == 0
-                    if success:
-                        logger.debug(
-                            f"Fallback command completed successfully with return code {result.returncode}"
-                        )
-                        return result, True
-                    else:
-                        logger.error(
-                            f"Fallback command failed with return code {result.returncode}"
-                        )
-                        if result.stderr:
-                            logger.error(f"Fallback stderr: {result.stderr}")
-                        return result, False
-            except Exception as e2:
-                logger.error(f"Fallback subprocess attempt also failed: {e2}")
-
-            logger.error(f"Error running command {' '.join(cmd)}: {e}")
-            return None, False
 
     def cleanup_temporary_files(self, extension_name=None):
         """Clean up leftover temporary alembic .ini files from older runs.
@@ -1132,39 +798,6 @@ class MigrationManager:
         cfg = self._make_alembic_config(extension_name, versions_dir)
         return self._extension_revision(cfg, extension_name, message=message, auto=auto)
 
-    def create_extension_alembic_ini(self, extension_name, extension_versions_dir):
-        """Create a completely customized alembic.ini for an extension"""
-        ext_migrations_dir = extension_versions_dir.parent
-
-        # Prepare configuration dictionary
-        config_dict = get_extension_alembic_ini_dict(
-            extension_name,
-            ext_migrations_dir,
-            self.db_info["url"],
-            self.test_mode,
-            self.database_dir_name,
-        )
-
-        # Convert to INI format
-        config_content = dict_to_ini(config_dict)
-
-        # Write to a temporary file located alongside the extension migrations
-        temp_file_path = self.create_temp_file(
-            config_content,
-            suffix=".ini",
-            directory=ext_migrations_dir,
-        )
-
-        self._extension_temp_inis.setdefault(extension_name, set()).add(temp_file_path)
-        logger.debug(
-            f"Created dedicated extension alembic.ini at {temp_file_path} for {extension_name}"
-        )
-
-        # For debugging, log the configuration
-        logger.debug(f"Extension alembic.ini configuration:\n{config_content}")
-
-        return temp_file_path
-
     def ensure_extension_versions_directory(self, extension_name):
         """Ensure extension has a migrations/versions directory.
 
@@ -1184,230 +817,6 @@ class MigrationManager:
         )
         versions_dir.mkdir(exist_ok=True)
         return True, versions_dir
-
-    def _cleanup_specific_extension_files(self, extension_name):
-        """Clean up temporary files for ONE specific extension only."""
-        logger.debug(f"Cleaning up files for extension: {extension_name}")
-
-        ext_dir = self.paths["extensions_dir"] / extension_name
-        if not ext_dir.exists():
-            return
-
-        migrations_dir = ext_dir / "migrations"
-        if not migrations_dir.exists():
-            return
-
-        # Remove any tracked temporary alembic.ini files created for this extension
-        temp_ini_paths = getattr(self, "_extension_temp_inis", {}).pop(
-            extension_name, set()
-        )
-        for temp_ini in temp_ini_paths:
-            self.cleanup_file(
-                temp_ini,
-                f"Removed temporary alembic.ini for extension {extension_name}: {temp_ini}",
-            )
-
-        # Files to clean up
-        cleanup_files = [
-            migrations_dir / "alembic.ini",
-            migrations_dir / "env.py",
-            migrations_dir / "script.py.mako",
-            migrations_dir / "__init__.py",
-        ]
-
-        # Clean up files in migrations directory
-        for file_path in cleanup_files:
-            if file_path.exists():
-                try:
-                    file_path.unlink()
-                    logger.debug(
-                        f"Removed {file_path.name} for extension {extension_name}"
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to remove {file_path}: {e}")
-
-        # Clean up __init__.py in versions directories
-        for versions_subdir in ["versions", "test_versions"]:
-            versions_dir = migrations_dir / versions_subdir
-            if versions_dir.exists():
-                versions_init = versions_dir / "__init__.py"
-                if versions_init.exists():
-                    try:
-                        versions_init.unlink()
-                        logger.debug(
-                            f"Removed __init__.py from {versions_subdir} for extension {extension_name}"
-                        )
-                    except Exception as e:
-                        logger.warning(f"Failed to remove {versions_init}: {e}")
-
-        # Clean up root extension __init__.py if it was created during migration operations
-        root_init = ext_dir / "__init__.py"
-        if root_init.exists():
-            try:
-                content = root_init.read_text().strip()
-                # Only remove if it looks like it was created by migration system
-                if not content or content.startswith("# Extension:"):
-                    root_init.unlink()
-                    logger.debug(
-                        f"Removed root __init__.py for extension {extension_name}"
-                    )
-            except Exception as e:
-                logger.warning(
-                    f"Failed to remove root __init__.py for {extension_name}: {e}"
-                )
-
-    def cleanup_extension_files(self):
-        """Clean up temporary files and resources for an extension"""
-        logger.debug("Cleaning up temporary extension files")
-
-        # Files to clean up for extensions - these are temporary files created during migration operations
-        cleanup_patterns = ["alembic.ini", "env.py", "script.py.mako"]
-
-        # Clean up in all extension directories
-        for ext_name in self.configured_extensions:
-            # Get extension directory using configurable path
-            possible_ext_dirs = [
-                self.paths["extensions_dir"] / ext_name,
-                Path("extensions") / ext_name,  # Fallback for compatibility
-                self.paths["root_dir"] / self.extensions_dir_name / ext_name,
-                Path(f"src/{self.extensions_dir_name}") / ext_name,
-            ]
-
-            for ext_dir in possible_ext_dirs:
-                if not ext_dir.exists():
-                    continue
-
-                ext_migrations_dir = ext_dir / "migrations"
-                if not ext_migrations_dir.exists():
-                    continue
-
-                logger.debug(f"Cleaning up files in {ext_migrations_dir}")
-                for pattern in cleanup_patterns:
-                    file_path = ext_migrations_dir / pattern
-                    if file_path.exists():
-                        try:
-                            file_path.unlink()
-                            logger.debug(f"Removed {pattern} at {file_path}")
-                        except Exception as e:
-                            logger.warning(f"Failed to clean up {file_path}: {e}")
-
-                # AGGRESSIVE CLEANUP: Remove ALL __init__.py files created during migration operations
-                # Remove __init__.py from migrations directory
-                migrations_init = ext_migrations_dir / "__init__.py"
-                if migrations_init.exists():
-                    try:
-                        migrations_init.unlink()
-                        logger.debug(
-                            f"Removed migrations __init__.py at {migrations_init}"
-                        )
-                    except Exception as e:
-                        logger.warning(f"Failed to clean up {migrations_init}: {e}")
-
-                # Remove __init__.py from versions directories (both regular and test)
-                for versions_subdir in ["versions", "test_versions"]:
-                    versions_dir = ext_migrations_dir / versions_subdir
-                    if versions_dir.exists():
-                        versions_init = versions_dir / "__init__.py"
-                        if versions_init.exists():
-                            try:
-                                versions_init.unlink()
-                                logger.debug(
-                                    f"Removed versions __init__.py at {versions_init}"
-                                )
-                            except Exception as e:
-                                logger.warning(
-                                    f"Failed to clean up {versions_init}: {e}"
-                                )
-
-                # AGGRESSIVE CLEANUP: Remove root extension __init__.py if it was created during migration operations
-                # Remove it regardless of content since migration operations shouldn't create permanent __init__.py files
-                root_init = ext_dir / "__init__.py"
-                if root_init.exists():
-                    try:
-                        # Read content to log what we're removing
-                        content = root_init.read_text().strip()
-                        root_init.unlink()
-                        logger.debug(
-                            f"Removed root __init__.py at {root_init} (content: {content[:50]}...)"
-                        )
-                    except Exception as e:
-                        logger.warning(
-                            f"Failed to clean up root __init__.py {root_init}: {e}"
-                        )
-
-        # Also clean up any temporary INI files in the current directory
-        temp_files = Path(".").glob("tmp*.ini")
-        for temp_file in temp_files:
-            if "alembic" in temp_file.name.lower():
-                try:
-                    temp_file.unlink()
-                    logger.debug(f"Removed temporary file: {temp_file}")
-                except Exception as e:
-                    logger.warning(f"Failed to clean up {temp_file}: {e}")
-
-        # Clean up the main alembic.ini if it exists and we're not in an active operation
-        if not hasattr(self, "_operation_in_progress"):
-            alembic_ini = self.paths["src_dir"] / "alembic.ini"
-            if alembic_ini.exists():
-                self.cleanup_file(alembic_ini, "Cleaned up main alembic.ini")
-
-        return True
-
-    def cleanup_all_extension_files(self, extension_list=None):
-        """Clean up all files for specific extensions, including root __init__.py files.
-        This is more aggressive than cleanup_extension_files and should be used for test cleanup.
-        """
-        extension_list = extension_list or []
-
-        logger.debug(f"Performing complete cleanup for extensions: {extension_list}")
-
-        for ext_name in extension_list:
-            possible_ext_dirs = [
-                self.paths["extensions_dir"] / ext_name,
-                Path("extensions") / ext_name,  # Fallback for compatibility
-                self.paths["root_dir"] / self.extensions_dir_name / ext_name,
-                Path(f"src/{self.extensions_dir_name}") / ext_name,
-            ]
-
-            for ext_dir in possible_ext_dirs:
-                if ext_dir.exists():
-                    try:
-                        import shutil
-
-                        shutil.rmtree(ext_dir)
-                        logger.debug(
-                            f"Completely removed extension directory: {ext_dir}"
-                        )
-                    except Exception as e:
-                        logger.warning(
-                            f"Failed to remove extension directory {ext_dir}: {e}"
-                        )
-
-                        # Try to remove individual files if rmtree fails
-                        try:
-                            for file_path in ext_dir.rglob("*"):
-                                if file_path.is_file():
-                                    file_path.unlink()
-
-                            # Remove empty directories
-                            for dir_path in sorted(
-                                ext_dir.rglob("*"), key=lambda x: str(x), reverse=True
-                            ):
-                                if dir_path.is_dir() and not any(dir_path.iterdir()):
-                                    dir_path.rmdir()
-
-                            # Finally remove the root extension directory if empty
-                            if ext_dir.exists() and not any(ext_dir.iterdir()):
-                                ext_dir.rmdir()
-                                logger.debug(
-                                    f"Removed extension directory after manual cleanup: {ext_dir}"
-                                )
-                        except Exception as e2:
-                            logger.error(
-                                f"Manual cleanup also failed for {ext_name}: {e2}"
-                            )
-
-        return True
 
     def regenerate_migrations(
         self, extension_name=None, all_extensions=False, message=None
@@ -1517,10 +926,7 @@ class MigrationManager:
 
                 logger.debug(f"Successfully regenerated migrations for {ext_name}")
 
-            # Clean up extension temporary files after all extensions are processed
-            if extensions_to_process:
-                self.cleanup_extension_files()
-                logger.debug("Cleaned up extension temporary files after regeneration")
+            # Phase 4 eliminated per-extension temporary files; nothing to clean.
 
         return True
 
@@ -1677,29 +1083,8 @@ class {class_name}(Base):
                 f"Error creating extension {extension_name}: {e}", exc_info=True
             )
             return False
-        finally:
-            # Clean up temporary files manually
-            try:
-                extensions_dir = self.paths["extensions_dir"]
-                ext_dir = extensions_dir / extension_name
-                migrations_dir = ext_dir / "migrations"
-
-                if migrations_dir.exists():
-                    temp_files = [
-                        migrations_dir / "alembic.ini",
-                        migrations_dir / "env.py",
-                        migrations_dir / "script.py.mako",
-                    ]
-
-                    for file_path in temp_files:
-                        self.cleanup_file(
-                            file_path, f"Cleaning up temporary file {file_path}"
-                        )
-            except Exception as e:
-                logger.error(f"Error during final cleanup: {e}", exc_info=True)
-
-            # Also run the standard cleanup
-            self.cleanup_extension_files()
+        # Phase 4 eliminated per-extension temporary files; nothing to clean
+        # in a finally block.
 
     def _ensure_extension_in_env_var(self, extension_name):
         """Ensure an extension is in the APP_EXTENSIONS environment variable"""
@@ -1750,13 +1135,10 @@ class {class_name}(Base):
         for name, path in self.paths.items():
             logger.debug(f"{name}: {path}")
 
-        # Alembic configuration
+        # Alembic configuration is built in-memory via _make_alembic_config —
+        # there is no on-disk alembic.ini to inspect.
         logger.debug("--- ALEMBIC CONFIG ---")
-        logger.debug(f"Alembic ini path: {self.alembic_ini_path}")
-        if self.alembic_ini_path.exists():
-            logger.debug("Alembic ini exists: Yes")
-        else:
-            logger.debug("Alembic ini exists: No")
+        logger.debug("Alembic config: in-memory (no on-disk alembic.ini)")
 
         # Extensions
         logger.debug("--- EXTENSIONS ---")
@@ -2222,10 +1604,7 @@ def main():
     finally:
         try:
             extension_name = getattr(args, "extension", None)
-            if extension_name:
-                manager._cleanup_specific_extension_files(extension_name)
-            else:
-                manager.cleanup_temporary_files()
+            manager.cleanup_temporary_files(extension_name)
         except Exception as e:
             logger.warning(f"Error during final cleanup: {e}", exc_info=True)
 

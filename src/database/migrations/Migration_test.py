@@ -382,6 +382,52 @@ def test_env_table_extenders_lists_field_injection_owners(booted_app):
     assert extenders == sorted(extenders), "extenders must be sorted"
 
 
+# ---------- Phase 4 clean-folder gate -----------------------------------
+
+
+@pytest.mark.migration
+@pytest.mark.real
+@pytest.mark.extension
+def test_extension_folder_stays_clean_after_full_cycle(booted_app):
+    """Phase 4 post-condition: after a full upgrade with extensions, no
+    env.py / alembic.ini / script.py.mako / __init__.py / tmp*.ini files
+    appear under any extension's migrations/ tree. Only versions/<rev>.py
+    files should exist there.
+
+    This is the user-facing success criterion of Phase 4 (in-memory
+    Alembic config + shared script_location), guaranteeing extension
+    folders contain only author-owned source + revision files."""
+    booted_app(extensions="auth_mfa,payment")
+
+    src_path = Path(__file__).resolve().parent.parent.parent
+    extensions_dir = src_path / "extensions"
+
+    pollutants = []
+    for migrations_dir in extensions_dir.glob("*/migrations"):
+        for entry in migrations_dir.iterdir():
+            if entry.is_dir() and entry.name in ("versions", "test_versions"):
+                continue
+            if entry.is_dir() and entry.name == "__pycache__":
+                continue
+            pollutants.append(str(entry.relative_to(src_path)))
+        # versions/ subdirs may only contain revision files + __pycache__
+        for sub in ("versions", "test_versions"):
+            sub_dir = migrations_dir / sub
+            if not sub_dir.exists():
+                continue
+            for entry in sub_dir.iterdir():
+                if entry.is_dir() and entry.name == "__pycache__":
+                    continue
+                if entry.is_file() and entry.suffix == ".py":
+                    continue
+                pollutants.append(str(entry.relative_to(src_path)))
+
+    assert not pollutants, (
+        "extension folders polluted with non-revision files: "
+        f"{pollutants}"
+    )
+
+
 # ---------- Item 24: audit-ownership CLI --------------------------------
 
 
