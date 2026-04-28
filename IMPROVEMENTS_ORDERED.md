@@ -1853,4 +1853,17 @@ The Phase-1 work that did **not** require any of those prereqs (typed value mode
 
 **Acceptance.** `pytest -m security` asserts `with pytest.raises(EmailHeaderInjectionError)` for CRLF cases, etc. The string-substring matchers are removed. SendGrid+Stalwart+SMTP2go each route at least one upstream-failure shape (401, 429, 503) into the correct typed exception, verified by integration tests gated on real credentials per Item 15.
 
+## Item 61 — Email reshape: bond to AbstractProviderInstance contract
+
+**Severity:** High
+**Scope:** `AbstractEmailProvider`, `AbstractEmailProviderInstance` (new), all three concrete providers.
+**Owner area:** Email extension.
+**Prereq:** Item 26 (explicit `AbstractProviderInstance` contract). Cross-refs Item 37 (typed Settings/abilities).
+
+**Purpose.** Phase-1 introduced friendly classmethods on `AbstractEmailProvider` (`send`, `update_email`, `list_emails`) that take `provider_instance` as a positional arg. This is correct Phase-1 shape but threaded through every call. Item 26 promotes `AbstractProviderInstance` to a real ABC; once it lands, the email extension defines `AbstractEmailProviderInstance(AbstractProviderInstance)` carrying the eight typed abilities (`send`, `send_bulk`, `list_emails`, `get_email`, `update_email`, `reply`, `download_attachment`, `list_threads`) so call sites become `bonded.send(message)` instead of `Provider.send(provider_instance, message)`.
+
+**Implementation.** `AbstractEmailProviderInstance` declares the eight abstracts and a typed `capabilities: ClassVar[FrozenSet[Capability]]` (lifted from Phase-1's class-level capability flag). `bond_instance` returns the typed instance; `_instance` is declared as a typed `ClassVar` per Item 26 and a mypy gate enforces the contract. The Phase-1 classmethods on `AbstractEmailProvider` become `@deprecated` shims that delegate to the bonded instance for one release.
+
+**Acceptance.** `mypy` rejects a concrete provider whose `bond_instance` returns a non-`AbstractEmailProviderInstance`. New callers use `bonded = Provider.bond_instance(model); await bonded.send(msg)`. The Phase-1 surface keeps working through deprecation warnings.
+
 
