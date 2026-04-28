@@ -1392,5 +1392,50 @@ The combination delivers bounded-latency for high-priority work regardless of lo
 
 ---
 
+## Item 58 — Magic-link (passwordless email) authentication
 
+**Severity:** Medium
+**Scope:** Framework provisions in `BLL_Auth.py` (one-time-token primitive, passwordless grant abstraction, `UserManager.login_via_grant` hook target); new `EXT_Auth_MagicLink` extension implementing the user-facing flow.
+**Owner area:** Authentication / extensions.
+
+**Purpose.** Magic-link authentication — the user enters their email, receives a one-time link, clicks it, and is logged in — is a baseline expectation of modern SaaS products. The framework today supports password login, MFA (TOTP / email / SMS), recovery codes, and basic-auth / API-key flows, but does not support passwordless email login. An audit of the auth subsystem (`BLL_Auth.py`, `BLL.Authentication.md`, `EXT_Auth_MFA.py`) confirms the building blocks exist — `SessionModel` already carries `requires_verification` and `expires_at`, the recovery-code pattern in `MultifactorRecoveryCodeModel` shows correct one-time-token shape with hash + salt + `is_used`, and the hook system supports BEFORE/AFTER hooks on `UserManager.login` — but the door for a magic-link extension to plug in is not explicitly opened. This item leaves that door open with the smallest possible framework changes and ships the extension itself in the same line item.
+
+**Current state.** No magic-link support. No formal one-time-token primitive (the recovery-code pattern is private to `auth_mfa`). No passwordless grant abstraction in `UserManager`. An author wanting to ship magic-link today must either subclass `UserManager` (touching the core conceptually) or hand-roll the entire flow including the session-issuance path.
+
+### Framework provisions (the door)
+
+The following minimal additions in core land before the extension is authored:
+
+1. **`OneTimeTokenMixin`**, a small reusable model mixin in `src/logic/BLL_Auth.py` that captures the recovery-code pattern as a first-class primitive: `code_hash`, `code_salt`, `expires_at`, `is_used`, `used_at`, `created_ip`, plus the `verify(submitted_code) -> bool` and `mark_used()` methods. The `MultifactorRecoveryCodeModel` is migrated to use this mixin so the pattern has one canonical home. Magic-link tokens, QR-pairing tokens (Item 59), invitation codes, and any future one-time-token primitive build on this. Tokens are hashed at rest using bcrypt with per-token salt; raw codes appear only in the original response and are never recoverable.
+
+2. **`PasswordlessGrant` abstraction** on `UserManager`: a typed `login_via_grant(grant_type: str, grant_payload: BaseModel) -> SessionModel` method that takes a registered grant kind (e.g. `"magic_link"`, `"device_pairing"`, `"oauth"`) and a typed payload, validates the grant via a registered handler, and issues a session. A grant registry (`PasswordlessGrantRegistry`) accepts `(grant_type, validator)` registrations from extensions; the validator is a callable taking the typed payload and returning the authenticated `UserModel` or raising `InvalidGrantError`. This is the explicit hook point — extensions register grant validators against the registry and `UserManager.login_via_grant` dispatches to them.
+
+3. **`SessionModel.grant_type` field**: a new optional `grant_type: Optional[str]` field on the existing `SessionModel`, recording which grant kind issued the session. This is observability — operators can audit which sessions came from password login, magic link, OAuth, device pairing, etc. — and is also consumed by `requires_verification` semantics if a particular grant type warrants step-up before sensitive operations.
+
+4. **Extension dependency declaration**: `EXT_Auth_MagicLink` declares `EXT_Email` as a required dependency via the existing extension-dependency mechanism.
+
+These four changes are scoped narrowly enough to land independently of Items 10 (auth strategies — different concern; that handles outbound auth, this handles inbound passwordless grants) and 18 (permission registry — orthogonal). They do not break any existing auth path.
+
+### Extension implementation (`EXT_Auth_MagicLink`)
+
+Lives in `src/extensions/auth_magic_link/`. Files:
+
+- **`EXT_Auth_MagicLink.py`** — the extension manifest. Declares the extension name, version, dependencies (`EXT_Email`, core auth), settings (`magic_link_ttl_minutes: int = 15`, `magic_link_base_url: str`, `magic_link_email_template: str`).
+- **`BLL_Auth_MagicLink.py`** — the BLL.
+  - Model `AuthMagicLinkToken(ApplicationModel, DatabaseMixin, OneTimeTokenMixin)`: adds `user_id: str` and `requested_email: str` (so a token issued for `alice@example.com` cannot be used to log in as `bob@example.com` even if the request is replayed against a different user).
+  - Manager `MagicLinkManager(AbstractBLLManager, RouterMixin)` with two custom routes via `@custom_route` (Item 40):
+    - `POST /v1/auth/magic-link/request` — input `MagicLinkRequest(email: str)`, generates a token, sends an email through `EXT_Email` containing `{magic_link_base_url}?token={raw_code}`, returns `202` with no token in the response (the token reaches the user *only* through email, never the response). To avoid user-enumeration, the response is identical whether the email is registered or not.
+    - `POST /v1/auth/magic-link/verify` — input `MagicLinkVerify(token: str)`, validates the token via `OneTimeTokenMixin.verify`, marks it used, and calls `UserManager.login_via_grant("magic_link", MagicLinkGrantPayload(user_id=...))` to issue a session.
+  - Grant validator `magic_link_grant_validator`, registered against `PasswordlessGrantRegistry` at extension load.
+- **`EP.Schema.auth_magic_link.md`** — documents the two endpoints.
+- **`EXT.auth_magic_link.md`** — extension overview, security considerations, configuration.
+- **Tests** — covers token expiry, replay protection (a token cannot be used twice), wrong-email replay (a token for `alice@example.com` is rejected when the verify request omits or mismatches the email), email-enumeration absence (request response is identical for registered vs unregistered emails), TTL enforcement, and the integration with `SessionModel.grant_type="magic_link"`.
+
+**Implementation notes.** Token entropy is at least 256 bits, base64url-encoded for URL safety. The TTL default of fifteen minutes is short enough to mitigate replay from leaked emails and long enough for a normal user flow. Rate limiting on `POST /v1/auth/magic-link/request` is enforced per email and per IP (default ten requests per hour per email, twenty per IP) to prevent email-based denial-of-service. The verify endpoint is hardened against timing attacks via constant-time hash comparison (already provided by `OneTimeTokenMixin.verify`). When a token verifies, all *other* outstanding tokens for the same user are invalidated, so a user requesting three links and clicking the latest cannot then have an attacker click an older one. The email template is configurable per deployment but the default ships with a clear from-address, subject, and "you didn't request this — ignore this email" copy.
+
+**Acceptance criteria.** A user submitting their email to `POST /v1/auth/magic-link/request` receives an email containing a one-time link. Clicking the link issues a fully-functional session indistinguishable from password-login except for `SessionModel.grant_type="magic_link"`. Replay of the same token fails. A token used outside its TTL fails. Rate limiting kicks in under abuse. No user enumeration is possible from the request endpoint. The extension installs and uninstalls cleanly without touching core code.
+
+**Dependencies.** Framework provisions are independent of other items but build cleanly atop Item 40 (custom routes) and Item 22 (blocking-vs-non-blocking hooks for the audit AFTER hook). Cross-references Items 18 (permission registry — magic-link sessions issue with the user's full role grants), 32 (the email template's from-address is a `Secret`-marked setting), 41 (typed hook context — the registered grant validator can be a typed hook).
+
+---
 
