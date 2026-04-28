@@ -1439,3 +1439,55 @@ Lives in `src/extensions/auth_magic_link/`. Files:
 
 ---
 
+## Item 59 — QR-code device-pairing authentication (Steam Guard / Discord style)
+
+**Severity:** Medium
+**Scope:** Framework provisions in `BLL_Auth.py` (pending-session approval state, real-time approval channel, cross-device grant abstraction); new `EXT_Auth_DevicePairing` extension implementing the user-facing flow.
+**Owner area:** Authentication / extensions.
+
+**Purpose.** "Scan this QR code with your already-logged-in mobile app to log in here" is the pairing flow popularized by Steam, Discord, WhatsApp Web, and most recent SaaS desktop applications. Compared with magic-link, it has two attractive properties: it requires no email round trip (the new device's wait time is bounded by how long the user takes to pick up their phone), and it gives the *already-authenticated* device cryptographic certainty that the new device's request is in the same physical room (the QR is on the new device's screen, the camera is on the authenticated device — an attacker has to get visual access to either the new device or the photo of the QR). The framework today has neither the pending-session primitive nor the cross-device approval channel, so a deployment wanting this flow must either author it in the core or skip the feature. This item leaves the door open with framework primitives and ships the extension.
+
+**Current state.** No QR-pairing support. `SessionModel.requires_verification` exists but has no documented "approval pending" workflow. No cross-device approval channel (the inbound webhook infrastructure from Item 5 is the closest primitive but is shaped for upstream-provider events, not intra-application device approvals). The investigation in `BLL_Auth.py` confirms `SessionModel` already carries the right shape (`session_key`, `expires_at`, `revoked`, `requires_verification`, `trust_score`, `device_type`, `device_name`) and the `OneTimeTokenMixin` from Item 58 covers the QR-token primitive — what is missing is the approval-channel and the grant abstraction.
+
+### Framework provisions (the door)
+
+The following minimal additions in core land before the extension is authored. Items 58 and 59 share the `OneTimeTokenMixin` and the `PasswordlessGrantRegistry`; this item additionally adds:
+
+1. **`PendingSessionState`** — a new field `SessionModel.pending_state: Optional[Literal["awaiting_approval", "approved", "denied"]]`. A session created in `awaiting_approval` is not yet usable — bonded sessions check the state and refuse to authorize requests until the state is `approved`. The `requires_verification` flag becomes a derived getter from `pending_state`, preserving backward compatibility for callers that set it explicitly.
+
+2. **Real-time approval channel** — a small SSE endpoint `GET /v1/auth/pairing/{pairing_id}/stream` that the unauthenticated client subscribes to after generating its QR. The endpoint streams approval-status updates (`pending`, `approved+session_token`, `denied`, `expired`) so the client receives the result within milliseconds of the authenticated device approving, without polling. Polling fallback is supported via `GET /v1/auth/pairing/{pairing_id}/status` for clients that cannot maintain SSE. The SSE channel is implemented using the streaming-service infrastructure from Item 13 once landed; until then a simpler ASGI-streaming response suffices.
+
+3. **`CrossDeviceGrant` abstraction** — extends the `PasswordlessGrantRegistry` from Item 58 with a grant kind whose validation requires *another* authenticated requester to approve, rather than a token in the unauthenticated request. The grant validator signature is `(pairing_request, approver_session) -> UserModel`, distinguishing it from the magic-link single-step validator. The framework's `UserManager.login_via_grant` for cross-device grants accepts the approver-session context as part of the grant payload.
+
+These three changes are scoped narrowly. They do not require Item 5's webhook infrastructure (this is intra-application, not cross-system) and they do not require Item 13's streaming service to land first (the SSE endpoint is an ASGI-streaming response in the simple form), though they integrate cleanly with both when those items ship.
+
+### Extension implementation (`EXT_Auth_DevicePairing`)
+
+Lives in `src/extensions/auth_device_pairing/`. Files:
+
+- **`EXT_Auth_DevicePairing.py`** — the extension manifest. Declares dependencies (core auth, optionally `EXT_Auth_MFA` if step-up is required for approval), settings (`pairing_ttl_seconds: int = 300`, `pairing_qr_payload_format: Literal["url","raw_token"] = "url"`, `pairing_base_url: str`, `require_approver_mfa: bool = False`).
+- **`BLL_Auth_DevicePairing.py`** — the BLL.
+  - Model `DevicePairingRequest(ApplicationModel, DatabaseMixin, OneTimeTokenMixin)`: adds `requesting_device_type: str` (mobile / desktop / web), `requesting_device_name: Optional[str]` (a human-readable nickname like "Office Chrome"), `requesting_ip: str`, `requesting_user_agent: str`, `approver_user_id: Optional[str]` (set on approval), `approved_at: Optional[datetime]`, `denied_at: Optional[datetime]`, `pending_session_id: Optional[str]` (the `awaiting_approval`-state session that the client will receive on approval).
+  - Manager `DevicePairingManager(AbstractBLLManager, RouterMixin)` with three custom routes (Item 40):
+    - `POST /v1/auth/pairing/request` — input `PairingRequest(device_type, device_name)`, generates a `DevicePairingRequest` with a fresh one-time token and an `awaiting_approval` session reserved, returns `PairingResponse(pairing_id, qr_payload, expires_in)`. The `qr_payload` is either a deep link URL (`{pairing_base_url}/approve?token={raw_token}`) for mobile-app interception or the raw token for QR libraries to encode directly.
+    - `POST /v1/auth/pairing/approve` (authenticated) — input `PairingApprove(token: str)`, called by the *already-authenticated* device after it scans the QR. The endpoint validates the token via `OneTimeTokenMixin.verify`, optionally requires step-up MFA from the approver per `require_approver_mfa`, marks the pairing approved, transitions the reserved pending session to `approved`, attaches `approver_user_id`, and writes an audit event. The approver's user identity becomes the new device's user identity (the new device logs in as the approver, not as a separate identity).
+    - `POST /v1/auth/pairing/deny` (authenticated) — input `PairingDeny(token: str)`, called when the approver explicitly rejects the pairing. Marks the request denied, invalidates the pending session, audits.
+    - `GET /v1/auth/pairing/{pairing_id}/stream` (unauthenticated) — SSE endpoint subscribed by the new device after request, streams the resolution in real-time. The stream emits at most one status event then closes; the framework enforces a maximum stream lifetime equal to the pairing TTL.
+    - `GET /v1/auth/pairing/{pairing_id}/status` (unauthenticated) — polling fallback, returns the same status payload as the SSE stream.
+  - Grant validator `device_pairing_grant_validator`, registered against `PasswordlessGrantRegistry` as a `CrossDeviceGrant`.
+- **`EP.Schema.auth_device_pairing.md`** — documents the five endpoints and the SSE event format.
+- **`EXT.auth_device_pairing.md`** — extension overview, security considerations, threat model, configuration.
+- **Tests** — covers token expiry (request after TTL fails), replay protection (a token cannot approve twice), denial path (the new device receives `denied` and cannot retry the same token), unauthenticated approve attempt (rejected with 401), step-up MFA enforcement when configured, SSE-stream resolution end-to-end, polling-fallback parity with SSE, the awaiting-approval session is unusable until approved, the new device's session matches the approver's user identity exactly.
+
+**Implementation notes.** The QR payload includes the token directly so a malicious bystander photographing the QR could approve elsewhere — this is mitigated by the short TTL (five minutes default), by the requirement that the approver be already authenticated on a trusted device, and by the audit trail recording the approval IP and device. For high-security deployments, the extension supports an optional `pairing_requires_proximity_proof: bool` setting that adds a numeric short-code visible on both devices that the approver must confirm matches what the new device displays — the same out-of-band confirmation pattern Discord uses. Rate limiting on `POST /v1/auth/pairing/request` prevents pairing-request flooding (default twenty per IP per hour). The SSE stream is bounded by the pairing TTL and closes on any terminal state. The `pending_state="awaiting_approval"` session reservation strategy avoids a race where two parallel requests issue overlapping sessions: the session is created up front in the un-usable state, and approval flips the state atomically rather than creating a new session.
+
+**Threat model summary.** (1) Photo-of-QR attack: an attacker photographs the QR over-the-shoulder. Mitigated by short TTL, optional proximity proof, and the fact that the approver still must consciously approve from their authenticated device. (2) Approver-device-compromise: if the approver's already-authenticated device is malicious or compromised, it can approve arbitrary pairings — this is fundamental to the model and is the same trust assumption Steam Guard and Discord operate under. (3) New-device-MITM: an attacker intercepts the QR-payload URL from the new device's display. Mitigated by short TTL and TLS on every endpoint. (4) Session-substitution: the awaiting-approval session is unusable, so even if the QR is leaked the leaked session has no authority until approved.
+
+**Acceptance criteria.** A new device calls `POST /v1/auth/pairing/request` and displays the returned QR. The approver scans the QR on their authenticated device, the device-pairing app calls `POST /v1/auth/pairing/approve`, and the new device's SSE stream immediately receives an `approved` event with the now-usable session token. The new device's session is bound to the approver's user identity. Denial works symmetrically. Expired pairings cannot be approved. Replay of an approved token fails. Polling fallback returns the same final state as the SSE stream. The extension installs and uninstalls cleanly without touching core code.
+
+**Dependencies.** Framework provisions are independent. Cross-references Items 13 (streaming service — the SSE channel migrates to it once landed), 18 (permission registry — pairing sessions issue with the approver's full role grants), 22 (blocking-vs-non-blocking hooks for audit), 40 (custom routes), 41 (typed hook context), 58 (shares `OneTimeTokenMixin` and `PasswordlessGrantRegistry`).
+
+---
+
+
+
