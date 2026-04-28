@@ -766,4 +766,492 @@ The work is organized into three roughly-parallel tracks once the critical-path 
 
 The expected critical-path completion is the gate for opening provider work; the remaining items can be landed iteratively while provider authorship begins on the now-stable foundation.
 
+---
+
+## Second-round audit additions
+
+A subsequent independent documentation audit surfaced additional gaps that the first thirty items did not cover. They are added below as Items 31–52. Several extend or refine earlier items; cross-references are noted in each entry.
+
+---
+
+## Item 31 — Shared outbound HTTP client primitive
+
+**Severity:** High
+**Scope:** New `ProviderHTTPClient`, integration into every provider that performs outbound HTTP, refactor of existing example providers.
+**Owner area:** Provider system / external federation core.
+
+**Purpose.** Today every provider initializes its own SDK or HTTP client inside `bond_instance`. There is no shared layer for cross-cutting outbound concerns — timeout policy, retry policy, idempotency-key injection (Item 4), 429 handling (Item 17), trace context propagation (Item 34), credential redaction in logs (Item 32), authentication strategy invocation (Item 10), sandbox/live discriminator (Item 50). Each provider author re-implements these, inconsistently, and the resulting drift is the single largest source of duplicated provider code in the framework's existing example extensions.
+
+**Current state.** Each provider holds its own SDK or constructs its own `requests`/`httpx` client. No shared policy layer.
+
+**Target state.** A single `ProviderHTTPClient` that bonded provider instances either wrap (when an upstream SDK is the natural interface) or use directly (when the provider speaks raw HTTP). The client exposes a method-per-verb interface and applies, in order: trace propagation, authentication strategy, idempotency-key injection (for marked methods), rate-limit token acquisition, timeout, send, response-class detection, header parsing for `Retry-After`-style signals, log redaction. Providers that wrap an SDK route the SDK's HTTP layer through this client (most modern SDKs allow injection of a custom transport); providers that hit raw HTTP use it directly. Configuration is per-provider, layered defaults from the framework with provider overrides.
+
+**Implementation notes.** The client is typed: request bodies and responses are bound to Pydantic models when given, and untyped passthrough is supported but discouraged. Connection pooling is shared across all providers in the same process. TLS configuration (cipher suites, certificate pinning) is exposed as policy. Egress proxy support is exposed as policy.
+
+**Acceptance criteria.** A new provider hitting raw HTTP writes its outbound calls through `self.http.post(url, model=...)` and inherits trace propagation, retry, rate limiting, idempotency keying, log redaction, and auth-strategy headers without writing any of those concerns itself. A provider wrapping an upstream SDK (e.g. `stripe`) configures the SDK to route through the shared client and gets the same behavior.
+
+**Dependencies.** Cross-references Items 2, 4, 10, 17, 32, 34, 50.
+
+---
+
+## Item 32 — Credential vault with OpenBao as default
+
+**Severity:** High
+**Scope:** Credential storage for `ProviderInstanceModel.api_key` and any other sensitive provider settings; logging layer redaction; admin API for credential rotation.
+**Owner area:** Security / configuration.
+
+**Purpose.** Provider credentials today live as plaintext columns in the database. The documentation rule "never log API keys" is a guideline, not a primitive — there is no enforcement. Production deployments will require encryption at rest, secret rotation, audit-on-read, and log redaction enforced by the framework rather than by author discipline. The user has specified that **OpenBao** (the open-source HashiCorp Vault fork) is the framework's default credential store, with a documented fallback chain for environments where OpenBao is not configured.
+
+**Current state.** `api_key` is a plain DB column. Settings flagged secret-in-prose are stored in plaintext. No rotation contract. No audit. No enforced redaction.
+
+**Target state.** A three-tier credential resolution order, in priority:
+
+1. **OpenBao** — the default credential store. Provider instance credential references resolve through OpenBao's API. Credentials are referenced by path/key, not stored in our database. Reads are audited by OpenBao. Rotation is performed by OpenBao policies; the framework re-resolves on token-renewal cycles.
+2. **Environment variables** — fallback when OpenBao is not configured (single-process developer setups, simple deployments). Conventional names per provider.
+3. **Encrypted database column** — fallback when neither OpenBao nor env vars are configured. Encryption uses framework-managed Fernet (or KMS-backed equivalent) with key rotation supported. Reads are audited via the existing audit log infrastructure.
+
+The `ProviderInstanceModel.api_key` field becomes a `CredentialRef` rather than a plaintext string — a typed reference that resolves through whichever tier is configured. Logging layer integration enforces redaction: any value matching a known credential pattern, or any value tagged `Secret[T]` in Pydantic, is replaced with `***` before reaching log output. Stack traces and error envelopes are similarly scrubbed.
+
+**Implementation notes.** OpenBao integration uses the standard Vault API — token-based or app-role authentication, lease renewal, secret-version pinning. The fallback chain is configured by environment (`CREDENTIAL_STORE=openbao|env|database`). Document a migration path from plaintext columns to encrypted: a one-time script reads existing plaintext, writes to OpenBao (or encrypts in place), updates the reference. Audit-on-read includes the requester id, the credential reference, the calling provider, and the outcome.
+
+**Acceptance criteria.** Starting the framework with OpenBao configured resolves all provider credentials through OpenBao; without it, env vars take over; without those, the encrypted-column fallback is used. Logging output never contains a plaintext credential. A credential rotation in OpenBao is reflected in subsequent provider calls within one renewal cycle without a framework restart.
+
+**Dependencies.** Independent. Cross-references Item 10 (auth strategies consume credentials through this layer).
+
+---
+
+## Item 33 — Upstream API version pinning per provider
+
+**Severity:** Medium
+**Scope:** `AbstractStaticProvider`, paired Pydantic external DTOs replacing string-based `field_mappings` for compile-time validation.
+**Owner area:** External federation.
+
+**Purpose.** Stripe and most modern SaaS APIs version their wire format. Pinning the upstream version is the difference between "we pick up upstream changes when we are ready" and "an upstream silent change breaks production on a Tuesday." Today providers do not declare which upstream version they target. Combined with stringly-typed `field_mappings: Dict[str, str]`, this means there is no compile-time guarantee that mapped fields exist on either side, and no deliberate path for upgrading from one upstream version to the next.
+
+**Current state.** No version pin. `field_mappings` is a string-to-string dict.
+
+**Target state.** Each provider declares `external_api_version: ClassVar[Optional[str]]`. The shared HTTP client (Item 31) injects this as the appropriate header (`Stripe-Version`, `X-Api-Version`, etc.) per provider. Field mappings (Item 6) are upgraded from string keys to references to fields on a paired Pydantic external DTO that mirrors the upstream's schema for the pinned version, so renames or removed fields are caught at type-check time. When the framework supports a new upstream version, the provider's external DTOs are updated and the version pin advanced in a single coordinated change.
+
+**Implementation notes.** The contract-testing snapshots from Item 11 are pinned to the same version, so drift detection compares like-versus-like. Document a recommended cadence for upstream version review and upgrade. For upstreams without a formal version (e.g. internal partner APIs), the version field is null and the framework relies on Item 11 to detect drift.
+
+**Acceptance criteria.** A provider declaring `external_api_version = "2024-06-20"` produces correctly-versioned outbound headers; type checks fail if a `field_mapping` references a field absent from the paired external DTO; advancing the version pin and updating the DTOs is a single reviewable change.
+
+**Dependencies.** Cross-references Items 6 (field-mapping pipeline), 11 (drift snapshots), 31 (shared HTTP client injects the header).
+
+---
+
+## Item 34 — Distributed tracing and provider-call metrics
+
+**Severity:** Medium
+**Scope:** `RotationManager.rotate`, shared HTTP client (Item 31), `RequestContext`, metrics emission layer.
+**Owner area:** Observability.
+
+**Purpose.** A single user request traverses API → BLL → rotation → bonded SDK → outbound HTTP. Diagnosing latency or failures along that path requires correlated traces across all layers. Metrics on rotation behavior (how often we rotated, which provider succeeded, how long each attempt took) are essential for capacity planning and for catching upstream degradation before it becomes user-visible. Today none of this is documented.
+
+**Current state.** `meta_logging` extension exists for structured logs; no trace context propagation; no provider-call metrics.
+
+**Target state.** W3C `traceparent` and `baggage` headers propagate from the inbound request through `RequestContext`, into `RotationManager.rotate`, into the shared HTTP client (Item 31), and out to the upstream. The framework emits a fixed set of provider-call metrics: latency histogram per `(provider, ability)`, success/error rate, rotation-attempt counter (how many providers we walked before success), per-provider health gauge (consumed from Item 27's `health_check`), idempotency-key cache hit rate. Metrics emission is pluggable — Prometheus, OpenTelemetry, Statsd backends — with a no-op default for environments that do not collect.
+
+**Implementation notes.** Trace context lives on `RequestContext` and is set by an ASGI middleware on inbound requests. The shared HTTP client reads it from the active context. `RotationManager.rotate` opens a span per attempt, tagged with the provider name and the attempt index, so a multi-provider rotation appears as a parent span with N attempt-children. Document the span naming convention. Metric labels are bounded — provider names and ability names form a small cardinality set; do not add unbounded labels (such as user id) to metric tags.
+
+**Acceptance criteria.** A request tagged with a `traceparent` produces a coherent trace from inbound API through outbound provider call in the configured tracing backend. Provider-call metrics are visible in the configured metrics backend with consistent label names. A simulated rotation with three failed attempts and one success appears as four attempt-spans nested under one parent.
+
+**Dependencies.** Cross-references Items 27, 31. Independent of other items.
+
+---
+
+## Item 35 — Outbox, dead-letter queue, and reconciliation primitive
+
+**Severity:** Medium
+**Scope:** New `outbox` and `dlq` tables, background drain service, reconciliation job pattern.
+**Owner area:** External federation reliability.
+
+**Purpose.** Today a fully exhausted rotation raises HTTP 500 and the request is lost. For fire-and-forget operations (audit shipping, non-critical notifications) this is unacceptable; for mutating operations whose local state has already been committed (a charge attempt that failed mid-rotation after the local order was created) this is dangerous. The framework needs a generic outbox/DLQ primitive that the federation system uses to guarantee at-least-once delivery and to surface unrecoverable failures for human attention.
+
+This item is distinct from the outbox pattern referenced in Item 14, which uses an outbox specifically for mirror-on-create. Item 35 generalizes the primitive so any mutation can be deferred and retried.
+
+**Current state.** No outbox. No DLQ. No reconciliation pattern.
+
+**Target state.** Two tables: `outbox` records pending outbound operations with the operation type, the target provider/ability, the payload, the idempotency key, the deadline, and the retry count. `dlq` records exhausted-retry operations with the same metadata plus the final error and the operator-action status. A background `OutboxDrainService` (built on Item 28's `QueueConsumerService` flavor) reads pending outbox entries, attempts the operation through `RotationManager`, marks them complete on success, retries with backoff on transient failure, and moves to DLQ on exhausted retries.
+
+A BLL mutation that wishes to use the outbox writes to its local table and to `outbox` in the same transaction (the "transactional outbox" pattern), guaranteeing local commit and pending external operation are atomic with each other. The drain service runs at a configurable cadence; reconciliation jobs sweep periodically to catch outbox entries stuck in flight (e.g. after a worker crash) and to verify external state matches local state for the long-tail of operations where neither system has perfect knowledge.
+
+**Implementation notes.** The outbox table carries a unique-per-domain natural key (e.g. local entity id + operation type) so duplicate outbox entries from retried logic are absorbed. DLQ entries surface in an admin endpoint with replay and discard actions. Reconciliation is a per-extension concern; the framework provides the scheduling and the comparison primitive, but extensions implement the diff-and-converge logic for their domain.
+
+**Acceptance criteria.** A user-create that needs to mirror to Stripe writes to `users` and `outbox` in one transaction; the drain service successfully creates the Stripe customer and clears the outbox entry; if Stripe is exhausted-failed, the entry moves to DLQ and an admin can replay it after fixing the underlying issue. A reconciliation job for the payment extension can detect a Stripe customer that exists upstream but is missing locally (or vice versa) and trigger the appropriate compensating action.
+
+**Dependencies.** Depends on Item 28. Cross-references Item 14 (which becomes a specific use case of this primitive).
+
+---
+
+## Item 36 — Data residency and regional provider pools
+
+**Severity:** Medium
+**Scope:** Provider instance metadata, resolution flow, per-tenant residency policy.
+**Owner area:** Provider system / multi-tenancy.
+
+**Purpose.** Item 19 disambiguated user/team/system/root scopes. It did not address geographic placement — and for many real deployments (EU GDPR, US data localization, regulated healthcare jurisdictions) the residency of the provider instance matters as much as its scope. A user in an EU tenant must hit an EU-region Stripe account, an EU-region SendGrid pool, an EU-region OpenAI deployment. Without a residency primitive, every multi-tenant deployment will encode this in a different ad-hoc place.
+
+**Current state.** Provider instances have no region tag. Resolution does not consider residency.
+
+**Target state.** `ProviderInstance` carries an optional `region: Optional[str]` tag (e.g. `eu`, `us`, `apac`, free-form to allow per-deployment vocabularies). Tenants (teams, users) carry an optional `data_residency: Optional[str]` policy. Provider resolution (Item 19) is extended: when a residency policy is set on the requester's tenant, only instances whose `region` matches are considered, regardless of scope. If no in-region instance exists at any scope, raise `NoInRegionProviderError(requester, ability, region)` rather than silently routing to an out-of-region instance.
+
+For providers that are inherently single-region (a regional payment processor), the `region` tag is fixed at instance creation time. For providers that are multi-region (Stripe accounts in EU vs US), each region is a distinct provider instance.
+
+**Implementation notes.** Document that `region` is opaque to the framework — values are agreed by deployment policy. The shared HTTP client (Item 31) does not enforce regional egress; that is an infrastructure concern (HAProxy, regional egress proxies). Residency enforcement at the application layer is about provider-instance selection, not about network path.
+
+**Acceptance criteria.** A user in an EU-residency team invoking a payment ability is routed to an EU-tagged Stripe instance even when a US-tagged instance is otherwise higher in the resolution order. A residency miss surfaces as a typed error rather than silently routing out-of-region.
+
+**Dependencies.** Extends Item 19.
+
+---
+
+## Item 37 — Typed `ProviderSettings` and ability declarations
+
+**Severity:** High
+**Scope:** `AbstractStaticProvider`, abstract-provider per-extension subclasses, `_env`, `_abilities`.
+**Owner area:** Provider system / type safety.
+
+**Purpose.** Provider configuration today is stringly-typed in three ways simultaneously. Settings are accessed via `get_setting("base_url")` returning untyped values. Environment variables are declared in `_env: Dict[str, Any]` with no schema. Abilities are declared as `_abilities: Set[str]` with no information about input types, return types, or the contract they fulfill. All three are runtime surprises waiting to happen, and all three undermine the framework's stated commitment to end-to-end strong typing — particularly at the federation boundary where mistakes cost real money.
+
+**Current state.** `_env: Dict[str, Any]`, `_abilities: Set[str]`, `get_setting("name", default)`, all stringly-typed.
+
+**Target state.** Each abstract provider declares `Settings` as an inner Pydantic model class capturing every required and optional setting with typed fields, defaults, validators, and `Secret` markers for sensitive values. Concrete providers declare a subclass when they add settings beyond the abstract's minimum. `_env` is replaced by an `EnvSchema` Pydantic model with the same shape — typed names, defaults, required flags, secret flags. The framework validates env-var presence and types at startup, surfacing a clear error rather than failing at first use.
+
+Abilities are declared as typed callables on the abstract provider class. Each ability has a Pydantic-validated input model, a typed return, and clear semantics. Concrete providers either implement or omit each ability, and the framework knows at import time which providers fulfill which abilities, surfacing a clear error if a concrete provider's signature drifts from the abstract's contract. The string-set abilities registry is derived from the typed declarations rather than being a separate source of truth.
+
+**Implementation notes.** `Secret`-typed fields integrate with Item 32's redaction. The `EnvSchema` pulls double duty as the documentation source for required configuration — the auto-generated provider docs derive from it. Concrete providers' `Settings` extend the abstract's via Pydantic inheritance, so the type checker enforces compatibility.
+
+**Acceptance criteria.** A new provider author writes `class Settings(AbstractStripeSettings.Settings): webhook_endpoint: str` and the framework validates this at startup; missing required settings produce a clear error that names them; the type checker catches a concrete provider whose ability signature drifts from the abstract.
+
+**Dependencies.** Cross-references Items 26 (provider instance contract), 32 (secret marking).
+
+---
+
+## Item 38 — Pydantic-typed seed data
+
+**Severity:** Low
+**Scope:** `seed_data` ClassVar / method on Pydantic models, seeding system.
+**Owner area:** Database / seeding.
+
+**Purpose.** Seed data today is declared as `List[Dict[str, Any]]`. A typo in a field name, a wrong-typed value, or a missing required field is caught only when the seeding job runs against a live database. For a framework that prides itself on Pydantic-first single source of truth, accepting raw dicts at the seeding boundary is an exception that should not exist.
+
+**Current state.** Seed data is `List[Dict[str, Any]]`.
+
+**Target state.** Seed data is declared as `List[<ModelClass>]` or, equivalently, `List[<ModelClass>.Create]` for entities that distinguish creation from full state. Field typos, type mismatches, and missing required fields fail at import time. The seeding system reads typed instances and writes them through the same validation pipeline as runtime creates, so seeded data is guaranteed to satisfy the same constraints as user-created data.
+
+**Implementation notes.** Existing seed declarations migrate by replacing dict literals with model instantiations. The migration is mechanical and can be scripted. Document the placeholder-resolution pattern (the `_extension_name`, `_provider_name` substitutions) as a typed pre-processor that runs before validation, so placeholders survive the type-check.
+
+**Acceptance criteria.** A seed entry with a typo in a field name fails at import. Seeded data passes the same validators as runtime creates without re-implementing validation.
+
+**Dependencies.** Independent.
+
+---
+
+## Item 39 — Per-resource endpoint versioning
+
+**Severity:** Medium
+**Scope:** `RouterMixin`, route generation, OpenAPI generation, SDK generation (Item 25).
+**Owner area:** Endpoints.
+
+**Purpose.** Endpoint paths today are hardcoded `/v1/<resource>`. There is no documented mechanism for promoting a resource to `/v2/`, no side-by-side dual-version routing, no deprecation contract. Any non-trivial framework will eventually need to ship a v2 of some resources while v1 remains supported; the current shape gives no path to that without core changes — which is the situation the framework most wants to avoid.
+
+**Current state.** `prefix: ClassVar[str] = "/v1/<resource>"` is hand-set per manager. No version field. No per-version routing.
+
+**Target state.** `RouterMixin` exposes `version: ClassVar[str] = "v1"` (default) and the prefix is computed from the version plus the resource name. Multiple managers may register the same resource at different versions; both versions route concurrently, both appear in OpenAPI, both are present in the generated SDK as version-suffixed methods. A `deprecated_in: ClassVar[Optional[str]]` and `sunset_in: ClassVar[Optional[str]]` carry the deprecation contract — the framework adds `Deprecation` and `Sunset` HTTP headers automatically and emits a logged warning per-call after the deprecation date.
+
+**Implementation notes.** Versions are alphanumeric tokens (`v1`, `v2`, `v2beta`, `v3rc1`); ordering for "latest" is lexicographic with documented quirks for prereleases. The SDK generator (Item 25) emits versioned method names. GraphQL schema generation namespaces under the version (or, where Apollo Federation is in play, declares versioned subgraph entities).
+
+**Acceptance criteria.** A `UserManagerV2(AbstractBLLManager, RouterMixin)` declared alongside the existing `UserManager` produces a `/v2/user` route concurrently with `/v1/user`, both versions in OpenAPI, both versions in the SDK. Sunsetting `/v1/` emits the documented headers and logs.
+
+**Dependencies.** Cross-references Item 25 (SDK generation).
+
+---
+
+## Item 40 — Custom-route contract with SDK, GraphQL, and test parity
+
+**Severity:** Medium
+**Scope:** `@custom_route` decorator (referenced but undefined), SDK generator (Item 25), GraphQL schema generator, auto-generated test scaffolds.
+**Owner area:** Endpoints.
+
+**Purpose.** `RouterMixin` auto-generates eight CRUD-shaped routes per resource. Many real endpoints are not CRUD — RPC-style action endpoints (`/v1/user/{id}/promote`), file uploads, batch imports, streaming, custom search shapes. Today these are added via `@custom_route` (referenced in the documentation as a decorator), but the contract for how custom routes participate in the rest of the framework is undefined. Most importantly, a custom route silently bypasses the auto-generated SDK, the auto-generated GraphQL surface, and the auto-generated test scaffold, which means every author writing a custom route must hand-author corresponding SDK methods, GraphQL fields, and tests — duplicating work that the framework was meant to do automatically.
+
+**Current state.** `@custom_route` is referenced. Its contract for SDK, GraphQL, and test parity is not documented.
+
+**Target state.** `@custom_route` is a typed decorator that captures everything the framework needs to extend the auto-generated surface beyond CRUD. The decorator declares: HTTP method, path (relative to the manager's prefix), input model (Pydantic), output model (Pydantic), authentication type, OpenAPI tags, and an optional `expose_in` set controlling whether the route appears in REST only, GraphQL only, SDK only, or all three. The SDK generator (Item 25) emits a method per custom route. The GraphQL generator emits a field (mutation by default, query for safe operations) per custom route. The test scaffolder generates a baseline test for each custom route with the standard auth, validation, and happy-path checks.
+
+For genuinely RPC-shaped routes (no clear resource), the decorator can be applied to a free-standing class derived from a new `AbstractActionEndpoint` rather than to a `RouterMixin` subclass; the same generators handle it.
+
+**Implementation notes.** The streaming case (Item 13) and the webhook case (Item 5) are handled by their own decorators (e.g. `@webhook_handler`, `@streaming_route`) rather than by `@custom_route`, but they share the same SDK/GraphQL/test integration story. Custom routes must declare typed inputs and outputs — untyped routes are rejected at registration to preserve the framework's typing guarantees.
+
+**Acceptance criteria.** A custom route declared via `@custom_route(method="POST", path="/promote", input=PromoteRequest, output=PromoteResponse)` produces a corresponding SDK method, a GraphQL mutation, and a generated baseline test, without the author writing any of those concerns. A custom route lacking typed input/output is rejected at registration with a clear error.
+
+**Dependencies.** Cross-references Items 5, 13, 25.
+
+---
+
+## Item 41 — Type-safe hook context with `ParamSpec` and `Generic`
+
+**Severity:** Medium
+**Scope:** `HookContext`, `@hook_bll` decorator, hook signatures.
+**Owner area:** Hook system / type safety.
+
+**Purpose.** `HookContext.args` and `HookContext.kwargs` are typed `Any`. A hook author targeting `UserManager.create` has no compile-time guarantee that they are reading the right fields — they index into `kwargs` by string name and trust convention. A signature drift on the target method silently breaks every hook against it. With Python's `ParamSpec` and `Generic`, the hook context can be parameterized by the target method's signature, and the type checker can enforce that hooks read fields actually present on the target.
+
+**Current state.** `HookContext.args: Any`, `HookContext.kwargs: Any`. No compile-time correlation with the target method.
+
+**Target state.** `HookContext[P, R]` is generic over the target's `ParamSpec` and return type. The `@hook_bll` decorator preserves the binding so a hook function declared `def my_hook(context: HookContext[UserManager.create])` has access to `context.kwargs` typed as the keyword arguments of `UserManager.create` and `context.result: R | None` typed as the return value. Static analysis catches hooks that read fields not present on the target method and hooks whose `set_result` argument does not match the target's return type.
+
+**Implementation notes.** Python's typing for this pattern is well-established (`ParamSpec`, `Concatenate`) and works under `mypy --strict` and `pyright`. The framework provides typed helpers for the common ergonomic cases: `context.kwarg("user_id")` returns the field's typed value rather than an `Any`. Document the migration: existing hooks are gradually re-typed; the framework continues to accept untyped hooks during the transition with a deprecation warning.
+
+**Acceptance criteria.** A hook reading `context.kwargs["nonexistent"]` against `UserManager.create` produces a static-type error. A hook calling `context.set_result(WrongType())` produces a static-type error. Existing untyped hooks continue to work during the deprecation window.
+
+**Dependencies.** Independent.
+
+---
+
+## Item 42 — Cross-process event bus seam
+
+**Severity:** Medium
+**Scope:** New event-bus abstraction, adapter pattern for Kafka / NATS / Redis Streams, integration with hooks and outbox.
+**Owner area:** Eventing.
+
+**Purpose.** Hooks today are in-process. They are powerful for cross-cutting concerns within a single application, but they cannot fan out events to other services in a microservices deployment. Many extensions will need to publish events to other systems — billing changes to an invoicing service, user signups to a marketing system, audit trails to a SIEM — and without a documented seam, every extension will reinvent the publish mechanism inconsistently.
+
+**Current state.** No cross-process event bus. Hooks remain in-process.
+
+**Target state.** An `AbstractEventBus` with a small contract: publish a typed event, subscribe to a typed event channel. Adapters ship for Kafka, NATS, Redis Streams, and an in-memory adapter for testing and single-process deployments. The bus is opt-in — hooks remain the recommended in-process seam — and it is fed by the outbox (Item 35) so that publish-and-local-mutation are transactional. A `@on_event` decorator subscribes a handler to a bus channel; handlers run in a `QueueConsumerService` (Item 28) so the bus and the service-lifecycle infrastructure are the same.
+
+Events on the bus are typed Pydantic models, versioned, with backward-compatibility rules documented (additive-only, no field renames, no narrowed types) so that subscribers built against an older event version continue to work.
+
+**Implementation notes.** The bus is not a replacement for hooks — it is a complement. Document the decision rule: in-process cross-cutting concerns use hooks; cross-process fan-out uses the bus. Schema registry integration (Confluent Schema Registry, NATS JetStream's schema support) is out of scope for v1 but documented as a future direction.
+
+**Acceptance criteria.** An extension can publish a typed event via `event_bus.publish(UserCreated(...))` from inside a BLL hook; another service running its own framework instance can subscribe via `@on_event(UserCreated)` and receive the event. The outbox guarantees the publish is atomic with the local user-create. The in-memory adapter lets tests exercise the same code paths without standing up Kafka.
+
+**Dependencies.** Depends on Items 28, 35.
+
+---
+
+## Item 43 — Abstract provider templates for missing infrastructure categories
+
+**Severity:** Medium
+**Scope:** New abstract providers and accompanying documentation for object storage, cache, queue/scheduler, search index, AI/LLM, and notification fan-out.
+**Owner area:** Provider system / extension templates.
+
+**Purpose.** The framework currently ships abstract provider templates for database, email, payment, MFA, and meta-logging. To deliver on its "any back-end" promise, it should also bake in templates (or at minimum documented patterns) for the remaining infrastructure categories every non-trivial application needs. Without these, the first three applications built on the framework will each implement object storage, cache, and job queues three different ways, all incompatible with each other. The templates do not need full reference implementations — they need an `AbstractProvider_*` defining the abilities and a `[PRV.X.md](http://PRV.X.md)` documenting the contract, so that real implementations can land later as separate extensions following the established pattern.
+
+**Current state.** Database, email, payment, MFA, meta-logging templates exist. Object storage, cache, queue, search, AI, notification fan-out are absent.
+
+**Target state.** Six new abstract provider templates land:
+
+- **Object / blob storage** — abilities for upload, download, list, delete, presigned URL generation, multipart upload. Reference targets: S3, GCS, Azure Blob, local filesystem.
+- **Cache** — abilities for get, set with TTL, delete, increment, set-if-not-exists, multi-get. Reference targets: Redis, memcached, in-memory.
+- **Queue / job scheduler** — abilities for enqueue, schedule (delayed), cron-style recurring, dead-letter, status query. Reference targets: Celery, RQ, Arq, native (using Item 28's `QueueConsumerService`).
+- **Search index** — abilities for index, query, delete, bulk-index, schema management. Reference targets: Elasticsearch, OpenSearch, Meilisearch, Algolia.
+- **AI / LLM** — abilities for completion, chat, embedding, streaming completion (using Item 13), tool/function calling, image generation. Reference targets: OpenAI, Anthropic, local providers.
+- **Notification fan-out** — abilities for push (mobile), SMS, in-app — coordinated alongside the existing email provider so a single "notify" call selects channels per recipient preferences.
+
+**Implementation notes.** Each template defines abilities using Item 37's typed-ability declarations, with paired Pydantic input/output models. The documentation describes the contract and references at least one concrete provider implementation (which may live in a separate repository for each). The templates establish the vocabulary so that downstream extensions agree on ability names and signatures.
+
+**Acceptance criteria.** Each of the six categories has a committed `AbstractProvider_*.py` and matching `[PRV.X.md](http://PRV.X.md)` describing the abilities and the required settings model. A toy concrete provider for each category (e.g. local-filesystem object storage, in-memory cache) ships as a reference implementation.
+
+**Dependencies.** Cross-references Items 13 (streaming for AI/LLM and large-file storage), 28 (queue consumer for the scheduler category), 37 (typed abilities).
+
+---
+
+## Item 44 — Service layer async and lifecycle semantics
+
+**Severity:** Medium
+**Scope:** `SVC.Patterns.md`, all service flavors from Item 28, the framework's process lifecycle.
+**Owner area:** Services.
+
+**Purpose.** Item 28 broadens the service interface into perpetual, scheduled, queue-consumer, and streaming flavors. It does not pin the underlying execution model — are services asyncio coroutines? Threads? Subprocesses? How are they cancelled on shutdown? Do they survive a code reload (Item 20)? What is the supervisor's restart policy for a service that crashes? These questions matter most for webhook listeners, queue consumers, schedulers, and streaming services — exactly the flavors Item 28 added.
+
+**Current state.** Lifecycle methods (start, stop, pause, resume) are documented but their underlying execution model is not pinned.
+
+**Target state.** Pin asyncio as the model. Services are coroutines running on the framework's main event loop, or on dedicated event loops in worker processes for CPU-heavy workloads. Cancellation is cooperative — services receive `asyncio.CancelledError` on stop and have a documented drain period (default thirty seconds, configurable per service) to finish in-flight work before the process exits. A service that exceeds the drain period is forcibly cancelled with a logged warning. Code reload via Item 20 attempts a clean stop-and-restart of every running service; services that cannot survive a reload (e.g. stateful streaming consumers with long re-handshake costs) opt out via a class flag and fall back to "process restart only" semantics for that service.
+
+The supervisor restart policy is configurable per service: `always` (restart on any exit), `on_failure` (restart only on non-zero exit / unhandled exception), `never` (one-shot). Backoff between restarts is exponential with jitter. A service that has crashed N times within a window is held in a `failed` state with an admin-action requirement, rather than restart-storming.
+
+**Implementation notes.** The asyncio choice rules out blocking I/O inside service handlers — document the use of `asyncio.to_thread` for unavoidable blocking calls. The drain-period semantics interact with Item 14's outbox draining: the OutboxDrainService must complete in-flight outbox entries before exiting, or the framework risks producing duplicate sends after a restart.
+
+**Acceptance criteria.** A service author writing a `QueueConsumerService` can rely on documented cancellation semantics; a long-running operation receives `CancelledError` cleanly on stop; the drain period is honored. A service crash triggers the configured restart policy with the configured backoff. Item 20's hot reload triggers a clean stop-and-restart for every reloadable service.
+
+**Dependencies.** Refines Item 28. Cross-references Items 14, 20.
+
+---
+
+## Item 45 — Field- and column-level attribute-based access control
+
+**Severity:** Medium
+**Scope:** Permission system, model field metadata, response serialization.
+**Owner area:** Authorization.
+
+**Purpose.** The current permission model is row-level — a user either can read a record or cannot. Real applications regularly need finer-grained control: a customer-support agent can read a user's email and name but not their SSN; a billing admin can read invoice totals but not line items. Today this is unsupported, so extensions either expose more than they should (security risk) or fork the response model per role (maintenance burden). A field-level ABAC layer integrated with the permission registry from Item 18 closes this gap.
+
+**Current state.** Row-level permissions via `permission_references`. No field-level controls.
+
+**Target state.** Pydantic field metadata captures field-level grants. A field marked `Field(..., requires=["payment.invoice.read_lines"])` is included in serialized output only when the requester has the named permission. The serialization layer applies the grant check at response time, replacing disallowed fields with a sentinel (or omitting them, configurable per deployment). Search and update operations honor the same grants — a user without `payment.invoice.write_lines` cannot update line items even if they can update the invoice's other fields.
+
+The same metadata applies to GraphQL: the resolver for a marked field returns null with a typed error attached when the requester lacks the grant, preserving the partial-data partial-errors contract from Item 16.
+
+**Implementation notes.** The grant check is integrated into the permission registry (Item 18) so the same `payment.invoice.read_lines` string serves as both an OAuth scope and a field-level gate. Document the precedence: row-level access controls visibility of the record at all; field-level filters which fields appear once the record is visible. A typed `Sensitive[T]` field annotation can replace the more verbose `Field(..., requires=...)` for the common case.
+
+**Acceptance criteria.** A `User` model with `ssn: str = Field(..., requires=["auth.user.read_ssn"])` returns the field only to requesters with the grant; other requesters see the field omitted from REST responses and null in GraphQL responses with a typed error. Search criteria using a restricted field are rejected for requesters without the grant.
+
+**Dependencies.** Cross-references Item 18 (permission registry).
+
+---
+
+## Item 46 — GraphQL composition contract for our own extensions
+
+**Severity:** Medium
+**Scope:** Strawberry schema generation, multi-extension Query/Mutation/Subscription root composition, conflict resolution.
+**Owner area:** Endpoints / GraphQL.
+
+**Purpose.** This item is distinct from Item 16, which addresses federating *external* GraphQL providers into our schema. Item 46 addresses how *our own* extensions contribute to the GraphQL surface. `EP.GQL.md` says GraphQL is auto-generated from BLL, but does not specify how an extension contributes Query / Mutation / Subscription root fields, how conflicts between extensions adding the same root field are resolved, or whether Strawberry Federation directives govern how extension-contributed types interact. Without this contract, the first extension that wants to add a non-CRUD GraphQL field will require a core change — directly violating the framework's "extensions only" principle.
+
+**Current state.** GraphQL is described as auto-generated from BLL `RouterMixin` managers. Multi-extension composition is undocumented.
+
+**Target state.** A documented composition contract. Each extension's `RouterMixin`-tagged managers contribute their Query/Mutation/Subscription roots into a merged schema. Custom routes (Item 40) participate via the same `expose_in` flag. The merge resolves conflicts in three stages: identical contributions (same name, same signature) merge as a single field; non-identical contributions on the same field name fail at startup with a clear error naming the offending extensions (mirroring Item 23's collision detection); namespacing under the extension name is offered as an opt-in for extensions that explicitly want to avoid collisions. Extensions can also contribute new types (not just root fields) to the schema; type-name collisions follow the same three-stage resolution.
+
+If Strawberry Federation is the target architecture, document which Federation directives extensions may declare on their types (`@key`, `@external`, `@requires`, `@provides`) and how those compose with Item 16's federation of external GraphQL upstreams. Otherwise, document that extensions ship a single merged subgraph and that gateway-level federation is out of scope for our own composition (only relevant for external providers per Item 16).
+
+**Implementation notes.** Subscriptions require event-bus integration (Item 42) for cross-process delivery; document the in-process subscription path as the default and Item 42 as the upgrade path for multi-process deployments. The merged schema is rebuilt on extension install/uninstall (Item 20) and the rebuild diff is logged so operators can see what changed.
+
+**Acceptance criteria.** Two extensions both adding fields under the root `Query` produce a merged schema with both fields present; two extensions both attempting to add a field with the same name and a different signature produce a clear startup error. An extension can ship its own GraphQL types and have them appear in the merged schema without modifying core.
+
+**Dependencies.** Cross-references Items 16, 20, 23, 40, 42.
+
+---
+
+## Item 47 — Deadline budget propagation through `RequestContext`
+
+**Severity:** Medium
+**Scope:** `RequestContext`, `RotationManager`, shared HTTP client (Item 31), middleware chain.
+**Owner area:** Operational resilience.
+
+**Purpose.** A user request traverses API → BLL → rotation → SDK → outbound HTTP. Each layer applies its own timeout, with no shared deadline budget. A request with a five-second outer deadline can spend the first four seconds in the BLL and then start a four-second outbound HTTP call, blowing through the user-visible deadline by three seconds. A shared budget threaded through `RequestContext` lets each downstream layer see how much time remains and shrink its own timeout accordingly.
+
+**Current state.** Per-layer timeouts. No shared budget.
+
+**Target state.** `RequestContext` carries a `deadline: Optional[datetime]` set by the inbound middleware from the request's `X-Deadline-At` header (or computed from a configurable default). Every framework component that performs I/O — the rotation system, the shared HTTP client, the database session, the event bus publish — reads the deadline before scheduling work, computes the remaining budget, and either adjusts its own timeout to fit or raises `DeadlineExceededError` immediately if the budget is already exhausted. A typed `DeadlineExceededError` surfaces as HTTP 504 to the client with a clear message.
+
+**Implementation notes.** Deadline propagation extends naturally to the outbox (Item 35): an outbox entry can carry a deadline, and the drain service skips entries whose deadline has passed and routes them to the DLQ with a deadline-exceeded final status. The trace context (Item 34) records the budget consumed at each span so post-mortem analysis can identify which layer ate the deadline.
+
+**Acceptance criteria.** A request with a one-second deadline that spends nine hundred milliseconds in the BLL produces a `DeadlineExceededError` rather than starting a one-second outbound HTTP call. The error surfaces as 504 with a typed message identifying the elapsed budget and the layer that ran out.
+
+**Dependencies.** Cross-references Items 31, 34, 35.
+
+---
+
+## Item 48 — Graceful degradation contract
+
+**Severity:** Medium
+**Scope:** Provider declarations, rotation system, outbox (Item 35).
+**Owner area:** Operational resilience.
+
+**Purpose.** When a non-critical provider exhausts its rotation chain (e.g. the email provider is fully down), the right behavior depends on the operation. For a transactional email tied to a user signup, failing fast and surfacing the error is correct. For a marketing send, queuing for later delivery is correct. The framework today has no documented decision point for this — every provider author makes the choice ad hoc, and the choice is invisible to operators trying to understand why a request succeeded with degraded behavior versus failing outright.
+
+**Current state.** Exhausted rotation raises HTTP 500. No degradation contract.
+
+**Target state.** Each provider declares a `degradation_policy: ClassVar[DegradationPolicy]` per ability or per operation. Three modes: `fail_fast` (the current behavior; raise on exhaustion), `queue_and_retry` (write to outbox, return 202, drain via background service), `silent_drop` (log and return success; only valid for genuinely fire-and-forget operations like analytics). The default is `fail_fast` for correctness; opt-in to the others requires explicit declaration so degradation is visible in code review.
+
+The `queue_and_retry` mode integrates with Item 35's outbox: the request returns immediately with a 202 and a tracking id; the outbox drain service performs the actual operation in the background; the client polls the tracking id for completion or subscribes to a webhook for the resolution.
+
+**Implementation notes.** The choice between `fail_fast` and `queue_and_retry` is part of the API contract — clients calling a `queue_and_retry` operation must know to handle 202 responses, so the choice is reflected in the OpenAPI documentation, the SDK, and the GraphQL surface. Switching an operation between modes is a breaking change to its API and follows normal versioning (Item 39).
+
+**Acceptance criteria.** A provider author declaring `degradation_policy = QueueAndRetry()` on a `send_email` ability produces a 202 response on rotation exhaustion with a tracking id, with the operation completing once the upstream recovers. The same author declaring `degradation_policy = FailFast()` produces a 500 on exhaustion, the existing behavior.
+
+**Dependencies.** Cross-references Item 35 (outbox), Item 39 (versioning).
+
+---
+
+## Item 49 — Cross-extension migration ordering with foreign-key awareness
+
+**Severity:** Medium
+**Scope:** `MigrationManager`, extension dependency declarations, Alembic migration runner.
+**Owner area:** Database / migrations.
+
+**Purpose.** `DB.Migrations.md` documents migration ordering as "all core migrations, then all extension migrations in extension dependency order." This handles dependencies declared via `EXT_Dependency`, but says nothing about an extension whose models hold foreign keys into another extension's models. If extension B's table FKs into extension A's table, B's migration creating that FK must run after A's migration creating the referenced table — and the framework does not currently enforce this as a topological constraint over the merged migration graph. The result is that running migrations in a fresh database with multiple extensions can fail at FK creation time, even when both extensions individually pass their own migration tests.
+
+**Current state.** Per-extension migration ordering is documented. Cross-extension FK ordering is not.
+
+**Target state.** Migration ordering is computed as a topological sort over the union of (a) declared `EXT_Dependency` relationships and (b) FK references discovered by inspecting model definitions. An extension whose model has an FK into another extension's model implicitly depends on that extension for migration purposes, even if it did not declare the dependency explicitly. Cycles in the merged graph (an FK from A to B and another from B to A) fail at startup with a clear error naming the offending tables and extensions.
+
+**Implementation notes.** The topological sort runs once at startup and is cached. Cross-extension FK detection inspects both `@extension_model` field injections and standalone extension tables. Document the recommended pattern for extensions that genuinely need bidirectional references (introduce a join table owned by one of the extensions, rather than direct FKs in both directions).
+
+**Acceptance criteria.** A fresh-database migration run with extensions A and B, where B has an FK into A, produces a correct migration order automatically without B declaring an explicit `EXT_Dependency` on A. A circular FK dependency fails at startup with a clear error.
+
+**Dependencies.** Refines Item 24 (single-mechanism ownership detection). Cross-references Item 20 (hot install must respect the ordering for runtime-installed extensions).
+
+---
+
+## Item 50 — Sandbox versus live credential split convention
+
+**Severity:** Low
+**Scope:** Provider configuration, `_env` schema (Item 37), shared HTTP client (Item 31).
+**Owner area:** Provider system / configuration.
+
+**Purpose.** Most external APIs distinguish test mode from live mode (Stripe's `sk_test_*` versus `sk_live_*`, SendGrid's sandbox flag, Twilio's test credentials). Today there is no documented convention for naming the paired environment variables, no per-environment selection mechanism, and no enforcement that a deployment marked `production` will refuse test credentials and vice versa. Every provider author rolls their own scheme.
+
+**Current state.** No sandbox/live convention.
+
+**Target state.** A canonical convention: paired env vars are named `{PROVIDER}_API_KEY_TEST` and `{PROVIDER}_API_KEY_LIVE` (and similarly for any other secret), with selection driven by a top-level `APP_ENV` discriminator (`development`, `staging`, `production`). The framework's typed `EnvSchema` (Item 37) declares which variables are paired and the shared HTTP client (Item 31) selects the right value at request time. Production deployments refuse to start if any provider resolves to a `_TEST_` credential; development deployments warn (but do not refuse) on `_LIVE_` credentials.
+
+**Implementation notes.** Some upstreams use a single key with a server-side test/live flag rather than paired keys; document that the convention is opt-out for those providers and the discriminator is provider-specific. The headers injected per environment (e.g. `Stripe-Account` for Connect, sandbox flags) are likewise declarative on the provider rather than imperative inside `bond_instance`.
+
+**Acceptance criteria.** A staging deployment uses `_TEST_` credentials automatically; a production deployment fails to start if any `_TEST_` credential is configured for an in-use provider; the documentation describes the convention in one place.
+
+**Dependencies.** Cross-references Items 31, 37.
+
+---
+
+## Item 51 — Sticky-session and percentage-canary routing in rotation
+
+**Severity:** Low
+**Scope:** `RotationManager`, per-call routing hints, canary configuration.
+**Owner area:** Provider rotation.
+
+**Purpose.** Item 3 deferred load balancing to L7 infrastructure. Two routing concerns remain inside the rotation system: stickiness (a multi-call conversation, such as an LLM chat session, should pin to the same provider so the upstream's session-state stays coherent) and canary routing (a new provider should receive a small percentage of traffic before being promoted to first-in-chain). Neither is solvable at the L7 layer because both depend on application-level context.
+
+**Current state.** Linear failover only. No stickiness, no canary.
+
+**Target state.** `RotationManager.rotate` accepts an optional routing hint: `session_id` (when present, the rotation system pins repeated calls within that session to the first provider that succeeded for it, until that provider becomes unhealthy) or `canary_percentage` (when present, the rotation system routes the configured percentage of calls to the canary provider as the first attempt and the rest to the normal chain). Both hints are opt-in per call and per ability; the default behavior is unchanged (linear failover).
+
+**Implementation notes.** Sticky session state lives in a small in-memory cache keyed by `(session_id, ability)` with a configurable TTL. Multi-process deployments either accept session-affinity-loss on cross-process requests (acceptable for many use cases) or back the cache with Redis. Canary configuration is a per-extension declaration with the canary provider name and the percentage; rolling forward the canary to first-in-chain is an admin action that updates the rotation chain.
+
+**Acceptance criteria.** An LLM chat session with `session_id=conv_123` routes its successive messages to the same provider until that provider fails, at which point it advances normally. A canary configuration of ten percent for a new payment provider produces approximately one in ten calls to the canary, with the remainder following the normal chain.
+
+**Dependencies.** Cross-references Item 2.
+
+---
+
+## Item 52 — Single `EXT.Contracts.md` enumerating the framework's public primitives
+
+**Severity:** Low
+**Scope:** New documentation file collating contracts referenced from elsewhere.
+**Owner area:** Documentation.
+
+**Purpose.** Several framework primitives are referenced repeatedly across the existing documentation as if defined: `ExtensionRegistry`, `RotationManager`, `ProviderInstanceModel`, `external_navigation_property`, the non-BLL `@hook` decorator, `@extension_model`, `@custom_route`, `AbstractExternalAPIClient`, `AbstractProviderInstance`. Their full signatures, invariants, and intended usage are scattered across multiple files (or, in some cases, only present implicitly in code). An extension author piecing together the contract from prose ends up guessing, and guessing reliably produces extensions that almost-but-not-quite follow the framework's expectations. A single canonical reference document closes this gap.
+
+**Current state.** Primitives are referenced everywhere, defined in scattered places, sometimes implicit in code only.
+
+**Target state.** A new `[EXT.Contracts.md](http://EXT.Contracts.md)` enumerates every primitive an extension author touches, with the full typed signature, the invariants the framework guarantees, the invariants the extension must uphold, the recommended usage pattern, and cross-references to the deeper documents that describe the surrounding system. The document is generated where possible from docstrings and type annotations, so it stays in sync with the code; sections that cannot be generated (invariants, recommended usage) are written by hand and reviewed on each public-API change.
+
+**Implementation notes.** The generation step is a simple Sphinx-like or `pdoc` pass over the public symbols, producing the typed-signature half. The invariant and usage sections are hand-written stubs that fail CI when a new public symbol lands without a matching entry. Document the policy: if a symbol does not appear in `[EXT.Contracts.md](http://EXT.Contracts.md)`, extension authors should not use it — it is not stable.
+
+**Acceptance criteria.** Every primitive named in `[EXT.Patterns.md](http://EXT.Patterns.md)`, `[PRV.Patterns.md](http://PRV.Patterns.md)`, `[PRV.External.md](http://PRV.External.md)`, and the BLL/EP/SDK pattern docs has a corresponding entry in `[EXT.Contracts.md](http://EXT.Contracts.md)`. Adding a new public primitive requires adding its contract entry in the same change.
+
+**Dependencies.** Independent.
+
+---
+
+
+
+
+
+
+
+
 
