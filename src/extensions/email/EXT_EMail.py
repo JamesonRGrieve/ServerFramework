@@ -19,7 +19,10 @@ based on file naming conventions.
 import os
 from abc import abstractmethod
 from email.utils import parseaddr
-from typing import Any, ClassVar, Dict, List, Optional, Set, Type
+from enum import Enum
+from typing import Any, ClassVar, Dict, FrozenSet, List, Optional, Set, Type, Union
+
+from pydantic import BaseModel, Field
 
 from extensions.AbstractExtensionProvider import (
     AbstractProviderInstance,
@@ -38,6 +41,116 @@ from logic.BLL_Providers import ProviderInstanceModel
 # certainly a DoS or smuggling attempt rather than a legitimate message.
 _EMAIL_MAX_SUBJECT_OCTETS = 998
 _EMAIL_MAX_BODY_BYTES = 10 * 1024 * 1024
+
+
+# ============================================================================
+# Email value types
+#
+# These are the data shapes the friendly Phase-1 surface (``send``,
+# ``update_email``, ``list_emails``) speaks. They are pure Pydantic models
+# and do not depend on any of the deferred IMPROVEMENTS items; once Item 37
+# (typed ability declarations) lands, they slot in unchanged as the typed
+# inputs to ``AbstractEmailProviderInstance`` abstract abilities.
+# ============================================================================
+
+
+class Importance(str, Enum):
+    """RFC 4021 ``Importance`` values, normalised across providers."""
+
+    HIGH = "high"
+    NORMAL = "normal"
+    LOW = "low"
+
+
+class Capability(str, Enum):
+    """Coarse-grained ability flags. A provider declares the subset it
+    actually implements; callers branch on capability rather than catching
+    ``NotImplementedError``."""
+
+    SEND = "send"
+    BULK_SEND = "bulk_send"
+    LIST = "list"
+    SEARCH = "search"
+    READ = "read"
+    REPLY = "reply"
+    UPDATE = "update"
+    ATTACHMENTS = "attachments"
+    THREADS = "threads"
+    TEMPLATES = "templates"
+    VALIDATE_ADDRESS = "validate_address"
+    SUPPRESSIONS = "suppressions"
+    INBOUND_WEBHOOK = "inbound_webhook"
+
+
+class EmailAddress(BaseModel):
+    """A single RFC 5322 mailbox: address + optional display name."""
+
+    address: str = Field(..., description="The address part (local@domain).")
+    name: Optional[str] = Field(None, description="Display name, if any.")
+
+    def format(self) -> str:
+        """Render as a string suitable for ``To``/``From``/``Cc`` headers."""
+        if self.name:
+            # We do not quote the display name here; ``_validate_message`` has
+            # already rejected CRLF and NUL, so a bare name is safe in headers.
+            return f"{self.name} <{self.address}>"
+        return self.address
+
+
+class Attachment(BaseModel):
+    """An email attachment carried inline as bytes."""
+
+    filename: str = Field(..., description="Suggested filename for recipient.")
+    content: bytes = Field(..., description="Raw attachment bytes.")
+    content_type: Optional[str] = Field(
+        None, description="MIME type; guessed from filename if omitted."
+    )
+
+    @classmethod
+    def from_path(cls, path: str) -> "Attachment":
+        """Load an attachment from a local filesystem path."""
+        import mimetypes
+
+        with open(path, "rb") as fh:
+            content = fh.read()
+        guessed = mimetypes.guess_type(path)[0]
+        return cls(
+            filename=os.path.basename(path),
+            content=content,
+            content_type=guessed,
+        )
+
+
+class EmailMessage(BaseModel):
+    """The full payload of a single outbound email.
+
+    Carries every field the friendly ``send(message)`` API accepts. Concrete
+    providers translate the relevant subset for their transport; fields a
+    given transport cannot honour (e.g. ``cc`` on a single-recipient SMTP
+    relay) are surfaced as a ``NotSupportedError`` rather than silently
+    dropped.
+    """
+
+    to: List[EmailAddress] = Field(..., min_length=1)
+    subject: str = Field(...)
+    body_text: Optional[str] = Field(None)
+    body_html: Optional[str] = Field(None)
+    cc: List[EmailAddress] = Field(default_factory=list)
+    bcc: List[EmailAddress] = Field(default_factory=list)
+    reply_to: Optional[EmailAddress] = Field(None)
+    from_: Optional[EmailAddress] = Field(
+        None,
+        alias="from",
+        description="Sender; falls back to the provider's default from-address.",
+    )
+    attachments: List[Attachment] = Field(default_factory=list)
+    headers: Dict[str, str] = Field(default_factory=dict)
+    importance: Importance = Field(Importance.NORMAL)
+    template_id: Optional[str] = Field(None)
+    template_vars: Dict[str, Any] = Field(default_factory=dict)
+    tags: List[str] = Field(default_factory=list)
+
+    model_config = {"populate_by_name": True}
 
 
 class AbstractEmailProvider(AbstractStaticProvider):
