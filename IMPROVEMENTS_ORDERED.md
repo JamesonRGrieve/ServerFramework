@@ -1879,4 +1879,17 @@ The Phase-1 work that did **not** require any of those prereqs (typed value mode
 
 **Acceptance.** A deployment missing `SENDGRID_API_KEY` while `EMAIL_PROVIDER=sendgrid` produces a clear startup error naming the field. `Secret`-marked fields never appear in log output (Item 32 redaction). The BLL hooks no longer need a hardcoded registry tuple — the typed Settings drive registration.
 
+## Item 63 — Email reshape: idempotent send + bulk send
+
+**Severity:** High
+**Scope:** `AbstractEmailProviderInstance.send`, new `send_bulk`, all three concrete providers.
+**Owner area:** Email extension.
+**Prereq:** Item 4 (idempotency primitive), Item 12 (bulk endpoint expression). Cross-refs Item 1.
+
+**Purpose.** A 5xx retry storm sends the same invitation email twice. `EmailMessage` carries no idempotency slot today. After Item 4 lands, `send_via_provider` is decorated `@idempotent` and the framework's key derivation handles retry safety; after Item 12 lands, `send_bulk_via_provider` is added as a true batch endpoint that returns per-recipient typed errors instead of looping over single sends.
+
+**Implementation.** Decorate `send_via_provider` with `@idempotent`. Implement `send_bulk_via_provider` for SendGrid (`personalizations` array, up to 1000 recipients), SMTP2go (`to[]` array, up to 1000), Stalwart (multiple `RCPT TO` in one DATA). Each per-item rejection surfaces as a typed `InvalidInputExternalError` with the specific recipient in the error payload. Stalwart's batch path is opportunistic — most SMTP submission servers accept multiple `RCPT TO` against one `MAIL FROM`, but some enforce a single recipient; the provider declares the supported batch size and the framework falls back to a serial loop for providers that don't support batching.
+
+**Acceptance.** A 1000-recipient invitation send issues one upstream call to SendGrid/SMTP2go and surfaces 17 invalid addresses as 17 individual typed errors. A retry of `send` after a 503 carries the same idempotency key as the first attempt; the upstream returns the prior result rather than creating a duplicate.
+
 
