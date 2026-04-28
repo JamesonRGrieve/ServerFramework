@@ -539,16 +539,6 @@ class MigrationManager:
 
         return config_args
 
-    @staticmethod
-    def env_parse_csv_env_var(env_var_name, default=None):
-        """Parse a comma-separated environment variable into a list of strings."""
-        from lib.Environment import env
-
-        value = env(env_var_name)
-        if not value or value.strip() == "":
-            return default or []
-        return [item.strip() for item in value.split(",") if item.strip()]
-
     def __init__(
         self,
         test_mode=False,
@@ -1627,17 +1617,24 @@ class MigrationManager:
 
         logger.debug(f"Using message: {message}")
 
-        # NUKE THE DATABASE - We're starting from scratch
-        logger.debug("Deleting existing database to start fresh")
-        db_path = self.paths["database_dir"] / "database.db"
-        if db_path.exists():
-            try:
-                db_path.unlink()
-                logger.debug(f"Successfully deleted database: {db_path}")
-            except Exception as e:
-                logger.warning(f"Failed to delete database {db_path}: {e}")
+        # NUKE THE DATABASE - We're starting from scratch.
+        # Use db_info["file_path"] so test/parametrized DBs delete the right file.
+        # Postgres has no file_path; skip the delete in that case (tables are
+        # dropped by the migration, not the file).
+        file_path = self.db_info.get("file_path") if self.db_info else None
+        if file_path:
+            db_path = Path(file_path)
+            logger.debug(f"Deleting existing database to start fresh: {db_path}")
+            if db_path.exists():
+                try:
+                    db_path.unlink()
+                    logger.debug(f"Successfully deleted database: {db_path}")
+                except Exception as e:
+                    logger.warning(f"Failed to delete database {db_path}: {e}")
+            else:
+                logger.debug(f"Database file {db_path} does not exist, skipping deletion")
         else:
-            logger.debug(f"Database file {db_path} does not exist, skipping deletion")
+            logger.debug("No db_info file_path set; skipping pre-regenerate DB delete")
 
         # Handle core migrations first
         if not extension_name or all_extensions:
@@ -1908,21 +1905,6 @@ class {class_name}(Base):
             extensions.append(extension_name)
 
         return ",".join(extensions)
-
-    def update_extension_config(self, extension_name):
-        """Update the extension configuration - DEPRECATED
-
-        This function is kept for backward compatibility but doesn't do anything.
-        Extensions are now configured via the APP_EXTENSIONS environment variable.
-        """
-        # Function is kept for backward compatibility
-        logger.debug(
-            f"NOTICE: Extension '{extension_name}' needs to be added to APP_EXTENSIONS environment variable."
-        )
-        logger.debug(
-            "Please update your environment variables to include this extension for migrations to work correctly."
-        )
-        return True
 
     def debug_environment(self):
         """Show debug information about the environment"""
@@ -2303,16 +2285,6 @@ def main():
         help="Create an empty migration file without auto-generating content.",
     )
     revision_parser.set_defaults(autogenerate=True)
-    revision_parser.add_argument(
-        "--regenerate",
-        action="store_true",
-        help="Delete all existing migrations and regenerate",
-    )
-    revision_parser.add_argument(
-        "--all",
-        action="store_true",
-        help="With --regenerate: regenerate all extensions after core",
-    )
 
     history_parser = subparsers.add_parser(
         "history", help="Show migration version history"
@@ -2326,17 +2298,6 @@ def main():
     )
     current_parser.add_argument(
         "--extension", help="Show current version for a specific extension"
-    )
-
-    init_parser = subparsers.add_parser(
-        "init", help="Initialize migration structure for an extension"
-    )
-    init_parser.add_argument("extension", help="Extension to initialize")
-    init_parser.add_argument(
-        "--skip-model", action="store_true", help="Skip creating sample model"
-    )
-    init_parser.add_argument(
-        "--skip-migrate", action="store_true", help="Skip migration creation"
     )
 
     create_parser = subparsers.add_parser(
@@ -2395,33 +2356,14 @@ def main():
                 success = manager.run_alembic_command(args.command, args.target)
 
         elif args.command == "revision":
-            if args.regenerate:
-                success = manager.regenerate_migrations(
-                    extension_name=args.extension,
-                    all_extensions=args.all,
-                    message=args.message,
-                )
+            if not args.message:
+                logger.error("--message is required for new revisions")
+                success = False
             elif args.extension:
-                if not args.message:
-                    if args.regenerate:
-                        args.message = "initial schema"
-                    else:
-                        logger.debug(
-                            "Error: --message is required for new non-regenerated revisions"
-                        )
-                        sys.exit(1)
                 success = manager.create_extension_migration(
                     args.extension, args.message, args.autogenerate
                 )
             else:
-                if not args.message:
-                    if args.regenerate:
-                        args.message = "initial schema"
-                    else:
-                        logger.debug(
-                            "Error: --message is required for new non-regenerated revisions"
-                        )
-                        sys.exit(1)
                 cmd = ["revision"]
                 if args.autogenerate:
                     cmd.append("--autogenerate")
@@ -2439,13 +2381,6 @@ def main():
                 success = manager.run_extension_migration(args.extension, "current")
             else:
                 success = manager.run_alembic_command("current")
-
-        elif args.command == "init":
-            success = manager.create_extension(
-                args.extension,
-                skip_model=args.skip_model,
-                skip_migrate=args.skip_migrate,
-            )
 
         elif args.command == "create":
             success = manager.create_extension(
@@ -2467,27 +2402,21 @@ def main():
 
         else:
             parser.print_help()
-            sys.exit(1)
+            success = False
 
-        sys.exit(0 if success else 1)
-
-    finally:  # FIXME: This code is unreachable
-        # Ensure cleanup runs regardless of success/failure
+    finally:
         try:
-            # Clean up only the specific extension being worked on
             extension_name = getattr(args, "extension", None)
             if extension_name:
                 manager._cleanup_specific_extension_files(extension_name)
-                logger.debug(f"Final cleanup for extension {extension_name} completed")
             else:
-                # For core operations, just clean up general temporary files
                 manager.cleanup_temporary_files()
-                logger.debug("Final cleanup of temporary files completed")
         except Exception as e:
             logger.warning(f"Error during final cleanup: {e}", exc_info=True)
 
-        # Clean up test environment
         manager.cleanup_test_environment()
+
+    sys.exit(0 if success else 1)
 
 
 if __name__ == "__main__":

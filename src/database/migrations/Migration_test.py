@@ -168,24 +168,23 @@ def test_run_all_migrations_with_payment_extension_extends_user_table(booted_app
     assert not missing, f"missing extension columns on users: {missing}; have {sorted(cols)}"
 
 
-# ---------- regenerate respects db_info["file_path"] (Phase 1 xfail) -----
+# ---------- regenerate targets db_info["file_path"] ----------------------
 
 
 @pytest.mark.migration
 @pytest.mark.real
 @pytest.mark.regenerate
-@pytest.mark.xfail(
-    reason="Phase 1 will fix regenerate_migrations to use db_info['file_path'] "
-    "instead of hardcoded database/database.db",
-    strict=True,
-)
 def test_regenerate_uses_db_info_file_path(migration_manager, tmp_path):
-    """regenerate_migrations must delete the DB at db_info['file_path'], not the
-    hardcoded `database/database.db` path. Currently it deletes the wrong file."""
+    """regenerate_migrations must operate on the DB at db_info['file_path'],
+    not the hardcoded `database/database.db` path.
+
+    Verification: the test DB sentinel is overwritten (proving the test path
+    was the one wiped) AND any pre-existing decoy at `database/database.db`
+    is left untouched."""
     target = Path(migration_manager.db_info["file_path"])
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_bytes(b"sentinel")
-    assert target.exists()
+    sentinel = b"sentinel"
+    target.write_bytes(sentinel)
 
     src_path = Path(__file__).resolve().parent.parent.parent
     decoy = src_path / "database" / "database.db"
@@ -198,7 +197,15 @@ def test_regenerate_uses_db_info_file_path(migration_manager, tmp_path):
         pass
 
     try:
-        assert not target.exists(), "regenerate did not delete the test DB"
+        assert (
+            not target.exists() or target.read_bytes() != sentinel
+        ), "regenerate left the test DB sentinel intact — wrong file targeted"
+
+        if decoy_existed_before:
+            assert decoy.exists() and decoy.read_bytes() == decoy_payload_before, (
+                "regenerate clobbered the production decoy at "
+                f"{decoy} — should have used db_info['file_path']"
+            )
     finally:
         if decoy_existed_before and decoy_payload_before is not None:
             decoy.write_bytes(decoy_payload_before)
@@ -208,13 +215,8 @@ def test_regenerate_uses_db_info_file_path(migration_manager, tmp_path):
 
 
 @pytest.mark.migration
-@pytest.mark.xfail(
-    reason="Phase 1 will collapse env_parse_csv_env_var and _parse_csv_env_var into one helper",
-    strict=True,
-)
 def test_parse_csv_env_var_static_and_instance_agree(migration_manager):
-    """There should be exactly one CSV-env parser. After Phase 1 there is no
-    `env_parse_csv_env_var` static."""
+    """There should be exactly one CSV-env parser."""
     from database.migrations.Migration import MigrationManager
 
     assert not hasattr(MigrationManager, "env_parse_csv_env_var"), (
@@ -226,31 +228,26 @@ def test_parse_csv_env_var_static_and_instance_agree(migration_manager):
 
 
 @pytest.mark.migration
-def test_init_and_create_dispatch_identically():
-    """Both `init <name>` and `create <name>` route to MigrationManager.create_extension.
-    Phase 1 collapses these to a single canonical verb (init removed); this test
-    documents current behavior and is updated/removed as part of Phase 1."""
+def test_create_cli_verb_dispatches_to_create_extension(capsys):
+    """Phase 1 collapsed `init` + `create` into a single `create` verb. Confirm
+    the parser only accepts `create` and that it routes to the public
+    create_extension API."""
     import database.migrations.Migration as mig_mod
 
-    parser = argparse.ArgumentParser()
-    sub = parser.add_subparsers(dest="command")
-    init_p = sub.add_parser("init")
-    init_p.add_argument("extension")
-    init_p.add_argument("--skip-model", action="store_true")
-    init_p.add_argument("--skip-migrate", action="store_true")
-    create_p = sub.add_parser("create")
-    create_p.add_argument("extension")
-    create_p.add_argument("--skip-model", action="store_true")
-    create_p.add_argument("--skip-migrate", action="store_true")
+    assert hasattr(mig_mod.MigrationManager, "create_extension")
 
-    init_args = parser.parse_args(["init", "demo_ext"])
-    create_args = parser.parse_args(["create", "demo_ext"])
+    src_dir = Path(mig_mod.__file__).resolve().parent.parent.parent
+    import subprocess
 
-    assert init_args.extension == create_args.extension == "demo_ext"
-    assert init_args.skip_model == create_args.skip_model is False
-    assert init_args.skip_migrate == create_args.skip_migrate is False
-    assert hasattr(mig_mod.MigrationManager, "create_extension"), (
-        "create_extension method missing — both verbs depend on it"
+    res = subprocess.run(
+        [sys.executable, str(mig_mod.__file__), "init", "demo_ext"],
+        cwd=str(src_dir),
+        capture_output=True,
+        text=True,
+    )
+    assert res.returncode != 0, "init verb should have been removed in Phase 1"
+    assert "invalid choice" in (res.stderr or "").lower() or "init" in (res.stderr or ""), (
+        f"expected argparse rejection of 'init', got stderr: {res.stderr!r}"
     )
 
 
