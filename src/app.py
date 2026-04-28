@@ -1,160 +1,18 @@
-### --------------------------------------------------------------
-### -- INITIAL VENV SETUP - DO NOT IMPORT ANY LOCAL FILES HERE! --
-### --------------------------------------------------------------
 import json
 import os
-import shutil
-import subprocess
 import sys
-import venv
 from contextlib import contextmanager
-from pathlib import Path
 from typing import Any, Dict, Optional
 
+# Venv + dependency bootstrap lives in ``bootstrap.py`` so importing
+# ``app`` for its ``instance``/``build_app`` factories does not pull in
+# subprocess/venv machinery. ``setup_python_path`` is re-exported here
+# for backwards compatibility — several other functions in this module
+# call it by its short name.
+from bootstrap import run_venv_bootstrap as _venv  # noqa: F401
+from bootstrap import setup_python_path
+
 from lib.Logging import logger
-
-
-def setup_python_path():
-    """Ensure the Python path is set up correctly"""
-    current_file_path = Path(__file__).resolve()
-    src_dir = current_file_path.parent
-    root_dir = src_dir.parent
-    if str(root_dir) not in sys.path:
-        sys.path.insert(0, str(root_dir))
-    if str(src_dir) not in sys.path:
-        sys.path.insert(0, str(src_dir))
-
-
-def _venv():
-    """Create a virtual environment if it doesn't exist and install requirements"""
-    from lib.Logging import logger
-
-    current_file_path = Path(__file__).resolve()
-    src_dir = current_file_path.parent
-    root_dir = src_dir.parent
-    venv_dir = root_dir / ".venv"
-    pyproject_file = src_dir / "pyproject.toml"
-    requirements_file = root_dir / "requirements.txt"
-
-    # Check which package manager is available (prefer uv > conda > pip)
-    use_uv = shutil.which("uv") is not None
-    use_conda = shutil.which("conda") is not None
-
-    # If we're not in a virtual environment, create one and restart
-    if sys.prefix == sys.base_prefix:
-        if not venv_dir.exists():
-            logger.debug(f"Creating virtual environment at {venv_dir}")
-            try:
-                if use_uv:
-                    logger.debug("Using uv for faster virtual environment creation...")
-                    subprocess.run(["uv", "venv", str(venv_dir)], check=True)
-                elif use_conda:
-                    logger.debug("Using conda for virtual environment creation...")
-                    subprocess.run(
-                        ["conda", "create", "-p", str(venv_dir), "python", "-y"],
-                        check=True,
-                    )
-                else:
-                    venv.create(venv_dir, with_pip=True)
-            except Exception as e:
-                logger.debug(f"Failed to create virtual environment: {e}")
-                return False
-
-        python_path = venv_dir / ("Scripts" if os.name == "nt" else "bin") / "python"
-        logger.debug(f"Restarting with virtual environment at {python_path}...")
-        try:
-            os.execl(str(python_path), str(python_path), *sys.argv)
-        except Exception as e:
-            logger.debug(f"Failed to restart with virtual environment: {e}")
-            return False
-
-    # We're now in the virtual environment, install requirements
-    logger.debug("Running in virtual environment, checking requirements...")
-
-    # Prefer pyproject.toml if it exists, otherwise fall back to requirements.txt
-    if pyproject_file.exists():
-        logger.debug(f"pyproject.toml found at {pyproject_file}, installing...")
-        try:
-            # Install from pyproject.toml using pip install -e . (editable install)
-            # Note: conda doesn't directly support pyproject.toml, so we use pip within the env
-            if use_uv:
-                logger.debug("Using uv for faster package installation...")
-                result = subprocess.run(
-                    ["uv", "pip", "install", "-e", str(src_dir)],
-                    capture_output=True,
-                    text=True,
-                    check=True,
-                )
-            else:
-                result = subprocess.run(
-                    [
-                        sys.executable,
-                        "-m",
-                        "pip",
-                        "install",
-                        "-e",
-                        str(src_dir),
-                    ],
-                    capture_output=True,
-                    text=True,
-                    check=True,
-                )
-
-            from lib.Logging import logger
-
-            logger.info("Dependencies from pyproject.toml installed successfully!")
-        except subprocess.CalledProcessError as e:
-            logger.debug(f"Failed to install from pyproject.toml: {e.stderr}")
-            return False
-        except Exception as e:
-            logger.debug(f"Error installing from pyproject.toml: {e}")
-            return False
-    elif requirements_file.exists():
-        logger.debug("Requirements file found, installing...")
-        try:
-            if use_uv:
-                logger.debug("Using uv for faster package installation...")
-                result = subprocess.run(
-                    ["uv", "pip", "install", "-r", str(requirements_file)],
-                    capture_output=True,
-                    text=True,
-                    check=True,
-                )
-            else:
-                result = subprocess.run(
-                    [
-                        sys.executable,
-                        "-m",
-                        "pip",
-                        "install",
-                        "-r",
-                        str(requirements_file),
-                    ],
-                    capture_output=True,
-                    text=True,
-                    check=True,
-                )
-
-            from lib.Logging import logger
-
-            logger.info("Requirements.txt installed successfully!")
-        except subprocess.CalledProcessError as e:
-            logger.debug(f"Failed to install requirements.txt: {e.stderr}")
-            return False
-        except Exception as e:
-            logger.debug(f"Error installing requirements.txt: {e}")
-            return False
-    else:
-        logger.debug(
-            f"No pyproject.toml at {pyproject_file} or requirements.txt at {requirements_file}"
-        )
-
-    logger.debug("Requirements complete, configuring PATH...")
-    setup_python_path()
-    from lib.Logging import logger
-
-    logger.info("PATH configuration complete, local modules loadable.")
-    return True
 
 
 if __name__ == "__main__":
@@ -410,9 +268,30 @@ def build_app(model_registry: ModelRegistry):
     from lib.Environment import env
     from lib.Logging import logger
 
-    this_directory = os.path.abspath(os.path.dirname(__file__))
-    with open(os.path.join(this_directory, "version"), encoding="utf-8") as f:
-        version = f.read().strip()
+    # Prefer the installed distribution's version when available; fall back
+    # to the sibling ``version`` file so in-tree development keeps working.
+    version: Optional[str] = None
+    try:
+        from importlib.metadata import PackageNotFoundError, version as _pkg_version
+
+        try:
+            version = _pkg_version("serverframework")
+        except PackageNotFoundError:
+            try:
+                version = _pkg_version("server")
+            except PackageNotFoundError:
+                version = None
+    except ImportError:
+        version = None
+
+    if not version:
+        this_directory = os.path.abspath(os.path.dirname(__file__))
+        version_file = os.path.join(this_directory, "version")
+        try:
+            with open(version_file, encoding="utf-8") as f:
+                version = f.read().strip()
+        except FileNotFoundError:
+            version = "0.0.0"
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
