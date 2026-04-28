@@ -246,9 +246,27 @@ class GraphQLManager(ErrorHandlerMixin):
         mutation_type = self._create_mutation_type()
         subscription_type = self._create_subscription_type()
 
-        # Create schema
+        # In production, disable schema introspection so an unauthenticated
+        # client can't enumerate every type/field and a depth-bomb attacker
+        # can't iterate the catalogue cheaply. We read the environment
+        # directly from the OS rather than via the cached `settings` object
+        # so a freshly-built schema picks up the current value.
+        import os as _os
+
+        schema_extensions: List[Any] = []
+        if (_os.getenv("ENVIRONMENT") or "local").lower() == "production":
+            try:
+                from strawberry.extensions import DisableIntrospection
+
+                schema_extensions.append(DisableIntrospection())
+            except Exception:
+                pass
+
         schema = strawberry.Schema(
-            query=query_type, mutation=mutation_type, subscription=subscription_type
+            query=query_type,
+            mutation=mutation_type,
+            subscription=subscription_type,
+            extensions=schema_extensions,
         )
 
         return schema

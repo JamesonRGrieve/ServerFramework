@@ -2701,6 +2701,19 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
             entity["id"] not in response.text
         ), f"Cross-tenant list leaked entity id {entity['id']} from team_a to admin_b"
 
+    def _path_parent_ids_from_entity(self, entity: Dict[str, Any]) -> Dict[str, str]:
+        """Build path_parent_ids from a created entity for nested-URL tests."""
+        path_parent_ids: Dict[str, str] = {}
+        if self.parent_entities:
+            for parent in self.parent_entities:
+                if parent.foreign_key in entity:
+                    parent_id = entity[parent.foreign_key]
+                    if parent.path_level in [1, 2] or (
+                        hasattr(parent, "is_path") and parent.is_path
+                    ):
+                        path_parent_ids[f"{parent.name}_id"] = parent_id
+        return path_parent_ids
+
     @pytest.mark.security
     def test_PUT_404_other_team(
         self, server: Any, admin_a: Any, admin_b: Any, team_a: Any, team_b: Any
@@ -2719,8 +2732,9 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
                 f"Hijacked by B {self.faker.word()}"
             )
 
+        path_parent_ids = self._path_parent_ids_from_entity(entity)
         response = server.put(
-            self.get_update_endpoint(entity["id"], {}),
+            self.get_update_endpoint(entity["id"], path_parent_ids),
             json={self.entity_name: update_data},
             headers=self._get_appropriate_headers(admin_b.jwt),
         )

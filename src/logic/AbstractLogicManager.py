@@ -2156,9 +2156,33 @@ class AbstractBLLManager(ABC):
         else:
             return self._create_single_entity(**kwargs)
 
+    # Fields a client must never be able to set on Create/Update bodies.
+    # The server is the sole authority on identity and audit timestamps —
+    # honouring them from the request would let a malicious or sloppy
+    # caller spoof ownership and break the audit trail.
+    _SERVER_CONTROLLED_AUDIT_FIELDS: ClassVar[tuple] = (
+        "id",
+        "created_at",
+        "updated_at",
+        "deleted_at",
+        "created_by_user_id",
+        "updated_by_user_id",
+        "deleted_by_user_id",
+    )
+
+    @classmethod
+    def _strip_server_controlled_fields(cls, kwargs: Dict[str, Any]) -> None:
+        """Remove audit/identity fields a client should never be able to set."""
+        for banned in cls._SERVER_CONTROLLED_AUDIT_FIELDS:
+            kwargs.pop(banned, None)
+
     def _create_single_entity(self, **kwargs) -> Any:
         """Create a single entity."""
         # Store original kwargs to preserve hook modifications
+        # NOTE: server-controlled audit fields are stripped before this copy
+        # so hooks cannot accidentally re-introduce a client-supplied id or
+        # spoofed created_by_user_id.
+        self._strip_server_controlled_fields(kwargs)
         original_kwargs = kwargs.copy()
 
         args = self.model_registry.apply(self.Model).Create(**kwargs)
@@ -2474,6 +2498,10 @@ class AbstractBLLManager(ABC):
 
     def update(self, id: str, **kwargs):
         """Update an entity by ID."""
+        # Drop audit/identity fields from the inbound payload. Server-managed
+        # bookkeeping (updated_at, updated_by_user_id, etc.) must not be
+        # client-controllable.
+        self._strip_server_controlled_fields(kwargs)
         logger.debug(f"Updating entity with ID: {id} and kwargs: {kwargs}")
         logger.debug(
             f"Update model fields: {list(self.model_registry.apply(self.Model).Update.model_fields.keys())}"

@@ -686,9 +686,18 @@ class UserManager(AbstractBLLManager, RouterMixin):
 
     @staticmethod
     def generate_jwt_token(
-        user_id: str, email: str, timezone_str: str = "UTC", expiration_hours: int = 24
+        user_id: str,
+        email: str,
+        timezone_str: str = "UTC",
+        expiration_hours: int = 24,
+        session_key: Optional[str] = None,
     ) -> str:
-        """Generate a JWT token for authentication"""
+        """Generate a JWT token for authentication.
+
+        If `session_key` is provided, it is embedded as the `jti` claim and
+        the verifier will look up the associated SessionModel row at request
+        time, rejecting tokens whose session has been revoked.
+        """
         expiration = datetime.now(timezone.utc) + timedelta(hours=expiration_hours)
         payload = {
             "sub": user_id,
@@ -697,7 +706,59 @@ class UserManager(AbstractBLLManager, RouterMixin):
             "exp": expiration,
             "iat": datetime.now(timezone.utc),
         }
+        if session_key:
+            payload["jti"] = session_key
         return jwt.encode(payload, env("JWT_SECRET"), algorithm="HS256")
+
+    @staticmethod
+    def _enforce_session_not_revoked(
+        payload: Dict[str, Any], model_registry, db=None
+    ) -> None:
+        """If a JWT carries a `jti` (session_key), the matching SessionModel
+        row must exist, be active, and not be revoked. Otherwise the token is
+        rejected.
+
+        Tokens without a `jti` are accepted as legacy/long-lived bearer tokens
+        and bypass this check; new tokens issued by the login flow always
+        carry one.
+        """
+        session_key = payload.get("jti") if isinstance(payload, dict) else None
+        if not session_key:
+            return
+        try:
+            db_manager = (
+                model_registry.DB.manager
+                if model_registry is not None
+                else None
+            )
+            if db_manager is None and db is None:
+                return  # No DB context; cannot verify, fail-open is acceptable here
+            session_dto = SessionModel.DB(db_manager.Base).get(
+                requester_id=env("ROOT_ID"),
+                model_registry=model_registry,
+                db=db,
+                filters=[SessionModel.DB(db_manager.Base).session_key == session_key],
+            )
+        except Exception:
+            session_dto = None
+        if session_dto is None:
+            raise HTTPException(
+                status_code=401, detail="Session has been revoked"
+            )
+        is_active = (
+            session_dto["is_active"]
+            if isinstance(session_dto, dict)
+            else getattr(session_dto, "is_active", False)
+        )
+        revoked = (
+            session_dto["revoked"]
+            if isinstance(session_dto, dict)
+            else getattr(session_dto, "revoked", False)
+        )
+        if not is_active or revoked:
+            raise HTTPException(
+                status_code=401, detail="Session has been revoked"
+            )
 
     @staticmethod
     def verify_token(
@@ -710,6 +771,8 @@ class UserManager(AbstractBLLManager, RouterMixin):
 
         try:
             payload = jwt.decode(token, env("JWT_SECRET"), algorithms=["HS256"])
+
+            UserManager._enforce_session_not_revoked(payload, model_registry)
 
             user = UserModel.DB(model_registry.DB.manager.Base).get(
                 requester_id=env("ROOT_ID"),
@@ -820,6 +883,13 @@ class UserManager(AbstractBLLManager, RouterMixin):
                         leeway=timedelta(minutes=5),
                         i=ip,
                         s=server,
+                    )
+
+                    # If the token carries a `jti`, the bound session must
+                    # still be active. A revoked session invalidates every
+                    # bearer token issued for it.
+                    UserManager._enforce_session_not_revoked(
+                        payload, model_registry, db=db
                     )
 
                     user = (
@@ -1051,7 +1121,10 @@ class UserManager(AbstractBLLManager, RouterMixin):
             )
             if len(user) != 1:
                 logger.warning("This should never have multiple users!")
-                raise HTTPException(status_code=401, detail="Invalid credentials.")
+                # Use the exact same detail string as the wrong-password
+                # branch below — distinguishing them lets a remote attacker
+                # enumerate which emails are registered.
+                raise HTTPException(status_code=401, detail="Invalid credentials")
 
             user = user[0]
 
@@ -1167,18 +1240,24 @@ class UserManager(AbstractBLLManager, RouterMixin):
                     status_code=400, detail="Either password or token is required"
                 )
 
-            # Login successful - generate JWT token
+            # Login successful — generate session key first so the JWT can
+            # bind to it via `jti`. Revoking this session in
+            # SessionManager.delete() then invalidates every issued bearer
+            # token for it (see _enforce_session_not_revoked).
             user_timezone = (
                 user.get("timezone", "UTC")
                 if isinstance(user, dict)
                 else getattr(user, "timezone", "UTC")
             )
+            session_key = secrets.token_hex(16)
             token = UserManager.generate_jwt_token(
-                user_id=str(user["id"]), email=user["email"], timezone_str=user_timezone
+                user_id=str(user["id"]),
+                email=user["email"],
+                timezone_str=user_timezone,
+                session_key=session_key,
             )
 
             # Create session
-            session_key = secrets.token_hex(16)
             SessionModel.DB(model_registry.DB.manager.Base).create(
                 requester_id=user["id"],
                 model_registry=model_registry,
@@ -1368,6 +1447,21 @@ class UserManager(AbstractBLLManager, RouterMixin):
         """
         if model_registry is None:
             raise ValueError("model_registry is required for register")
+
+        # Strip server-controlled audit/identity fields from the inbound
+        # body so a registering client cannot spoof their `id`,
+        # `created_by_user_id`, or audit timestamps.
+        if isinstance(registration_data, dict):
+            for banned in (
+                "id",
+                "created_at",
+                "updated_at",
+                "deleted_at",
+                "created_by_user_id",
+                "updated_by_user_id",
+                "deleted_by_user_id",
+            ):
+                registration_data.pop(banned, None)
 
         # Check registration mode
         from lib.Environment import settings
@@ -1930,10 +2024,52 @@ class UserCredentialManager(AbstractBLLManager, RouterMixin):
 
         return super().update(id, **kwargs)
 
+    # Minimum password requirements. A password must contain at least
+    # MIN_LENGTH characters and at least one digit + one letter. The aim
+    # is to refuse trivially-weak passwords (e.g. "a" or "12345"), not to
+    # police every dictionary password — defence in depth on top of
+    # bcrypt + MFA.
+    PASSWORD_MIN_LENGTH = 8
+
+    @staticmethod
+    def _validate_password_policy(password: Optional[str]) -> None:
+        """Reject passwords that don't meet the minimum policy."""
+        if not isinstance(password, str) or not password.strip():
+            raise HTTPException(
+                status_code=422,
+                detail="Password must be a non-empty string",
+            )
+        if len(password) < UserCredentialManager.PASSWORD_MIN_LENGTH:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Password must be at least "
+                    f"{UserCredentialManager.PASSWORD_MIN_LENGTH} characters"
+                ),
+            )
+        has_alpha = any(c.isalpha() for c in password)
+        has_digit = any(c.isdigit() for c in password)
+        if not (has_alpha and has_digit):
+            raise HTTPException(
+                status_code=422,
+                detail="Password must contain at least one letter and one digit",
+            )
+
     def change_password(
-        self, user_id: str, current_password: str, new_password: str
+        self,
+        user_id: str,
+        current_password: Optional[str],
+        new_password: Optional[str],
     ) -> Dict[str, str]:
         """Change a user's password with verification"""
+        # Validate inputs up-front so a missing or weak password fails
+        # cleanly with 422/401 rather than crashing inside bcrypt.
+        if current_password is None or not isinstance(current_password, str):
+            raise HTTPException(
+                status_code=422, detail="current_password is required"
+            )
+        self._validate_password_policy(new_password)
+
         # Find current active credential
         credentials = UserCredentialModel.DB(self.model_registry.DB.manager.Base).list(
             requester_id=user_id or env("ROOT_ID"),

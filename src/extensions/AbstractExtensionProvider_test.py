@@ -1398,14 +1398,21 @@ class TestExtensionLoadDeniesPathTraversal:
         ],
     )
     def test_register_extension_rejects_unsafe_name(self, bad_name):
-        """Names containing path-traversal markers must raise, not import."""
+        """Names containing path-traversal markers must raise, not import.
+
+        The unsafe-name guard may fire either at class-definition time
+        (e.g. null-byte names crash filesystem globs invoked by the
+        metaclass) or at registration time. Either is acceptable — both
+        outcomes prevent the bad name from reaching the loader.
+        """
         registry = ExtensionRegistry("")
 
-        class BadExtension(AbstractStaticExtension):
-            name = bad_name
-            description = "should never load"
-
         with pytest.raises(Exception):
+
+            class BadExtension(AbstractStaticExtension):
+                name = bad_name
+                description = "should never load"
+
             registry.register_extension(BadExtension)
 
 

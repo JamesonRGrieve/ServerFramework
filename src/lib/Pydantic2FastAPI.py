@@ -3045,9 +3045,23 @@ def register_custom_route(
                 ) or request.headers.get("Authorization")
 
             if "ip_address" in sig.parameters:
-                method_args["ip_address"] = request.headers.get("X-Forwarded-For") or (
-                    request.client.host if request.client else None
-                )
+                # Honour X-Forwarded-For ONLY when the upstream peer is a
+                # configured trusted proxy. Without this guard a remote
+                # client can spoof their IP for audit-log and rate-limit
+                # purposes simply by setting the header.
+                from lib.Environment import env
+
+                trusted = [
+                    p.strip() for p in (env("TRUSTED_PROXIES") or "").split(",") if p.strip()
+                ]
+                peer_host = request.client.host if request.client else None
+                if trusted and peer_host in trusted:
+                    forwarded = request.headers.get("X-Forwarded-For")
+                    method_args["ip_address"] = (
+                        forwarded.split(",")[0].strip() if forwarded else peer_host
+                    )
+                else:
+                    method_args["ip_address"] = peer_host
 
             if "req_uri" in sig.parameters:
                 method_args["req_uri"] = request.headers.get("Referer")
