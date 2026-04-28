@@ -159,6 +159,11 @@ class AbstractEmailProvider(AbstractStaticProvider):
     extension: ClassVar[Optional[Type[AbstractStaticExtension]]] = None
     extension_type: ClassVar[str] = "email"
 
+    # Capability flags. Concrete providers override with the subset they
+    # actually implement. Callers branch on ``Capability.X in cls.capabilities``
+    # rather than catching ``NotImplementedError`` at the call site.
+    capabilities: ClassVar[FrozenSet["Capability"]] = frozenset()
+
     @classmethod
     @abstractmethod
     def services(cls) -> List[str]:
@@ -511,6 +516,144 @@ class AbstractEmailProvider(AbstractStaticProvider):
     @abstractmethod
     def get_platform_name(cls) -> str:
         """Get the name of the email platform this provider interacts with."""
+
+    # ------------------------------------------------------------------
+    # Phase-1 friendly surface
+    #
+    # ``send``, ``update_email``, and ``list_emails`` collapse the legacy
+    # 17-method receive/send/state-mutation surface into 3 typed methods
+    # that take ``EmailMessage`` / kwargs instead of positional triples.
+    # Until Item 26 (``AbstractProviderInstance`` contract) lands, these
+    # remain classmethods that take ``provider_instance`` as the first
+    # arg; they delegate to the existing legacy abstracts so concrete
+    # providers do not need to change to satisfy them. The legacy
+    # ``send_email`` / ``mark_email_as_read`` / etc. methods stay as
+    # the abstract surface; this layer is purely additive.
+    # ------------------------------------------------------------------
+
+    @classmethod
+    async def send(
+        cls,
+        provider_instance: ProviderInstanceModel,
+        message: "EmailMessage",
+    ) -> str:
+        """Send a typed ``EmailMessage`` via this provider.
+
+        Validates the message (CRLF / NUL / length / address shape /
+        attachment safety) before any transport call. Concrete providers
+        that want to use the rich ``EmailMessage`` shape (cc / bcc / from-
+        name / reply-to / headers) should override this method directly;
+        the default implementation flattens ``message`` into the legacy
+        ``send_email(recipient, subject, body, attachments)`` positional
+        contract for backwards compatibility.
+        """
+        validation_error = cls._validate_message(message)
+        if validation_error:
+            logger.error(validation_error)
+            return validation_error
+
+        # Flatten to legacy abstract: pick the first ``to`` address as the
+        # recipient. ``cc`` / ``bcc`` / ``reply_to`` / ``from_`` / display
+        # names / headers / template_* are dropped on the legacy path —
+        # providers that need them must override ``send`` directly.
+        recipient = message.to[0].format()
+        body = message.body_html or message.body_text or ""
+        # Convert ``Attachment`` objects to filesystem paths via temp-file
+        # if any are byte-only; legacy ``send_email`` only accepts paths.
+        legacy_attachments: Optional[List[str]] = None
+        if message.attachments:
+            import tempfile
+
+            legacy_attachments = []
+            for att in message.attachments:
+                tmp = tempfile.NamedTemporaryFile(
+                    delete=False, suffix="_" + att.filename
+                )
+                tmp.write(att.content)
+                tmp.close()
+                legacy_attachments.append(tmp.name)
+        return await cls.send_email(
+            provider_instance,
+            recipient=recipient,
+            subject=message.subject,
+            body=body,
+            attachments=legacy_attachments,
+            importance=message.importance.value,
+        )
+
+    @classmethod
+    async def update_email(
+        cls,
+        provider_instance: ProviderInstanceModel,
+        message_id: str,
+        *,
+        read: Optional[bool] = None,
+        flagged: Optional[bool] = None,
+        folder: Optional[str] = None,
+        deleted: bool = False,
+    ) -> str:
+        """Apply state changes to an existing message in one call.
+
+        Each kwarg, when not ``None``, dispatches to the corresponding
+        legacy abstract: ``read=True`` → ``mark_email_as_read``,
+        ``read=False`` → ``mark_email_as_unread``, ``flagged=True`` →
+        ``flag_email``, ``flagged=False`` → ``unflag_email``,
+        ``folder="X"`` → ``move_email``, ``deleted=True`` →
+        ``delete_email``. Multiple state changes in one call apply
+        sequentially; the first error short-circuits.
+        """
+        results: List[str] = []
+        if read is True:
+            results.append(await cls.mark_email_as_read(provider_instance, message_id))
+        elif read is False:
+            results.append(
+                await cls.mark_email_as_unread(provider_instance, message_id)
+            )
+        if flagged is True:
+            results.append(await cls.flag_email(provider_instance, message_id))
+        elif flagged is False:
+            results.append(await cls.unflag_email(provider_instance, message_id))
+        if folder is not None:
+            results.append(
+                await cls.move_email(provider_instance, message_id, folder)
+            )
+        if deleted:
+            results.append(await cls.delete_email(provider_instance, message_id))
+        if not results:
+            return "No state change requested"
+        return "; ".join(str(r) for r in results)
+
+    @classmethod
+    async def list_emails(
+        cls,
+        provider_instance: ProviderInstanceModel,
+        *,
+        folder: Optional[str] = None,
+        query: Optional[str] = None,
+        limit: int = 10,
+        cursor: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """List emails with an optional search query and folder.
+
+        Delegates to ``search_emails`` when ``query`` is provided, else
+        ``get_emails``. ``cursor`` is currently passed-through opaquely;
+        Item 7 (pagination homogenisation) will replace it with a typed
+        ``next_token`` envelope.
+        """
+        effective_folder = folder or "Inbox"
+        if query:
+            return await cls.search_emails(
+                provider_instance,
+                query=query,
+                folder_name=effective_folder,
+                max_emails=limit,
+            )
+        return await cls.get_emails(
+            provider_instance,
+            folder_name=effective_folder,
+            max_emails=limit,
+            page_size=limit,
+        )
 
 
 class EXT_EMail(AbstractStaticExtension):
