@@ -1866,4 +1866,17 @@ The Phase-1 work that did **not** require any of those prereqs (typed value mode
 
 **Acceptance.** `mypy` rejects a concrete provider whose `bond_instance` returns a non-`AbstractEmailProviderInstance`. New callers use `bonded = Provider.bond_instance(model); await bonded.send(msg)`. The Phase-1 surface keeps working through deprecation warnings.
 
+## Item 62 — Email reshape: typed Settings, EnvSchema, Secret-marked credentials
+
+**Severity:** Medium
+**Scope:** `AbstractEmailProvider`, all three concrete providers, BLL hook registration.
+**Owner area:** Email extension / configuration.
+**Prereq:** Item 37 (typed `ProviderSettings` and ability declarations). Cross-refs Items 32 (credential vault) and 50 (sandbox/live discriminator).
+
+**Purpose.** The current `_env: Dict[str, Any]` (`SENDGRID_API_KEY`, `STALWART_PASSWORD`, `SMTP2GO_API_KEY`, etc.) is a stringly-typed dict with no Pydantic validation, no `Secret` markers, and no startup-time error when a required value is missing. After Item 37 lands, each abstract provider declares `Settings` as an inner Pydantic model, and `_env` becomes an `EnvSchema` with typed names, defaults, required flags, and `Secret`-marked sensitive values that integrate with Item 32's redaction.
+
+**Implementation.** `AbstractEmailProvider.Settings` declares the shared shape (`from_email: EmailStr`, `default_provider_name: Optional[str]`, etc.). Each concrete provider extends it: `SendgridProvider.Settings(from_email: EmailStr, api_key: Secret[str])`, `StalwartProvider.Settings(host: str, port: int = 587, username: str, password: Secret[str], use_tls: bool = True, from_email: EmailStr)`, `Smtp2goProvider.Settings(api_key: Secret[str], from_email: EmailStr, api_url: HttpUrl = "https://api.smtp2go.com/v3")`. The startup check refuses to boot if a required value is missing for any registered provider. The `BLL_EMail._EMAIL_PROVIDER_REGISTRY` tuple-loop is replaced by iterating over registered provider classes whose `Settings.is_configured()` is true.
+
+**Acceptance.** A deployment missing `SENDGRID_API_KEY` while `EMAIL_PROVIDER=sendgrid` produces a clear startup error naming the field. `Secret`-marked fields never appear in log output (Item 32 redaction). The BLL hooks no longer need a hardcoded registry tuple — the typed Settings drive registration.
+
 
