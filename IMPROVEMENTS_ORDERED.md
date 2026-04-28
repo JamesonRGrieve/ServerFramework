@@ -1294,7 +1294,11 @@ How extension-contributed schema, tables, and dependencies are validated, ordere
 
 **Dependencies.** Independent.
 
-**Refinement after audit.** The original target state conflates two genuinely different problems: (a) **manifest-driven install with a clean process restart** (Medium, tractable, the manifest format and `install_from_manifest` orchestration plus a graceful restart) and (b) **true in-process hot reload** (High difficulty, requires `importlib.reload` to play well with cached class references in other modules, hook decorators that registered at import time, Pydantic models that cache `__pydantic_validator__` against class objects, SQLAlchemy mappers that cannot be cleanly unmapped, and Strawberry schemas baked at startup). The phrase "static class identity must be preserved across reloads" is the entire problem and cannot be solved without a class-registry rewrite that tracks every place a class object is captured. This item is split: Item 20 retains scope (a) at Medium severity, with the acceptance criterion narrowed to "a SIGHUP triggers a clean stop, registry rebuild, and start that surfaces the new extension without manual operator action." Scope (b) — true hot reload of *code* without restart — is documented as a stretch goal with no committed scope; deployments that need it use blue-green at the process level instead. The "modified extensions reload" sentence in the original target state is removed; install/uninstall via clean restart is the contract. — Surface skipped optional dependencies at startup
+**Refinement after audit.** The original target state conflates two genuinely different problems: (a) **manifest-driven install with a clean process restart** (Medium, tractable, the manifest format and `install_from_manifest` orchestration plus a graceful restart) and (b) **true in-process hot reload** (High difficulty, requires `importlib.reload` to play well with cached class references in other modules, hook decorators that registered at import time, Pydantic models that cache `__pydantic_validator__` against class objects, SQLAlchemy mappers that cannot be cleanly unmapped, and Strawberry schemas baked at startup). The phrase "static class identity must be preserved across reloads" is the entire problem and cannot be solved without a class-registry rewrite that tracks every place a class object is captured. This item is split: Item 20 retains scope (a) at Medium severity, with the acceptance criterion narrowed to "a SIGHUP triggers a clean stop, registry rebuild, and start that surfaces the new extension without manual operator action." Scope (b) — true hot reload of *code* without restart — is documented as a stretch goal with no committed scope; deployments that need it use blue-green at the process level instead. The "modified extensions reload" sentence in the original target state is removed; install/uninstall via clean restart is the contract.
+
+---
+
+## Item 30 — Surface skipped optional dependencies at startup
 
 **Severity:** Low
 **Scope:** Dependency resolver, startup banner, optional `on_optional_missing` callback.
@@ -1870,3 +1874,319 @@ A single canonical reference for every primitive an extension author touches.
 **Dependencies.** Cross-references Item 52 (contracts manifest), Item 68 (public API surface).
 
 ---
+
+# Group 21 — Distribution and Packaging
+
+The breaking and ecosystem-shaping pieces of the pip-package conversion that follow the additive groundwork commit `cf5cc68`, plus the supply-chain hygiene every PyPI release needs. The non-packaging former-P items (P2/61, P3/62, P5/64, P6/65, P9/68) live in their topical groups; this group holds the items whose primary concern is package layout and release safety.
+
+## Item 60 — Rename top-level packages under a single namespace (formerly P1)
+
+**Severity:** Critical
+**Scope:** `src/` layout; every absolute import in the tree; `extensions_path` synthesized module names; migration env scripts.
+**Owner area:** Packaging.
+
+**Purpose.** The framework currently exposes `lib/`, `logic/`, `database/`, `endpoints/`, `extensions/`, `sdk/`, and `pydantic2/` as **top-level** packages. Names like `lib` and `database` are virtually guaranteed to collide with other packages on a consumer's `sys.path`, and `logic` / `endpoints` are generic enough that any non-trivial application is likely to want them too. The façade shipped in `cf5cc68` papers over this for the moment by inserting `src/` onto `sys.path` at import time, but that is a short-term hack — as soon as a consumer has their own `lib/` or `database/` package, imports will resolve to whichever one happened to land on the path first.
+
+**Current state.** Top-level packages collide with virtually any consumer namespace. `serverframework/__init__.py` mutates `sys.path` to make in-package imports resolve.
+
+**Target state.** Move every top-level package under a single namespace: `src/serverframework/{lib,logic,database,endpoints,extensions,pydantic2,app.py,bootstrap.py,__init__.py}`. Rewrite every absolute import: `from lib.Logging import logger` → `from serverframework.lib.Logging import logger`; `from logic.BLL_Auth import UserManager` → `from serverframework.logic.BLL_Auth import UserManager`; and so on for every `from extensions.…`, `from endpoints.…`, `from pydantic2.…` site. This touches hundreds of import sites but the change is mechanical and can be driven by a codemod (`ruff check --select I --fix` will not help; use a targeted `sed` or `libcst` script).
+
+**Implementation notes.** Test discovery patterns (`pytest`'s `python_files = "*_test.py"` with `--import-mode=importlib`) need to keep working — verify after the rename. The `extensions/<name>/EXT_…` import strings constructed dynamically inside `ExtensionRegistry` need updating: today they say `f"extensions.{ext_name}.{file}"`; after the rename they need to say `f"serverframework.extensions.{ext_name}.{file}"` (the path-override case from Item 61 produces neither). Migration env scripts under `database/migrations/env.py` likely reference `database.…` modules — update those too. `sdk/` is excluded from this rename; see Item 64.
+
+**Acceptance criteria.** A consumer with their own `lib/` or `database/` package can `pip install serverframework` and import the framework without collision. The `sys.path.insert(0, str(_SRC_DIR))` hack in `serverframework/__init__.py` is removed (Item 66 closes this loop). The full test suite passes after the rename.
+
+**Dependencies.** Independent. Blocks Items 62 (env.py moves with the rename), 64 (SDK separation moves `src/sdk/` out), 66 (sys.path cleanup), 68 (final `__all__` lives under `serverframework`).
+
+---
+
+## Item 63 — Console entry point and module entry (formerly P4)
+
+**Severity:** High
+**Scope:** New `serverframework/__main__.py`, `[project.scripts]` entry in `pyproject.toml`, `serverframework.cli` module, `python app.py` forward.
+**Owner area:** Packaging.
+
+**Purpose.** The promised end state is "`main.py` is just `from serverframework import run; run(...)`," which works as of `cf5cc68`. But for the case where someone wants to invoke the server without writing a `main.py` at all, the package should also expose a console script (`server-framework run --extensions payment --extensions-path ./exts`) and a module entry (`python -m serverframework run …`). Without these, the framework presents two install pathways (clone-and-run-app.py, pip-install-and-write-main.py) and a third use case (pip-install-and-just-run) is left undiscoverable.
+
+**Current state.** `python app.py` works via the existing entry. The pip-installed pathway requires writing a `main.py`. No console script. No `__main__.py`.
+
+**Target state.** Add `serverframework/__main__.py` that parses argv (argparse) and forwards to `run()`. Add a `[project.scripts]` entry to `pyproject.toml`: `server-framework = "serverframework.cli:main"`. Make the existing `python app.py` path forward to the same CLI so there is one source of truth for the run loop. The bootstrap (`bootstrap.py`) is now self-contained and can be invoked from the CLI as a separate subcommand (`server-framework bootstrap`) for the "first run on a fresh checkout" case.
+
+**Implementation notes.** The CLI module is the canonical entrypoint; `python app.py`, `python -m serverframework`, and the `server-framework` console script all dispatch through it. Keep argv parsing minimal (argparse) — the framework's runtime configuration lives in env vars (Item 65 makes this safe across import order), not in CLI flags.
+
+**Acceptance criteria.** `pip install serverframework` exposes the `server-framework` command in the user's PATH; `python -m serverframework run` and `server-framework run` and `python app.py` all start the same server with the same configuration.
+
+**Dependencies.** Depends on Item 60 (rename — `serverframework.cli` lives under the namespace package). Cross-references Item 65 (lazy env so CLI flags do not race with import-time env capture).
+
+---
+
+## Item 66 — Drop `sys.path` mutation from the façade (formerly P7)
+
+**Severity:** Medium
+**Scope:** `serverframework/__init__.py`.
+**Owner area:** Packaging.
+
+**Purpose.** `serverframework/__init__.py` currently does `sys.path.insert(0, str(_SRC_DIR))` followed by `from app import build_app, instance`. This is the mechanism that lets the façade import the un-renamed top-level modules. It is load-bearing today but evil long-term: mutating `sys.path` from a library is exactly the sort of thing that makes packages hard to vendor, embed, or run from a zipapp, and silently masks namespace collisions a consumer would otherwise catch immediately.
+
+**Current state.** `__init__.py` mutates `sys.path` and imports from un-namespaced modules.
+
+**Target state.** Remove the `sys.path` insertion and the `from app import …` once Item 60 (rename) lands. Replace with `from serverframework.app import build_app, instance`. This is purely a cleanup that is blocked on Item 60.
+
+**Implementation notes.** The change is a few lines but it is the visible signal that the rename has fully landed; until this drops, the package still has the workaround in plain sight.
+
+**Acceptance criteria.** `serverframework/__init__.py` contains no `sys.path` mutation. Consumers can run the framework from a zipapp.
+
+**Dependencies.** Blocked on Item 60.
+
+---
+
+## Item 67 — Source the version string from package metadata only (formerly P8)
+
+**Severity:** Low
+**Scope:** `src/version` (file), `build_app` version-resolution logic, `pyproject.toml`.
+**Owner area:** Packaging.
+
+**Purpose.** `build_app` reads a sibling `version` file (now with an `importlib.metadata.version` fallback). Once the package is installed from a wheel, the metadata is authoritative; the sibling file is dead weight that risks drifting from the actual release version.
+
+**Current state.** Two sources of truth for the version string. The sibling file wins on uninstalled checkouts; the metadata wins on installed wheels.
+
+**Target state.** Remove `src/version` from the repo. Remove the file-read fallback in `build_app`. Source `[project.version]` from a single place (e.g., dynamic versioning via `setuptools-scm` keyed off git tags) so the version string is never out of sync with the release.
+
+**Implementation notes.** Works fine as-is; this is paperwork and ships with the rest of the packaging cleanup. `setuptools-scm` is the recommended version source because it ties the version string to git tags, which is also the input to Item 86's release-signing pipeline.
+
+**Acceptance criteria.** Only one source of the version string exists in the repo, and it derives from git tags via `setuptools-scm` (or equivalent).
+
+**Dependencies.** Independent. Cross-references Item 86 (release tagging is the upstream of both this and supply-chain signing).
+
+---
+
+## Item 86 — Supply-chain hygiene for the published package
+
+**Severity:** High
+**Scope:** PyPI release pipeline; `pyproject.toml` and CI configuration; SBOM generation; signed releases; pinned-hash policy; vuln scanning.
+**Owner area:** Security / packaging.
+
+**Purpose.** Items 60-67 ship `serverframework` to PyPI as a public package that integrates a credential vault (Item 32) and ships supply-chain-attractive primitives (auth strategies, OAuth integration). A package with that surface cannot ship to PyPI without the supply-chain hygiene the rest of the Python ecosystem has standardized on. The audit found zero items addressing SBOM, signed releases, dependency pinning, or supply-chain attack defense across P1-P9 (Item 67 mentions setuptools-scm — that is "where does the version string come from," not supply-chain).
+
+**Current state.** No SBOM. No signed releases. No pinned-hash policy. No vuln scanning gate.
+
+**Target state.** **(a) SBOM.** Every released wheel ships a CycloneDX SBOM (`bom.json`) generated at build time from the wheel's metadata; the SBOM is published as a release asset alongside the wheel. **(b) Signed releases.** Wheels are signed with sigstore/cosign as part of the release pipeline; the signature is verifiable from the public sigstore transparency log without requiring the framework to maintain its own signing-key infrastructure. **(c) Pinned hashes.** `pyproject.toml`'s dependency declarations remain version-range expressions, but the published wheel ships with a `requirements.lock` (or equivalent) that pins each transitive dependency to a specific version+hash; consumers using the lock get reproducible installs. **(d) Vuln scanning.** CI runs `pip-audit` or `safety` against the lock on every PR and on a nightly cron; a finding above a configurable severity threshold fails the build and opens an issue. **(e) Security policy.** A `SECURITY.md` documents the supported-versions matrix, the disclosure channel, and the response-time commitment.
+
+**Implementation notes.** Sigstore is the recommended signing path because it does not require the project to maintain its own signing keys (the developer's GitHub/Google identity is the trust anchor via OIDC). The CycloneDX format is the industry-standard SBOM shape; the `cyclonedx-python` tool generates one from `pyproject.toml`. `pip-audit` is the recommended vuln scanner because it consumes the same lock format `pip-tools` produces. The policy document follows GitHub's `SECURITY.md` conventions.
+
+**Acceptance criteria.** A released wheel on PyPI has a verifiable sigstore signature and a published `bom.json`. The release pipeline fails if any direct or transitive dependency has an open critical vulnerability. The repository carries a `SECURITY.md` with the disclosure channel and response-time commitments.
+
+**Dependencies.** Cross-references Item 60 (rename ships before the first signed release), Item 67 (version string is the input to release tagging). Blocks the first PyPI publish.
+
+---
+
+# Group 22 — Inbound Surface Hardening
+
+The framework already documents and partially implements per-extension rate limits (e.g. `meta_logging_rate_limiting_hook`) and per-flow throttling (Items 58, 59), but there is no canonical primitive for "this endpoint is publicly exposed and needs to be defended against abuse." Group 22 fills that gap.
+
+## Item 71 — CORS policy, inbound rate limiting, and brute-force/lockout protection
+
+**Severity:** High
+**Scope:** `app.py:334` CORS middleware; new `@rate_limit(...)` endpoint decorator; new `LockoutPolicy` per auth flow; integration with Item 69's distributed counter.
+**Owner area:** Inbound API surface / security.
+
+**Purpose.** Three distinct gaps share one entrypoint. **(a) CORS.** `src/app.py:334` configures `allow_origins=["*"]` together with `allow_credentials=True` — the RFC-violating combination that browsers will treat as `null` origin. There is no documented production CORS policy, no per-deployment override, no environment-based origin filtering. **(b) Inbound rate limiting.** Item 17 protects the framework's calls *to* upstream providers; nothing protects the framework *from* inbound abuse. The existing `meta_logging_rate_limiting_hook` is a per-extension instance, not a generic primitive. Items 58 and 59 each invent per-endpoint defaults ("ten requests per hour per email"), reinventing the wheel. **(c) Brute-force / lockout.** Auth flows (password login, magic-link request, MFA verify, device-pairing approve) have no documented lockout policy. A single attacker can brute-force a magic-link verify endpoint until the TTL expires.
+
+**Current state.** CORS wildcards. Per-extension rate-limit hooks. No generic `@rate_limit` decorator. No `LockoutPolicy`. No anomaly-detection hook.
+
+**Target state.** **(a) CORS.** Production deployments declare allowed origins via a config primitive (`APP_CORS_ALLOWED_ORIGINS=https://app.example.com,https://admin.example.com`); the framework refuses to start in `APP_ENV=production` if origins are wildcarded. Development deployments may continue to use `*` with a startup warning. The `allow_credentials=True` path is rejected when origins are `*` (RFC compliance, not just our preference). **(b) Inbound rate limiting.** A `@rate_limit("100/min", scope="ip")` decorator on `RouterMixin` methods, custom routes (Item 40), and webhook endpoints (Item 5) enforces a per-(scope) request rate using Item 69's `DistributedCounter`. Scopes: `ip`, `user`, `tenant`, `(ip, endpoint)`, `(user, endpoint)`. Defaults are documented per-endpoint-shape (auth endpoints: 10/min by IP; mutating endpoints: 60/min by user; read endpoints: 600/min by user). **(c) Lockout.** A `LockoutPolicy(failures_per_window=5, window=15m, lockout=30m)` on auth flows triggers a per-(actor, flow) lockout after the configured failures; lockout state lives in a small DB table and is observable via an admin endpoint. The pluggable `AnomalyDetector` ABC (default: no-op) accepts `report_failure(actor, flow)` calls and can escalate (captcha, MFA step-up, alert) without each auth flow inventing the integration.
+
+**Implementation notes.** The CORS startup check is one assertion in `app.py`. The `@rate_limit` decorator is a thin wrapper over Item 69 — the heavy lifting is in the counter primitive. The `LockoutPolicy` table is small (`actor_key`, `flow`, `failure_count`, `locked_until`); cleanup is a scheduled task per Item 28's `ScheduledService`. The `AnomalyDetector` is the integration point for captcha (hCaptcha, reCAPTCHA), step-up MFA (reuses Item 18's freshness gate), and SIEM alerting (reuses Item 85's `ErrorReporter`).
+
+**Acceptance criteria.** A production-mode startup with wildcard CORS fails fast with a clear error. A `@rate_limit("10/min", scope="ip")`-decorated endpoint returns 429 on the 11th request from a single IP. A magic-link verify endpoint locks out an IP for 30 minutes after 5 failures within 15 minutes. The audit log records every lockout with the actor, flow, and trigger.
+
+**Dependencies.** Depends on Item 69 (distributed counter). Cross-references Items 17 (outbound rate limit — different dimension), 58, 59 (auth flows consume `LockoutPolicy` rather than inventing per-flow throttling), 85 (lockout events route through the structured-log/error-reporter pipeline).
+
+---
+
+# Group 23 — Operational Resilience
+
+The day-2 concerns the framework currently does not address: backups, deploys without downtime, multi-region placement, and the operator surface that runs all of it. None of these gate provider authorship; all of them gate production deployment.
+
+## Item 79 — Backup, restore, and point-in-time recovery primitive
+
+**Severity:** High
+**Scope:** Per-table classification (`backup-critical` vs `ephemeral`), scheduled DB snapshot service, integrity-verified restore drill, RTO/RPO documentation.
+**Owner area:** Operational resilience / database.
+
+**Purpose.** Items 24 and 49 cover migrations *forward*; Item 56 covers audit-log archival; Items 54 and 55 cover read replicas and RLS. Nothing in the document addresses nightly DB snapshots, point-in-time recovery, backup verification, restore drills, RTO/RPO targets, or backup encryption. The framework holds credentials (Item 32 fallback to encrypted column), quota state (Item 19), sessions (BLL_Auth), and outbox entries (Item 35); a deployment cannot ship to production without a backup story for any of these. The omission is not in the Deferred legend, so this item closes the gap.
+
+**Current state.** No backup contract. No restore drill. RTO/RPO undocumented.
+
+**Target state.** Each table declares a `backup_class: ClassVar[BackupClass]`: `critical` (data loss is unacceptable; included in nightly snapshots and continuous WAL archiving), `recoverable` (data loss is recoverable from upstream sources, e.g. external entities resolved via federation; included in nightly snapshots only), `ephemeral` (cache, session, sticky-routing state; excluded from backups). A scheduled `BackupService` (Item 28's `ScheduledService` flavor) runs nightly and drives the underlying DB engine's snapshot/dump command (`pg_dump` for Postgres, equivalent for others) into a configured `BackupTarget` (Item 43's object-storage abstract; S3/GCS/local-filesystem). PITR is supported for engines with WAL streaming (Postgres) via a separate continuous-archive job. A monthly restore drill — automated CI job that takes the latest backup, restores it into a scratch DB, runs a smoke test, and discards — verifies that backups are actually restorable. RTO/RPO targets are declared per deployment and tracked as a metric (`backup_age_seconds`, `last_successful_restore_drill_age_seconds`).
+
+**Implementation notes.** The Postgres path is the reference implementation; the framework documents per-engine alternatives. `pg_dump` is the simple option but does not give PITR; `pg_basebackup` plus continuous WAL archiving to the `BackupTarget` is the production option. Restore drills must run on isolated infrastructure (not against the live DB) — they are non-trivial to automate and are the failure mode most production deployments overlook. The `outbox` table (Item 35) and `Quota` table (Item 19) need careful handling on restore: outbox entries past the deadline are stale and should be marked DLQ on restore rather than re-fired; quota counters are restored as-of the backup time and the gap between backup and restore is a known small over-count window.
+
+**Acceptance criteria.** A scheduled snapshot lands in the `BackupTarget` nightly. The restore drill runs monthly in CI and asserts the smoke test passes. `backup_age_seconds` and `last_successful_restore_drill_age_seconds` metrics are emitted and observable. A documented runbook describes the manual restore procedure.
+
+**Dependencies.** Depends on Items 28 (scheduled service) and 43 (object-storage abstract for the backup target). Cross-references Items 35 (outbox restore semantics), 19 (quota restore semantics), 56 (audit-log archival is independent of DB backup).
+
+---
+
+## Item 80 — Zero-downtime / rolling-deploy migration window contract
+
+**Severity:** High
+**Scope:** Migration framework (Items 24, 49, 62), `@extension_model` field-injection contract (Item 23), startup checks.
+**Owner area:** Database / deployment.
+
+**Purpose.** Items 24, 49, and 62 cover migration *correctness* (ownership, FK ordering, out-of-tree discovery). They do not cover the deploy-time scenario where v1 and v2 of the application both run against the same DB during a rolling deploy. A NOT NULL column added by an `@extension_model` injection (Item 23) breaks v1 the moment the migration runs; a column drop in the same release that adds the replacement breaks v1 during the window v2 has not finished rolling out. The framework's no-touch-the-core principle is at risk if extension authors must pick "ship the migration manually outside CI" to keep production up.
+
+**Current state.** Migrations are forward-only and assumed atomic. No expand/contract phase. No invariants enforcing rolling-deploy safety.
+
+**Target state.** Every migration is split into two logical phases: **expand** (add new structure, leave old structure in place; both old and new versions of the application run cleanly against the post-expand DB) and **contract** (remove the old structure, only after the new version has fully rolled out and the old version has been retired). The framework enforces invariants that make rolling deploys safe by default: NOT NULL columns added by `@extension_model` must declare a default (so v1 inserts continue to succeed); column drops are gated by a `removed_in: str` declaration that the migration generator turns into a separate contract migration in a later release; FK adds are split into "add column with FK" (expand) and "set NOT NULL on the FK" (contract). A startup check rejects a migration that violates these invariants.
+
+**Implementation notes.** The expand/contract split mirrors the standard pattern from Liquibase, gh-ost, and Postgres operational guides. Tooling: extend the Alembic templates to emit a stub for the contract migration in the next release; rejection is at `alembic revision --autogenerate` time, not at apply time. Items 24 (ownership) and 49 (FK ordering) gate the discovery of which extension owns which migration; this item gates the *shape* of migrations that have already been ordered correctly.
+
+**Acceptance criteria.** A `@extension_model`-injected NOT NULL column without a default is rejected at migration generation time with a clear error. A column-drop migration without a paired earlier expand migration is rejected at startup. A rolling deploy with v1 and v2 running concurrently against the post-expand DB succeeds without data corruption.
+
+**Dependencies.** Depends on Items 23, 24, 49. Cross-references Item 20 (hot install must respect rolling-deploy invariants for runtime-installed extensions).
+
+---
+
+## Item 81 — Operational surface: probes, alerts, runbooks, DLQ admin UX
+
+**Severity:** High
+**Scope:** New `/healthz` and `/readyz` endpoints; `Alert` declaration on hooks/services; runbook generation tied to typed errors; admin UX for DLQ entries and `failed`-state services.
+**Owner area:** Operational resilience / observability.
+
+**Purpose.** Item 27 is per-provider health. Item 35 mentions "an admin endpoint with replay and discard actions" for DLQ — that is the *only* operator-UX line in the document. Item 44 has a `failed`-state admin reset. There is no framework-level `/healthz`/`/readyz` distinction, no alerting taxonomy tying the metrics from Items 22/34/44/57 to runbook entries, no DLQ operator UX with filtering/bulk-replay/classification. The framework will be unoperatable in its current shape — operators will be paged for unfamiliar metrics with no documented response.
+
+**Current state.** No `/healthz` or `/readyz`. No alert taxonomy. No DLQ admin UX. The `failed`-state CLI from Item 44 is the closest existing operator surface.
+
+**Target state.** **(a) Probes.** `/healthz` returns 200 if the process is up (always, modulo total failure); `/readyz` returns 200 only if the DB is reachable, the credential store is reachable, and every Critical-tier provider's `health_check` (Item 27) is OK. K8s liveness probes target `/healthz`; readiness probes target `/readyz`. **(b) Alerts.** Every emitted metric has an associated `Alert` declaration: `Alert(metric="provider_silent_drop_total", threshold=0, window="5m", runbook="docs/runbooks/silent-drop.md")`. The framework ships a generated `alerts.yaml` that operators import into Prometheus AlertManager (or equivalent); the alerts file is the inventory the on-call rotation uses. **(c) Runbooks.** Every typed framework error (Item 1's `BaseExternalError` hierarchy, `QuotaExhaustedError`, `DeadlineExceededError`, `LockTimeoutError`) carries a `runbook_url: ClassVar[Optional[str]]` that the structured logger emits; operators clicking the URL get the documented diagnosis and response. **(d) DLQ admin UX.** A `/admin/dlq` admin endpoint lists DLQ entries (Item 35) with filtering by extension, ability, error class, and timestamp; bulk-replay and bulk-discard actions are typed and audit-logged. The same surface lists `failed`-state services (Item 44) with the reset action.
+
+**Implementation notes.** The `/readyz` semantics are the trap: a Critical-tier provider that flaps will cycle the deployment in/out of the load balancer if `/readyz` keys on it directly. Mitigate with a hysteresis window — `/readyz` returns 503 only after the provider has been DOWN for more than the configured window (default 60s). Alert declarations are colocated with the metric emission (Item 34's tracing layer), not in a separate file. Runbook URLs are stable identifiers; broken runbook links are caught by a CI link-checker.
+
+**Acceptance criteria.** K8s liveness/readiness probes correctly distinguish process-up from system-ready. A simulated provider failure produces an alert in AlertManager with the correct runbook URL. The DLQ admin UX permits filtering and bulk-replay against a real DLQ entry without writing custom queries.
+
+**Dependencies.** Depends on Items 27 (provider health), 35 (DLQ), 44 (failed-state services). Cross-references Items 22 (hook metrics), 34 (metrics emission), 57 (queue-fairness metrics), 85 (structured logging carries the runbook URL).
+
+---
+
+## Item 83 — Cross-region deployment contract
+
+**Severity:** Medium
+**Scope:** Documentation; explicit primitives that would need to change for active-active.
+**Owner area:** Multi-region deployment.
+
+**Purpose.** Item 36 covers data residency at the *provider-instance* level (which Stripe account does this user's traffic go to). It does not cover which DB instance writes go to, how Item 35's outbox drains across regions, how Item 51's sticky-session cache federates across regions, or how Item 19's atomic quota decrement crosses an Atlantic latency boundary. Item 54's read replicas are documented as same-region. The framework will silently work in active-passive only; an operator who reads the docs and deploys active-active will discover the gaps in production.
+
+**Current state.** Multi-region implicit. Active-active is not addressed.
+
+**Target state.** This item is primarily documentation: declare the supported deployment topology explicitly (active-passive multi-region; active-active is out of scope for v1). Identify the primitives that would need to change for active-active and list them so a future "v2 active-active" roadmap has a starting point: (a) Item 19's `Quota` decrement needs cross-region consensus or per-region partitioning; (b) Item 35's outbox needs per-region sharding to avoid a global drainer becoming the bottleneck or splitting writes; (c) Item 51's sticky-session cache needs a global Redis or session-affinity at the load-balancer; (d) Item 32's credential cache invalidation must propagate across regions; (e) Item 69's `DistributedCounter` must operate against a regional Redis with documented eventual-consistency semantics or against a globally-replicated Postgres. The doc explicitly states that mixing active-active with the v1 framework risks silent over-counting on quota, duplicate sends from the outbox, and routing inconsistency on stickiness — none of which produce immediate errors but all of which produce financial or correctness drift.
+
+**Implementation notes.** No code change in this item. The active-passive topology is the recommended deployment for v1: a primary region runs the framework against a primary DB; secondary regions run read-only replicas (Item 54) for read-heavy workloads; failover is operator-driven (DNS or load-balancer cutover) with documented RTO/RPO from Item 79. Item 36's residency primitive routes user traffic to the in-jurisdiction region's primary; cross-region writes go to the user's home region.
+
+**Acceptance criteria.** `docs/deployment/multi-region.md` explicitly states active-passive is supported, active-active is out-of-scope for v1, and lists the primitives that would change for v2. Operators planning multi-region deployments find the limits documented before they hit them in production.
+
+**Dependencies.** Cross-references Items 19, 32, 35, 36, 51, 54, 69, 79.
+
+---
+
+# Group 24 — Compliance and Privacy
+
+Item 45 (field-level ABAC) controls *access* to fields; Item 56 (audit retention) sets the retention bar; Item 32's credential vault encrypts secrets. None of those satisfy GDPR/CCPA right-to-erasure or PII classification. Group 24 fills that gap.
+
+## Item 82 — PII classification and right-to-erasure orchestration
+
+**Severity:** High
+**Scope:** New `pii: PIIClass` field annotation; per-extension `erase_user(user_id)` hook; audit-log conflict resolution; data-export hook for portability.
+**Owner area:** Compliance / privacy.
+
+**Purpose.** GDPR Article 17 (right to erasure) and CCPA §1798.105 (right to delete) require that, on a verified user request, the controller erases the user's personal data across every system that holds it. The framework today provides no inventory of where a user's data lives across extensions, no deletion orchestration, no audit-log redaction-on-erasure mechanism (which conflicts with Item 56's `forever` retention class). An EU/CA/UK deployment cannot ship without these. PII classification is the prerequisite — without classifying which fields are personal data, the erase operation cannot be scoped correctly.
+
+**Current state.** No PII classification. No right-to-erasure orchestration. Audit-log retention from Item 56 makes no provision for erasure-on-request even when the underlying user data is deleted.
+
+**Target state.** **(a) PII classification.** A `pii: PIIClass` field annotation on Pydantic model fields declares the field's classification: `direct_identifier` (name, email, phone), `pseudonymous` (user_id, session_key — replaceable on erasure with a sentinel), `sensitive` (SSN, financial info, health), `derived` (model output that may have absorbed PII via training), `none` (the default; field is not personal data). The annotation is enumerable via Item 52's contracts manifest, so a per-deployment PII inventory falls out of the model graph. **(b) Per-extension erase hook.** `AbstractStaticExtension.erase_user(user_id)` is an optional method extensions implement to delete or pseudonymize the user's data within their domain. The framework's central `UserManager.erase()` orchestrates the call across every installed extension in dependency order (reverse of Item 24/49 ordering), is idempotent (re-calling produces the same result), and is itself audit-logged with a special `erasure_event` class. **(c) Audit-log conflict.** Item 56's retention conflicts with erasure for legitimate-interest audit events; the resolution is field-level: the audit event keeps its outline (timestamp, action, outcome) but PII fields within the event are redacted to a sentinel on erasure, with a per-event-class flag (`pii_redactable: bool` defaulting True) that lets compliance-mandated full-fidelity retention opt out. **(d) Data export.** A symmetric `AbstractStaticExtension.export_user(user_id) -> dict` hook produces the user's data in a portable shape (JSON or CSV) for the GDPR Article 20 (data portability) right.
+
+**Implementation notes.** The `pii: PIIClass` annotation is metadata on the Pydantic field — it does not affect serialization unless paired with Item 45's field-level ABAC. The erasure orchestration must be transactional within each extension (`erase_user` runs inside a single transaction per extension); cross-extension atomicity is not guaranteed (which is realistic for a federated system) but the orchestration is idempotent so a partial-failure-then-retry produces a complete erasure. The `erasure_event` audit class is itself `pii_redactable=False` and `retention="forever"` — the audit-of-the-erasure must be preserved indefinitely as the regulator-defensible record.
+
+**Acceptance criteria.** A user submitting a right-to-erasure request via the documented endpoint has their data erased or pseudonymized across every installed extension; the orchestration is idempotent and audit-logged. A field annotated `pii=PIIClass.direct_identifier` appears in the generated PII inventory (the extension's `EXT.Contracts.md` entry per Item 52 lists it). A data-export request returns the user's data in JSON across every installed extension's `export_user` hook output.
+
+**Dependencies.** Cross-references Items 45 (field-level ABAC reuses the `pii` annotation), 52 (contracts manifest enumerates PII), 56 (audit retention is amended for redaction-on-erasure).
+
+---
+
+# Group 25 — Code Hygiene and Verified Doc/Code Divergences
+
+Items in this group are fourth-round audit findings against the live codebase: code-hygiene sweeps and specific code-vs-doc divergences that must be resolved alongside the architectural items above. These are not architectural improvements; they are debt the architectural work cannot land cleanly atop.
+
+## Item 73 — Code-hygiene sweep: prints, bare excepts, removed-model TODOs
+
+**Severity:** Medium
+**Scope:** ~43 `print()` calls in non-test source; ~20+ bare `except:` clauses; two `# TODO @Kristy NetworkModel doesn't exist anymore` markers.
+**Owner area:** Code quality.
+
+**Purpose.** Three code-hygiene patterns surfaced uniformly across the codebase that AGENTS.md ("write concise code; fail fast") and Item 85 (structured logging) both implicitly disallow: stray `print()` calls in production source paths; bare `except:` clauses without even `as e` binding (silent error swallowing); and stale TODO markers from an incomplete refactor (`NetworkModel` was removed but the codepaths that emit its name still exist). Each in isolation is small; together they are enough drag on production debugging that Item 85 (structured logging) cannot ship cleanly until they are resolved.
+
+**Current state.** Verified at audit time:
+- 43 `print()` calls in non-test source: `lib/Pydantic.py:1212`, `lib/Pydantic2FastAPI.py:2257-2290`, `app.py:379-404` (the last prints POSTed bodies unfiltered — a PII risk in production logs).
+- ~20+ bare `except:` clauses: `app.py:389,449,468`; `extensions/AbstractExtensionProvider.py:1268,1312,1479,1494,1513,1579,1613`; `lib/Pydantic2SQLAlchemy.py:146,156,168,493,512,1501,1503`; `extensions/meta_logging/BLL_Meta_Logging.py:574`; `lib/Dependencies.py:1357`.
+- Two `# TODO @Kristy NetworkModel doesn't exist anymore` markers at `lib/AbstractPydantic2.py:929` and `lib/Pydantic.py:588`, with the surrounding code still emitting the obsolete class name.
+
+**Target state.** **(a) Prints.** Every `print()` in non-test source is removed in the same change that lands Item 85's structured logging contract. The 43 sites are mechanically rewritten to `logger.debug(...)` with a useful message and structured fields where applicable. The `app.py:379-404` POST-response-body prints are removed entirely — they are debugging leftovers, not logging. **(b) Bare excepts.** Every bare `except:` is rewritten to `except SpecificException as e:` with the most-narrow type that matches the actual cases observed; `as e` is mandatory; the handler at minimum `logger.warning("...", exc_info=True)`s the exception; re-raising via `raise` is preferred where the current behavior of swallowing is itself a bug. AGENTS.md's "fail fast" rule applies. **(c) NetworkModel.** The two TODO markers are resolved by either reinstating the `NetworkModel` class as a thin alias around the replacement (`BaseNetworkModel`) for backward compatibility, or deleting the codepaths that reference it. Pick one and commit.
+
+**Implementation notes.** This is a large mechanical change. Best landed as a single PR with a clear commit message; CI signals the regression set. The print-to-logger rewrite is a sed-friendly transformation; the bare-except rewrite requires per-site judgment about which exception to catch and whether to re-raise. The NetworkModel resolution is a one-day refactor, not architecture work — the model registry's emission paths around `lib/Pydantic.py:586-1290` need a single coherent strategy.
+
+**Acceptance criteria.** No `print()` call exists in any non-test source file. No bare `except:` clause exists outside of `_test.py` files (test fixtures may use bare excepts in narrow setup/teardown contexts). The two `NetworkModel` TODO markers are resolved.
+
+**Dependencies.** Coordinates with Item 85 (structured logging is the destination for the print-rewrite). Independent otherwise.
+
+---
+
+## Item 74 — Replace mocked subscription-status return with real Stripe rotation call
+
+**Severity:** High
+**Scope:** `extensions/payment/BLL_Payment.py:312`.
+**Owner area:** Payment extension.
+
+**Purpose.** `BLL_Payment.py:312` carries the comment `# TODO: Implement actual subscription checking via rotation system` and returns a hardcoded `{"subscription_id": "sub_mock", "current_period_end": "2025-12-31T23:59:59Z"}`. The payment extension is documented as functional but ships a mocked subscription-status return that masquerades as a real query. Any caller relying on the result — auth flows that gate based on subscription state, billing-cycle reset logic, churn detection — is operating on a fiction.
+
+**Current state.** `get_subscription_status` returns a hardcoded mock dict.
+
+**Target state.** Replace the mock with a real call through the rotation system to the `subscription` ability on the active payment provider. The implementation pattern follows the documented `*_via_provider` shape from Item 1 (typed result contract) and Item 4 (idempotency) once those land; in the interim, the hand-coded path through the existing rotation primitive is acceptable as long as the result reflects the actual upstream state. The mocked return value is removed; an upstream failure surfaces as the typed error from Item 1's hierarchy rather than a fictional success.
+
+**Implementation notes.** This is a payment-extension concern, not framework. Item 14 (mirror-on-create) and Item 35 (outbox) provide the orchestration shape for keeping the local subscription record in sync with Stripe; this item is the simpler "read-through" path that does not require either. The `payment_info["has_payment_setup"]` check above the TODO is the existing precondition; preserve it.
+
+**Acceptance criteria.** `get_subscription_status(user_id)` returns the user's real subscription state from the upstream payment provider, not a hardcoded mock. A test against sandbox Stripe credentials per Item 15 verifies the real path.
+
+**Dependencies.** Cross-references Items 1 (typed errors), 4 (idempotency), 14 (mirror-on-create — the create path is symmetric), 15 (sandbox testing).
+
+---
+
+## Item 75 — Move soft-delete enforcement from BLL into the DB layer
+
+**Severity:** Medium
+**Scope:** `BLL_Auth.py:1165` workaround; `database/AbstractDatabaseEntity.py` (soft-delete primitive); every BLL query that filters by `deleted_at`.
+**Owner area:** Database / BLL.
+
+**Purpose.** `BLL_Auth.py:1165` carries the comment `# TODO: This is a temporary fix to block users from logging in after they have been deleted but the DB layer should handle this`. The login path checks `if user["deleted_at"]:` by hand and rejects. This pattern leaks across BLL: every query that should respect soft-delete depends on the BLL author remembering to filter, which is exactly the failure-mode `DB.Patterns.md` declares should not exist. A single missed filter is a tombstoned-record bug; in the case of login, it is a security-relevant tombstoned-record bug.
+
+**Current state.** `deleted_at` filtering is by convention in the BLL. No DB-layer enforcement.
+
+**Target state.** Soft-delete is implemented as a `SoftDeleteMixin` on `AbstractDatabaseEntity` that adds the `deleted_at` column and registers a SQLAlchemy `before_compile` query event that auto-injects `deleted_at IS NULL` into every read against tables tagged with the mixin. A bypass parameter (`include_deleted=True`) is offered for admin queries that genuinely need tombstoned records; without it, deleted rows are invisible to the BLL. The `BLL_Auth.py:1165` workaround is removed in the same change that lands the mixin; the login path naturally returns "user not found" because the soft-deleted user is invisible to the read.
+
+**Implementation notes.** SQLAlchemy's query-event approach is well-trodden; the framework already uses `before_compile` for related concerns (per `lib/Pydantic2SQLAlchemy.py`). The bypass flag uses a session-scoped marker so admin queries are explicit. This pairs with Item 55 (RLS) — both implement the "filter at the DB layer" defense-in-depth pattern, RLS for tenant isolation and this for soft-delete.
+
+**Acceptance criteria.** A `SoftDeleteMixin`-tagged model is queried from the BLL and tombstoned rows are invisible without any BLL-author filter clause. The `BLL_Auth.py:1165` workaround comment and the hand-written `if user["deleted_at"]:` check are removed; the login path produces the same correct rejection through the DB-layer filter alone.
+
+**Dependencies.** Cross-references Item 55 (RLS — sibling defense-in-depth pattern). Independent otherwise.
+
+---
+
+# Sequencing recommendations
+
+The work is organized into four roughly-parallel tracks once the eight Critical-path items land. The Critical-path summary at the top of this document names the gating set; everything below organizes the remaining work.
+
+- **Track A — External federation core.** Items 1, 2, 4, 5, 6, 10, 14, 17, 26, 35, 70. Ordered roughly: 1 → 2 → 4 (depend on the typed error hierarchy); 5 and 10 in parallel; 6 in parallel; 14 after 28 and 35; 17 anytime after 2 and 69; 26 and 70 are paired sibling-Critical items pinning the manager-and-bonded-instance contract.
+- **Track B — Pagination, search, navigation, GraphQL federation.** Items 7, 8, 9, 11, 12, 16, 29, 76, 87. Ordered roughly: 7 and 8 in parallel; 9 after 7; 11 anytime; 12 after 1, 4; 16 after 9, 10, 11, 15; 29 after 7, 8; 76 closes the documented-WebSocket gap; 87 closes GitHub #10.
+- **Track C — Cross-cutting framework hardening.** Items 15, 18, 19, 20, 21, 22, 23, 24, 25, 27, 28, 30, 64, 69, 72, 85. All largely independent of one another; 28 before 13 and 14; 18 before any extension that needs to register permissions; 19 before any provider work that involves billable usage; 64 paired with 25; 69 before 17/19/57; 72 closes the no-mock-pillar enforcement gap; 85 closes the structured-logging gap and the print()-cleanup half of Item 73.
+- **Track D — Operational, compliance, and packaging.** Items 60, 61, 62, 63, 65, 66, 67, 68, 71, 73, 74, 75, 77, 78, 79, 80, 81, 82, 83, 86. The pip-package items (60, 61, 62, 63, 65, 66, 67, 68) form an internal ordering keyed by Item 60 (rename) — see the Group 21 dependency notes; 86 (supply chain) blocks the first PyPI publish. The operational items (79, 80, 81) are independent of provider authorship and can land in any order; 82 is a compliance precondition for EU/CA/UK deployments; 83 is documentation only.
+- **Documentation-only.** Items 3, 52, 78.
+
+The expected Critical-path completion is the gate for opening provider work; the remaining items can be landed iteratively while provider authorship begins on the now-stable foundation. Track D items are gating for the *first PyPI publish* (Item 86) and the *first production deployment* (Items 79, 81), but not for in-tree provider authorship.
+
