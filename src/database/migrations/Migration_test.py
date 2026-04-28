@@ -75,6 +75,50 @@ def booted_app(tmp_path, monkeypatch):
     return _boot
 
 
+# ---------- Phase 2: registry-driven table.info stamps ------------------
+
+
+@pytest.mark.migration
+@pytest.mark.real
+@pytest.mark.extension
+@pytest.mark.mfa
+def test_extension_owned_table_stamped_with_extension(booted_app):
+    """Tables defined in extension modules get table.info["extension"] = name."""
+    app, _ = booted_app(extensions="auth_mfa")
+    registry = app.state.model_registry
+    found = {}
+    for sa_model in registry.db_models.values():
+        table = getattr(sa_model, "__table__", None)
+        if table is not None and "extension" in table.info:
+            found[table.name] = table.info["extension"]
+    assert found.get("multifactor_methods") == "auth_mfa", (
+        f"expected multifactor_methods stamped owner=auth_mfa; got {found}"
+    )
+
+
+@pytest.mark.migration
+@pytest.mark.real
+@pytest.mark.extension
+@pytest.mark.payment
+def test_core_table_extended_by_extension_stamped(booted_app):
+    """Core tables extended via @extension_model gather "payment" in
+    table.info["extensions"] (set, not scalar)."""
+    app, _ = booted_app(extensions="payment")
+    registry = app.state.model_registry
+    users_sa = None
+    for pyd, sa in registry.db_models.items():
+        if pyd.__name__ in ("UserModel", "User") or getattr(
+            sa.__table__, "name", ""
+        ) == "users":
+            users_sa = sa
+            break
+    assert users_sa is not None, "could not find users SA model"
+    extending = users_sa.__table__.info.get("extensions", set())
+    assert "payment" in extending, (
+        f"expected 'payment' in users.info['extensions']; got {extending}"
+    )
+
+
 # ---------- core upgrade -------------------------------------------------
 
 

@@ -344,111 +344,12 @@ class MigrationManager:
 
     @staticmethod
     def _is_core_table_extended_by_extension(table, extension_name):
+        """Whether `extension_name` extends `table` via @extension_model.
+
+        Reads the deterministic stamp written by
+        ModelRegistry._stamp_extension_table_ownership() at commit time.
         """
-        Check if a core table has been extended by the specified extension.
-
-        This checks the model extension registry to see if any extensions from
-        the specified extension have been applied to the model that corresponds
-        to this table.
-
-        Args:
-            table: SQLAlchemy table object
-            extension_name: Name of the extension to check
-
-        Returns:
-            bool: True if the table's model has been extended by this extension
-        """
-        try:
-            from lib.Pydantic2SQLAlchemy import get_applied_extensions
-
-            # Get the table class
-            table_class = getattr(table, "class_", None)
-            if not table_class:
-                return False
-
-            # Get applied extensions registry
-            applied_extensions = get_applied_extensions()
-
-            # Look for the target model in the applied extensions
-            # The table class might be the SQLAlchemy model, we need to find the corresponding Pydantic model
-            target_model_key = None
-
-            # Try to find the Pydantic model that corresponds to this SQLAlchemy table
-            # This is a bit tricky because we need to reverse-lookup from SQLAlchemy to Pydantic
-
-            # Strategy 1: Check if the table class has a reference to the Pydantic model
-            if hasattr(table_class, "_pydantic_model"):
-                pydantic_model = table_class._pydantic_model
-                target_model_key = (
-                    f"{pydantic_model.__module__}.{pydantic_model.__name__}"
-                )
-
-            # Strategy 2: Look for a model with similar naming in the applied extensions
-            if not target_model_key:
-                table_name = getattr(table, "name", "")
-                class_name = getattr(table_class, "__name__", "")
-
-                # Try to find a matching model in applied extensions
-                for target_key in applied_extensions.keys():
-                    if (
-                        class_name in target_key
-                        or stringcase.alphanumcase(table_name).lower()
-                        in target_key.lower()
-                    ):
-                        target_model_key = target_key
-                        break
-
-            # Strategy 3: Check by module name patterns
-            if not target_model_key and table_class:
-                module_name = table_class.__module__
-                class_name = table_class.__name__
-
-                # For core models, try common patterns
-                if module_name and (
-                    "logic.BLL_" in module_name or "database.DB_" in module_name
-                ):
-                    # Try to construct the likely Pydantic model key
-                    if "logic.BLL_" in module_name:
-                        # BLL model - the table class might be named differently
-                        # Look for models that end with "Model"
-                        for target_key in applied_extensions.keys():
-                            if (
-                                target_key.startswith("logic.BLL_")
-                                and "Model" in target_key
-                            ):
-                                # Check if this could be related to our table
-                                model_part = target_key.split(".")[-1]  # Get class name
-                                if (
-                                    model_part.replace("Model", "").lower()
-                                    in class_name.lower()
-                                    or class_name.replace("DB", "").lower()
-                                    in model_part.lower()
-                                ):
-                                    target_model_key = target_key
-                                    break
-
-            if not target_model_key:
-                logger.debug(f"Could not find Pydantic model for table {table.name}")
-                return False
-
-            # Check if this target model has extensions from our extension
-            if target_model_key in applied_extensions:
-                extension_list = applied_extensions[target_model_key]
-
-                # Check if any of the applied extensions are from our extension
-                for extension_key in extension_list:
-                    if f"extensions.{extension_name}." in extension_key:
-                        logger.debug(
-                            f"Found model extension {extension_key} for table {table.name} "
-                            f"from extension {extension_name}"
-                        )
-                        return True
-
-            return False
-
-        except Exception as e:
-            logger.debug(f"Error checking model extensions for table {table.name}: {e}")
-            return False
+        return extension_name in (table.info or {}).get("extensions", set())
 
     @staticmethod
     def env_include_object(object, name, type_, reflected, compare_to, base=None):
