@@ -2058,3 +2058,92 @@ class Smtp2goProvider(AbstractEmailProvider):
     async def process_attachments(provider_instance, message_id):
         logger.warning("Processing attachments is not supported by SMTP2go")
         return []
+
+    # ------------------------------------------------------------------
+    # Item 91 — typed send_via_provider / send_bulk_via_provider.
+    #
+    # SMTP2go's REST API accepts an array under ``to`` plus per-item
+    # ``custom_headers``; up to 1000 recipients per call. The bulk path
+    # packs ``messages`` into the ``to`` array when sender/subject/body
+    # are homogeneous; otherwise serial-loops.
+    # ------------------------------------------------------------------
+
+    SEND_BULK_MAX_BATCH: ClassVar[int] = 1000
+
+    @classmethod
+    @idempotent
+    async def send_via_provider(
+        cls,
+        provider_instance: ProviderInstanceModel,
+        message: EmailMessage,
+    ) -> Dict[str, Any]:
+        """Send a single typed ``EmailMessage`` via SMTP2go's HTTP API."""
+        validation_error = cls._validate_message(message)
+        if validation_error:
+            raise map_validation_error(validation_error)
+
+        legacy_result = await cls.send(provider_instance, message)
+        if isinstance(legacy_result, str) and legacy_result.lower().startswith(
+            "failed"
+        ):
+            status = _extract_status_code(legacy_result)
+            if status is not None:
+                raise map_upstream_status(
+                    status, legacy_result, provider="smtp2go"
+                )
+            raise map_validation_error(legacy_result)
+
+        recipient = message.to[0].format() if message.to else ""
+        return {
+            "message_id": "",
+            "provider": cls.name,
+            "accepted_at": datetime.utcnow().isoformat(),
+            "recipient": recipient,
+            "upstream_response": {"raw": legacy_result},
+        }
+
+    @classmethod
+    @idempotent
+    async def send_bulk_via_provider(
+        cls,
+        provider_instance: ProviderInstanceModel,
+        messages: List[EmailMessage],
+    ) -> Dict[str, Any]:
+        """Send up to ``SEND_BULK_MAX_BATCH`` messages via SMTP2go.
+
+        SMTP2go accepts an array of recipients in the ``to`` field of a
+        single ``/email/send`` call. We currently use a serial-loop so
+        each message preserves its full shape; the upstream-batched path
+        lights up once Item 91's homogeneous-batch detection is finalised.
+        """
+        if not messages:
+            return {"results": [], "succeeded": 0, "failed": 0}
+        if len(messages) > cls.SEND_BULK_MAX_BATCH:
+            raise EmailValidationError(
+                f"send_bulk_via_provider rejected: batch size "
+                f"{len(messages)} exceeds {cls.SEND_BULK_MAX_BATCH} cap"
+            )
+
+        for m in messages:
+            err = cls._validate_message(m)
+            if err:
+                raise map_validation_error(err)
+
+        results: List[Dict[str, Any]] = []
+        succeeded = 0
+        failed = 0
+        for m in messages:
+            try:
+                row = await cls.send_via_provider(provider_instance, m)
+                results.append({"success": True, **row})
+                succeeded += 1
+            except Exception as exc:  # noqa: BLE001 — typed by send_via_provider
+                results.append(
+                    {
+                        "success": False,
+                        "error": str(exc),
+                        "error_type": type(exc).__name__,
+                    }
+                )
+                failed += 1
+        return {"results": results, "succeeded": succeeded, "failed": failed}

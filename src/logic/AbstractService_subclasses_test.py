@@ -12,7 +12,9 @@ from typing import Any, List
 import pytest
 
 from logic.AbstractService import (
+    DEFAULT_DRAIN_PERIOD_SECONDS,
     ConsumerStreamingService,
+    HealthStatus,
     InMemoryQueueSource,
     PerpetualService,
     ProducerStreamingService,
@@ -161,3 +163,93 @@ def test_subclass_aliases_exist():
     assert issubclass(ProducerStreamingService, StreamingService)
     # PerpetualService is a transparent alias for AbstractService semantics.
     assert PerpetualService is not None
+
+
+# ---------------------------------------------------------------------------
+# Item 28 cross-flavor lifecycle: health, drain period, restart policy, failed
+# ---------------------------------------------------------------------------
+
+
+class _NoopPerpetual(PerpetualService):
+    async def update(self) -> None:
+        return None
+
+
+@pytest.mark.unit
+def test_default_drain_period_is_30s():
+    assert DEFAULT_DRAIN_PERIOD_SECONDS == 30.0
+    svc = _NoopPerpetual(requester_id="r")
+    assert svc.drain_period_seconds == 30.0
+
+
+@pytest.mark.unit
+def test_drain_period_override():
+    svc = _NoopPerpetual(requester_id="r", drain_period_seconds=5)
+    assert svc.drain_period_seconds == 5
+
+
+@pytest.mark.unit
+def test_default_restart_policy_is_on_failure():
+    svc = _NoopPerpetual(requester_id="r")
+    assert svc.restart_policy == "on_failure"
+
+
+@pytest.mark.unit
+def test_restart_policy_override():
+    svc = _NoopPerpetual(requester_id="r", restart_policy="always")
+    assert svc.restart_policy == "always"
+
+
+@pytest.mark.unit
+def test_health_when_not_running():
+    svc = _NoopPerpetual(requester_id="r")
+    h = svc.health()
+    assert h.status == HealthStatus.DOWN
+
+
+@pytest.mark.unit
+def test_health_when_running():
+    svc = _NoopPerpetual(requester_id="r")
+    svc.start()
+    assert svc.health().status == HealthStatus.OK
+    svc.pause()
+    assert svc.health().status == HealthStatus.DEGRADED
+    svc.resume()
+    assert svc.health().status == HealthStatus.OK
+    svc.stop()
+
+
+@pytest.mark.unit
+def test_failed_state_after_max_failures():
+    svc = _NoopPerpetual(requester_id="r", max_failures=1)
+    # Trip through _handle_failure to enter terminal failed state.
+    try:
+        svc._handle_failure(RuntimeError("boom"))
+    except Exception:
+        pass
+    try:
+        svc._handle_failure(RuntimeError("boom"))
+    except Exception:
+        pass
+    assert svc.failed is True
+    assert svc.health().status == HealthStatus.FAILED
+
+
+@pytest.mark.unit
+def test_reset_failed_clears_state():
+    svc = _NoopPerpetual(requester_id="r", max_failures=0)
+    try:
+        svc._handle_failure(RuntimeError("boom"))
+    except Exception:
+        pass
+    assert svc.failed is True
+    svc.reset_failed()
+    assert svc.failed is False
+    assert svc.failures == 0
+
+
+@pytest.mark.unit
+def test_health_status_to_dict():
+    svc = _NoopPerpetual(requester_id="r")
+    d = svc.health().to_dict()
+    assert "status" in d and "detail" in d and "timestamp" in d
