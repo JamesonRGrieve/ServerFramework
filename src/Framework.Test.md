@@ -170,6 +170,22 @@ Extension Test → Provider Test (inherits DB + server)
 - **Memory Testing**: Memory usage patterns and leak detection
 - **Concurrency Testing**: Multi-user scenario validation
 
+### Scalability Testing (Big-O assertion)
+
+`lib.Scalability` provides parameterized Big-O assertions consumed by all three layered abstract tests. Every `AbstractDBTest`, `AbstractBLLTest`, and `AbstractEPTest` subclass inherits a `test_scalability_*_n_factor` method parametrized over `{TIME, QUERY_COUNT, MEMORY}`. The test is skipped unless the subclass opts in via `scalability_profile`:
+
+```python
+from lib.Scalability import ScalabilityProfile, ScalingMetric
+
+class TestUserDB(AbstractDBTest):
+    scalability_profile = ScalabilityProfile.default(
+        n_values=[5, 15, 50],
+        metrics=[ScalingMetric.TIME, ScalingMetric.QUERY_COUNT],
+    )
+```
+
+The framework seeds N entities at each `n`, runs the operation under measurement, fits `T(n) = a·n^k` via log-log regression, and asserts `k` stays under the per-metric maximum. Defaults: `k ≤ 1.4` for time/memory, `k ≤ 0.4` for query count — calibrated so that N+1 query patterns (which produce `k ≈ 1`) trip the gate. See [lib/LIB.Scalability.md](lib/LIB.Scalability.md).
+
 ## Testing Tools and Framework
 
 ### Core Testing Stack

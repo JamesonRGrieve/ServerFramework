@@ -17,6 +17,7 @@ from AbstractTest import (
     SkipThisTest,
 )
 from lib.Environment import env
+from lib.Scalability import ScalabilityProfile, ScalingMetric
 from logic.AbstractBLLTest import AbstractBLLTest
 from logic.BLL_Auth import (
     InvitationManager,
@@ -394,6 +395,11 @@ class TestTeamManager(AbstractBLLTest):
         "description": f"Updated {faker.sentence()}",
     }
     unique_fields = ["name"]
+    scalability_profile = ScalabilityProfile.default(
+        n_values=[3, 8, 20],
+        metrics=[ScalingMetric.TIME, ScalingMetric.QUERY_COUNT, ScalingMetric.MEMORY],
+        repetitions=2,
+    )
 
     def test_create_team_with_empty_name_fails(self, admin_a, model_registry):
         """Test that team creation with empty name fails."""

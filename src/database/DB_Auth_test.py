@@ -9,6 +9,7 @@ from faker import Faker
 from AbstractTest import ParentEntity
 from database.AbstractDBTest import AbstractDBTest
 from lib.Environment import env
+from lib.Scalability import ScalabilityProfile, ScalingMetric
 
 # Import BLL models which will be converted to SQLAlchemy models via .DB()
 from logic.BLL_Auth import (
@@ -295,6 +296,11 @@ class TestTeam(AbstractDBTest):
         "description": "Updated TeamModel description",
     }
     unique_fields = ["name"]
+    scalability_profile = ScalabilityProfile.default(
+        n_values=[3, 8, 20],
+        metrics=[ScalingMetric.TIME, ScalingMetric.QUERY_COUNT, ScalingMetric.MEMORY],
+        repetitions=2,
+    )
 
 
 class TestMetadataUserOnly(AbstractDBTest):

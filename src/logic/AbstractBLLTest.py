@@ -6,6 +6,11 @@ import pytest
 from AbstractTest import AbstractTest, CategoryOfTest, ClassOfTestsConfig
 from lib.Environment import env
 from lib.Logging import logger
+from lib.Scalability import (
+    ScalabilityProfile,
+    ScalingMetric,
+    assert_scaling_within_bounds,
+)
 from logic.AbstractLogicManager import AbstractBLLManager
 
 
@@ -1161,3 +1166,64 @@ class AbstractBLLTest(AbstractTest):
                     assert isinstance(
                         hooks["after"], list
                     ), f"'after' hooks for {method_name} should be a list"
+
+    # ------------------------------------------------------------------ #
+    # Scalability / Big-O assertions
+    # ------------------------------------------------------------------ #
+    # Subclasses opt in by setting `scalability_profile`. Asserts that
+    # `manager.list()` scales within the configured exponent for time,
+    # query count, and peak memory as the underlying entity count grows.
+    # The Big-O exponent caught here is the one driving the framework's
+    # n-factor SLO: regressions surface as a metric-specific assertion
+    # rather than a single opaque pass/fail.
+
+    scalability_profile: Optional[ScalabilityProfile] = None
+
+    @pytest.mark.parametrize(
+        "metric",
+        sorted(
+            [ScalingMetric.TIME, ScalingMetric.QUERY_COUNT, ScalingMetric.MEMORY],
+            key=lambda m: m.value,
+        ),
+    )
+    def test_scalability_list_n_factor(
+        self, admin_a, team_a, server, model_registry, metric: ScalingMetric
+    ):
+        """Big-O assertion: manager.list() must stay within the configured
+        exponent for time, query count, and peak memory as the BLL surface
+        scales out. Catches accidental N+1 in resolver chains, hook-storm
+        regressions, and per-entity fan-out."""
+        if self.scalability_profile is None:
+            pytest.skip("scalability_profile not configured on this test class")
+        if metric not in self.scalability_profile.metrics:
+            pytest.skip(f"metric {metric.value} not enabled in scalability_profile")
+
+        self.server = server
+        self.model_registry = model_registry
+        seeded = {"count": 0}
+
+        def setup(target_n: int) -> None:
+            while seeded["count"] < target_n:
+                self._create(
+                    admin_a.id,
+                    team_a.id,
+                    key=f"scalability_seed_{seeded['count']}",
+                    server=server,
+                    model_registry=model_registry,
+                )
+                seeded["count"] += 1
+
+        requester = env("SYSTEM_ID") if self.is_system_entity else admin_a.id
+
+        def operation(_n: int) -> None:
+            manager = self.class_under_test(
+                requester_id=requester,
+                target_team_id=team_a.id,
+                model_registry=model_registry,
+            )
+            manager.list()
+
+        engine = model_registry.database_manager.engine
+        assert_scaling_within_bounds(
+            operation, self.scalability_profile, metric, engine=engine, setup=setup
+        )
