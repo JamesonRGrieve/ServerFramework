@@ -889,6 +889,71 @@ class TestSeedModelBehavior:
 
         static_seeder.seed_model(FaultyModel, None, None, None)
 
+    def test_seed_model_accepts_typed_pydantic_instances(self):
+        """Item 38 — a seed_list declared as `List[ModelClass]` (typed
+        Pydantic instances rather than dicts) is normalized to dicts at
+        the seeder boundary so the rest of the pipeline keeps its shape.
+        Field typos and missing required fields surface at Pydantic
+        instantiation (import time) rather than at seeding time."""
+        from pydantic import BaseModel
+
+        class TypedSeed(BaseModel):
+            id: str
+            name: str
+
+        created = []
+
+        class TypedSeedModel:
+            __name__ = "TypedSeedModel"
+            seed_list = [
+                TypedSeed(id="typed-1", name="alpha"),
+                TypedSeed(id="typed-2", name="beta"),
+            ]
+
+            @classmethod
+            def exists(cls, requester_id, model_registry, **kwargs):
+                return False
+
+            @classmethod
+            def create(cls, creator_id, model_registry, return_type="db", **item):
+                created.append(item)
+
+        static_seeder.seed_model(TypedSeedModel, None, None, None)
+
+        # The Pydantic instances are converted via model_dump so the
+        # `create` call receives the same kwargs as the dict path.
+        assert {item["id"] for item in created} == {"typed-1", "typed-2"}
+        assert all("name" in item for item in created)
+
+    def test_seed_model_skips_invalid_seed_item_types(self):
+        """Item 38 — seed entries that are neither dicts nor Pydantic
+        models are skipped with a warning rather than crashing the
+        seeder. This guards against accidental string / list seed entries
+        slipping past the type check at declaration time."""
+
+        class MixedSeedModel:
+            __name__ = "MixedSeedModel"
+            seed_list = [
+                {"id": "ok", "name": "valid"},
+                "this-is-not-a-valid-seed-entry",
+                42,
+            ]
+
+            @classmethod
+            def exists(cls, requester_id, model_registry, **kwargs):
+                return False
+
+            @classmethod
+            def create(cls, creator_id, model_registry, return_type="db", **item):
+                MixedSeedModel.created = getattr(MixedSeedModel, "created", []) + [item]
+
+        static_seeder.seed_model(MixedSeedModel, None, None, None)
+
+        # Only the dict survives; bare string and int are dropped.
+        created = getattr(MixedSeedModel, "created", [])
+        assert len(created) == 1
+        assert created[0]["id"] == "ok"
+
 
 @pytest.mark.seed
 @pytest.mark.db

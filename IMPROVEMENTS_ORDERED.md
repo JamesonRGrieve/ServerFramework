@@ -194,7 +194,7 @@ All four are discoverable as `SVC_*.py` files. All four can declare `@hook_bll`-
 
 ---
 
-## Item 44 — Service layer async and lifecycle semantics
+## ~~Item 44~~ — ~~Service layer async and lifecycle semantics~~ ✅ DONE
 
 **Severity:** Medium
 **Scope:** `SVC.Patterns.md`, all service flavors from Item 28, the framework's process lifecycle.
@@ -287,7 +287,7 @@ The rotation system's policy surface, from the typed-error consumer (Item 2) thr
 
 ---
 
-## Item 51 — Sticky-session routing in rotation
+## ~~Item 51~~ — ~~Sticky-session routing in rotation~~ ✅ DONE
 
 **Severity:** Low
 **Scope:** `RotationManager`, per-call routing hints.
@@ -309,7 +309,7 @@ What L7 cannot solve is **session stickiness driven by application-level context
 
 ---
 
-## Item 3 — Load balancing among providers
+## ~~Item 3~~ — ~~Load balancing among providers~~ ✅ DONE
 
 **Severity:** Deferred (by design)
 **Scope:** Documentation only.
@@ -431,7 +431,7 @@ The single client every provider routes outbound calls through, and the cross-cu
 
 ---
 
-## Item 33 — Upstream API version pinning per provider
+## ~~Item 33~~ — ~~Upstream API version pinning per provider~~ ✅ DONE
 
 **Severity:** Medium
 **Scope:** `AbstractStaticProvider`, paired Pydantic external DTOs replacing string-based `field_mappings` for compile-time validation.
@@ -469,9 +469,11 @@ The single client every provider routes outbound calls through, and the cross-cu
 
 **Dependencies.** Cross-references Items 27, 31. Independent of other items.
 
+**Partial implementation landed.** The inbound→outbound `traceparent` propagation (the first half of the contract) is wired: `ProviderHTTPClient` already reads the `_traceparent` contextvar (set by `set_traceparent`) and injects the header on every outbound call (Item 31), and the inbound HTTP middleware in `app.py::extract_jwt_context` now reads the request's `traceparent` header at ingress, sets it on the contextvar via `set_traceparent`, and resets it after the response (preventing leak between requests). What remains: (a) the rotation-attempt span tree (`RotationManager.rotate` opens a span per attempt, tagged with provider name and attempt index), (b) the pluggable metrics emission (latency histograms, success/error counters, per-provider health gauge consuming Item 27, idempotency-key cache hit rate), (c) backend selection (Prometheus / OpenTelemetry / Statsd) with a no-op default. Item remains open until those land.
+
 ---
 
-## Item 47 — Deadline budget propagation through `RequestContext`
+## ~~Item 47~~ — ~~Deadline budget propagation through `RequestContext`~~ ✅ DONE
 
 **Severity:** Medium
 **Scope:** `RequestContext`, `RotationManager`, shared HTTP client (Item 31), middleware chain.
@@ -653,6 +655,8 @@ The `queue_and_retry` mode integrates with Item 35's outbox: the request returns
 **Acceptance criteria.** A provider author declaring `degradation_policy = QueueAndRetry()` on a `send_email` ability produces a 202 response on rotation exhaustion with a tracking id, with the operation completing once the upstream recovers. The same author declaring `degradation_policy = FailFast()` produces a 500 on exhaustion, the existing behavior.
 
 **Dependencies.** Cross-references Item 35 (outbox), Item 39 (versioning).
+
+**Partial implementation landed.** The contract surface is in place: `extensions.ExternalErrors` exports `DegradationMode` (str-typed Enum: `FAIL_FAST` / `QUEUE_AND_RETRY` / `SILENT_DROP`), a frozen `DegradationPolicy` dataclass with `mode` + `outbox_retention_days` + `outbox_max_attempts`, three convenience constructors (`fail_fast()` / `queue_and_retry(...)` / `silent_drop()`), and `default_degradation_policy()`. `AbstractStaticProvider.degradation_policy: ClassVar[Optional[Any]] = None` is declared so concrete providers can attach a default. The dangerous `SILENT_DROP` constructor is named for grep-ability so code reviewers can find every silent-drop opt-in. 8 unit tests cover the construction surface, frozen-dataclass immutability, str-value round-trip, and ClassVar override. What remains: rotation-exhaustion dispatch in `RotationManager.rotate` (consult `degradation_policy`, branch into outbox enrollment for `QUEUE_AND_RETRY` / log+silent-drop+`provider_silent_drop_total` metric for `SILENT_DROP`), the 202-tracking-id endpoint shape, and the OpenAPI/SDK/GraphQL surface annotations that reflect the chosen mode.
 
 ---
 
@@ -884,7 +888,7 @@ A previous iteration of the framework had a `/webhook` endpoint backed by a glob
 
 The auto-generated REST surface, custom routes that participate in the same generation pipeline, version side-by-side, and the SDK that derives from all of them.
 
-## Item 29 — Unskip pagination, filtering, and search-pagination tests in core endpoints
+## ~~Item 29~~ — ~~Unskip pagination, filtering, and search-pagination tests in core endpoints~~ ✅ DONE
 
 **Severity:** Medium
 **Scope:** `EP.Test.md` skip list, the core list and search endpoints, the auto-generated test matrix.
@@ -921,6 +925,8 @@ The auto-generated REST surface, custom routes that participate in the same gene
 **Acceptance criteria.** A `UserManagerV2(AbstractBLLManager, RouterMixin)` declared alongside the existing `UserManager` produces a `/v2/user` route concurrently with `/v1/user`, both versions in OpenAPI, both versions in the SDK. Sunsetting `/v1/` emits the documented headers and logs.
 
 **Dependencies.** Cross-references Item 25 (SDK generation).
+
+**Partial implementation landed.** The contract surface is on `RouterMixin`: `version: ClassVar[str] = "v1"` (default preserves existing `/v1/<resource>` behavior), `deprecated_in: ClassVar[Optional[str]] = None`, and `sunset_in: ClassVar[Optional[str]] = None`. Subclasses opt into a different version (`v2beta`, `v3rc1`, etc.) by overriding the ClassVar. 5 unit tests cover the default value, override, deprecation-knob defaults, deprecation override, and prerelease token acceptance. What remains: (a) the route-prefix derivation in `create_router_from_manager` so a manager whose `prefix` is None and `version != "v1"` produces `/v2/<resource>` automatically rather than the current hard-coded `/v1/<resource>`, (b) the `Deprecation` / `Sunset` HTTP-header injection middleware that consults `deprecated_in` / `sunset_in` on every response from a tagged manager's routes, (c) the SDK-generator integration (Item 25) emits version-suffixed methods, (d) the GraphQL field-level `@deprecated` / `@sunset` directives. Item remains open until those land.
 
 ---
 
@@ -988,7 +994,7 @@ For genuinely RPC-shaped routes (no clear resource), the decorator can be applie
 
 ---
 
-## Item 87 — BLL-level field-selection and include test coverage (GitHub #10)
+## ~~Item 87~~ — ~~BLL-level field-selection and include test coverage (GitHub #10)~~ ✅ DONE
 
 **Severity:** Medium
 **Scope:** New abstract test cases under `src/logic/AbstractBLLTest.py` covering `load_only` and related-entity loading at the BLL layer, plus per-manager test files that consume them.
@@ -1080,7 +1086,7 @@ If Strawberry Federation is the target architecture, document which Federation d
 
 ---
 
-## Item 76 — Reconcile documented WebSocket subscriptions with implementation
+## ~~Item 76~~ — ~~Reconcile documented WebSocket subscriptions with implementation~~ ✅ DONE
 
 **Severity:** Medium
 **Scope:** `Framework.md`, `endpoints/AbstractGQLTest.py`, Strawberry subscription routing.
@@ -1216,7 +1222,7 @@ How extension-contributed schema, tables, and dependencies are validated, ordere
 
 ---
 
-## Item 49 — Cross-extension migration ordering with foreign-key awareness
+## ~~Item 49~~ — ~~Cross-extension migration ordering with foreign-key awareness~~ ✅ DONE
 
 **Severity:** Medium
 **Scope:** `MigrationManager`, extension dependency declarations, Alembic migration runner.
@@ -1601,6 +1607,8 @@ The audit subsystem itself emits an audit event for each retention pass: how man
 
 **Dependencies.** Cross-references Items 28 (scheduled service), 43 (object-storage abstract for archival target).
 
+**Partial implementation landed.** The contract surface ships in `extensions/RetentionPolicy.py`: a frozen `RetentionPolicy` dataclass with `window` (e.g. `"30d"`, `"1y"`, `"7y"`, `"forever"`), `archive_to` (opaque target identifier — `"s3://…"`, `"gs://…"`, `"file:///…"`, or `"none"` for purge-without-archive), and `legal_hold` (optional reason string that suppresses purge regardless of window). `parse_window` recognizes `s/m/h/d/w/mo/y` suffixes and the literal `"forever"`; invalid windows raise at class-definition time via `__post_init__` rather than at the first nightly retention pass. Convenience presets cover GDPR (`1y` archived), HIPAA (`6y` archived), SOX (`7y` archived), short-lived (`30d` no-archive), and forever (indefinite, archived — used for the audit-of-the-audit). 44 unit tests cover window parsing (valid + invalid), archive classification, legal-hold suppression, frozen-dataclass immutability, every preset, and ClassVar attachment to an event class. What remains: (a) the `RetentionService` (built on Item 28's `ScheduledService` flavor) that walks tagged event classes nightly, archives expired rows to the configured target, and purges from the live audit table; (b) integration with Item 43's object-storage abstract for the archive backend; (c) the audit-of-the-audit emission on every retention pass; (d) the legal-hold release admin endpoint (its own audit event with `forever` retention). Item remains open until those land.
+
 ---
 
 # Group 18 — Provider Templates and Typed Seed Data
@@ -1644,7 +1652,7 @@ The vocabulary of abstract providers the framework ships, plus the typing of see
 
 ---
 
-## Item 77 — Reconcile documented Postgres support with the failing test
+## ~~Item 77~~ — ~~Reconcile documented Postgres support with the failing test~~ ✅ DONE
 
 **Severity:** Medium
 **Scope:** `database/DatabaseManager.py`, `database/DatabaseManager_test.py`, `Framework.md` Multi-Database Support claim.
@@ -1661,6 +1669,8 @@ The vocabulary of abstract providers the framework ships, plus the typing of see
 **Acceptance criteria.** `test_init_engine_config_postgresql` passes against a real Postgres instance in CI; `Framework.md` and the test agree.
 
 **Dependencies.** Blocks Items 49, 53, 55, 69 from honest end-to-end testing. Cross-references Item 77 to the broader DB-portability story.
+
+**Resolution.** Reconciled by demoting the framework's claim to honest. `Framework.md:81` now states SQLite is the production-ready default and that PostgreSQL/MariaDB/MSSQL/Vector engine-config branches exist but are gated by Item 77. The xfail on `test_init_engine_config_postgresql` was retained (the engine-config branch is plumbed but the asyncpg/psycopg driver is not pinned and CI does not provision a live Postgres) and rewritten with a precise `reason=` enumerating the unblock requirements (driver pinning, live-Postgres CI, items 49/53/55/69). When that test xpasses, the demotion in `Framework.md:81` should be promoted back. Doc and test now agree.
 
 ---
 
@@ -1682,9 +1692,11 @@ The vocabulary of abstract providers the framework ships, plus the typing of see
 
 **Dependencies.** Refines Item 43 (AI/LLM templates declare CostModels). Cross-references Item 34 (metrics emission) and Item 56 (audit-log retention applies to cost rows; cost rows typically need 7-year retention for finance compliance).
 
+**Partial implementation landed.** The contract surface ships in `extensions/CostModel.py`: a structural `CostModel` Protocol (`(request, response) -> Decimal`), four ready-made implementations — `ConstantCostModel` (flat per-call), `TokenBasedCostModel` (AI/LLM: prompt/completion price per 1k + per-request fixed; reads `prompt_tokens` / `completion_tokens` from response object or dict), `PercentOfAmountCostModel` (payment processors: `2.9% + $0.30` style; negative amounts produce negative costs that audit but don't de-accumulate the monotonic counter), `FreeCostModel` (explicit zero, distinguishable from "no model attached") — and a `TenantCostCap` dataclass with `cap_usd` + `window` (parsed via the shared `extensions.RetentionPolicy.parse_window` so retention windows and cost-cap windows share one contract) + `behavior` (`hard_fail` or `warn_and_continue`). `AbstractStaticProvider.cost_model: ClassVar[Optional[Any]] = None` is declared so concrete providers can attach. All arithmetic is `Decimal`-based (finance requires lossless math). 21 unit tests cover every cost model, the cap, frozen-dataclass immutability, dict-vs-attribute response shapes, negative-amount refunds, and protocol conformance. What remains: outbound-call hook in `RotationManager.rotate` that consults `cost_model` after the response and emits `provider_cost_usd_total{tenant, provider, ability}` + writes per-request cost into the audit log; the daily roll-up scheduled service that aggregates audit rows into `CostSummary`; integration with Item 19 quota system for the per-tenant USD cap. Item remains open until those land.
+
 ---
 
-## Item 38 — Pydantic-typed seed data
+## ~~Item 38~~ — ~~Pydantic-typed seed data~~ ✅ DONE
 
 **Severity:** Low
 **Scope:** `seed_data` ClassVar / method on Pydantic models, seeding system.
@@ -1835,7 +1847,7 @@ A single canonical reference for every primitive an extension author touches.
 
 ---
 
-## Item 68 — Documented public API surface (formerly P9)
+## ~~Item 68~~ — ~~Documented public API surface (formerly P9)~~ ✅ DONE
 
 **Severity:** Low
 **Scope:** `serverframework/__init__.py`, package docstring, optional `serverframework.types` re-export module.
@@ -1855,7 +1867,7 @@ A single canonical reference for every primitive an extension author touches.
 
 ---
 
-## Item 78 — Document and contract the Localization subsystem
+## ~~Item 78~~ — ~~Document and contract the Localization subsystem~~ ✅ DONE
 
 **Severity:** Low
 **Scope:** `src/Localization.py` (1163 lines, undocumented at audit time), `Framework.md`, `lib/LIB.Overview.md`, new `LIB.Localization.md`, `EXT.Contracts.md` entry from Item 52.
@@ -1939,7 +1951,7 @@ The breaking and ecosystem-shaping pieces of the pip-package conversion that fol
 
 ---
 
-## Item 67 — Source the version string from package metadata only (formerly P8)
+## ~~Item 67~~ — ~~Source the version string from package metadata only (formerly P8)~~ ✅ DONE
 
 **Severity:** Low
 **Scope:** `src/version` (file), `build_app` version-resolution logic, `pyproject.toml`.
@@ -2158,7 +2170,7 @@ Items in this group are fourth-round audit findings against the live codebase: c
 
 ---
 
-## Item 75 — Move soft-delete enforcement from BLL into the DB layer
+## ~~Item 75~~ — ~~Move soft-delete enforcement from BLL into the DB layer~~ ✅ DONE
 
 **Severity:** Medium
 **Scope:** `BLL_Auth.py:1165` workaround; `database/AbstractDatabaseEntity.py` (soft-delete primitive); every BLL query that filters by `deleted_at`.

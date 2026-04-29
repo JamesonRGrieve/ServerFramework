@@ -265,9 +265,25 @@ class TestDatabaseManager:
             assert manager.engine_config is not None
             assert manager.async_engine_config is not None
 
-    @pytest.mark.xfail(reason="Postgres not yet supported.")
+    @pytest.mark.xfail(
+        reason=(
+            "Item 77 — PostgreSQL engine config is wired (see DatabaseManager."
+            "init_engine_config Postgres branch) but the asyncpg/psycopg "
+            "driver is not pinned in requirements.lock and CI does not "
+            "provision a live Postgres, so create_engine() fails at module "
+            "import resolution time. Production-ready support remains "
+            "blocked on driver pinning + CI provisioning + items 49/53/55/69."
+        ),
+        strict=False,
+    )
     def test_init_engine_config_postgresql(self):
-        """Test engine configuration initialization for PostgreSQL."""
+        """Test engine configuration initialization for PostgreSQL.
+
+        Item 77 — when this test xpasses, the framework's multi-DB claim
+        in Framework.md should be promoted from "in progress" to
+        production-ready, and Items 49/53/55/69 unblock from honest
+        end-to-end testing on Postgres.
+        """
         env = {
             "DATABASE_TYPE": "postgresql",
             "DATABASE_NAME": "test.static.db",

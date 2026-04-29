@@ -78,7 +78,7 @@ Extensions and services use consistent configuration:
 ## Database Layer
 
 ### Management
-- **DatabaseManager**: Thread-safe connection pooling with multi-database support (PostgreSQL, SQLite, MariaDB, MSSQL, Vector)
+- **DatabaseManager**: Thread-safe connection pooling. **SQLite is the production-ready default** (the only backend with a passing engine-config test). PostgreSQL/MariaDB/MSSQL/Vector engine-config branches exist and are wired through `init_engine_config`, but the Postgres path is gated by Item 77 — driver pinning (asyncpg/psycopg), CI provisioning of a live Postgres, and the corresponding Big-O / migration tests still need to land before the multi-DB claim is honest. See `IMPROVEMENTS_ORDERED.md` Item 77 (and the items it gates: 49, 53, 55, 69) for the path forward.
 - **Declarative Base Isolation**: Each DatabaseManager instance maintains separate declarative base
 - **Migration System**: Alembic-based with core and extension-specific migrations, automatic dependency resolution
 
@@ -125,7 +125,7 @@ Extensions and services use consistent configuration:
 ### GraphQL Integration
 - **Automatic Mapping**: Pydantic models automatically converted to GraphQL schemas
 - **Dynamic Schema**: Runtime schema generation with type safety
-- **Real-Time Subscriptions**: WebSocket-based real-time data updates
+- **Real-Time Subscriptions**: **Deferred** (Item 76). Strawberry's WebSocket subscription transport is not wired into the FastAPI app today; `endpoints/AbstractGQLTest.py` treats "WebSocket not supported" as an expected response. End-to-end subscription delivery depends on the streaming-service flavor (Item 13), the cross-process event bus (Item 42), and the GraphQL composition contract (Item 46). Until all three land, declaring a Strawberry subscription on a `RouterMixin` manager will not deliver events through this server. Track Item 76 for the unblock.
 - **Unified Queries**: Single endpoint for complex data retrieval patterns
 
 ## Extension System
@@ -138,15 +138,22 @@ Extensions and services use consistent configuration:
 
 ### Provider Rotation
 - **External API Management**: Unified interface for external service integration
-- **Failover Support**: Automatic provider rotation on failure
+- **Failover Support**: Automatic provider rotation on failure (rotation is a **failover mechanism only**, not a load distributor — Item 3)
 - **AbstractExternalModel**: Standardized external API integration patterns
 - **Configuration Management**: Provider-specific configuration with validation
+- **Load balancing is delegated to L7 infrastructure** (HAProxy or equivalent). Round-robin, weighted, latency-based, and percentage-canary routing are explicitly out of scope; the rotation chain implements failover only. The lone carve-out is **session stickiness** (Item 51): pinning an LLM conversation or other application-level session to one upstream remains rotation's concern because L7 cannot see the application key.
 
 ### Core Extensions
 - **auth_mfa**: Multi-factor authentication (TOTP, email, SMS)
 - **email**: SendGrid integration with template support
 - **payment**: Stripe payment processing with subscription management
 - **database**: Multi-database support with natural language querying
+
+### Localization (`src/Localization.py`)
+- **Locale-aware metadata**: `docs.<locale>.json` per-locale dictionaries supply translated table comments, column comments, singular/plural nouns, relationship names, and Swagger descriptions for every entity.
+- **`@localized_model` decorator**: applies the active locale's metadata to a SQLAlchemy declarative class — derives `__tablename__`, fills `Column.comment`, rewrites `back_populates`, and lets foreign keys target the locale-derived table name.
+- **Module-level helpers** (`relationship`, `foreign_key`): drop-in replacements for the SQLAlchemy originals that consult the locale.
+- **Singleton** (`Localization()`): process-global locale state. Per-request locale switching is currently out of scope (would live on top of Item 47's `RequestContext`). See [`lib/LIB.Localization.md`](./lib/LIB.Localization.md) for the architectural summary and public-symbol contract (Item 78).
 
 ## Framework Design Philosophy
 
