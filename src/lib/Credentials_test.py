@@ -14,6 +14,7 @@ from lib.Credentials import (
     Secret,
     SecretValue,
     _CACHE,
+    cache_bust_on_auth_rejection,
     clear_bad,
     invalidate,
     is_marked_bad,
@@ -153,3 +154,30 @@ def test_validate_environment_skips_non_production(isolated_env):
     ref = CredentialRef(tier="env", path="CRED_TEST_API_KEY")
     validate_environment_credentials("development", {"stripe": ref})
     validate_environment_credentials("staging", {"stripe": ref})
+
+
+@pytest.mark.unit
+def test_cache_bust_on_auth_rejection_returns_new_value(isolated_env):
+    """Re-resolved value differs -> credential rotated externally;
+    return the new value and clear the bad marker."""
+    isolated_env.setenv("APP_ENV", "development")
+    isolated_env.setenv("CRED_TEST_API_KEY_TEST", "v1")
+    ref = CredentialRef(tier="env", path="CRED_TEST_API_KEY")
+    assert ref.resolve() == "v1"
+    isolated_env.setenv("CRED_TEST_API_KEY_TEST", "v2")
+    fresh = cache_bust_on_auth_rejection(ref)
+    assert fresh == "v2"
+    assert not is_marked_bad(ref)
+
+
+@pytest.mark.unit
+def test_cache_bust_on_auth_rejection_marks_bad_when_identical(isolated_env):
+    """Re-resolved value equals cached -> source tier did NOT rotate;
+    mark bad and raise so the rotation system advances."""
+    isolated_env.setenv("APP_ENV", "development")
+    isolated_env.setenv("CRED_TEST_API_KEY_TEST", "stale")
+    ref = CredentialRef(tier="env", path="CRED_TEST_API_KEY")
+    assert ref.resolve() == "stale"
+    with pytest.raises(RuntimeError, match="re-resolved identical"):
+        cache_bust_on_auth_rejection(ref)
+    assert is_marked_bad(ref)

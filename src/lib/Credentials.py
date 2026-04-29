@@ -295,6 +295,34 @@ def clear_bad(ref: CredentialRef, env: Optional[str] = None) -> None:
     _CACHE.clear_bad(ref._cache_key(env))
 
 
+def cache_bust_on_auth_rejection(
+    ref: CredentialRef, env: Optional[str] = None
+) -> str:
+    """Item 32 — credential cache-bust on upstream auth rejection.
+
+    Invalidates the cached value and re-resolves from the source tier.
+    If the freshly-resolved credential is byte-identical to the cached
+    value (i.e. the source did NOT rotate), marks the credential as
+    actually-bad and re-raises a RuntimeError so the rotation system
+    advances per Item 2's auth policy.
+
+    Returns the freshly-resolved credential when it differs from the
+    cached value; raises RuntimeError when it is identical.
+    """
+    key = ref._cache_key(env)
+    previous = _CACHE.get(key)
+    _CACHE.invalidate(key)
+    fresh = ref.resolve(env=env)
+    if previous is not None and fresh == previous:
+        _CACHE.mark_bad(key)
+        raise RuntimeError(
+            f"Credential {ref.tier}:{ref.path} re-resolved identical after "
+            "auth rejection; marking bad. Rotate the source-tier credential "
+            "before retrying."
+        )
+    return fresh
+
+
 # ----- Redaction ------------------------------------------------------------
 
 
@@ -376,6 +404,7 @@ __all__ = [
     "mark_bad",
     "is_marked_bad",
     "clear_bad",
+    "cache_bust_on_auth_rejection",
     "register_secret",
     "registered_secrets",
     "redact",
