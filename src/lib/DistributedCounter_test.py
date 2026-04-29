@@ -11,6 +11,7 @@ from lib.DistributedCounter import (
     DistributedCounter,
     InMemoryDistributedCounter,
     PostgresDistributedCounter,
+    default_counter,
 )
 
 
@@ -81,3 +82,62 @@ def test_abstract_subclasses_register():
     assert issubclass(InMemoryDistributedCounter, DistributedCounter)
     assert issubclass(PostgresDistributedCounter, DistributedCounter)
     assert issubclass(CounterExhaustedError, Exception)
+
+
+# ---------------------------------------------------------------------------
+# No-arg default and Quota-list signature (Item 69 acceptance criteria)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_distributed_counter_no_arg_constructible():
+    """Quota.try_consume integration depends on this no-arg path."""
+    counter = DistributedCounter()
+    assert counter is not None
+
+
+@pytest.mark.unit
+def test_default_counter_factory_returns_distributed_counter():
+    counter = default_counter()
+    assert isinstance(counter, DistributedCounter)
+
+
+@pytest.mark.unit
+def test_no_arg_counter_supports_quota_list_call_shape():
+    """Verifies the polymorphic try_consume(quotas, amount=...) shape.
+
+    Note: the list-shape is intentionally sync (returns bool, not coroutine)
+    so callers like Quota.try_consume can use it without awaiting.
+    """
+    class _Row:
+        def __init__(self, limit: int, consumed: int = 0) -> None:
+            self.limit = limit
+            self.consumed = consumed
+
+        def is_exhausted(self, additional: int = 0) -> bool:
+            return (self.consumed + additional) > self.limit
+
+    a = _Row(limit=10, consumed=0)
+    b = _Row(limit=20, consumed=5)
+    counter = DistributedCounter()
+    assert counter.try_consume([a, b], amount=3) is True
+    assert a.consumed == 3
+    assert b.consumed == 8
+
+
+@pytest.mark.unit
+def test_quota_list_refuses_if_any_row_exhausted():
+    class _Row:
+        def __init__(self, limit: int, consumed: int = 0) -> None:
+            self.limit = limit
+            self.consumed = consumed
+
+        def is_exhausted(self, additional: int = 0) -> bool:
+            return (self.consumed + additional) > self.limit
+
+    a = _Row(limit=10, consumed=8)
+    b = _Row(limit=5, consumed=4)  # only 1 left
+    counter = DistributedCounter()
+    assert counter.try_consume([a, b], amount=3) is False
+    assert a.consumed == 8  # unchanged
+    assert b.consumed == 4

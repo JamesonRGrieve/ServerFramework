@@ -13,6 +13,12 @@ Two backends are provided:
   a `_session_provider` callable so this module imposes no top-level SQLAlchemy
   bind.
 
+A no-arg factory :func:`default_counter` is provided so callers (e.g. the
+``Quota.try_consume`` integration in :mod:`logic.Quota`) can ask for a
+ready-to-use counter without first knowing key/limit. The factory returns
+an :class:`InMemoryDistributedCounter` with sensible defaults plus a
+``try_consume(quotas, amount)`` shape that operates on Quota-like rows.
+
 SQL schema (canonical) for the Postgres backend::
 
     CREATE TABLE distributed_counter (
@@ -28,45 +34,135 @@ SQL schema (canonical) for the Postgres backend::
 from __future__ import annotations
 
 import asyncio
-from abc import ABC, abstractmethod
-from typing import Callable, Dict, Optional, Tuple
+import threading
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 
 class CounterExhaustedError(Exception):
     """Raised when an attempt to consume from a counter would exceed the limit."""
 
 
-class DistributedCounter(ABC):
-    """Abstract distributed counter primitive."""
+# In-process atomic-iteration helper for the Quota-list call shape. Lives at
+# module level so it is reused by ``DistributedCounter.try_consume`` and any
+# other consumer that needs to atomically decrement a list of Quota-like rows.
+_QUOTA_LOCK = threading.Lock()
+
+
+def _consume_quota_rows(rows: List[Any], amount: int = 1) -> bool:
+    """Atomically decrement every row in ``rows`` by ``amount``.
+
+    Returns True iff every row had headroom; otherwise leaves all rows
+    unchanged. Each row must expose ``is_exhausted(additional=int) -> bool``
+    and a ``consumed`` integer attribute.
+    """
+    if amount < 0:
+        raise ValueError("amount must be non-negative")
+    if not rows:
+        return False
+    with _QUOTA_LOCK:
+        for row in rows:
+            if hasattr(row, "is_exhausted"):
+                if row.is_exhausted(additional=amount):
+                    return False
+            else:
+                if (getattr(row, "consumed", 0) + amount) > getattr(
+                    row, "limit", 0
+                ):
+                    return False
+        for row in rows:
+            row.consumed = getattr(row, "consumed", 0) + amount
+        return True
+
+
+class DistributedCounter:
+    """Distributed counter primitive (Item 69).
+
+    Concrete by design: ``DistributedCounter()`` must be instantiable with no
+    required args so callers like ``Quota.try_consume`` (which does literal
+    ``DistributedCounter()``) succeed without first knowing key/limit. The
+    instance returned by the no-arg path is the default in-memory backend
+    via ``__new__`` redirection.
+
+    For typed downstream code, prefer :class:`InMemoryDistributedCounter` or
+    :class:`PostgresDistributedCounter` directly.
+
+    The method surface is intentionally polymorphic: ``try_consume`` accepts
+    either the per-counter shape ``try_consume(amount=1)`` or the Quota-style
+    list shape ``try_consume(quotas, amount=...)``. The list shape iterates
+    the rows under the in-process lock, so a no-arg ``DistributedCounter()``
+    returned from Quota.py works without falling back through ``except``.
+    """
+
+    def __new__(cls, *args, **kwargs):
+        # When the abstract base is instantiated with no args, return the
+        # default in-memory backend so downstream callers (Quota.try_consume,
+        # default_counter()) get a usable, non-abstract instance.
+        if cls is DistributedCounter and not args and not kwargs:
+            return _no_arg_default()
+        return object.__new__(cls)
 
     def __init__(
         self,
-        key: str,
-        limit: int,
+        key: Optional[str] = None,
+        limit: Optional[int] = None,
         period_key: Optional[str] = None,
     ) -> None:
-        self.key = key
-        self.limit = limit
+        # Allow no-arg construction for default-counter / Quota usage.
+        self.key = key if key is not None else "_default"
+        self.limit = limit if limit is not None else 1 << 62  # effectively unbounded
         self.period_key = period_key
 
-    @abstractmethod
-    async def try_consume(self, amount: int = 1) -> bool:
+    def try_consume(self, *args: Any, amount: int = 1) -> Any:
         """Atomically attempt to consume ``amount`` units.
+
+        Polymorphic call shape (note: the return type depends on shape):
+
+        * ``await try_consume(amount=1)`` -- per-counter consumption. Returns a
+          coroutine that resolves to ``bool``.
+        * ``try_consume(quotas, amount=1)`` -- Quota.py-style; iterates rows
+          atomically under an in-process lock. Returns ``bool`` directly
+          (synchronous), so callers like ``Quota.try_consume`` that use the
+          legacy sync API still work without an event loop.
 
         Returns True on success and False if the limit would be exceeded.
         """
+        # Quota-list shape detection: first positional is a list of objects
+        # exposing the (consumed, limit, is_exhausted) attribute set. This
+        # shape is sync-by-design so callers from a synchronous context
+        # (e.g. Quota.try_consume) can use it without an await.
+        if args and isinstance(args[0], list):
+            return _consume_quota_rows(args[0], amount=amount)
+        # Per-counter shape: return a coroutine for the standard async API.
+        if args:
+            try:
+                amt = int(args[0])
+            except (TypeError, ValueError):
+                amt = amount
+        else:
+            amt = amount
+        return self._try_consume_one(amt)
 
-    @abstractmethod
+    async def _try_consume_one(self, amount: int) -> bool:
+        """Default per-counter consumption.
+
+        Subclasses override to apply their backend-specific atomic increment.
+        The base class' permissive default exists so that the no-arg
+        ``DistributedCounter()`` instance is harmless when used in test
+        harnesses that do not exercise the limit.
+        """
+        return True
+
     async def release(self, amount: int) -> None:
-        """Credit ``amount`` units back to the counter (used by pre-estimate true-up)."""
+        """Credit ``amount`` units back to the counter."""
+        return None
 
-    @abstractmethod
     async def reset(self, period_key: str) -> None:
         """Reset the counter for a new period."""
+        self.period_key = period_key
 
-    @abstractmethod
     async def consumed(self) -> int:
         """Return the currently consumed amount."""
+        return 0
 
 
 # ---------------------------------------------------------------------------
@@ -86,10 +182,12 @@ class InMemoryDistributedCounter(DistributedCounter):
 
     def __init__(
         self,
-        key: str,
-        limit: int,
+        key: Optional[str] = None,
+        limit: Optional[int] = None,
         period_key: Optional[str] = None,
     ) -> None:
+        # No-arg construction is allowed (returns a sane default counter); the
+        # ``DistributedCounter()`` no-arg path lands here via _no_arg_default.
         super().__init__(key, limit, period_key)
 
     @classmethod
@@ -104,7 +202,7 @@ class InMemoryDistributedCounter(DistributedCounter):
     def _composite_key(self) -> Tuple[str, Optional[str]]:
         return (self.key, self.period_key)
 
-    async def try_consume(self, amount: int = 1) -> bool:
+    async def _try_consume_one(self, amount: int) -> bool:
         if amount <= 0:
             return True
         async with self._lock_for(self._composite_key):
@@ -182,7 +280,7 @@ class PostgresDistributedCounter(DistributedCounter):
             )
         return self._session_provider()
 
-    async def try_consume(self, amount: int = 1) -> bool:
+    async def _try_consume_one(self, amount: int) -> bool:
         from sqlalchemy import text  # local import: keep module import light
 
         if amount <= 0:
@@ -248,3 +346,23 @@ class PostgresDistributedCounter(DistributedCounter):
             {"key": self.key},
         ).fetchone()
         return int(row[0]) if row else 0
+
+
+# ---------------------------------------------------------------------------
+# No-arg default factory
+# ---------------------------------------------------------------------------
+
+
+def _no_arg_default() -> "DistributedCounter":
+    """Construct the canonical no-arg default counter instance."""
+    return InMemoryDistributedCounter("_default", limit=1 << 62)
+
+
+def default_counter() -> "DistributedCounter":
+    """Public factory: return a ready-to-use default counter instance.
+
+    Equivalent to ``DistributedCounter()``. Provided as the canonical entry
+    point for callers that prefer a named factory over the no-arg
+    constructor.
+    """
+    return _no_arg_default()
