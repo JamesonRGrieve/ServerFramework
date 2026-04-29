@@ -259,11 +259,106 @@ class HookRegistry:
         self.hooks[method_name][timing].sort(key=lambda x: x["priority"])
 
 
+# ---------------------------------------------------------------------------
+# Item 21 helpers: extension-name derivation + topological sort
+# ---------------------------------------------------------------------------
+
+
+def _hook_extension_name(func: Callable) -> str:
+    """Best-effort extension name for a hook function.
+
+    The convention used across the framework's extensions is to put the
+    hook in a module path containing the extension name (e.g.
+    ``extensions.payment.hooks``). We extract the segment that comes after
+    ``extensions.`` if present; otherwise we fall back to the module name.
+    """
+    module = getattr(func, "__module__", "") or ""
+    parts = module.split(".")
+    if "extensions" in parts:
+        idx = parts.index("extensions")
+        if idx + 1 < len(parts):
+            return parts[idx + 1]
+    # Fall back to the leaf module name -- gives a stable per-file token.
+    return parts[-1] if parts else ""
+
+
+def _sort_hooks_topologically(hooks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Apply the Item 21 four-tier deterministic ordering rule.
+
+    Tiers:
+      1. Explicit ``before=[ExtName]``/``after=[ExtName]`` constraints
+         (topological sort; cycles raise :class:`HookOrderingError`).
+      2. ``priority`` (lower runs first).
+      3. Extension name (alphabetical).
+      4. Hook function name (alphabetical).
+    """
+    if len(hooks) <= 1:
+        return list(hooks)
+
+    # Build an extension -> [hooks] index. Constraints are extension-level.
+    by_ext: Dict[str, List[Dict[str, Any]]] = {}
+    for h in hooks:
+        by_ext.setdefault(h.get("extension", ""), []).append(h)
+
+    # Build dependency graph: edge u -> v means "u must come before v".
+    # ``before=[v]`` on u  -> u -> v
+    # ``after=[v]`` on u   -> v -> u
+    graph: Dict[str, set] = {ext: set() for ext in by_ext.keys()}
+    for h in hooks:
+        ext = h.get("extension", "")
+        for nxt in h.get("before") or []:
+            if nxt in graph:
+                graph.setdefault(ext, set()).add(nxt)
+        for prev in h.get("after") or []:
+            if prev in graph:
+                graph.setdefault(prev, set()).add(ext)
+
+    # Kahn's algorithm with deterministic tie-break (alphabetical extension).
+    in_degree = {ext: 0 for ext in graph}
+    for ext, outs in graph.items():
+        for out in outs:
+            in_degree[out] = in_degree.get(out, 0) + 1
+
+    ordered_exts: List[str] = []
+    ready = sorted([ext for ext, d in in_degree.items() if d == 0])
+    while ready:
+        ext = ready.pop(0)
+        ordered_exts.append(ext)
+        for out in sorted(graph.get(ext, set())):
+            in_degree[out] -= 1
+            if in_degree[out] == 0:
+                ready.append(out)
+        ready.sort()
+
+    if len(ordered_exts) != len(graph):
+        # Cycle: name every extension still with non-zero in-degree.
+        offenders = sorted(
+            ext for ext, d in in_degree.items() if d > 0
+        )
+        raise HookOrderingError(
+            "Hook before/after constraints form a cycle among extensions: "
+            f"{offenders}"
+        )
+
+    # Within each extension bucket, sort by (priority, function_name).
+    result: List[Dict[str, Any]] = []
+    for ext in ordered_exts:
+        bucket = sorted(
+            by_ext.get(ext, []),
+            key=lambda h: (h.get("priority", 50), getattr(h["func"], "__name__", "")),
+        )
+        result.extend(bucket)
+    return result
+
+
 def hook_bll(
     target: Union[Type["AbstractBLLManager"], Callable],
     timing: Union[HookTiming, str] = HookTiming.BEFORE,
     priority: int = 50,
     condition: Optional[Callable[[HookContext], bool]] = None,
+    before: Optional[List[str]] = None,
+    after: Optional[List[str]] = None,
+    blocking: Optional[bool] = None,
 ) -> Callable:
     """
     Enhanced hook decorator for BLL methods.
@@ -278,6 +373,14 @@ def hook_bll(
         timing: When to execute (HookTiming.BEFORE/AFTER or "before"/"after")
         priority: Execution order (lower numbers run first)
         condition: Optional callable that returns bool for conditional execution
+        before: Item 21 -- list of extension names this hook must run BEFORE.
+            Resolved as a topological sort; cycles raise HookOrderingError.
+        after: Item 21 -- list of extension names this hook must run AFTER.
+            Same semantics as ``before``.
+        blocking: Item 22 -- if True (default for BEFORE), exceptions from the
+            hook propagate. If False (default for AFTER), exceptions are
+            logged + a metric is emitted and the operation continues. Pass
+            None to accept the timing-default.
 
     Returns:
         Decorator function that registers the hook
@@ -292,6 +395,11 @@ def hook_bll(
         @hook_bll(ExtensionManager.create, timing=HookTiming.BEFORE, priority=10)
         def validate_creation(context: HookContext) -> None:
             # Validation logic
+
+        # Item 21 -- explicit ordering: audit must run AFTER mfa.
+        @hook_bll(UserManager.create, timing=HookTiming.BEFORE, after=["mfa"])
+        def audit_logging(context: HookContext) -> None:
+            ...
     """
     # Determine if target is a class or method
     if inspect.isclass(target) and issubclass(target, AbstractBLLManager):
