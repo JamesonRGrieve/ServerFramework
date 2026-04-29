@@ -1,5 +1,7 @@
 import functools
 import uuid
+from contextlib import contextmanager
+from datetime import datetime, timezone
 from typing import (
     Any,
     List,
@@ -13,8 +15,8 @@ from typing import (
 )
 
 from fastapi import HTTPException, Request
-from sqlalchemy import Column, DateTime, ForeignKey, String, func, inspect
-from sqlalchemy.orm import Session, declared_attr, relationship
+from sqlalchemy import Column, DateTime, ForeignKey, String, event, func, inspect
+from sqlalchemy.orm import Query, Session, declared_attr, relationship
 from sqlalchemy.orm.exc import MultipleResultsFound, NoResultFound
 
 from database.DatabaseManager import DatabaseManager
@@ -1252,8 +1254,135 @@ class BaseMixin:
         )
 
 
-class UpdateMixin:
-    """Adds update and delete hooks to the hooks registry"""
+class SoftDeleteMixin:
+    """Soft-delete primitive: tags an entity for DB-layer soft-delete enforcement.
+
+    How to use:
+        Inherit from `SoftDeleteMixin` (directly or transitively via `UpdateMixin`)
+        on any SQLAlchemy model that should hide rows whose `deleted_at` is set.
+        The `before_compile` query event auto-injects `WHERE deleted_at IS NULL`
+        for every read against tagged tables. Call `entity.soft_delete(session)`
+        to tombstone a row. To see tombstoned rows for admin/audit work, wrap the
+        access in `with include_deleted(session): ...` or pass
+        `query.execution_options(include_deleted=True)`. The mixin replaces every
+        BLL-side `if record.deleted_at: ...` workaround — those are removed once
+        the model inherits this mixin.
+
+    Example:
+        class User(Base, BaseMixin, SoftDeleteMixin):
+            __tablename__ = "users"
+            email = Column(String, nullable=False)
+
+        # Default queries hide soft-deleted users:
+        session.query(User).all()  # WHERE deleted_at IS NULL injected
+
+        # Admin bypass:
+        with include_deleted(session):
+            all_rows = session.query(User).all()  # tombstones included
+    """
+
+    __soft_delete__ = True
+
+    @declared_attr
+    def deleted_at(cls):
+        return Column(DateTime, default=None, nullable=True, index=True)
+
+    def soft_delete(self, db: Session) -> None:
+        """Tombstone this row by setting `deleted_at = now(UTC)` and committing."""
+        self.deleted_at = datetime.now(timezone.utc)
+        db.add(self)
+        db.commit()
+
+
+@contextmanager
+def include_deleted(db: Session):
+    """Session-scoped bypass: expose soft-deleted rows for admin queries.
+
+    Inside the `with` block, queries built from `db` skip the
+    `deleted_at IS NULL` auto-filter. Restores prior state on exit.
+    """
+    prior = db.info.get("include_deleted", False)
+    db.info["include_deleted"] = True
+    try:
+        yield db
+    finally:
+        db.info["include_deleted"] = prior
+
+
+def _query_has_deleted_at_filter(query: Query) -> bool:
+    """Return True if `query` already filters on `deleted_at`.
+
+    Walks the WHERE-clause for any reference to a column named `deleted_at`,
+    so the auto-filter doesn't double-up on hand-written explicit filters.
+    """
+    try:
+        whereclause = getattr(query, "whereclause", None)
+        if whereclause is None:
+            return False
+        for elem in whereclause._traverse_internals if False else []:
+            pass
+        # Walk the SQL expression tree looking for a Column named 'deleted_at'.
+        from sqlalchemy.sql import visitors
+
+        found = {"v": False}
+
+        def _visit(elem):
+            if hasattr(elem, "key") and elem.key == "deleted_at":
+                found["v"] = True
+            if hasattr(elem, "name") and elem.name == "deleted_at":
+                found["v"] = True
+
+        visitors.traverse(whereclause, {}, {"column": _visit, "binary": _visit})
+        return found["v"]
+    except Exception:
+        return False
+
+
+@event.listens_for(Query, "before_compile", retval=True)
+def _soft_delete_before_compile(query: Query) -> Query:
+    """Auto-inject `deleted_at IS NULL` for SoftDeleteMixin-tagged entities.
+
+    Honors `session.info["include_deleted"]` and `query.execution_options(
+    include_deleted=True)` as bypasses for admin/audit reads. Skips entities
+    whose query already filters on `deleted_at` to avoid double-filtering.
+    """
+    # Bypass via query execution_options
+    try:
+        if query._execution_options.get("include_deleted", False):
+            return query
+    except Exception:
+        pass
+
+    # Bypass via session.info
+    try:
+        sess = query.session
+        if sess is not None and sess.info.get("include_deleted", False):
+            return query
+    except Exception:
+        pass
+
+    # Skip if the query already filters on deleted_at
+    if _query_has_deleted_at_filter(query):
+        return query
+
+    for desc in query.column_descriptions:
+        entity = desc.get("entity") if isinstance(desc, dict) else None
+        if entity is None:
+            continue
+        if not getattr(entity, "__soft_delete__", False):
+            continue
+        if not hasattr(entity, "deleted_at"):
+            continue
+        query = query.enable_assertions(False).filter(entity.deleted_at.is_(None))
+    return query
+
+
+class UpdateMixin(SoftDeleteMixin):
+    """Adds update and delete hooks to the hooks registry.
+
+    Inherits `SoftDeleteMixin` so the `deleted_at` column and DB-layer filter
+    apply to every model that uses `UpdateMixin`.
+    """
 
     # Initialize hooks for update and delete
     @classmethod
@@ -1421,9 +1550,8 @@ class UpdateMixin:
         # Convert to requested return type
         return db_to_return_type(entity, return_type, override_dto, fields)
 
-    @declared_attr
-    def deleted_at(cls):
-        return Column(DateTime, default=None)
+    # `deleted_at` is provided by SoftDeleteMixin (parent of UpdateMixin)
+    # so the DB-layer auto-filter applies uniformly.
 
     @declared_attr
     def deleted_by_user_id(cls):

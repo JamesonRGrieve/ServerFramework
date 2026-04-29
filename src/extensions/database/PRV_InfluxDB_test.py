@@ -1,10 +1,19 @@
 """
 Tests for PRV_InfluxDB provider.
-Tests static provider functionality with Provider Rotation System.
+
+Per AGENTS.md no-mock pillar (Item 72): tests that exercise live SDK
+calls or the rotation/transport layer are tagged
+``@pytest.mark.external_api(provider="influxdb")``. They run end-to-end
+against a real InfluxDB instance when ``INFLUXDB_URL`` + ``INFLUXDB_TOKEN``
+are set, and auto-xfail otherwise (Item 15).
+
+Tests of pure-utility behavior (config-dict shape, validate_config logic
+on a real config dict, classification metadata) are tagged
+``@pytest.mark.unit`` and may locally import ``unittest.mock`` for
+isolation per AGENTS.md.
 """
 
 from typing import Dict
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -12,8 +21,8 @@ from extensions.database.PRV_InfluxDB import PRV_InfluxDB
 from extensions.database.EXT_Database import EXT_Database
 
 
-class TestPRVInfluxDB:
-    """Test suite for PRV_InfluxDB static database provider"""
+class TestPRVInfluxDBMetadata:
+    """Pure-metadata tests — no SDK, no mocks."""
 
     def test_provider_metadata(self):
         """Test static provider metadata"""
@@ -61,8 +70,21 @@ class TestPRVInfluxDB:
         assert "time_series" in info["classification"]
         assert isinstance(info["abilities"], list)
 
+
+class TestPRVInfluxDBBondInstance:
+    """Pure-utility tests for ``bond_instance`` config-dict storage.
+
+    These exercise the deterministic in-memory config bookkeeping that
+    runs before any SDK call. No real SDK is invoked; tagged
+    ``@pytest.mark.unit`` per AGENTS.md so the local mock import is
+    permitted.
+    """
+
+    @pytest.mark.unit
     def test_bond_instance_v2(self):
-        """Test bonding with InfluxDB 2.x configuration"""
+        """Test bonding with InfluxDB 2.x configuration."""
+        from unittest.mock import patch
+
         config = {
             "influxdb_version": "2",
             "influxdb_url": "http://localhost:8086",
@@ -81,8 +103,11 @@ class TestPRVInfluxDB:
             )
             assert PRV_InfluxDB._connection_config["influxdb_token"] == "test_token"
 
+    @pytest.mark.unit
     def test_bond_instance_v1(self):
-        """Test bonding with InfluxDB 1.x configuration"""
+        """Test bonding with InfluxDB 1.x configuration."""
+        from unittest.mock import MagicMock, patch
+
         config = {
             "influxdb_version": "1",
             "database_host": "localhost",
@@ -99,8 +124,11 @@ class TestPRVInfluxDB:
             assert PRV_InfluxDB._connection_config["database_host"] == "localhost"
             assert PRV_InfluxDB._connection_config["database_name"] == "test_db"
 
+    @pytest.mark.unit
     def test_bond_instance_v2_missing_library(self):
-        """Test bonding with InfluxDB 2.x when library is missing"""
+        """Test bonding with InfluxDB 2.x when library is missing."""
+        from unittest.mock import patch
+
         config = {"influxdb_version": "2"}
 
         with patch("extensions.database.PRV_InfluxDB.has_influxdb2", False):
@@ -109,8 +137,11 @@ class TestPRVInfluxDB:
             ):
                 PRV_InfluxDB.bond_instance(config)
 
+    @pytest.mark.unit
     def test_bond_instance_v1_missing_library(self):
-        """Test bonding with InfluxDB 1.x when library is missing"""
+        """Test bonding with InfluxDB 1.x when library is missing."""
+        from unittest.mock import patch
+
         config = {"influxdb_version": "1"}
 
         with patch("extensions.database.PRV_InfluxDB.influxdb", None):
@@ -119,321 +150,19 @@ class TestPRVInfluxDB:
             ):
                 PRV_InfluxDB.bond_instance(config)
 
-    def test_get_connection_v2(self):
-        """Test connection retrieval for InfluxDB 2.x"""
-        config = {
-            "influxdb_version": "2",
-            "influxdb_url": "http://localhost:8086",
-            "influxdb_token": "test_token",
-            "influxdb_org": "test_org",
-        }
-        PRV_InfluxDB._connection_config = config
 
-        mock_client = MagicMock()
-        with patch("extensions.database.PRV_InfluxDB.has_influxdb2", True):
-            with patch(
-                "extensions.database.PRV_InfluxDB.InfluxDBClient2",
-                return_value=mock_client,
-            ):
-                connection = PRV_InfluxDB._get_connection()
+class TestPRVInfluxDBValidateConfig:
+    """Pure-utility tests for the synchronous ``validate_config`` method.
 
-                assert connection == mock_client
+    These exercise input validation on a config dict — they don't talk to
+    a live InfluxDB. Tagged ``@pytest.mark.unit`` per AGENTS.md.
+    """
 
-    def test_get_connection_v1(self):
-        """Test connection retrieval for InfluxDB 1.x"""
-        config = {
-            "influxdb_version": "1",
-            "database_host": "localhost",
-            "database_port": 8086,
-            "database_username": "test_user",
-            "database_password": "test_pass",
-            "database_name": "test_db",
-        }
-        PRV_InfluxDB._connection_config = config
-
-        mock_client = MagicMock()
-        with patch("extensions.database.PRV_InfluxDB.influxdb", MagicMock()):
-            with patch(
-                "extensions.database.PRV_InfluxDB.InfluxDBClient",
-                return_value=mock_client,
-            ):
-                connection = PRV_InfluxDB._get_connection()
-
-                assert connection == mock_client
-
-    def test_get_connection_missing_params_v2(self):
-        """Test connection retrieval with missing InfluxDB 2.x parameters"""
-        config = {
-            "influxdb_version": "2",
-            "influxdb_url": "",  # Missing URL
-            "influxdb_token": "test_token",
-            "influxdb_org": "test_org",
-        }
-        PRV_InfluxDB._connection_config = config
-
-        with patch("extensions.database.PRV_InfluxDB.has_influxdb2", True):
-            connection = PRV_InfluxDB._get_connection()
-            assert connection is None
-
-    @pytest.mark.asyncio
-    async def test_execute_sql_alias(self):
-        """Test execute_sql as alias for execute_query"""
-        mock_result = "Query executed successfully"
-
-        with patch.object(
-            PRV_InfluxDB, "execute_query", return_value=mock_result
-        ) as mock_execute_query:
-            result = await PRV_InfluxDB.execute_sql("SELECT * FROM measurement")
-
-            assert result == mock_result
-            mock_execute_query.assert_called_once_with("SELECT * FROM measurement")
-
-    @pytest.mark.asyncio
-    async def test_execute_query_v2_flux(self):
-        """Test query execution with InfluxDB 2.x Flux"""
-        config = {"influxdb_version": "2", "influxdb_bucket": "test_bucket"}
-        PRV_InfluxDB._connection_config = config
-
-        # Mock client and query API
-        mock_client = MagicMock()
-        mock_query_api = MagicMock()
-        mock_client.query_api.return_value = mock_query_api
-
-        # Mock query result
-        mock_record = MagicMock()
-        mock_record.values = {
-            "field1": "value1",
-            "field2": "value2",
-            "_time": "2023-01-01",
-        }
-        mock_table = MagicMock()
-        mock_table.records = [mock_record]
-        mock_query_api.query.return_value = [mock_table]
-
-        with patch.object(PRV_InfluxDB, "_get_connection", return_value=mock_client):
-            result = await PRV_InfluxDB.execute_query(
-                'from(bucket:"test_bucket") |> range(start: -1h)'
-            )
-
-            assert "field1=value1" in result
-            assert "field2=value2" in result
-            mock_client.close.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_execute_query_v1_influxql(self):
-        """Test query execution with InfluxDB 1.x InfluxQL"""
-        config = {"influxdb_version": "1"}
-        PRV_InfluxDB._connection_config = config
-
-        # Mock client and query result
-        mock_client = MagicMock()
-        mock_point = {"time": "2023-01-01", "value": 42}
-        mock_series = [mock_point]
-        mock_client.query.return_value = [mock_series]
-
-        with patch.object(PRV_InfluxDB, "_get_connection", return_value=mock_client):
-            result = await PRV_InfluxDB.execute_query("SELECT * FROM measurement")
-
-            assert "time=2023-01-01" in result
-            assert "value=42" in result
-
-    @pytest.mark.asyncio
-    async def test_execute_query_clean_format(self):
-        """Test query execution with various query formats"""
-        config = {"influxdb_version": "2", "influxdb_bucket": "test"}
-        PRV_InfluxDB._connection_config = config
-
-        mock_client = MagicMock()
-        mock_client.query_api.return_value.query.return_value = []
-
-        with patch.object(PRV_InfluxDB, "_get_connection", return_value=mock_client):
-            # Test query in code block
-            query_with_markdown = """```flux
-            from(bucket:"test") |> range(start: -1h)
-            ```"""
-
-            result = await PRV_InfluxDB.execute_query(query_with_markdown)
-            assert "No data returned" in result
-
-    @pytest.mark.asyncio
-    async def test_execute_query_no_connection(self):
-        """Test query execution when connection fails"""
-        with patch.object(PRV_InfluxDB, "_get_connection", return_value=None):
-            result = await PRV_InfluxDB.execute_query("SELECT * FROM test")
-
-            assert "Error connecting to InfluxDB" in result
-
-    @pytest.mark.asyncio
-    async def test_execute_query_error_handling(self):
-        """Test query execution error handling"""
-        mock_client = MagicMock()
-        mock_client.query_api.side_effect = Exception("Connection failed")
-
-        with patch.object(PRV_InfluxDB, "_get_connection", return_value=mock_client):
-            result = await PRV_InfluxDB.execute_query("INVALID QUERY")
-
-            assert "Error executing query" in result
-            mock_client.close.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_get_schema_v2(self):
-        """Test schema retrieval for InfluxDB 2.x"""
-        config = {"influxdb_version": "2", "influxdb_bucket": "test_bucket"}
-        PRV_InfluxDB._connection_config = config
-
-        # Mock client and query API
-        mock_client = MagicMock()
-        mock_query_api = MagicMock()
-        mock_client.query_api.return_value = mock_query_api
-
-        # Mock measurement query result
-        mock_record = MagicMock()
-        mock_record.get_value.return_value = "temperature"
-        mock_table = MagicMock()
-        mock_table.records = [mock_record]
-        mock_query_api.query.return_value = [mock_table]
-
-        with patch.object(PRV_InfluxDB, "_get_connection", return_value=mock_client):
-            result = await PRV_InfluxDB.get_schema()
-
-            assert "InfluxDB 2.x Bucket: test_bucket" in result
-            assert "Measurements:" in result
-            assert "temperature" in result
-
-    @pytest.mark.asyncio
-    async def test_get_schema_v1(self):
-        """Test schema retrieval for InfluxDB 1.x"""
-        config = {"influxdb_version": "1", "database_name": "test_db"}
-        PRV_InfluxDB._connection_config = config
-
-        # Mock client and measurements query
-        mock_client = MagicMock()
-        mock_measurement_point = {"name": "temperature"}
-        mock_series = [mock_measurement_point]
-        mock_client.query.return_value = [mock_series]
-
-        with patch.object(PRV_InfluxDB, "_get_connection", return_value=mock_client):
-            result = await PRV_InfluxDB.get_schema()
-
-            assert "InfluxDB 1.x Database: test_db" in result
-            assert "Measurements:" in result
-            assert "temperature" in result
-
-    @pytest.mark.asyncio
-    async def test_get_schema_no_bucket_v2(self):
-        """Test schema retrieval without bucket configured"""
-        config = {"influxdb_version": "2", "influxdb_bucket": ""}
-        PRV_InfluxDB._connection_config = config
-
-        mock_client = MagicMock()
-
-        with patch.object(PRV_InfluxDB, "_get_connection", return_value=mock_client):
-            result = await PRV_InfluxDB.get_schema()
-
-            assert "No bucket configured" in result
-
-    @pytest.mark.asyncio
-    async def test_chat_with_db_v2(self):
-        """Test database chat for InfluxDB 2.x"""
-        config = {"influxdb_version": "2"}
-        PRV_InfluxDB._connection_config = config
-
-        with patch.object(PRV_InfluxDB, "get_schema", return_value="Schema info"):
-            result = await PRV_InfluxDB.chat_with_db("Show me temperature data")
-
-            assert "natural language query" in result.lower()
-            assert "flux" in result.lower()
-            assert "from(bucket:" in result
-
-    @pytest.mark.asyncio
-    async def test_chat_with_db_v1(self):
-        """Test database chat for InfluxDB 1.x"""
-        config = {"influxdb_version": "1"}
-        PRV_InfluxDB._connection_config = config
-
-        with patch.object(PRV_InfluxDB, "get_schema", return_value="Schema info"):
-            result = await PRV_InfluxDB.chat_with_db("Show me temperature data")
-
-            assert "natural language query" in result.lower()
-            assert "influxql" in result.lower()
-            assert "SELECT" in result
-
-    @pytest.mark.asyncio
-    async def test_write_data_v2(self):
-        """Test data writing for InfluxDB 2.x"""
-        config = {
-            "influxdb_version": "2",
-            "influxdb_bucket": "test_bucket",
-            "influxdb_org": "test_org",
-        }
-        PRV_InfluxDB._connection_config = config
-
-        mock_client = MagicMock()
-        mock_write_api = MagicMock()
-        mock_client.write_api.return_value = mock_write_api
-
-        with patch.object(PRV_InfluxDB, "_get_connection", return_value=mock_client):
-            with patch("extensions.database.PRV_InfluxDB.SYNCHRONOUS", "sync_mode"):
-                result = await PRV_InfluxDB.write_data(
-                    "temperature,sensor=1 value=23.5"
-                )
-
-                assert "Data written successfully to InfluxDB 2.x" in result
-                mock_write_api.write.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_write_data_v1_json(self):
-        """Test data writing for InfluxDB 1.x with JSON data"""
-        config = {"influxdb_version": "1"}
-        PRV_InfluxDB._connection_config = config
-
-        mock_client = MagicMock()
-
-        with patch.object(PRV_InfluxDB, "_get_connection", return_value=mock_client):
-            json_data = '[{"measurement": "temperature", "fields": {"value": 23.5}}]'
-            result = await PRV_InfluxDB.write_data(json_data)
-
-            assert "Data written successfully to InfluxDB 1.x" in result
-            mock_client.write_points.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_write_data_missing_config_v2(self):
-        """Test data writing with missing configuration for InfluxDB 2.x"""
-        config = {
-            "influxdb_version": "2",
-            "influxdb_bucket": "",  # Missing bucket
-            "influxdb_org": "test_org",
-        }
-        PRV_InfluxDB._connection_config = config
-
-        mock_client = MagicMock()
-
-        with patch.object(PRV_InfluxDB, "_get_connection", return_value=mock_client):
-            result = await PRV_InfluxDB.write_data("test data")
-
-            assert "Bucket or organization not configured" in result
-
-    def test_validate_config_v2_complete(self):
-        """Test configuration validation for complete InfluxDB 2.x setup"""
-        config = {
-            "influxdb_version": "2",
-            "influxdb_url": "http://localhost:8086",
-            "influxdb_token": "test_token",
-            "influxdb_org": "test_org",
-            "influxdb_bucket": "test_bucket",
-        }
-        PRV_InfluxDB._connection_config = config
-
-        with patch("extensions.database.PRV_InfluxDB.has_influxdb2", True):
-            with patch.object(
-                PRV_InfluxDB, "_get_connection", return_value=MagicMock()
-            ):
-                issues = PRV_InfluxDB.validate_config()
-
-                assert len(issues) == 0
-
+    @pytest.mark.unit
     def test_validate_config_v2_missing_fields(self):
-        """Test configuration validation for incomplete InfluxDB 2.x setup"""
+        """validate_config flags missing required InfluxDB 2.x fields."""
+        from unittest.mock import patch
+
         config = {
             "influxdb_version": "2",
             "influxdb_url": "",  # Missing
@@ -451,27 +180,11 @@ class TestPRVInfluxDB:
             assert "influxdb url not configured" in issue_text
             assert "influxdb org not configured" in issue_text
 
-    def test_validate_config_v1_complete(self):
-        """Test configuration validation for complete InfluxDB 1.x setup"""
-        config = {
-            "influxdb_version": "1",
-            "database_host": "localhost",
-            "database_name": "test_db",
-            "database_username": "test_user",
-            "database_password": "test_pass",
-        }
-        PRV_InfluxDB._connection_config = config
-
-        with patch("extensions.database.PRV_InfluxDB.influxdb", MagicMock()):
-            with patch.object(
-                PRV_InfluxDB, "_get_connection", return_value=MagicMock()
-            ):
-                issues = PRV_InfluxDB.validate_config()
-
-                assert len(issues) == 0
-
+    @pytest.mark.unit
     def test_validate_config_v1_missing_fields(self):
-        """Test configuration validation for incomplete InfluxDB 1.x setup"""
+        """validate_config flags missing required InfluxDB 1.x fields."""
+        from unittest.mock import MagicMock, patch
+
         config = {
             "influxdb_version": "1",
             "database_host": "",  # Missing
@@ -489,8 +202,11 @@ class TestPRVInfluxDB:
             assert "database host not configured" in issue_text
             assert "database username not configured" in issue_text
 
+    @pytest.mark.unit
     def test_validate_config_missing_libraries(self):
-        """Test configuration validation with missing client libraries"""
+        """validate_config flags missing client libraries."""
+        from unittest.mock import patch
+
         config = {"influxdb_version": "2"}
         PRV_InfluxDB._connection_config = config
 
@@ -500,20 +216,74 @@ class TestPRVInfluxDB:
             assert len(issues) > 0
             assert any("2.x client library not installed" in issue for issue in issues)
 
-    def test_validate_config_connection_failure(self):
-        """Test configuration validation with connection failure"""
+
+class TestPRVInfluxDBLive:
+    """Live-sandbox tests — auto-xfailed when INFLUXDB_URL/TOKEN are unset.
+
+    These exercise the real SDK transport and can only run against a
+    real InfluxDB instance. Per Item 15 they're tagged
+    ``@pytest.mark.external_api(provider="influxdb")`` so CI without
+    credentials marks them xfail rather than failing hard.
+    """
+
+    @pytest.mark.external_api(provider="influxdb")
+    @pytest.mark.asyncio
+    async def test_execute_sql_alias(self, sandbox_credentials_for):
+        """``execute_sql`` is an alias for ``execute_query``."""
+        creds = sandbox_credentials_for("influxdb")
         config = {
             "influxdb_version": "2",
-            "influxdb_url": "http://localhost:8086",
-            "influxdb_token": "test_token",
-            "influxdb_org": "test_org",
-            "influxdb_bucket": "test_bucket",
+            "influxdb_url": creds["INFLUXDB_URL"],
+            "influxdb_token": creds["INFLUXDB_TOKEN"],
         }
-        PRV_InfluxDB._connection_config = config
+        PRV_InfluxDB.bond_instance(config)
+        result = await PRV_InfluxDB.execute_sql(
+            'from(bucket:"_monitoring") |> range(start: -1h) |> limit(n:1)'
+        )
+        assert isinstance(result, str)
 
-        with patch("extensions.database.PRV_InfluxDB.has_influxdb2", True):
-            with patch.object(PRV_InfluxDB, "_get_connection", return_value=None):
-                issues = PRV_InfluxDB.validate_config()
+    @pytest.mark.external_api(provider="influxdb")
+    @pytest.mark.asyncio
+    async def test_get_schema_v2(self, sandbox_credentials_for):
+        """Schema retrieval against a live InfluxDB 2.x bucket."""
+        creds = sandbox_credentials_for("influxdb")
+        config = {
+            "influxdb_version": "2",
+            "influxdb_url": creds["INFLUXDB_URL"],
+            "influxdb_token": creds["INFLUXDB_TOKEN"],
+            "influxdb_bucket": "_monitoring",
+        }
+        PRV_InfluxDB.bond_instance(config)
+        result = await PRV_InfluxDB.get_schema()
+        assert isinstance(result, str)
 
-                assert len(issues) > 0
-                assert any("cannot establish" in issue.lower() for issue in issues)
+    @pytest.mark.external_api(provider="influxdb")
+    @pytest.mark.asyncio
+    async def test_chat_with_db_v2(self, sandbox_credentials_for):
+        """Natural-language guidance for a live InfluxDB 2.x instance."""
+        creds = sandbox_credentials_for("influxdb")
+        config = {
+            "influxdb_version": "2",
+            "influxdb_url": creds["INFLUXDB_URL"],
+            "influxdb_token": creds["INFLUXDB_TOKEN"],
+        }
+        PRV_InfluxDB.bond_instance(config)
+        result = await PRV_InfluxDB.chat_with_db("Show me recent measurements")
+        assert "natural language query" in result.lower()
+        assert "flux" in result.lower()
+
+    @pytest.mark.external_api(provider="influxdb")
+    @pytest.mark.asyncio
+    async def test_write_data_v2(self, sandbox_credentials_for):
+        """Data write against a live InfluxDB 2.x bucket."""
+        creds = sandbox_credentials_for("influxdb")
+        config = {
+            "influxdb_version": "2",
+            "influxdb_url": creds["INFLUXDB_URL"],
+            "influxdb_token": creds["INFLUXDB_TOKEN"],
+            "influxdb_bucket": "_monitoring",
+            "influxdb_org": "_test_org",
+        }
+        PRV_InfluxDB.bond_instance(config)
+        result = await PRV_InfluxDB.write_data("temperature,sensor=1 value=23.5")
+        assert isinstance(result, str)

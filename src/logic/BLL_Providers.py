@@ -4,7 +4,8 @@ import inspect
 import random
 import time
 import warnings
-from typing import Any, ClassVar, Dict, List, Optional
+from dataclasses import dataclass
+from typing import Any, ClassVar, Dict, List, Literal, Optional, Tuple
 
 import stringcase
 from fastapi import HTTPException
@@ -46,6 +47,80 @@ _AUTH_COOLDOWNS: Dict[str, float] = {}
 def reset_auth_cooldowns() -> None:
     """Test helper: clear the in-process auth cooldown tracker."""
     _AUTH_COOLDOWNS.clear()
+
+
+# Item 51 — sticky-session routing primitives.
+@dataclass(frozen=True)
+class RoutingHint:
+    """Per-call routing hint passed to `RotationManager.rotate`.
+
+    Item 51: when `stickiness_key` is non-None, the rotation system pins
+    repeated calls within that key to the first provider that succeeded
+    for it (scoped by `(stickiness_key, ability)`), until the pin expires
+    or the pinned provider becomes unhealthy. Default behavior (linear
+    failover) is unchanged when no hint is supplied. Canary routing is
+    intentionally NOT a field here — per Item 3 it remains L7's job.
+    """
+
+    stickiness_key: Optional[str] = None
+
+
+# Item 51 — in-memory sticky-session cache. Keyed by
+# `(stickiness_key, ability)`; value is `(provider_instance_id, expires_at)`
+# where `expires_at` is a monotonic-time deadline. Multi-PROCESS
+# deployments accept session-affinity loss across processes (acceptable
+# for many use cases) or back this with Redis (out of scope here).
+_STICKY_SESSIONS: Dict[Tuple[str, Optional[str]], Tuple[str, float]] = {}
+
+
+def _sticky_ttl_seconds() -> float:
+    """Configurable TTL via env, default 600s."""
+    raw = env("STICKY_SESSION_TTL_SECONDS")
+    if not raw:
+        return 600.0
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return 600.0
+
+
+def reset_sticky_sessions() -> None:
+    """Test helper: clear the in-process sticky-session cache."""
+    _STICKY_SESSIONS.clear()
+
+
+def _sticky_get(
+    stickiness_key: str, ability: Optional[str]
+) -> Optional[str]:
+    """Return the pinned provider_instance_id for `(stickiness_key, ability)`
+    if present and not expired; otherwise None. Expired entries are evicted."""
+    key = (stickiness_key, ability)
+    pinned = _STICKY_SESSIONS.get(key)
+    if pinned is None:
+        return None
+    pi_id, expires_at = pinned
+    if time.monotonic() >= expires_at:
+        _STICKY_SESSIONS.pop(key, None)
+        return None
+    return pi_id
+
+
+def _sticky_set(
+    stickiness_key: str, ability: Optional[str], provider_instance_id: str
+) -> None:
+    """Pin `provider_instance_id` for `(stickiness_key, ability)` with the
+    configured TTL."""
+    expires_at = time.monotonic() + _sticky_ttl_seconds()
+    _STICKY_SESSIONS[(stickiness_key, ability)] = (
+        str(provider_instance_id),
+        expires_at,
+    )
+
+
+def _sticky_invalidate(stickiness_key: str, ability: Optional[str]) -> None:
+    """Drop the pin for `(stickiness_key, ability)` (e.g. on health failure
+    or pinned-provider error)."""
+    _STICKY_SESSIONS.pop((stickiness_key, ability), None)
 
 
 def validate_manager_constructors(*managers: type) -> None:
@@ -519,6 +594,17 @@ class ProviderInstanceModel(
     model_name: Optional[str] = None
     api_key: Optional[str] = None
     enabled: Optional[bool] = Field(True, description="Whether it is enabled")
+    # Item 19: provider scope. Resolution semantics differ by scope:
+    #   * root   -> framework-internal only; never reachable via user-context resolution.
+    #   * system -> SaaS-owned; user-invokable, metered against unified Quota.
+    #   * team   -> team-owned; user-invokable.
+    #   * user   -> user-owned; user-invokable.
+    # Defaults to "user" for backwards compatibility with rows written before
+    # this column existed.
+    scope: Literal["root", "system", "team", "user"] = Field(
+        "user",
+        description="Provider scope: root (framework-internal), system (SaaS-owned), team (team-owned), user (user-owned).",
+    )
 
     # Database metadata for SQLAlchemy generation
     table_comment: ClassVar[str] = (
@@ -615,6 +701,7 @@ class ProviderInstanceModel(
         api_key: Optional[str] = None
         user_id: Optional[str] = None
         team_id: Optional[str] = None
+        scope: Literal["root", "system", "team", "user"] = "user"
 
         @model_validator(mode="after")
         def validate_name_length(self):
@@ -631,6 +718,7 @@ class ProviderInstanceModel(
         api_key: Optional[str] = None
         user_id: Optional[str] = None
         team_id: Optional[str] = None
+        scope: Optional[Literal["root", "system", "team", "user"]] = None
 
     class Search(
         ApplicationModel.Search,
@@ -642,6 +730,7 @@ class ProviderInstanceModel(
     ):
         model_name: Optional[StringSearchModel] = None
         api_key: Optional[StringSearchModel] = None
+        scope: Optional[StringSearchModel] = None
 
 
 class ProviderInstanceManager(AbstractBLLManager, RouterMixin):
@@ -1141,10 +1230,24 @@ class RotationManager(AbstractBLLManager, RouterMixin):
         - `InvalidInputExternalError` / `PermanentExternalError` -> re-raise
         - bare `Exception` -> advance (back-compat path)
 
+        Per Item 51 (sticky-session routing), an optional
+        `routing_hint=RoutingHint(stickiness_key=...)` keyword argument
+        pins repeated calls within that key to the first provider that
+        succeeded for it (scoped by `(stickiness_key, ability)`), until
+        the pin TTL expires or the pinned provider becomes unhealthy.
+        On pinned-provider failure the pin is invalidated and the call
+        falls through to the default linear rotation. On default-rotation
+        success with a hint present, the winning provider becomes the new
+        pin. Default behavior is unchanged when no hint is supplied;
+        canary remains L7's job (Item 3).
+
         Args:
             callable_func: Function to call with each ProviderInstanceModel
             *args: Positional arguments to pass to the callable function
-            **kwargs: Keyword arguments to pass to the callable function
+            **kwargs: Keyword arguments to pass to the callable function.
+                Reserved keys (consumed by the rotation system, not the callable):
+                  - `routing_hint`: Optional[RoutingHint]
+                  - `ability`: Optional[str] — sticky-cache discriminator
 
         Returns:
             Result from the first successful provider call
@@ -1153,6 +1256,10 @@ class RotationManager(AbstractBLLManager, RouterMixin):
             HTTPException: If all providers fail, includes list of attempted providers
         """
         from fastapi import HTTPException
+
+        # Item 51 — extract sticky-session controls before passing kwargs through.
+        routing_hint: Optional[RoutingHint] = kwargs.pop("routing_hint", None)
+        ability: Optional[str] = kwargs.pop("ability", None)
 
         # Get all rotation provider instances for this rotation
         if not self.target_id:
@@ -1169,11 +1276,52 @@ class RotationManager(AbstractBLLManager, RouterMixin):
                 detail=f"No provider instances found for rotation {self.target_id}",
             )
 
+        # Item 51 — if a stickiness key is present, try the pinned provider
+        # first. On success → return. On failure → invalidate the pin and
+        # fall through to the default linear rotation. Skip pin if the
+        # pinned provider is currently unhealthy or under auth cooldown.
+        sticky_key: Optional[str] = (
+            routing_hint.stickiness_key if routing_hint else None
+        )
+        ordered_chain = list(rotation_provider_instances)
+        if sticky_key:
+            pinned_pi_id = _sticky_get(sticky_key, ability)
+            if pinned_pi_id is not None:
+                pinned_rpi = next(
+                    (
+                        r
+                        for r in ordered_chain
+                        if str(r.provider_instance_id) == str(pinned_pi_id)
+                    ),
+                    None,
+                )
+                if pinned_rpi is not None and self._sticky_pin_usable(pinned_rpi):
+                    pin_result, pin_succeeded = self._attempt_pinned(
+                        pinned_rpi, callable_func, args, kwargs
+                    )
+                    if pin_succeeded:
+                        # Refresh TTL on success.
+                        _sticky_set(sticky_key, ability, pinned_pi_id)
+                        return pin_result
+                    # Pin failed → invalidate and fall through. Move the
+                    # pinned RPI to the head so the surviving-chain
+                    # rotation begins from there (per Item 51 — recompute
+                    # against the surviving chain post-attempt).
+                    _sticky_invalidate(sticky_key, ability)
+                    ordered_chain = [
+                        r
+                        for r in ordered_chain
+                        if str(r.provider_instance_id) != str(pinned_pi_id)
+                    ]
+                else:
+                    # Unhealthy or vanished pin — drop and fall through.
+                    _sticky_invalidate(sticky_key, ability)
+
         attempted_providers = []
         last_exception = None
         policy_mod = self._load_rotation_policy_module()
 
-        for rpi in rotation_provider_instances:
+        for rpi in ordered_chain:
             # Item 2: skip providers still inside their auth cooldown window.
             cooldown_expires = _AUTH_COOLDOWNS.get(str(rpi.provider_instance_id))
             if cooldown_expires is not None and time.monotonic() < cooldown_expires:

@@ -1,12 +1,16 @@
 """
 Tests for PRV_SQLite provider.
-Tests static provider functionality with Provider Rotation System.
+
+Per AGENTS.md no-mock pillar: the bulk of these tests use a real SQLite
+database via tempfile. The handful of pure-utility tests for
+``validate_config`` against an unwritable directory and for connection
+failure paths are tagged ``@pytest.mark.unit`` and locally import
+``unittest.mock`` for filesystem-call isolation only.
 """
 
 import os
 import tempfile
 from typing import Dict
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -367,18 +371,22 @@ class TestPRVSQLite:
         finally:
             os.unlink(tmp.name)
 
-    def test_validate_config_no_file(self):
-        """Test configuration validation without database file"""
+    @pytest.mark.unit
+    def test_validate_config_no_file(self, monkeypatch):
+        """validate_config flags a missing database_file from real env."""
         # Clear any existing configuration
         PRV_SQLite._connection_config = {}
 
-        with patch("lib.Environment.env", return_value=""):
-            issues = PRV_SQLite.validate_config()
+        # No-mock pillar: clear the real env var instead of patching
+        # ``lib.Environment.env``. The validator pulls DATABASE_FILE from
+        # the real environment when no config dict supplies it.
+        monkeypatch.delenv("DATABASE_FILE", raising=False)
+        issues = PRV_SQLite.validate_config()
 
-            assert len(issues) > 0
-            assert any(
-                "database file not provided" in issue.lower() for issue in issues
-            )
+        assert len(issues) > 0
+        assert any(
+            "database file not provided" in issue.lower() for issue in issues
+        )
 
     def test_validate_config_valid_file(self):
         """Test configuration validation with valid file"""
@@ -395,9 +403,17 @@ class TestPRVSQLite:
         finally:
             os.unlink(tmp.name)
 
+    @pytest.mark.unit
     def test_validate_config_unwritable_directory(self):
-        """Test configuration validation with unwritable directory"""
-        # Test with a directory that doesn't exist and can't be created
+        """validate_config flags a directory it cannot create.
+
+        Pure-utility unit test (``@pytest.mark.unit``): we isolate the
+        ``os.makedirs`` syscall to avoid actually requiring an unwritable
+        directory on the host, which is the only correct way to assert
+        the function's error-path behavior cross-platform.
+        """
+        from unittest.mock import patch
+
         config = {"database_file": "/root/restricted/test.db"}
         PRV_SQLite._connection_config = config
 
@@ -438,9 +454,18 @@ class TestPRVSQLite:
         finally:
             os.unlink(tmp.name)
 
+    @pytest.mark.unit
     @pytest.mark.asyncio
     async def test_connection_error_handling(self):
-        """Test error handling when connection fails"""
+        """Connection-failure path returns a clean error string.
+
+        Pure-utility unit test (``@pytest.mark.unit``): we isolate the
+        ``os.makedirs`` syscall so the connection attempt deterministically
+        fails. This exercises the function's error-handling path on every
+        host without requiring a real read-only directory.
+        """
+        from unittest.mock import patch
+
         # Configure with invalid path
         PRV_SQLite._connection_config = {"database_file": "/nonexistent/path/test.db"}
 

@@ -1251,6 +1251,16 @@ class AbstractStaticProvider(AbstractStaticExtensionSystemComponent):
     # rotation system reads it via `RotationManager._resolve_rotation_policy`.
     rotation_policy: ClassVar[Optional[Any]] = None
 
+    # Item 33 — upstream API version pinning. Concrete providers may pin
+    # the upstream wire version (e.g. Stripe "2024-06-20"). When
+    # `external_api_version_header` is also set, `ProviderHTTPClient`
+    # injects the version as that header on every outbound call. When
+    # only `external_api_version` is set the value is informational
+    # (typically consumed by the upstream SDK rather than as a wire
+    # header) and the framework warns once at startup.
+    external_api_version: ClassVar[Optional[str]] = None
+    external_api_version_header: ClassVar[Optional[str]] = None
+
     # Item 27 — cached health report per provider class instance.
     _cached_health: ClassVar[Optional[HealthReport]] = None
     _cached_health_at: ClassVar[float] = 0.0

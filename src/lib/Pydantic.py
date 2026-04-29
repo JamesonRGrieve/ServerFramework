@@ -535,18 +535,21 @@ class PydanticUtility:
 
     def discover_model_relationships(
         self, bll_modules: Dict
-    ) -> List[Tuple[Type[BaseModel], Type[BaseModel], Type[BaseModel], Type]]:
+    ) -> List[Tuple[Type[BaseModel], Type[BaseModel], Type]]:
         """
         Discover and map relationships between models.
 
         This function examines the provided BLL modules to find model relationships,
-        including main models, reference models, and network models.
+        including main models and reference models. Network models are no longer
+        author-defined; they are emitted by the Pydantic2 generator from
+        ``BaseNetworkModel`` and looked up via the registry, so they are not
+        part of the discovery tuple.
 
         Args:
             bll_modules: Dictionary mapping module names to module objects
 
         Returns:
-            List of tuples containing (model_class, ref_model_class, network_model_class, manager_class)
+            List of tuples containing (model_class, ref_model_class, manager_class)
         """
         relationships = []
         processed_models = set()
@@ -583,15 +586,9 @@ class PydanticUtility:
             for model_name, model_class in model_classes:
                 base_name = model_name.replace("Model", "")
                 ref_model_name = f"{base_name}ReferenceModel"
-                network_model_name = f"{base_name}NetworkModel"
                 manager_name = f"{base_name}Manager"
-                # TODO @Kristy NetworkModel doesn't exist anymore
                 ref_model_class = next(
                     (cls for name, cls in module_members if name == ref_model_name),
-                    None,
-                )
-                network_model_class = next(
-                    (cls for name, cls in module_members if name == network_model_name),
                     None,
                 )
                 manager_class = next(
@@ -608,25 +605,8 @@ class PydanticUtility:
                         },
                     )
 
-                if not network_model_class:
-                    network_model_class = type(
-                        network_model_name,
-                        (BaseModel,),
-                        {
-                            "__annotations__": {"id": str},
-                            "__module__": model_class.__module__,
-                        },
-                    )
-
                 if manager_class:
-                    relationships.append(
-                        (
-                            model_class,
-                            ref_model_class,
-                            network_model_class,
-                            manager_class,
-                        )
-                    )
+                    relationships.append((model_class, ref_model_class, manager_class))
 
         return relationships
 
@@ -645,11 +625,11 @@ class PydanticUtility:
         model_fields_mapping = {}
 
         # First collect all main model fields
-        for model_class, ref_model_class, _, _ in model_relationships:
+        for model_class, ref_model_class, _ in model_relationships:
             model_fields_mapping[model_class] = self.get_model_fields(model_class)
 
         # Then collect fields for reference models
-        for _, ref_model_class, _, _ in model_relationships:
+        for _, ref_model_class, _ in model_relationships:
             if ref_model_class not in model_fields_mapping:
                 model_fields_mapping[ref_model_class] = self.get_model_fields(
                     ref_model_class

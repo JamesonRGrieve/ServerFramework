@@ -349,11 +349,56 @@ def build_app(model_registry: ModelRegistry):
     )
     app.extensions = {}
 
-    # Configure CORS
+    # ------------------------------------------------------------------
+    # CORS configuration (Item 71a).
+    #
+    # Production deployments MUST declare allowed origins via the
+    # ``APP_CORS_ALLOWED_ORIGINS`` env var (comma-separated). The
+    # framework refuses to start if production is configured with a
+    # wildcard origin or with ``allow_credentials=True`` + ``*``.
+    # Development deployments without an explicit allowlist fall back
+    # to ``*`` (without credentials) and emit a startup warning.
+    # ------------------------------------------------------------------
+    from lib.InboundSecurity import parse_cors_origins, validate_cors_config
+
+    app_env = (env("APP_ENV", default="development") or "development").lower()
+    raw_origins = env("APP_CORS_ALLOWED_ORIGINS", default="")
+    parsed_origins = parse_cors_origins(raw_origins)
+
+    if not parsed_origins:
+        # No explicit allowlist. Production refuses to start; dev warns + uses *.
+        if app_env == "production":
+            validate_cors_config(
+                allow_origins=["*"],
+                allow_credentials=True,
+                app_env="production",
+            )
+            # Unreachable — validate_cors_config raises in this branch.
+            raise RuntimeError(
+                "CORS misconfiguration: APP_ENV=production with no "
+                "APP_CORS_ALLOWED_ORIGINS allowlist."
+            )
+        logger.warning(
+            "APP_CORS_ALLOWED_ORIGINS is empty; falling back to '*' without "
+            "credentials. Set APP_CORS_ALLOWED_ORIGINS for non-development "
+            "deployments."
+        )
+        cors_origins = ["*"]
+        cors_credentials = False
+    else:
+        # Validate explicit allowlist; production with '*' fails fast.
+        cors_origins = parsed_origins
+        cors_credentials = "*" not in parsed_origins
+        validate_cors_config(
+            allow_origins=cors_origins,
+            allow_credentials=cors_credentials,
+            app_env=app_env,
+        )
+
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
+        allow_origins=cors_origins,
+        allow_credentials=cors_credentials,
         allow_methods=["*"],
         allow_headers=["*"],
     )

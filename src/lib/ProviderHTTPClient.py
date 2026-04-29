@@ -213,6 +213,39 @@ def _maybe_parse_model(
 # ----- Client ---------------------------------------------------------------
 
 
+# Item 33 — set of provider classes for which the framework has already
+# emitted the "version-without-header" warning. Keyed on the bound provider
+# class so the warning fires exactly once per (provider, version) pair.
+_versioning_warned: set = set()
+
+
+def _maybe_warn_version_without_header(provider: Any) -> None:
+    """Emit a one-shot warning when a bound provider declares
+    `external_api_version` but no `external_api_version_header`.
+
+    The version is then assumed to be consumed by the SDK (e.g. Stripe's
+    Python SDK reads `stripe.api_version`) rather than as a wire header.
+    """
+    if provider is None:
+        return
+    version = getattr(provider, "external_api_version", None)
+    header = getattr(provider, "external_api_version_header", None)
+    if not version or header:
+        return
+    key = (provider, version)
+    if key in _versioning_warned:
+        return
+    _versioning_warned.add(key)
+    name = getattr(provider, "__name__", provider.__class__.__name__)
+    logging.getLogger("ProviderHTTP").warning(
+        "Provider %s declares external_api_version=%r without "
+        "external_api_version_header; the version will not be injected "
+        "as an outbound header (SDK-consumed only).",
+        name,
+        version,
+    )
+
+
 class ProviderHTTPClient:
     """Async HTTP client wrapping `httpx.AsyncClient` with the provider
     cross-cutting pipeline.
@@ -220,6 +253,11 @@ class ProviderHTTPClient:
     Construct one per provider instance. The underlying `httpx.AsyncClient`
     is pooled across all `ProviderHTTPClient` instances that share the same
     `ClientPolicy` (modulo the proxy/TLS keys).
+
+    `provider` is the bound provider class (subclass of
+    `AbstractStaticProvider`). When supplied, the client reads cross-cutting
+    ClassVars off it — currently `external_api_version` and
+    `external_api_version_header` (Item 33) for header injection.
     """
 
     def __init__(
@@ -228,12 +266,15 @@ class ProviderHTTPClient:
         auth_strategy: Optional[AuthStrategy] = None,
         rate_limit: Optional[TokenBucket] = None,
         provider_name: Optional[str] = None,
+        provider: Optional[Any] = None,
     ) -> None:
         self.policy = policy or ClientPolicy()
         self.auth_strategy = auth_strategy
         self.rate_limit = rate_limit
         self.provider_name = provider_name
+        self.provider = provider
         self._logger = logging.getLogger(f"ProviderHTTP.{provider_name or 'default'}")
+        _maybe_warn_version_without_header(provider)
 
     # --- Pipeline helpers ---
 
@@ -250,6 +291,14 @@ class ProviderHTTPClient:
         if self.auth_strategy is not None:
             self.auth_strategy.refresh_if_needed()
             headers.update(self.auth_strategy.headers_for(requester_id))
+        # Item 33 — upstream API version pinning. Same pipeline step as
+        # auth strategy header injection: when the bound provider declares
+        # both a version and a header name, inject as a wire header.
+        if self.provider is not None:
+            version = getattr(self.provider, "external_api_version", None)
+            header_name = getattr(self.provider, "external_api_version_header", None)
+            if version and header_name:
+                headers[header_name] = version
         if idempotency_key:
             headers["Idempotency-Key"] = idempotency_key
         if extra_headers:
@@ -362,17 +411,20 @@ class ProviderHTTPClientSync:
         auth_strategy: Optional[AuthStrategy] = None,
         rate_limit: Optional[TokenBucket] = None,
         provider_name: Optional[str] = None,
+        provider: Optional[Any] = None,
     ) -> None:
         self.policy = policy or ClientPolicy()
         self.auth_strategy = auth_strategy
         self.rate_limit = rate_limit
         self.provider_name = provider_name
+        self.provider = provider
         self._logger = logging.getLogger(f"ProviderHTTP.{provider_name or 'default'}")
         self._async_helper = ProviderHTTPClient(
             policy=policy,
             auth_strategy=auth_strategy,
             rate_limit=rate_limit,
             provider_name=provider_name,
+            provider=provider,
         )
 
     def _build_headers(self, *a: Any, **k: Any) -> Dict[str, str]:
