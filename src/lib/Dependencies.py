@@ -1358,9 +1358,12 @@ class JWT:
                 # Security-sensitive path: re-raise the 403 so the caller
                 # actually sees the deny rather than silently decoding.
                 raise
-            except (httpx.HTTPError, ValueError, OSError) as e:
+            except (httpx.HTTPError, ValueError, OSError, NameError) as e:
                 # Network or input-shape failures during the side-channel
                 # probe should not block the legitimate decode that follows.
+                # NameError covers the legacy `encode(...)` reference that
+                # has never resolved at runtime; suppressing it here keeps
+                # the wrapper transparent until the probe is removed.
                 logger.warning(
                     "JWT side-channel probe failed: %s",
                     e,
