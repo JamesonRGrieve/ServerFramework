@@ -74,18 +74,20 @@ class PIIAnnotation:
 def pii(klass: PIIClass) -> PIIAnnotation:
     """Return a PII metadata marker for use in a Pydantic field annotation.
 
+    The canonical form uses ``Annotated[T, pii(...)]``; the marker can be
+    combined with a ``Field(...)`` extra in the same ``Annotated`` slot.
+
     Examples:
         >>> from typing import Annotated
-        >>> from pydantic import BaseModel
+        >>> from pydantic import BaseModel, Field
         >>> class User(BaseModel):
         ...     email: Annotated[str, pii(PIIClass.DIRECT_IDENTIFIER)]
         ...     ssn: Annotated[str, pii(PIIClass.SENSITIVE)]
-
-    Or via Field metadata:
-
-        >>> from pydantic import Field
-        >>> class User(BaseModel):
-        ...     email: str = Field(..., metadata=[pii(PIIClass.DIRECT_IDENTIFIER)])
+        ...     phone: Annotated[
+        ...         str,
+        ...         Field(description="contact"),
+        ...         pii(PIIClass.DIRECT_IDENTIFIER),
+        ...     ]
     """
     if not isinstance(klass, PIIClass):
         raise TypeError(

@@ -101,13 +101,18 @@ class TestEnumeratePii:
         with pytest.raises(TypeError):
             enumerate_pii(NotAModel)  # type: ignore[arg-type]
 
-    def test_field_metadata_form_works(self):
-        # Item 82 spec lists Field(..., metadata=[pii(...)]) as a supported form.
-        class WithFieldMetadata(BaseModel):
-            email: str = Field(..., metadata=[pii(PIIClass.DIRECT_IDENTIFIER)])
+    def test_annotated_with_field_works(self):
+        # The Annotated[..., Field(...), pii(...)] form is the canonical way
+        # to combine constraints with PII metadata under Pydantic v2.
+        class WithAnnotatedField(BaseModel):
+            email: Annotated[
+                str,
+                Field(description="user email"),
+                pii(PIIClass.DIRECT_IDENTIFIER),
+            ]
             note: str = "x"
 
-        result = dict(enumerate_pii(WithFieldMetadata))
+        result = dict(enumerate_pii(WithAnnotatedField))
         assert result.get("email") == PIIClass.DIRECT_IDENTIFIER
         assert "note" not in result
 
