@@ -1209,7 +1209,9 @@ class ModelRegistry(AbstractRegistry):
         if model_name.endswith("Model"):
             model_name = model_name[:-5]  # Remove 'Model' suffix
         field_name = stringcase.snakecase(model_name)
-        print(f"DEBUG _generate_network_class: model={model}, field_name={field_name}")
+        logger.debug(
+            f"_generate_network_class: model={model}, field_name={field_name}"
+        )
 
         # Create the Network class statically
         network_model_name = f"{model.__name__.replace('Model', '')}Network"
@@ -1409,7 +1411,9 @@ class ModelRegistry(AbstractRegistry):
         )
 
         # ResponseSingle class - wraps the base model
-        print(f"DEBUG ResponseSingle creation: field_name={field_name}, model={model}")
+        logger.debug(
+            f"ResponseSingle creation: field_name={field_name}, model={model}"
+        )
         network_attrs["ResponseSingle"] = type(
             "ResponseSingle",
             (BaseModel,),
@@ -1418,8 +1422,8 @@ class ModelRegistry(AbstractRegistry):
                 "__module__": model.__module__,
             },
         )
-        print(
-            f"DEBUG ResponseSingle created: {network_attrs['ResponseSingle'].model_fields}"
+        logger.debug(
+            f"ResponseSingle created: {network_attrs['ResponseSingle'].model_fields}"
         )
 
         # ResponsePlural class - wraps a list of the base model
@@ -1530,8 +1534,8 @@ class ModelRegistry(AbstractRegistry):
                                 else:
                                     # This is a regular Pydantic model - bind it normally
                                     try:
-                                        print(
-                                            f"DEBUG: Attempting to bind {attr.__name__} from {module_name}"
+                                        logger.debug(
+                                            f"Attempting to bind {attr.__name__} from {module_name}"
                                         )
                                         self.bind(attr)
                                         logger.debug(
@@ -1696,7 +1700,7 @@ class ModelRegistry(AbstractRegistry):
         """
         # If model is already bound, nothing to do
         if model in self.bound_models:
-            print(f"DEBUG: Model {model.__name__} already bound, skipping")
+            logger.debug(f"Model {model.__name__} already bound, skipping")
             return
 
         # Check for duplicate model names with different class objects (this should never happen)
@@ -2449,6 +2453,31 @@ class ModelRegistry(AbstractRegistry):
                 if "database.DB_" in module_name and module_name in sys.modules:
                     logger.debug(f"Reusing already imported core module: {module_name}")
                     module = sys.modules[module_name]
+                elif module_name.startswith("extensions."):
+                    # Item 61: route extension imports through the
+                    # canonical loader so they work for out-of-tree
+                    # extension trees and register under both legacy
+                    # and synthesized names.
+                    from extensions.ExtensionLoader import (
+                        load_extension_module,
+                    )
+
+                    parts = module_name.split(".")
+                    # ``extensions.<ext_name>.<file_stem>``
+                    if len(parts) >= 3:
+                        ext_name = parts[1]
+                        file_stem = parts[-1]
+                        extensions_root = _resolve_extensions_dir()
+                        module = load_extension_module(
+                            extensions_root, ext_name, file_stem
+                        )
+                    else:
+                        spec = importlib.util.spec_from_file_location(
+                            module_name, file_path
+                        )
+                        module = importlib.util.module_from_spec(spec)
+                        sys.modules[module_name] = module
+                        spec.loader.exec_module(module)
                 else:
                     # Import the module
                     spec = importlib.util.spec_from_file_location(
@@ -3020,20 +3049,20 @@ class ModelRegistry(AbstractRegistry):
 
                 try:
                     logger.debug(f"Importing extension EP module: {module_name}")
-                    # Use importlib.util for proper module loading
-                    spec = importlib.util.spec_from_file_location(
-                        module_name, file_path
+                    # Item 61: route through the canonical loader so
+                    # out-of-tree extension EP files load correctly and
+                    # are registered under both legacy and synthesized
+                    # names.
+                    from extensions.ExtensionLoader import (
+                        load_extension_module,
                     )
-                    if spec and spec.loader:
-                        module = importlib.util.module_from_spec(spec)
-                        sys.modules[module_name] = module
-                        spec.loader.exec_module(module)
-                        imported_modules.append(module_name)
-                        logger.debug(f"Successfully imported EP module: {module_name}")
-                    else:
-                        logger.warning(
-                            f"Could not create spec for EP module {module_name}"
-                        )
+
+                    file_stem = os.path.basename(file_path)[:-3]
+                    module = load_extension_module(
+                        extensions_root, ext_name, file_stem
+                    )
+                    imported_modules.append(module_name)
+                    logger.debug(f"Successfully imported EP module: {module_name}")
                 except Exception as e:
                     logger.error(f"Failed to import EP module {module_name}: {e}")
 

@@ -5,7 +5,7 @@ import time
 import uuid
 from pathlib import Path
 from types import NoneType
-from typing import Annotated, Any, List, Tuple, get_args, get_origin, ForwardRef
+from typing import Annotated, Any, Dict, List, Tuple, get_args, get_origin, ForwardRef
 
 import pytest
 from faker import Faker
@@ -34,6 +34,108 @@ project_root = src_path.parent
 # =============================================================================
 
 
+# =============================================================================
+# EXTERNAL API TEST MARKERS (Item 15)
+# =============================================================================
+# Two markers govern external-API tests:
+#   @pytest.mark.external_api(provider="stripe")
+#       Marks a test that requires real (sandbox) credentials. If the
+#       credentials are absent, the test is automatically xfailed with a
+#       clear reason naming the missing env vars; if they are present, the
+#       test runs end-to-end against the sandbox.
+#   @pytest.mark.external_smoke
+#       Marks a test that deliberately runs without credentials and asserts
+#       the framework's no-credentials path surfaces correctly.
+#
+# See src/extensions/EXT.Test.External.md for the operator-facing contract.
+# =============================================================================
+
+# Mapping from provider name to the env vars that, if present, would unblock
+# its sandbox tests. Extensions add their providers via
+# ``register_external_api_provider`` at import time (typically from the
+# extension's own conftest.py). The defaults shipped here cover the
+# providers the framework ships with itself.
+EXTERNAL_API_PROVIDER_ENV_VARS: Dict[str, List[str]] = {
+    # Stripe sandbox — secret key and a webhook signing secret for inbound
+    # tests (Item 5). Both must be set for a sandbox test to run.
+    "stripe": ["STRIPE_API_KEY", "STRIPE_WEBHOOK_SECRET"],
+    # SendGrid sandbox.
+    "sendgrid": ["SENDGRID_API_KEY"],
+    # Twilio sandbox.
+    "twilio": ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN"],
+    # GitHub — for federated tests against a sandbox account.
+    "github": ["GITHUB_TOKEN"],
+}
+
+
+def register_external_api_provider(name: str, env_vars: List[str]) -> None:
+    """Register a provider's sandbox env-var requirements.
+
+    Extensions that ship their own external-API tests call this from their
+    conftest.py (or from a top-level extension fixture file) to extend the
+    default mapping above. Idempotent: re-registering a provider replaces
+    its env-var list.
+    """
+    EXTERNAL_API_PROVIDER_ENV_VARS[name] = list(env_vars)
+
+
+def requires_sandbox_credentials(provider: str) -> Tuple[bool, str]:
+    """Return ``(has_creds, reason)`` for a provider's sandbox credentials.
+
+    ``has_creds`` is True iff every env var in the provider's mapping is
+    set to a non-empty value. ``reason`` is the xfail/skip message to
+    display when ``has_creds`` is False — it names the missing env vars
+    so the operator knows what to set.
+    """
+    env_vars = EXTERNAL_API_PROVIDER_ENV_VARS.get(provider)
+    if env_vars is None:
+        return (
+            False,
+            (
+                f"unknown external-api provider {provider!r}; register it "
+                f"via conftest.register_external_api_provider(name, env_vars)"
+            ),
+        )
+    missing = [v for v in env_vars if not os.environ.get(v)]
+    if missing:
+        return (
+            False,
+            (
+                f"missing sandbox credentials for {provider!r}: set "
+                f"{', '.join(missing)} to enable this test"
+            ),
+        )
+    return True, ""
+
+
+def pytest_collection_modifyitems(config, items):
+    """Auto-xfail external_api tests when sandbox credentials are absent.
+
+    Tests marked ``@pytest.mark.external_api(provider="stripe")`` get an
+    automatic ``xfail(strict=False)`` when the provider's env vars are
+    missing — they still run but a missing-credential failure becomes an
+    xfail-pass rather than a hard fail.
+
+    Tests marked ``@pytest.mark.external_smoke`` are unconditional — they
+    deliberately exercise the no-credentials path.
+    """
+    import pytest as _pytest
+
+    for item in items:
+        marker = item.get_closest_marker("external_api")
+        if marker is None:
+            continue
+        provider = (
+            marker.kwargs.get("provider")
+            or (marker.args[0] if marker.args else None)
+        )
+        if not provider:
+            continue
+        has_creds, reason = requires_sandbox_credentials(provider)
+        if not has_creds:
+            item.add_marker(_pytest.mark.xfail(reason=reason, strict=False))
+
+
 def pytest_configure(config):
     """
     Called after command line options have been parsed and all plugins are loaded.
@@ -41,6 +143,24 @@ def pytest_configure(config):
     For xdist workers, we use file locking to ensure only one worker initializes
     the database at a time. Other workers wait until initialization is complete.
     """
+    # Register the Item 15 external-API markers if the loaded ini hasn't
+    # already declared them. Idempotent — pytest tolerates duplicate
+    # addinivalue_line calls.
+    config.addinivalue_line(
+        "markers",
+        (
+            "external_api(provider): test requires real sandbox credentials "
+            "for the named provider; auto-xfailed when credentials are absent"
+        ),
+    )
+    config.addinivalue_line(
+        "markers",
+        (
+            "external_smoke: smoke test that runs without credentials and "
+            "asserts the no-credentials configuration-failure path surfaces"
+        ),
+    )
+
     # Check if we're running with xdist
     worker_id = os.environ.get("PYTEST_XDIST_WORKER")
 
@@ -532,6 +652,32 @@ def isolated_extension_server():
         return TestClient(instance(db_prefix=db_prefix, extensions=extensions))
 
     return _create_server
+
+
+@pytest.fixture(scope="session")
+def sandbox_credentials_for():
+    """Return a callable ``(provider) -> Dict[str, str]`` mapping env vars to values.
+
+    Item 15: tests that exercise real upstream calls run against sandbox or
+    test-mode credentials. This fixture returns the env-var dict for the
+    requested provider — empty when the credentials are absent, populated
+    when they are set in the environment. Pair with the ``external_api``
+    marker (which auto-xfails when creds are missing) so the test body can
+    use the values directly without a presence check.
+
+    Usage::
+
+        @pytest.mark.external_api(provider="stripe")
+        def test_real_stripe_call(sandbox_credentials_for):
+            creds = sandbox_credentials_for("stripe")
+            # creds is {"STRIPE_API_KEY": "sk_test_...", ...}
+    """
+
+    def _get(provider: str) -> Dict[str, str]:
+        env_vars = EXTERNAL_API_PROVIDER_ENV_VARS.get(provider, [])
+        return {v: os.environ.get(v, "") for v in env_vars}
+
+    return _get
 
 
 def generate_test_email(prefix="test"):

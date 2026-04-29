@@ -411,6 +411,7 @@ class MigrationManager:
         database_dir="database",
         model_registry=None,
         test_versions_root=None,
+        extensions_path=None,
     ):
         """Initialize the migration manager.
 
@@ -434,10 +435,19 @@ class MigrationManager:
                 artifacts to the test's lifecycle. When None, test_versions
                 directories under the source tree are used (legacy behavior,
                 relied on by direct CLI test invocations).
+            extensions_path: Optional path to an out-of-tree extensions
+                root (Item 62). When provided, migration discovery walks
+                this path rather than the bundled ``<src>/extensions``.
+                Equivalent to calling ``lib.Paths.set_extensions_root``
+                with the same value but scoped to this MigrationManager
+                instance. When None, falls back to
+                ``lib.Paths.extensions_dir()`` which already honors any
+                global override (set by ExtensionRegistry).
         """
         # Store directory configuration
         self.extensions_dir_name = extensions_dir
         self.database_dir_name = database_dir
+        self._extensions_path_override = extensions_path
 
         # Set class variable for static methods to access
         MigrationManager._extensions_dir_name = extensions_dir
@@ -532,7 +542,21 @@ class MigrationManager:
     #     return logger
 
     def _setup_python_path(self):
-        """Set up Python path for imports using configurable directory names."""
+        """Set up Python path for imports.
+
+        Item 62: Consults ``lib.Paths.extensions_dir()`` for the extensions
+        root rather than computing it inline as ``<src>/<extensions_dir_name>``.
+        This honors:
+          1. ``extensions_path`` passed to ``MigrationManager(...)`` (highest
+             priority — scopes the override to this manager instance).
+          2. ``lib.Paths.set_extensions_root(...)`` global override (set by
+             ``ExtensionRegistry(extensions_path=...)`` or by an explicit
+             setup call).
+          3. The bundled ``<src>/extensions`` location when neither override
+             is set.
+        """
+        from lib.Paths import extensions_path as resolve_extensions_path
+
         # Get the current migrations directory (where this file is located)
         migrations_dir = current_file_dir
 
@@ -541,11 +565,17 @@ class MigrationManager:
         src_dir = database_dir.parent  # database -> src
         root_dir = src_dir.parent  # src -> root
 
-        # Extensions directory uses configurable name for DB model discovery
-        if hasattr(self, "extensions_dir_name"):
+        # Extensions directory: route through lib.Paths so the same source
+        # of truth governs code loading and migration discovery.
+        instance_override = getattr(self, "_extensions_path_override", None)
+        extensions_dir = resolve_extensions_path(instance_override)
+
+        # Back-compat: if a non-default extensions_dir_name was passed and
+        # no override is active, fall back to the legacy in-src-dir form.
+        if instance_override is None and getattr(
+            self, "extensions_dir_name", "extensions"
+        ) != "extensions":
             extensions_dir = src_dir / self.extensions_dir_name
-        else:
-            extensions_dir = src_dir / "extensions"
 
         for path in [str(root_dir), str(src_dir)]:
             if path not in sys.path:
@@ -556,7 +586,7 @@ class MigrationManager:
             "database_dir": database_dir,
             "src_dir": src_dir,
             "root_dir": root_dir,
-            "extensions_dir": extensions_dir,  # Uses configurable directory name
+            "extensions_dir": extensions_dir,
         }
 
     def _get_configured_extensions(self):
@@ -957,6 +987,37 @@ class MigrationManager:
             return False
         cfg = self._make_alembic_config(extension_name, versions_dir)
         return self._extension_revision(cfg, extension_name, message=message, auto=auto)
+
+    def discover_extension_migration_dirs(self):
+        """Walk ``lib.Paths.extensions_dir()`` and list per-extension migration roots.
+
+        Item 62 — when the framework is configured with an out-of-tree
+        extensions root (via ``ExtensionRegistry(extensions_path=...)``
+        or ``MigrationManager(extensions_path=...)``), this returns the
+        ``migrations/`` directories under that root for every extension
+        that has BLL files. The framework's core migration root is
+        excluded — Alembic's ``script_location`` already points at
+        ``database/migrations``.
+
+        Returns a list of ``(extension_name, migrations_dir_path)``
+        tuples in deterministic (sorted) order.
+        """
+        ext_root = Path(self.paths["extensions_dir"])
+        out = []
+        if not ext_root.exists():
+            return out
+        for ext_dir in sorted(ext_root.iterdir()):
+            if not ext_dir.is_dir() or ext_dir.name.startswith("__"):
+                continue
+            # Only consider extensions that ship BLL files — those are the
+            # ones with database state. Extensions with no BLL_*.py have
+            # nothing to migrate.
+            if not list(ext_dir.glob("BLL_*.py")):
+                continue
+            migrations_dir = ext_dir / "migrations"
+            if migrations_dir.exists():
+                out.append((ext_dir.name, migrations_dir))
+        return out
 
     def _resolve_extension_versions_dir(self, extension_name):
         """Resolve the per-extension version_locations directory.

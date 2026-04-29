@@ -6,6 +6,14 @@ that MigrationManager._make_alembic_config builds. There is no
 per-extension env.py copy; the extension target is propagated through
 context.config.attributes["extension"] (set by _make_alembic_config) with
 ALEMBIC_EXTENSION as a back-compat fallback for direct alembic CLI use.
+
+Item 62 — Extension-aware migration discovery: when an out-of-tree
+extensions root is configured (via ``lib.Paths.set_extensions_root`` or
+via ``ExtensionRegistry(extensions_path=...)``), this env.py and the
+``MigrationManager`` honor that root rather than the hardcoded
+``<src>/extensions`` location. The discovery walks
+``lib.Paths.extensions_dir()`` so a single source of truth governs both
+code loading and migration discovery.
 """
 
 from logging.config import fileConfig
@@ -17,9 +25,23 @@ from sqlalchemy import MetaData, engine_from_config, pool
 from database.migrations.Migration import MigrationManager
 from lib.Environment import env
 from lib.Logging import logger
+from lib.Paths import extensions_dir as resolve_extensions_dir
 
 current_file = Path(__file__).resolve()
 paths = MigrationManager.env_setup_python_path(current_file)
+
+# Item 62 — Make the active extensions root discoverable to env_*.
+# ``resolve_extensions_dir`` honors per-instance overrides set via
+# ``ExtensionRegistry(extensions_path=...)`` or ``set_extensions_root``,
+# falling back to the bundled ``<src>/extensions`` location otherwise.
+# We attach it to ``paths`` so downstream consumers (autogenerate code
+# that walks the registry, FK-aware ordering in Item 49) read the same
+# source of truth.
+paths["extensions_dir"] = Path(resolve_extensions_dir())
+logger.debug(
+    f"env.py: extensions_dir resolved to {paths['extensions_dir']} "
+    f"(override active: {paths['extensions_dir'] != Path(paths['src_dir']) / 'extensions'})"
+)
 
 # Lazy initialization of DatabaseManager and Base to avoid creating
 # database files at import time (which would create production database during tests)

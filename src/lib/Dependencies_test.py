@@ -1201,5 +1201,134 @@ class TestDependencies(unittest.TestCase):
             self.assertEqual(resolved, deps_dict)
 
 
+class TestExtDependencyOptionalMissing(unittest.TestCase):
+    """Item 30: ``on_optional_missing`` callback + ``disables_abilities``."""
+
+    def test_default_callback_logs_warning_when_optional_missing(self):
+        from lib.Dependencies import EXT_Dependency
+
+        dep = EXT_Dependency(name="missing_ext", friendly_name="Missing Ext", optional=True)
+        with patch("lib.Dependencies.logger") as mock_logger:
+            assert dep.is_satisfied(loaded_extensions={}) is True
+            assert mock_logger.warning.called
+            msg = mock_logger.warning.call_args[0][0]
+            assert "missing_ext" in msg
+
+    def test_custom_callback_invoked_with_dep_name(self):
+        from lib.Dependencies import EXT_Dependency
+
+        seen = []
+
+        def cb(name: str) -> None:
+            seen.append(name)
+
+        dep = EXT_Dependency(
+            name="missing_ext",
+            friendly_name="Missing Ext",
+            optional=True,
+            on_optional_missing=cb,
+        )
+        assert dep.is_satisfied(loaded_extensions={}) is True
+        assert seen == ["missing_ext"]
+
+    def test_callback_not_invoked_when_dep_present(self):
+        from lib.Dependencies import EXT_Dependency
+
+        seen = []
+
+        def cb(name: str) -> None:
+            seen.append(name)
+
+        dep = EXT_Dependency(
+            name="present_ext",
+            friendly_name="Present Ext",
+            optional=True,
+            on_optional_missing=cb,
+        )
+        assert dep.is_satisfied(loaded_extensions={"present_ext": "1.0.0"}) is True
+        assert seen == []
+
+    def test_required_dep_does_not_invoke_callback(self):
+        """``on_optional_missing`` is only relevant for optional deps."""
+        from lib.Dependencies import EXT_Dependency
+
+        seen = []
+        dep = EXT_Dependency(
+            name="missing_ext",
+            friendly_name="Missing Ext",
+            optional=False,
+            on_optional_missing=lambda name: seen.append(name),
+        )
+        # Required dep that is missing returns False -- but since it's
+        # NOT optional, the on_optional_missing callback is NOT invoked.
+        assert dep.is_satisfied(loaded_extensions={}) is False
+        assert seen == []
+
+    def test_disables_abilities_field_default_empty(self):
+        from lib.Dependencies import EXT_Dependency
+
+        dep = EXT_Dependency(name="missing_ext", friendly_name="Missing Ext", optional=True)
+        assert dep.disables_abilities == []
+
+    def test_disables_abilities_field_carries_list(self):
+        from lib.Dependencies import EXT_Dependency
+
+        dep = EXT_Dependency(
+            name="missing_ext",
+            friendly_name="Missing Ext",
+            optional=True,
+            disables_abilities=["openai.complete", "openai.embed"],
+        )
+        assert dep.disables_abilities == ["openai.complete", "openai.embed"]
+
+    def test_callback_exception_does_not_break_startup(self):
+        from lib.Dependencies import EXT_Dependency
+
+        def bad(name: str) -> None:
+            raise RuntimeError("boom")
+
+        dep = EXT_Dependency(
+            name="missing_ext",
+            friendly_name="Missing Ext",
+            optional=True,
+            on_optional_missing=bad,
+        )
+        # Must not raise; logged at warning level instead.
+        with patch("lib.Dependencies.logger") as mock_logger:
+            assert dep.is_satisfied(loaded_extensions={}) is True
+            # at least one warning emitted (the "callback raised" path)
+            assert mock_logger.warning.called
+
+
+class TestPrintOptionalSkipBanner(unittest.TestCase):
+    """Item 30: ``print_optional_skip_banner`` startup helper."""
+
+    def test_banner_lists_each_skipped_dep(self):
+        from lib.Dependencies import print_optional_skip_banner
+
+        rendered = print_optional_skip_banner(
+            [
+                ("openai_provider", "openai.complete,openai.embed"),
+                ("vector_search", ""),
+            ]
+        )
+        assert "openai_provider" in rendered
+        assert "vector_search" in rendered
+        assert "openai.complete" in rendered
+
+    def test_banner_handles_empty_input(self):
+        from lib.Dependencies import print_optional_skip_banner
+
+        rendered = print_optional_skip_banner([])
+        assert "(none)" in rendered or "OPTIONAL" in rendered
+
+    def test_banner_returns_rendered_string(self):
+        from lib.Dependencies import print_optional_skip_banner
+
+        rendered = print_optional_skip_banner([("foo", "")])
+        assert isinstance(rendered, str)
+        assert "foo" in rendered
+
+
 if __name__ == "__main__":
     unittest.main()

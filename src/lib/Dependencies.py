@@ -11,7 +11,7 @@ import sys
 from abc import ABC, abstractmethod
 from enum import Enum
 from http.client import HTTPException
-from typing import Dict, List, Optional, Tuple, Type
+from typing import Any, Dict, List, Optional, Tuple, Type
 
 import httpx
 
@@ -1354,8 +1354,18 @@ class JWT:
                     == 403
                 ):
                     raise HTTPException(status_code=403, detail="Invalid JWT")
-            except:
-                pass
+            except HTTPException:
+                # Security-sensitive path: re-raise the 403 so the caller
+                # actually sees the deny rather than silently decoding.
+                raise
+            except (httpx.HTTPError, ValueError, OSError) as e:
+                # Network or input-shape failures during the side-channel
+                # probe should not block the legitimate decode that follows.
+                logger.warning(
+                    "JWT side-channel probe failed: %s",
+                    e,
+                    exc_info=True,
+                )
 
         token = kwargs.pop("jwt", args[0] if args else None)
         return JSONWebToken.decode(token, **kwargs)
@@ -1646,6 +1656,27 @@ class EXT_Dependency(Dependency):
     Represents a dependency of an extension on another extension.
     """
 
+    # Item 30: ability metadata + optional-missing callback. Both are
+    # additive; existing call sites continue to work without supplying
+    # either.
+    disables_abilities: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Names of abilities this extension would expose if the "
+            "(optional) dependency were satisfied. Surfaced by the "
+            "startup banner so operators know what is silently disabled."
+        ),
+    )
+    on_optional_missing: Optional[Any] = Field(
+        default=None,
+        exclude=True,
+        description=(
+            "Callable[[str], None] invoked when this optional "
+            "dependency is missing. Defaults to a structured warning "
+            "log via lib.Dependencies.print_optional_skip_banner."
+        ),
+    )
+
     def is_satisfied(self, loaded_extensions: Dict[str, str]) -> bool:
         """
         Check if this dependency is satisfied.
@@ -1658,6 +1689,18 @@ class EXT_Dependency(Dependency):
         """
         # Check if the extension is loaded
         if self.name not in loaded_extensions:
+            if self.optional:
+                # Item 30: invoke the on-missing callback so the operator
+                # has a real signal that an optional dependency was
+                # silently skipped. Errors in the callback never block
+                # startup -- log and continue.
+                callback = self.on_optional_missing or _default_optional_missing_callback
+                try:
+                    callback(self.name)
+                except Exception as err:  # pragma: no cover - defensive
+                    logger.warning(
+                        f"on_optional_missing callback for {self.name} raised: {err}"
+                    )
             return self.optional
 
         # If semver is specified, check version compatibility
@@ -1673,6 +1716,49 @@ class EXT_Dependency(Dependency):
 
         # Extension is loaded but no semver specified
         return True
+
+
+def _default_optional_missing_callback(dep_name: str) -> None:
+    """Default ``on_optional_missing`` handler. Emits a structured warning.
+
+    Extensions can override per-dependency by passing their own callable
+    to ``EXT_Dependency(on_optional_missing=...)``. The banner helper
+    ``print_optional_skip_banner`` consumes the same metadata to render
+    a single startup-time summary.
+    """
+    logger.warning(
+        f"Optional extension dependency missing: {dep_name}. "
+        f"Features depending on it will be disabled."
+    )
+
+
+def print_optional_skip_banner(skipped: List[Tuple[str, str]]) -> str:
+    """Render a startup banner naming every skipped optional dependency.
+
+    Args:
+        skipped: A list of ``(dep_name, disabled_abilities_csv)`` tuples.
+            Typical input is built by walking the resolved extension set
+            and collecting ``(EXT_Dependency.name, ",".join(d.disables_abilities))``
+            for any optional dependency that was missing.
+
+    Returns:
+        The rendered banner string. Also printed to stdout so operators
+        see it during startup; deployments that capture stdout to their
+        log pipeline get a structured record automatically.
+    """
+    if not skipped:
+        rendered = "OPTIONAL DEPS SKIPPED: (none)"
+        print(rendered)
+        return rendered
+    parts = []
+    for dep_name, abilities in skipped:
+        if abilities:
+            parts.append(f"{dep_name} (disabled: {abilities})")
+        else:
+            parts.append(dep_name)
+    rendered = "OPTIONAL DEPS SKIPPED: " + ", ".join(parts)
+    print(rendered)
+    return rendered
 
 
 class SysDependencies(List[SYS_Dependency]):

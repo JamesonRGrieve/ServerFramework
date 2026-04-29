@@ -571,8 +571,11 @@ def meta_logging_audit_hook(context: HookContext) -> None:
         if hasattr(context.result, "__len__"):
             try:
                 result_count = len(context.result)
-            except:
-                pass
+            except TypeError as e:
+                # `__len__` exists but is not callable / raises (rare).
+                logger.debug(
+                    "meta_logging audit: result.__len__() failed: %s", e
+                )
 
         logger.debug(
             f"Meta logging completed: {method_name} by user {requester_id}, "

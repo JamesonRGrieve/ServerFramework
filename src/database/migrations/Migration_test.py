@@ -583,3 +583,111 @@ def test_audit_ownership_cli_lists_tables():
         f"audit-ownership --help failed: stderr={res.stderr!r}"
     )
     assert "audit" in (res.stdout + res.stderr).lower()
+
+
+# ---------- Item 62: Extension-aware migration discovery ----------------
+
+
+@pytest.mark.migration
+def test_item62_extensions_path_override_routes_through_paths(tmp_path):
+    """Item 62 — MigrationManager(extensions_path=...) routes discovery
+    through ``lib.Paths.extensions_dir()`` and walks the supplied root
+    rather than the bundled ``<src>/extensions`` location.
+
+    Sets up a stub extensions tree under ``./my_extensions/payment/``
+    with a real ``BLL_*.py`` file and a ``migrations/`` directory, then
+    asserts that ``discover_extension_migration_dirs`` finds it.
+    """
+    from database.migrations.Migration import MigrationManager
+
+    # Build a stub out-of-tree extensions root.
+    ext_root = tmp_path / "my_extensions"
+    ext_root.mkdir()
+    payment_dir = ext_root / "payment"
+    payment_dir.mkdir()
+    (payment_dir / "__init__.py").write_text("")
+    (payment_dir / "BLL_Payment.py").write_text(
+        "# stub BLL — exists so the extension counts as schema-bearing\n"
+    )
+    migrations_dir = payment_dir / "migrations"
+    migrations_dir.mkdir()
+    (migrations_dir / "__init__.py").write_text("")
+    (migrations_dir / "versions").mkdir()
+
+    # Construct the manager with the per-instance override (Item 62).
+    # We bypass __init__ to avoid the DatabaseManager bootstrap and
+    # invoke the path-resolution helpers directly — this is the unit
+    # under test.
+    mgr = MigrationManager.__new__(MigrationManager)
+    mgr.extensions_dir_name = "extensions"
+    mgr.database_dir_name = "database"
+    mgr._extensions_path_override = str(ext_root)
+    mgr.paths = mgr._setup_python_path()
+
+    # The resolved extensions_dir must equal the override.
+    assert Path(mgr.paths["extensions_dir"]).resolve() == ext_root.resolve(), (
+        f"expected extensions_dir={ext_root.resolve()}, got {mgr.paths['extensions_dir']}"
+    )
+
+    # discover_extension_migration_dirs must find ``payment``.
+    discovered = mgr.discover_extension_migration_dirs()
+    names = [n for n, _ in discovered]
+    assert "payment" in names, (
+        f"discovery missed out-of-tree extension; got {names}"
+    )
+    discovered_dir = dict(discovered)["payment"]
+    assert discovered_dir.resolve() == migrations_dir.resolve()
+
+
+@pytest.mark.migration
+def test_item62_global_paths_override_picked_up(tmp_path):
+    """Item 62 — ``lib.Paths.set_extensions_root`` global override is
+    honored by MigrationManager when no per-instance override is set."""
+    from database.migrations.Migration import MigrationManager
+    from lib import Paths
+
+    ext_root = tmp_path / "global_ext"
+    ext_root.mkdir()
+    sub = ext_root / "billing"
+    sub.mkdir()
+    (sub / "__init__.py").write_text("")
+    (sub / "BLL_Billing.py").write_text("")
+    (sub / "migrations").mkdir()
+
+    saved = Paths._EXTENSIONS_ROOT_OVERRIDE  # noqa: SLF001 - test scope
+    try:
+        Paths.set_extensions_root(ext_root)
+
+        mgr = MigrationManager.__new__(MigrationManager)
+        mgr.extensions_dir_name = "extensions"
+        mgr.database_dir_name = "database"
+        mgr._extensions_path_override = None
+        mgr.paths = mgr._setup_python_path()
+
+        assert Path(mgr.paths["extensions_dir"]).resolve() == ext_root.resolve()
+        names = [n for n, _ in mgr.discover_extension_migration_dirs()]
+        assert "billing" in names
+    finally:
+        Paths._EXTENSIONS_ROOT_OVERRIDE = saved
+
+
+@pytest.mark.migration
+def test_item62_no_override_falls_back_to_bundled():
+    """Item 62 — without overrides, paths resolve to ``<src>/extensions``."""
+    from database.migrations.Migration import MigrationManager
+    from lib import Paths
+
+    saved = Paths._EXTENSIONS_ROOT_OVERRIDE  # noqa: SLF001 - test scope
+    try:
+        Paths._EXTENSIONS_ROOT_OVERRIDE = None
+        mgr = MigrationManager.__new__(MigrationManager)
+        mgr.extensions_dir_name = "extensions"
+        mgr.database_dir_name = "database"
+        mgr._extensions_path_override = None
+        mgr.paths = mgr._setup_python_path()
+
+        # Bundled extensions dir is at <src>/extensions.
+        expected = (Path(mgr.paths["src_dir"]) / "extensions").resolve()
+        assert Path(mgr.paths["extensions_dir"]).resolve() == expected
+    finally:
+        Paths._EXTENSIONS_ROOT_OVERRIDE = saved
