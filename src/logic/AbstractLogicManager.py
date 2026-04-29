@@ -264,6 +264,48 @@ class HookRegistry:
 # ---------------------------------------------------------------------------
 
 
+# Item 22: per-process counter exposed for observability/metric collectors.
+# Tests assert against this rather than wiring a real metrics backend.
+NON_BLOCKING_HOOK_FAILURES: Dict[str, int] = {}
+
+
+def _hook_blocking(hook_info: Dict[str, Any], default: bool) -> bool:
+    """Resolve the blocking flag for a hook, falling back to ``default``."""
+    explicit = hook_info.get("blocking")
+    if explicit is None:
+        return default
+    return bool(explicit)
+
+
+def _emit_non_blocking_failure_metric(
+    method_name: str,
+    timing: str,
+    hook_func: Callable,
+    error: BaseException,
+) -> None:
+    """Item 22 metric emission for a swallowed hook exception.
+
+    The framework does not bind a specific metrics backend here; this helper
+    increments an in-process counter and logs a structured warning. A real
+    deployment plugs into Prometheus / OTel via a logger handler or by
+    monkey-patching this function at startup.
+    """
+    metric_key = (
+        f"hook.non_blocking_failure"
+        f"|method={method_name}"
+        f"|timing={timing}"
+        f"|hook={getattr(hook_func, '__name__', '<unknown>')}"
+    )
+    NON_BLOCKING_HOOK_FAILURES[metric_key] = (
+        NON_BLOCKING_HOOK_FAILURES.get(metric_key, 0) + 1
+    )
+    logger.warning(
+        f"Non-blocking hook failure: method={method_name} timing={timing}"
+        f" hook={getattr(hook_func, '__name__', '<unknown>')}"
+        f" error={type(error).__name__}: {error}"
+    )
+
+
 def _hook_extension_name(func: Callable) -> str:
     """Best-effort extension name for a hook function.
 
@@ -557,6 +599,9 @@ def hook_bll(
                     "timing": timing_enum.value,
                     "priority": priority,
                     "condition": condition,
+                    "before": list(before or []),
+                    "after": list(after or []),
+                    "blocking": blocking,
                 }
 
             # Register the hook
@@ -567,11 +612,38 @@ def hook_bll(
                 hook_func,
                 priority,
                 condition,
+                before=before,
+                after=after,
+                blocking=blocking,
             )
 
         return hook_func
 
     return decorator
+
+
+def non_critical_hook(
+    target: Union[Type["AbstractBLLManager"], Callable],
+    timing: Union[HookTiming, str] = HookTiming.AFTER,
+    priority: int = 50,
+    condition: Optional[Callable[[HookContext], bool]] = None,
+    before: Optional[List[str]] = None,
+    after: Optional[List[str]] = None,
+) -> Callable:
+    """Item 22 ergonomic alias for ``hook_bll(..., blocking=False)``.
+
+    Use this for AFTER hooks that should never break the underlying
+    operation (audit, notification, analytics).
+    """
+    return hook_bll(
+        target=target,
+        timing=timing,
+        priority=priority,
+        condition=condition,
+        before=before,
+        after=after,
+        blocking=False,
+    )
 
 
 def _register_hook_on_class(
@@ -581,6 +653,9 @@ def _register_hook_on_class(
     hook_func: Callable,
     priority: int,
     condition: Optional[Callable],
+    before: Optional[List[str]] = None,
+    after: Optional[List[str]] = None,
+    blocking: Optional[bool] = None,
 ) -> None:
     """
     Register hook on the target class registry.
@@ -592,6 +667,9 @@ def _register_hook_on_class(
         hook_func: Hook function
         priority: Execution priority
         condition: Optional condition function
+        before: list of extension names this hook must run BEFORE (Item 21).
+        after: list of extension names this hook must run AFTER (Item 21).
+        blocking: per-hook blocking override (Item 22).
     """
     if not hasattr(target_class, "_hook_registry"):
         parent_registry = None
@@ -602,7 +680,15 @@ def _register_hook_on_class(
         target_class._hook_registry = HookRegistry(parent_registry)
 
     target_class._hook_registry.register_hook(
-        target_class, method_name, timing, hook_func, priority, condition
+        target_class,
+        method_name,
+        timing,
+        hook_func,
+        priority,
+        condition,
+        before=before,
+        after=after,
+        blocking=blocking,
     )
 
 
@@ -719,8 +805,20 @@ def wrap_method_with_hooks(
                     # Update kwargs with any modifications from the hook
                     kwargs.update(context.kwargs)
                 except Exception as e:
-                    logger.error(
-                        f"Error in before hook {hook_info['func'].__name__}: {e}"
+                    # Item 22: BEFORE hooks default blocking=True (security
+                    # and validation must fail loudly). Authors that
+                    # explicitly opt out via blocking=False get the
+                    # log+metric+continue path.
+                    if _hook_blocking(hook_info, default=True):
+                        logger.error(
+                            f"Error in before hook {hook_info['func'].__name__}: {e}"
+                        )
+                        raise
+                    _emit_non_blocking_failure_metric(
+                        method_name=method_name,
+                        timing="before",
+                        hook_func=hook_info["func"],
+                        error=e,
                     )
 
         # Check if we should skip the original method
@@ -750,8 +848,23 @@ def wrap_method_with_hooks(
                     if context.modified_result is not None:
                         result = context.modified_result
                 except Exception as e:
+                    # Item 22: AFTER hooks default blocking=False; observers
+                    # should not break the operation they are observing.
+                    # Authors that opt in via blocking=True get the
+                    # propagation path.
+                    if _hook_blocking(hook_info, default=False):
+                        logger.error(
+                            f"Error in after hook {hook_info['func'].__name__}: {e}"
+                        )
+                        raise
                     logger.error(
                         f"Error in after hook {hook_info['func'].__name__}: {e}"
+                    )
+                    _emit_non_blocking_failure_metric(
+                        method_name=method_name,
+                        timing="after",
+                        hook_func=hook_info["func"],
+                        error=e,
                     )
 
         return result

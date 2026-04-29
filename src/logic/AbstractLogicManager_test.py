@@ -784,21 +784,32 @@ class TestAbstractLogicManager:
         assert before_index < after_index
 
     def test_hook_error_handling(self):
-        """Test error handling in hooks"""
-        # Register hook that raises an error
+        """Item 22: BEFORE hooks default blocking=True; an error must propagate.
+
+        The same hook registered with blocking=False must NOT propagate.
+        """
+        # Default (blocking=True) BEFORE hook: error must propagate.
         hook_bll(BaseManagerForTest.create, timing=HookTiming.BEFORE, priority=10)(
             error_hook
         )
-
-        # Execute method - should handle hook error gracefully
-        entity = self.base_manager.create(name="Error Test")
-
-        # Verify hook was called
+        with pytest.raises(ValueError):
+            self.base_manager.create(name="Error Test")
         assert "error_hook" in hook_tracker.calls
 
-        # Verify entity was still created despite hook error
+        # Reset registry so we can re-register with blocking=False.
+        BaseManagerForTest._hook_registry.clear()
+        hook_tracker.calls.clear()
+        # Re-register with blocking=False -- error must be swallowed.
+        hook_bll(
+            BaseManagerForTest.create,
+            timing=HookTiming.BEFORE,
+            priority=10,
+            blocking=False,
+        )(error_hook)
+        entity = self.base_manager.create(name="Error Test 2")
         assert entity is not None
-        assert entity.name == "Error Test"
+        assert entity.name == "Error Test 2"
+        assert "error_hook" in hook_tracker.calls
 
     def test_create_operation(self):
         """Test creating an entity."""
