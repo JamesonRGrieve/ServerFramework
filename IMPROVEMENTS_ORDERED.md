@@ -2188,6 +2188,8 @@ Items in this group are fourth-round audit findings against the live codebase: c
 
 **Dependencies.** Cross-references Item 55 (RLS — sibling defense-in-depth pattern). Independent otherwise.
 
+**ROOT bypass restored as a follow-up.** The `BLL_Auth.UserManager.auth` flow's team-membership enrichment calls `TeamModel.DB(...).get(requester_id=ROOT_ID, ...)`; under the auto-filter, that pathway 404s when any team a user is bonded to is soft-deleted. The fix preserves the prior "ROOT can see tombstoned rows for admin/audit reads" contract by passing `query.execution_options(include_deleted=True)` from `cls.get`, `cls.list`, `cls.exists` (both branches), and `cls.count` whenever the requester is ROOT — `_soft_delete_before_compile` already honors that execution option as its bypass. Non-ROOT requesters still get the auto-filter; admin/audit code keeps its visibility into deleted state.
+
 ---
 
 # Sequencing recommendations
