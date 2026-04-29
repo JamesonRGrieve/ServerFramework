@@ -443,6 +443,25 @@ def build_app(model_registry: ModelRegistry):
             except (TypeError, ValueError):
                 pass
 
+        # Item 34 — propagate the W3C ``traceparent`` from the inbound
+        # request into the contextvar that ``ProviderHTTPClient`` reads.
+        # The value is forwarded verbatim on every outbound provider call
+        # so traces correlate across the API → BLL → rotation → outbound
+        # boundary in OTel-compatible backends. ``baggage`` is treated
+        # the same way (forwarded but not parsed). When the header is
+        # absent, no trace context is set — this preserves the no-op
+        # path for environments that have not configured tracing.
+        traceparent_header = request.headers.get("traceparent")
+        traceparent_token = None
+        if traceparent_header:
+            try:
+                from lib.ProviderHTTPClient import set_traceparent
+
+                traceparent_token = set_traceparent(traceparent_header)
+            except ImportError:
+                # ProviderHTTPClient not on path (test isolation, etc.) — no-op.
+                traceparent_token = None
+
         try:
             response = await call_next(request)
         except DeadlineExceededError as exc:
@@ -454,6 +473,17 @@ def build_app(model_registry: ModelRegistry):
                     "layer": exc.layer,
                 },
             )
+        finally:
+            # Item 34 — restore the prior traceparent contextvar (or
+            # clear it) so a request with a header does not leak into
+            # the next request's outbound calls.
+            if traceparent_token is not None:
+                try:
+                    from lib.ProviderHTTPClient import _traceparent
+
+                    _traceparent.reset(traceparent_token)
+                except (ImportError, ValueError):
+                    pass
 
         # NOTE: A previous debugging block here printed POST response bodies
         # to stdout, including JSON payloads. Removed (Item 73) — that path

@@ -469,6 +469,8 @@ The single client every provider routes outbound calls through, and the cross-cu
 
 **Dependencies.** Cross-references Items 27, 31. Independent of other items.
 
+**Partial implementation landed.** The inbound→outbound `traceparent` propagation (the first half of the contract) is wired: `ProviderHTTPClient` already reads the `_traceparent` contextvar (set by `set_traceparent`) and injects the header on every outbound call (Item 31), and the inbound HTTP middleware in `app.py::extract_jwt_context` now reads the request's `traceparent` header at ingress, sets it on the contextvar via `set_traceparent`, and resets it after the response (preventing leak between requests). What remains: (a) the rotation-attempt span tree (`RotationManager.rotate` opens a span per attempt, tagged with provider name and attempt index), (b) the pluggable metrics emission (latency histograms, success/error counters, per-provider health gauge consuming Item 27, idempotency-key cache hit rate), (c) backend selection (Prometheus / OpenTelemetry / Statsd) with a no-op default. Item remains open until those land.
+
 ---
 
 ## ~~Item 47~~ — ~~Deadline budget propagation through `RequestContext`~~ ✅ DONE
