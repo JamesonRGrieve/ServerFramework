@@ -1837,7 +1837,7 @@ A single canonical reference for every primitive an extension author touches.
 
 ---
 
-## Item 68 — Documented public API surface (formerly P9)
+## ~~Item 68~~ — ~~Documented public API surface (formerly P9)~~ ✅ DONE
 
 **Severity:** Low
 **Scope:** `serverframework/__init__.py`, package docstring, optional `serverframework.types` re-export module.
