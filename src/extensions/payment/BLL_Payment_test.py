@@ -1,5 +1,4 @@
 from datetime import datetime
-from unittest.mock import Mock
 
 import pytest
 from faker import Faker
@@ -104,23 +103,29 @@ class TestPayment_UserManager(CoreUserManagerTests, ExtensionServerMixin):
     def test_subscription_validation_hook_bypass(self, admin_a, team_a):
         """Test that subscription validation hook bypasses for system users - verifies hook logic works correctly"""
         # This test ensures the hook logic works correctly for bypass scenarios
-        # Since we can't easily test the actual hook, we test the bypass conditions
+        # using a real HookContext (per AGENTS.md no-mock pillar).
 
         # Test root user bypass
         root_email = env("ROOT_EMAIL")
         if root_email:
             # Simulate login context for root user
             from extensions.payment.BLL_Payment import validate_subscription_on_login
-            from logic.AbstractLogicManager import HookContext
+            from logic.AbstractLogicManager import HookContext, HookTiming
 
-            # Create mock context for root user login
-            mock_context = Mock()
-            mock_context.kwargs = {"login_data": {"email": root_email}}
-            mock_context.result = {"id": env("ROOT_ID")}
+            # Build a real HookContext for the bypass scenario. The hook
+            # should examine kwargs/result and short-circuit for root.
+            real_context = HookContext(
+                manager=None,
+                method_name="login",
+                args=[],
+                kwargs={"login_data": {"email": root_email}},
+                timing=HookTiming.AFTER,
+            )
+            real_context.set_result({"id": env("ROOT_ID")})
 
             # This should not raise an exception (bypass)
             try:
-                validate_subscription_on_login(mock_context)
+                validate_subscription_on_login(real_context)
                 # If we get here, the bypass worked
                 assert True
             except Exception:

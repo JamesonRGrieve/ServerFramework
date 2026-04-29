@@ -925,15 +925,11 @@ class TemplateGenerator:
 
         attributes = [f"    Model = {model_name}"]
 
-        # Add template-specific attributes
-        # TODO @Kristy NetworkModel doesn't exist anymore
+        # NetworkModel is resolved at runtime from ``Model.NetworkModel`` via the
+        # registry (see ``AbstractBLLManager.__init__``); it is not a module-level
+        # class, so we don't emit a static binding for it here.
         if template_type == "manager":
-            attributes.extend(
-                [
-                    f"    ReferenceModel = {base_name}ReferenceModel",
-                    f"    NetworkModel = {base_name}NetworkModel",
-                ]
-            )
+            attributes.append(f"    ReferenceModel = {base_name}ReferenceModel")
 
         return "\n".join(attributes)
 

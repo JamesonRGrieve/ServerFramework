@@ -19,13 +19,17 @@ the improved abstraction patterns similar to endpoint patterns.
 """
 
 import base64
+from logging import getLogger
 from typing import Any, Dict, List
 
 from sdk.AbstractSDKHandler import (
     AbstractSDKHandler,
     AuthenticationError,
     ResourceConfig,
+    SDKException,
 )
+
+logger = getLogger(__name__)
 
 # ===== User SDK =====
 
@@ -82,7 +86,8 @@ class UserSDK(AbstractSDKHandler):
         try:
             self._request("GET", "/v1")
             return True
-        except:
+        except SDKException as e:
+            logger.warning(f"Token verification failed: {e}", exc_info=True)
             return False
 
     def register(
@@ -1196,7 +1201,8 @@ class AuthSDK(AbstractSDKHandler):
         try:
             self._request("GET", "/v1")
             return True
-        except:
+        except SDKException as e:
+            logger.warning(f"Token verification failed: {e}", exc_info=True)
             return False
 
     def register(

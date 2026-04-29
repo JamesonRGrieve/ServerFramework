@@ -55,13 +55,8 @@ def run_venv_bootstrap() -> bool:
     try:
         from lib.Logging import logger  # type: ignore
     except Exception:  # pragma: no cover - bootstrap path
-        class _PrintLogger:
-            def debug(self, msg, *a, **kw):
-                print(msg)
-
-            info = warning = error = debug
-
-        logger = _PrintLogger()  # type: ignore
+        from logging import getLogger
+        logger = getLogger(__name__)
 
     current_file_path = Path(__file__).resolve()
     src_dir = current_file_path.parent

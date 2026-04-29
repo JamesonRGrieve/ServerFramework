@@ -31,7 +31,10 @@ from __future__ import annotations
 
 import os
 import re
+from logging import getLogger
 from typing import Any, Dict, Optional
+
+logger = getLogger(__name__)
 
 # Match ``extensions.<name>...`` or filesystem paths containing
 # ``/extensions/<name>/``. Both forms appear in ``__module__`` because
@@ -168,7 +171,7 @@ def print_ownership(ownership: Dict[str, Optional[str]]) -> str:
         owner = ownership[name] or "<core>"
         lines.append(f"  {name.ljust(width)}  {owner}")
     rendered = "\n".join(lines)
-    print(rendered)
+    logger.info(rendered)
     return rendered
 
 

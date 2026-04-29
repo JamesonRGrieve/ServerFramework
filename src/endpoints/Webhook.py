@@ -28,6 +28,7 @@ from typing import Any, Callable, Dict, Optional, Tuple
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict
 
+from lib.InboundSecurity import rate_limit
 from lib.Logging import logger
 
 
@@ -245,10 +246,12 @@ def create_webhook_router() -> APIRouter:
         return Response(status_code=200)
 
     @router.post("/{extension}/{provider}")
+    @rate_limit("100/min", scope="ip")
     async def _no_event(extension: str, provider: str, request: Request) -> Response:
         return await _dispatch(extension, provider, None, request)
 
     @router.post("/{extension}/{provider}/{event}")
+    @rate_limit("100/min", scope="ip")
     async def _with_event(
         extension: str, provider: str, event: str, request: Request
     ) -> Response:

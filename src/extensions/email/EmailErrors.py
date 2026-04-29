@@ -53,6 +53,7 @@ __all__ = [
     "EmailNonAsciiAddressError",
     "EmailMissingFromAddressError",
     "EmailValidationError",
+    "NotSupportedError",
     "map_validation_error",
     "map_upstream_status",
     "BaseExternalError",
@@ -61,6 +62,24 @@ __all__ = [
     "RateLimitExternalError",
     "AuthExternalError",
 ]
+
+
+class NotSupportedError(BaseExternalError):
+    """Raised by an `AbstractEmailProviderInstance` ability when the bonded
+    provider lacks the capability (e.g. SendGrid asked for `list_threads`).
+
+    Per Item 95: callers should branch on `capability in instance.capabilities`
+    rather than catching this; it is the safety-net for accidental calls."""
+
+    def __init__(self, provider: str = "", capability: str = "") -> None:
+        msg = (
+            f"Provider {provider!r} does not support capability {capability!r}"
+            if provider or capability
+            else "Capability not supported by this provider"
+        )
+        super().__init__(msg)
+        self.provider = provider
+        self.capability = capability
 
 
 # ---------------------------------------------------------------------------

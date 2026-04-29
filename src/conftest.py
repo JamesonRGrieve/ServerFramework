@@ -65,6 +65,9 @@ EXTERNAL_API_PROVIDER_ENV_VARS: Dict[str, List[str]] = {
     "twilio": ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN"],
     # GitHub — for federated tests against a sandbox account.
     "github": ["GITHUB_TOKEN"],
+    # InfluxDB — time-series database. Tests against a live InfluxDB
+    # instance (1.x or 2.x) are gated on these vars.
+    "influxdb": ["INFLUXDB_URL", "INFLUXDB_TOKEN"],
 }
 
 

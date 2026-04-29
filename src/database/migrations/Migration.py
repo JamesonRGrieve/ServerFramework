@@ -11,7 +11,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import stringcase
 from filelock import FileLock, Timeout
@@ -166,45 +166,33 @@ class MigrationManager:
     def _compute_migration_order(self, extensions: List[str]) -> List[str]:
         """Topologically sort extensions for FK-aware migration ordering.
 
-        Implements IMPROVEMENTS_ORDERED.md Item 49. Builds a DAG over the
-        provided extension names whose edges are the union of:
+        Thin adapter around :func:`database.MigrationOrdering.compute_migration_order`
+        (Item 49). Gathers the inputs the algorithm needs from this manager's
+        attached registry:
 
-         (a) Declared `EXT_Dependency` relationships, looked up via the
-             ExtensionRegistry attached to self._model_registry. An entry
-             ``EXT_Dependency(name="A")`` on extension B contributes the
-             edge A -> B (A migrates first).
+         (a) Declared ``EXT_Dependency`` relationships, looked up via the
+             ExtensionRegistry attached to ``self._model_registry``. Optional
+             dependencies are filtered out (only required deps contribute edges).
+         (b) The live ``Base.metadata`` so FK references can be inspected.
 
-         (b) FK references discovered by walking Base.metadata.tables.
-             For each ForeignKey on a table owned by extension B that
-             references a table owned by extension A (where A != B),
-             contribute the edge A -> B. FK references between core
-             and extension tables don't add edges — core always migrates
-             first by structural rule (run_all_migrations sequences core
-             before extensions unconditionally).
-
-        Returns a list of extension names in a valid migration order. On a
-        cycle, raises a RuntimeError whose message names the offending
-        extensions and the FK columns that closed the cycle, plus a hint
-        toward the recommended workaround (introduce a join table owned
-        by one of the extensions).
-
-        Requires: model_registry attached and committed (so Base.metadata
-        is populated). Without this, FK discovery is a no-op and only
-        declared dependencies contribute edges — order falls back to the
-        declared-only resolution that already shipped pre-Item-49.
+        Returns a list of extension names — restricted to the input set —
+        in a valid migration order. On a cycle, ``MigrationOrderingError``
+        is re-raised as ``RuntimeError`` so existing callers (which catch
+        ``RuntimeError``) keep working; the original message naming the
+        offending extensions, FK columns, and join-table workaround is
+        preserved verbatim.
         """
         if not extensions:
             return []
 
-        from graphlib import CycleError, TopologicalSorter
+        from database.MigrationOrdering import (
+            MigrationOrderingError,
+            compute_migration_order as _compute,
+        )
 
-        # Sort the input so unrelated extensions land in deterministic order.
-        nodes = sorted(set(extensions))
-        graph: dict = {n: set() for n in nodes}
-        # Pretty-printable provenance for cycle errors: edge -> reason.
-        provenance: dict = {}
-
-        # (a) Declared EXT_Dependency edges, if any registry is reachable.
+        # Build the declared-deps mapping. Only consider extensions that
+        # appear in the input (or are referenced as dependencies of one).
+        ext_dependencies: Dict[str, List[str]] = {n: [] for n in extensions}
         registry = self._model_registry
         ext_registry = getattr(registry, "extension_registry", None) if registry else None
         if ext_registry is not None:
@@ -212,7 +200,7 @@ class MigrationManager:
 
             for ext_class in getattr(ext_registry, "extensions", []):
                 ext_name = getattr(ext_class, "name", None)
-                if ext_name not in graph:
+                if ext_name not in ext_dependencies:
                     continue
                 deps = getattr(ext_class, "dependencies", None)
                 if deps is None:
@@ -225,60 +213,25 @@ class MigrationManager:
                 for dep in ext_deps:
                     if not isinstance(dep, EXT_Dependency) or dep.optional:
                         continue
-                    if dep.name in graph and dep.name != ext_name:
-                        graph[ext_name].add(dep.name)
-                        provenance.setdefault(
-                            (dep.name, ext_name),
-                            f"declared EXT_Dependency: {ext_name} depends on {dep.name}",
-                        )
+                    if dep.name and dep.name != ext_name:
+                        ext_dependencies[ext_name].append(dep.name)
 
-        # (b) FK-discovered edges. Reads ownership stamps written in Phase 2.
+        metadata = None
         if registry is not None:
             base = getattr(getattr(registry, "database_manager", None), "Base", None)
             metadata = getattr(base, "metadata", None) if base else None
-            if metadata is not None:
-                for table_name, table in metadata.tables.items():
-                    table_owner = self.env_is_table_owned_by_extension(table)
-                    if table_owner is None or table_owner not in graph:
-                        continue
-                    for fk in table.foreign_keys:
-                        ref_table = fk.column.table
-                        ref_owner = self.env_is_table_owned_by_extension(ref_table)
-                        if (
-                            ref_owner is None
-                            or ref_owner not in graph
-                            or ref_owner == table_owner
-                        ):
-                            continue
-                        graph[table_owner].add(ref_owner)
-                        provenance.setdefault(
-                            (ref_owner, table_owner),
-                            (
-                                f"FK {table_name}.{fk.parent.name} -> "
-                                f"{ref_table.name}.{fk.column.name}"
-                            ),
-                        )
 
-        sorter = TopologicalSorter({n: list(graph[n]) for n in nodes})
         try:
-            return list(sorter.static_order())
-        except CycleError as e:
-            cycle_nodes = e.args[1] if len(e.args) > 1 else []
-            edges_in_cycle = []
-            for i in range(len(cycle_nodes) - 1):
-                src, dst = cycle_nodes[i + 1], cycle_nodes[i]
-                reason = provenance.get((src, dst), f"{src} -> {dst}")
-                edges_in_cycle.append(reason)
-            msg = (
-                "Cross-extension migration cycle detected (Item 49). "
-                "Cycle: "
-                + " -> ".join(cycle_nodes)
-                + ". Edges: "
-                + "; ".join(edges_in_cycle)
-                + ". Resolution: introduce a join table owned by one side "
-                "rather than mutual direct FKs (see DB.Migrations.md)."
-            )
-            raise RuntimeError(msg) from e
+            full_order = _compute(metadata, ext_dependencies)
+        except MigrationOrderingError as e:
+            # Preserve the historic RuntimeError contract for callers that
+            # catch RuntimeError; the message body comes verbatim from
+            # MigrationOrderingError.__str__.
+            raise RuntimeError(str(e)) from e
+
+        # Restrict to the requested extension set, preserving order.
+        wanted = set(extensions)
+        return [n for n in full_order if n in wanted]
 
     def audit_table_ownership(self) -> bool:
         """Print a tab-separated audit of table → owner → extenders.
@@ -295,13 +248,13 @@ class MigrationManager:
 
             ModelRegistry().commit(extensions=os.environ.get("APP_EXTENSIONS", ""))
 
-            print("table\towner\textenders")
+            logger.info("table\towner\textenders")
             for table_name in sorted(Base.metadata.tables.keys()):
                 table = Base.metadata.tables[table_name]
                 owner = self.env_is_table_owned_by_extension(table) or "core"
                 extenders = self.env_table_extenders(table)
                 ext_col = ",".join(extenders) if extenders else "-"
-                print(f"{table_name}\t{owner}\t{ext_col}")
+                logger.info(f"{table_name}\t{owner}\t{ext_col}")
             return True
         except Exception as e:
             logger.error(f"audit-ownership failed: {e}", exc_info=True)

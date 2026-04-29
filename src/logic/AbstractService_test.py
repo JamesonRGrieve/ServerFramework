@@ -3,7 +3,6 @@ import time
 import uuid
 from datetime import datetime
 from typing import Optional
-from unittest.mock import patch
 
 import pytest
 from pydantic import BaseModel, Field

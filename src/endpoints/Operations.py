@@ -44,6 +44,7 @@ from typing import Any, Callable, Dict, List, Optional
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict
 
+from lib.InboundSecurity import rate_limit
 from lib.Logging import logger
 
 
@@ -463,6 +464,7 @@ def create_operations_router(
     # ----- DLQ admin ------------------------------------------------------
 
     @router.get("/admin/dlq")
+    @rate_limit("30/min", scope="user")
     def list_dlq(
         extension: Optional[str] = Query(None),
         ability: Optional[str] = Query(None),
@@ -489,6 +491,7 @@ def create_operations_router(
         }
 
     @router.post("/admin/dlq/{entry_id}/replay")
+    @rate_limit("30/min", scope="user")
     def replay_dlq(entry_id: str) -> Dict[str, Any]:
         if cfg.dlq_replay is None:
             raise HTTPException(
@@ -505,6 +508,7 @@ def create_operations_router(
         return {"status": "replayed", "id": entry_id}
 
     @router.post("/admin/dlq/{entry_id}/discard")
+    @rate_limit("30/min", scope="user")
     def discard_dlq(entry_id: str) -> Dict[str, Any]:
         if cfg.dlq_discard is None:
             raise HTTPException(
@@ -523,6 +527,7 @@ def create_operations_router(
     # ----- Service admin --------------------------------------------------
 
     @router.get("/admin/services")
+    @rate_limit("30/min", scope="user")
     def list_failed_services() -> Dict[str, Any]:
         services = cfg.failed_services_lister() if cfg.failed_services_lister else []
         rendered = []
@@ -538,6 +543,7 @@ def create_operations_router(
         return {"services": rendered, "total": len(rendered)}
 
     @router.post("/admin/services/{name}/reset")
+    @rate_limit("30/min", scope="user")
     def reset_service(name: str) -> Dict[str, Any]:
         if cfg.service_reset is None:
             raise HTTPException(

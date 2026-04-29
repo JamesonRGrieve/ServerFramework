@@ -400,7 +400,8 @@ class AbstractSDKHandler(ABC):
                 if isinstance(error_data, dict)
                 else f"HTTP {status_code} error"
             )
-        except:
+        except Exception as e:
+            self.logger.warning(f"Failed to parse error response: {e}", exc_info=True)
             error_data = {}
             error_message = f"HTTP {status_code} error"
 
