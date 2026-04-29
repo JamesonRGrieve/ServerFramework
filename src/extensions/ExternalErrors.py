@@ -20,6 +20,7 @@ Item 2 — RotationPolicy dataclass.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any, Callable, ClassVar, Optional
 
 
@@ -203,6 +204,108 @@ def default_rotation_policy() -> RotationPolicy:
     return RotationPolicy()
 
 
+# ---- Item 48: Graceful degradation contract ----------------------------------
+
+
+class DegradationMode(str, Enum):
+    """Item 48 — three degradation modes that determine what the framework
+    does when a non-critical provider exhausts its rotation chain.
+
+    Values are string-typed so they round-trip cleanly through OpenAPI /
+    audit logs / GraphQL introspection without a custom serializer.
+    """
+
+    FAIL_FAST = "fail_fast"
+    """Default. Raise ``HTTPException(500)`` on rotation exhaustion. The
+    operation surface is synchronous and the caller learns of failure
+    immediately. Correct for transactional operations whose downstream
+    behavior depends on the upstream's success (e.g. billing capture)."""
+
+    QUEUE_AND_RETRY = "queue_and_retry"
+    """Outbox-mediated. On rotation exhaustion the operation enrolls in
+    the outbox (Item 35); the route returns ``202 Accepted`` with a
+    tracking id; the outbox drain service performs the operation in the
+    background; the client polls the tracking id (or subscribes via a
+    webhook from Item 5) for completion. The SLA shifts from synchronous
+    to asynchronous; clients calling such operations must know to handle
+    202 responses. Correct for non-blocking sends like marketing email
+    where eventual delivery is acceptable."""
+
+    SILENT_DROP = "silent_drop"
+    """Log and return success on rotation exhaustion. **Dangerous.** Only
+    valid for genuinely fire-and-forget operations like analytics
+    beacons. The framework emits a mandatory metric
+    ``provider_silent_drop_total{provider, ability}`` on every
+    silent-drop occurrence so operators can dashboard the rate; a
+    non-zero rate on an operation that was not deliberately marked
+    silent-drop is the alert signal for misconfiguration."""
+
+
+@dataclass(frozen=True)
+class DegradationPolicy:
+    """Item 48 — per-ability degradation declaration consumed by the
+    rotation system on chain exhaustion.
+
+    Fields:
+        mode: which of the three modes above applies.
+        outbox_retention_days: how long the queue-and-retry outbox
+            retains entries before considering them permanently failed
+            (defaults to 7). Ignored unless ``mode == QUEUE_AND_RETRY``.
+        outbox_max_attempts: maximum number of outbox-driven retries
+            before the entry moves to the dead-letter queue (Item 35).
+            Defaults to 5.
+
+    The choice between modes is part of the API contract: switching an
+    operation between ``FAIL_FAST`` and ``QUEUE_AND_RETRY`` is a breaking
+    change because the response shape (200 vs 202) and the SLA
+    (synchronous vs eventual) shift. Treat mode changes as version bumps
+    per Item 39.
+    """
+
+    mode: DegradationMode = DegradationMode.FAIL_FAST
+    outbox_retention_days: int = 7
+    outbox_max_attempts: int = 5
+
+
+def fail_fast() -> DegradationPolicy:
+    """Convenience constructor for the default `FAIL_FAST` policy."""
+    return DegradationPolicy(mode=DegradationMode.FAIL_FAST)
+
+
+def queue_and_retry(
+    *, outbox_retention_days: int = 7, outbox_max_attempts: int = 5
+) -> DegradationPolicy:
+    """Convenience constructor for `QUEUE_AND_RETRY` with explicit
+    retention / attempt knobs."""
+    return DegradationPolicy(
+        mode=DegradationMode.QUEUE_AND_RETRY,
+        outbox_retention_days=outbox_retention_days,
+        outbox_max_attempts=outbox_max_attempts,
+    )
+
+
+def silent_drop() -> DegradationPolicy:
+    """Convenience constructor for the dangerous `SILENT_DROP` policy.
+
+    Authors using this must accept that successful return values will be
+    emitted on actual upstream failure; the framework requires a
+    deliberate opt-in via this constructor (rather than a bare
+    ``DegradationPolicy(mode=SILENT_DROP)``) to make grep-ability
+    explicit during code review.
+    """
+    return DegradationPolicy(mode=DegradationMode.SILENT_DROP)
+
+
+def default_degradation_policy() -> DegradationPolicy:
+    """Item 48 — the framework default is always `FAIL_FAST`.
+
+    Provider authors that omit ``degradation_policy`` on their abilities
+    inherit this default. Opting into the riskier modes requires an
+    explicit declaration so degradation is visible in code review.
+    """
+    return DegradationPolicy()
+
+
 __all__ = [
     "BaseExternalError",
     "TransientExternalError",
@@ -215,4 +318,10 @@ __all__ = [
     "NavigationNotIncludedError",
     "RotationPolicy",
     "default_rotation_policy",
+    "DegradationMode",
+    "DegradationPolicy",
+    "fail_fast",
+    "queue_and_retry",
+    "silent_drop",
+    "default_degradation_policy",
 ]

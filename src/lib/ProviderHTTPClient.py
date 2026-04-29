@@ -333,6 +333,27 @@ class ProviderHTTPClient:
             )
 
     def _resolve_timeout(self, deadline_ms: Optional[int]) -> float:
+        # Item 47 — when no per-call deadline_ms is supplied, fall back to
+        # the inbound request's remaining budget so cross-layer budgets
+        # cooperate instead of stacking. A `DeadlineExceededError` raised
+        # by the per-call check propagates up to the inbound middleware,
+        # which surfaces it as 504.
+        if deadline_ms is None:
+            try:
+                from lib.RequestContext import (
+                    DeadlineExceededError,
+                    remaining_deadline_ms,
+                )
+
+                request_remaining = remaining_deadline_ms()
+                if request_remaining is not None:
+                    if request_remaining <= 0:
+                        raise DeadlineExceededError(
+                            elapsed_ms=0, layer="provider_http"
+                        )
+                    deadline_ms = request_remaining
+            except ImportError:  # pragma: no cover - test isolation
+                pass
         if deadline_ms is not None:
             return max(0.001, deadline_ms / 1000.0)
         return self.policy.timeout

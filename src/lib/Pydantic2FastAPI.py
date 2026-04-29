@@ -1187,6 +1187,30 @@ class RouterMixin:
     nested_resources: ClassVar[Dict[str, NestedResourceConfig]] = {}
     example_overrides: ClassVar[Dict[str, Dict[str, Any]]] = {}
 
+    # Item 39 — per-resource endpoint versioning surface.
+    #
+    # ``version`` is the URL-path version segment (default ``"v1"`` to
+    # match the framework's existing ``/v1/<resource>`` shape). When
+    # ``prefix`` is None, the route prefix is derived as ``f"/{version}/
+    # {resource_name}"``. Multiple managers may register the same
+    # resource at different versions — declare e.g.
+    # ``UserManagerV2(AbstractBLLManager, RouterMixin): version = "v2"``
+    # alongside the existing ``UserManager`` and both versions route
+    # concurrently, both appear in OpenAPI, and the SDK generator emits
+    # version-suffixed methods. See IMPROVEMENTS_ORDERED.md Item 39 for
+    # the full deprecation contract.
+    version: ClassVar[str] = "v1"
+
+    # ``deprecated_in`` / ``sunset_in`` carry the deprecation contract.
+    # When set, the framework adds the ``Deprecation`` and ``Sunset``
+    # HTTP headers to every response on this version's routes and emits
+    # a logged warning per call after the deprecation date. Values are
+    # ISO-8601 datetimes (UTC) or version tokens — the framework does
+    # not enforce a specific format here, only that the values are
+    # opaque strings forwarded to clients verbatim.
+    deprecated_in: ClassVar[Optional[str]] = None
+    sunset_in: ClassVar[Optional[str]] = None
+
     @classmethod
     def Router(cls, model_registry) -> APIRouter:
         """

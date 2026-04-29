@@ -34,7 +34,12 @@ from database.DatabaseManager import DatabaseManager
 from lib.Environment import env, inflection
 from lib.Logging import logger
 from lib.Pydantic import ModelRegistry
-from lib.RequestContext import clear_request_context, set_request_user
+from lib.RequestContext import (
+    DeadlineExceededError,
+    clear_request_context,
+    set_request_deadline_ms,
+    set_request_user,
+)
 
 
 def setup_extension_dependencies():
@@ -289,30 +294,28 @@ def build_app(model_registry: ModelRegistry):
     from lib.Environment import env
     from lib.Logging import logger
 
-    # Prefer the installed distribution's version when available; fall back
-    # to the sibling ``version`` file so in-tree development keeps working.
-    version: Optional[str] = None
+    # Item 67 — single source of truth: the installed distribution's
+    # metadata. Editable installs (`pip install -e .`) populate this
+    # the same way wheel installs do, so in-tree development keeps
+    # working. The sibling ``version`` file fallback was removed
+    # because it drifted from the actual release version (and was a
+    # second source of truth that defeated the purpose of having
+    # ``[project.version]`` in pyproject.toml at all). When the package
+    # is not installed at all (rare — e.g. running directly from a
+    # source checkout without `pip install`), we default to "0.0.0"
+    # rather than masking the missing-install with stale file data.
+    version: str = "0.0.0"
     try:
         from importlib.metadata import PackageNotFoundError, version as _pkg_version
 
-        try:
-            version = _pkg_version("serverframework")
-        except PackageNotFoundError:
+        for _dist_name in ("serverframework", "server"):
             try:
-                version = _pkg_version("server")
+                version = _pkg_version(_dist_name)
+                break
             except PackageNotFoundError:
-                version = None
+                continue
     except ImportError:
-        version = None
-
-    if not version:
-        this_directory = os.path.abspath(os.path.dirname(__file__))
-        version_file = os.path.join(this_directory, "version")
-        try:
-            with open(version_file, encoding="utf-8") as f:
-                version = f.read().strip()
-        except FileNotFoundError:
-            version = "0.0.0"
+        pass
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -430,7 +433,57 @@ def build_app(model_registry: ModelRegistry):
                 # If JWT decode fails, just continue without setting context
                 pass
 
-        response = await call_next(request)
+        # Item 47 — read X-Request-Timeout-Ms (gRPC-style relative ms)
+        # and convert to an absolute monotonic deadline at ingress so all
+        # subsequent budget checks share one time source.
+        timeout_header = request.headers.get("X-Request-Timeout-Ms")
+        if timeout_header:
+            try:
+                set_request_deadline_ms(int(timeout_header))
+            except (TypeError, ValueError):
+                pass
+
+        # Item 34 — propagate the W3C ``traceparent`` from the inbound
+        # request into the contextvar that ``ProviderHTTPClient`` reads.
+        # The value is forwarded verbatim on every outbound provider call
+        # so traces correlate across the API → BLL → rotation → outbound
+        # boundary in OTel-compatible backends. ``baggage`` is treated
+        # the same way (forwarded but not parsed). When the header is
+        # absent, no trace context is set — this preserves the no-op
+        # path for environments that have not configured tracing.
+        traceparent_header = request.headers.get("traceparent")
+        traceparent_token = None
+        if traceparent_header:
+            try:
+                from lib.ProviderHTTPClient import set_traceparent
+
+                traceparent_token = set_traceparent(traceparent_header)
+            except ImportError:
+                # ProviderHTTPClient not on path (test isolation, etc.) — no-op.
+                traceparent_token = None
+
+        try:
+            response = await call_next(request)
+        except DeadlineExceededError as exc:
+            return JSONResponse(
+                status_code=504,
+                content={
+                    "detail": str(exc),
+                    "elapsed_ms": exc.elapsed_ms,
+                    "layer": exc.layer,
+                },
+            )
+        finally:
+            # Item 34 — restore the prior traceparent contextvar (or
+            # clear it) so a request with a header does not leak into
+            # the next request's outbound calls.
+            if traceparent_token is not None:
+                try:
+                    from lib.ProviderHTTPClient import _traceparent
+
+                    _traceparent.reset(traceparent_token)
+                except (ImportError, ValueError):
+                    pass
 
         # NOTE: A previous debugging block here printed POST response bodies
         # to stdout, including JSON payloads. Removed (Item 73) — that path

@@ -11,6 +11,39 @@ without depending on the layout of the internal ``lib``, ``logic``,
 ``database`` etc. packages. The façade is intentionally additive: it does
 not replace ``app.py`` and does not touch any existing call site, so the
 historical ``python app.py`` entry point keeps working unchanged.
+
+Public-vs-internal contract (Item 68)
+-------------------------------------
+**Stable surface.** ``__all__`` (defined below) enumerates the symbols
+that this package commits to as part of the documented public API.
+Anything in ``__all__`` is covered by the framework's compatibility
+guarantees — its signature and observable behavior will not change in
+breaking ways within a major version.
+
+**Internal modules.** Importing any symbol *not* in ``__all__`` —
+including but not limited to ``serverframework.lib``,
+``serverframework.logic``, ``serverframework.database``,
+``serverframework.endpoints``, ``serverframework.extensions``,
+``serverframework.sdk`` — is **at the consumer's own risk**. Those
+modules are framework internals; their layout, naming, and signatures
+may change between versions without prior notice. If you need a
+primitive that is currently only reachable via an internal module,
+open an issue against the framework so the primitive can be promoted
+to the public surface (and to ``EXT.Contracts.md``, see Item 52)
+rather than depending on the internal path.
+
+**Type re-exports.** Type hints against framework-defined Pydantic
+models (``UserModel.Create``, ``SessionModel``, …) currently require
+importing from internal modules; a future ``serverframework.types``
+re-export module is on the roadmap (Item 68 follow-up). Until that
+ships, type-hint imports from internal modules carry the same
+"at your own risk" caveat as runtime imports.
+
+**CI enforcement.** The framework's CI cross-checks ``__all__`` against
+``EXT.Contracts.md`` (Item 52, when populated): a symbol is in
+``serverframework.__all__`` if and only if it has a corresponding
+contract entry. Drift in either direction fails the build, so adding a
+new public symbol forces a matching documented contract.
 """
 
 from __future__ import annotations

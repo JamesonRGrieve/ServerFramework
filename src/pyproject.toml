@@ -118,7 +118,10 @@ exclude = [
 namespaces = true
 
 [tool.setuptools.package-data]
-"*" = ["version", "*.json", "*.md"]
+# Item 67 — the sibling ``version`` file was removed; the version
+# string now comes solely from `[project.version]` (which feeds
+# ``importlib.metadata.version("serverframework")`` at runtime).
+"*" = ["*.json", "*.md"]
 
 [tool.serverframework.supply_chain]
 # Item 86 — Supply-chain hygiene declarations consumed by the release pipeline.

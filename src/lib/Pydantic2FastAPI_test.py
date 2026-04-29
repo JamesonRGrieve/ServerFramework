@@ -284,6 +284,53 @@ class TestRouterMixin:
         assert router.prefix == "/v1/test"
         assert "Test API" in router.tags
 
+    # Item 39 — endpoint versioning surface tests
+    def test_default_version_is_v1(self):
+        """Default ``version`` ClassVar is ``"v1"`` to match the
+        existing ``/v1/<resource>`` shape — adding the surface must not
+        break existing routes."""
+        assert RouterMixin.version == "v1"
+
+    def test_version_classvar_overridable(self):
+        """A subclass can pin a different version; both versions can
+        coexist on the same resource by registering both managers."""
+
+        class TestManagerV2(RouterMixin):
+            version = "v2"
+
+        assert TestManagerV2.version == "v2"
+        assert RouterMixin.version == "v1"  # base unchanged
+
+    def test_deprecation_classvars_default_none(self):
+        """``deprecated_in`` / ``sunset_in`` default to ``None``;
+        when None the framework emits no Deprecation / Sunset headers."""
+        assert RouterMixin.deprecated_in is None
+        assert RouterMixin.sunset_in is None
+
+    def test_deprecation_classvars_overridable(self):
+        """Setting the deprecation knobs is a per-manager opt-in for
+        the deprecation contract — an ISO date or version token is
+        valid; the framework forwards the string verbatim."""
+
+        class TestManagerDeprecated(RouterMixin):
+            version = "v1"
+            deprecated_in = "2026-12-31"
+            sunset_in = "2027-06-30"
+
+        assert TestManagerDeprecated.deprecated_in == "2026-12-31"
+        assert TestManagerDeprecated.sunset_in == "2027-06-30"
+
+    def test_prerelease_version_tokens_accepted(self):
+        """Version is an opaque alphanumeric token — ``v2beta``,
+        ``v3rc1`` and similar prerelease identifiers are valid. Ordering
+        for "latest" is lexicographic with documented quirks for
+        prereleases (per Item 39 implementation notes)."""
+
+        class TestManagerBeta(RouterMixin):
+            version = "v2beta"
+
+        assert TestManagerBeta.version == "v2beta"
+
 
 class TestAuthDependencies:
     """Test authentication dependencies."""

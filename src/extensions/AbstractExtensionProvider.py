@@ -1251,6 +1251,29 @@ class AbstractStaticProvider(AbstractStaticExtensionSystemComponent):
     # rotation system reads it via `RotationManager._resolve_rotation_policy`.
     rotation_policy: ClassVar[Optional[Any]] = None
 
+    # Item 48 — per-ability graceful-degradation policy. Concrete providers
+    # may attach a `DegradationPolicy` to an ability via the ability
+    # decorator, or fall back to this provider-class-level default. The
+    # rotation system consults the policy when its chain is exhausted:
+    # `FAIL_FAST` (default) raises HTTP 500; `QUEUE_AND_RETRY` enrolls
+    # the operation in the outbox (Item 35) and returns 202; `SILENT_DROP`
+    # logs and returns success while emitting `provider_silent_drop_total`
+    # metric. None means "inherit the framework default" which is
+    # `FAIL_FAST`. Switching modes is a breaking change to the API
+    # contract — version per Item 39.
+    degradation_policy: ClassVar[Optional[Any]] = None
+
+    # Item 84 — per-provider cost-observability model. A `CostModel`
+    # callable (`(request, response) -> Decimal`) returns the cost of a
+    # single upstream call in the deployment's base currency. The
+    # framework reads this on the outbound-call path and emits the
+    # `provider_cost_usd_total{tenant, provider, ability}` counter +
+    # writes per-request cost into the audit log (Item 56 retention).
+    # `None` means the provider does not contribute to cost metrics
+    # (rather than emitting zero-cost noise — providers that are
+    # genuinely free declare `FreeCostModel()` explicitly).
+    cost_model: ClassVar[Optional[Any]] = None
+
     # Item 33 — upstream API version pinning. Concrete providers may pin
     # the upstream wire version (e.g. Stripe "2024-06-20"). When
     # `external_api_version_header` is also set, `ProviderHTTPClient`

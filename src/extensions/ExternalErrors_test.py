@@ -7,6 +7,8 @@ import pytest
 from extensions.ExternalErrors import (
     AuthExternalError,
     BaseExternalError,
+    DegradationMode,
+    DegradationPolicy,
     InvalidInputExternalError,
     InvalidPaginationError,
     NavigationNotIncludedError,
@@ -15,7 +17,11 @@ from extensions.ExternalErrors import (
     RotationPolicy,
     TransientExternalError,
     UnsupportedOperatorError,
+    default_degradation_policy,
     default_rotation_policy,
+    fail_fast,
+    queue_and_retry,
+    silent_drop,
 )
 
 
@@ -92,3 +98,57 @@ class TestRotationPolicy:
 
         p = RotationPolicy(header_parser=parser)
         assert p.header_parser({"x": 1}) == {"retry_after_seconds": 5}
+
+
+# ---- Item 48: DegradationPolicy tests ----------------------------------------
+
+
+class TestDegradationPolicy:
+    def test_default_mode_is_fail_fast(self):
+        p = default_degradation_policy()
+        assert p.mode == DegradationMode.FAIL_FAST
+
+    def test_fail_fast_constructor(self):
+        p = fail_fast()
+        assert p.mode == DegradationMode.FAIL_FAST
+
+    def test_queue_and_retry_constructor_defaults(self):
+        p = queue_and_retry()
+        assert p.mode == DegradationMode.QUEUE_AND_RETRY
+        assert p.outbox_retention_days == 7
+        assert p.outbox_max_attempts == 5
+
+    def test_queue_and_retry_constructor_overrides(self):
+        p = queue_and_retry(outbox_retention_days=30, outbox_max_attempts=10)
+        assert p.outbox_retention_days == 30
+        assert p.outbox_max_attempts == 10
+
+    def test_silent_drop_constructor(self):
+        # The dangerous mode requires the explicit constructor for grep-ability.
+        p = silent_drop()
+        assert p.mode == DegradationMode.SILENT_DROP
+
+    def test_dataclass_frozen(self):
+        # Frozen dataclass — immutable after construction. Catches accidental
+        # mutation that would silently change degradation behavior across
+        # callers that share the same policy instance.
+        p = fail_fast()
+        with pytest.raises(Exception):  # FrozenInstanceError on >=3.7
+            p.mode = DegradationMode.SILENT_DROP  # type: ignore[misc]
+
+    def test_mode_string_value_round_trip(self):
+        # Modes are str-typed enums so they round-trip through OpenAPI
+        # / audit logs / GraphQL introspection without a custom serializer.
+        assert DegradationMode.FAIL_FAST.value == "fail_fast"
+        assert DegradationMode.QUEUE_AND_RETRY.value == "queue_and_retry"
+        assert DegradationMode.SILENT_DROP.value == "silent_drop"
+
+    def test_provider_default_classvar_overridable(self):
+        # AbstractStaticProvider declares `degradation_policy: ClassVar` so
+        # concrete providers can attach a default. Verify the override
+        # mechanism by subclassing inline (avoids importing the full
+        # provider machinery in this unit test).
+        class _Provider:
+            degradation_policy = queue_and_retry()
+
+        assert _Provider.degradation_policy.mode == DegradationMode.QUEUE_AND_RETRY
