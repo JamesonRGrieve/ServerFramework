@@ -690,6 +690,21 @@ def test_manager_with_isolated_database():
 
 This Pydantic-first architecture with enterprise database management represents a modern approach to database patterns that maximizes developer productivity and operational reliability. The `DatabaseManager.py` implementation provides production-ready database management with thread-safe operations, multi-database support, and comprehensive session handling. The DatabaseMixin approach provides a single source of truth, while the sophisticated permission system and seeding infrastructure ensure security and maintainability at scale.
 
+## Soft-Delete Enforcement
+
+Soft-delete is a `SoftDeleteMixin` on `AbstractDatabaseEntity` that adds the `deleted_at` column and registers a SQLAlchemy `before_compile` query event that auto-injects `deleted_at IS NULL` into every read against tables tagged with the mixin. A bypass parameter (`include_deleted=True`) is offered for admin queries that genuinely need tombstoned records; without it, deleted rows are invisible to the BLL.
+
+The bypass flag uses a session-scoped marker so admin queries are explicit. BLL authors do not write `if user["deleted_at"]:` checks by hand — those leak across BLL and a single missed filter is a tombstoned-record bug, security-relevant in cases like login. The DB-layer enforcement is defense-in-depth alongside RLS for tenant isolation: RLS filters cross-tenant access, soft-delete filters tombstoned rows, and both apply at the query-compile layer rather than relying on author discipline.
+
+## Read-Replica Routing
+
+Two complementary opt-in mechanisms route read-only operations to a replica without each extension reaching into the session-management layer.
+
+- **Method-level annotation.** A `@read_only` decorator on BLL methods declares the method is safe to route to a replica. The framework's session binder consults the annotation at method dispatch and binds a replica session when one is configured, falling back to primary when no replica is configured or when the request is inside a write-transaction.
+- **Request-context flag.** `RequestContext.read_only: bool` forces all session binding within the request to use replicas. Useful for dedicated read-only endpoints.
+
+Read-after-write consistency is preserved: within a single logical request, once any write has occurred against primary, subsequent reads in the same request bind primary regardless of `@read_only` annotation. The framework supports a configured pool of replicas with simple round-robin selection between them; advanced load shaping is delegated to HAProxy or the database's own load balancer. Replica health is consulted before binding; an unhealthy replica is removed from rotation per a configurable health-check interval. Read-only mode requested with no replica configured is a deployment-config-only fallback to primary (with a warn-once log), not a runtime error.
+
 ## Production Considerations
 
 ### Best Practices

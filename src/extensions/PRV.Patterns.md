@@ -12,7 +12,7 @@ Providers are the service integration layer for extensions, offering standardize
 - **Auto-Discovery**: Extensions automatically discover providers via `extension.providers` property
 - **Instance Bonding**: Providers use `bond_instance()` to create bonded instances for API operations
 - **Ability System**: Providers declare abilities using the `@ability` decorator
-- **Rotation Integration**: Providers integrate with RotationManager for failover; **load balancing across active-active providers is NOT a concern of this system** (Item 3) — production deployments place HAProxy or an equivalent L7 load balancer in front of provider endpoints when load distribution is desired. The rotation chain is a failover mechanism, not a load distributor. Round-robin, weighted, latency-based routing, and percentage-canary routing are all explicitly out of scope for the framework. See Item 51 for the one carve-out: application-level **session stickiness** (e.g. pinning an LLM conversation to one upstream) remains rotation's concern because L7 cannot see conversation IDs.
+- **Rotation Integration**: Providers integrate with RotationManager for failover; load balancing across active-active providers is NOT a concern of this system. Production deployments place HAProxy or an equivalent L7 load balancer in front of provider endpoints when load distribution is desired. The rotation chain is a failover mechanism, not a load distributor. Round-robin, weighted, latency-based routing, and percentage-canary routing are all explicitly out of scope for the framework. The one carve-out is application-level session stickiness (pinning an LLM conversation to one upstream); that remains rotation's concern because L7 cannot see conversation IDs.
 - **Type-Based Environment Variables**: External extensions auto-register API-related env vars
 
 ## Table of Contents
@@ -960,3 +960,84 @@ Provider Test Environment:
 3. **Static Usage**: Document how to use providers through class methods
 4. **Auto-Discovery**: Document provider discovery patterns and file organization
 5. **Environment Variables**: Document all required and optional environment variables
+
+## Provider Cross-Cutting Concerns
+
+These primitives wrap every provider call; an author who follows the patterns above inherits the behavior without writing the cross-cutting code.
+
+### Typed external errors
+`*_via_provider` methods raise typed exceptions on failure and return the unwrapped external payload on success. The `BaseExternalError` hierarchy in `extensions.ExternalErrors` defines `TransientExternalError` (5xx — retryable, advances chain on exhaustion), `RateLimitExternalError` (429 — backoff against same provider), `AuthExternalError` (401/403 — cool-down + advance), `InvalidInputExternalError` (4xx — never rotates), `PermanentExternalError`. The dict envelope `{"success", "data", "error"}` is internal to the rotation system and never escapes to caller code.
+
+### Failure classification and rotation policy
+Each provider declares `rotation_policy: ClassVar[RotationPolicy]` carrying `transient_max_retries`, `transient_base_ms`/`max_ms`/`jitter`, `rate_limit_base_ms`/`max_ms`, `auth_cooldown_seconds`, and a per-provider `header_parser` for `Retry-After` / `X-RateLimit-Reset` semantics. 4xx are caught at the request-homogenization layer before the call leaves us and never trigger rotation.
+
+### `AbstractProviderInstance` contract
+The bonded `_instance` is typed via `AbstractProviderInstance` (an `abc.ABC` with `__init__(self, instance: ProviderInstanceModel)`, `validate_credentials() -> bool`, `close()`, plus extension-specific abstract methods). Provider classes declare `_instance: ClassVar[Optional[AbstractProviderInstance]] = None`; `bond_instance` is typed `(cls, ProviderInstanceModel) -> AbstractProviderInstance`. Static type checking catches contract violations at import time.
+
+### Manager constructor consistency
+Every BLL manager accepts `model_registry` as its first positional parameter (`(model_registry, requester_id, target_id=None, target_team_id=None, parent=None)`). `RotationManager` honors the same shape. A registry-finalize pass at startup walks `inspect.signature(cls.__init__)` for every manager class and fails fast if the first parameter is not `model_registry`.
+
+### Pluggable authentication strategies
+`ProviderInstanceModel.auth_strategy_name: str` plus an opaque credentials blob; the strategy registry hydrates one of `APIKeyAuth`, `OAuth2Auth`, `AWSSigV4Auth`, `JWTBearerAuth`, `MTLSAuth`. The strategy contract is `headers_for(requester) -> dict`, `params_for(requester) -> dict`, `body_modifier(requester, body) -> body`, `refresh_if_needed()`. Outbound calls route every auth header through the strategy; rotation of refresh-bearing tokens hot-swaps without re-bonding the entire instance.
+
+### Typed `Settings` and ability declarations
+Each abstract provider declares `Settings` as an inner Pydantic model with typed fields, defaults, validators, and `Secret` markers. `_env` is replaced by an `EnvSchema` Pydantic model. Abilities are typed callables with Pydantic-validated input/output models; the string-set abilities registry is derived from typed declarations. A startup test walks every concrete provider's `Settings` and verifies the inheritance chain is non-narrowing on required fields.
+
+### Rate limits and quotas
+Providers declare `rate_limit: ClassVar[Optional[RateLimit]]` with steady-state `rps` and `burst`. The framework's per-provider token bucket (Postgres-or-Redis backed by `DistributedCounter`) acquires a token before issuing; `Retry-After`-style signals pause that provider rather than rotating. Quota tracking is a different dimension and applies independently.
+
+### `is_configured` vs `health_check`
+`is_configured() -> bool` reflects "all required env vars present" — startup readiness. `health_check() -> HealthStatus` performs a live, lightweight call (`OK` / `DEGRADED` / `DOWN`) cached with a configurable TTL (default 60s). Rotation skips `DOWN` providers without consuming a retry slot.
+
+### Sticky-session routing
+`RotationManager.rotate` accepts an optional `RoutingHint(stickiness_key: Optional[str])`. With a key, the rotation system pins repeated calls within that key to the first provider that succeeded for it (LLM conversation memory, partial outputs) until the provider becomes unhealthy or the sticky-session TTL expires. Canary routing is HAProxy's job — not duplicated inside rotation.
+
+### Credential vault with OpenBao default
+`ProviderInstanceModel.api_key` is a `CredentialRef` resolving in tier order: OpenBao → environment variable → encrypted database column (Fernet by default; KMS-backed `EncryptionBackend` for cloud). `Secret[T]`-tagged Pydantic fields integrate with the redaction layer; logging never emits a plaintext credential. Auth rejection invalidates the cached credential and forces a fresh resolve; a re-resolved-identical credential transitions the provider to `DOWN` and halts retry until an operator intervenes. PyJWT is the canonical JWS/JWE library; the algorithm registry is versioned (`JWS_ALG_VERSION`) with documented HS256→EdDSA rotation procedure.
+
+### Sandbox/live discriminator
+Paired env vars are named `{PROVIDER}_API_KEY_TEST` and `{PROVIDER}_API_KEY_LIVE`, selected by top-level `APP_ENV` (`development` / `staging` / `production`). The discriminator runs inside `CredentialRef.resolve` only when the resolved tier is the env-var fallback; OpenBao paths embed the environment in the storage path (`secret/data/{env}/{provider}/api_key`). Production refuses to start with `_TEST_` resolved; development warns on `_LIVE_`.
+
+### Shared outbound HTTP client
+`ProviderHTTPClient` is the single layer every outbound HTTP call routes through. In order it applies: trace propagation, authentication strategy, idempotency-key injection, rate-limit token acquisition, timeout, send, response-class detection, header parsing, log redaction. Providers wrapping an SDK route the SDK's transport through this client when supported. Connection pooling is shared process-wide; TLS configuration and egress proxy are policy.
+
+### Upstream API version pinning
+Providers declare `external_api_version: ClassVar[Optional[str]]`; the shared HTTP client injects the appropriate header (`Stripe-Version`, `X-Api-Version`, etc.). `field_mappings` uses references to fields on a paired Pydantic external DTO that mirrors the upstream schema for the pinned version, so renames are caught at type-check time. Drift snapshots are pinned to the same version.
+
+### Idempotency primitive
+`AbstractExternalManager.idempotency_key(operation, args) -> str` defaults to a hash of `(requester_id, operation, canonicalized_args)`. Mutating `*_via_provider` methods are decorated `@idempotent`. The canonical store is the outbox row when the operation is enrolled in the outbox (typical for mutations) and the request envelope when the call is purely synchronous; the in-memory cache is a same-process retry-budget optimization only. The key is minted by the BLL caller at the mutation boundary, not by rotation.
+
+### Shared distributed primitives
+`AdvisoryLock` (`async with acquire_lock("namespace:{id}", timeout=...)`) backs outbox claim, quota decrement, and link-field write-back. Backends: Postgres `pg_advisory_lock` (default, transaction-scoped), Redis Redlock (load-shed alternative). `DistributedCounter(key, limit, period_key).try_consume(amount) / release(amount) / reset(period_key)` is the canonical multi-process atomic counter consumed by token-bucket rate limits, quota decrement, and the per-tenant fairness virtual-time scheduler.
+
+### Schema drift and contract testing
+Providers targeting an upstream with a published OpenAPI spec declare `openapi_url: ClassVar[Optional[str]]`. A canonical snapshot lives at `src/extensions/{name}/contracts/{provider}.openapi.json`. CI fetches the live spec on a per-provider cadence, structurally diffs against the snapshot, and fails on breaking changes (removed fields, narrowed types, removed enum values). Non-breaking diffs open a PR updating the snapshot. Providers without machine-readable specs use real recorded responses normalized to remove instance-specific identifiers.
+
+### Sandbox-credential test contract
+`@pytest.mark.external_api(provider="stripe")` runs against real (sandbox) credentials when present and is automatically xfailed with a clear reason naming the missing env vars when absent. `@pytest.mark.external_smoke` deliberately runs without credentials and asserts configuration-failure paths surface correctly. No mocks of `RotationManager`, `*_via_provider` methods, or extension functionality. Optional `PRV_Fake_*` providers are an opt-in for offline CI; sandbox credentials are the recommended path.
+
+### Distributed tracing and provider-call metrics
+W3C `traceparent` and `baggage` propagate from the inbound request through `RequestContext`, into `RotationManager.rotate`, into `ProviderHTTPClient`, and out to the upstream. `RotationManager.rotate` opens one span per attempt tagged with provider name and attempt index, so a multi-provider rotation appears as a parent span with N attempt-children. Span naming follows OTel HTTP-client semantic conventions (`http.method`, `http.url.template`, `http.response.status_code`, `peer.service`). The framework emits a fixed metric set: latency histogram per `(provider, ability)`, success/error rate, rotation-attempt counter, per-provider health gauge, idempotency-key cache hit rate. Backends are pluggable — Prometheus, OpenTelemetry, Statsd — with a no-op default. Metric labels are bounded.
+
+### Data residency and regional provider pools
+Two distinct concepts: `ResidencyJurisdiction` is the legal/policy umbrella (`EU`, `US`, `UK`, `CA`, `APAC`, `HEALTHCARE_HIPAA`); `ResidencyRegion` is the physical placement of a specific provider instance (`eu-west-1`, `eu-central-1`, `us-east-1`). Each jurisdiction declares the set of regions it includes, mapped at deployment time via `JurisdictionRegistry`. `ProviderInstance` carries `region: Optional[ResidencyRegion]`. Tenants carry `data_residency: Optional[ResidencyJurisdiction]`. Provider resolution skips instances whose `region` is not mapped under the requester's tenant jurisdiction; if none qualify, raises `NoInJurisdictionProviderError`. The shared HTTP client does not enforce regional egress (that is HAProxy / regional egress proxy concern); residency at the application layer is about provider-instance selection.
+
+### Abstract provider templates
+The framework ships abstract provider templates for the infrastructure categories every non-trivial application needs. Each template defines abilities using the typed-ability declarations, with paired Pydantic input/output models, and ships with at least one toy reference implementation.
+
+- **Object / blob storage** — abilities for upload, download, list, delete, presigned URL generation, multipart upload. Reference targets: S3, GCS, Azure Blob, local filesystem.
+- **Cache** — abilities for get, set with TTL, delete, increment, set-if-not-exists, multi-get. Reference targets: Redis, memcached, in-memory.
+- **Queue / job scheduler** — abilities for enqueue, schedule (delayed), cron-style recurring, dead-letter, status query. Reference targets: Celery, RQ, Arq, native (`QueueConsumerService`).
+- **Search index** — abilities for index, query, delete, bulk-index, schema management. Reference targets: Elasticsearch, OpenSearch, Meilisearch, Algolia.
+- **AI / LLM** — abilities for completion, chat, embedding, streaming completion, tool/function calling, image generation. Reference targets: OpenAI, Anthropic, local providers.
+- **Notification fan-out** — abilities for push (mobile), SMS, in-app — coordinated alongside the existing email provider so a single `notify` call composes over the existing email contract and selects additional channels per recipient preferences.
+
+`AbstractProvider_AI` implements pre-estimate / post-true-up quota inside the abstract itself so all LLM providers inherit correct quota semantics by default. Before issuing the call, the provider computes a conservative upper-bound token estimate (input tokens + `max_tokens` ceiling) and pre-decrements quota. After the response returns, the framework reconciles: if actual < pre-estimate the difference is credited back; if actual > pre-estimate the overage is debited and the requester sees a typed `QuotaOverrunWarning`, with the operator able to configure whether overruns hard-fail subsequent calls or warn-and-continue. For streamed responses the true-up runs incrementally per chunk so a runaway stream is cancelled when the budget is depleted.
+
+Nested quotas: `Quota` rows declare an optional `qualifier: dict` (e.g. `{"model": "gpt-4-turbo"}`); rows without a qualifier match all calls to that ability. A single call debits every matching row in one transaction so partial debits are impossible. Tool-calling and structured-output translation: the abstract template defines the canonical vocabulary (`ToolDefinition`, `ToolCall`, `ToolResult`) and concrete providers translate to and from their upstream's specific shape via the field-mapping pipeline. Structured-output / JSON-mode is normalized to a single `output_format: Optional[JsonSchema]` parameter.
+
+### Graceful degradation contract
+Each provider declares `degradation_policy: ClassVar[Optional[DegradationPolicy]]` per ability or per operation. Three modes: `FAIL_FAST` (default; raise on rotation exhaustion — correct for transactional emails, password resets, anything user-blocking), `QUEUE_AND_RETRY` (write to outbox, return 202 with a tracking id, drain via the background outbox service when the upstream recovers), `SILENT_DROP` (log and return success; valid only for genuinely fire-and-forget operations like analytics, and emits a mandatory `provider_silent_drop_total{provider, ability}` metric so operators can dashboard the rate and catch unintentional silent failures). The choice between modes is part of the API contract — clients calling a `QUEUE_AND_RETRY` operation must know to handle 202 responses, so the choice is reflected in the OpenAPI documentation, the SDK, and the GraphQL surface. Switching an operation between modes is a breaking change.
+
+### Cost observability per tenant
+Each provider with billable upstream calls declares `cost_model: ClassVar[Optional[CostModel]]` — a `(request, response) -> Decimal` callable returning USD (or the deployment's configured base currency). Four ready-made implementations ship: `ConstantCostModel` (flat per-call), `TokenBasedCostModel` (LLM: `prompt_tokens * prompt_price + completion_tokens * completion_price + per_request_fixed_cost`), `PercentOfAmountCostModel` (payment processors: `2.9% + $0.30` style), `FreeCostModel` (explicit zero, distinguishable from "no model attached"). All arithmetic is `Decimal`-based. The framework emits `provider_cost_usd_total{tenant, provider, ability}` as a counter and writes per-request cost into the audit log. Cost rows roll up daily into a `CostSummary` table for fast queries; the audit log remains the source of truth. `TenantCostCap(cap_usd, window, behavior=hard_fail|warn_and_continue)` extends quota enforcement with a per-tenant USD cap. Currency conversion is out of scope — a deployment with multi-currency upstreams declares a single base currency.

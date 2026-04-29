@@ -1,9 +1,9 @@
-# External-API Test Contract (Item 15)
+# External-API Test Contract
 
-The framework's most-emphasized testing principle is **no mocks**: real
-implementations, real databases, real server connections. Item 15
-reconciles that principle with external-federation tests via two pytest
-markers and a small fixture.
+The framework's most-emphasized testing principle is no mocks: real
+implementations, real databases, real server connections. The principle
+is reconciled with external-federation tests via two pytest markers
+and a small fixture.
 
 ## The two markers
 

@@ -21,9 +21,9 @@ The `src/lib` directory contains foundational utilities and abstractions that po
 
 ### System Utilities
 - **[LIB.Logging.md](./LIB.Logging.md)**: Centralized logging system with custom levels, environment configuration, and structured output
-- **[LIB.RequestContext.md](./LIB.RequestContext.md)**: Context variable management for storing request-specific user information, timezone data, and per-request deadline budget (Item 47)
+- **[LIB.RequestContext.md](./LIB.RequestContext.md)**: Context variable management for storing request-specific user information, timezone data, per-request deadline budget, `correlation_id`, `traceparent`, and `read_only` flag
 - **[LIB.Scalability.md](./LIB.Scalability.md)**: Big-O assertion utilities (power-law fit, time/query/memory measurement context managers) consumed by per-layer scalability tests to keep the framework's n-factor within bounds
-- **[LIB.Localization.md](./LIB.Localization.md)**: Locale-aware metadata layer (singleton + `@localized_model` decorator) for translating user-facing copy, table comments, and relationship names from `docs.<locale>.json` files (Item 78)
+- **[LIB.Localization.md](./LIB.Localization.md)**: Locale-aware metadata layer (singleton + `@localized_model` decorator) for translating user-facing copy, table comments, and relationship names from `docs.<locale>.json` files
 
 ## Integration Patterns
 

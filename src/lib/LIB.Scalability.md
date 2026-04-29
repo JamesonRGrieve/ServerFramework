@@ -83,3 +83,34 @@ Subclasses inherit `test_scalability_list_n_factor` (DB / BLL) or `test_scalabil
 ## Testing the Tester
 
 `Scalability_test.py` covers the analytic core with real workloads (linear loops, quadratic loops, constant operations, list construction, in-memory SQLite). No mocks — the philosophy mirrors the framework's no-mock pillar.
+
+## Distributed Synchronization Primitives
+
+Cross-process serialization is uniformly provided by two primitives that every critical-section caller in the framework consumes — outbox claim, atomic quota decrement, link-field write-back, and ad-hoc extension critical sections all sit on the same well-tested implementation rather than each rolling its own with `threading.Lock`, `SELECT ... FOR UPDATE`, or ad-hoc `UPDATE ... WHERE` patterns.
+
+### `AdvisoryLock`
+
+Canonical call: `acquire_lock(name: str, timeout: Optional[float] = None) -> AdvisoryLock`. `AdvisoryLock` is usable as a context manager:
+
+```python
+async with acquire_lock("outbox.claim:{entry_id}"):
+    ...
+```
+
+Two backends ship. The default uses Postgres's `pg_advisory_lock` family, transaction-scoped for safety (auto-released on commit/rollback) with session-scoped available for explicit cross-transaction locks. The Redis backend uses a Redlock-style implementation with a fencing token to detect lock-holder failure mid-operation.
+
+Lock identifiers are namespaced by extension. Acquisition has a configurable timeout and raises `LockTimeoutError` on exhaustion rather than blocking forever. The framework instruments lock acquisition with metrics (`advisory_lock_wait_seconds{name}`, `advisory_lock_held_seconds{name}`) so contention is visible to operators.
+
+### `DistributedCounter`
+
+Canonical multi-process atomic counter with `INCR ... WHERE counter < limit RETURNING` semantics. Three operations:
+
+- `try_consume(amount) -> bool` — atomic; returns `False` if the limit would be exceeded.
+- `release(amount)` — credits an amount back; used by the AI/LLM pre-estimate / post-true-up pattern.
+- `reset(period_key)` — rolls to a new period.
+
+Two backends. The default uses Postgres `UPDATE ... WHERE consumed + ? <= limit RETURNING` against a `distributed_counter` table. The Redis backend uses a Lua-scripted INCRBY-with-bound (atomic `GET` / `INCRBY` with rollback on overage) to avoid the `INCR-then-DECR` race that kills naive Redis counters.
+
+`DistributedCounter` is the canonical mechanism for token-bucket rate limits, atomic quota decrement, and the per-tenant fairness virtual-time scheduler. Per-counter metrics (`counter_consumed_ratio{name}`, `counter_overrun_total{name}`). The audit log captures every `try_consume` failure with the requester, the counter name, and the requested amount.
+
+A `RateLimit(rps=100, burst=20)` provider saturating at exactly 100 RPS across a 4-process deployment never exceeds the global rate. A `Quota` decrement under concurrent contention from many processes never permits the limit to be exceeded; the failing decrements raise `QuotaExhaustedError`. Postgres and Redis backends produce identical correctness behavior under stress.

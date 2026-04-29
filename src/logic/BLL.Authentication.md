@@ -466,3 +466,61 @@ All authentication entities follow the standard model pattern:
 - Session expiration handling
 - Multi-factor authentication support
 - Account status verification
+
+## Permission Registry and OAuth Scopes
+
+The framework standardizes permission name shape as `{extension}.{resource}.{action}[:{qualifier}]` — concrete examples: `payment.subscription.read`, `payment.subscription.write`, `auth.user.delete`, `meta_logging.audit.read:own`. The same string is the permission name and the OAuth scope; there is no parallel scope concept.
+
+`PermissionDef` is a frozen dataclass:
+
+- `name`: the canonical scope string.
+- `description`: the user-facing copy displayed on OAuth consent screens.
+- `implies`: a tuple of names this permission implies (e.g. `payment.subscription` implies `.read` and `.write` variants).
+- `sensitive`: bool marking permissions that require step-up authentication or fresh consent regardless of token grant.
+- `user_grantable`: bool controlling whether the permission can be granted via an OAuth token at all.
+- `system_only`: bool marking permissions reserved for internal system actions, never appearing in tokens.
+
+`AbstractStaticExtension.get_permissions() -> List[PermissionDef]` is called by the framework at startup; the registry validates uniqueness across the merged registry and seeds the database. The OAuth extension reads `ExtensionRegistry.iter_permissions()` to produce its consent catalog and validates scope strings on token issuance against the same registry.
+
+Resolution at request time: database-backed roles grant a set of permission names; OAuth tokens carry their granted scopes as a set of permission names. The effective permission set for a request is the intersection of role grants and token scopes — `effective = role_grants ∩ token_scopes` for OAuth-bearing requests, or `effective = role_grants` for direct authentication. A token can never escalate beyond what its bearer's role allows. `requester.has_permission(name)` walks the `implies` graph. Permissions marked `sensitive=True` require a freshly-issued token (within a configurable window) regardless of scope grant.
+
+Wildcard scopes are supported only at consent time — the user grants `payment.subscription.*`, expanded into the concrete permission set before the token is issued, so revocation remains precise. Audit logs record every check that succeeded via OAuth scope (versus direct role) with the token id and the scope name used.
+
+A session issued via passwordless grant (magic link, device pairing) counts as freshly-issued only for non-sensitive permissions. Any operation requiring a `sensitive=True` permission against a grant-issued session triggers a step-up MFA challenge before proceeding, regardless of the session's age.
+
+## One-Time Tokens and Passwordless Grants
+
+`OneTimeTokenMixin` is a small reusable model mixin that captures the recovery-code pattern as a first-class primitive: `code_hash`, `code_salt`, `expires_at`, `is_used`, `used_at`, `created_ip`, plus `verify(submitted_code) -> bool` and `mark_used()` methods. Tokens are hashed at rest using bcrypt with per-token salt; raw codes appear only in the original response and are never recoverable. `MultifactorRecoveryCodeModel`, magic-link tokens, QR-pairing tokens, and invitation codes all build on this mixin.
+
+`PasswordlessGrant` is the typed `login_via_grant(grant_type: str, grant_payload: BaseModel) -> SessionModel` method on `UserManager` that takes a registered grant kind and a typed payload, validates the grant via a registered handler, and issues a session. A `PasswordlessGrantRegistry` accepts `(grant_type, validator)` registrations from extensions; the validator is a callable taking the typed payload and returning the authenticated `UserModel` or raising `InvalidGrantError`. This is the explicit hook point — extensions register grant validators against the registry and `UserManager.login_via_grant` dispatches to them.
+
+`SessionModel.grant_type: Optional[str]` records which grant kind issued the session (`"password"`, `"magic_link"`, `"device_pairing"`, `"oauth"`). Operators can audit which sessions came from which path; the freshness gate consumes this when deciding whether a step-up challenge is required for a sensitive operation.
+
+### Magic-link authentication
+
+The user enters their email, receives a one-time link, clicks it, and is logged in. The `EXT_Auth_MagicLink` extension declares `EXT_Email` as a required dependency and ships two custom routes:
+
+- `POST /v1/auth/magic-link/request` — input `MagicLinkRequest(email: str)`, generates a token, sends an email through `EXT_Email` containing `{magic_link_base_url}?token={raw_code}`, returns `202` with no token in the response. To avoid user-enumeration, the response is identical whether the email is registered or not.
+- `POST /v1/auth/magic-link/verify` — input `MagicLinkVerify(token: str)`, validates the token via `OneTimeTokenMixin.verify`, marks it used, and calls `UserManager.login_via_grant("magic_link", MagicLinkGrantPayload(user_id=...))` to issue a session.
+
+The token model `AuthMagicLinkToken(ApplicationModel, DatabaseMixin, OneTimeTokenMixin)` adds `user_id: str` and `requested_email: str` so a token issued for `alice@example.com` cannot be used to log in as `bob@example.com` even if the request is replayed against a different user. Token entropy is at least 256 bits, base64url-encoded. TTL default is fifteen minutes. Rate limiting on the request endpoint is per-email and per-IP. The verify endpoint uses constant-time hash comparison (provided by `OneTimeTokenMixin.verify`). When a token verifies, all other outstanding tokens for the same user are invalidated, so a user requesting three links and clicking the latest cannot have an attacker click an older one.
+
+### QR-code device pairing
+
+"Scan this QR code with your already-logged-in mobile app to log in here" — the pairing flow popularized by Steam, Discord, WhatsApp Web. The new device generates a QR; the already-authenticated device scans it; the new device's session is bound to the approver's user identity.
+
+`SessionModel.pending_state: Optional[Literal["awaiting_approval", "approved", "denied"]]`. A session created in `awaiting_approval` is not yet usable — bonded sessions check the state and refuse to authorize requests until the state is `approved`. The `requires_verification` flag is a derived getter from `pending_state`.
+
+`CrossDeviceGrant` extends `PasswordlessGrantRegistry` with a grant kind whose validation requires *another* authenticated requester to approve, rather than a token in the unauthenticated request. The grant validator signature is `(pairing_request, approver_session) -> UserModel`.
+
+The `EXT_Auth_DevicePairing` extension ships custom routes:
+
+- `POST /v1/auth/pairing/request` — input `PairingRequest(device_type, device_name)`, generates a `DevicePairingRequest` with a fresh one-time token and an `awaiting_approval` session reserved, returns `PairingResponse(pairing_id, qr_payload, expires_in)`.
+- `POST /v1/auth/pairing/approve` (authenticated) — input `PairingApprove(token: str)`, called by the already-authenticated device after it scans the QR. Optionally requires step-up MFA from the approver per `require_approver_mfa`. Marks the pairing approved, transitions the reserved pending session to `approved`, attaches `approver_user_id`. The approver's user identity becomes the new device's user identity.
+- `POST /v1/auth/pairing/deny` (authenticated) — explicit rejection.
+- `GET /v1/auth/pairing/{pairing_id}/stream` (unauthenticated) — SSE endpoint subscribed by the new device after request; streams the resolution in real-time. Bounded by the pairing TTL and closes on any terminal state.
+- `GET /v1/auth/pairing/{pairing_id}/status` (unauthenticated) — polling fallback returning the same status payload as the SSE stream.
+
+The QR payload includes the token directly so a malicious bystander photographing the QR could approve elsewhere — mitigated by short TTL (five minutes default), the requirement that the approver be already authenticated on a trusted device, and the audit trail recording the approval IP and device. For high-security deployments, an optional `pairing_requires_proximity_proof: bool` setting adds a numeric short-code visible on both devices that the approver must confirm matches what the new device displays.
+
+When `require_approver_mfa=True`, the approver's step-up MFA at approval time satisfies the freshness gate transitively for the new device's session, since the approver has just demonstrated possession-of-second-factor in the same approval flow that issued the session.

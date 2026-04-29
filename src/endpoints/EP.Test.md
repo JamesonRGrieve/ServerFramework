@@ -178,7 +178,7 @@ _skip_tests = [
 ]
 ```
 
-**Pagination, Filtering, and Search-Pagination (Item 29 — closed-by-verification):**
+**Pagination, Filtering, and Search-Pagination:**
 
 Pagination and filtering are wired through the auto-generated CRUD layer for every `RouterMixin`-tagged manager. `test_GET_200_list_pagination`, `test_POST_200_search_pagination`, and `test_GET_200_filter` are **live tests in `AbstractEPTest`** — they run by default for every concrete EP test class. The `page` / `pageSize` parameters are accepted by `manager.list()` and translated to `limit` / `offset`; `filters` are accepted by both `manager.list()` and `manager.search()` and pass through to the DB layer. Field selection (`fields=`) coexists with pagination and filtering parameters.
 

@@ -777,4 +777,28 @@ def test_user_creation_with_hooks(user_manager):
     pass
 ```
 
+## Deterministic Hook Ordering
+
+When multiple extensions register hooks against the same manager method, execution order is fully deterministic across runs. The four-tier rule:
+
+1. **Explicit `before=[ExtName]` and `after=[ExtName]` constraints** on the `@hook_bll` decorator are resolved as a topological sort. Cycles in the explicit-constraint phase are detected and raised as a startup error naming every extension involved.
+2. **Priority number** breaks ties among hooks with no explicit constraints relative to one another. Ranges retain their semantic meaning (1-10 critical, 11-20 business logic, etc.).
+3. **Extension name, alphabetical**, breaks ties among hooks with the same priority.
+4. **Hook function name, alphabetical**, breaks remaining ties.
+
+The topological sort runs once per `(manager, method)` at startup and is cached. The `before` and `after` constraints accept extension names (not specific hook names) for ergonomics; finer-grained ordering is not needed and would invite tighter coupling between extensions.
+
+## Typed Hook Context
+
+`HookContext[P, R]` is generic over the target's `ParamSpec` and return type. The `@hook_bll` decorator preserves the binding so a hook function declared `def my_hook(context: HookContext[UserManager.create])` has access to `context.kwargs` typed as the keyword arguments of `UserManager.create` and `context.result: R | None` typed as the return value. Static analysis catches hooks that read fields not present on the target method and hooks whose `set_result` argument does not match the target's return type.
+
+The framework provides typed helpers for ergonomic cases: `context.kwarg("user_id")` returns the field's typed value rather than `Any`. The hook context exposes the merged signature of the target — the core method's signature plus any `@extension_model` field injections discoverable at registry-finalize time — so a hook reading an extension-injected field type-checks cleanly.
+
+## Cross-Process Event Bus
+
+Hooks are in-process. For cross-process fan-out, `AbstractEventBus` exposes a small contract: publish a typed event, subscribe to a typed event channel. Adapters ship for Kafka, NATS, Redis Streams, plus an in-memory adapter for testing and single-process deployments.
+
+The bus is opt-in — hooks remain the recommended in-process seam — and it is fed by the outbox so that publish-and-local-mutation are transactional. A `@on_event` decorator subscribes a handler to a bus channel; handlers run in a `QueueConsumerService` so the bus and the service-lifecycle infrastructure are the same.
+
+Events on the bus are typed Pydantic models, versioned, with backward-compatibility rules enforced by a CI compatibility checker (modeled on the schema-drift snapshot pattern) that diffs new event-model PRs against committed schemas and fails on breaking changes — additive-only, no field renames, no narrowed types. Decision rule: in-process cross-cutting concerns use hooks; cross-process fan-out uses the bus.
 This comprehensive guide covers all aspects of the enhanced BLL hook system. Use these patterns to implement robust, maintainable, and performant hook-based functionality in your BLL managers.

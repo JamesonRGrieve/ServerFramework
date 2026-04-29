@@ -14,8 +14,8 @@ Security fixes ship to:
 | Older minors  | Unsupported         | No backports; upgrade to the latest minor. |
 
 The version string is the one published on PyPI and is set via
-`setuptools-scm`. See `IMPROVEMENTS_ORDERED.md` Item 67 for the version
-contract and Item 86 for the supply-chain process this document codifies.
+`setuptools-scm` from git tags — there is no separate sibling `version`
+file to drift out of sync.
 
 ## Reporting a Vulnerability
 
@@ -93,8 +93,8 @@ configurable knobs live in `pyproject.toml` under
 1. **Code review**: All changes require at least one maintainer review
    before merging.
 2. **Secrets management**: Never commit credentials, API keys, or tokens.
-   Use sandbox credentials for tests (see Item 15 in
-   `IMPROVEMENTS_ORDERED.md`) and scope them to test-only operations.
+   Use sandbox credentials for tests (see `extensions/EXT.Test.External.md`)
+   and scope them to test-only operations.
 3. **Static analysis**: Run `pip-audit`, `bandit`, and the project's
    linter suite before opening a pull request.
 4. **Dependency hygiene**: Add new dependencies via `pyproject.toml` and

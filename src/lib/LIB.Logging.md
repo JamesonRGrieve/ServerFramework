@@ -164,3 +164,25 @@ Monitor logging performance impact in production environments with appropriate l
 5. **Error Context**: Provide full context for errors including stack traces when appropriate
 6. **Production Filtering**: Use appropriate log levels in production to avoid noise
 7. **Monitoring Integration**: Design log messages for effective monitoring and alerting
+
+## Structured Application Logging Contract
+
+Every log line carries a `correlation_id` populated from `RequestContext.correlation_id` — set by inbound middleware, derived from the `traceparent` header when present, otherwise minted. `correlation_id` propagates across `asyncio.to_thread` and `asyncio.create_task` via a context-var copying helper the framework supplies (`contextvars.copy_context().run(fn)` for `to_thread`, a wrapper around `create_task` that snapshots context).
+
+### Log Level Taxonomy
+
+- `DEBUG` — developer-only, off in production.
+- `INFO` — operational milestones (startup, shutdown, config-load, retention pass complete).
+- `WARNING` — degraded behavior; dashboard signal (rotation skip, optional dependency missing, replica unhealthy).
+- `ERROR` — operator should be alerted; the request failed but the process continues.
+- `CRITICAL` — process-level failure; reserved for the framework's own startup-validation failures.
+
+Application-log retention defaults to 30 days, configurable per deployment. This is independent of audit-log retention which lives on `meta_logging` events.
+
+### `ErrorReporter`
+
+A pluggable `ErrorReporter` ABC accepts `report(exception, context)` calls. Framework-shipped adapters cover Sentry, Rollbar, and a no-op default. Every uncaught exception in a request handler, every `blocking=True` hook failure, every `failed`-state service crash routes through this surface in addition to being logged. The reporter receives the exception, the originating `RequestContext` snapshot, and the current `correlation_id`.
+
+### No `print()` in non-test source
+
+`print()` calls in production source bypass the logging layer, miss `correlation_id` correlation, and (for response-body prints in particular) leak PII into logs. There are no `print()` calls in non-test source; the `logger.debug(...)` / `logger.info(...)` / etc. surface is the only valid emission path.

@@ -178,4 +178,14 @@ Some endpoints support including related entities:
 
 ```python
 user = sdk.auth.get_user(user_id="123", include=["teams", "roles"])
-``` 
+```
+
+## Generation from `RouterMixin`
+
+SDK handlers are auto-generated from the registry of `RouterMixin`-tagged managers. A generator walks the registry and emits an `SDKHandler` per resource at build time (or at runtime, with cached output). Generated handlers are deterministic and overwrite-safe — regeneration produces the same file, byte for byte.
+
+The generator uses the same source-of-truth as the OpenAPI generator and the REST router generator, so all three are derived from one introspection pass over the registry. Field selection and pagination support, search transformers, and authentication overrides flow into the generated handlers automatically. Custom routes declared via `@custom_route` produce a corresponding SDK method per route.
+
+Hand-authored handlers remain for non-CRUD operations (login, logout, install_extension) and for resources that need behavior beyond the mechanical CRUD shape; these are clearly distinguished and live in separate files. Authors writing custom handlers extend or override the generated ones via subclassing.
+
+Adding a new `RouterMixin`-decorated manager to an extension produces a corresponding SDK handler with full CRUD, search, and batch support, without any SDK code being written by the author. 

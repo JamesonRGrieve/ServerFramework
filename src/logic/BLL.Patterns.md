@@ -487,4 +487,55 @@ def list_runtime_extensions():
 1. **Decoration** - Use `@bll_hook` decorator for hook methods
 2. **Discovery** - Hooks are automatically discovered during manager initialization
 3. **Error Handling** - Hook errors should not prevent core operations
+
+## Provider Scope and Quota
+
+Provider instances carry `scope: Literal["root", "system", "team", "user"]`. The four scopes are not interchangeable.
+
+- **Root.** SaaS-owned, framework-internal use only. Users cannot access or invoke a root provider in custom manners. Reached only via direct lookup from framework code (`EXT_Email.get_root_instance(ability="system_notification")`); the user-context resolver never returns a root instance. Root invocation is audit-logged with the calling code path.
+- **System.** SaaS-owned, included in the subscription. Users invoke system providers like their own credentials, but the credentials underneath are SaaS-issued and the usage is metered against the user's included quota.
+- **Team.** Team-owned credentials, used by any member of the team.
+- **User.** User-owned credentials.
+
+System, team, and user providers all share the same quota infrastructure. What changes between them is where the credentials come from and who effectively pays for them; what does not change is how usage is tracked.
+
+Resolution flow for a user-invokable call inside `bond_instance`: walk `user → team → system` for an instance matching this extension and ability; first match wins; root is never inspected on this path. On match, check quota for `(user_id, team_id, ability)`; if exhausted, raise `QuotaExhaustedError(scope, ability, period)`. Atomically decrement quota, then bond and proceed. If nothing resolves at any user-invokable scope, raise `NoProviderInstanceError(requester, ability)` — typed, with no silent fallback to root.
+
+A single `Quota` table serves all three user-invokable scopes:
+
+```python
+class Quota(ApplicationModel, DatabaseMixin):
+    user_id: Optional[str]                # NULL = team-wide quota
+    team_id: Optional[str]                # NULL = user-scoped quota outside any team
+                                          # both populated = this user's allotment within this team
+    ability: str                          # canonical ability name
+    period: Literal["minute","hour","day","month","billing_cycle"]
+    period_key: str                       # e.g. "2026-04" or "2026-04-28T15:00"
+    limit: int                            # 0 = blocked, sentinel for unlimited as appropriate
+    consumed: int
+    unit: Literal["call","token","byte","message","row"]
+    qualifier: Optional[dict]             # e.g. {"model": "gpt-4-turbo"} for nested quotas
+```
+
+Semantics:
+
+- `user_id` populated, `team_id` NULL — quota that belongs to a user across all of their contexts.
+- `team_id` populated, `user_id` NULL — quota that belongs to a team, shared across its members.
+- Both populated — per-user-within-team quota, allowing a team to partition its overall quota among its members.
+
+The framework consumes from quota; it does not decide the limit values. Limit population is the responsibility of whoever owns the budget (the subscription extension writes system-tier limits when a user upgrades, team admins write team-level partitioning, etc.). When multiple quota rows match a single request, the framework decrements all matching rows and refuses the request if any of them is exhausted. Atomic decrement runs on the `DistributedCounter` primitive with `UPDATE ... WHERE consumed + ? <= limit RETURNING` semantics — a no-op when exhausted, surfacing as the typed error.
+
+Nested quotas are routinely structured as an overall ceiling with per-model sub-ceilings (e.g. "this team has 1M tokens per month overall, of which at most 200K against `gpt-4-turbo`"). Quota rows declare their dimension via the optional `qualifier: dict`; rows without a qualifier match all calls to that ability. A single call debits every matching row in one transaction so partial debits are impossible. AI/LLM providers integrate the pre-estimate / post-true-up pattern automatically: a conservative upper-bound estimate pre-decrements before the call; the actual token count reconciles after, crediting back any over-estimate or surfacing `QuotaOverrunWarning` on under-estimate.
+
+System-scoped provider instances are unreachable to a user unless a quota row exists permitting their use. No user can accidentally email from the SaaS's brand SendGrid, charge to the SaaS's Stripe account, or consume the included AI tier without an explicit quota allowance recorded.
+
+## Field-Level Access Control
+
+Pydantic field metadata captures field-level grants. A field marked `Field(..., requires=["payment.invoice.read_lines"])` is included in serialized output only when the requester has the named permission. The serialization layer applies the grant check at response time, replacing disallowed fields with a sentinel (or omitting them, configurable per deployment). Search and update operations honor the same grants — a user without `payment.invoice.write_lines` cannot update line items even if they can update the invoice's other fields.
+
+The same metadata applies to GraphQL: the resolver for a marked field returns null with a typed error attached when the requester lacks the grant, preserving the partial-data partial-errors contract.
+
+Precedence: row-level access controls visibility of the record at all; field-level filters which fields appear once the record is visible. A typed `Sensitive[T]` field annotation can replace the more verbose `Field(..., requires=...)` for the common case. Performance: applying field-level grants on a 10k-row list response is costly if the check runs per record; the framework computes the allowed-field set once per `(manager, requester)` at request bind and caches it for the request's lifetime, so the per-record cost is a single dictionary lookup. Restricted fields cannot be used for `ORDER BY` or filtering by requesters lacking the grant — both are rejected at request validation, since ordering by a restricted field leaks its values through inference attacks just as much as direct read does.
+
+The grant string is the same string used for OAuth scopes and database-backed roles — one canonical permission name serves as scope, role grant, and field-level gate.
 4. **Documentation** - Document hook behavior and expected parameters
