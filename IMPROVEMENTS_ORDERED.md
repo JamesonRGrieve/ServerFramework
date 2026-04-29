@@ -41,7 +41,7 @@ A separate critical-path applies to the public PyPI release of the package (the 
 
 1. Item 60 — Rename top-level packages under a single namespace.
 2. ~~Item 61 — Out-of-tree extension import support.~~ ✅
-3. Item 86 — Supply-chain hygiene (SBOM, signed releases, pinned hashes, vuln scanning).
+3. ~~Item 86 — Supply-chain hygiene (SBOM, signed releases, pinned hashes, vuln scanning).~~ ✅
 
 Everything else can iterate without retrofit once these are in place.
 
@@ -770,7 +770,7 @@ This problem mirrors Item 7 in shape and is solved with the same pattern: a tran
 
 How we keep our view of an upstream's wire format honest, and how the no-mock pillar reconciles with the external-call reality.
 
-## Item 11 — Schema drift and contract testing
+## ~~Item 11~~ — ~~Schema drift and contract testing~~ ✅ DONE
 
 **Severity:** Medium
 **Scope:** Per-external-provider schema snapshot files, CI diff job, optional cron-driven refresh.
@@ -792,7 +792,7 @@ For providers whose upstreams do not publish a machine-readable spec, the snapsh
 
 ---
 
-## Item 15 — External API test contract reconciled with the no-mock pillar
+## ~~Item 15~~ — ~~External API test contract reconciled with the no-mock pillar~~ ✅ DONE
 
 **Severity:** High
 **Scope:** Pytest markers, fixture scaffolding for external sandbox credentials, CI configuration.
@@ -814,7 +814,7 @@ The documented "mock the rotation system" example in `PRV.External.md` is remove
 
 ---
 
-## Item 72 — Remove BLL/extension test mocks that violate the no-mock pillar
+## ~~Item 72~~ — ~~Remove BLL/extension test mocks that violate the no-mock pillar~~ ✅ DONE
 
 **Severity:** High
 **Scope:** `extensions/database/EXT_Database_test.py`, `extensions/AbstractExtensionProvider_test.py`, any other BLL or extension test file that uses `unittest.mock`.
@@ -1256,7 +1256,7 @@ How extension-contributed schema, tables, and dependencies are validated, ordere
 
 ---
 
-## Item 62 — Extension-aware migration discovery (formerly P3)
+## ~~Item 62~~ — ~~Extension-aware migration discovery (formerly P3)~~ ✅ DONE
 
 **Severity:** High
 **Scope:** `database/migrations/env.py`, `MigrationManager` discovery, Alembic `script_location` configuration.
@@ -1959,7 +1959,7 @@ The breaking and ecosystem-shaping pieces of the pip-package conversion that fol
 
 ---
 
-## Item 86 — Supply-chain hygiene for the published package
+## ~~Item 86~~ — ~~Supply-chain hygiene for the published package~~ ✅ DONE
 
 **Severity:** High
 **Scope:** PyPI release pipeline; `pyproject.toml` and CI configuration; SBOM generation; signed releases; pinned-hash policy; vuln scanning.
@@ -2007,7 +2007,7 @@ The framework already documents and partially implements per-extension rate limi
 
 The day-2 concerns the framework currently does not address: backups, deploys without downtime, multi-region placement, and the operator surface that runs all of it. None of these gate provider authorship; all of them gate production deployment.
 
-## Item 79 — Backup, restore, and point-in-time recovery primitive
+## ~~Item 79~~ — ~~Backup, restore, and point-in-time recovery primitive~~ ✅ DONE
 
 **Severity:** High
 **Scope:** Per-table classification (`backup-critical` vs `ephemeral`), scheduled DB snapshot service, integrity-verified restore drill, RTO/RPO documentation.
@@ -2027,7 +2027,7 @@ The day-2 concerns the framework currently does not address: backups, deploys wi
 
 ---
 
-## Item 80 — Zero-downtime / rolling-deploy migration window contract
+## ~~Item 80~~ — ~~Zero-downtime / rolling-deploy migration window contract~~ ✅ DONE
 
 **Severity:** High
 **Scope:** Migration framework (Items 24, 49, 62), `@extension_model` field-injection contract (Item 23), startup checks.
@@ -2047,7 +2047,7 @@ The day-2 concerns the framework currently does not address: backups, deploys wi
 
 ---
 
-## Item 81 — Operational surface: probes, alerts, runbooks, DLQ admin UX
+## ~~Item 81~~ — ~~Operational surface: probes, alerts, runbooks, DLQ admin UX~~ ✅ DONE
 
 **Severity:** High
 **Scope:** New `/healthz` and `/readyz` endpoints; `Alert` declaration on hooks/services; runbook generation tied to typed errors; admin UX for DLQ entries and `failed`-state services.
@@ -2091,7 +2091,7 @@ The day-2 concerns the framework currently does not address: backups, deploys wi
 
 Item 45 (field-level ABAC) controls *access* to fields; Item 56 (audit retention) sets the retention bar; Item 32's credential vault encrypts secrets. None of those satisfy GDPR/CCPA right-to-erasure or PII classification. Group 24 fills that gap.
 
-## Item 82 — PII classification and right-to-erasure orchestration
+## ~~Item 82~~ — ~~PII classification and right-to-erasure orchestration~~ ✅ DONE
 
 **Severity:** High
 **Scope:** New `pii: PIIClass` field annotation; per-extension `erase_user(user_id)` hook; audit-log conflict resolution; data-export hook for portability.
