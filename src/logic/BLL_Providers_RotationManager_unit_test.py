@@ -105,6 +105,10 @@ def _make_rotation_manager_with_fake_instances(instances: List[Any]) -> Rotation
     """Build a RotationManager whose `_get_ordered_rotation_provider_instances`
     returns the supplied iterable, and whose model lookup returns the same
     object as the provider_instance dto. Bypasses DB entirely.
+
+    The fake DB lookup honors the `id` kwarg so that skipping a provider
+    (e.g. via auth cooldown) does not desynchronize the lookup queue from
+    the RPI iteration order.
     """
     rm = RotationManager(model_registry=None, requester_id="r1")
     rm.target_id = "rotation-1"
@@ -114,11 +118,9 @@ def _make_rotation_manager_with_fake_instances(instances: List[Any]) -> Rotation
     fake_rpis = [MagicMock(provider_instance_id=f"pi-{i}") for i in range(len(instances))]
     rm._get_ordered_rotation_provider_instances = lambda: fake_rpis  # type: ignore
 
-    # Replace the model_registry-driven lookup with a queue.
-    queue = list(instances)
-
-    def fake_lookup(*a, **k):  # closure ignored, drains queue in order
-        return queue.pop(0)
+    # Map pi-id -> instance so the fake lookup returns the right instance
+    # regardless of which RPIs the rotation actually visits.
+    pi_map: dict = {f"pi-{i}": inst for i, inst in enumerate(instances)}
 
     # Patch ProviderInstanceModel.DB(...).get to use the fake lookup.
     import logic.BLL_Providers as bll_mod
@@ -129,7 +131,8 @@ def _make_rotation_manager_with_fake_instances(instances: List[Any]) -> Rotation
             pass
 
         def get(self, *a, **k):
-            return queue.pop(0)
+            pi_id = k.get("id")
+            return pi_map.get(str(pi_id))
 
     rm.model_registry = MagicMock()
     rm.model_registry.DB.Base = object()
