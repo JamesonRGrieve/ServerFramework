@@ -1263,6 +1263,17 @@ class AbstractStaticProvider(AbstractStaticExtensionSystemComponent):
     # contract — version per Item 39.
     degradation_policy: ClassVar[Optional[Any]] = None
 
+    # Item 84 — per-provider cost-observability model. A `CostModel`
+    # callable (`(request, response) -> Decimal`) returns the cost of a
+    # single upstream call in the deployment's base currency. The
+    # framework reads this on the outbound-call path and emits the
+    # `provider_cost_usd_total{tenant, provider, ability}` counter +
+    # writes per-request cost into the audit log (Item 56 retention).
+    # `None` means the provider does not contribute to cost metrics
+    # (rather than emitting zero-cost noise — providers that are
+    # genuinely free declare `FreeCostModel()` explicitly).
+    cost_model: ClassVar[Optional[Any]] = None
+
     # Item 33 — upstream API version pinning. Concrete providers may pin
     # the upstream wire version (e.g. Stripe "2024-06-20"). When
     # `external_api_version_header` is also set, `ProviderHTTPClient`
