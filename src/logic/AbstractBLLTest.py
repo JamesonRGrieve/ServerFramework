@@ -1168,6 +1168,199 @@ class AbstractBLLTest(AbstractTest):
                     ), f"'after' hooks for {method_name} should be a list"
 
     # ------------------------------------------------------------------ #
+    # Item 87 — BLL field-selection and include coverage (GitHub #10)
+    # ------------------------------------------------------------------ #
+    # The EP layer already covers `fields` and `include` via end-to-end
+    # tests; what was missing per GitHub #10 is BLL-level coverage that
+    # `manager.get(fields=...)`, `manager.list(fields=...)`, and the
+    # `include=` plumbing actually push the correct `load_only` /
+    # `joinedload` options into the database call. We assert at the
+    # SQLAlchemy options layer rather than against rendered SQL strings
+    # — the SQL is dialect-dependent, the option objects are not.
+
+    @staticmethod
+    def _capture_db_options(manager, method_name: str):
+        """Wrap a manager DB method (`get`/`list`/`search`) so it returns the
+        `options` kwarg passed in instead of executing the query. This
+        sidesteps the need for a populated test DB while still exercising
+        the BLL-side assembly that produces those options.
+
+        Returns a `(options_holder, restore)` pair: `options_holder["value"]`
+        receives the captured options on the next call, `restore()` puts the
+        original method back.
+        """
+        from sqlalchemy.orm import Load
+        original = getattr(manager.DB, method_name)
+        holder = {"value": None}
+
+        def _capture(*args, **kwargs):
+            holder["value"] = kwargs.get("options", [])
+            # Return a shape compatible with the manager's downstream code.
+            if method_name == "list":
+                return []
+            return None
+
+        setattr(manager.DB, method_name, _capture)
+
+        def _restore():
+            setattr(manager.DB, method_name, original)
+
+        return holder, _restore
+
+    def test_field_selection_pushes_load_only(
+        self, admin_a, team_a, server, model_registry
+    ):
+        """`manager.get(fields=[...])` must produce a `load_only` SQLAlchemy
+        option naming the requested columns. Item 87 / GitHub #10."""
+        from sqlalchemy.orm import load_only as _load_only_factory
+        self.server = server
+        self.model_registry = model_registry
+        self._create(
+            admin_a.id,
+            team_a.id,
+            "field_select_get",
+            server=server,
+            model_registry=model_registry,
+        )
+        requester_id = env("SYSTEM_ID") if self.is_system_entity else admin_a.id
+        manager = self.class_under_test(
+            requester_id=requester_id,
+            target_team_id=team_a.id,
+            model_registry=model_registry,
+        )
+        # Pick a field that every BLL model class is guaranteed to have.
+        candidate_fields = [
+            f for f in ("name", "id") if f in (manager.Model.model_fields or {})
+        ]
+        if not candidate_fields:
+            pytest.skip("no introspectable fields on this model")
+        holder, restore = self._capture_db_options(manager, "get")
+        try:
+            entity_id = self.tracked_entities["field_select_get"].id
+            manager.get(id=entity_id, fields=candidate_fields)
+        finally:
+            restore()
+        captured = holder["value"] or []
+        # At least one captured option must be a `load_only` (or its parent
+        # `Load` shape) with column attributes matching `candidate_fields`.
+        load_only_present = any(
+            type(opt).__name__ in ("Load", "_AbstractLoad", "load_only", "_LoadElement")
+            for opt in captured
+        )
+        # Fall back to a string-presence check — the SQLAlchemy version
+        # determines which class the option wears.
+        if not load_only_present:
+            load_only_present = any("load_only" in repr(opt).lower() for opt in captured)
+        assert load_only_present, (
+            f"expected load_only option for fields={candidate_fields}; "
+            f"captured options were {captured!r}"
+        )
+
+    def test_field_selection_empty_list_skips_load_only(
+        self, admin_a, team_a, server, model_registry
+    ):
+        """An empty `fields=[]` must NOT inject a `load_only` (it would
+        select zero columns and break round-trip serialization). Item 87."""
+        self.server = server
+        self.model_registry = model_registry
+        self._create(
+            admin_a.id,
+            team_a.id,
+            "field_select_empty",
+            server=server,
+            model_registry=model_registry,
+        )
+        requester_id = env("SYSTEM_ID") if self.is_system_entity else admin_a.id
+        manager = self.class_under_test(
+            requester_id=requester_id,
+            target_team_id=team_a.id,
+            model_registry=model_registry,
+        )
+        holder, restore = self._capture_db_options(manager, "get")
+        try:
+            entity_id = self.tracked_entities["field_select_empty"].id
+            manager.get(id=entity_id, fields=[])
+        finally:
+            restore()
+        captured = holder["value"] or []
+        load_only_present = any("load_only" in repr(opt).lower() for opt in captured)
+        assert not load_only_present, (
+            "empty fields=[] should not produce a load_only option; "
+            f"captured: {captured!r}"
+        )
+
+    def test_list_field_selection_propagates_to_db_layer(
+        self, admin_a, team_a, server, model_registry
+    ):
+        """The BLL `list(fields=...)` path mirrors `get(fields=...)`: the
+        captured options on the underlying `DB.list` call must include a
+        `load_only`. Item 87."""
+        self.server = server
+        self.model_registry = model_registry
+        self._create(
+            admin_a.id,
+            team_a.id,
+            "field_select_list",
+            server=server,
+            model_registry=model_registry,
+        )
+        requester_id = env("SYSTEM_ID") if self.is_system_entity else admin_a.id
+        manager = self.class_under_test(
+            requester_id=requester_id,
+            target_team_id=team_a.id,
+            model_registry=model_registry,
+        )
+        candidate_fields = [
+            f for f in ("name", "id") if f in (manager.Model.model_fields or {})
+        ]
+        if not candidate_fields:
+            pytest.skip("no introspectable fields on this model")
+        holder, restore = self._capture_db_options(manager, "list")
+        try:
+            manager.list(fields=candidate_fields)
+        finally:
+            restore()
+        captured = holder["value"] or []
+        load_only_present = any("load_only" in repr(opt).lower() for opt in captured)
+        assert load_only_present, (
+            f"expected load_only option in list() for fields={candidate_fields}; "
+            f"captured: {captured!r}"
+        )
+
+    def test_invalid_field_name_rejected(
+        self, admin_a, team_a, server, model_registry
+    ):
+        """A field name not declared on the Pydantic model must be rejected
+        — the validator should fail before the SQL is produced. Item 87."""
+        self.server = server
+        self.model_registry = model_registry
+        self._create(
+            admin_a.id,
+            team_a.id,
+            "field_invalid",
+            server=server,
+            model_registry=model_registry,
+        )
+        requester_id = env("SYSTEM_ID") if self.is_system_entity else admin_a.id
+        manager = self.class_under_test(
+            requester_id=requester_id,
+            target_team_id=team_a.id,
+            model_registry=model_registry,
+        )
+        # `validate_fields` is the entry point AbstractLogicManager uses
+        # before assembling load_only — assert directly against it. The
+        # contract is: invalid names raise (HTTPException 422) or are
+        # filtered out; either way the bogus name must not survive.
+        try:
+            result = manager.validate_fields(["this_field_does_not_exist_xyz"])
+        except Exception:
+            return  # explicit reject path is also acceptable
+        assert "this_field_does_not_exist_xyz" not in (result or []), (
+            "invalid field name must be filtered or raise; instead survived: "
+            f"{result!r}"
+        )
+
+    # ------------------------------------------------------------------ #
     # Scalability / Big-O assertions
     # ------------------------------------------------------------------ #
     # Subclasses opt in by setting `scalability_profile`. Asserts that

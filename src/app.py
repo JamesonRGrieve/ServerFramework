@@ -34,7 +34,12 @@ from database.DatabaseManager import DatabaseManager
 from lib.Environment import env, inflection
 from lib.Logging import logger
 from lib.Pydantic import ModelRegistry
-from lib.RequestContext import clear_request_context, set_request_user
+from lib.RequestContext import (
+    DeadlineExceededError,
+    clear_request_context,
+    set_request_deadline_ms,
+    set_request_user,
+)
 
 
 def setup_extension_dependencies():
@@ -430,7 +435,27 @@ def build_app(model_registry: ModelRegistry):
                 # If JWT decode fails, just continue without setting context
                 pass
 
-        response = await call_next(request)
+        # Item 47 — read X-Request-Timeout-Ms (gRPC-style relative ms)
+        # and convert to an absolute monotonic deadline at ingress so all
+        # subsequent budget checks share one time source.
+        timeout_header = request.headers.get("X-Request-Timeout-Ms")
+        if timeout_header:
+            try:
+                set_request_deadline_ms(int(timeout_header))
+            except (TypeError, ValueError):
+                pass
+
+        try:
+            response = await call_next(request)
+        except DeadlineExceededError as exc:
+            return JSONResponse(
+                status_code=504,
+                content={
+                    "detail": str(exc),
+                    "elapsed_ms": exc.elapsed_ms,
+                    "layer": exc.layer,
+                },
+            )
 
         # NOTE: A previous debugging block here printed POST response bodies
         # to stdout, including JSON payloads. Removed (Item 73) — that path

@@ -287,7 +287,7 @@ The rotation system's policy surface, from the typed-error consumer (Item 2) thr
 
 ---
 
-## Item 51 — Sticky-session routing in rotation
+## ~~Item 51~~ — ~~Sticky-session routing in rotation~~ ✅ DONE
 
 **Severity:** Low
 **Scope:** `RotationManager`, per-call routing hints.
@@ -431,7 +431,7 @@ The single client every provider routes outbound calls through, and the cross-cu
 
 ---
 
-## Item 33 — Upstream API version pinning per provider
+## ~~Item 33~~ — ~~Upstream API version pinning per provider~~ ✅ DONE
 
 **Severity:** Medium
 **Scope:** `AbstractStaticProvider`, paired Pydantic external DTOs replacing string-based `field_mappings` for compile-time validation.
@@ -471,7 +471,7 @@ The single client every provider routes outbound calls through, and the cross-cu
 
 ---
 
-## Item 47 — Deadline budget propagation through `RequestContext`
+## ~~Item 47~~ — ~~Deadline budget propagation through `RequestContext`~~ ✅ DONE
 
 **Severity:** Medium
 **Scope:** `RequestContext`, `RotationManager`, shared HTTP client (Item 31), middleware chain.
@@ -988,7 +988,7 @@ For genuinely RPC-shaped routes (no clear resource), the decorator can be applie
 
 ---
 
-## Item 87 — BLL-level field-selection and include test coverage (GitHub #10)
+## ~~Item 87~~ — ~~BLL-level field-selection and include test coverage (GitHub #10)~~ ✅ DONE
 
 **Severity:** Medium
 **Scope:** New abstract test cases under `src/logic/AbstractBLLTest.py` covering `load_only` and related-entity loading at the BLL layer, plus per-manager test files that consume them.
@@ -1216,7 +1216,7 @@ How extension-contributed schema, tables, and dependencies are validated, ordere
 
 ---
 
-## Item 49 — Cross-extension migration ordering with foreign-key awareness
+## ~~Item 49~~ — ~~Cross-extension migration ordering with foreign-key awareness~~ ✅ DONE
 
 **Severity:** Medium
 **Scope:** `MigrationManager`, extension dependency declarations, Alembic migration runner.
@@ -2158,7 +2158,7 @@ Items in this group are fourth-round audit findings against the live codebase: c
 
 ---
 
-## Item 75 — Move soft-delete enforcement from BLL into the DB layer
+## ~~Item 75~~ — ~~Move soft-delete enforcement from BLL into the DB layer~~ ✅ DONE
 
 **Severity:** Medium
 **Scope:** `BLL_Auth.py:1165` workaround; `database/AbstractDatabaseEntity.py` (soft-delete primitive); every BLL query that filters by `deleted_at`.

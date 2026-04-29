@@ -29,7 +29,9 @@ try:
     from logic.BLL_Providers import (
         ManagerContractError,
         RotationManager,
+        RoutingHint,
         reset_auth_cooldowns,
+        reset_sticky_sessions,
         validate_manager_constructors,
     )
 except NameError as _exc:  # pragma: no cover - defensive
@@ -44,8 +46,10 @@ def _reset_auth_cooldowns():
     """Auth-cooldown state is module-level; reset between tests so that
     a provider marked unhealthy by one test does not skew the next."""
     reset_auth_cooldowns()
+    reset_sticky_sessions()
     yield
     reset_auth_cooldowns()
+    reset_sticky_sessions()
 
 
 # ----- Item 70 tests --------------------------------------------------------
@@ -326,3 +330,134 @@ def test_auth_cooldown_skips_provider_on_subsequent_rotate():
         assert seen_second == ["prov-B"]
     finally:
         rm2._restore_db()
+
+
+# ----- Item 51 sticky-session tests ----------------------------------------
+
+
+@pytest.mark.unit
+def test_sticky_pin_set_on_first_success():
+    """First rotate() with a stickiness key — no prior pin — falls through
+    to linear rotation and pins the winning provider."""
+    a = MagicMock()
+    a.name = "prov-A"
+    rm = _make_rotation_manager_with_fake_instances([a])
+    try:
+        result = rm.rotate(lambda inst: "ok", routing_hint=RoutingHint(stickiness_key="conv-1"))
+        assert result == "ok"
+        from logic.BLL_Providers import _sticky_get
+        assert _sticky_get("conv-1", None) == "pi-0"
+    finally:
+        rm._restore_db()
+
+
+@pytest.mark.unit
+def test_sticky_pin_reused_on_subsequent_rotate():
+    """Second rotate() with the same stickiness key honors the pin and
+    skips the linear chain — call goes straight to pi-0 even when the
+    chain would otherwise enumerate other RPIs."""
+    a = MagicMock()
+    a.name = "prov-A"
+    b = MagicMock()
+    b.name = "prov-B"
+    # Pin pi-0 (prov-A) up front so the second rotate exercises the
+    # pinned-attempt path.
+    rm1 = _make_rotation_manager_with_fake_instances([a, b])
+    try:
+        rm1.rotate(lambda inst: "ok-1", routing_hint=RoutingHint(stickiness_key="conv-2"))
+    finally:
+        rm1._restore_db()
+
+    rm2 = _make_rotation_manager_with_fake_instances([a, b])
+    seen: list = []
+
+    def call(inst):
+        seen.append(inst.name)
+        return "ok-2"
+
+    try:
+        result = rm2.rotate(call, routing_hint=RoutingHint(stickiness_key="conv-2"))
+        assert result == "ok-2"
+        # Pin hit — only prov-A should be visited.
+        assert seen == ["prov-A"]
+    finally:
+        rm2._restore_db()
+
+
+@pytest.mark.unit
+def test_sticky_pin_invalidated_on_pinned_failure_then_falls_through():
+    """When the pinned provider fails (transient/auth/bare), the pin is
+    invalidated and the linear chain is recomputed against the surviving
+    chain (the failed pin is removed from the head)."""
+    a = MagicMock()
+    a.name = "prov-A"
+    b = MagicMock()
+    b.name = "prov-B"
+    # Pin pi-0 first.
+    rm1 = _make_rotation_manager_with_fake_instances([a, b])
+    try:
+        rm1.rotate(lambda inst: "ok", routing_hint=RoutingHint(stickiness_key="conv-3"))
+    finally:
+        rm1._restore_db()
+
+    rm2 = _make_rotation_manager_with_fake_instances([a, b])
+    visited: list = []
+
+    def call(inst):
+        visited.append(inst.name)
+        if inst.name == "prov-A":
+            raise AuthExternalError("401 on pinned")
+        return "B-ok"
+
+    try:
+        result = rm2.rotate(call, routing_hint=RoutingHint(stickiness_key="conv-3"))
+        assert result == "B-ok"
+        # Pinned A failed → fall-through to surviving chain (B only).
+        assert visited == ["prov-A", "prov-B"]
+        # Pin invalidated; new pin should be B.
+        from logic.BLL_Providers import _sticky_get
+        assert _sticky_get("conv-3", None) == "pi-1"
+    finally:
+        rm2._restore_db()
+
+
+@pytest.mark.unit
+def test_sticky_invalid_input_propagates_through_pin():
+    """`InvalidInputExternalError` from a pinned attempt re-raises rather
+    than silently falling through — sticky pinning never masks a 4xx.
+    Default rotation has the same semantics; the pin path must match."""
+    a = MagicMock()
+    a.name = "prov-A"
+    b = MagicMock()
+    b.name = "prov-B"
+    rm1 = _make_rotation_manager_with_fake_instances([a, b])
+    try:
+        rm1.rotate(lambda inst: "ok", routing_hint=RoutingHint(stickiness_key="conv-4"))
+    finally:
+        rm1._restore_db()
+
+    rm2 = _make_rotation_manager_with_fake_instances([a, b])
+
+    def call(inst):
+        raise InvalidInputExternalError("bad payload")
+
+    try:
+        with pytest.raises(InvalidInputExternalError):
+            rm2.rotate(call, routing_hint=RoutingHint(stickiness_key="conv-4"))
+    finally:
+        rm2._restore_db()
+
+
+@pytest.mark.unit
+def test_sticky_no_routing_hint_no_pin():
+    """Default behavior is unchanged when no routing hint is supplied —
+    no pin is created on success, no pin is consulted on subsequent calls."""
+    a = MagicMock()
+    a.name = "prov-A"
+    rm = _make_rotation_manager_with_fake_instances([a])
+    try:
+        rm.rotate(lambda inst: "ok")
+        from logic.BLL_Providers import _STICKY_SESSIONS
+        assert len(_STICKY_SESSIONS) == 0
+    finally:
+        rm._restore_db()

@@ -1216,6 +1216,52 @@ class RotationManager(AbstractBLLManager, RouterMixin):
             delay_ms = max(0.0, delay_ms * factor)
         time.sleep(delay_ms / 1000.0)
 
+    def _sticky_pin_usable(self, rpi) -> bool:
+        """Item 51: a pinned RPI is usable iff it is not under an active
+        auth cooldown. Other health signals (DB unreachability, instance
+        deletion) are surfaced when the pinned attempt actually runs."""
+        cooldown_expires = _AUTH_COOLDOWNS.get(str(rpi.provider_instance_id))
+        if cooldown_expires is None:
+            return True
+        return time.monotonic() >= cooldown_expires
+
+    def _attempt_pinned(self, rpi, callable_func, args, kwargs):
+        """Item 51: run `callable_func` against the pinned RPI exactly once.
+
+        Returns ``(result, succeeded)`` so the caller can refresh the
+        sticky pin TTL on success or fall through to the surviving-chain
+        rotation on failure. Errors that linear rotation would surface
+        immediately (`InvalidInputExternalError`, `PermanentExternalError`)
+        are re-raised through the pin path as well — sticky pinning never
+        masks application-level invalid input.
+        """
+        try:
+            with self.model_registry.DB.get_session() as session:
+                provider_instance = ProviderInstanceModel.DB(
+                    self.model_registry.DB.Base
+                ).get(
+                    requester_id=self.requester.id,
+                    model_registry=self.model_registry,
+                    return_type="dto",
+                    override_dto=ProviderInstanceModel,
+                    id=rpi.provider_instance_id,
+                )
+        except Exception:
+            return None, False
+        if not provider_instance:
+            return None, False
+        try:
+            result = callable_func(provider_instance, *args, **kwargs)
+            return result, True
+        except Exception as exc:
+            policy_mod = self._load_rotation_policy_module()
+            if policy_mod is not None:
+                InvalidInput = getattr(policy_mod, "InvalidInputExternalError", None)
+                Permanent = getattr(policy_mod, "PermanentExternalError", None)
+                if InvalidInput and Permanent and isinstance(exc, (InvalidInput, Permanent)):
+                    raise
+            return None, False
+
     def rotate(self, callable_func, *args, **kwargs):
         """
         Execute a callable with each provider instance in the rotation sequence.
@@ -1387,6 +1433,12 @@ class RotationManager(AbstractBLLManager, RouterMixin):
                     logger.debug(
                         f"Successfully used provider instance: {provider_instance.name}"
                     )
+                    # Item 51 — on a successful default-rotation attempt with a
+                    # stickiness key, the winning provider becomes the new pin.
+                    if sticky_key:
+                        _sticky_set(
+                            sticky_key, ability, str(rpi.provider_instance_id)
+                        )
                     return result
                 except Exception as exc:
                     # Item 2 dispatch — only when the typed error module is loaded.
