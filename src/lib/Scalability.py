@@ -150,8 +150,12 @@ def evaluate_scaling(
     cleaned = [s for s in samples if s.value > threshold.floor_value]
     fit = fit_power_law(cleaned if len(cleaned) >= 2 else samples)
     headroom = threshold.max_exponent - fit.exponent
-    fit_ok = fit.r_squared >= threshold.min_r_squared or fit.point_count < 3
-    passed = fit.exponent <= threshold.max_exponent and fit_ok
+    if fit.exponent <= threshold.expected_exponent:
+        passed = True
+    elif fit.exponent <= threshold.max_exponent:
+        passed = fit.r_squared >= threshold.min_r_squared or fit.point_count < 3
+    else:
+        passed = False
     return ScalingResult(
         metric=threshold.metric,
         samples=samples,

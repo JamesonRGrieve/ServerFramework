@@ -129,6 +129,21 @@ class TestEvaluateScaling:
         with pytest.raises(ValueError, match="at least one sample"):
             evaluate_scaling([], DEFAULT_THRESHOLDS[ScalingMetric.TIME])
 
+    def test_flat_data_below_ideal_passes_regardless_of_r_squared(self):
+        # Real-world scenario: at small n, list() is dominated by setup
+        # cost, so timings are essentially flat with noise. Observed k is
+        # near zero (better than the ideal of 1.0) but R^2 is low because
+        # there's no signal. We must pass — flat is what we wanted.
+        samples = [
+            MeasurementSample(n=3, metric=ScalingMetric.TIME, value=0.00769),
+            MeasurementSample(n=8, metric=ScalingMetric.TIME, value=0.00742),
+            MeasurementSample(n=20, metric=ScalingMetric.TIME, value=0.00758),
+        ]
+        result = evaluate_scaling(samples, DEFAULT_THRESHOLDS[ScalingMetric.TIME])
+        assert result.passed
+        assert result.fit.exponent < 0.1
+        assert result.fit.r_squared < 0.5
+
 
 class TestMeasureTime:
     def test_records_elapsed(self):

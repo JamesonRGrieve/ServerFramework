@@ -12,6 +12,7 @@ from endpoints.AbstractEPTest import AbstractEPTest, HttpMethod, StatusCode
 from lib.Environment import env
 from lib.Logging import logger
 from lib.Pydantic2Strawberry import convert_field_name
+from lib.Scalability import ScalabilityProfile, ScalingMetric
 from logic.BLL_Auth import InvitationModel, RoleModel, TeamModel, UserModel
 
 
@@ -46,6 +47,11 @@ class TestTeamEndpoints(AbstractEPTest):
         "description": "Updated team description",
     }
     unique_fields = ["name"]
+    scalability_profile = ScalabilityProfile.default(
+        n_values=[3, 8, 20],
+        metrics=[ScalingMetric.TIME, ScalingMetric.QUERY_COUNT, ScalingMetric.MEMORY],
+        repetitions=2,
+    )
 
     def create_payload(
         self,
