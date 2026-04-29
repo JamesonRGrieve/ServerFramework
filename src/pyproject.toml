@@ -120,6 +120,17 @@ namespaces = true
 [tool.setuptools.package-data]
 "*" = ["version", "*.json", "*.md"]
 
+[tool.serverframework.supply_chain]
+# Item 86 — Supply-chain hygiene declarations consumed by the release pipeline.
+# These knobs are read by ``lib.SupplyChain`` helpers and by the CI workflow
+# that gates releases on SBOM emission, signature attestation, and vuln scan
+# results. See docs/SECURITY.md for the operator-facing contract.
+sbom_format = "cyclonedx"
+signing = "sigstore"
+vuln_scanner = "pip-audit"
+severity_gate = "HIGH"
+lock_file = "requirements.lock"
+
 [tool.isort]
 profile = "black"
 line_length = 88
