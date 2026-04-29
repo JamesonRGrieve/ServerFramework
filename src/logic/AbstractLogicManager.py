@@ -188,7 +188,10 @@ class HookRegistry:
             method_name: Name of the method to get hooks for
 
         Returns:
-            Dictionary with 'before' and 'after' lists of hook info dictionaries
+            Dictionary with 'before' and 'after' lists of hook info dictionaries.
+            Lists are returned in the deterministic four-tier order described
+            in Item 21: explicit ``before/after`` constraints, then priority,
+            then extension name, then function name.
         """
         hooks = {"before": [], "after": []}
 
@@ -203,6 +206,9 @@ class HookRegistry:
             hooks["before"].extend(self.hooks[method_name]["before"])
             hooks["after"].extend(self.hooks[method_name]["after"])
 
+        # Item 21: apply the deterministic four-tier sort BEFORE returning.
+        hooks["before"] = _sort_hooks_topologically(hooks["before"])
+        hooks["after"] = _sort_hooks_topologically(hooks["after"])
         return hooks
 
     def register_hook(
@@ -213,6 +219,9 @@ class HookRegistry:
         hook_func: Callable,
         priority: int = 50,
         condition: Optional[Callable] = None,
+        before: Optional[List[str]] = None,
+        after: Optional[List[str]] = None,
+        blocking: Optional[bool] = None,
     ) -> None:
         """
         Register a hook for a specific method.
@@ -224,14 +233,29 @@ class HookRegistry:
             hook_func: Function to execute as hook
             priority: Execution priority (lower numbers run first)
             condition: Optional condition function for conditional execution
+            before: List of extension names this hook must run BEFORE (Item 21).
+            after: List of extension names this hook must run AFTER (Item 21).
+            blocking: If True, exceptions from the hook propagate (Item 22).
+                If False, exceptions are logged + a metric is emitted and the
+                operation continues. None preserves the timing-default
+                (BEFORE -> True, AFTER -> False).
         """
         if method_name not in self.hooks:
             self.hooks[method_name] = {"before": [], "after": []}
 
-        hook_info = {"func": hook_func, "priority": priority, "condition": condition}
+        hook_info = {
+            "func": hook_func,
+            "priority": priority,
+            "condition": condition,
+            "before": list(before or []),
+            "after": list(after or []),
+            "blocking": blocking,
+            "extension": _hook_extension_name(hook_func),
+        }
 
         self.hooks[method_name][timing].append(hook_info)
-        # Sort by priority (lower numbers run first)
+        # Sort by priority (lower numbers run first); the get_hooks accessor
+        # then applies the full four-tier topological sort.
         self.hooks[method_name][timing].sort(key=lambda x: x["priority"])
 
 
