@@ -178,12 +178,11 @@ _skip_tests = [
 ]
 ```
 
-**Currently Skipped in AbstractEPTest:**
-| Test | Reason | GitHub Issue |
-|------|--------|--------------|
-| `test_GET_200_list_pagination` | Pagination not yet implemented | - |
-| `test_POST_200_search_pagination` | Search pagination not yet implemented | - |
-| `test_GET_200_filter` | Filtering not yet implemented | - |
+**Pagination, Filtering, and Search-Pagination (Item 29 — closed-by-verification):**
+
+Pagination and filtering are wired through the auto-generated CRUD layer for every `RouterMixin`-tagged manager. `test_GET_200_list_pagination`, `test_POST_200_search_pagination`, and `test_GET_200_filter` are **live tests in `AbstractEPTest`** — they run by default for every concrete EP test class. The `page` / `pageSize` parameters are accepted by `manager.list()` and translated to `limit` / `offset`; `filters` are accepted by both `manager.list()` and `manager.search()` and pass through to the DB layer. Field selection (`fields=`) coexists with pagination and filtering parameters.
+
+Concrete subclasses opt out of these tests via `_skip_tests` only when the entity legitimately does not support a standard list endpoint (for example, `EP_Auth_test.UserModel` skips `test_GET_200_list_pagination` because users are not exposed via a standard global LIST for privacy / security reasons — that is per-entity policy, not a missing-feature gate).
 
 | SkipReason        | When                      |
 | ----------------- | ------------------------- |

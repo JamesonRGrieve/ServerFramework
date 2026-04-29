@@ -884,7 +884,7 @@ A previous iteration of the framework had a `/webhook` endpoint backed by a glob
 
 The auto-generated REST surface, custom routes that participate in the same generation pipeline, version side-by-side, and the SDK that derives from all of them.
 
-## Item 29 — Unskip pagination, filtering, and search-pagination tests in core endpoints
+## ~~Item 29~~ — ~~Unskip pagination, filtering, and search-pagination tests in core endpoints~~ ✅ DONE
 
 **Severity:** Medium
 **Scope:** `EP.Test.md` skip list, the core list and search endpoints, the auto-generated test matrix.
