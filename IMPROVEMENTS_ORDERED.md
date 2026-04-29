@@ -28,19 +28,19 @@ Each item below is scoped as a deliverable. The intent is that this document bec
 
 The eight gating items that must land before provider authorship are:
 
-1. Item 1 — Unified result contract for external provider calls.
-2. Item 2 — Failure classification and rotation policy.
-3. Item 4 — Idempotency primitive for external operations.
-4. Item 5 — Inbound webhook handler infrastructure.
-5. Item 10 — Pluggable authentication strategies on provider instances.
-6. Item 14 — Mirror-on-create lifecycle primitive.
-7. Item 26 — Explicit `AbstractProviderInstance` contract.
-8. Item 70 — Manager constructor contract consistency (RotationManager violates the documented `model_registry`-first signature; every provider author derives from a moving target until this is fixed).
+1. ~~Item 1 — Unified result contract for external provider calls.~~ ✅
+2. ~~Item 2 — Failure classification and rotation policy.~~ ✅
+3. ~~Item 4 — Idempotency primitive for external operations.~~ ✅
+4. ~~Item 5 — Inbound webhook handler infrastructure.~~ ✅
+5. ~~Item 10 — Pluggable authentication strategies on provider instances.~~ ✅
+6. ~~Item 14 — Mirror-on-create lifecycle primitive.~~ ✅
+7. ~~Item 26 — Explicit `AbstractProviderInstance` contract.~~ ✅
+8. ~~Item 70 — Manager constructor contract consistency (RotationManager violates the documented `model_registry`-first signature; every provider author derives from a moving target until this is fixed).~~ ✅
 
 A separate critical-path applies to the public PyPI release of the package (the items in former Group 21, plus the supply-chain hardening surfaced by the fourth-round audit):
 
 1. Item 60 — Rename top-level packages under a single namespace.
-2. Item 61 — Out-of-tree extension import support.
+2. ~~Item 61 — Out-of-tree extension import support.~~ ✅
 3. Item 86 — Supply-chain hygiene (SBOM, signed releases, pinned hashes, vuln scanning).
 
 Everything else can iterate without retrofit once these are in place.
@@ -51,7 +51,7 @@ Everything else can iterate without retrofit once these are in place.
 
 The single contract every external call and every cross-cutting policy depends on. Item 1 establishes the typed exception hierarchy that downstream items (rotation policy, idempotency, bulk endpoints, GraphQL federation) consume.
 
-## Item 1 — Unified result contract for external provider calls
+## ~~Item 1~~ — ~~Unified result contract for external provider calls~~ ✅ DONE
 
 **Severity:** Critical
 **Scope:** `AbstractExternalModel`, `AbstractExternalManager`, `AbstractExternalAPIClient`, every `*_via_provider` method authored hereafter.
@@ -75,7 +75,7 @@ The single contract every external call and every cross-cutting policy depends o
 
 The base shape of a bonded provider, the auth strategies that sit on top of it, and the typed settings/abilities that pin its surface at type-check time. These are critical-path because every concrete provider derives from them.
 
-## Item 26 — Explicit `AbstractProviderInstance` contract
+## ~~Item 26~~ — ~~Explicit `AbstractProviderInstance` contract~~ ✅ DONE
 
 **Severity:** Critical
 **Scope:** `AbstractProviderInstance`, `bond_instance` typing, all existing and future provider authors.
@@ -99,7 +99,7 @@ The provider class declares `_instance: ClassVar[Optional[AbstractProviderInstan
 
 ---
 
-## Item 70 — Manager constructor contract consistency
+## ~~Item 70~~ — ~~Manager constructor contract consistency~~ ✅ DONE
 
 **Severity:** Critical
 **Scope:** `RotationManager.__init__` and any other manager whose constructor diverges from the documented `model_registry`-first signature.
@@ -119,7 +119,7 @@ The provider class declares `_instance: ClassVar[Optional[AbstractProviderInstan
 
 ---
 
-## Item 10 — Pluggable authentication strategies on provider instances
+## ~~Item 10~~ — ~~Pluggable authentication strategies on provider instances~~ ✅ DONE
 
 **Severity:** Critical
 **Scope:** `AbstractStaticProvider.bond_instance`, `ProviderInstanceModel`, new `AuthStrategy` ABC and concrete subclasses; integration point for the OAuth extension.
@@ -141,7 +141,7 @@ The provider class declares `_instance: ClassVar[Optional[AbstractProviderInstan
 
 ---
 
-## Item 37 — Typed `ProviderSettings` and ability declarations
+## ~~Item 37~~ — ~~Typed `ProviderSettings` and ability declarations~~ ✅ DONE
 
 **Severity:** High
 **Scope:** `AbstractStaticProvider`, abstract-provider per-extension subclasses, `_env`, `_abilities`.
@@ -167,7 +167,7 @@ Abilities are declared as typed callables on the abstract provider class. Each a
 
 The service interface is broadened before any item that schedules background work, drains an outbox, runs a streaming consumer, or schedules compensating actions can land. Item 28 sets the surface; Item 44 pins the execution model.
 
-## Item 28 — Broaden the service interface beyond perpetual time-based loops
+## ~~Item 28~~ — ~~Broaden the service interface beyond perpetual time-based loops~~ ✅ DONE
 
 **Severity:** Medium
 **Scope:** Existing service interface (currently shaped for perpetual time-based tasks), new `ScheduledService`, `QueueConsumerService`, and `StreamingService` flavors, shared lifecycle.
@@ -220,7 +220,7 @@ The supervisor restart policy is configurable per service: `always` (restart on 
 
 The rotation system's policy surface, from the typed-error consumer (Item 2) through rate limits (17) and liveness (27) to application-level stickiness (51). Item 3 documents what we deliberately delegate to L7.
 
-## Item 2 — Failure classification and rotation policy
+## ~~Item 2~~ — ~~Failure classification and rotation policy~~ ✅ DONE
 
 **Severity:** Critical
 **Scope:** `RotationManager`, `AbstractStaticProvider`, every external provider authored hereafter.
@@ -245,7 +245,7 @@ The rotation system's policy surface, from the typed-error consumer (Item 2) thr
 
 ---
 
-## Item 17 — Rate-limit and quota awareness per provider
+## ~~Item 17~~ — ~~Rate-limit and quota awareness per provider~~ ✅ DONE
 
 **Severity:** Medium
 **Scope:** Per-provider `RateLimit`, token-bucket implementation, response-header parsers, integration into rotation.
@@ -267,7 +267,7 @@ The rotation system's policy surface, from the typed-error consumer (Item 2) thr
 
 ---
 
-## Item 27 — Separate `is_configured` from `health_check`
+## ~~Item 27~~ — ~~Separate `is_configured` from `health_check`~~ ✅ DONE
 
 **Severity:** Low
 **Scope:** `AbstractStaticProvider`, rotation system health gates.
@@ -333,7 +333,7 @@ What L7 cannot solve is **session stickiness driven by application-level context
 
 How secret material enters the framework, where it lives at rest, how it is redacted in logs, and how test/live shapes are kept apart. These wrap into the auth strategies of Group 2 and feed the shared HTTP client of Group 6.
 
-## Item 32 — Credential vault with OpenBao as default
+## ~~Item 32~~ — ~~Credential vault with OpenBao as default~~ ✅ DONE
 
 **Severity:** High
 **Scope:** Credential storage for `ProviderInstanceModel.api_key` and any other sensitive provider settings; logging layer redaction; admin API for credential rotation.
@@ -365,7 +365,7 @@ Credentials resolve per-request, not per-bond, so rotation in the credential sto
 
 ---
 
-## Item 50 — Sandbox versus live credential split convention
+## ~~Item 50~~ — ~~Sandbox versus live credential split convention~~ ✅ DONE
 
 **Severity:** Low
 **Scope:** Provider configuration, `_env` schema (Item 37), shared HTTP client (Item 31).
@@ -387,7 +387,7 @@ Credentials resolve per-request, not per-bond, so rotation in the credential sto
 
 ---
 
-## Item 65 — Lazy environment variable lookup (formerly P6)
+## ~~Item 65~~ — ~~Lazy environment variable lookup (formerly P6)~~ ✅ DONE
 
 **Severity:** Medium
 **Scope:** `app.py` (`instance`, `create_registry_with_db_manager`), every other call site that consumes `env(...)` in a default argument expression.
@@ -411,7 +411,7 @@ Credentials resolve per-request, not per-bond, so rotation in the credential sto
 
 The single client every provider routes outbound calls through, and the cross-cutting concerns that hang off it: upstream API version pinning, distributed tracing, and end-to-end deadline budgets.
 
-## Item 31 — Shared outbound HTTP client primitive
+## ~~Item 31~~ — ~~Shared outbound HTTP client primitive~~ ✅ DONE
 
 **Severity:** High
 **Scope:** New `ProviderHTTPClient`, integration into every provider that performs outbound HTTP, refactor of existing example providers.
@@ -519,7 +519,7 @@ A pluggable `ErrorReporter` ABC accepts `report(exception, context)` calls; fram
 
 The reliability core: making mutating calls safely retryable, persisting work that did not finish in the foreground, mirroring local entities to upstream counterparts, serializing critical sections, and choosing the right shape of failure when rotation is exhausted.
 
-## Item 4 — Idempotency primitive for external operations
+## ~~Item 4~~ — ~~Idempotency primitive for external operations~~ ✅ DONE
 
 **Severity:** Critical
 **Scope:** `AbstractExternalManager`, `RotationManager`, every external provider performing mutating operations.
@@ -541,7 +541,7 @@ The reliability core: making mutating calls safely retryable, persisting work th
 
 ---
 
-## Item 35 — Outbox, dead-letter queue, and reconciliation primitive
+## ~~Item 35~~ — ~~Outbox, dead-letter queue, and reconciliation primitive~~ ✅ DONE
 
 **Severity:** Medium
 **Scope:** New `outbox` and `dlq` tables, background drain service, reconciliation job pattern.
@@ -567,7 +567,7 @@ A BLL mutation that wishes to use the outbox writes to its local table and to `o
 
 ---
 
-## Item 14 — Mirror-on-create lifecycle primitive
+## ~~Item 14~~ — ~~Mirror-on-create lifecycle primitive~~ ✅ DONE
 
 **Severity:** Critical
 **Scope:** New `@mirror_on_create` decorator, BEFORE-COMMIT hook integration, saga / outbox documentation.
@@ -594,7 +594,7 @@ Symmetric `@mirror_on_update` and `@mirror_on_delete` decorators handle the corr
 
 ---
 
-## Item 53 — Advisory locking primitive
+## ~~Item 53~~ — ~~Advisory locking primitive~~ ✅ DONE
 
 **Severity:** Medium
 **Scope:** New `AdvisoryLock` abstraction, Postgres advisory-lock backend, Redis-based fallback, integration with quota decrement, outbox claim, and other critical sections.
@@ -614,7 +614,7 @@ Symmetric `@mirror_on_update` and `@mirror_on_delete` decorators handle the corr
 
 ---
 
-## Item 69 — Distributed counter primitive
+## ~~Item 69~~ — ~~Distributed counter primitive~~ ✅ DONE
 
 **Severity:** High
 **Scope:** New `DistributedCounter` abstraction; Postgres-backed and Redis-backed adapters; integration with token bucket (Item 17), atomic quota decrement (Item 19), per-tenant fairness virtual-time scheduler (Item 57).
@@ -660,7 +660,7 @@ The `queue_and_retry` mode integrates with Item 35's outbox: the request returns
 
 The data-shape translation layer between our internal contracts and any external API. These items share the same pattern (a typed translator abstraction with provider-nominated implementations) and travel together.
 
-## Item 6 — Field-mapping pipeline beyond 1:1 renames
+## ~~Item 6~~ — ~~Field-mapping pipeline beyond 1:1 renames~~ ✅ DONE
 
 **Severity:** High
 **Scope:** `AbstractExternalModel.field_mappings`, `to_external_format`, `from_external_format`.
@@ -680,7 +680,7 @@ The data-shape translation layer between our internal contracts and any external
 
 ---
 
-## Item 7 — Pagination homogenization
+## ~~Item 7~~ — ~~Pagination homogenization~~ ✅ DONE
 
 **Severity:** High
 **Scope:** `AbstractExternalAPIClient.list`, `AbstractExternalManager.list`, `to_external_query_format`, every external provider supporting list operations.
@@ -704,7 +704,7 @@ For cursor-only providers, arbitrary jump-to-offset (e.g., "give me page 100 dir
 
 ---
 
-## Item 8 — Search DSL translation
+## ~~Item 8~~ — ~~Search DSL translation~~ ✅ DONE
 
 **Severity:** High
 **Scope:** `AbstractExternalAPIClient.search`, `AbstractExternalManager.search`, search transformers; every external provider supporting search.
@@ -726,7 +726,7 @@ This problem mirrors Item 7 in shape and is solved with the same pattern: a tran
 
 ---
 
-## Item 12 — Bulk endpoint expression for upstream APIs that support them
+## ~~Item 12~~ — ~~Bulk endpoint expression for upstream APIs that support them~~ ✅ DONE
 
 **Severity:** Medium
 **Scope:** `AbstractExternalManager.batch_*`, optional `batch_*_via_provider` slots.
@@ -746,7 +746,7 @@ This problem mirrors Item 7 in shape and is solved with the same pattern: a tran
 
 ---
 
-## Item 9 — N+1 prevention through `include` for external navigation
+## ~~Item 9~~ — ~~N+1 prevention through `include` for external navigation~~ ✅ DONE
 
 **Severity:** High
 **Scope:** External navigation properties (`create_external_reference_model`), the `include` query parameter handling, batched resolvers.
@@ -838,7 +838,7 @@ The documented "mock the rotation system" example in `PRV.External.md` is remove
 
 The bidirectional half of the federation story. Item 5 is the typed inbound mount; Item 13 is the long-lived connection counterpart. Both fan into the same hook bus that internal mutations fire.
 
-## Item 5 — Inbound webhook handler infrastructure
+## ~~Item 5~~ — ~~Inbound webhook handler infrastructure~~ ✅ DONE
 
 **Severity:** Critical
 **Scope:** New endpoint mount, new decorator, new registry; every external provider that emits webhooks.
@@ -1104,7 +1104,7 @@ If Strawberry Federation is the target architecture, document which Federation d
 
 Determinism, reliability defaults, and type safety for the cross-cutting hook bus that every extension touches.
 
-## Item 21 — Deterministic hook ordering across extensions
+## ~~Item 21~~ — ~~Deterministic hook ordering across extensions~~ ✅ DONE
 
 **Severity:** Medium
 **Scope:** `@hook_bll` decorator, hook registry sort logic, optional explicit ordering constraints.
@@ -1131,7 +1131,7 @@ This produces a fully deterministic ordering across runs and lets extensions exp
 
 ---
 
-## Item 22 — Implement the documented `blocking=False` hook parameter
+## ~~Item 22~~ — ~~Implement the documented `blocking=False` hook parameter~~ ✅ DONE
 
 **Severity:** Medium
 **Scope:** `@hook_bll` decorator, hook execution flow.
@@ -1152,7 +1152,7 @@ This produces a fully deterministic ordering across runs and lets extensions exp
 
 ---
 
-## Item 41 — Type-safe hook context with `ParamSpec` and `Generic`
+## ~~Item 41~~ — ~~Type-safe hook context with `ParamSpec` and `Generic`~~ ✅ DONE
 
 **Severity:** Medium
 **Scope:** `HookContext`, `@hook_bll` decorator, hook signatures.
@@ -1176,7 +1176,7 @@ This produces a fully deterministic ordering across runs and lets extensions exp
 
 How extension-contributed schema, tables, and dependencies are validated, ordered, and reloaded. Field collisions, migration ownership, FK-aware ordering, hot reload, and observable optional-dependency state all belong to one extension-system surface.
 
-## Item 23 — `@extension_model` collision detection at startup
+## ~~Item 23~~ — ~~`@extension_model` collision detection at startup~~ ✅ DONE
 
 **Severity:** Medium
 **Scope:** `@extension_model` decorator, extension registry validation pass.
@@ -1196,7 +1196,7 @@ How extension-contributed schema, tables, and dependencies are validated, ordere
 
 ---
 
-## Item 24 — Single canonical mechanism for migration ownership detection
+## ~~Item 24~~ — ~~Single canonical mechanism for migration ownership detection~~ ✅ DONE
 
 **Severity:** Medium
 **Scope:** `MigrationManager`, `@extension_model` decorator, table-args metadata, documentation.
@@ -1236,7 +1236,7 @@ How extension-contributed schema, tables, and dependencies are validated, ordere
 
 ---
 
-## Item 61 — Out-of-tree extension import support (formerly P2)
+## ~~Item 61~~ — ~~Out-of-tree extension import support (formerly P2)~~ ✅ DONE
 
 **Severity:** Critical
 **Scope:** Every `importlib.import_module(...)` call that targets an extension module; new reusable loader helper in `lib/Paths.py` or new `lib/ExtensionLoader.py`.
@@ -1298,7 +1298,7 @@ How extension-contributed schema, tables, and dependencies are validated, ordere
 
 ---
 
-## Item 30 — Surface skipped optional dependencies at startup
+## ~~Item 30~~ — ~~Surface skipped optional dependencies at startup~~ ✅ DONE
 
 **Severity:** Low
 **Scope:** Dependency resolver, startup banner, optional `on_optional_missing` callback.
@@ -1322,7 +1322,7 @@ How extension-contributed schema, tables, and dependencies are validated, ordere
 
 The multi-tenant resolution surface: which provider instance is consulted for which user, against which budget, in which jurisdiction — and how the database itself enforces and scales the same boundaries.
 
-## Item 19 — Root and system providers, with unified per-user/per-team quota
+## ~~Item 19~~ — ~~Root and system providers, with unified per-user/per-team quota~~ ✅ DONE
 
 **Severity:** High
 **Scope:** `ProviderInstance.scope` field, separation of root-internal-only invocation path, new unified `Quota` table, integration into provider resolution.
@@ -1471,7 +1471,7 @@ The framework supports configuring a pool of replicas with simple round-robin se
 
 The permission registry that doubles as the OAuth scope catalog, and the field-level grants that share its naming so the same string gates a row read, a column read, and a token-bound action.
 
-## Item 18 — Permissions registration tied to OAuth scope shape
+## ~~Item 18~~ — ~~Permissions registration tied to OAuth scope shape~~ ✅ DONE
 
 **Severity:** High
 **Scope:** New `PermissionDef` type, new `AbstractStaticExtension.get_permissions()` contract, integration with the OAuth extension's consent and authorization flows.
@@ -1983,7 +1983,7 @@ The breaking and ecosystem-shaping pieces of the pip-package conversion that fol
 
 The framework already documents and partially implements per-extension rate limits (e.g. `meta_logging_rate_limiting_hook`) and per-flow throttling (Items 58, 59), but there is no canonical primitive for "this endpoint is publicly exposed and needs to be defended against abuse." Group 22 fills that gap.
 
-## Item 71 — CORS policy, inbound rate limiting, and brute-force/lockout protection
+## ~~Item 71~~ — ~~CORS policy, inbound rate limiting, and brute-force/lockout protection~~ ✅ DONE
 
 **Severity:** High
 **Scope:** `app.py:334` CORS middleware; new `@rate_limit(...)` endpoint decorator; new `LockoutPolicy` per auth flow; integration with Item 69's distributed counter.
@@ -2115,7 +2115,7 @@ Item 45 (field-level ABAC) controls *access* to fields; Item 56 (audit retention
 
 Items in this group are fourth-round audit findings against the live codebase: code-hygiene sweeps and specific code-vs-doc divergences that must be resolved alongside the architectural items above. These are not architectural improvements; they are debt the architectural work cannot land cleanly atop.
 
-## Item 73 — Code-hygiene sweep: prints, bare excepts, removed-model TODOs
+## ~~Item 73~~ — ~~Code-hygiene sweep: prints, bare excepts, removed-model TODOs~~ ✅ DONE
 
 **Severity:** Medium
 **Scope:** ~43 `print()` calls in non-test source; ~20+ bare `except:` clauses; two `# TODO @Kristy NetworkModel doesn't exist anymore` markers.
@@ -2138,7 +2138,7 @@ Items in this group are fourth-round audit findings against the live codebase: c
 
 ---
 
-## Item 74 — Replace mocked subscription-status return with real Stripe rotation call
+## ~~Item 74~~ — ~~Replace mocked subscription-status return with real Stripe rotation call~~ ✅ DONE
 
 **Severity:** High
 **Scope:** `extensions/payment/BLL_Payment.py:312`.
@@ -2198,7 +2198,7 @@ These items capture work on the email extension's API surface that was scoped du
 
 The Phase-1 work that did **not** require any of those prereqs (typed value models, capability flags, the friendly `send`/`update_email`/`list_emails` surface, and the `EmailMessage`-aware security mixin) shipped in `claude/security-audit-email-EqBda` ahead of this group. Everything below is the deferred remainder.
 
-## Item 88 — Email reshape: typed-error migration
+## ~~Item 88~~ — ~~Email reshape: typed-error migration~~ ✅ DONE
 
 **Severity:** High
 **Scope:** `AbstractEmailProvider`, `SendgridProvider`, `StalwartProvider`, `Smtp2goProvider`, `AbstractEmailProviderSecurityTests`.
@@ -2211,7 +2211,7 @@ The Phase-1 work that did **not** require any of those prereqs (typed value mode
 
 **Acceptance.** `pytest -m security` asserts `with pytest.raises(EmailHeaderInjectionError)` for CRLF cases, etc. The string-substring matchers are removed. SendGrid+Stalwart+SMTP2go each route at least one upstream-failure shape (401, 429, 503) into the correct typed exception, verified by integration tests gated on real credentials per Item 15.
 
-## Item 89 — Email reshape: bond to AbstractProviderInstance contract
+## ~~Item 89~~ — ~~Email reshape: bond to AbstractProviderInstance contract~~ ✅ DONE
 
 **Severity:** High
 **Scope:** `AbstractEmailProvider`, `AbstractEmailProviderInstance` (new), all three concrete providers.
@@ -2237,7 +2237,7 @@ The Phase-1 work that did **not** require any of those prereqs (typed value mode
 
 **Acceptance.** A deployment missing `SENDGRID_API_KEY` while `EMAIL_PROVIDER=sendgrid` produces a clear startup error naming the field. `Secret`-marked fields never appear in log output (Item 32 redaction). The BLL hooks no longer need a hardcoded registry tuple — the typed Settings drive registration.
 
-## Item 91 — Email reshape: idempotent send + bulk send
+## ~~Item 91~~ — ~~Email reshape: idempotent send + bulk send~~ ✅ DONE
 
 **Severity:** High
 **Scope:** `AbstractEmailProviderInstance.send`, new `send_bulk`, all three concrete providers.
@@ -2250,7 +2250,7 @@ The Phase-1 work that did **not** require any of those prereqs (typed value mode
 
 **Acceptance.** A 1000-recipient invitation send issues one upstream call to SendGrid/SMTP2go and surfaces 17 invalid addresses as 17 individual typed errors. A retry of `send` after a 503 carries the same idempotency key as the first attempt; the upstream returns the prior result rather than creating a duplicate.
 
-## Item 92 — Email reshape: auth-strategy adoption (Stalwart BasicAuth)
+## ~~Item 92~~ — ~~Email reshape: auth-strategy adoption (Stalwart BasicAuth)~~ ✅ DONE
 
 **Severity:** Medium
 **Scope:** `StalwartProvider.bond_instance`, `SendgridProvider.bond_instance`, `Smtp2goProvider.bond_instance`.
