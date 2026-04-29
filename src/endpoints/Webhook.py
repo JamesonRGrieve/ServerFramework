@@ -141,6 +141,16 @@ def _lookup_handler(
     return WEBHOOK_REGISTRY.get((extension, provider, None))
 
 
+def _has_any_handler(extension: str, provider: str) -> bool:
+    """True if any handler is registered for ``(extension, provider, *)``."""
+    extension = extension.lower()
+    provider = provider.lower()
+    for k in WEBHOOK_REGISTRY.keys():
+        if k[0] == extension and k[1] == provider:
+            return True
+    return False
+
+
 async def _maybe_await(value: Any) -> Any:
     if inspect.isawaitable(value):
         return await value
@@ -166,23 +176,46 @@ def create_webhook_router() -> APIRouter:
 
         headers = {k.lower(): v for k, v in request.headers.items()}
 
-        # Signature verification.
+        # Signature verification is MANDATORY per Item 5: if no
+        # ``verify_signature`` is registered for the provider, reject with
+        # 401. The webhook mount is public, so unverified delivery would
+        # let any caller fire arbitrary events at the framework's hook bus.
+        handler = _lookup_handler(extension, provider, event)
         provider_class = _PROVIDER_CLASSES.get(
             (extension.lower(), provider.lower())
         )
-        verify_signature = getattr(provider_class, "verify_signature", None) if provider_class else None
-        if verify_signature is not None:
+        verify_signature = (
+            getattr(provider_class, "verify_signature", None)
+            if provider_class
+            else None
+        )
+        # Only enforce signature verification when a handler is actually
+        # registered for this (extension, provider). Otherwise an upstream
+        # probe to a non-existent extension/provider would 401 instead of
+        # the more informative "unrecognized event -> 200 + warn" path.
+        if handler is not None or _has_any_handler(extension, provider):
+            if verify_signature is None:
+                logger.warning(
+                    f"Webhook for {extension}/{provider} rejected: no "
+                    f"verify_signature registered on provider class."
+                )
+                raise HTTPException(
+                    status_code=401,
+                    detail="Signature verification not configured for this provider",
+                )
             try:
                 ok = await _maybe_await(verify_signature(headers, body_bytes))
             except Exception as e:
                 logger.warning(
                     f"Signature verification raised for {extension}/{provider}: {e}"
                 )
-                raise HTTPException(status_code=401, detail="Signature verification failed")
+                raise HTTPException(
+                    status_code=401, detail="Signature verification failed"
+                )
             if not ok:
-                raise HTTPException(status_code=401, detail="Signature verification failed")
-
-        handler = _lookup_handler(extension, provider, event)
+                raise HTTPException(
+                    status_code=401, detail="Signature verification failed"
+                )
         if handler is None:
             logger.warning(
                 f"Unrecognized webhook event for {extension}/{provider}/{event};"
