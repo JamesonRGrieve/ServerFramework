@@ -499,7 +499,14 @@ def _unwrap_provider_call(model_class: type, method_name: str, fn: Callable, *ar
         raise
 
     # New contract: the method returned the payload directly.
-    if not isinstance(result, dict) or not {"success", "data", "error"}.issubset(set(result.keys())):
+    # Legacy envelope detection: a dict carrying a `success` key and at least
+    # one of `data` / `error`. Both keys present together is the canonical
+    # legacy shape, but providers in the wild sometimes omit one or the other.
+    if (
+        not isinstance(result, dict)
+        or "success" not in result
+        or not ({"data", "error"} & set(result.keys()))
+    ):
         return result
 
     # Legacy envelope shim.
