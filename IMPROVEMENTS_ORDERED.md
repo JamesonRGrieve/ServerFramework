@@ -1607,6 +1607,8 @@ The audit subsystem itself emits an audit event for each retention pass: how man
 
 **Dependencies.** Cross-references Items 28 (scheduled service), 43 (object-storage abstract for archival target).
 
+**Partial implementation landed.** The contract surface ships in `extensions/RetentionPolicy.py`: a frozen `RetentionPolicy` dataclass with `window` (e.g. `"30d"`, `"1y"`, `"7y"`, `"forever"`), `archive_to` (opaque target identifier — `"s3://…"`, `"gs://…"`, `"file:///…"`, or `"none"` for purge-without-archive), and `legal_hold` (optional reason string that suppresses purge regardless of window). `parse_window` recognizes `s/m/h/d/w/mo/y` suffixes and the literal `"forever"`; invalid windows raise at class-definition time via `__post_init__` rather than at the first nightly retention pass. Convenience presets cover GDPR (`1y` archived), HIPAA (`6y` archived), SOX (`7y` archived), short-lived (`30d` no-archive), and forever (indefinite, archived — used for the audit-of-the-audit). 44 unit tests cover window parsing (valid + invalid), archive classification, legal-hold suppression, frozen-dataclass immutability, every preset, and ClassVar attachment to an event class. What remains: (a) the `RetentionService` (built on Item 28's `ScheduledService` flavor) that walks tagged event classes nightly, archives expired rows to the configured target, and purges from the live audit table; (b) integration with Item 43's object-storage abstract for the archive backend; (c) the audit-of-the-audit emission on every retention pass; (d) the legal-hold release admin endpoint (its own audit event with `forever` retention). Item remains open until those land.
+
 ---
 
 # Group 18 — Provider Templates and Typed Seed Data
