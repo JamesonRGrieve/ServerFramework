@@ -149,6 +149,12 @@ Extensions and services use consistent configuration:
 - **payment**: Stripe payment processing with subscription management
 - **database**: Multi-database support with natural language querying
 
+### Localization (`src/Localization.py`)
+- **Locale-aware metadata**: `docs.<locale>.json` per-locale dictionaries supply translated table comments, column comments, singular/plural nouns, relationship names, and Swagger descriptions for every entity.
+- **`@localized_model` decorator**: applies the active locale's metadata to a SQLAlchemy declarative class — derives `__tablename__`, fills `Column.comment`, rewrites `back_populates`, and lets foreign keys target the locale-derived table name.
+- **Module-level helpers** (`relationship`, `foreign_key`): drop-in replacements for the SQLAlchemy originals that consult the locale.
+- **Singleton** (`Localization()`): process-global locale state. Per-request locale switching is currently out of scope (would live on top of Item 47's `RequestContext`). See [`lib/LIB.Localization.md`](./lib/LIB.Localization.md) for the architectural summary and public-symbol contract (Item 78).
+
 ## Framework Design Philosophy
 
 ### Extension-Only Implementation Pattern

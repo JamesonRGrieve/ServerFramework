@@ -1857,7 +1857,7 @@ A single canonical reference for every primitive an extension author touches.
 
 ---
 
-## Item 78 — Document and contract the Localization subsystem
+## ~~Item 78~~ — ~~Document and contract the Localization subsystem~~ ✅ DONE
 
 **Severity:** Low
 **Scope:** `src/Localization.py` (1163 lines, undocumented at audit time), `Framework.md`, `lib/LIB.Overview.md`, new `LIB.Localization.md`, `EXT.Contracts.md` entry from Item 52.
