@@ -8,13 +8,59 @@ import uuid
 from abc import ABC, abstractmethod
 from collections import deque
 from datetime import datetime, timezone
-from typing import Any, Callable, Deque, Dict, List, Optional, TypeVar
+from typing import Any, Callable, Deque, Dict, List, Literal, Optional, TypeVar
 
 from sqlalchemy.orm import Session
 
 from lib.Logging import logger
 
 T = TypeVar("T", bound="AbstractService")
+
+
+# Default drain period (Item 28 / Item 44 alignment): on stop the service has
+# this many seconds to finish in-flight work before being forcibly cancelled.
+DEFAULT_DRAIN_PERIOD_SECONDS: float = 30.0
+
+
+# Restart policy literal -- controls how a supervisor handles service exits.
+# - "always": restart on any exit
+# - "on_failure": restart only on unhandled exception
+# - "never": one-shot, do not restart
+RestartPolicy = Literal["always", "on_failure", "never"]
+
+
+class HealthStatus:
+    """A simple structured health-status value for AbstractService.health().
+
+    Three states map naturally to the rotation system's HealthStatus from
+    Item 27 -- this is intentionally compatible at the value-level so a
+    service consumer can use the same OK/DEGRADED/DOWN vocabulary.
+    """
+
+    OK = "OK"
+    DEGRADED = "DEGRADED"
+    DOWN = "DOWN"
+    FAILED = "FAILED"
+
+    def __init__(
+        self,
+        status: str,
+        detail: str = "",
+        timestamp: Optional[datetime] = None,
+    ) -> None:
+        self.status = status
+        self.detail = detail
+        self.timestamp = timestamp or datetime.now(timezone.utc)
+
+    def __repr__(self) -> str:  # pragma: no cover - cosmetic
+        return f"HealthStatus({self.status}, {self.detail!r})"
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "status": self.status,
+            "detail": self.detail,
+            "timestamp": self.timestamp.isoformat(),
+        }
 
 
 class AbstractService(ABC):
@@ -66,6 +112,18 @@ class AbstractService(ABC):
         self._last_run_time = 0
         self.service_id = service_id or str(uuid.uuid4())
         self.db_manager = kwargs.get("db_manager")
+        # Item 28: drain period and supervisor restart policy.
+        self.drain_period_seconds: float = float(
+            kwargs.get("drain_period_seconds", DEFAULT_DRAIN_PERIOD_SECONDS)
+        )
+        self.restart_policy: RestartPolicy = kwargs.get(
+            "restart_policy", "on_failure"
+        )
+        # ``failed`` is the terminal supervisor state per Item 28's acceptance
+        # criteria; entered when the service exhausts ``max_failures`` and
+        # cleared only by an explicit reset (admin action / tests).
+        self.failed: bool = False
+        self._failed_reason: Optional[str] = None
         self._configure_service(**kwargs)
 
     def _configure_service(self, **kwargs) -> None:

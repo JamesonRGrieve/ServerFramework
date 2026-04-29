@@ -34,6 +34,20 @@ class ManagerContractError(TypeError):
     documented `model_registry`-first contract (Item 70)."""
 
 
+# Item 2 — per-process auth cooldown tracker. Module-level so the
+# multi-instance state survives RotationManager construction across
+# requests. Keyed by `provider_instance_id`; value is the monotonic time
+# at which the cooldown expires. Multi-PROCESS deployments accept
+# independent per-process state until Item 69's DistributedCounter
+# is wired through.
+_AUTH_COOLDOWNS: Dict[str, float] = {}
+
+
+def reset_auth_cooldowns() -> None:
+    """Test helper: clear the in-process auth cooldown tracker."""
+    _AUTH_COOLDOWNS.clear()
+
+
 def validate_manager_constructors(*managers: type) -> None:
     """Walk each manager class's `__init__` signature and assert the first
     non-self parameter is named `model_registry`.
@@ -1160,6 +1174,22 @@ class RotationManager(AbstractBLLManager, RouterMixin):
         policy_mod = self._load_rotation_policy_module()
 
         for rpi in rotation_provider_instances:
+            # Item 2: skip providers still inside their auth cooldown window.
+            cooldown_expires = _AUTH_COOLDOWNS.get(str(rpi.provider_instance_id))
+            if cooldown_expires is not None and time.monotonic() < cooldown_expires:
+                logger.debug(
+                    "Skipping provider_instance %s — auth cooldown active "
+                    "(%.1fs remaining)",
+                    rpi.provider_instance_id,
+                    cooldown_expires - time.monotonic(),
+                )
+                attempted_providers.append(
+                    {
+                        "provider_instance_id": rpi.provider_instance_id,
+                        "error": "auth cooldown active",
+                    }
+                )
+                continue
             # Get the actual provider instance once per rpi.
             try:
                 with self.model_registry.DB.get_session() as session:
@@ -1241,6 +1271,9 @@ class RotationManager(AbstractBLLManager, RouterMixin):
                         if isinstance(exc, Auth):
                             # Mark unhealthy via cooldown; advance.
                             cooldown = getattr(policy, "auth_cooldown_seconds", 300) if policy else 300
+                            _AUTH_COOLDOWNS[str(rpi.provider_instance_id)] = (
+                                time.monotonic() + float(cooldown)
+                            )
                             logger.warning(
                                 "Auth failure on %s; advancing (cooldown=%ss)",
                                 provider_instance.name, cooldown,

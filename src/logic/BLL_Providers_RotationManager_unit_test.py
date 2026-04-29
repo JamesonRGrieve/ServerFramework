@@ -29,6 +29,7 @@ try:
     from logic.BLL_Providers import (
         ManagerContractError,
         RotationManager,
+        reset_auth_cooldowns,
         validate_manager_constructors,
     )
 except NameError as _exc:  # pragma: no cover - defensive
@@ -36,6 +37,15 @@ except NameError as _exc:  # pragma: no cover - defensive
         f"BLL_Providers import blocked by lib/Dependencies (other batch): {_exc}",
         allow_module_level=True,
     )
+
+
+@pytest.fixture(autouse=True)
+def _reset_auth_cooldowns():
+    """Auth-cooldown state is module-level; reset between tests so that
+    a provider marked unhealthy by one test does not skew the next."""
+    reset_auth_cooldowns()
+    yield
+    reset_auth_cooldowns()
 
 
 # ----- Item 70 tests --------------------------------------------------------
@@ -269,3 +279,47 @@ def test_bare_exception_advances_for_back_compat():
         assert rm.rotate(call) == "B-ok"
     finally:
         rm._restore_db()
+
+
+@pytest.mark.unit
+def test_auth_cooldown_skips_provider_on_subsequent_rotate():
+    """After an auth failure on prov-A, a second rotate() within the
+    cooldown window should skip prov-A and start at prov-B."""
+    a = MagicMock()
+    a.name = "prov-A"
+    b = MagicMock()
+    b.name = "prov-B"
+    # First rotate sees a, b. Second rotate sees b only because
+    # _make_rotation_manager_with_fake_instances pops as we use them;
+    # we therefore build two separate RMs but share the cooldown state.
+    rm1 = _make_rotation_manager_with_fake_instances([a, b])
+    seen_first: list = []
+
+    def call_first(inst):
+        seen_first.append(inst.name)
+        if inst.name == "prov-A":
+            raise AuthExternalError("401")
+        return "B-ok"
+
+    try:
+        assert rm1.rotate(call_first) == "B-ok"
+        assert seen_first == ["prov-A", "prov-B"]
+    finally:
+        rm1._restore_db()
+
+    # Same RPI ids -> same cooldown lookup. New RM but same RPIs.
+    rm2 = _make_rotation_manager_with_fake_instances([a, b])
+    seen_second: list = []
+
+    def call_second(inst):
+        seen_second.append(inst.name)
+        return "B-ok"
+
+    try:
+        # The cooldown helper builds RPIs with provider_instance_id=pi-N
+        # by index. Both RMs use the same indexes, so prov-A's pi-0 is in
+        # cooldown. Second rotate should skip pi-0 entirely.
+        assert rm2.rotate(call_second) == "B-ok"
+        assert seen_second == ["prov-B"]
+    finally:
+        rm2._restore_db()
