@@ -190,6 +190,18 @@ def test_iter_extension_permissions_uses_get_permissions():
     assert pairs[0][1].name == "fake.thing.read"
 
 
+def test_validate_uniqueness_no_op_when_clean():
+    reg = PermissionRegistry()
+    reg.register(
+        [PermissionDef(name="p.r.a", description="d")], source="ext1"
+    )
+    # Identical duplicate accepted -> validate_uniqueness must still pass.
+    reg.register(
+        [PermissionDef(name="p.r.a", description="d")], source="ext2"
+    )
+    reg.validate_uniqueness()  # no raise
+
+
 def test_collect_extension_permissions_into():
     class FakeExt:
         name = "fake"
