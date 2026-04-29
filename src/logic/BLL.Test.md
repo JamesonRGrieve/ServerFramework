@@ -155,6 +155,15 @@ The `generate_search_test_parameters()` method:
 - Verifies create hooks have before/after arrays
 - Confirms proper hook discovery system
 
+### Scalability Tests
+
+#### `test_scalability_list_n_factor(admin_a, team_a, server, model_registry, metric)`
+- Parametrized over `metric ∈ {TIME, QUERY_COUNT, MEMORY}`.
+- Skipped unless the subclass sets `scalability_profile` (a `ScalabilityProfile` from `lib.Scalability`).
+- Seeds N entities at each `n` in `scalability_profile.n_values`, then calls `manager.list()` and asserts the observed Big-O exponent stays within the per-metric threshold.
+- Defaults: `k ≤ 1.4` for time/memory, `k ≤ 0.4` for query count (catches N+1 in resolver chains and hook-storm regressions).
+- See [LIB.Scalability.md](../lib/LIB.Scalability.md).
+
 ## Entity Management
 
 ### Tracked Entities System

@@ -22,6 +22,7 @@ The `src/lib` directory contains foundational utilities and abstractions that po
 ### System Utilities
 - **[LIB.Logging.md](./LIB.Logging.md)**: Centralized logging system with custom levels, environment configuration, and structured output
 - **[LIB.RequestContext.md](./LIB.RequestContext.md)**: Context variable management for storing request-specific user information and timezone data
+- **[LIB.Scalability.md](./LIB.Scalability.md)**: Big-O assertion utilities (power-law fit, time/query/memory measurement context managers) consumed by per-layer scalability tests to keep the framework's n-factor within bounds
 
 ## Integration Patterns
 

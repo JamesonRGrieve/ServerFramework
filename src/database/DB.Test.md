@@ -46,6 +46,7 @@ parent_entities = [...]                # Parent entity dependencies
 - `test_CRUD_delete()` - Soft deletion with access control
 - `test_CRUD_soft_delete()` - Deleted entity accessibility for ROOT_ID
 - `test_ORM_*()` - Direct SQLAlchemy operations for comparison
+- `test_scalability_list_n_factor(metric)` - Big-O assertion (parametrized over `TIME`/`QUERY_COUNT`/`MEMORY`); skipped unless the subclass sets `scalability_profile`. Catches N+1 and super-linear regressions in `sqlalchemy_model.list()`. See [LIB.Scalability.md](../lib/LIB.Scalability.md).
 
 ### AbstractDatabaseEntity Testing (`AbstractDatabaseEntity_test.py`)
 Unit tests for the core database entity functionality:
@@ -192,6 +193,19 @@ class TestEntityName(AbstractDBTest):
         self._server = server  # Store server for access by helper methods
         self.ensure_model(server)  # Automatically determines sqlalchemy_model
 ```
+
+### Scalability Opt-In
+```python
+from lib.Scalability import ScalabilityProfile, ScalingMetric
+
+class TestEntityName(AbstractDBTest):
+    create_fields = {...}
+    scalability_profile = ScalabilityProfile.default(
+        n_values=[5, 15, 50],
+        metrics=[ScalingMetric.TIME, ScalingMetric.QUERY_COUNT],
+    )
+```
+The inherited `test_scalability_list_n_factor` seeds N entities at each step and asserts `sqlalchemy_model.list()` stays within the per-metric Big-O bound. Defaults: `k ≤ 1.4` for time/memory, `k ≤ 0.4` for query count (catches N+1).
 
 ### Parent Entity Pattern
 ```python

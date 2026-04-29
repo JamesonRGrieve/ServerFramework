@@ -30,6 +30,11 @@ from endpoints.AbstractGQLTest import AbstractGraphQLTest
 from lib.Environment import env, inflection
 from lib.Logging import logger
 from lib.Pydantic import PydanticUtility
+from lib.Scalability import (
+    ScalabilityProfile,
+    ScalingMetric,
+    assert_scaling_within_bounds,
+)
 from logic.AbstractBLLTest import AbstractBLLTest
 
 # Using shared inflection instance from Environment
@@ -4424,3 +4429,62 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         """Get the endpoint for entity deletion."""
         base = self._build_endpoint(self._get_nesting_level("DETAIL"), parent_ids)
         return f"{base}/{resource_id}"
+
+    # ------------------------------------------------------------------ #
+    # Scalability / Big-O assertions
+    # ------------------------------------------------------------------ #
+    # Subclasses opt in by setting `scalability_profile`. Asserts that the
+    # GET-list endpoint scales within the configured exponent for time,
+    # query count, and peak memory as the underlying entity count grows.
+    # Catches regressions like: list endpoints that materialise full
+    # objects per row, serializers with O(n^2) field walks, or include=
+    # resolvers that fan out one upstream call per item.
+
+    scalability_profile: Optional[ScalabilityProfile] = None
+
+    @pytest.mark.parametrize(
+        "metric",
+        sorted(
+            [ScalingMetric.TIME, ScalingMetric.QUERY_COUNT, ScalingMetric.MEMORY],
+            key=lambda m: m.value,
+        ),
+    )
+    def test_scalability_GET_list_n_factor(
+        self, server: Any, admin_a: Any, team_a: Any, metric: ScalingMetric
+    ):
+        """Big-O assertion: GET /<base_endpoint> must stay within the
+        configured exponent across the request/response stack as row count
+        grows. Time covers handler + serialization, query count covers DB
+        access pattern (N+1 detector), memory covers payload growth."""
+        if self.scalability_profile is None:
+            pytest.skip("scalability_profile not configured on this test class")
+        if metric not in self.scalability_profile.metrics:
+            pytest.skip(f"metric {metric.value} not enabled in scalability_profile")
+
+        seeded = {"count": 0}
+
+        def setup(target_n: int) -> None:
+            while seeded["count"] < target_n:
+                self._create(
+                    server,
+                    admin_a.jwt,
+                    admin_a.id,
+                    team_id=team_a.id,
+                    key=f"scalability_seed_{seeded['count']}",
+                )
+                seeded["count"] += 1
+
+        endpoint = self.get_list_endpoint()
+        headers = self._get_appropriate_headers(admin_a.jwt, None)
+
+        def operation(_n: int) -> None:
+            response = server.get(endpoint, headers=headers)
+            assert response.status_code == 200, (
+                f"GET {endpoint} returned {response.status_code} during "
+                f"scalability probe; cannot measure scaling"
+            )
+
+        engine = server.app.state.model_registry.database_manager.engine
+        assert_scaling_within_bounds(
+            operation, self.scalability_profile, metric, engine=engine, setup=setup
+        )

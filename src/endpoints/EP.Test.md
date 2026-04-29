@@ -88,6 +88,24 @@ class TestItemEndpoints(AbstractEPTest):
 | `test_GQL_mutation_delete` | Delete mutation        |
 | `test_GQL_subscription`    | Real-time subscription |
 
+### Scalability Tests
+
+`test_scalability_GET_list_n_factor` is parametrized over `metric ∈ {TIME, QUERY_COUNT, MEMORY}` and skipped unless the subclass sets `scalability_profile`:
+
+```python
+from lib.Scalability import ScalabilityProfile, ScalingMetric
+
+class TestItemEndpoints(AbstractEPTest):
+    base_endpoint = "item"
+    entity_name = "item"
+    scalability_profile = ScalabilityProfile.default(
+        n_values=[5, 15, 50],
+        metrics=[ScalingMetric.TIME, ScalingMetric.QUERY_COUNT],
+    )
+```
+
+Seeds N entities at each `n`, fires `GET /<base_endpoint>` with admin auth, and asserts the observed Big-O exponent stays within the per-metric threshold. Catches list endpoints that materialize per-row, serializers with O(n²) field walks, and `include=` resolvers that fan out one upstream call per item. See [LIB.Scalability.md](../lib/LIB.Scalability.md).
+
 ## Nested Resources
 
 ### ParentEntity Configuration
