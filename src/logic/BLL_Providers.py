@@ -1,3 +1,9 @@
+from __future__ import annotations
+
+import inspect
+import random
+import time
+import warnings
 from typing import Any, ClassVar, Dict, List, Optional
 
 import stringcase
@@ -21,6 +27,38 @@ from logic.AbstractLogicManager import (
 )
 from logic.BLL_Auth import TeamModel, UserModel
 from logic.BLL_Extensions import AbilityModel, ExtensionModel
+
+
+class ManagerContractError(TypeError):
+    """Raised by `validate_manager_constructors` when a manager violates the
+    documented `model_registry`-first contract (Item 70)."""
+
+
+def validate_manager_constructors(*managers: type) -> None:
+    """Walk each manager class's `__init__` signature and assert the first
+    non-self parameter is named `model_registry`.
+
+    Per Item 70: every BLL manager must accept `model_registry` as its
+    first constructor parameter. This function is intentionally NOT wired
+    into framework startup — see Item 70's notes. Use it from a CI-time
+    test or call manually during a registry-finalize pass.
+
+    Raises:
+        ManagerContractError: First offending manager's name + actual signature.
+    """
+    for cls in managers:
+        sig = inspect.signature(cls.__init__)
+        params = [p for p in sig.parameters.values() if p.name != "self"]
+        if not params:
+            raise ManagerContractError(
+                f"{cls.__name__}.__init__ has no parameters; expected first to be 'model_registry'"
+            )
+        first = params[0].name
+        if first != "model_registry":
+            raise ManagerContractError(
+                f"{cls.__name__}.__init__ first parameter is {first!r}; "
+                "must be 'model_registry' (Item 70 contract)"
+            )
 
 
 class ProviderModel(
@@ -990,16 +1028,32 @@ class RotationManager(AbstractBLLManager, RouterMixin):
 
     def __init__(
         self,
-        requester_id: str,
+        model_registry: Optional[Any] = None,
+        requester_id: Optional[str] = None,
         target_id: Optional[str] = None,
         target_team_id: Optional[str] = None,
-        model_registry: Optional[Any] = None,
-    ):
+        parent: Optional[Any] = None,
+    ) -> None:
+        """Item 70 — `model_registry` first per the documented contract.
+
+        Back-compat: if the first positional argument is a string we
+        assume it's the legacy `requester_id` and route it accordingly,
+        emitting a `DeprecationWarning`.
+        """
+        if isinstance(model_registry, str):
+            warnings.warn(
+                "RotationManager(requester_id, ...) is deprecated; pass "
+                "model_registry first per the documented BLL.Patterns contract",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            requester_id, model_registry = model_registry, None
         super().__init__(
+            model_registry=model_registry,
             requester_id=requester_id,
             target_id=target_id,
             target_team_id=target_team_id,
-            model_registry=model_registry,
+            parent=parent,
         )
         self._provider_instances = None
         self._rotation = None
@@ -1023,13 +1077,55 @@ class RotationManager(AbstractBLLManager, RouterMixin):
             )
         return self._provider_instances
 
+    def _load_rotation_policy_module(self):
+        """Lazy import the rotation-policy types from `extensions.ExternalErrors`.
+
+        Returns the module if available, else None — back-compat path
+        keeps working when Item 2's file isn't on the import path yet.
+        """
+        try:
+            from extensions import ExternalErrors  # type: ignore
+            return ExternalErrors
+        except ImportError:
+            return None
+
+    def _resolve_rotation_policy(self, provider_instance):
+        """Look up the per-provider `RotationPolicy` from the rotation
+        policy module, falling back to defaults."""
+        mod = self._load_rotation_policy_module()
+        if mod is None:
+            return None
+        # Prefer policy declared on the bonded provider class, when accessible.
+        provider_cls = getattr(provider_instance, "provider_class", None)
+        if provider_cls is not None:
+            policy = getattr(provider_cls, "rotation_policy", None)
+            if policy is not None:
+                return policy
+        if hasattr(mod, "default_rotation_policy"):
+            return mod.default_rotation_policy()
+        return None
+
+    def _backoff_sleep(self, base_ms: int, max_ms: int, jitter: float, attempt: int) -> None:
+        """Exponential backoff with jitter; honors `max_ms` ceiling."""
+        delay_ms = min(max_ms, base_ms * (2 ** max(0, attempt - 1)))
+        if jitter > 0:
+            factor = 1.0 + random.uniform(-jitter, jitter)
+            delay_ms = max(0.0, delay_ms * factor)
+        time.sleep(delay_ms / 1000.0)
+
     def rotate(self, callable_func, *args, **kwargs):
         """
         Execute a callable with each provider instance in the rotation sequence.
 
-        Tries each provider in hierarchy order (parent_id=None first, then children).
-        Catches exceptions, logs failures, and continues to the next provider.
-        Only raises HTTPException if all providers fail.
+        Per Item 2 (rotation policy hookup), when the callable raises a
+        `BaseExternalError` subclass the rotation system applies the
+        per-provider `RotationPolicy`:
+
+        - `TransientExternalError` -> retry per `transient_*`, then advance
+        - `RateLimitExternalError` -> backoff per `rate_limit_*`, do NOT advance
+        - `AuthExternalError` -> mark unhealthy, advance immediately
+        - `InvalidInputExternalError` / `PermanentExternalError` -> re-raise
+        - bare `Exception` -> advance (back-compat path)
 
         Args:
             callable_func: Function to call with each ProviderInstanceModel
@@ -1061,64 +1157,142 @@ class RotationManager(AbstractBLLManager, RouterMixin):
 
         attempted_providers = []
         last_exception = None
+        policy_mod = self._load_rotation_policy_module()
 
         for rpi in rotation_provider_instances:
+            # Get the actual provider instance once per rpi.
             try:
-                # Get the actual provider instance
                 with self.model_registry.DB.get_session() as session:
                     provider_instance = ProviderInstanceModel.DB(
                         self.model_registry.DB.Base
                     ).get(
                         requester_id=self.requester.id,
-                        # db=session,
                         model_registry=self.model_registry,
                         return_type="dto",
                         override_dto=ProviderInstanceModel,
                         id=rpi.provider_instance_id,
                     )
+            except Exception as exc:  # back-compat: bare exception advances
+                logger.warning(f"Provider lookup failed: {exc}")
+                attempted_providers.append(
+                    {
+                        "provider_instance_id": rpi.provider_instance_id,
+                        "error": f"lookup failed: {exc}",
+                    }
+                )
+                last_exception = exc
+                continue
 
-                if not provider_instance:
+            if not provider_instance:
+                logger.warning(
+                    f"Provider instance {rpi.provider_instance_id} not found"
+                )
+                attempted_providers.append(
+                    {
+                        "provider_instance_id": rpi.provider_instance_id,
+                        "error": "Provider instance not found",
+                    }
+                )
+                continue
+
+            policy = self._resolve_rotation_policy(provider_instance)
+            transient_attempt = 0
+            rate_limit_attempt = 0
+            advance_after_loop = False
+
+            while True:
+                try:
+                    logger.debug(
+                        f"Attempting to use provider instance: {provider_instance.name}"
+                    )
+                    result = callable_func(provider_instance, *args, **kwargs)
+                    logger.debug(
+                        f"Successfully used provider instance: {provider_instance.name}"
+                    )
+                    return result
+                except Exception as exc:
+                    # Item 2 dispatch — only when the typed error module is loaded.
+                    if policy_mod is not None and isinstance(
+                        exc, getattr(policy_mod, "BaseExternalError", ())
+                    ):
+                        InvalidInput = getattr(policy_mod, "InvalidInputExternalError")
+                        Permanent = getattr(policy_mod, "PermanentExternalError")
+                        Transient = getattr(policy_mod, "TransientExternalError")
+                        RateLimit = getattr(policy_mod, "RateLimitExternalError")
+                        Auth = getattr(policy_mod, "AuthExternalError")
+
+                        if isinstance(exc, (InvalidInput, Permanent)):
+                            # Surface immediately; do not rotate.
+                            raise
+
+                        if isinstance(exc, RateLimit):
+                            rate_limit_attempt += 1
+                            base = getattr(policy, "rate_limit_base_ms", 1000) if policy else 1000
+                            mx = getattr(policy, "rate_limit_max_ms", 60000) if policy else 60000
+                            wait = getattr(exc, "retry_after_seconds", None)
+                            if wait is not None:
+                                time.sleep(float(wait))
+                            else:
+                                self._backoff_sleep(base, mx, 0.1, rate_limit_attempt)
+                            # Stay on the same provider; do not advance.
+                            last_exception = exc
+                            continue
+
+                        if isinstance(exc, Auth):
+                            # Mark unhealthy via cooldown; advance.
+                            cooldown = getattr(policy, "auth_cooldown_seconds", 300) if policy else 300
+                            logger.warning(
+                                "Auth failure on %s; advancing (cooldown=%ss)",
+                                provider_instance.name, cooldown,
+                            )
+                            attempted_providers.append(
+                                {
+                                    "provider_instance_id": rpi.provider_instance_id,
+                                    "provider_name": provider_instance.name,
+                                    "error": f"auth: {exc}",
+                                }
+                            )
+                            last_exception = exc
+                            advance_after_loop = True
+                            break
+
+                        if isinstance(exc, Transient):
+                            transient_attempt += 1
+                            mr = getattr(policy, "transient_max_retries", 3) if policy else 3
+                            if transient_attempt <= mr:
+                                base = getattr(policy, "transient_base_ms", 100) if policy else 100
+                                mx = getattr(policy, "transient_max_ms", 5000) if policy else 5000
+                                jit = getattr(policy, "transient_jitter", 0.1) if policy else 0.1
+                                self._backoff_sleep(base, mx, jit, transient_attempt)
+                                last_exception = exc
+                                continue
+                            attempted_providers.append(
+                                {
+                                    "provider_instance_id": rpi.provider_instance_id,
+                                    "provider_name": provider_instance.name,
+                                    "error": f"transient (exhausted): {exc}",
+                                }
+                            )
+                            last_exception = exc
+                            advance_after_loop = True
+                            break
+
+                    # Bare-exception or unknown typed error -> back-compat advance.
                     logger.warning(
-                        f"Provider instance {rpi.provider_instance_id} not found"
+                        f"Provider instance {provider_instance.name} failed: {exc}"
                     )
                     attempted_providers.append(
                         {
                             "provider_instance_id": rpi.provider_instance_id,
-                            "error": "Provider instance not found",
+                            "provider_name": provider_instance.name,
+                            "error": str(exc),
                         }
                     )
-                    continue
+                    last_exception = exc
+                    advance_after_loop = True
+                    break
 
-                # Attempt to call the function with the provider instance and additional args/kwargs
-                logger.debug(
-                    f"Attempting to use provider instance: {provider_instance.name}"
-                )
-                result = callable_func(provider_instance, *args, **kwargs)
-
-                # TODO: result may come with error details, need to handle that
-                # If we get here, the call was successful
-                logger.debug(
-                    f"Successfully used provider instance: {provider_instance.name}"
-                )
-                return result
-
-            except Exception as e:
-                # Log the failure and add to attempted list
-                provider_name = (
-                    getattr(provider_instance, "name", "Unknown")
-                    if "provider_instance" in locals()
-                    else "Unknown"
-                )
-                logger.warning(f"Provider instance {provider_name} failed: {str(e)}")
-
-                attempted_providers.append(
-                    {
-                        "provider_instance_id": rpi.provider_instance_id,
-                        "provider_name": provider_name,
-                        "error": str(e),
-                    }
-                )
-                last_exception = e
+            if advance_after_loop:
                 continue
 
         # If we get here, all providers failed

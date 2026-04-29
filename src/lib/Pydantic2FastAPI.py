@@ -2254,16 +2254,18 @@ def register_route(
                     created_instance = get_manager(manager, manager_property).create(
                         **item_data
                     )
-                    print(f"DEBUG: Type of created_instance: {type(created_instance)}")
-                    print(
-                        f"DEBUG: Created instance dict: {created_instance.model_dump() if hasattr(created_instance, 'model_dump') else created_instance}"
+                    logger.debug(
+                        f"Type of created_instance: {type(created_instance)}"
+                    )
+                    logger.debug(
+                        f"Created instance dict: {created_instance.model_dump() if hasattr(created_instance, 'model_dump') else created_instance}"
                     )
 
                     # Debug the ResponseSingle structure
-                    print(
-                        f"DEBUG: ResponseSingle model fields: {network_model.ResponseSingle.model_fields}"
+                    logger.debug(
+                        f"ResponseSingle model fields: {network_model.ResponseSingle.model_fields}"
                     )
-                    print(f"DEBUG: resource_name: {resource_name}")
+                    logger.debug(f"resource_name: {resource_name}")
 
                     # Try passing the dict instead of the instance
                     created_dict = (
@@ -2276,7 +2278,9 @@ def register_route(
                     expected_fields = list(
                         network_model.ResponseSingle.model_fields.keys()
                     )
-                    print(f"DEBUG: ResponseSingle expects fields: {expected_fields}")
+                    logger.debug(
+                        f"ResponseSingle expects fields: {expected_fields}"
+                    )
 
                     # Try to construct the payload based on expected fields
                     if "base" in expected_fields:
@@ -2284,11 +2288,11 @@ def register_route(
                     else:
                         payload = {resource_name: created_dict}
 
-                    print(f"DEBUG: Payload to ResponseSingle: {payload}")
+                    logger.debug(f"Payload to ResponseSingle: {payload}")
                     toReturn = network_model.ResponseSingle(**payload)
-                    print(f"DEBUG: ResponseSingle type: {type(toReturn)}")
-                    print(
-                        f"DEBUG: ResponseSingle dict: {toReturn.model_dump() if hasattr(toReturn, 'model_dump') else toReturn}"
+                    logger.debug(f"ResponseSingle type: {type(toReturn)}")
+                    logger.debug(
+                        f"ResponseSingle dict: {toReturn.model_dump() if hasattr(toReturn, 'model_dump') else toReturn}"
                     )
                     return toReturn
             except Exception as err:

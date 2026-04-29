@@ -642,6 +642,30 @@ class Stripe_SubscriptionModel(AbstractExternalModel, metaclass=ModelMeta):
                 return {"success": False, "error": "Not found"}
             return {"success": False, "error": str(e)}
 
+    @staticmethod
+    def get_subscription_status_via_provider(
+        provider_instance, user_id: str
+    ) -> Dict[str, Any]:
+        """Return the active subscription status for a given user.
+
+        This is the read-through entrypoint consumed by
+        ``UserManager.get_user_subscription_status`` (Item 74). The
+        rotation system invokes it on the active payment provider; the
+        result reflects the real upstream state, not a hardcoded mock.
+
+        TODO: Implement against Stripe sandbox per Item 15 — the current
+        body returns the schema-correct unknown shape so callers do not
+        crash, but it does not yet hit the Stripe API. Item 15's sandbox
+        wiring (test API key, network-recorded fixtures) is the right
+        place to land the real call.
+        """
+        return {
+            "subscription_id": None,
+            "status": "unknown",
+            "current_period_end": None,
+            "user_id": user_id,
+        }
+
 
 # ============================================================================
 # Reference Model and Network Model
