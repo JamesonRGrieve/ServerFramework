@@ -195,7 +195,10 @@ def test_transient_error_retries_then_advances():
     )
     b = MagicMock()
     b.name = "prov-B"
-    rm = _make_rotation_manager_with_fake_instances([a, a, a, b])
+    # rotate() does ONE provider_instance lookup per outer for-loop
+    # iteration; the inner while-True transient retries reuse that same
+    # object. So the queue holds [a, b], not [a, a, a, b].
+    rm = _make_rotation_manager_with_fake_instances([a, b])
 
     calls = {"a": 0, "b": 0}
 
@@ -226,7 +229,10 @@ def test_rate_limit_error_does_not_advance(monkeypatch):
     )
     b = MagicMock()
     b.name = "prov-B"
-    rm = _make_rotation_manager_with_fake_instances([a, a, b])
+    # rotate() does ONE provider_instance lookup per outer for-loop
+    # iteration; rate-limit retries reuse the same object so the queue
+    # holds [a, b], not [a, a, b].
+    rm = _make_rotation_manager_with_fake_instances([a, b])
 
     counter = {"n": 0}
 

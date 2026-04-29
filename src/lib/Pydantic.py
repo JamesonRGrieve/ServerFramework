@@ -1411,7 +1411,9 @@ class ModelRegistry(AbstractRegistry):
         )
 
         # ResponseSingle class - wraps the base model
-        print(f"DEBUG ResponseSingle creation: field_name={field_name}, model={model}")
+        logger.debug(
+            f"ResponseSingle creation: field_name={field_name}, model={model}"
+        )
         network_attrs["ResponseSingle"] = type(
             "ResponseSingle",
             (BaseModel,),
@@ -1420,8 +1422,8 @@ class ModelRegistry(AbstractRegistry):
                 "__module__": model.__module__,
             },
         )
-        print(
-            f"DEBUG ResponseSingle created: {network_attrs['ResponseSingle'].model_fields}"
+        logger.debug(
+            f"ResponseSingle created: {network_attrs['ResponseSingle'].model_fields}"
         )
 
         # ResponsePlural class - wraps a list of the base model
@@ -1532,8 +1534,8 @@ class ModelRegistry(AbstractRegistry):
                                 else:
                                     # This is a regular Pydantic model - bind it normally
                                     try:
-                                        print(
-                                            f"DEBUG: Attempting to bind {attr.__name__} from {module_name}"
+                                        logger.debug(
+                                            f"Attempting to bind {attr.__name__} from {module_name}"
                                         )
                                         self.bind(attr)
                                         logger.debug(
