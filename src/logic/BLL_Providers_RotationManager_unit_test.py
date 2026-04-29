@@ -253,7 +253,15 @@ def test_transient_error_retries_then_advances():
 
 @pytest.mark.unit
 def test_rate_limit_error_does_not_advance(monkeypatch):
-    monkeypatch.setattr("logic.BLL_Providers.time.sleep", lambda *_: None)
+    # Patch via the canonical _bll_mod reference rather than a string
+    # import path. Other tests' `_scoped_import` calls (e.g. the seeder
+    # tests' from_scoped_import on logic) replace the `logic.BLL_Providers`
+    # entry in sys.modules with a new module object, so pytest's
+    # monkeypatch string-resolver fails to walk
+    # `logic.BLL_Providers.time.sleep` mid-suite. Patching the attribute
+    # directly via the module reference we captured at import time
+    # bypasses the sys.modules lookup entirely.
+    monkeypatch.setattr(_bll_mod.time, "sleep", lambda *_: None)
     a = MagicMock()
     a.name = "prov-A"
     a.provider_class = type(
