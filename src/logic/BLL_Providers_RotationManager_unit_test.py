@@ -26,6 +26,14 @@ from extensions.ExternalErrors import (
 # without an `Any` import). When that happens we skip the whole module
 # so our own contract tests don't get false-failed by an unrelated bug.
 try:
+    import logic.BLL_Providers as _bll_mod  # canonical reference for the
+    # OLD module — `_scoped_import` from `lib/Pydantic_test.py` may
+    # replace `sys.modules["logic.BLL_Providers"]` with a fresh module
+    # at runtime, leaving this test file's `RotationManager` symbol
+    # pointing at the OLD class that writes to the OLD
+    # `_STICKY_SESSIONS` dict. Asserting through `_bll_mod._sticky_get`
+    # (rather than re-importing from the live sys.modules) keeps reads
+    # and writes pointed at the same module-globals dict.
     from logic.BLL_Providers import (
         ManagerContractError,
         RotationManager,
@@ -127,7 +135,14 @@ def _make_rotation_manager_with_fake_instances(instances: List[Any]) -> Rotation
     pi_map: dict = {f"pi-{i}": inst for i, inst in enumerate(instances)}
 
     # Patch ProviderInstanceModel.DB(...).get to use the fake lookup.
-    import logic.BLL_Providers as bll_mod
+    # Use the canonical _bll_mod reference (bound at test-file import
+    # time) so the patched class is the same one the OLD wrapped rotate
+    # method resolves through its function globals — even after another
+    # test's `_scoped_import` has swapped sys.modules to a new module
+    # object. Without this, the patch would land on the NEW class while
+    # rotate keeps reading from the OLD class and the DB would not be
+    # stubbed.
+    bll_mod = _bll_mod
     original_db = bll_mod.ProviderInstanceModel.DB
 
     class _FakeDB:
@@ -345,8 +360,7 @@ def test_sticky_pin_set_on_first_success():
     try:
         result = rm.rotate(lambda inst: "ok", routing_hint=RoutingHint(stickiness_key="conv-1"))
         assert result == "ok"
-        from logic.BLL_Providers import _sticky_get
-        assert _sticky_get("conv-1", None) == "pi-0"
+        assert _bll_mod._sticky_get("conv-1", None) == "pi-0"
     finally:
         rm._restore_db()
 
@@ -415,8 +429,7 @@ def test_sticky_pin_invalidated_on_pinned_failure_then_falls_through():
         # Pinned A failed → fall-through to surviving chain (B only).
         assert visited == ["prov-A", "prov-B"]
         # Pin invalidated; new pin should be B.
-        from logic.BLL_Providers import _sticky_get
-        assert _sticky_get("conv-3", None) == "pi-1"
+        assert _bll_mod._sticky_get("conv-3", None) == "pi-1"
     finally:
         rm2._restore_db()
 
@@ -457,7 +470,6 @@ def test_sticky_no_routing_hint_no_pin():
     rm = _make_rotation_manager_with_fake_instances([a])
     try:
         rm.rotate(lambda inst: "ok")
-        from logic.BLL_Providers import _STICKY_SESSIONS
-        assert len(_STICKY_SESSIONS) == 0
+        assert len(_bll_mod._STICKY_SESSIONS) == 0
     finally:
         rm._restore_db()
