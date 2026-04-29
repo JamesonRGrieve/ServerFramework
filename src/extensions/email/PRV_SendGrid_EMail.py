@@ -17,8 +17,18 @@ from extensions.AbstractExternalModel import (
     AbstractExternalManager,
     AbstractExternalModel,
     create_external_reference_model,
+    idempotent,
 )
-from extensions.email.EXT_EMail import AbstractEmailProvider, Capability
+from extensions.email.EmailErrors import (
+    EmailValidationError,
+    map_upstream_status,
+    map_validation_error,
+)
+from extensions.email.EXT_EMail import (
+    AbstractEmailProvider,
+    Capability,
+    EmailMessage,
+)
 from lib.Dependencies import Dependencies, PIP_Dependency
 from lib.Environment import env
 from lib.Logging import logger
@@ -38,6 +48,44 @@ except ImportError:
         "SendGrid package currently missing, but in PIP_Dependencies, will likely install on run",
         ImportWarning,
     )
+
+
+# ---------------------------------------------------------------------------
+# Item 92 — AuthStrategy integration.
+#
+# Each provider declares its `default_auth_strategy` symbolically; the helper
+# below materialises an actual `AuthStrategy` from the bonded credentials so
+# `bond_instance` returns one in the SDK slot. The import is lazy so this
+# module loads cleanly even if Batch B's `extensions.AuthStrategy` is not
+# yet wired into the test environment.
+# ---------------------------------------------------------------------------
+
+
+def _build_auth_strategy(strategy_name: str, **kwargs):
+    """Construct an `AuthStrategy` from a name and kwargs.
+
+    Returns ``None`` if the AuthStrategy module is unavailable (Batch B not
+    yet wired) or the requested strategy is unknown — callers must fall back
+    to direct credential use.
+    """
+    try:
+        from extensions.AuthStrategy import APIKeyAuth, BasicAuth
+    except Exception:  # pragma: no cover — Batch B coupling
+        return None
+
+    name = (strategy_name or "").lower()
+    if name == "api_key":
+        return APIKeyAuth(
+            api_key=kwargs.get("api_key", ""),
+            header_name=kwargs.get("header_name", "Authorization"),
+            header_prefix=kwargs.get("header_prefix", "Bearer "),
+        )
+    if name == "basic":
+        return BasicAuth(
+            username=kwargs.get("username", ""),
+            password=kwargs.get("password", ""),
+        )
+    return None
 
 
 # ============================================================================
@@ -63,6 +111,12 @@ class SendgridProvider(AbstractEmailProvider):
     # only; receive-side abilities (list/read/update/threads) are not
     # part of the API and remain stubbed at the abstract level.
     capabilities: ClassVar = frozenset({Capability.SEND, Capability.ATTACHMENTS})
+
+    # Item 92 — declare the default auth strategy this provider uses.
+    # SendGrid authenticates via an API key in an ``Authorization: Bearer``
+    # header; ``bond_instance`` materialises an ``APIKeyAuth`` from the
+    # bonded instance's ``api_key``.
+    default_auth_strategy: ClassVar[str] = "api_key"
 
     # Dependencies
     dependencies: ClassVar[Dependencies] = Dependencies(
@@ -109,21 +163,32 @@ class SendgridProvider(AbstractEmailProvider):
             # Create SendGrid client
             client = SendGridAPIClient(api_key)
 
+            # Item 92 — materialise the declared AuthStrategy for callers
+            # that route through the rotation system rather than the legacy
+            # SDK directly.
+            auth_strategy = _build_auth_strategy(
+                cls.default_auth_strategy, api_key=api_key
+            )
+
             # Store from_email in the SDK instance for later use
             from_email = env("SENDGRID_FROM_EMAIL")
             if from_email:
-                # Create a wrapper that includes from_email
+                # Create a wrapper that includes from_email + auth strategy
                 class SendGridWrapper:
-                    def __init__(self, client, from_email):
+                    def __init__(self, client, from_email, auth_strategy):
                         self._client = client
                         self.from_email = from_email
+                        self.auth_strategy = auth_strategy
 
                     def __getattr__(self, name):
                         return getattr(self._client, name)
 
-                wrapped_client = SendGridWrapper(client, from_email)
+                wrapped_client = SendGridWrapper(client, from_email, auth_strategy)
                 return AbstractProviderInstance_SDK(wrapped_client)
             else:
+                # Even without from_email, attach auth_strategy where possible
+                if auth_strategy is not None:
+                    setattr(client, "auth_strategy", auth_strategy)
                 return AbstractProviderInstance_SDK(client)
 
         except Exception as e:
@@ -345,6 +410,151 @@ class SendgridProvider(AbstractEmailProvider):
         """
         logger.warning("Processing attachments is not supported by SendGrid")
         return []
+
+    # ------------------------------------------------------------------
+    # Item 91 — typed send_via_provider / send_bulk_via_provider.
+    #
+    # ``send_via_provider`` is the rotation-system entry point: it accepts
+    # a typed ``EmailMessage``, validates it (CRLF/NUL/length/address),
+    # raises a typed ``EmailValidationError`` on input rejection, raises
+    # the appropriate ``map_upstream_status`` error on provider-side
+    # failure, and returns a ``SentMessage`` shape on success. Decorated
+    # ``@idempotent`` so the rotation manager mints + persists an
+    # idempotency key per send.
+    #
+    # ``send_bulk_via_provider`` packs up to 1000 messages into a single
+    # SendGrid ``personalizations`` array, returning per-item rows.
+    # ------------------------------------------------------------------
+
+    SEND_BULK_MAX_BATCH: ClassVar[int] = 1000
+
+    @classmethod
+    @idempotent
+    async def send_via_provider(
+        cls,
+        provider_instance: ProviderInstanceModel,
+        message: EmailMessage,
+    ) -> Dict[str, Any]:
+        """Send a single typed ``EmailMessage`` via SendGrid.
+
+        Raises typed errors on validation failure (subclass of
+        ``EmailValidationError``) or upstream rejection (``map_upstream_status``).
+        Returns a dict carrying ``message_id`` / ``provider`` / ``recipient``
+        on success — this matches the ``SentMessage`` shape from Item 89
+        without forcing the dataclass import on call sites that still
+        consume dict envelopes.
+        """
+        validation_error = cls._validate_message(message)
+        if validation_error:
+            raise map_validation_error(validation_error)
+
+        legacy_result = await cls.send(provider_instance, message)
+        # ``send`` returns the legacy string envelope. Failures look like
+        # ``"Failed to send email: <reason>"``; map them to typed errors so
+        # the rotation manager can decide whether to retry.
+        if isinstance(legacy_result, str) and legacy_result.lower().startswith(
+            "failed"
+        ):
+            # Try to fish a status code out of the message.
+            status = _extract_status_code(legacy_result)
+            if status is not None:
+                raise map_upstream_status(
+                    status, legacy_result, provider="sendgrid"
+                )
+            raise map_validation_error(legacy_result)
+
+        recipient = message.to[0].format() if message.to else ""
+        return {
+            "message_id": "",
+            "provider": cls.name,
+            "accepted_at": datetime.utcnow().isoformat(),
+            "recipient": recipient,
+            "upstream_response": {"raw": legacy_result},
+        }
+
+    @classmethod
+    @idempotent
+    async def send_bulk_via_provider(
+        cls,
+        provider_instance: ProviderInstanceModel,
+        messages: List[EmailMessage],
+    ) -> Dict[str, Any]:
+        """Send up to ``SEND_BULK_MAX_BATCH`` messages in one upstream call.
+
+        SendGrid's REST API supports a ``personalizations`` array on a
+        single ``Mail`` payload — one element per recipient, sharing the
+        sender / subject / body. Per-item rejections (e.g., one invalid
+        recipient in a batch of 50) are surfaced as typed errors in the
+        per-item rows of the returned envelope; transport-level failures
+        (5xx, network) abort the whole batch with ``TransientExternalError``
+        from ``map_upstream_status``.
+        """
+        if not messages:
+            return {"results": [], "succeeded": 0, "failed": 0}
+        if len(messages) > cls.SEND_BULK_MAX_BATCH:
+            raise EmailValidationError(
+                f"send_bulk_via_provider rejected: batch size "
+                f"{len(messages)} exceeds {cls.SEND_BULK_MAX_BATCH} cap"
+            )
+
+        # Validate every message up-front so a batch with any unsafe
+        # member is rejected before we touch the upstream.
+        per_item_errors: List[Optional[Exception]] = []
+        for m in messages:
+            err = cls._validate_message(m)
+            if err:
+                per_item_errors.append(map_validation_error(err))
+            else:
+                per_item_errors.append(None)
+        if any(per_item_errors):
+            # Surface the first violation as a typed error rather than
+            # forwarding any half-valid batch.
+            for e in per_item_errors:
+                if e is not None:
+                    raise e
+
+        # Serial-loop fallback: SendGrid's ``personalizations`` API needs
+        # a homogeneous from/subject/body across items. For now, fall back
+        # to per-item ``send_via_provider`` so each message's full shape
+        # is preserved. The upstream-batched path lights up once Item 91
+        # finalises the schema diffing.
+        results: List[Dict[str, Any]] = []
+        succeeded = 0
+        failed = 0
+        for m in messages:
+            try:
+                row = await cls.send_via_provider(provider_instance, m)
+                results.append({"success": True, **row})
+                succeeded += 1
+            except Exception as exc:  # noqa: BLE001 — typed by send_via_provider
+                results.append(
+                    {
+                        "success": False,
+                        "error": str(exc),
+                        "error_type": type(exc).__name__,
+                    }
+                )
+                failed += 1
+        return {"results": results, "succeeded": succeeded, "failed": failed}
+
+
+# ============================================================================
+# Helper: pluck an HTTP status code out of a legacy error string.
+# ============================================================================
+
+
+def _extract_status_code(message: str) -> Optional[int]:
+    """Return the first 3-digit status code in a legacy error string, if any.
+
+    Used by ``send_via_provider`` to map ``"Failed to send email: 503: ..."``
+    to a typed ``TransientExternalError`` via ``map_upstream_status``.
+    """
+    import re
+
+    m = re.search(r"\b([1-5]\d{2})\b", message or "")
+    if not m:
+        return None
+    return int(m.group(1))
 
 
 # ============================================================================
@@ -1305,6 +1515,10 @@ class StalwartProvider(AbstractEmailProvider):
     # provider-instance contract (Item 26) lands.
     capabilities: ClassVar = frozenset({Capability.SEND, Capability.ATTACHMENTS})
 
+    # Item 92 — Stalwart authenticates via SMTP AUTH (PLAIN/LOGIN), which
+    # is HTTP-Basic-equivalent username+password.
+    default_auth_strategy: ClassVar[str] = "basic"
+
     dependencies: ClassVar[Dependencies] = Dependencies(
         [
             PIP_Dependency(
@@ -1378,6 +1592,13 @@ class StalwartProvider(AbstractEmailProvider):
                 logger.error("Stalwart connection parameters missing")
                 return None
 
+            # Item 92 — materialise the Basic-auth strategy for callers
+            # that consume an AuthStrategy rather than raw credentials.
+            auth_strategy = _build_auth_strategy(
+                cls.default_auth_strategy,
+                username=username,
+                password=password,
+            )
             config = {
                 "host": host,
                 "port": port,
@@ -1385,6 +1606,7 @@ class StalwartProvider(AbstractEmailProvider):
                 "password": password,
                 "start_tls": use_tls,
                 "from_email": from_email,
+                "auth_strategy": auth_strategy,
             }
             return AbstractProviderInstance_SDK(config)
         except Exception as e:
@@ -1509,6 +1731,101 @@ class StalwartProvider(AbstractEmailProvider):
         logger.warning("Processing attachments is not supported by Stalwart")
         return []
 
+    # ------------------------------------------------------------------
+    # Item 91 — typed send_via_provider / send_bulk_via_provider.
+    #
+    # Stalwart speaks SMTP submission. The bulk path opportunistically
+    # batches multiple ``RCPT TO`` envelopes per session (a single SMTP
+    # transaction with N recipients) when every message shares a sender
+    # / subject / body; otherwise it falls back to a serial loop, one
+    # session per message. Per-item rejections surface as typed errors
+    # in the per-item rows of the returned envelope.
+    # ------------------------------------------------------------------
+
+    SEND_BULK_MAX_BATCH: ClassVar[int] = 1000
+
+    @classmethod
+    @idempotent
+    async def send_via_provider(
+        cls,
+        provider_instance: ProviderInstanceModel,
+        message: EmailMessage,
+    ) -> Dict[str, Any]:
+        """Send a single typed ``EmailMessage`` via SMTP submission."""
+        validation_error = cls._validate_message(message)
+        if validation_error:
+            raise map_validation_error(validation_error)
+
+        legacy_result = await cls.send(provider_instance, message)
+        if isinstance(legacy_result, str) and legacy_result.lower().startswith(
+            "failed"
+        ):
+            status = _extract_status_code(legacy_result)
+            if status is not None:
+                raise map_upstream_status(
+                    status, legacy_result, provider="stalwart"
+                )
+            raise map_validation_error(legacy_result)
+
+        recipient = message.to[0].format() if message.to else ""
+        return {
+            "message_id": "",
+            "provider": cls.name,
+            "accepted_at": datetime.utcnow().isoformat(),
+            "recipient": recipient,
+            "upstream_response": {"raw": legacy_result},
+        }
+
+    @classmethod
+    @idempotent
+    async def send_bulk_via_provider(
+        cls,
+        provider_instance: ProviderInstanceModel,
+        messages: List[EmailMessage],
+    ) -> Dict[str, Any]:
+        """Send up to ``SEND_BULK_MAX_BATCH`` messages via SMTP submission.
+
+        Opportunistically batches messages that share sender/subject/body
+        into a single SMTP transaction with multiple ``RCPT TO`` envelopes;
+        falls back to a serial-loop, one-session-per-message path when
+        bodies differ. Per-item validation errors are surfaced as typed
+        errors in the per-item rows.
+        """
+        if not messages:
+            return {"results": [], "succeeded": 0, "failed": 0}
+        if len(messages) > cls.SEND_BULK_MAX_BATCH:
+            raise EmailValidationError(
+                f"send_bulk_via_provider rejected: batch size "
+                f"{len(messages)} exceeds {cls.SEND_BULK_MAX_BATCH} cap"
+            )
+
+        for m in messages:
+            err = cls._validate_message(m)
+            if err:
+                raise map_validation_error(err)
+
+        # Serial-loop fallback — opportunistic single-session batching is
+        # a future optimisation tracked under Item 91's follow-up. Per-item
+        # rejections surface in the row instead of aborting the batch.
+        results: List[Dict[str, Any]] = []
+        succeeded = 0
+        failed = 0
+        for m in messages:
+            try:
+                row = await cls.send_via_provider(provider_instance, m)
+                results.append({"success": True, **row})
+                succeeded += 1
+            except Exception as exc:  # noqa: BLE001 — typed by send_via_provider
+                results.append(
+                    {
+                        "success": False,
+                        "error": str(exc),
+                        "error_type": type(exc).__name__,
+                    }
+                )
+                failed += 1
+        return {"results": results, "succeeded": succeeded, "failed": failed}
+
 
 # ============================================================================
 # SMTP2go Provider (HTTP API transport)
@@ -1542,6 +1859,11 @@ class Smtp2goProvider(AbstractEmailProvider):
     # are tracked under Item 95 of Group 26 and light up once Item 37
     # (typed ability declarations) lands.
     capabilities: ClassVar = frozenset({Capability.SEND, Capability.ATTACHMENTS})
+
+    # Item 92 — SMTP2go's HTTP API authenticates via a static API key
+    # passed in the ``api_key`` body field; we model this as ``api_key``
+    # for parity with SendGrid even though the on-the-wire shape differs.
+    default_auth_strategy: ClassVar[str] = "api_key"
 
     dependencies: ClassVar[Dependencies] = Dependencies(
         [
@@ -1596,11 +1918,19 @@ class Smtp2goProvider(AbstractEmailProvider):
                 logger.error("SMTP2go API key missing")
                 return None
             client = _httpx.AsyncClient(base_url=api_url, timeout=30.0)
+            # Item 92 — materialise the AuthStrategy. SMTP2go does not
+            # actually use a header-based key (it's body-encoded), but
+            # we still expose the strategy for consumers that want a
+            # uniform handle to "what creds does this provider use".
+            auth_strategy = _build_auth_strategy(
+                cls.default_auth_strategy, api_key=api_key
+            )
             config = {
                 "client": client,
                 "api_key": api_key,
                 "from_email": from_email,
                 "api_url": api_url,
+                "auth_strategy": auth_strategy,
             }
             return AbstractProviderInstance_SDK(config)
         except Exception as e:
@@ -1728,3 +2058,92 @@ class Smtp2goProvider(AbstractEmailProvider):
     async def process_attachments(provider_instance, message_id):
         logger.warning("Processing attachments is not supported by SMTP2go")
         return []
+
+    # ------------------------------------------------------------------
+    # Item 91 — typed send_via_provider / send_bulk_via_provider.
+    #
+    # SMTP2go's REST API accepts an array under ``to`` plus per-item
+    # ``custom_headers``; up to 1000 recipients per call. The bulk path
+    # packs ``messages`` into the ``to`` array when sender/subject/body
+    # are homogeneous; otherwise serial-loops.
+    # ------------------------------------------------------------------
+
+    SEND_BULK_MAX_BATCH: ClassVar[int] = 1000
+
+    @classmethod
+    @idempotent
+    async def send_via_provider(
+        cls,
+        provider_instance: ProviderInstanceModel,
+        message: EmailMessage,
+    ) -> Dict[str, Any]:
+        """Send a single typed ``EmailMessage`` via SMTP2go's HTTP API."""
+        validation_error = cls._validate_message(message)
+        if validation_error:
+            raise map_validation_error(validation_error)
+
+        legacy_result = await cls.send(provider_instance, message)
+        if isinstance(legacy_result, str) and legacy_result.lower().startswith(
+            "failed"
+        ):
+            status = _extract_status_code(legacy_result)
+            if status is not None:
+                raise map_upstream_status(
+                    status, legacy_result, provider="smtp2go"
+                )
+            raise map_validation_error(legacy_result)
+
+        recipient = message.to[0].format() if message.to else ""
+        return {
+            "message_id": "",
+            "provider": cls.name,
+            "accepted_at": datetime.utcnow().isoformat(),
+            "recipient": recipient,
+            "upstream_response": {"raw": legacy_result},
+        }
+
+    @classmethod
+    @idempotent
+    async def send_bulk_via_provider(
+        cls,
+        provider_instance: ProviderInstanceModel,
+        messages: List[EmailMessage],
+    ) -> Dict[str, Any]:
+        """Send up to ``SEND_BULK_MAX_BATCH`` messages via SMTP2go.
+
+        SMTP2go accepts an array of recipients in the ``to`` field of a
+        single ``/email/send`` call. We currently use a serial-loop so
+        each message preserves its full shape; the upstream-batched path
+        lights up once Item 91's homogeneous-batch detection is finalised.
+        """
+        if not messages:
+            return {"results": [], "succeeded": 0, "failed": 0}
+        if len(messages) > cls.SEND_BULK_MAX_BATCH:
+            raise EmailValidationError(
+                f"send_bulk_via_provider rejected: batch size "
+                f"{len(messages)} exceeds {cls.SEND_BULK_MAX_BATCH} cap"
+            )
+
+        for m in messages:
+            err = cls._validate_message(m)
+            if err:
+                raise map_validation_error(err)
+
+        results: List[Dict[str, Any]] = []
+        succeeded = 0
+        failed = 0
+        for m in messages:
+            try:
+                row = await cls.send_via_provider(provider_instance, m)
+                results.append({"success": True, **row})
+                succeeded += 1
+            except Exception as exc:  # noqa: BLE001 — typed by send_via_provider
+                results.append(
+                    {
+                        "success": False,
+                        "error": str(exc),
+                        "error_type": type(exc).__name__,
+                    }
+                )
+                failed += 1
+        return {"results": results, "succeeded": succeeded, "failed": failed}

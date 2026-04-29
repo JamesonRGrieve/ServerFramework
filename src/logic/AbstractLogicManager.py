@@ -45,15 +45,55 @@ class HookTiming(Enum):
     AFTER = "after"
 
 
-class HookContext:
-    """
-    Context object passed to hooks for accessing and modifying method execution.
+# ---------------------------------------------------------------------------
+# Item 21 -- Deterministic ordering / cycle detection
+# ---------------------------------------------------------------------------
 
-    This context provides hooks with the ability to:
-    - Access the manager instance and method arguments
-    - Modify arguments and return values
-    - Skip original method execution
-    - Store temporary data for communication between hooks
+
+class HookOrderingError(Exception):
+    """Raised at startup when explicit before/after constraints form a cycle.
+
+    The error message names every extension involved in the offending cycle
+    so the developer can resolve it without inspecting the registry by hand.
+    """
+
+
+# Generic ParamSpec / typing imports (Item 41).
+try:
+    from typing import ParamSpec  # Python 3.10+
+except ImportError:  # pragma: no cover - fallback for older runtimes
+    from typing_extensions import ParamSpec  # type: ignore[assignment]
+
+import typing as _typing  # noqa: E402
+
+_P = ParamSpec("_P")
+_R = _typing.TypeVar("_R")
+
+
+class HookContext(_typing.Generic[_P, _R]):
+    """
+    Type-safe context object passed to hooks (Item 41).
+
+    ``HookContext[P, R]`` is parameterized by the target method's
+    ``ParamSpec`` ``P`` and return type ``R`` so static analysis catches
+    hooks that read fields not present on the target. Existing untyped
+    hooks (``def my_hook(ctx: HookContext)``) continue to work because
+    ``Generic`` is permissive at runtime; deprecation of the untyped path
+    is a follow-up.
+
+    Migration guide::
+
+        # Old, still works (deprecated typing):
+        def my_hook(ctx: HookContext) -> None:
+            user_id = ctx.kwargs["user_id"]   # untyped Any
+
+        # New, fully typed:
+        def my_hook(ctx: HookContext[..., User]) -> None:
+            user_id = ctx.kwarg("user_id")    # typed accessor
+
+    The typed accessors (``kwarg``, ``arg``, ``set_result``) are runtime
+    methods; the static type-correlation is enforced by mypy/pyright when
+    callers spell out the parameterization.
     """
 
     def __init__(
@@ -86,7 +126,7 @@ class HookContext:
         self.modified_result = None
         self.condition_data = {}
 
-    def set_result(self, result: Any) -> None:
+    def set_result(self, result: _R) -> None:
         """
         Set a custom result that will override the method's original return value.
 
@@ -98,6 +138,23 @@ class HookContext:
     def skip_method(self) -> None:
         """Skip execution of the original method."""
         self.skip_execution = True
+
+    # -- typed accessors (Item 41) -----------------------------------------
+
+    def kwarg(self, name: str, default: Any = None) -> Any:
+        """Typed-accessor sugar: return ``kwargs[name]`` or ``default``.
+
+        Authors using ``HookContext[..., R]`` get a typed return shape via
+        the param-spec; the runtime falls through to dict.get for safety.
+        """
+        return self.kwargs.get(name, default)
+
+    def arg(self, index: int, default: Any = None) -> Any:
+        """Typed-accessor sugar: return ``args[index]`` or ``default``."""
+        try:
+            return self.args[index]
+        except IndexError:
+            return default
 
 
 class HookRegistry:
@@ -131,7 +188,10 @@ class HookRegistry:
             method_name: Name of the method to get hooks for
 
         Returns:
-            Dictionary with 'before' and 'after' lists of hook info dictionaries
+            Dictionary with 'before' and 'after' lists of hook info dictionaries.
+            Lists are returned in the deterministic four-tier order described
+            in Item 21: explicit ``before/after`` constraints, then priority,
+            then extension name, then function name.
         """
         hooks = {"before": [], "after": []}
 
@@ -146,6 +206,9 @@ class HookRegistry:
             hooks["before"].extend(self.hooks[method_name]["before"])
             hooks["after"].extend(self.hooks[method_name]["after"])
 
+        # Item 21: apply the deterministic four-tier sort BEFORE returning.
+        hooks["before"] = _sort_hooks_topologically(hooks["before"])
+        hooks["after"] = _sort_hooks_topologically(hooks["after"])
         return hooks
 
     def register_hook(
@@ -156,6 +219,9 @@ class HookRegistry:
         hook_func: Callable,
         priority: int = 50,
         condition: Optional[Callable] = None,
+        before: Optional[List[str]] = None,
+        after: Optional[List[str]] = None,
+        blocking: Optional[bool] = None,
     ) -> None:
         """
         Register a hook for a specific method.
@@ -167,15 +233,164 @@ class HookRegistry:
             hook_func: Function to execute as hook
             priority: Execution priority (lower numbers run first)
             condition: Optional condition function for conditional execution
+            before: List of extension names this hook must run BEFORE (Item 21).
+            after: List of extension names this hook must run AFTER (Item 21).
+            blocking: If True, exceptions from the hook propagate (Item 22).
+                If False, exceptions are logged + a metric is emitted and the
+                operation continues. None preserves the timing-default
+                (BEFORE -> True, AFTER -> False).
         """
         if method_name not in self.hooks:
             self.hooks[method_name] = {"before": [], "after": []}
 
-        hook_info = {"func": hook_func, "priority": priority, "condition": condition}
+        hook_info = {
+            "func": hook_func,
+            "priority": priority,
+            "condition": condition,
+            "before": list(before or []),
+            "after": list(after or []),
+            "blocking": blocking,
+            "extension": _hook_extension_name(hook_func),
+        }
 
         self.hooks[method_name][timing].append(hook_info)
-        # Sort by priority (lower numbers run first)
+        # Sort by priority (lower numbers run first); the get_hooks accessor
+        # then applies the full four-tier topological sort.
         self.hooks[method_name][timing].sort(key=lambda x: x["priority"])
+
+
+# ---------------------------------------------------------------------------
+# Item 21 helpers: extension-name derivation + topological sort
+# ---------------------------------------------------------------------------
+
+
+# Item 22: per-process counter exposed for observability/metric collectors.
+# Tests assert against this rather than wiring a real metrics backend.
+NON_BLOCKING_HOOK_FAILURES: Dict[str, int] = {}
+
+
+def _hook_blocking(hook_info: Dict[str, Any], default: bool) -> bool:
+    """Resolve the blocking flag for a hook, falling back to ``default``."""
+    explicit = hook_info.get("blocking")
+    if explicit is None:
+        return default
+    return bool(explicit)
+
+
+def _emit_non_blocking_failure_metric(
+    method_name: str,
+    timing: str,
+    hook_func: Callable,
+    error: BaseException,
+) -> None:
+    """Item 22 metric emission for a swallowed hook exception.
+
+    The framework does not bind a specific metrics backend here; this helper
+    increments an in-process counter and logs a structured warning. A real
+    deployment plugs into Prometheus / OTel via a logger handler or by
+    monkey-patching this function at startup.
+    """
+    metric_key = (
+        f"hook.non_blocking_failure"
+        f"|method={method_name}"
+        f"|timing={timing}"
+        f"|hook={getattr(hook_func, '__name__', '<unknown>')}"
+    )
+    NON_BLOCKING_HOOK_FAILURES[metric_key] = (
+        NON_BLOCKING_HOOK_FAILURES.get(metric_key, 0) + 1
+    )
+    logger.warning(
+        f"Non-blocking hook failure: method={method_name} timing={timing}"
+        f" hook={getattr(hook_func, '__name__', '<unknown>')}"
+        f" error={type(error).__name__}: {error}"
+    )
+
+
+def _hook_extension_name(func: Callable) -> str:
+    """Best-effort extension name for a hook function.
+
+    The convention used across the framework's extensions is to put the
+    hook in a module path containing the extension name (e.g.
+    ``extensions.payment.hooks``). We extract the segment that comes after
+    ``extensions.`` if present; otherwise we fall back to the module name.
+    """
+    module = getattr(func, "__module__", "") or ""
+    parts = module.split(".")
+    if "extensions" in parts:
+        idx = parts.index("extensions")
+        if idx + 1 < len(parts):
+            return parts[idx + 1]
+    # Fall back to the leaf module name -- gives a stable per-file token.
+    return parts[-1] if parts else ""
+
+
+def _sort_hooks_topologically(hooks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Apply the Item 21 four-tier deterministic ordering rule.
+
+    Tiers:
+      1. Explicit ``before=[ExtName]``/``after=[ExtName]`` constraints
+         (topological sort; cycles raise :class:`HookOrderingError`).
+      2. ``priority`` (lower runs first).
+      3. Extension name (alphabetical).
+      4. Hook function name (alphabetical).
+    """
+    if len(hooks) <= 1:
+        return list(hooks)
+
+    # Build an extension -> [hooks] index. Constraints are extension-level.
+    by_ext: Dict[str, List[Dict[str, Any]]] = {}
+    for h in hooks:
+        by_ext.setdefault(h.get("extension", ""), []).append(h)
+
+    # Build dependency graph: edge u -> v means "u must come before v".
+    # ``before=[v]`` on u  -> u -> v
+    # ``after=[v]`` on u   -> v -> u
+    graph: Dict[str, set] = {ext: set() for ext in by_ext.keys()}
+    for h in hooks:
+        ext = h.get("extension", "")
+        for nxt in h.get("before") or []:
+            if nxt in graph:
+                graph.setdefault(ext, set()).add(nxt)
+        for prev in h.get("after") or []:
+            if prev in graph:
+                graph.setdefault(prev, set()).add(ext)
+
+    # Kahn's algorithm with deterministic tie-break (alphabetical extension).
+    in_degree = {ext: 0 for ext in graph}
+    for ext, outs in graph.items():
+        for out in outs:
+            in_degree[out] = in_degree.get(out, 0) + 1
+
+    ordered_exts: List[str] = []
+    ready = sorted([ext for ext, d in in_degree.items() if d == 0])
+    while ready:
+        ext = ready.pop(0)
+        ordered_exts.append(ext)
+        for out in sorted(graph.get(ext, set())):
+            in_degree[out] -= 1
+            if in_degree[out] == 0:
+                ready.append(out)
+        ready.sort()
+
+    if len(ordered_exts) != len(graph):
+        # Cycle: name every extension still with non-zero in-degree.
+        offenders = sorted(
+            ext for ext, d in in_degree.items() if d > 0
+        )
+        raise HookOrderingError(
+            "Hook before/after constraints form a cycle among extensions: "
+            f"{offenders}"
+        )
+
+    # Within each extension bucket, sort by (priority, function_name).
+    result: List[Dict[str, Any]] = []
+    for ext in ordered_exts:
+        bucket = sorted(
+            by_ext.get(ext, []),
+            key=lambda h: (h.get("priority", 50), getattr(h["func"], "__name__", "")),
+        )
+        result.extend(bucket)
+    return result
 
 
 def hook_bll(
@@ -183,6 +398,9 @@ def hook_bll(
     timing: Union[HookTiming, str] = HookTiming.BEFORE,
     priority: int = 50,
     condition: Optional[Callable[[HookContext], bool]] = None,
+    before: Optional[List[str]] = None,
+    after: Optional[List[str]] = None,
+    blocking: Optional[bool] = None,
 ) -> Callable:
     """
     Enhanced hook decorator for BLL methods.
@@ -197,6 +415,14 @@ def hook_bll(
         timing: When to execute (HookTiming.BEFORE/AFTER or "before"/"after")
         priority: Execution order (lower numbers run first)
         condition: Optional callable that returns bool for conditional execution
+        before: Item 21 -- list of extension names this hook must run BEFORE.
+            Resolved as a topological sort; cycles raise HookOrderingError.
+        after: Item 21 -- list of extension names this hook must run AFTER.
+            Same semantics as ``before``.
+        blocking: Item 22 -- if True (default for BEFORE), exceptions from the
+            hook propagate. If False (default for AFTER), exceptions are
+            logged + a metric is emitted and the operation continues. Pass
+            None to accept the timing-default.
 
     Returns:
         Decorator function that registers the hook
@@ -211,6 +437,11 @@ def hook_bll(
         @hook_bll(ExtensionManager.create, timing=HookTiming.BEFORE, priority=10)
         def validate_creation(context: HookContext) -> None:
             # Validation logic
+
+        # Item 21 -- explicit ordering: audit must run AFTER mfa.
+        @hook_bll(UserManager.create, timing=HookTiming.BEFORE, after=["mfa"])
+        def audit_logging(context: HookContext) -> None:
+            ...
     """
     # Determine if target is a class or method
     if inspect.isclass(target) and issubclass(target, AbstractBLLManager):
@@ -368,6 +599,9 @@ def hook_bll(
                     "timing": timing_enum.value,
                     "priority": priority,
                     "condition": condition,
+                    "before": list(before or []),
+                    "after": list(after or []),
+                    "blocking": blocking,
                 }
 
             # Register the hook
@@ -378,11 +612,38 @@ def hook_bll(
                 hook_func,
                 priority,
                 condition,
+                before=before,
+                after=after,
+                blocking=blocking,
             )
 
         return hook_func
 
     return decorator
+
+
+def non_critical_hook(
+    target: Union[Type["AbstractBLLManager"], Callable],
+    timing: Union[HookTiming, str] = HookTiming.AFTER,
+    priority: int = 50,
+    condition: Optional[Callable[[HookContext], bool]] = None,
+    before: Optional[List[str]] = None,
+    after: Optional[List[str]] = None,
+) -> Callable:
+    """Item 22 ergonomic alias for ``hook_bll(..., blocking=False)``.
+
+    Use this for AFTER hooks that should never break the underlying
+    operation (audit, notification, analytics).
+    """
+    return hook_bll(
+        target=target,
+        timing=timing,
+        priority=priority,
+        condition=condition,
+        before=before,
+        after=after,
+        blocking=False,
+    )
 
 
 def _register_hook_on_class(
@@ -392,6 +653,9 @@ def _register_hook_on_class(
     hook_func: Callable,
     priority: int,
     condition: Optional[Callable],
+    before: Optional[List[str]] = None,
+    after: Optional[List[str]] = None,
+    blocking: Optional[bool] = None,
 ) -> None:
     """
     Register hook on the target class registry.
@@ -403,6 +667,9 @@ def _register_hook_on_class(
         hook_func: Hook function
         priority: Execution priority
         condition: Optional condition function
+        before: list of extension names this hook must run BEFORE (Item 21).
+        after: list of extension names this hook must run AFTER (Item 21).
+        blocking: per-hook blocking override (Item 22).
     """
     if not hasattr(target_class, "_hook_registry"):
         parent_registry = None
@@ -413,7 +680,15 @@ def _register_hook_on_class(
         target_class._hook_registry = HookRegistry(parent_registry)
 
     target_class._hook_registry.register_hook(
-        target_class, method_name, timing, hook_func, priority, condition
+        target_class,
+        method_name,
+        timing,
+        hook_func,
+        priority,
+        condition,
+        before=before,
+        after=after,
+        blocking=blocking,
     )
 
 
@@ -530,8 +805,20 @@ def wrap_method_with_hooks(
                     # Update kwargs with any modifications from the hook
                     kwargs.update(context.kwargs)
                 except Exception as e:
-                    logger.error(
-                        f"Error in before hook {hook_info['func'].__name__}: {e}"
+                    # Item 22: BEFORE hooks default blocking=True (security
+                    # and validation must fail loudly). Authors that
+                    # explicitly opt out via blocking=False get the
+                    # log+metric+continue path.
+                    if _hook_blocking(hook_info, default=True):
+                        logger.error(
+                            f"Error in before hook {hook_info['func'].__name__}: {e}"
+                        )
+                        raise
+                    _emit_non_blocking_failure_metric(
+                        method_name=method_name,
+                        timing="before",
+                        hook_func=hook_info["func"],
+                        error=e,
                     )
 
         # Check if we should skip the original method
@@ -561,8 +848,23 @@ def wrap_method_with_hooks(
                     if context.modified_result is not None:
                         result = context.modified_result
                 except Exception as e:
+                    # Item 22: AFTER hooks default blocking=False; observers
+                    # should not break the operation they are observing.
+                    # Authors that opt in via blocking=True get the
+                    # propagation path.
+                    if _hook_blocking(hook_info, default=False):
+                        logger.error(
+                            f"Error in after hook {hook_info['func'].__name__}: {e}"
+                        )
+                        raise
                     logger.error(
                         f"Error in after hook {hook_info['func'].__name__}: {e}"
+                    )
+                    _emit_non_blocking_failure_metric(
+                        method_name=method_name,
+                        timing="after",
+                        hook_func=hook_info["func"],
+                        error=e,
                     )
 
         return result

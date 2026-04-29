@@ -156,11 +156,21 @@ def install_extension_dependencies_with_restart(extensions_str: str):
 
 
 def create_registry_with_db_manager(
-    db_manager, extensions_list: str = env("APP_EXTENSIONS")
+    db_manager, extensions_list: Optional[str] = None
 ):
-    """Create a ModelRegistry with the proper DatabaseManager attached."""
+    """Create a ModelRegistry with the proper DatabaseManager attached.
+
+    Sentinel: ``extensions_list=None`` means "fall back to APP_EXTENSIONS";
+    ``extensions_list=""`` means "no extensions". The env-var lookup
+    happens inside the function body so consumers that import the package
+    and then set ``os.environ['APP_EXTENSIONS']`` before calling get the
+    expected value (Item 65).
+    """
     from extensions.AbstractExtensionProvider import ExtensionRegistry
     from lib.Logging import logger
+
+    if extensions_list is None:
+        extensions_list = env("APP_EXTENSIONS")
 
     logger.debug(
         f"create_registry_with_db_manager: extensions_list={extensions_list}, extensions_str={extensions_list}"
@@ -227,17 +237,28 @@ def prepare_overrides(db_prefix: str, extensions: Optional[str]) -> Dict[str, st
     return overrides
 
 
-def instance(db_prefix: str = "", extensions: str = env("APP_EXTENSIONS")):
+def instance(db_prefix: str = "", extensions: Optional[str] = None):
     """
     Create a FastAPI application instance with database prefix and extension configuration.
 
+    Sentinel (Item 65): ``extensions=None`` means "fall back to
+    APP_EXTENSIONS" -- the env lookup happens inside the function body so
+    a consumer can ``import serverframework`` then
+    ``os.environ['APP_EXTENSIONS'] = 'payment'`` then ``run()`` and have
+    the override picked up. ``extensions=""`` means unambiguously "no
+    extensions" and bypasses the env fallback.
+
     Args:
         db_prefix: Prefix to add to the original DATABASE_NAME (e.g., "test" or "test.payment")
-        extensions: Extensions to load (e.g., "" for core, "payment" for payment extension)
+        extensions: Extensions to load. ``None`` -> read APP_EXTENSIONS.
+            ``""`` -> load none. CSV string -> load those.
 
     Returns:
         Configured FastAPI application instance with isolated ModelRegistry
     """
+    if extensions is None:
+        extensions = env("APP_EXTENSIONS")
+
     logger.debug(
         f"instance() called with db_prefix='{db_prefix}', extensions='{extensions}'"
     )
@@ -366,42 +387,10 @@ def build_app(model_registry: ModelRegistry):
 
         response = await call_next(request)
 
-        # Debug: Log response body for POST requests
-        if request.method == "POST":
-            try:
-                # For StreamingResponse, we need to consume the body
-                if hasattr(response, "body_iterator"):
-                    body_parts = []
-                    async for chunk in response.body_iterator:
-                        body_parts.append(chunk)
-                    body_bytes = b"".join(body_parts)
-                    body_str = body_bytes.decode("utf-8")
-                    print(f"DEBUG POST RESPONSE BODY: {body_str}")
-
-                    # Try to parse as JSON
-                    try:
-                        import json
-
-                        body_json = json.loads(body_str)
-                        print(
-                            f"DEBUG POST RESPONSE JSON: {json.dumps(body_json, indent=2)}"
-                        )
-                    except:
-                        pass
-
-                    # Recreate the response with the consumed body
-                    from starlette.responses import Response
-
-                    response = Response(
-                        content=body_bytes,
-                        status_code=response.status_code,
-                        headers=response.headers,
-                        media_type=response.media_type,
-                    )
-                else:
-                    print(f"DEBUG: Response type {type(response)} - no body_iterator")
-            except Exception as e:
-                print(f"DEBUG: Could not read response: {e}")
+        # NOTE: A previous debugging block here printed POST response bodies
+        # to stdout, including JSON payloads. Removed (Item 73) — that path
+        # leaked PII and credentials into production logs and offered no
+        # observability that structured logging (Item 85) does not.
 
         clear_request_context()  # Clear context after request
         return response
@@ -446,7 +435,12 @@ def build_app(model_registry: ModelRegistry):
             # Pydantic model
             try:
                 return obj.model_dump(mode="json")
-            except:
+            except Exception as e:
+                logger.warning(
+                    "make_json_serializable: model_dump failed; "
+                    "falling back to str()",
+                    exc_info=True,
+                )
                 return str(obj)
         elif isinstance(obj, dict):
             # Recursively handle dicts
@@ -465,7 +459,12 @@ def build_app(model_registry: ModelRegistry):
                 else:
                     # Last resort - convert to string
                     return str(obj)
-            except:
+            except Exception as e:
+                logger.warning(
+                    "make_json_serializable: dict-style coercion failed; "
+                    "falling back to str()",
+                    exc_info=True,
+                )
                 return str(obj)
         else:
             # Fallback to string representation

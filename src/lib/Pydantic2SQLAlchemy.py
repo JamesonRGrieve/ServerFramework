@@ -143,8 +143,11 @@ def _get_db_manager_from_context() -> Optional[Any]:
             task = asyncio.current_task()
             if task and hasattr(task, "_db_manager"):
                 return task._db_manager
-        except:
-            pass
+        except RuntimeError as e:
+            # current_task() raises RuntimeError outside an event loop.
+            logger.debug(
+                "DatabaseManager lookup: no current asyncio task: %s", e
+            )
 
         # 2. Try to get from thread-local storage (not recommended but for compatibility)
         try:
@@ -153,8 +156,10 @@ def _get_db_manager_from_context() -> Optional[Any]:
             local = threading.current_thread()
             if hasattr(local, "_db_manager"):
                 return local._db_manager
-        except:
-            pass
+        except (AttributeError, RuntimeError) as e:
+            logger.debug(
+                "DatabaseManager lookup: thread-local probe failed: %s", e
+            )
 
         # 3. Try to get from global app state (last resort)
         try:
@@ -165,8 +170,10 @@ def _get_db_manager_from_context() -> Optional[Any]:
                 if hasattr(module, "app") and hasattr(module.app, "state"):
                     if hasattr(module.app.state, "DB"):
                         return module.app.state.model_registry.database_manager
-        except:
-            pass
+        except (AttributeError, RuntimeError, ImportError) as e:
+            logger.debug(
+                "DatabaseManager lookup: app-state probe failed: %s", e
+            )
 
         return None
 
@@ -490,8 +497,12 @@ def _create_column_from_field(
                 schema = field_info.schema()
                 if isinstance(schema, dict) and "description" in schema:
                     comment = schema["description"]
-            except:
-                pass
+            except (AttributeError, TypeError, ValueError) as e:
+                logger.debug(
+                    "field schema introspection failed for %r: %s",
+                    getattr(field_info, "alias", field_info),
+                    e,
+                )
 
         if comment:
             params["comment"] = comment
@@ -509,8 +520,12 @@ def _create_column_from_field(
         ):
             try:
                 default_value = field_info.default_factory()
-            except:
-                pass
+            except Exception as e:
+                logger.debug(
+                    "default_factory invocation failed for %r: %s",
+                    getattr(field_info, "alias", field_info),
+                    e,
+                )
 
         # Filter out PydanticUndefined values before setting as SQLAlchemy default
         if default_value is not None and default_value is not ...:
@@ -1498,10 +1513,17 @@ class DatabaseMixin:
 
                         # This is a fallback - in practice we should have the registry attached to the base
                         pass
-                    except:
-                        pass
-            except:
-                pass
+                    except ImportError as e:
+                        logger.debug(
+                            "starlette unavailable while resolving "
+                            "model_registry: %s",
+                            e,
+                        )
+            except Exception as e:
+                logger.debug(
+                    "model_registry resolution from db_manager context failed: %s",
+                    e,
+                )
 
         # If we still don't have a model registry, we need to create one for this declarative base
         if model_registry is None:

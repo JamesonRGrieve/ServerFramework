@@ -1,10 +1,15 @@
+from __future__ import annotations
+
 from abc import ABC, ABCMeta, abstractmethod
+from datetime import datetime, timezone
 from enum import Enum
 from inspect import getmembers, isfunction
+from time import monotonic
 from typing import Any, Callable, ClassVar, Dict, List, Optional, Set, Tuple, Type
 
 from fastapi import APIRouter
 from ordered_set import OrderedSet
+from pydantic import BaseModel
 
 try:
     import pytest
@@ -246,17 +251,18 @@ class ExtensionRegistry(AbstractRegistry):
                                 "module_name": f"Extension_{extension_name}_StaticRoutes",
                             }
 
-                        # Import the module
-                        if module_name not in sys.modules:
-                            spec = importlib.util.spec_from_file_location(
-                                module_name, file_path
-                            )
-                            if spec and spec.loader:
-                                module = importlib.util.module_from_spec(spec)
-                                sys.modules[module_name] = module
-                                spec.loader.exec_module(module)
-                        else:
-                            module = sys.modules[module_name]
+                        # Item 61: dual-name registration via the
+                        # canonical loader. This ensures intra-extension
+                        # imports keep resolving when the extensions tree
+                        # lives at a non-default path.
+                        from extensions.ExtensionLoader import (
+                            load_extension_module,
+                        )
+
+                        file_stem = os.path.basename(file_path)[:-3]
+                        module = load_extension_module(
+                            self._extensions_root(), extension_name, file_stem
+                        )
 
                         # Find AbstractStaticExtension subclass
                         for attr_name in dir(module):
@@ -424,21 +430,19 @@ class ExtensionRegistry(AbstractRegistry):
                     if dep_file.endswith("_test.py"):
                         continue
 
-                    module_name = (
-                        f"extensions.{dep_name}.{os.path.basename(dep_file)[:-3]}"
+                    file_stem = os.path.basename(dep_file)[:-3]
+                    module_name = f"extensions.{dep_name}.{file_stem}"
+
+                    # Item 61: dual-name registration so intra-extension
+                    # imports keep working when the extensions tree lives
+                    # outside the package.
+                    from extensions.ExtensionLoader import (
+                        load_extension_module,
                     )
 
-                    # Import the module if not already imported
-                    if module_name not in sys.modules:
-                        spec = importlib.util.spec_from_file_location(
-                            module_name, dep_file
-                        )
-                        if spec and spec.loader:
-                            module = importlib.util.module_from_spec(spec)
-                            sys.modules[module_name] = module
-                            spec.loader.exec_module(module)
-                    else:
-                        module = sys.modules[module_name]
+                    module = load_extension_module(
+                        self._extensions_root(), dep_name, file_stem
+                    )
 
                     # Find the extension class
                     for attr_name in dir(module):
@@ -477,6 +481,7 @@ class ExtensionRegistry(AbstractRegistry):
         import os
         import sys
 
+        from extensions.ExtensionLoader import load_extension_module
         from lib.Logging import logger
 
         for extension_name in extension_names:
@@ -534,8 +539,13 @@ class ExtensionRegistry(AbstractRegistry):
                         logger.debug(f"Module path: {module_path}")
 
                         try:
-                            # Import the module
-                            module = importlib.import_module(module_path)
+                            # Item 61: Use load_extension_module so out-of-tree
+                            # extensions (extensions_path != bundled) load
+                            # correctly via spec_from_file_location.
+                            file_stem = os.path.basename(file_path)[:-3]
+                            module = load_extension_module(
+                                self._extensions_root(), extension_name, file_stem
+                            )
                             logger.debug(f"Successfully imported module: {module_path}")
 
                             # Process the module to find models
@@ -876,6 +886,7 @@ class ExtensionRegistry(AbstractRegistry):
         import os
         import sys
 
+        from extensions.ExtensionLoader import load_extension_module
         from lib.Logging import logger
 
         extension_name = extension_class.name
@@ -898,8 +909,12 @@ class ExtensionRegistry(AbstractRegistry):
             module_path = relative_path.replace(os.sep, ".").replace(".py", "")
 
             try:
-                # Import the module
-                module = importlib.import_module(module_path)
+                # Item 61: load via spec_from_file_location helper so
+                # out-of-tree extensions resolve correctly.
+                file_stem = os.path.basename(prv_file)[:-3]
+                module = load_extension_module(
+                    self._extensions_root(), extension_name, file_stem
+                )
 
                 # Find provider classes
                 for attr_name in dir(module):
@@ -966,6 +981,11 @@ class AbstractStaticExtensionSystemComponent(ABC):
     # Environment variables that this extension needs
     _env: Dict[str, Any] = {}
 
+    # Item 37 — typed settings and env schema. Optional; when present the
+    # framework prefers `Settings`/`EnvSchema` over the legacy `_env` dict.
+    Settings: ClassVar[Optional[Type[BaseModel]]] = None
+    EnvSchema: ClassVar[Optional[Type[BaseModel]]] = None
+
     # Unified dependencies of this extension using the Dependencies class
     dependencies: Dependencies = Dependencies([])
 
@@ -1003,11 +1023,44 @@ class AbstractStaticExtensionSystemComponent(ABC):
         if not hasattr(cls, "_abilities"):
             cls._abilities = set()
 
+        # Item 37: validate that Settings/EnvSchema, when declared, are BaseModel.
+        for attr_name in ("Settings", "EnvSchema"):
+            schema = cls.__dict__.get(attr_name)
+            if schema is not None and not (
+                isinstance(schema, type) and issubclass(schema, BaseModel)
+            ):
+                raise TypeError(
+                    f"{cls.__name__}.{attr_name} must inherit from pydantic.BaseModel"
+                )
+
         # Discover and register abilities from this class with validation
         cls._discover_static_abilities_with_validation()
 
         # Register environment variables
         cls._register_env_vars()
+
+    @classmethod
+    def get_setting(cls, name: str, default: Any = None) -> Any:
+        """Item 37 — typed setting accessor.
+
+        Consults `Settings` (Pydantic) when available so callers get
+        typed values; falls back to the legacy `_env` dict otherwise.
+        """
+        if cls.Settings is not None:
+            try:
+                instance = cls.Settings()
+                if hasattr(instance, name):
+                    return getattr(instance, name)
+            except Exception as exc:
+                logger.debug(
+                    "Settings construction failed for %s: %s", cls.__name__, exc
+                )
+        return cls._env.get(name, default) if isinstance(cls._env, dict) else default
+
+    @classmethod
+    def get_env_schema(cls) -> Optional[Type[BaseModel]]:
+        """Return the declared `EnvSchema` Pydantic model, or None."""
+        return cls.EnvSchema
 
     @classmethod
     def _discover_static_abilities_with_validation(cls) -> None:
@@ -1085,16 +1138,41 @@ class AbstractStaticExtensionSystemComponent(ABC):
 
 
 class AbstractProviderInstance(ABC):
+    """Item 26 — typed contract for bonded provider instances.
 
-    def __init__(self, model: Optional[ProviderInstanceModel] = None):
-        self.model = model
+    Concrete subclasses MUST accept a `ProviderInstanceModel` in their
+    constructor. `validate_credentials` and `close` carry default impls
+    so existing subclasses keep working; override them when the provider
+    holds resources to release or wants a self-test before first use.
+    """
 
     model: Optional[ProviderInstanceModel]
 
+    def __init__(self, instance: Optional[ProviderInstanceModel] = None) -> None:
+        self.model = instance
+
+    def validate_credentials(self) -> bool:
+        """Self-test the bonded credentials. Default: trust them.
+
+        Override to issue a no-op upstream call (e.g., GET /v1/me) and
+        return False on auth-failure responses. Should NOT raise.
+        """
+        return True
+
+    def close(self) -> None:
+        """Release any held resources (open SDK clients, sockets).
+
+        Default no-op. Subclasses with persistent connections (gRPC
+        channels, long-lived HTTP/2 clients) override this.
+        """
+        return None
+
 
 class AbstractProviderInstance_SDK(AbstractProviderInstance):
-    def __init__(self, sdk, model: Optional[ProviderInstanceModel] = None):
-        super().__init__(model=model)
+    def __init__(
+        self, sdk: Any, instance: Optional[ProviderInstanceModel] = None
+    ) -> None:
+        super().__init__(instance=instance)
         if sdk is None:
             raise Exception("An SDK is required for this provider.")
         self._sdk = sdk
@@ -1102,6 +1180,43 @@ class AbstractProviderInstance_SDK(AbstractProviderInstance):
     @property
     def sdk(self):
         return self._sdk
+
+
+# ----- Item 27: liveness reporting ------------------------------------------
+
+
+class HealthStatus(Enum):
+    OK = "ok"
+    DEGRADED = "degraded"
+    DOWN = "down"
+
+
+class HealthReport:
+    """Per-instance liveness report.
+
+    Item 27: distinct from `is_configured`. `is_configured` reports
+    "all required env vars present"; `health_check` reports a real
+    upstream-validated liveness check. A provider with stale credentials
+    is `is_configured == True` and `health_check == DOWN`.
+    """
+
+    __slots__ = ("status", "timestamp", "detail")
+
+    def __init__(
+        self,
+        status: HealthStatus,
+        timestamp: Optional[datetime] = None,
+        detail: str = "",
+    ) -> None:
+        self.status = status
+        self.timestamp = timestamp or datetime.now(timezone.utc)
+        self.detail = detail
+
+    def __repr__(self) -> str:
+        return (
+            f"HealthReport(status={self.status.value}, "
+            f"timestamp={self.timestamp.isoformat()}, detail={self.detail!r})"
+        )
 
 
 class AbstractStaticProvider(AbstractStaticExtensionSystemComponent):
@@ -1113,9 +1228,38 @@ class AbstractStaticProvider(AbstractStaticExtensionSystemComponent):
     (e.g., EXT_EMail.AbstractEmailProvider) which then define abstract abilities.
     """
 
+    # Item 26 — typed bonded-instance attribute.
+    _instance: ClassVar[Optional[AbstractProviderInstance]] = None
+
+    # Item 50 — paired-name discriminator source. Providers may override
+    # (e.g., `STRIPE_ENV`) when they need per-provider environment selection.
+    environment_source: ClassVar[str] = "APP_ENV"
+
+    # Item 10 — default auth strategy name. Providers may override
+    # (e.g. "oauth2", "jwt_bearer", "aws_sigv4"). Per-provider-instance
+    # overrides are read from `ProviderInstanceModel.auth_strategy_name`.
+    auth_strategy_name: ClassVar[str] = "api_key"
+
+    # Item 17 — optional per-provider rate-limit / concurrency caps.
+    # Concrete providers set these as needed. Imported lazily to avoid a
+    # hard module-cycle when this file loads before extensions.RateLimit.
+    rate_limit: ClassVar[Optional[Any]] = None
+    concurrency_limit: ClassVar[Optional[Any]] = None
+
+    # Item 2 — per-provider rotation policy. Concrete providers set this
+    # to a `RotationPolicy` (from `extensions.ExternalErrors`); the
+    # rotation system reads it via `RotationManager._resolve_rotation_policy`.
+    rotation_policy: ClassVar[Optional[Any]] = None
+
+    # Item 27 — cached health report per provider class instance.
+    _cached_health: ClassVar[Optional[HealthReport]] = None
+    _cached_health_at: ClassVar[float] = 0.0
+
     @classmethod
     @abstractmethod
-    def bond_instance(cls, instance: ProviderInstanceModel) -> AbstractProviderInstance:
+    def bond_instance(
+        cls, instance: ProviderInstanceModel
+    ) -> AbstractProviderInstance:
         """Bond a provider instance with the service SDK."""
         return AbstractProviderInstance(instance)
 
@@ -1128,6 +1272,72 @@ class AbstractStaticProvider(AbstractStaticExtensionSystemComponent):
     def get_abilities(cls) -> Set[str]:
         """Get provider abilities for rotation system."""
         return cls._abilities.copy()
+
+    @classmethod
+    def is_configured(cls) -> bool:
+        """All required environment variables present and non-empty.
+
+        Used for startup / admin readiness reporting. NOT a liveness check —
+        see `health_check` for upstream-validated liveness.
+        """
+        env_dict = cls._env if isinstance(cls._env, dict) else {}
+        for var_name in env_dict.keys():
+            value = env(var_name)
+            if value is None or (isinstance(value, str) and not value.strip()):
+                return False
+        return True
+
+    @classmethod
+    def health_check(cls) -> HealthReport:
+        """Live liveness check. Default: report OK based on `is_configured`.
+
+        Per Item 27 the cache is per-provider-instance, not per-class —
+        but the framework's existing structure carries provider state
+        on the class. Override at the concrete-provider level to issue
+        a real upstream call and downgrade to DEGRADED / DOWN.
+        """
+        if cls.is_configured():
+            return HealthReport(HealthStatus.OK, detail="defaults: configured")
+        return HealthReport(HealthStatus.DOWN, detail="missing required env vars")
+
+    @classmethod
+    def build_auth_strategy(
+        cls,
+        instance: ProviderInstanceModel,
+        payload: Optional[Dict[str, Any]] = None,
+    ) -> Any:
+        """Item 10 — build the auth strategy for a bonded instance.
+
+        Looks up the strategy name from the per-instance override (if
+        present on `ProviderInstanceModel.auth_strategy_name`) falling
+        back to the class-level default `cls.auth_strategy_name`. The
+        registry resolves the factory; payload is the credential blob
+        the strategy interprets (typically containing `api_key`,
+        `access_token`, `username`/`password`, etc.).
+        """
+        from extensions.AuthStrategy import AuthStrategyRegistry
+
+        name = (
+            getattr(instance, "auth_strategy_name", None)
+            or cls.auth_strategy_name
+        )
+        return AuthStrategyRegistry.get(name, payload or {})
+
+    @classmethod
+    def cached_health_check(cls, ttl_seconds: int = 60) -> HealthReport:
+        """TTL-cached `health_check`. Per Item 27 the cache lives per
+        provider-instance — for now, per-class given the framework's
+        static-provider model. Reset by calling `cls._cached_health = None`."""
+        now = monotonic()
+        if (
+            cls._cached_health is not None
+            and (now - cls._cached_health_at) < ttl_seconds
+        ):
+            return cls._cached_health
+        report = cls.health_check()
+        cls._cached_health = report
+        cls._cached_health_at = now
+        return report
 
 
 class AbstractStaticExtensionMeta(ABCMeta):
@@ -1233,12 +1443,15 @@ class AbstractStaticExtension(
             import inspect
             import os
 
+            from extensions.ExtensionLoader import load_extension_module
+
             providers = []
 
             # Get extension directory through Paths so a global
             # ``set_extensions_root`` override is honored.
             src_dir = _resolve_src_dir()
-            extension_dir = os.path.join(_resolve_extensions_dir(), cls.name)
+            extensions_root = _resolve_extensions_dir()
+            extension_dir = os.path.join(extensions_root, cls.name)
             extension_scope = f"extensions.{cls.name}"
 
             # Find all PRV files
@@ -1249,7 +1462,11 @@ class AbstractStaticExtension(
                     continue
                 module_name = os.path.basename(prv_file)[:-3]  # Remove .py
                 try:
-                    module = importlib.import_module(f"{extension_scope}.{module_name}")
+                    # Item 61: load via spec_from_file_location for
+                    # out-of-tree compatibility.
+                    module = load_extension_module(
+                        extensions_root, cls.name, module_name
+                    )
 
                     # Find provider classes in the module
                     for name, obj in inspect.getmembers(module, inspect.isclass):
@@ -1265,7 +1482,15 @@ class AbstractStaticExtension(
                                     and obj != AbstractStaticProvider
                                 ):
                                     providers.append(obj)
-                            except:
+                            except TypeError as e:
+                                # `issubclass` raises TypeError when `obj` is
+                                # not a class (e.g. instance/value attribute).
+                                logger.debug(
+                                    "provider discovery: %r failed issubclass check (%s); "
+                                    "falling back to _is_provider attribute",
+                                    obj,
+                                    e,
+                                )
                                 # Also check for _is_provider attribute as fallback
                                 if hasattr(obj, "_is_provider") and obj._is_provider:
                                     providers.append(obj)
@@ -1309,8 +1534,13 @@ class AbstractStaticExtension(
                         db_manager = (
                             app_module.app.state.model_registry.database_manager
                         )
-            except:
-                pass
+            except (AttributeError, ImportError) as e:
+                logger.debug(
+                    "root rotation: cannot reach app.state.model_registry "
+                    "for extension %s: %s",
+                    cls.name,
+                    e,
+                )
 
             # If not available from app state, try singleton pattern (backward compatibility)
             if not db_manager and hasattr(DatabaseManager, "get_instance"):
@@ -1476,8 +1706,12 @@ class AbstractStaticExtension(
                         if "RouterMixin" in f.read():
                             types.add(ExtensionType.ENDPOINTS)
                             break
-                except:
-                    pass
+                except OSError as e:
+                    logger.debug(
+                        "extension type detection: cannot read %s: %s",
+                        bll_file,
+                        e,
+                    )
 
         # Check for database models (in BLL files with DatabaseMixin)
         bll_files = glob.glob(os.path.join(extension_dir, "BLL_*.py"))
@@ -1491,8 +1725,12 @@ class AbstractStaticExtension(
                     ):
                         types.add(ExtensionType.DATABASE)
                         break
-            except:
-                pass
+            except OSError as e:
+                logger.debug(
+                    "extension type detection: cannot read %s: %s",
+                    bll_file,
+                    e,
+                )
 
         # Check for external components
         if glob.glob(os.path.join(extension_dir, "PRV_*.py")):
@@ -1510,8 +1748,12 @@ class AbstractStaticExtension(
                         ):
                             types.add(ExtensionType.EXTERNAL)
                             break
-                except:
-                    pass
+                except OSError as e:
+                    logger.debug(
+                        "extension type detection: cannot read %s: %s",
+                        bll_file,
+                        e,
+                    )
 
         cls._types_cache = types
         return types
@@ -1537,14 +1779,20 @@ class AbstractStaticExtension(
         import inspect
         import os
 
+        from extensions.ExtensionLoader import load_extension_module
+
         src_dir = _resolve_src_dir()
-        extension_dir = os.path.join(_resolve_extensions_dir(), cls.name)
+        extensions_root = _resolve_extensions_dir()
+        extension_dir = os.path.join(extensions_root, cls.name)
         extension_scope = f"extensions.{cls.name}"
 
         for bll_file in glob.glob(os.path.join(extension_dir, "BLL_*.py")):
             module_name = os.path.basename(bll_file)[:-3]  # Remove .py
             try:
-                module = importlib.import_module(f"{extension_scope}.{module_name}")
+                # Item 61: out-of-tree-compatible loader.
+                module = load_extension_module(
+                    extensions_root, cls.name, module_name
+                )
                 for name, obj in inspect.getmembers(module, inspect.isclass):
                     # Check if it's a BLL model with DatabaseMixin (has .DB property)
                     if (
@@ -1559,7 +1807,10 @@ class AbstractStaticExtension(
         for prv_file in glob.glob(os.path.join(extension_dir, "PRV_*.py")):
             module_name = os.path.basename(prv_file)[:-3]  # Remove .py
             try:
-                module = importlib.import_module(f"{extension_scope}.{module_name}")
+                # Item 61: out-of-tree-compatible loader.
+                module = load_extension_module(
+                    extensions_root, cls.name, module_name
+                )
                 for name, obj in inspect.getmembers(module, inspect.isclass):
                     # Check if it's an external model
                     if hasattr(obj, "_is_extension_model") and obj._is_extension_model:
@@ -1576,8 +1827,15 @@ class AbstractStaticExtension(
                                 and not inspect.isabstract(obj)
                             ):
                                 models.add(obj)
-                        except:
-                            pass
+                        except (TypeError, ImportError) as e:
+                            # `issubclass` raises TypeError on non-class objects;
+                            # ImportError if AbstractExternalModel is unavailable.
+                            logger.debug(
+                                "model discovery: %r failed external-model "
+                                "subclass check: %s",
+                                obj,
+                                e,
+                            )
             except Exception as e:
                 logger.debug(f"Failed to import {module_name}: {e}")
 
@@ -1610,8 +1868,12 @@ class AbstractStaticExtension(
 
                 if hasattr(DatabaseManager, "get_instance"):
                     db_manager = DatabaseManager.get_instance()
-            except:
-                pass
+            except (ImportError, AttributeError) as e:
+                logger.debug(
+                    "seed-data generation: DatabaseManager singleton "
+                    "unavailable: %s",
+                    e,
+                )
 
             if not db_manager:
                 logger.warning("No database manager available for seed data generation")

@@ -1,15 +1,66 @@
+from __future__ import annotations
+
 import asyncio
+import random
 import time
 import traceback
 import uuid
 from abc import ABC, abstractmethod
-from typing import Dict, List, Optional, TypeVar
+from collections import deque
+from datetime import datetime, timezone
+from typing import Any, Callable, Deque, Dict, List, Literal, Optional, TypeVar
 
 from sqlalchemy.orm import Session
 
 from lib.Logging import logger
 
 T = TypeVar("T", bound="AbstractService")
+
+
+# Default drain period (Item 28 / Item 44 alignment): on stop the service has
+# this many seconds to finish in-flight work before being forcibly cancelled.
+DEFAULT_DRAIN_PERIOD_SECONDS: float = 30.0
+
+
+# Restart policy literal -- controls how a supervisor handles service exits.
+# - "always": restart on any exit
+# - "on_failure": restart only on unhandled exception
+# - "never": one-shot, do not restart
+RestartPolicy = Literal["always", "on_failure", "never"]
+
+
+class HealthStatus:
+    """A simple structured health-status value for AbstractService.health().
+
+    Three states map naturally to the rotation system's HealthStatus from
+    Item 27 -- this is intentionally compatible at the value-level so a
+    service consumer can use the same OK/DEGRADED/DOWN vocabulary.
+    """
+
+    OK = "OK"
+    DEGRADED = "DEGRADED"
+    DOWN = "DOWN"
+    FAILED = "FAILED"
+
+    def __init__(
+        self,
+        status: str,
+        detail: str = "",
+        timestamp: Optional[datetime] = None,
+    ) -> None:
+        self.status = status
+        self.detail = detail
+        self.timestamp = timestamp or datetime.now(timezone.utc)
+
+    def __repr__(self) -> str:  # pragma: no cover - cosmetic
+        return f"HealthStatus({self.status}, {self.detail!r})"
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "status": self.status,
+            "detail": self.detail,
+            "timestamp": self.timestamp.isoformat(),
+        }
 
 
 class AbstractService(ABC):
@@ -61,6 +112,18 @@ class AbstractService(ABC):
         self._last_run_time = 0
         self.service_id = service_id or str(uuid.uuid4())
         self.db_manager = kwargs.get("db_manager")
+        # Item 28: drain period and supervisor restart policy.
+        self.drain_period_seconds: float = float(
+            kwargs.get("drain_period_seconds", DEFAULT_DRAIN_PERIOD_SECONDS)
+        )
+        self.restart_policy: RestartPolicy = kwargs.get(
+            "restart_policy", "on_failure"
+        )
+        # ``failed`` is the terminal supervisor state per Item 28's acceptance
+        # criteria; entered when the service exhausts ``max_failures`` and
+        # cleared only by an explicit reset (admin action / tests).
+        self.failed: bool = False
+        self._failed_reason: Optional[str] = None
         self._configure_service(**kwargs)
 
     def _configure_service(self, **kwargs) -> None:
@@ -145,11 +208,53 @@ class AbstractService(ABC):
 
         if self.failures > self.max_failures:
             self.running = False
+            # Item 28: enter the supervisor ``failed`` terminal state. The
+            # supervisor will not auto-restart from this state; an operator
+            # must call ``reset_failed`` (mirrored by Item 44's admin endpoint).
+            self.failed = True
+            self._failed_reason = (
+                f"max_failures exceeded ({self.failures}/{self.max_failures}): "
+                f"{type(error).__name__}: {error}"
+            )
             raise Exception(
                 f"{self.__class__.__name__} ({self.service_id}) Error: Too many failures. {error}"
             )
 
         return True
+
+    def reset_failed(self) -> None:
+        """Clear the terminal ``failed`` state set by the supervisor.
+
+        Mirrors Item 44's admin action: an operator that has diagnosed and
+        fixed the underlying failure cause calls this to allow the supervisor
+        to restart the service.
+        """
+        self.failed = False
+        self._failed_reason = None
+        self.failures = 0
+
+    def health(self) -> HealthStatus:
+        """Return a structured health status for the service.
+
+        Default mapping:
+        - ``failed`` -> ``FAILED``
+        - ``running and not paused`` -> ``OK``
+        - ``running and paused`` -> ``DEGRADED``
+        - otherwise -> ``DOWN``
+
+        Subclasses may override to fold in queue depth, last-message age,
+        connection state, etc.
+        """
+        if self.failed:
+            return HealthStatus(
+                HealthStatus.FAILED,
+                self._failed_reason or "service has entered the failed state",
+            )
+        if not self.running:
+            return HealthStatus(HealthStatus.DOWN, "service is not running")
+        if self.paused:
+            return HealthStatus(HealthStatus.DEGRADED, "service is paused")
+        return HealthStatus(HealthStatus.OK, "running")
 
     def _reset_failures(self) -> None:
         """Reset the failure counter after a successful execution."""
@@ -314,3 +419,304 @@ class ServiceRegistry:
             except Exception as e:
                 logger.error(f"Failed to cleanup/unregister service {service_id}: {e}")
         logger.debug("All services cleaned up")
+
+
+# ---------------------------------------------------------------------------
+# Item 28 - Broadened service interface
+# ---------------------------------------------------------------------------
+
+
+class PerpetualService(AbstractService):
+    """Alias for the existing :class:`AbstractService` perpetual-loop semantics.
+
+    Default flavor; provided so callers can be explicit at declaration time:
+
+        class MyAgentLoop(PerpetualService):
+            ...
+    """
+
+    pass
+
+
+# ----- Scheduled --------------------------------------------------------------
+
+
+class ScheduledService(AbstractService):
+    """Cron-or-interval scheduled execution.
+
+    Accepts either ``cron_expression`` or the existing ``interval_seconds``.
+    Persists ``last_run_at`` via an injectable ``state_store`` callable
+    (``state_store(service_id, value=None) -> Optional[datetime]``) so cadence
+    survives restarts.
+
+    The cron evaluator is intentionally minimal: if a real cron lib is wired
+    via ``cron_evaluator(cron_expression, last_run_at) -> datetime``, that is
+    used; otherwise the service falls back to ``interval_seconds`` semantics.
+    """
+
+    def __init__(
+        self,
+        *args: Any,
+        cron_expression: Optional[str] = None,
+        state_store: Optional[Callable[..., Any]] = None,
+        cron_evaluator: Optional[Callable[[str, Optional[datetime]], datetime]] = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(*args, **kwargs)
+        self.cron_expression = cron_expression
+        self._state_store = state_store
+        self._cron_evaluator = cron_evaluator
+        self.last_run_at: Optional[datetime] = None
+        if self._state_store is not None:
+            try:
+                self.last_run_at = self._state_store(self.service_id)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    f"ScheduledService {self.service_id}: state_store load failed: {e}"
+                )
+
+    def _persist_last_run(self) -> None:
+        if self._state_store is None:
+            return
+        try:
+            self._state_store(self.service_id, value=self.last_run_at)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                f"ScheduledService {self.service_id}: state_store save failed: {e}"
+            )
+
+    def _next_due(self, now: datetime) -> datetime:
+        if self.cron_expression and self._cron_evaluator is not None:
+            return self._cron_evaluator(self.cron_expression, self.last_run_at)
+        # Fallback to interval semantics.
+        base = self.last_run_at or now
+        return base.fromtimestamp(
+            base.timestamp() + self.interval_seconds, tz=timezone.utc
+        )
+
+    async def run_service_loop(self) -> None:  # type: ignore[override]
+        while self.running:
+            try:
+                if self.paused:
+                    await asyncio.sleep(1)
+                    continue
+                now = datetime.now(timezone.utc)
+                due = self._next_due(now)
+                if now < due:
+                    await asyncio.sleep(min(1.0, max(0.05, (due - now).total_seconds())))
+                    continue
+                await self.update()
+                self.last_run_at = now
+                self._persist_last_run()
+                self._reset_failures()
+                # Always yield to the event loop so external stop() calls
+                # are observable even when ``interval_seconds == 0``.
+                await asyncio.sleep(0)
+            except Exception as e:  # noqa: BLE001
+                retry = self._handle_failure(e)
+                if retry:
+                    await asyncio.sleep(self.retry_delay_seconds)
+                else:
+                    break
+
+
+# ----- QueueConsumer ----------------------------------------------------------
+
+
+class QueueSource(ABC):
+    """Abstract pull-model queue source."""
+
+    @abstractmethod
+    async def pull_one(self) -> Optional[dict]:
+        ...
+
+    @abstractmethod
+    async def ack(self, item: dict) -> None:
+        ...
+
+    @abstractmethod
+    async def nack(self, item: dict) -> None:
+        ...
+
+    @abstractmethod
+    async def move_to_dlq(self, item: dict, reason: str) -> None:
+        ...
+
+
+class InMemoryQueueSource(QueueSource):
+    """A FIFO in-memory queue, intended for tests and dev."""
+
+    def __init__(self) -> None:
+        self._items: Deque[dict] = deque()
+        self.dlq: List[dict] = []
+        self.acked: List[dict] = []
+        self.nacked: List[dict] = []
+
+    def push(self, item: dict) -> None:
+        self._items.append(item)
+
+    async def pull_one(self) -> Optional[dict]:
+        if not self._items:
+            return None
+        return self._items.popleft()
+
+    async def ack(self, item: dict) -> None:
+        self.acked.append(item)
+
+    async def nack(self, item: dict) -> None:
+        self.nacked.append(item)
+        # Re-enqueue at the back for redelivery.
+        self._items.append(item)
+
+    async def move_to_dlq(self, item: dict, reason: str) -> None:
+        self.dlq.append({"item": item, "reason": reason})
+
+
+class QueueConsumerService(AbstractService):
+    """Pulls from a :class:`QueueSource` with backoff and DLQ handling.
+
+    Override :meth:`process` to do per-item work. Failures are retried up to
+    ``max_retries`` times (tracked per-item via ``_attempts``); on exhaustion
+    the item is moved to DLQ.
+    """
+
+    def __init__(
+        self,
+        *args: Any,
+        queue_source: Optional[QueueSource] = None,
+        max_retries: int = 5,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(*args, **kwargs)
+        self.queue_source = queue_source
+        self.max_retries = max_retries
+        self._attempts: Dict[str, int] = {}
+
+    async def pull_one(self) -> Optional[dict]:
+        if self.queue_source is None:
+            return None
+        return await self.queue_source.pull_one()
+
+    async def process(self, item: dict) -> None:  # pragma: no cover - override me
+        raise NotImplementedError
+
+    def _item_key(self, item: dict) -> str:
+        # Prefer an explicit id; fall back to a stable repr.
+        return str(item.get("id") or id(item))
+
+    async def update(self) -> None:
+        item = await self.pull_one()
+        if item is None:
+            return
+        key = self._item_key(item)
+        try:
+            await self.process(item)
+            if self.queue_source is not None:
+                await self.queue_source.ack(item)
+            self._attempts.pop(key, None)
+        except Exception as e:  # noqa: BLE001
+            attempts = self._attempts.get(key, 0) + 1
+            self._attempts[key] = attempts
+            if attempts > self.max_retries:
+                logger.error(
+                    f"QueueConsumerService {self.service_id}: item {key} exhausted"
+                    f" retries ({attempts}); moving to DLQ. error={e}"
+                )
+                if self.queue_source is not None:
+                    await self.queue_source.move_to_dlq(item, str(e))
+                self._attempts.pop(key, None)
+            else:
+                logger.warning(
+                    f"QueueConsumerService {self.service_id}: item {key} failed"
+                    f" attempt {attempts}/{self.max_retries}; nacking. error={e}"
+                )
+                if self.queue_source is not None:
+                    await self.queue_source.nack(item)
+
+
+# ----- Streaming --------------------------------------------------------------
+
+
+class StreamingService(AbstractService):
+    """Long-lived connection-oriented work.
+
+    Lifecycle: ``connect() -> on_message(message) -> disconnect()``. Reconnection
+    backoff is exponential with jitter, capped at ``reconnect_max_seconds``.
+    """
+
+    reconnect_initial_seconds: float = 1.0
+    reconnect_max_seconds: float = 60.0
+
+    async def connect(self) -> Any:  # pragma: no cover - override me
+        raise NotImplementedError
+
+    async def on_message(self, message: Any) -> None:  # pragma: no cover - override me
+        raise NotImplementedError
+
+    async def disconnect(self) -> None:
+        return None
+
+    async def iter_messages(self, connection: Any):  # pragma: no cover - override me
+        """Async iterator of messages from the connection. Override per protocol."""
+        if False:
+            yield None
+        return
+
+    async def update(self) -> None:
+        # ``run_service_loop`` is overridden; ``update`` exists only to satisfy
+        # the abstract contract from AbstractService.
+        return None
+
+    async def run_service_loop(self) -> None:  # type: ignore[override]
+        attempt = 0
+        while self.running:
+            if self.paused:
+                await asyncio.sleep(1)
+                continue
+            try:
+                connection = await self.connect()
+                attempt = 0
+                self._reset_failures()
+                try:
+                    async for message in self.iter_messages(connection):
+                        if not self.running:
+                            break
+                        if self.paused:
+                            await asyncio.sleep(0.1)
+                            continue
+                        try:
+                            await self.on_message(message)
+                        except Exception as e:  # noqa: BLE001
+                            logger.error(
+                                f"StreamingService {self.service_id} on_message error: {e}"
+                            )
+                finally:
+                    try:
+                        await self.disconnect()
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning(
+                            f"StreamingService {self.service_id} disconnect error: {e}"
+                        )
+            except Exception as e:  # noqa: BLE001
+                if not self._handle_failure(e):
+                    break
+                attempt += 1
+                backoff = min(
+                    self.reconnect_max_seconds,
+                    self.reconnect_initial_seconds * (2 ** (attempt - 1)),
+                )
+                # Jitter: +/- 25%.
+                backoff = backoff * (0.75 + random.random() * 0.5)
+                await asyncio.sleep(backoff)
+
+
+class ConsumerStreamingService(StreamingService):
+    """Long-lived inbound connections: websocket subscribers, SSE listeners, etc."""
+
+    pass
+
+
+class ProducerStreamingService(StreamingService):
+    """Long-lived outbound streams that we write to."""
+
+    pass

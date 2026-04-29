@@ -1,5 +1,4 @@
 from typing import Any, ClassVar, Dict, Set
-from unittest.mock import patch
 
 import pytest
 from ordered_set import OrderedSet
@@ -709,32 +708,58 @@ class TestExtensionRegistry:
         result = registry.resolve_extension_dependencies(available_extensions)
         assert result == ["optional_only"]
 
-    def test_install_extension_dependencies_success(self):
-        """Test successful installation of extension dependencies."""
+    def test_install_extension_dependencies_returns_empty_for_unknown(self):
+        """Unknown extensions cause a real ImportError; the function returns ``{}``.
+
+        Item 72: replaces a previous ``patch('importlib.import_module')``
+        scenario with a real-import path. ``unknown_ext_xyz`` does not exist
+        on the filesystem, so the natural ``ImportError`` flows through and
+        the function's error path is exercised without mocks.
+        """
         registry = ExtensionRegistry("")  # Empty CSV string
 
-        # Test that the method returns empty dict when no valid extension module is found
-        # This is the expected behavior based on the implementation
-        result = registry.install_extension_dependencies(["nonexistent_ext"])
+        # Use a name guaranteed not to exist as a real extension module.
+        result = registry.install_extension_dependencies(["unknown_ext_xyz"])
         assert result == {}
 
-        # For a real successful test, we would need to create an actual extension module
-        # Since this is complex to mock properly without causing recursion issues,
-        # we verify the error handling path works correctly
-        with patch("importlib.import_module") as mock_import:
-            mock_import.side_effect = ImportError("Module not found")
-            result = registry.install_extension_dependencies(["test_ext"])
+    def test_install_extension_dependencies_real_fixture_returns_empty_when_no_deps(
+        self,
+    ):
+        """Item 72: load the real fixture extension via importlib.
+
+        The fixture lives under ``tests/fixtures/extensions/test_extension/``
+        and declares ``Dependencies([])`` — so the real install path
+        completes without raising and returns an empty dict (no
+        dependencies to install). This exercises the success branch of
+        ``install_extension_dependencies`` against a real module instead
+        of patching importlib.
+        """
+        import sys
+        from pathlib import Path
+
+        # Add tests/fixtures/extensions to sys.path so
+        # ``importlib.import_module("extensions.test_extension.EXT_test_extension")``
+        # can find the fixture. The path is restored after the test via
+        # the finally block.
+        repo_root = Path(__file__).resolve().parents[2]
+        fixture_path = str(repo_root / "tests" / "fixtures")
+        added = False
+        if fixture_path not in sys.path:
+            sys.path.insert(0, fixture_path)
+            added = True
+        try:
+            registry = ExtensionRegistry("")
+            result = registry.install_extension_dependencies(["test_extension"])
+            # Empty deps means an empty result dict. The key point is that
+            # the function ran against a real importable module — no
+            # importlib patch.
             assert result == {}
-
-    @patch("importlib.import_module")
-    def test_install_extension_dependencies_import_error(self, mock_import):
-        """Test handling of import errors during dependency installation."""
-        registry = ExtensionRegistry("")  # Empty CSV string
-
-        mock_import.side_effect = ImportError("Module not found")
-
-        result = registry.install_extension_dependencies(["nonexistent_ext"])
-        assert result == {}  # Should return empty dict when no dependencies found
+        finally:
+            if added:
+                try:
+                    sys.path.remove(fixture_path)
+                except ValueError:
+                    pass
 
 
 class TestAbstractProviderInnerClass:

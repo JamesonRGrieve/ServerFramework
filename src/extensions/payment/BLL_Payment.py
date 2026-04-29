@@ -309,13 +309,45 @@ def get_user_subscription_status(
         if not payment_info["has_payment_setup"]:
             return {"status": "inactive", "reason": "No payment method setup"}
 
-        # TODO: Implement actual subscription checking via rotation system
-        # For now, return a mock status
-        return {
-            "status": "active",
-            "subscription_id": "sub_mock",
-            "current_period_end": "2025-12-31T23:59:59Z",
-        }
+        # Item 74 — call the real rotation entrypoint instead of returning a
+        # hardcoded mock. The Payment extension's root rotation routes the
+        # call to the active payment provider's
+        # ``get_subscription_status_via_provider``; failures surface here as
+        # the typed external errors from Item 1's hierarchy (transient/
+        # rate-limit errors are retried/backed-off by the rotation system
+        # before they reach this layer).
+        try:
+            from extensions.payment.EXT_Payment import EXT_Payment
+            from extensions.payment.PRV_Stripe_Payment import (
+                Stripe_SubscriptionModel,
+            )
+
+            rotation_manager = getattr(EXT_Payment, "root", None)
+            if rotation_manager is None:
+                logger.warning(
+                    "Payment extension root rotation unavailable; "
+                    "returning unknown subscription status for user %s",
+                    user_id,
+                )
+                return {
+                    "subscription_id": None,
+                    "status": "unknown",
+                    "reason": "Payment rotation not configured",
+                }
+
+            return rotation_manager.rotate(
+                Stripe_SubscriptionModel.get_subscription_status_via_provider,
+                user_id=user_id,
+            )
+        except Exception as e:
+            logger.error(
+                f"Failed to fetch subscription status for user {user_id}: {e}"
+            )
+            return {
+                "subscription_id": None,
+                "status": "unknown",
+                "error": str(e),
+            }
 
     except Exception as e:
         logger.error(f"Error getting subscription status for user {user_id}: {e}")
