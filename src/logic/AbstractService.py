@@ -208,11 +208,53 @@ class AbstractService(ABC):
 
         if self.failures > self.max_failures:
             self.running = False
+            # Item 28: enter the supervisor ``failed`` terminal state. The
+            # supervisor will not auto-restart from this state; an operator
+            # must call ``reset_failed`` (mirrored by Item 44's admin endpoint).
+            self.failed = True
+            self._failed_reason = (
+                f"max_failures exceeded ({self.failures}/{self.max_failures}): "
+                f"{type(error).__name__}: {error}"
+            )
             raise Exception(
                 f"{self.__class__.__name__} ({self.service_id}) Error: Too many failures. {error}"
             )
 
         return True
+
+    def reset_failed(self) -> None:
+        """Clear the terminal ``failed`` state set by the supervisor.
+
+        Mirrors Item 44's admin action: an operator that has diagnosed and
+        fixed the underlying failure cause calls this to allow the supervisor
+        to restart the service.
+        """
+        self.failed = False
+        self._failed_reason = None
+        self.failures = 0
+
+    def health(self) -> HealthStatus:
+        """Return a structured health status for the service.
+
+        Default mapping:
+        - ``failed`` -> ``FAILED``
+        - ``running and not paused`` -> ``OK``
+        - ``running and paused`` -> ``DEGRADED``
+        - otherwise -> ``DOWN``
+
+        Subclasses may override to fold in queue depth, last-message age,
+        connection state, etc.
+        """
+        if self.failed:
+            return HealthStatus(
+                HealthStatus.FAILED,
+                self._failed_reason or "service has entered the failed state",
+            )
+        if not self.running:
+            return HealthStatus(HealthStatus.DOWN, "service is not running")
+        if self.paused:
+            return HealthStatus(HealthStatus.DEGRADED, "service is paused")
+        return HealthStatus(HealthStatus.OK, "running")
 
     def _reset_failures(self) -> None:
         """Reset the failure counter after a successful execution."""
@@ -467,6 +509,9 @@ class ScheduledService(AbstractService):
                 self.last_run_at = now
                 self._persist_last_run()
                 self._reset_failures()
+                # Always yield to the event loop so external stop() calls
+                # are observable even when ``interval_seconds == 0``.
+                await asyncio.sleep(0)
             except Exception as e:  # noqa: BLE001
                 retry = self._handle_failure(e)
                 if retry:

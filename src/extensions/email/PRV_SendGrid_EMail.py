@@ -1860,6 +1860,11 @@ class Smtp2goProvider(AbstractEmailProvider):
     # (typed ability declarations) lands.
     capabilities: ClassVar = frozenset({Capability.SEND, Capability.ATTACHMENTS})
 
+    # Item 92 — SMTP2go's HTTP API authenticates via a static API key
+    # passed in the ``api_key`` body field; we model this as ``api_key``
+    # for parity with SendGrid even though the on-the-wire shape differs.
+    default_auth_strategy: ClassVar[str] = "api_key"
+
     dependencies: ClassVar[Dependencies] = Dependencies(
         [
             PIP_Dependency(
@@ -1913,11 +1918,19 @@ class Smtp2goProvider(AbstractEmailProvider):
                 logger.error("SMTP2go API key missing")
                 return None
             client = _httpx.AsyncClient(base_url=api_url, timeout=30.0)
+            # Item 92 — materialise the AuthStrategy. SMTP2go does not
+            # actually use a header-based key (it's body-encoded), but
+            # we still expose the strategy for consumers that want a
+            # uniform handle to "what creds does this provider use".
+            auth_strategy = _build_auth_strategy(
+                cls.default_auth_strategy, api_key=api_key
+            )
             config = {
                 "client": client,
                 "api_key": api_key,
                 "from_email": from_email,
                 "api_url": api_url,
+                "auth_strategy": auth_strategy,
             }
             return AbstractProviderInstance_SDK(config)
         except Exception as e:
