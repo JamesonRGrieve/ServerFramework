@@ -860,30 +860,31 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
         # admin_a out before this happy-path test ever issues its
         # POST. The test is asserting "valid creds → 200", not
         # "lockout state survives across unrelated tests".
-        try:
-            from logic.BLL_Auth import FailedLoginAttemptModel
-            from lib.Environment import env
+        from sqlalchemy import delete as sa_delete
 
-            model_registry = server.app.state.model_registry
-            db_session = model_registry.DB.session()
-            try:
-                db_model = FailedLoginAttemptModel.DB(
-                    model_registry.DB.manager.Base
+        from database.AbstractDatabaseEntity import include_deleted
+        from logic.BLL_Auth import FailedLoginAttemptModel
+
+        model_registry = server.app.state.model_registry
+        db_session = model_registry.DB.session()
+        try:
+            db_model = FailedLoginAttemptModel.DB(
+                model_registry.DB.manager.Base
+            )
+            # Hard-delete (not the BLL soft-delete) so the BLL.count(...)
+            # in UserManager.auth no longer sees these rows.
+            with include_deleted(db_session):
+                db_session.execute(
+                    sa_delete(db_model).where(db_model.user_id == admin_a.id)
                 )
-                rows = (
-                    db_session.query(db_model)
-                    .filter(db_model.user_id == admin_a.id)
-                    .all()
-                )
-                for row in rows:
-                    db_session.delete(row)
-                db_session.commit()
-            finally:
-                db_session.close()
-        except Exception:
-            # If the cleanup pathway is unavailable, fall through and
-            # let the test surface the real failure.
-            pass
+            db_session.commit()
+        except Exception as exc:
+            db_session.rollback()
+            logger.warning(
+                "test_POST_200_authorize_body cleanup failed: %s", exc
+            )
+        finally:
+            db_session.close()
 
         # The authorize endpoint expects flat email/password, not nested in "auth"
         auth_payload = {
@@ -893,6 +894,13 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
 
         endpoint = "/v1/user/authorize"
         response = server.post(endpoint, json=auth_payload)
+        if response.status_code != 200:
+            logger.warning(
+                "test_POST_200_authorize_body unexpected status="
+                + str(response.status_code)
+                + " body="
+                + response.text[:500]
+            )
         self._assert_response_status(response, 200, "POST", endpoint, auth_payload)
 
         json_response = response.json()
