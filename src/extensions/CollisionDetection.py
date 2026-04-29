@@ -85,18 +85,55 @@ class _FieldOrigin:
     source_line: int = 0
 
     def matches(self, other: "_FieldOrigin") -> bool:
-        """Two declarations match if their Pydantic field info compares
-        equal. Pydantic v2's ``FieldInfo`` implements ``__eq__`` over
-        annotation, default, metadata, description, etc.
+        """Two declarations match if their Pydantic ``FieldInfo`` describes
+        the same field shape.
+
+        Pydantic v2's ``FieldInfo`` does NOT implement value ``__eq__``
+        (it falls back to identity), so we compare salient attributes
+        explicitly: ``annotation``, ``default``, ``default_factory``,
+        ``description``, ``metadata``, ``json_schema_extra``, ``alias``,
+        and ``examples``. Identical declarations across extensions become
+        a no-op duplicate; any difference is a collision.
+
+        ``None`` field info is used by legacy origins layered in via
+        ``extension_field_origins`` -- those carry no ``FieldInfo``, so a
+        pair that includes ``None`` cannot be proven identical and is
+        treated as a collision.
         """
+        if self.field_info is None or other.field_info is None:
+            # Legacy origins carry no FieldInfo; cannot prove identity.
+            return False
         if self.field_info is other.field_info:
             return True
+        # Try value equality first (covers any future Pydantic upgrade
+        # that adds a real __eq__).
         try:
-            return self.field_info == other.field_info
+            if self.field_info == other.field_info:
+                return True
         except Exception:
-            # If equality is not implemented, fall back to identity --
-            # which we already failed -- so they are different.
+            pass
+        try:
+            return _field_info_value_equal(self.field_info, other.field_info)
+        except Exception:
             return False
+
+
+def _field_info_value_equal(a: Any, b: Any) -> bool:
+    """Compare the salient attributes of two Pydantic v2 ``FieldInfo``s."""
+    attrs = (
+        "annotation",
+        "default",
+        "default_factory",
+        "description",
+        "metadata",
+        "json_schema_extra",
+        "alias",
+        "examples",
+    )
+    for attr in attrs:
+        if getattr(a, attr, None) != getattr(b, attr, None):
+            return False
+    return True
 
 
 # Module-level registry. Keyed by ``(model_name, field_name)`` so the
