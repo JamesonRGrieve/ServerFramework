@@ -97,3 +97,42 @@ def test_unrecognized_event_returns_200_without_handler():
         json={"id": "cus_3"},
     )
     assert r.status_code == 200
+
+
+@pytest.mark.unit
+def test_missing_verify_signature_returns_401():
+    """Item 5: Mandatory verify_signature lookup; reject 401 if absent."""
+
+    class _ExtensionWithoutVerify:
+        extension_name = "noverify"
+
+        class PRV_Stripe:
+            # NOTE: no verify_signature method.
+            pass
+
+    @webhook_handler(_ExtensionWithoutVerify, provider="stripe", event="customer.updated")
+    def handle(ctx: WebhookContext) -> None:
+        raise AssertionError("must not be called when signature isn't configured")
+
+    client = _client()
+    r = client.post(
+        "/webhook/noverify/stripe/customer.updated",
+        json={"id": "cus_no_sig"},
+    )
+    assert r.status_code == 401
+
+
+@pytest.mark.unit
+def test_unknown_extension_returns_200_without_signature_check():
+    """A probe to an extension/provider with no handlers returns 200, not 401.
+
+    The 401-on-absent-signature rule only fires when a handler exists --
+    otherwise a misdirected probe surfaces as the friendlier
+    "unrecognized event" path.
+    """
+    client = _client()
+    r = client.post(
+        "/webhook/unknown_extension/some_provider/some_event",
+        json={"id": "cus_unknown"},
+    )
+    assert r.status_code == 200
