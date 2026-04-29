@@ -19,6 +19,7 @@ from extensions.AbstractExternalModel import (
     BatchResult,
     BatchedNavigationResolver,
     ExternalNavigationProperty,
+    _unwrap_provider_call,
     bind_resolver,
     derive_batch_idempotency_key,
     get_navigation_includes,
@@ -30,6 +31,7 @@ from extensions.AbstractExternalModel import (
 )
 from extensions.ExternalErrors import (
     BaseExternalError,
+    InvalidInputExternalError,
     NavigationNotIncludedError,
     PermanentExternalError,
     TransientExternalError,
@@ -279,6 +281,266 @@ class TestBatchResultDeriveKey:
         k = derive_batch_idempotency_key([])
         assert isinstance(k, str)
         assert len(k) == 64
+
+
+class TestUnwrapProviderCall:
+    """Item 1: AbstractExternalAPIClient translates dict envelopes to typed
+    exceptions, while accepting raise-style callees as a back-compat shim."""
+
+    def test_legacy_envelope_success_is_unwrapped(self):
+        def fake_provider(provider_instance, **kwargs):
+            return {"success": True, "data": {"x": 1}, "error": None}
+
+        out = _unwrap_provider_call(_Stub_Model, "create", fake_provider, None, x=1)
+        assert out == {"x": 1}
+
+    def test_legacy_envelope_no_error_key_is_unwrapped(self):
+        def fake_provider(provider_instance, **kwargs):
+            return {"success": True, "data": {"x": 1}}
+
+        out = _unwrap_provider_call(_Stub_Model, "create", fake_provider, None, x=1)
+        assert out == {"x": 1}
+
+    def test_legacy_envelope_not_found_translates_to_invalid_input(self):
+        def fake_provider(provider_instance, external_id):
+            return {"success": False, "error": "Not found"}
+
+        with pytest.raises(InvalidInputExternalError) as ei:
+            _unwrap_provider_call(_Stub_Model, "get", fake_provider, None, "x")
+        assert ei.value.upstream_status == 404
+
+    def test_legacy_envelope_other_error_becomes_permanent(self):
+        def fake_provider(provider_instance, **kwargs):
+            return {"success": False, "error": "boom"}
+
+        with pytest.raises(PermanentExternalError):
+            _unwrap_provider_call(_Stub_Model, "create", fake_provider, None)
+
+    def test_typed_raise_passes_through(self):
+        def fake_provider(provider_instance, **kwargs):
+            raise TransientExternalError("upstream 503", upstream_status=503)
+
+        with pytest.raises(TransientExternalError):
+            _unwrap_provider_call(_Stub_Model, "create", fake_provider, None)
+
+    def test_unknown_exception_wrapped_when_opted_in(self):
+        class _Opt(AbstractExternalModel):
+            raises_typed_errors: ClassVar[bool] = True
+
+            @staticmethod
+            def create_via_provider(p, **kw): return None
+
+            @staticmethod
+            def get_via_provider(p, eid): return None
+
+            @staticmethod
+            def list_via_provider(p, **kw): return []
+
+            @staticmethod
+            def update_via_provider(p, eid, **kw): return None
+
+            @staticmethod
+            def delete_via_provider(p, eid): return None
+
+        def fake_provider(provider_instance, **kwargs):
+            raise RuntimeError("kaboom")
+
+        with pytest.raises(PermanentExternalError):
+            _unwrap_provider_call(_Opt, "create", fake_provider, None)
+
+    def test_unknown_exception_not_wrapped_when_not_opted_in(self):
+        def fake_provider(provider_instance, **kwargs):
+            raise RuntimeError("kaboom")
+
+        with pytest.raises(RuntimeError):
+            _unwrap_provider_call(_Stub_Model, "create", fake_provider, None)
+
+    def test_payload_passthrough_when_not_an_envelope(self):
+        def fake_provider(provider_instance, **kwargs):
+            return {"id": "abc", "name": "X"}
+
+        out = _unwrap_provider_call(_Stub_Model, "create", fake_provider, None)
+        assert out == {"id": "abc", "name": "X"}
+
+
+class TestBatchOperations:
+    """Item 12: AbstractExternalManager.batch_* delegates when the model
+    overrides batch_*_via_provider, else loops over per-item create/update/
+    delete."""
+
+    def test_supports_bulk_returns_false_by_default(self):
+        assert _Stub_Model.supports_bulk("create") is False
+        assert _Stub_Model.supports_bulk("update") is False
+        assert _Stub_Model.supports_bulk("delete") is False
+
+    def test_supports_bulk_returns_true_when_overridden(self):
+        class _BulkModel(AbstractExternalModel):
+            @staticmethod
+            def create_via_provider(p, **kw): return {}
+
+            @staticmethod
+            def get_via_provider(p, eid): return {}
+
+            @staticmethod
+            def list_via_provider(p, **kw): return []
+
+            @staticmethod
+            def update_via_provider(p, eid, **kw): return {}
+
+            @staticmethod
+            def delete_via_provider(p, eid): return None
+
+            @staticmethod
+            def batch_create_via_provider(p, items):
+                return [{"id": f"x{idx}", **it} for idx, it in enumerate(items)]
+
+        assert _BulkModel.supports_bulk("create") is True
+        assert _BulkModel.supports_bulk("update") is False
+
+    def test_batch_create_uses_bulk_slot_when_available(self):
+        class _BulkModel(AbstractExternalModel):
+            @staticmethod
+            def create_via_provider(p, **kw): return {"success": True, "data": kw}
+
+            @staticmethod
+            def get_via_provider(p, eid): return {"success": True, "data": {}}
+
+            @staticmethod
+            def list_via_provider(p, **kw): return {"success": True, "data": []}
+
+            @staticmethod
+            def update_via_provider(p, eid, **kw): return {"success": True, "data": {}}
+
+            @staticmethod
+            def delete_via_provider(p, eid): return {"success": True, "data": None}
+
+            @staticmethod
+            def batch_create_via_provider(p, items):
+                return [{"id": f"x{idx}", **it} for idx, it in enumerate(items)]
+
+        class _FakeRotation:
+            def rotate(self, fn, **kwargs):
+                return fn(None, **kwargs)
+
+        class _BulkManager(AbstractExternalManager):
+            Model = _BulkModel
+
+        m = _BulkManager(requester_id="u1", rotation_manager=_FakeRotation())
+        result = m.batch_create([{"a": 1}, {"a": 2}])
+        assert result.all_succeeded is True
+        assert result.count == 2
+        assert result.successes[0][0] == 0
+        assert result.successes[1][0] == 1
+
+    def test_batch_create_per_item_failure_in_bulk_mode(self):
+        class _BulkModel(AbstractExternalModel):
+            @staticmethod
+            def create_via_provider(p, **kw): return {"success": True, "data": kw}
+
+            @staticmethod
+            def get_via_provider(p, eid): return {"success": True, "data": {}}
+
+            @staticmethod
+            def list_via_provider(p, **kw): return {"success": True, "data": []}
+
+            @staticmethod
+            def update_via_provider(p, eid, **kw): return {"success": True, "data": {}}
+
+            @staticmethod
+            def delete_via_provider(p, eid): return {"success": True, "data": None}
+
+            @staticmethod
+            def batch_create_via_provider(p, items):
+                return [
+                    {"id": "x0", **items[0]},
+                    InvalidInputExternalError("bad", upstream_status=400),
+                    {"id": "x2", **items[2]},
+                ]
+
+        class _FakeRotation:
+            def rotate(self, fn, **kwargs):
+                return fn(None, **kwargs)
+
+        class _BulkManager(AbstractExternalManager):
+            Model = _BulkModel
+
+        m = _BulkManager(requester_id="u1", rotation_manager=_FakeRotation())
+        result = m.batch_create([{"a": 1}, {"a": 2}, {"a": 3}])
+        assert result.all_succeeded is False
+        assert len(result.successes) == 2
+        assert len(result.failures) == 1
+        assert result.failures[0][0] == 1
+        assert isinstance(result.failures[0][1], InvalidInputExternalError)
+
+    def test_batch_create_whole_batch_failure_in_bulk_mode(self):
+        class _BulkModel(AbstractExternalModel):
+            @staticmethod
+            def create_via_provider(p, **kw): return {"success": True, "data": kw}
+
+            @staticmethod
+            def get_via_provider(p, eid): return {"success": True, "data": {}}
+
+            @staticmethod
+            def list_via_provider(p, **kw): return {"success": True, "data": []}
+
+            @staticmethod
+            def update_via_provider(p, eid, **kw): return {"success": True, "data": {}}
+
+            @staticmethod
+            def delete_via_provider(p, eid): return {"success": True, "data": None}
+
+            @staticmethod
+            def batch_create_via_provider(p, items):
+                raise TransientExternalError("upstream down")
+
+        class _FakeRotation:
+            def rotate(self, fn, **kwargs):
+                return fn(None, **kwargs)
+
+        class _BulkManager(AbstractExternalManager):
+            Model = _BulkModel
+
+        m = _BulkManager(requester_id="u1", rotation_manager=_FakeRotation())
+        result = m.batch_create([{"a": 1}, {"a": 2}])
+        assert result.all_succeeded is False
+        assert len(result.failures) == 2
+        assert all(isinstance(f[1], TransientExternalError) for f in result.failures)
+
+    def test_default_batch_slots_raise_not_implemented(self):
+        with pytest.raises(NotImplementedError):
+            AbstractExternalModel.batch_create_via_provider(None, [])
+        with pytest.raises(NotImplementedError):
+            AbstractExternalModel.batch_update_via_provider(None, [])
+        with pytest.raises(NotImplementedError):
+            AbstractExternalModel.batch_delete_via_provider(None, [])
+
+
+class TestBatchedNavigationResolveMany:
+    def test_resolves_via_manager_factory(self):
+        class _FakeManager:
+            list_calls: list = []
+
+            def list(self, ids):
+                _FakeManager.list_calls.append(list(ids))
+                return [{"id": i, "name": f"name_{i}"} for i in ids]
+
+        resolver = BatchedNavigationResolver()
+        result = resolver.resolve_many(
+            _Stub_Model,
+            ["a", "b", "c"],
+            manager_factory=_FakeManager,
+        )
+        assert set(result.keys()) == {"a", "b", "c"}
+        assert result["a"]["name"] == "name_a"
+        # Subsequent calls hit the cache, not the manager.
+        _FakeManager.list_calls.clear()
+        again = resolver.resolve_many(
+            _Stub_Model,
+            ["a", "b"],
+            manager_factory=_FakeManager,
+        )
+        assert again["a"]["name"] == "name_a"
+        assert _FakeManager.list_calls == []  # cache hit
 
 
 class TestInitSubclassWarning:
