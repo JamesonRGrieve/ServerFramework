@@ -12,7 +12,7 @@ Providers are the service integration layer for extensions, offering standardize
 - **Auto-Discovery**: Extensions automatically discover providers via `extension.providers` property
 - **Instance Bonding**: Providers use `bond_instance()` to create bonded instances for API operations
 - **Ability System**: Providers declare abilities using the `@ability` decorator
-- **Rotation Integration**: Providers integrate with RotationManager for failover and load balancing
+- **Rotation Integration**: Providers integrate with RotationManager for failover; **load balancing across active-active providers is NOT a concern of this system** (Item 3) — production deployments place HAProxy or an equivalent L7 load balancer in front of provider endpoints when load distribution is desired. The rotation chain is a failover mechanism, not a load distributor. Round-robin, weighted, latency-based routing, and percentage-canary routing are all explicitly out of scope for the framework. See Item 51 for the one carve-out: application-level **session stickiness** (e.g. pinning an LLM conversation to one upstream) remains rotation's concern because L7 cannot see conversation IDs.
 - **Type-Based Environment Variables**: External extensions auto-register API-related env vars
 
 ## Table of Contents

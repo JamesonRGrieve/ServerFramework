@@ -7,6 +7,7 @@ with the dependency ordering system.
 """
 
 import inspect
+from typing import Any, Dict, List
 from sqlalchemy import select
 from database.DatabaseManager import DatabaseManager
 from lib.Environment import env
@@ -319,6 +320,28 @@ def seed_model(model_class, session, db_manager, model_registry=None):
     if not seed_list:
         logger.log("SQL", f"No seed items for {class_name}")
         return
+
+    # Item 38 — accept typed Pydantic instances in addition to raw dicts.
+    # A seed list declared as `List[ModelClass]` is normalized to dicts
+    # here so the rest of the pipeline (placeholder resolution, exists
+    # check, create call) keeps its existing shape. This means a typo in
+    # a field name now fails at *import* time (Pydantic instantiation
+    # raises) rather than when the seeder runs against a live DB —
+    # closing the type-safety gap Item 38 surfaced.
+    from pydantic import BaseModel as _PydanticBaseModel
+
+    normalized: List[Dict[str, Any]] = []
+    for item in seed_list:
+        if isinstance(item, _PydanticBaseModel):
+            normalized.append(item.model_dump(exclude_unset=True))
+        elif isinstance(item, dict):
+            normalized.append(item)
+        else:
+            logger.warning(
+                f"Seed item for {class_name} is neither dict nor Pydantic model "
+                f"(got {type(item).__name__}); skipping."
+            )
+    seed_list = normalized
 
     logger.log("SQL", f"Seeding {class_name} table with {len(seed_list)} items...")
 
