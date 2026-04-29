@@ -294,30 +294,28 @@ def build_app(model_registry: ModelRegistry):
     from lib.Environment import env
     from lib.Logging import logger
 
-    # Prefer the installed distribution's version when available; fall back
-    # to the sibling ``version`` file so in-tree development keeps working.
-    version: Optional[str] = None
+    # Item 67 — single source of truth: the installed distribution's
+    # metadata. Editable installs (`pip install -e .`) populate this
+    # the same way wheel installs do, so in-tree development keeps
+    # working. The sibling ``version`` file fallback was removed
+    # because it drifted from the actual release version (and was a
+    # second source of truth that defeated the purpose of having
+    # ``[project.version]`` in pyproject.toml at all). When the package
+    # is not installed at all (rare — e.g. running directly from a
+    # source checkout without `pip install`), we default to "0.0.0"
+    # rather than masking the missing-install with stale file data.
+    version: str = "0.0.0"
     try:
         from importlib.metadata import PackageNotFoundError, version as _pkg_version
 
-        try:
-            version = _pkg_version("serverframework")
-        except PackageNotFoundError:
+        for _dist_name in ("serverframework", "server"):
             try:
-                version = _pkg_version("server")
+                version = _pkg_version(_dist_name)
+                break
             except PackageNotFoundError:
-                version = None
+                continue
     except ImportError:
-        version = None
-
-    if not version:
-        this_directory = os.path.abspath(os.path.dirname(__file__))
-        version_file = os.path.join(this_directory, "version")
-        try:
-            with open(version_file, encoding="utf-8") as f:
-                version = f.read().strip()
-        except FileNotFoundError:
-            version = "0.0.0"
+        pass
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):

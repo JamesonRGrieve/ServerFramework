@@ -1941,7 +1941,7 @@ The breaking and ecosystem-shaping pieces of the pip-package conversion that fol
 
 ---
 
-## Item 67 — Source the version string from package metadata only (formerly P8)
+## ~~Item 67~~ — ~~Source the version string from package metadata only (formerly P8)~~ ✅ DONE
 
 **Severity:** Low
 **Scope:** `src/version` (file), `build_app` version-resolution logic, `pyproject.toml`.
