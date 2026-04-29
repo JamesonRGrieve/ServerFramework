@@ -1235,6 +1235,22 @@ class AbstractStaticProvider(AbstractStaticExtensionSystemComponent):
     # (e.g., `STRIPE_ENV`) when they need per-provider environment selection.
     environment_source: ClassVar[str] = "APP_ENV"
 
+    # Item 10 — default auth strategy name. Providers may override
+    # (e.g. "oauth2", "jwt_bearer", "aws_sigv4"). Per-provider-instance
+    # overrides are read from `ProviderInstanceModel.auth_strategy_name`.
+    auth_strategy_name: ClassVar[str] = "api_key"
+
+    # Item 17 — optional per-provider rate-limit / concurrency caps.
+    # Concrete providers set these as needed. Imported lazily to avoid a
+    # hard module-cycle when this file loads before extensions.RateLimit.
+    rate_limit: ClassVar[Optional[Any]] = None
+    concurrency_limit: ClassVar[Optional[Any]] = None
+
+    # Item 2 — per-provider rotation policy. Concrete providers set this
+    # to a `RotationPolicy` (from `extensions.ExternalErrors`); the
+    # rotation system reads it via `RotationManager._resolve_rotation_policy`.
+    rotation_policy: ClassVar[Optional[Any]] = None
+
     # Item 27 — cached health report per provider class instance.
     _cached_health: ClassVar[Optional[HealthReport]] = None
     _cached_health_at: ClassVar[float] = 0.0
@@ -1283,6 +1299,29 @@ class AbstractStaticProvider(AbstractStaticExtensionSystemComponent):
         if cls.is_configured():
             return HealthReport(HealthStatus.OK, detail="defaults: configured")
         return HealthReport(HealthStatus.DOWN, detail="missing required env vars")
+
+    @classmethod
+    def build_auth_strategy(
+        cls,
+        instance: ProviderInstanceModel,
+        payload: Optional[Dict[str, Any]] = None,
+    ) -> Any:
+        """Item 10 — build the auth strategy for a bonded instance.
+
+        Looks up the strategy name from the per-instance override (if
+        present on `ProviderInstanceModel.auth_strategy_name`) falling
+        back to the class-level default `cls.auth_strategy_name`. The
+        registry resolves the factory; payload is the credential blob
+        the strategy interprets (typically containing `api_key`,
+        `access_token`, `username`/`password`, etc.).
+        """
+        from extensions.AuthStrategy import AuthStrategyRegistry
+
+        name = (
+            getattr(instance, "auth_strategy_name", None)
+            or cls.auth_strategy_name
+        )
+        return AuthStrategyRegistry.get(name, payload or {})
 
     @classmethod
     def cached_health_check(cls, ttl_seconds: int = 60) -> HealthReport:
