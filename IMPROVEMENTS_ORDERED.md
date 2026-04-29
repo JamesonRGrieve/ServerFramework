@@ -656,6 +656,8 @@ The `queue_and_retry` mode integrates with Item 35's outbox: the request returns
 
 **Dependencies.** Cross-references Item 35 (outbox), Item 39 (versioning).
 
+**Partial implementation landed.** The contract surface is in place: `extensions.ExternalErrors` exports `DegradationMode` (str-typed Enum: `FAIL_FAST` / `QUEUE_AND_RETRY` / `SILENT_DROP`), a frozen `DegradationPolicy` dataclass with `mode` + `outbox_retention_days` + `outbox_max_attempts`, three convenience constructors (`fail_fast()` / `queue_and_retry(...)` / `silent_drop()`), and `default_degradation_policy()`. `AbstractStaticProvider.degradation_policy: ClassVar[Optional[Any]] = None` is declared so concrete providers can attach a default. The dangerous `SILENT_DROP` constructor is named for grep-ability so code reviewers can find every silent-drop opt-in. 8 unit tests cover the construction surface, frozen-dataclass immutability, str-value round-trip, and ClassVar override. What remains: rotation-exhaustion dispatch in `RotationManager.rotate` (consult `degradation_policy`, branch into outbox enrollment for `QUEUE_AND_RETRY` / log+silent-drop+`provider_silent_drop_total` metric for `SILENT_DROP`), the 202-tracking-id endpoint shape, and the OpenAPI/SDK/GraphQL surface annotations that reflect the chosen mode.
+
 ---
 
 # Group 8 — External Federation: Data Translation (Fields, Pagination, Search, Bulk, N+1)

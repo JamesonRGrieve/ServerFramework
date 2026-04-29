@@ -1251,6 +1251,18 @@ class AbstractStaticProvider(AbstractStaticExtensionSystemComponent):
     # rotation system reads it via `RotationManager._resolve_rotation_policy`.
     rotation_policy: ClassVar[Optional[Any]] = None
 
+    # Item 48 — per-ability graceful-degradation policy. Concrete providers
+    # may attach a `DegradationPolicy` to an ability via the ability
+    # decorator, or fall back to this provider-class-level default. The
+    # rotation system consults the policy when its chain is exhausted:
+    # `FAIL_FAST` (default) raises HTTP 500; `QUEUE_AND_RETRY` enrolls
+    # the operation in the outbox (Item 35) and returns 202; `SILENT_DROP`
+    # logs and returns success while emitting `provider_silent_drop_total`
+    # metric. None means "inherit the framework default" which is
+    # `FAIL_FAST`. Switching modes is a breaking change to the API
+    # contract — version per Item 39.
+    degradation_policy: ClassVar[Optional[Any]] = None
+
     # Item 33 — upstream API version pinning. Concrete providers may pin
     # the upstream wire version (e.g. Stripe "2024-06-20"). When
     # `external_api_version_header` is also set, `ProviderHTTPClient`
