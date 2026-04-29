@@ -11,6 +11,11 @@ from database.StaticPermissions import check_permission
 from lib.Environment import env
 from lib.Logging import logger
 from lib.Pydantic import obj_to_dict
+from lib.Scalability import (
+    ScalabilityProfile,
+    ScalingMetric,
+    assert_scaling_within_bounds,
+)
 
 # Database lock retries are now handled automatically by pytest hooks in conftest.py
 
@@ -1172,3 +1177,62 @@ class AbstractDBTest(AbstractTest):
         self._ORM_create(admin_a.id, team_a.id, "ORM_delete")
         self._ORM_delete(admin_a.id, team_a.id)
         self._delete_assert(admin_a.id, "ORM_delete")
+
+    # ------------------------------------------------------------------ #
+    # Scalability / Big-O assertions
+    # ------------------------------------------------------------------ #
+    # Subclasses opt in by setting `scalability_profile`. The list-scaling
+    # test seeds N entities at each step and asserts that
+    # sqlalchemy_model.list() scales within the configured Big-O bound for
+    # the chosen metric. Time/query/memory exponents are evaluated
+    # independently so the failure points to the regressing axis.
+
+    scalability_profile: Optional[ScalabilityProfile] = None
+
+    @pytest.mark.parametrize(
+        "metric",
+        sorted(
+            [ScalingMetric.TIME, ScalingMetric.QUERY_COUNT, ScalingMetric.MEMORY],
+            key=lambda m: m.value,
+        ),
+    )
+    def test_scalability_list_n_factor(
+        self, server, admin_a, team_a, metric: ScalingMetric
+    ):
+        """Big-O assertion: sqlalchemy_model.list() must stay within the
+        configured exponent for time, query count, and peak memory as the
+        underlying row count grows. Catches accidental N+1, O(n^2) joins,
+        and per-row materialization regressions."""
+        if self.scalability_profile is None:
+            pytest.skip("scalability_profile not configured on this test class")
+        if metric not in self.scalability_profile.metrics:
+            pytest.skip(f"metric {metric.value} not enabled in scalability_profile")
+
+        self.db = server.app.state.model_registry.database_manager.get_session()
+        self._server = server
+        self.model_registry = server.app.state.model_registry
+        self.ensure_model(server)
+
+        seeded = {"count": 0}
+
+        def setup(target_n: int) -> None:
+            while seeded["count"] < target_n:
+                self._CRUD_create(
+                    return_type="dict",
+                    user_id=admin_a.id,
+                    team_id=team_a.id,
+                    key=f"scalability_seed_{seeded['count']}",
+                )
+                seeded["count"] += 1
+
+        requester = env("SYSTEM_ID") if self.is_system_entity else admin_a.id
+
+        def operation(_n: int) -> None:
+            self.sqlalchemy_model.list(
+                requester, self.model_registry, return_type="dict"
+            )
+
+        engine = self.model_registry.database_manager.engine
+        assert_scaling_within_bounds(
+            operation, self.scalability_profile, metric, engine=engine, setup=setup
+        )
