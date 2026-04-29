@@ -50,6 +50,86 @@ class MyService(AbstractService):
             self.external_client.close()
 ```
 
+## Service Execution Model and Lifecycle Contract (Item 44)
+
+This section pins the contract every service flavor (perpetual, scheduled, queue-consumer, streaming — see Item 28) inherits. Service authors write against these guarantees; the supervisor honors them.
+
+### Execution model: asyncio
+- **Services are coroutines** running on the framework's main event loop, or on a dedicated event loop in a worker process for CPU-heavy workloads. The choice is made by the supervisor, not the service.
+- **Blocking I/O is forbidden inside a service handler.** Use `asyncio.to_thread(fn, …)` for unavoidable blocking calls. The default `asyncio.to_thread` thread pool is unbounded and a footgun under load — the framework caps it via a configurable thread-pool size (default 32; per-deployment override via `SVC_THREAD_POOL_SIZE`).
+- **Cross-thread context.** When using `asyncio.to_thread`, propagate `RequestContext` (Item 47 deadline budget, correlation id once Item 85 lands) via `contextvars.copy_context().run(fn)` so logs and deadlines do not silently lose context at the thread boundary.
+
+### Cancellation: cooperative, with documented drain
+- **Stop signals.** Calling `service.stop()` sets the cancellation flag and sends `asyncio.CancelledError` into the running coroutine on the next `await` point.
+- **Drain period.** After cancellation, the service has a documented drain window (default **30 seconds**, configurable per service via the `drain_timeout_seconds` ClassVar) to finish in-flight work — flush an open transaction, ack a queue message, write the last outbox row.
+- **Forced cancellation.** If the service exceeds the drain window, the supervisor force-cancels and emits a logged warning naming the service and the elapsed drain time.
+- **Pause / resume.** `pause()` stops scheduling new work but lets in-flight work complete normally. `resume()` re-enables scheduling. Neither raises `CancelledError`.
+
+### Outbox interaction
+The `OutboxDrainService` (Item 14 / Item 35) **must complete in-flight outbox entries before exiting**, or the framework will produce duplicate sends after a restart. Outbox-style services declare a longer drain window (typical 60–120 seconds) to honor this; the default 30-second drain is too aggressive for outbox patterns.
+
+### Hot-reload interaction (Item 20)
+- The supervisor attempts a clean stop-and-restart of every running service on hot-reload.
+- Services that cannot survive a reload — for example a stateful streaming consumer with a costly re-handshake — opt out via `reloadable: ClassVar[bool] = False`. They fall back to "process restart only" semantics for their lifecycle: a hot-reload of the rest of the codebase logs a warning and leaves the service running on the old code; the operator restarts the process to pick up changes.
+
+### Restart policy
+Each service declares its restart policy via a ClassVar:
+
+```python
+class MyService(QueueConsumerService):
+    restart_policy: ClassVar[RestartPolicy] = RestartPolicy.ON_FAILURE
+    backoff_initial_seconds: ClassVar[float] = 1.0
+    backoff_max_seconds: ClassVar[float] = 60.0
+    backoff_jitter: ClassVar[float] = 0.1
+    crash_window_seconds: ClassVar[int] = 300  # 5 min
+    crash_threshold: ClassVar[int] = 5
+    drain_timeout_seconds: ClassVar[int] = 30
+    reloadable: ClassVar[bool] = True
+```
+
+| `RestartPolicy` | When                                            |
+| --------------- | ----------------------------------------------- |
+| `ALWAYS`        | restart on every exit, including clean exits    |
+| `ON_FAILURE`    | restart only on non-zero exit / unhandled exception (default for queue / streaming) |
+| `NEVER`         | one-shot — never restart                        |
+
+Backoff between restarts is exponential with jitter, capped at `backoff_max_seconds`.
+
+### Restart-storm protection: the `failed` state
+A service that has crashed `crash_threshold` times within `crash_window_seconds` is held in the `failed` state and **does not auto-restart**. Restart-storming against a misconfigured upstream is the single most common operational footgun for this kind of supervisor; the framework refuses to participate.
+
+Recovery is a deliberate operator action:
+- **Admin endpoint.** `POST /admin/services/{name}/reset` resets the crash counter and re-enables the service. Requires admin authentication.
+- **CLI equivalent.** `python -m serverframework services reset <name>` (Item 63 console-entry follow-up, gated on Item 60 rename).
+- The admin reset emits an audit event (Item 56 retention applies) so the operator action is traceable.
+
+### Health surface
+Every service exposes:
+
+```python
+def get_health_status(self) -> Dict[str, Any]:
+    return {
+        "service_id": self.service_id,
+        "state": "running" | "paused" | "draining" | "failed" | "stopped",
+        "restart_count": self.restart_count,
+        "last_restart_at": self.last_restart_at,
+        "last_run_at": self.metrics.get("last_run_time"),
+        "drain_remaining_seconds": self.drain_remaining_seconds,  # only when draining
+        ...
+    }
+```
+
+The supervisor aggregates this into the operational health endpoint (Item 81).
+
+### Cross-references
+- Item 28 — service flavors (perpetual / scheduled / queue-consumer / streaming).
+- Item 14 / 35 — outbox drain interaction.
+- Item 20 — hot-reload interaction (`reloadable` opt-out).
+- Item 47 — `RequestContext` deadline propagation across `asyncio.to_thread`.
+- Item 56 — audit-log retention applies to admin-reset audit events.
+- Item 81 — operational health surface aggregates `get_health_status()`.
+- Item 85 — correlation-id propagation across `asyncio.to_thread` is the same context-copy mechanism used here.
+
 ## Service Lifecycle Patterns
 
 ### Initialization Pattern

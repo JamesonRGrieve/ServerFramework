@@ -194,7 +194,7 @@ All four are discoverable as `SVC_*.py` files. All four can declare `@hook_bll`-
 
 ---
 
-## Item 44 — Service layer async and lifecycle semantics
+## ~~Item 44~~ — ~~Service layer async and lifecycle semantics~~ ✅ DONE
 
 **Severity:** Medium
 **Scope:** `SVC.Patterns.md`, all service flavors from Item 28, the framework's process lifecycle.
