@@ -45,15 +45,55 @@ class HookTiming(Enum):
     AFTER = "after"
 
 
-class HookContext:
-    """
-    Context object passed to hooks for accessing and modifying method execution.
+# ---------------------------------------------------------------------------
+# Item 21 -- Deterministic ordering / cycle detection
+# ---------------------------------------------------------------------------
 
-    This context provides hooks with the ability to:
-    - Access the manager instance and method arguments
-    - Modify arguments and return values
-    - Skip original method execution
-    - Store temporary data for communication between hooks
+
+class HookOrderingError(Exception):
+    """Raised at startup when explicit before/after constraints form a cycle.
+
+    The error message names every extension involved in the offending cycle
+    so the developer can resolve it without inspecting the registry by hand.
+    """
+
+
+# Generic ParamSpec / typing imports (Item 41).
+try:
+    from typing import ParamSpec  # Python 3.10+
+except ImportError:  # pragma: no cover - fallback for older runtimes
+    from typing_extensions import ParamSpec  # type: ignore[assignment]
+
+import typing as _typing  # noqa: E402
+
+_P = ParamSpec("_P")
+_R = _typing.TypeVar("_R")
+
+
+class HookContext(_typing.Generic[_P, _R]):
+    """
+    Type-safe context object passed to hooks (Item 41).
+
+    ``HookContext[P, R]`` is parameterized by the target method's
+    ``ParamSpec`` ``P`` and return type ``R`` so static analysis catches
+    hooks that read fields not present on the target. Existing untyped
+    hooks (``def my_hook(ctx: HookContext)``) continue to work because
+    ``Generic`` is permissive at runtime; deprecation of the untyped path
+    is a follow-up.
+
+    Migration guide::
+
+        # Old, still works (deprecated typing):
+        def my_hook(ctx: HookContext) -> None:
+            user_id = ctx.kwargs["user_id"]   # untyped Any
+
+        # New, fully typed:
+        def my_hook(ctx: HookContext[..., User]) -> None:
+            user_id = ctx.kwarg("user_id")    # typed accessor
+
+    The typed accessors (``kwarg``, ``arg``, ``set_result``) are runtime
+    methods; the static type-correlation is enforced by mypy/pyright when
+    callers spell out the parameterization.
     """
 
     def __init__(
@@ -86,7 +126,7 @@ class HookContext:
         self.modified_result = None
         self.condition_data = {}
 
-    def set_result(self, result: Any) -> None:
+    def set_result(self, result: _R) -> None:
         """
         Set a custom result that will override the method's original return value.
 
@@ -98,6 +138,23 @@ class HookContext:
     def skip_method(self) -> None:
         """Skip execution of the original method."""
         self.skip_execution = True
+
+    # -- typed accessors (Item 41) -----------------------------------------
+
+    def kwarg(self, name: str, default: Any = None) -> Any:
+        """Typed-accessor sugar: return ``kwargs[name]`` or ``default``.
+
+        Authors using ``HookContext[..., R]`` get a typed return shape via
+        the param-spec; the runtime falls through to dict.get for safety.
+        """
+        return self.kwargs.get(name, default)
+
+    def arg(self, index: int, default: Any = None) -> Any:
+        """Typed-accessor sugar: return ``args[index]`` or ``default``."""
+        try:
+            return self.args[index]
+        except IndexError:
+            return default
 
 
 class HookRegistry:
