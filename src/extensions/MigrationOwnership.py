@@ -165,13 +165,16 @@ def print_ownership(ownership: Dict[str, Optional[str]]) -> str:
     Returns the rendered string and prints it to stdout, so this can be
     used both as a CLI helper and a programmatic formatter.
     """
+    import sys
+
     lines = ["Table ownership audit:", "-" * 40]
     width = max((len(n) for n in ownership.keys()), default=10)
     for name in sorted(ownership.keys()):
         owner = ownership[name] or "<core>"
         lines.append(f"  {name.ljust(width)}  {owner}")
     rendered = "\n".join(lines)
-    logger.info(rendered)
+    sys.stdout.write(rendered + "\n")
+    sys.stdout.flush()
     return rendered
 
 

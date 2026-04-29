@@ -248,8 +248,27 @@ class TestUser(AbstractDBTest):
         self._CRUD_delete(
             user_record["id"], team_a.id
         )  # Use the created user's ID as requester
-        self._CRUD_get("dict", env("ROOT_ID"), None, "CRUD_get_deleted", "CRUD_delete")
-        self._get_assert("CRUD_get_deleted")
+        # After Item 75 the soft-delete filter applies at the DB layer for
+        # every read; verify the row still exists in storage by bypassing the
+        # auto-filter via `include_deleted`, mirroring how admin/audit code is
+        # expected to inspect tombstoned rows.
+        from database.AbstractDatabaseEntity import include_deleted
+
+        session = self.model_registry.DB.session()
+        with include_deleted(session):
+            row = (
+                session.query(self.sqlalchemy_model)
+                .filter(self.sqlalchemy_model.id == user_record["id"])
+                .first()
+            )
+        assert row is not None, (
+            f"{self.sqlalchemy_model.__name__}: soft-deleted row should remain "
+            "in storage but is missing under include_deleted()"
+        )
+        assert row.deleted_at is not None, (
+            f"{self.sqlalchemy_model.__name__}: deleted_at not set after "
+            "soft-delete"
+        )
 
 
 class TestUserCredential(AbstractDBTest):

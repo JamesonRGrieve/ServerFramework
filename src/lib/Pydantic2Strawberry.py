@@ -301,24 +301,26 @@ class GraphQLManager(ErrorHandlerMixin):
         failed_models: List[Tuple[str, str, str]] = []
 
         for relationship in self.model_registry.model_relationships:
-            # Each relationship is a tuple: (model_class, ref_model_class, network_model_class, manager_class)
-            if len(relationship) >= 4:
-                model_class, ref_model_class, network_model_class, manager_class = (
+            if len(relationship) == 3:
+                model_class, ref_model_class, manager_class = relationship
+            elif len(relationship) >= 4:
+                model_class, ref_model_class, _network_model_class, manager_class = (
                     relationship[:4]
                 )
-                model_name = model_class.__name__ if model_class else "Unknown"
-                try:
-                    self._generate_components_for_model(model_class, manager_class)
-                    successful_models.append(model_name)
-                except Exception as e:
-                    module_name = model_class.__module__ if model_class else "unknown"
-                    failed_models.append((model_name, module_name, str(e)))
-                    logger.error(
-                        f"Failed to generate GraphQL components for {model_name} "
-                        f"(module: {module_name}): {str(e)}. "
-                        f"Continuing with other models..."
-                    )
-                    # Continue processing other models instead of failing completely
+            else:
+                continue
+            model_name = model_class.__name__ if model_class else "Unknown"
+            try:
+                self._generate_components_for_model(model_class, manager_class)
+                successful_models.append(model_name)
+            except Exception as e:
+                module_name = model_class.__module__ if model_class else "unknown"
+                failed_models.append((model_name, module_name, str(e)))
+                logger.error(
+                    f"Failed to generate GraphQL components for {model_name} "
+                    f"(module: {module_name}): {str(e)}. "
+                    f"Continuing with other models..."
+                )
 
         # Log summary
         logger.info(
@@ -1650,10 +1652,14 @@ class GraphQLManager(ErrorHandlerMixin):
         """Find the manager class for a given model."""
         # Look through model relationships
         for relationship in self.model_registry.model_relationships:
-            if len(relationship) >= 4:
+            if len(relationship) == 3:
+                rel_model, _, manager_class = relationship
+            elif len(relationship) >= 4:
                 rel_model, _, _, manager_class = relationship[:4]
-                if rel_model == model_class:
-                    return manager_class
+            else:
+                continue
+            if rel_model == model_class:
+                return manager_class
 
         return None
 

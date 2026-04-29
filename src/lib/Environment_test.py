@@ -70,10 +70,15 @@ class TestAppSettingsReal(TestMixin):
 
     def test_app_settings_from_environment(self, clean_environment):
         """Test that AppSettings reads from environment variables."""
-        # Set some environment variables
+        # Set some environment variables. After Item 71, production-mode
+        # validation refuses default ROOT_API_KEY/JWT_SECRET/ALLOWED_DOMAINS;
+        # supply secure values so the env→settings round-trip passes.
         os.environ["APP_NAME"] = "TestApp"
         os.environ["ENVIRONMENT"] = "production"
         os.environ["SERVER_URI"] = "https://test.example.com"
+        os.environ["ROOT_API_KEY"] = "test-root-api-key-not-default"
+        os.environ["JWT_SECRET"] = "test-jwt-secret-not-default-32chars"
+        os.environ["ALLOWED_DOMAINS"] = "test.example.com"
 
         settings = AppSettings.model_validate(os.environ)
 

@@ -595,21 +595,19 @@ def test_delete_method(test_user_id, mock_server):
         # Delete the entity with ROOT_ID (can delete all entities)
         TestModel.delete(ROOT_ID, model_registry, id=entity_id)
 
-        # Check that the entity was "soft deleted"
-        deleted_entity = db.query(TestModel).filter_by(id=entity_id).first()
+        # After Item 75 the soft-delete filter applies at the DB layer for
+        # every read; bypass it via include_deleted to confirm the row was
+        # tombstoned rather than hard-deleted. The delete runs in its own
+        # session (via @with_session), so expire_all() is required to read
+        # the freshly-committed deleted_at value through this test session.
+        from database.AbstractDatabaseEntity import include_deleted
 
-        # NOTE: This test is failing due to session isolation issues where the @with_session
-        # decorator creates a separate session from the test session. The delete method
-        # correctly sets deleted_at and deleted_by_user_id in its session but this doesn't
-        # reflect in the test session. This is a known issue with session management
-        # in the current test setup and should be addressed in a separate fix.
-        # For now, we'll verify the delete method works by checking the entity still exists
-        # (soft delete) rather than checking the specific delete fields.
-        assert deleted_entity is not None  # Entity should still exist (soft delete)
+        db.expire_all()
+        with include_deleted(db):
+            deleted_entity = db.query(TestModel).filter_by(id=entity_id).first()
 
-        # TODO: Fix session isolation to properly test delete field values
-        # assert deleted_entity.deleted_at is not None
-        # assert deleted_entity.deleted_by_user_id == ROOT_ID
+        assert deleted_entity is not None  # Row should still be present
+        assert deleted_entity.deleted_at is not None
     finally:
         db.close()
 
