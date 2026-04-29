@@ -99,10 +99,12 @@ class AbstractDBTest(AbstractTest):
     def teardown_method(self, method):
         """Clean up method-level test fixtures."""
         try:
-            # Close the database session
-            if hasattr(self, "db"):
-                self.db.close()
-                delattr(self, "db")
+            # Close the database session if one was opened on this instance.
+            db = self.__dict__.get("db")
+            if db is not None:
+                db.close()
+            if "db" in self.__dict__:
+                del self.__dict__["db"]
         finally:
             super().teardown_method(method)
 
@@ -1153,8 +1155,30 @@ class AbstractDBTest(AbstractTest):
             "CRUD_delete",
         )
         self._CRUD_delete(admin_a.id, team_a.id)
-        self._CRUD_get("dict", env("ROOT_ID"), None, "CRUD_get_deleted", "CRUD_delete")
-        self._get_assert("CRUD_get_deleted")
+        # After Item 75 the soft-delete filter applies at the DB layer for
+        # every read; verify the row still exists in storage by bypassing the
+        # auto-filter via `include_deleted`, mirroring how admin/audit code is
+        # expected to inspect tombstoned rows.
+        from database.AbstractDatabaseEntity import include_deleted
+
+        session = self.model_registry.DB.session()
+        with include_deleted(session):
+            row = (
+                session.query(self.sqlalchemy_model)
+                .filter(
+                    self.sqlalchemy_model.id
+                    == self.tracked_entities["CRUD_delete"]["id"]
+                )
+                .first()
+            )
+        assert row is not None, (
+            f"{self.sqlalchemy_model.__name__}: soft-deleted row should remain "
+            "in storage but is missing under include_deleted()"
+        )
+        assert row.deleted_at is not None, (
+            f"{self.sqlalchemy_model.__name__}: deleted_at not set after "
+            "soft-delete"
+        )
 
     def _ORM_delete(self, user_id: str = env("ROOT_ID"), team_id: str = None):
         entity = self.tracked_entities["ORM_delete"]

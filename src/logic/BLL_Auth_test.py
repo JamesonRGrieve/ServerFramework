@@ -172,10 +172,13 @@ class TestUserManager(AbstractBLLTest):
         entity_id = self._delete(
             self.tracked_entities["delete"].id, model_registry=model_registry
         )
-        # Assert deletion using the base assertion logic
+        # Assert deletion using the base assertion logic. After Item 75 the
+        # soft-delete filter applies at the DB layer, so a self-deleted user
+        # cannot authenticate as the requester for the post-delete read; use
+        # admin_a as the verifying requester instead.
         self._delete_assert(
             self.tracked_entities["delete"].id,
-            self.tracked_entities["delete"].id,
+            admin_a.id,
             model_registry=model_registry,
         )
 

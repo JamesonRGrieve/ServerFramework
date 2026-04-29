@@ -2704,12 +2704,20 @@ class TeamManager(AbstractBLLManager, RouterMixin):
     ) -> Any:
         """Get a team with optional included relationships. Returns 404 if not found."""
 
-        fields = self.validate_fields(fields)
+        fields_list = self.validate_fields(fields)
 
         options = []
         include_list = self.validate_includes(include)
         if include_list:
             options = self.generate_joins(self.DB, include_list)
+        # Item 87: push field selection through to the DB layer so the SQL
+        # only fetches the requested columns; matches AbstractBLLManager.get.
+        if fields_list:
+            from sqlalchemy.orm import load_only
+
+            columns = self._resolve_load_only_columns(fields_list)
+            if columns:
+                options.append(load_only(*columns))
         team = self.DB.get(
             requester_id=self.requester.id,
             model_registry=self.model_registry,

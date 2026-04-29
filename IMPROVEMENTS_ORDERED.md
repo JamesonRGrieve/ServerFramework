@@ -926,7 +926,7 @@ The auto-generated REST surface, custom routes that participate in the same gene
 
 **Dependencies.** Cross-references Item 25 (SDK generation).
 
-**Partial implementation landed.** The contract surface is on `RouterMixin`: `version: ClassVar[str] = "v1"` (default preserves existing `/v1/<resource>` behavior), `deprecated_in: ClassVar[Optional[str]] = None`, and `sunset_in: ClassVar[Optional[str]] = None`. Subclasses opt into a different version (`v2beta`, `v3rc1`, etc.) by overriding the ClassVar. 5 unit tests cover the default value, override, deprecation-knob defaults, deprecation override, and prerelease token acceptance. What remains: (a) the route-prefix derivation in `create_router_from_manager` so a manager whose `prefix` is None and `version != "v1"` produces `/v2/<resource>` automatically rather than the current hard-coded `/v1/<resource>`, (b) the `Deprecation` / `Sunset` HTTP-header injection middleware that consults `deprecated_in` / `sunset_in` on every response from a tagged manager's routes, (c) the SDK-generator integration (Item 25) emits version-suffixed methods, (d) the GraphQL field-level `@deprecated` / `@sunset` directives. Item remains open until those land.
+**Partial implementation landed.** The contract surface is on `RouterMixin`: `version: ClassVar[str] = "v1"` (default preserves existing `/v1/<resource>` behavior), `deprecated_in: ClassVar[Optional[str]] = None`, and `sunset_in: ClassVar[Optional[str]] = None`. Subclasses opt into a different version (`v2beta`, `v3rc1`, etc.) by overriding the ClassVar. The route-prefix derivation in `create_router_from_manager` now consults `version` so a manager whose `prefix` is `None` and `version != "v1"` produces `/v2/<resource>` (etc.) automatically; the `Deprecation` / `Sunset` HTTP-header injection middleware in `app.py` consults `deprecated_in` / `sunset_in` on every response from a tagged manager's routes (every endpoint registered under `create_router_from_manager` is tagged with its owning manager via `_router_mixin_manager`). 7 unit tests cover the default value, override, deprecation-knob defaults, deprecation override, prerelease token acceptance, versioned-prefix derivation, and endpoint tagging. What remains: (c) the SDK-generator integration (Item 25) emits version-suffixed methods, (d) the GraphQL field-level `@deprecated` / `@sunset` directives. Item remains open until those land.
 
 ---
 
@@ -2079,7 +2079,7 @@ The day-2 concerns the framework currently does not address: backups, deploys wi
 
 ---
 
-## Item 83 — Cross-region deployment contract
+## ~~Item 83~~ — ~~Cross-region deployment contract~~ ✅ DONE
 
 **Severity:** Medium
 **Scope:** Documentation; explicit primitives that would need to change for active-active.
@@ -2187,6 +2187,8 @@ Items in this group are fourth-round audit findings against the live codebase: c
 **Acceptance criteria.** A `SoftDeleteMixin`-tagged model is queried from the BLL and tombstoned rows are invisible without any BLL-author filter clause. The `BLL_Auth.py:1165` workaround comment and the hand-written `if user["deleted_at"]:` check are removed; the login path produces the same correct rejection through the DB-layer filter alone.
 
 **Dependencies.** Cross-references Item 55 (RLS — sibling defense-in-depth pattern). Independent otherwise.
+
+**ROOT bypass restored as a follow-up.** The `BLL_Auth.UserManager.auth` flow's team-membership enrichment calls `TeamModel.DB(...).get(requester_id=ROOT_ID, ...)`; under the auto-filter, that pathway 404s when any team a user is bonded to is soft-deleted. The fix preserves the prior "ROOT can see tombstoned rows for admin/audit reads" contract by passing `query.execution_options(include_deleted=True)` from `cls.get`, `cls.list`, `cls.exists` (both branches), and `cls.count` whenever the requester is ROOT — `_soft_delete_before_compile` already honors that execution option as its bypass. Non-ROOT requesters still get the auto-filter; admin/audit code keeps its visibility into deleted state.
 
 ---
 

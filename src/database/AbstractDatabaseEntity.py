@@ -932,6 +932,13 @@ class BaseMixin:
         # Build query with all filters
         query = build_query(db, db_cls, joins, options, filters, **kwargs)
 
+        # Item 75 follow-up: ROOT bypass for the soft-delete auto-filter.
+        if check_permissions:
+            from database.StaticPermissions import is_root_id as _is_root
+
+            if _is_root(requester_id) and hasattr(db_cls, "deleted_at"):
+                query = query.execution_options(include_deleted=True)
+
         # Get count
         return query.count()
 
@@ -1024,6 +1031,10 @@ class BaseMixin:
                     db, db_cls, joins=joins, options=options, filters=filters, **kwargs
                 )
 
+                # Item 75 follow-up: ROOT bypass for the auto-filter.
+                if is_root_id(requester_id) and hasattr(db_cls, "deleted_at"):
+                    query = query.execution_options(include_deleted=True)
+
                 # Check if any results exist with permission filtering
                 return query.first() is not None
         else:
@@ -1045,6 +1056,10 @@ class BaseMixin:
             query = build_query(
                 db, db_cls, joins=joins, options=options, filters=filters, **kwargs
             )
+
+            # Item 75 follow-up: ROOT bypass for the auto-filter.
+            if is_root_id(requester_id) and hasattr(db_cls, "deleted_at"):
+                query = query.execution_options(include_deleted=True)
 
             # Check if any results exist with permission filtering
             return query.first() is not None
@@ -1103,6 +1118,15 @@ class BaseMixin:
 
         # Build query with permission filter included
         query = build_query(db, db_cls, joins, options, filters, **kwargs)
+
+        # Item 75 follow-up: ROOT must continue to see soft-deleted rows
+        # for admin/audit reads — the BLL layer above already preserved
+        # this by skipping the explicit deleted_at filter for ROOT, but
+        # the DB-layer auto-filter (`_soft_delete_before_compile`) would
+        # re-impose it. Pass the bypass execution option for ROOT so the
+        # auto-filter exits early.
+        if is_root_id(requester_id) and hasattr(db_cls, "deleted_at"):
+            query = query.execution_options(include_deleted=True)
 
         # Get the single result
         try:
@@ -1232,6 +1256,11 @@ class BaseMixin:
         query = build_query(
             db, db_cls, joins, options, filters, order_by, limit, offset, **kwargs
         )
+
+        # Item 75 follow-up: same ROOT bypass as in get() above so admin
+        # listings continue to surface tombstoned rows.
+        if is_root_id(requester_id) and hasattr(db_cls, "deleted_at"):
+            query = query.execution_options(include_deleted=True)
 
         # Fetch records based on filtered query
         to_return = query.all()

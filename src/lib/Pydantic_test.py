@@ -626,7 +626,6 @@ class TestPydantic(unittest.TestCase):
         test_module = MagicMock(
             UserModel=UserModel,
             UserReferenceModel=UserReferenceModel,
-            UserNetworkModel=UserNetworkModel,
             UserManager=UserManager,
         )
 
@@ -638,22 +637,20 @@ class TestPydantic(unittest.TestCase):
             len(relationships), 1
         )  # Expect 1 relationship in the simplified test
 
-        # Basic structure check
-        model_class, ref_model_class, network_model_class, manager_class = (
-            relationships[0]
-        )
+        # After the in-flight WIP commit, the relationship tuple is 3-wide
+        # (network model is now derived from BaseNetworkModel, not part of the
+        # discovery tuple — see Pydantic.py:discover_model_relationships).
+        model_class, ref_model_class, manager_class = relationships[0]
         self.assertEqual(model_class, UserModel)
         self.assertEqual(ref_model_class, UserReferenceModel)
-        self.assertEqual(network_model_class, UserNetworkModel)
         self.assertEqual(manager_class, UserManager)
 
     def test_collect_model_fields(self):
         """Test collect_model_fields method."""
         # Create test relationships with real model classes, not MagicMock objects
         relationships = [
-            (UserModel, UserReferenceModel, UserNetworkModel, UserManager),
+            (UserModel, UserReferenceModel, UserManager),
             (
-                PostModel,
                 PostModel,
                 PostModel,
                 object,
