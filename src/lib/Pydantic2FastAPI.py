@@ -3216,8 +3216,11 @@ def create_router_from_manager(
         manager_class.__name__.replace("Manager", "")
     )
 
-    # Get configuration from ClassVars
-    prefix: str = manager_class.prefix or f"/v1/{resource_name}"
+    # Get configuration from ClassVars. Item 39: when the manager declares
+    # a non-default ``version`` and no explicit ``prefix``, derive the
+    # prefix from the version token rather than the hard-coded "v1".
+    version_token = getattr(manager_class, "version", None) or "v1"
+    prefix: str = manager_class.prefix or f"/{version_token}/{resource_name}"
     tags: List[str] = manager_class.tags or [
         f"{stringcase.titlecase(resource_name.replace('_', ' '))} Management"
     ]
@@ -3569,6 +3572,24 @@ def create_router_from_manager(
                     yield from list.__iter__(self)
 
         router.routes = _RouteList(prefix, router.routes)
+
+    # Item 39 — tag every endpoint registered on this router with the
+    # owning manager class so the inbound middleware in app.py can read
+    # ``deprecated_in`` / ``sunset_in`` per response and inject the
+    # ``Deprecation`` / ``Sunset`` HTTP headers without a separate
+    # prefix-to-manager registry.
+    #
+    # Walk the underlying list directly (``list.__iter__``) rather than
+    # ``router.routes`` — the latter is a custom ``_RouteList`` whose
+    # first iteration is one-shot and yields a proxy that the openapi
+    # generator depends on; consuming it here would leak that proxy.
+    for route in list.__iter__(router.routes):
+        endpoint = getattr(route, "endpoint", None)
+        if endpoint is not None and not hasattr(endpoint, "_router_mixin_manager"):
+            try:
+                endpoint._router_mixin_manager = manager_class
+            except (AttributeError, TypeError):
+                pass
 
     return router
 

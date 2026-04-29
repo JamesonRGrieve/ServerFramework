@@ -572,6 +572,35 @@ class TestRouterCreation:
         # Check that static route was created
         assert any("/static" in path for path in paths)
 
+    # Item 39: route prefix derives from RouterMixin.version when no
+    # explicit prefix is set, and every endpoint is tagged with its
+    # owning manager so the deprecation/sunset middleware can read
+    # ``deprecated_in`` / ``sunset_in`` per response.
+    def test_versioned_prefix_derived_from_version_classvar(self, model_registry):
+        """A manager declaring ``version = "v2"`` produces a /v2 prefix
+        without explicit ``prefix`` configuration."""
+
+        class TestManagerV2(TestManager):
+            prefix = None  # opt out of TestManager's hardcoded prefix
+            version = "v2"
+
+        router = create_router_from_manager(TestManagerV2, model_registry)
+        assert router.prefix == "/v2/test_v2"
+
+    def test_endpoints_tagged_with_owning_manager(self, model_registry):
+        """``_router_mixin_manager`` is attached to each endpoint so the
+        app-level middleware can resolve ``deprecated_in``/``sunset_in``
+        without a separate prefix-to-manager registry."""
+        router = create_router_from_manager(TestManager, model_registry)
+
+        tagged = 0
+        for route in list.__iter__(router.routes):
+            endpoint = getattr(route, "endpoint", None)
+            if endpoint is not None and hasattr(endpoint, "_router_mixin_manager"):
+                assert endpoint._router_mixin_manager is TestManager
+                tagged += 1
+        assert tagged > 0, "expected at least one tagged endpoint"
+
     def test_generated_router_openapi_definitions(self, model_registry):
         """Ensure generated routers expose component definitions in OpenAPI."""
         from fastapi import FastAPI

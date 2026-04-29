@@ -490,6 +490,26 @@ def build_app(model_registry: ModelRegistry):
         # leaked PII and credentials into production logs and offered no
         # observability that structured logging (Item 85) does not.
 
+        # Item 39 — inject ``Deprecation`` / ``Sunset`` HTTP headers when
+        # the matched route's manager declares ``deprecated_in`` /
+        # ``sunset_in``. The values are opaque strings forwarded
+        # verbatim so clients can surface the contract without the
+        # framework imposing a date format.
+        try:
+            route = request.scope.get("route")
+            endpoint = getattr(route, "endpoint", None) if route else None
+            manager_class = getattr(endpoint, "_router_mixin_manager", None)
+            if manager_class is not None:
+                deprecated_in = getattr(manager_class, "deprecated_in", None)
+                sunset_in = getattr(manager_class, "sunset_in", None)
+                if deprecated_in:
+                    response.headers["Deprecation"] = str(deprecated_in)
+                if sunset_in:
+                    response.headers["Sunset"] = str(sunset_in)
+        except Exception:
+            # Header injection is best-effort; never break the response.
+            pass
+
         clear_request_context()  # Clear context after request
         return response
 
