@@ -926,6 +926,8 @@ The auto-generated REST surface, custom routes that participate in the same gene
 
 **Dependencies.** Cross-references Item 25 (SDK generation).
 
+**Partial implementation landed.** The contract surface is on `RouterMixin`: `version: ClassVar[str] = "v1"` (default preserves existing `/v1/<resource>` behavior), `deprecated_in: ClassVar[Optional[str]] = None`, and `sunset_in: ClassVar[Optional[str]] = None`. Subclasses opt into a different version (`v2beta`, `v3rc1`, etc.) by overriding the ClassVar. 5 unit tests cover the default value, override, deprecation-knob defaults, deprecation override, and prerelease token acceptance. What remains: (a) the route-prefix derivation in `create_router_from_manager` so a manager whose `prefix` is None and `version != "v1"` produces `/v2/<resource>` automatically rather than the current hard-coded `/v1/<resource>`, (b) the `Deprecation` / `Sunset` HTTP-header injection middleware that consults `deprecated_in` / `sunset_in` on every response from a tagged manager's routes, (c) the SDK-generator integration (Item 25) emits version-suffixed methods, (d) the GraphQL field-level `@deprecated` / `@sunset` directives. Item remains open until those land.
+
 ---
 
 ## Item 40 — Custom-route contract with SDK, GraphQL, and test parity
