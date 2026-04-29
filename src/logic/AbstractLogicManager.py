@@ -1924,11 +1924,11 @@ class AbstractBLLManager(ABC):
                         parsed_value = datetime.fromisoformat(
                             value.replace("Z", "+00:00")
                         )
-                    except:
+                    except ValueError:
                         try:
                             parsed_value = date.fromisoformat(value)
-                        except:
-                            pass
+                        except ValueError as e:
+                            logger.warning(f"Unparseable date filter value {value!r}: {e}")
 
                 # Check if value is a datetime or date
                 if isinstance(parsed_value, datetime):

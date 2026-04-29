@@ -684,13 +684,13 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
                 invalid_data=invalid_data,
             )
         }
-        print(f"AbstractEPTest DEBUG: Payload for {key}: {json.dumps(payload)}")
+        logger.debug(f"AbstractEPTest DEBUG: Payload for {key}: {json.dumps(payload)}")
 
         if parent_ids_override is not None:
             path_parent_ids = parent_ids_override
 
         endpoint = self.get_create_endpoint(path_parent_ids)
-        print(f"Create method endpoint: {endpoint}")
+        logger.debug(f"Create method endpoint: {endpoint}")
         # Make the request
         response = server.post(
             endpoint,
@@ -800,12 +800,12 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
                 merged_parent_ids,
             )
         )
-        print(f"AbstractEPTest DEBUG: Parent entities: {parent_entities_dict}")
+        logger.debug(f"AbstractEPTest DEBUG: Parent entities: {parent_entities_dict}")
         # Extract the team's ID from the parent_entities_dict
         team_id = parent_entities_dict.get("team", {}).get("id")
 
         # Debugging output to verify the extracted team ID
-        print(f"Extracted Team ID: {team_id}")
+        logger.debug(f"Extracted Team ID: {team_id}")
 
         # Create the entity payload
         name = f"Test {self.faker.word()}"
@@ -819,18 +819,18 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
 
         # Create entity data with fields parameter for response filtering
         entity_data = {self.entity_name: payload_data, "fields": [field_name]}
-        print(
+        logger.debug(
             f"AbstractEPTest DEBUG: Payload for field {field_name}: {json.dumps(entity_data)}"
         )
         endpoint = self.get_create_endpoint(path_parent_ids)
-        print(f"Create method endpoint: {endpoint}")
+        logger.debug(f"Create method endpoint: {endpoint}")
         response = server.post(
             endpoint,
             json=entity_data,
             headers=self._get_appropriate_headers(admin_a.jwt),
         )
-        print(f"Response status code: {response.status_code}")
-        print(f"Response JSON: {response.json()}")
+        logger.debug(f"Response status code: {response.status_code}")
+        logger.debug(f"Response JSON: {response.json()}")
         self._assert_response_status(
             response,
             201,
@@ -1040,7 +1040,7 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
             raise ValueError("Either jwt_token or api_key must be provided")
         # Get the entity to retrieve
         entity_to_get = self.tracked_entities[get_key]
-        print(f"Entity to get:", entity_to_get)
+        logger.debug(f"Entity to get: {entity_to_get}")
 
         # Determine whether to use path-based nesting
         detail_nesting_level = self.NESTING_CONFIG_OVERRIDES.get("DETAIL", 0)
@@ -1076,15 +1076,15 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
 
         # Build the endpoint
         endpoint = self.get_detail_endpoint(entity_to_get["id"], path_parent_ids)
-        print(f"DEBUG: GET endpoint: {endpoint}{query_string}")
+        logger.debug(f"DEBUG: GET endpoint: {endpoint}{query_string}")
 
         # Make the request
         response = server.get(
             f"{endpoint}{query_string}",
             headers=self._get_appropriate_headers(jwt_token, api_key),
         )
-        print(f"DEBUG: GET response status code: {response.status_code}")
-        print(f"DEBUG: GET response JSON: {response.json()}")
+        logger.debug(f"DEBUG: GET response status code: {response.status_code}")
+        logger.debug(f"DEBUG: GET response JSON: {response.json()}")
         # Assert response and store entity
         self._assert_response_status(
             response,
@@ -1135,7 +1135,7 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
 
         # Assert it doesn't contain other fields
         fields_list = [field_name]
-        print("Contains the fields: " + str(fields_list))
+        logger.debug("Contains the fields: " + str(fields_list))
         other_fields = [field for field in entity.keys() if field not in fields_list]
         if other_fields:
             for field in other_fields:
@@ -2008,7 +2008,7 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
 
         # Get the entity to update
         entity_to_update = self.tracked_entities[update_key]
-        print(f"Updating entity: {entity_to_update}")
+        logger.debug(f"Updating entity: {entity_to_update}")
 
         # Extract parent IDs from the entity
         parent_ids = {}
@@ -2033,9 +2033,9 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
                 update_data[self.string_field_to_update] = (
                     f"Updated {self.faker.word()}"
                 )
-        print(f"Update data: {update_data}")
+        logger.debug(f"Update data: {update_data}")
         endpoint = self.get_update_endpoint(entity_to_update["id"], path_parent_ids)
-        print(f"Update endpoint: {endpoint}")
+        logger.debug(f"Update endpoint: {endpoint}")
 
         # Make the request
         response = server.put(
@@ -2043,8 +2043,8 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
             json={self.entity_name: update_data},
             headers=self._get_appropriate_headers(jwt_token, api_key),
         )
-        print(f"Response status code: {response.status_code}")
-        print(f"Response body: {response.text}")
+        logger.debug(f"Response status code: {response.status_code}")
+        logger.debug(f"Response body: {response.text}")
 
         if not invalid_data:
             # Assert response and store entity
@@ -2112,10 +2112,10 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         # Create the request payload with fields parameter for response filtering
         request_data = {self.entity_name: update_data, "fields": [field_name]}
 
-        print(
+        logger.debug(
             f"AbstractEPTest DEBUG: Update payload for field {field_name}: {json.dumps(request_data)}"
         )
-        print(f"Update endpoint: {endpoint}")
+        logger.debug(f"Update endpoint: {endpoint}")
 
         # Make the PUT request
         response = server.put(
@@ -2124,7 +2124,7 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
             headers=self._get_appropriate_headers(admin_a.jwt, api_key),
         )
 
-        print(f"Response JSON: {response.json()}")
+        logger.debug(f"Response JSON: {response.json()}")
 
         # Assert successful response
         self._assert_response_status(
@@ -2248,14 +2248,14 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
 
         # Send the request
         endpoint = self.get_update_endpoint(entity["id"], {})
-        print(f"Update endpoint: {endpoint}")
+        logger.debug(f"Update endpoint: {endpoint}")
         response = server.put(
             endpoint,
             json=invalid_payload,
             headers=self._get_appropriate_headers(admin_a.jwt),
         )
         response_data = response.json()
-        print(f"Response data: {response_data}")
+        logger.debug(f"Response data: {response_data}")
 
         # Assert the response
         assert response.status_code == 422, (
@@ -3442,7 +3442,7 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
             json={self.resource_name_plural: entity},  # Should be array, not object
             headers=self._get_appropriate_headers(admin_a.jwt),
         )
-        print(f"Response: {response}")
+        logger.debug(f"Response: {response}")
         assert response.status_code == 422, (
             f"Plural key with singular data should return 422, got {response.status_code}. "
             f"Response: {response.text}"
@@ -3483,7 +3483,7 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
             f"Response: {response.text}"
         )
         response_data = response.json()
-        print(f"Response data: {response_data}")
+        logger.debug(f"Response data: {response_data}")
 
         # Assert that the 'detail' key exists in the response
         assert "detail" in response_data, "Response should contain a 'detail' key"

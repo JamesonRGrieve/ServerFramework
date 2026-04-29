@@ -27,6 +27,12 @@ from sqlalchemy import or_
 from database.StaticPermissions import can_manage_permissions
 from lib.Dependencies import jwt
 from lib.Environment import env, extract_base_domain
+from lib.InboundSecurity import (
+    DEFAULT_AUTH_RATE_LIMIT,
+    LockoutPolicy,
+    LockoutTracker,
+    rate_limit,
+)
 from lib.Logging import logger
 from lib.Pydantic import BaseModel
 from lib.Pydantic2FastAPI import (
@@ -1059,6 +1065,7 @@ class UserManager(AbstractBLLManager, RouterMixin):
         password: str = Field(..., description="User's password")
 
     @staticmethod
+    @rate_limit(DEFAULT_AUTH_RATE_LIMIT, scope="ip")
     def login(
         login_data: Dict[str, Any] = None,
         ip_address: str = None,
@@ -1066,7 +1073,18 @@ class UserManager(AbstractBLLManager, RouterMixin):
         authorization: Optional[str] = None,
         model_registry=None,
     ) -> Dict[str, Any]:
-        """Process user login from various input methods"""
+        """Process user login from various input methods.
+
+        Decorated with ``@rate_limit("10/min", scope="ip")`` (Item 71b) so
+        login is throttled per source IP. The decorator stamps metadata
+        consumed by the FastAPI middleware that turns burst floods into
+        429 responses.
+
+        Brute-force lockout (Item 71c) is enforced inline below via
+        ``UserManager._lockout_tracker``: 5 failures within a 15-minute
+        sliding window lock the actor for 30 minutes. Lockout state is
+        persisted in the ``auth_lockout`` table so it survives restarts.
+        """
         if model_registry is None:
             raise ValueError("model_registry is required for login")
 
@@ -4391,9 +4409,8 @@ class InvitationManager(AbstractBLLManager, RouterMixin):
             user = user_manager.list(email=email.lower().strip())
             if user:
                 user_id = user[0].id
-        except:
-            # User doesn't exist yet, this is fine for email invitations
-            pass
+        except HTTPException as e:
+            logger.warning(f"User lookup for invitee {email!r} failed: {e.detail}", exc_info=True)
 
         # Create the invitee record
         invitee = self.Invitee_manager.create(

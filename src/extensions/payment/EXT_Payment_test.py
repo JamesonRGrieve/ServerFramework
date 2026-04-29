@@ -362,11 +362,25 @@ class TestEXTPayment:
         assert any(dep.name == "stripe" for dep in pip_deps)
 
     def test_concrete_provider_bond_instance_method(self):
-        """Test concrete provider bond_instance method."""
-        from unittest.mock import MagicMock
+        """Test concrete provider bond_instance method.
 
-        mock_instance = MagicMock()
-        result = ConcretePaymentProvider.bond_instance(mock_instance)
+        bond_instance for the test provider simply returns the class. We
+        verify that contract using a real provider-instance-shaped object
+        rather than a mock (per AGENTS.md no-mock pillar).
+        """
+
+        class _FakeInstance:
+            """Minimal real stand-in for a provider instance DTO.
+
+            bond_instance only inspects the parameter when overridden by
+            a real provider; this concrete test provider returns ``cls``
+            unconditionally, so any plain object satisfies the contract.
+            """
+
+            id = "test-instance-id"
+            name = "test-instance"
+
+        result = ConcretePaymentProvider.bond_instance(_FakeInstance())
         assert result is not None
 
     def test_provider_discovery(self):
@@ -378,7 +392,6 @@ class TestEXTPayment:
 
 from decimal import Decimal
 from typing import Dict, List, Optional
-from unittest.mock import patch
 
 import pytest
 
@@ -831,31 +844,35 @@ class TestAbstractPaymentProvider:
             assert callable(method)
 
     def test_env_var_getters(self):
-        """Test environment variable getter methods."""
-        # Test get_secret_key
-        with patch.object(
-            ConcretePaymentProvider, "get_env_value", return_value="sk_test_123"
-        ):
+        """Test environment variable getter methods using real env dict."""
+        # No-mock pillar: mutate the provider's real env dict and verify the
+        # getters read from it. The getters are pure dict lookups; no need
+        # to patch.
+        original_env = dict(ConcretePaymentProvider.env)
+        try:
+            ConcretePaymentProvider.env["CONCRETEPAYMENT_SECRET_KEY"] = "sk_test_123"
+            ConcretePaymentProvider.env["CONCRETEPAYMENT_WEBHOOK_SECRET"] = "whsec_test_123"
+
             secret_key = ConcretePaymentProvider.get_secret_key()
             assert secret_key == "sk_test_123"
 
-        # Test get_webhook_secret
-        with patch.object(
-            ConcretePaymentProvider, "get_env_value", return_value="whsec_test_123"
-        ):
             webhook_secret = ConcretePaymentProvider.get_webhook_secret()
             assert webhook_secret == "whsec_test_123"
+        finally:
+            ConcretePaymentProvider.env.clear()
+            ConcretePaymentProvider.env.update(original_env)
 
     def test_validate_config_static_method(self):
-        """Test config validation static method."""
-        with patch.object(
-            ConcretePaymentProvider, "get_api_key", return_value="pk_test_123"
-        ):
-            with patch.object(
-                ConcretePaymentProvider, "get_secret_key", return_value="sk_test_123"
-            ):
-                # Should return True for properly configured provider
-                assert ConcretePaymentProvider.validate_config() is True
+        """Test config validation static method using the real env dict."""
+        # validate_config returns True iff get_secret_key() returns a truthy
+        # value. We populate the real env dict — no patching required.
+        original_env = dict(ConcretePaymentProvider.env)
+        try:
+            ConcretePaymentProvider.env["CONCRETEPAYMENT_SECRET_KEY"] = "sk_test_123"
+            assert ConcretePaymentProvider.validate_config() is True
+        finally:
+            ConcretePaymentProvider.env.clear()
+            ConcretePaymentProvider.env.update(original_env)
 
     def test_services_consistency(self):
         """Test that services method returns consistent results."""
@@ -867,10 +884,16 @@ class TestAbstractPaymentProvider:
 
     def test_extension_info_includes_currency(self):
         """Test that extension info includes currency information."""
-        with patch.object(ConcretePaymentProvider, "get_env_value", return_value="EUR"):
+        # No-mock pillar: mutate the real env dict that get_env_value reads.
+        original_env = dict(ConcretePaymentProvider.env)
+        try:
+            ConcretePaymentProvider.env["CONCRETEPAYMENT_CURRENCY"] = "EUR"
             info = ConcretePaymentProvider.get_extension_info()
             assert "currency" in info
             assert info["currency"] == "EUR"
+        finally:
+            ConcretePaymentProvider.env.clear()
+            ConcretePaymentProvider.env.update(original_env)
 
     def test_static_implementation_completeness(self):
         """Test that static implementation provides all required methods."""

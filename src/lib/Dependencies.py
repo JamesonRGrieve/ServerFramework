@@ -1748,7 +1748,7 @@ def print_optional_skip_banner(skipped: List[Tuple[str, str]]) -> str:
     """
     if not skipped:
         rendered = "OPTIONAL DEPS SKIPPED: (none)"
-        print(rendered)
+        logger.info(rendered)
         return rendered
     parts = []
     for dep_name, abilities in skipped:
@@ -1757,7 +1757,7 @@ def print_optional_skip_banner(skipped: List[Tuple[str, str]]) -> str:
         else:
             parts.append(dep_name)
     rendered = "OPTIONAL DEPS SKIPPED: " + ", ".join(parts)
-    print(rendered)
+    logger.info(rendered)
     return rendered
 
 
