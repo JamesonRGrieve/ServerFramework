@@ -217,15 +217,140 @@ class InMemoryOutboxStore(OutboxStore):
 
 
 # ---------------------------------------------------------------------------
-# Drain-service stub
+# OutboxDrainService -- built on Item 28's QueueConsumerService
 # ---------------------------------------------------------------------------
-#
-# OutboxDrainService is intentionally not defined here as a class -- it is
-# built on top of QueueConsumerService (Item 28) and is registered by the
-# service-layer bootstrap. Importing the service layer here would create a
-# load-time cycle. Callers should:
-#
-#     from logic.AbstractService import QueueConsumerService
-#     from logic.Outbox import OutboxStore
-#
-# and compose the drain there.
+
+
+class OutboxDrainService:
+    """Background drain for the outbox.
+
+    Built on top of :class:`logic.AbstractService.QueueConsumerService`. The
+    class is constructed lazily by :func:`make_outbox_drain_service` so that
+    importing :mod:`logic.Outbox` does not pull the service layer at module
+    load time -- this keeps the import graph acyclic for callers that only
+    need the model + store types (e.g. BLL writers enrolling rows).
+    """
+
+    def __init__(
+        self,
+        store: OutboxStore,
+        executor: "Optional[OutboxOperationExecutor]" = None,
+        max_retries: int = 5,
+        **service_kwargs,
+    ) -> None:
+        # Lazy import to avoid module-load cycle.
+        from logic.AbstractService import QueueConsumerService, QueueSource
+
+        class _OutboxQueueSource(QueueSource):
+            """Adapter that exposes ``OutboxStore`` as a ``QueueSource``."""
+
+            def __init__(self, store: OutboxStore) -> None:
+                self._store = store
+                self._claimed: List[OutboxEntry] = []
+
+            async def pull_one(self) -> Optional[dict]:
+                if not self._claimed:
+                    self._claimed = list(self._store.claim_pending(limit=10))
+                if not self._claimed:
+                    return None
+                entry = self._claimed.pop(0)
+                return entry.model_dump() | {"_outbox_id": entry.id}
+
+            async def ack(self, item: dict) -> None:
+                eid = item.get("_outbox_id") or item.get("id")
+                if eid:
+                    self._store.mark_complete(str(eid))
+
+            async def nack(self, item: dict) -> None:
+                # The OutboxStore implementation moves the entry back to
+                # pending on mark_failed; nack here is a no-op so the
+                # store remains the single source of truth.
+                return None
+
+            async def move_to_dlq(self, item: dict, reason: str) -> None:
+                eid = item.get("_outbox_id") or item.get("id")
+                if eid:
+                    self._store.mark_failed(
+                        str(eid), RuntimeError(reason), max_retries=0
+                    )
+
+        class _DrainConsumer(QueueConsumerService):
+            def __init__(self, *args, executor=None, store=None, **kwargs):
+                super().__init__(*args, **kwargs)
+                self._executor = executor
+                self._store = store
+
+            async def process(self, item: dict) -> None:
+                eid = item.get("_outbox_id") or item.get("id")
+                if self._executor is None:
+                    # No executor wired -- treat the entry as delivered.
+                    return None
+                try:
+                    await self._executor(item)
+                except Exception as e:
+                    if eid is not None:
+                        self._store.mark_failed(
+                            str(eid), e, max_retries=self.max_retries
+                        )
+                    raise
+
+        self.store = store
+        self.executor = executor
+        self._queue_source = _OutboxQueueSource(store)
+        # Build the underlying consumer with sensible service defaults.
+        kwargs = dict(service_kwargs)
+        kwargs.setdefault("requester_id", "system:outbox-drain")
+        kwargs.setdefault("interval_seconds", 1)
+        self._consumer = _DrainConsumer(
+            queue_source=self._queue_source,
+            max_retries=max_retries,
+            executor=executor,
+            store=store,
+            **kwargs,
+        )
+
+    # -- proxy lifecycle to the underlying consumer ---------------------------
+
+    def start(self) -> None:
+        self._consumer.start()
+
+    def stop(self) -> None:
+        self._consumer.stop()
+
+    def pause(self) -> None:
+        self._consumer.pause()
+
+    def resume(self) -> None:
+        self._consumer.resume()
+
+    def health(self):  # type: ignore[no-untyped-def]
+        return self._consumer.health()
+
+    async def update(self) -> None:
+        """One drain step (claim + dispatch)."""
+        await self._consumer.update()
+
+    async def run_service_loop(self) -> None:
+        await self._consumer.run_service_loop()
+
+
+# Type alias used in OutboxDrainService.__init__. Defined late because the
+# class signature only needs ``Callable`` semantics.
+OutboxOperationExecutor = "Optional[ ... ]"  # documented below.
+
+import typing as _t  # noqa: E402
+
+OutboxOperationExecutor = _t.Callable[[dict], _t.Awaitable[None]]
+
+
+def make_outbox_drain_service(
+    store: OutboxStore,
+    executor: Optional[OutboxOperationExecutor] = None,
+    **kwargs,
+) -> OutboxDrainService:
+    """Factory that produces a fully-wired :class:`OutboxDrainService`.
+
+    Provided as the canonical construction path so callers do not have to
+    remember the keyword names accepted by the underlying consumer.
+    """
+    return OutboxDrainService(store=store, executor=executor, **kwargs)

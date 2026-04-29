@@ -7,8 +7,10 @@ import pytest
 from logic.Outbox import (
     DLQEntry,
     InMemoryOutboxStore,
+    OutboxDrainService,
     OutboxEntry,
     OutboxStore,
+    make_outbox_drain_service,
 )
 
 
@@ -91,3 +93,59 @@ def test_mark_failed_retries_then_dlqs():
     assert len(dlq) == 1
     assert isinstance(dlq[0], DLQEntry)
     assert dlq[0].idempotency_key == "idem-f"
+
+
+# ---------------------------------------------------------------------------
+# OutboxDrainService (Item 35 + Item 28 integration)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+async def test_drain_service_processes_pending_entry():
+    store = InMemoryOutboxStore()
+    store.enqueue(_entry("idem-d1"))
+    delivered: list = []
+
+    async def executor(item: dict) -> None:
+        delivered.append(item.get("idempotency_key"))
+
+    drain = make_outbox_drain_service(store, executor=executor)
+    await drain.update()
+    assert delivered == ["idem-d1"]
+    assert store.find_by_idempotency_key("idem-d1").status == "complete"
+
+
+@pytest.mark.unit
+async def test_drain_service_marks_failures_on_executor_raise():
+    store = InMemoryOutboxStore()
+    store.enqueue(_entry("idem-d2"))
+
+    async def executor(item: dict) -> None:
+        raise RuntimeError("upstream rejected")
+
+    drain = make_outbox_drain_service(store, executor=executor, max_retries=1)
+    await drain.update()
+    # Entry should now be back in pending awaiting next drain pass.
+    e = store.find_by_idempotency_key("idem-d2")
+    assert e is not None
+    assert e.status == "pending"
+    assert e.retry_count == 1
+
+
+@pytest.mark.unit
+def test_drain_service_lifecycle_proxies():
+    store = InMemoryOutboxStore()
+    drain = OutboxDrainService(store=store)
+    drain.start()
+    assert drain.health().status in ("OK", "DEGRADED")
+    drain.pause()
+    assert drain.health().status == "DEGRADED"
+    drain.resume()
+    drain.stop()
+    assert drain.health().status in ("DOWN", "FAILED")
+
+
+@pytest.mark.unit
+def test_find_by_idempotency_key_returns_none_for_unknown():
+    store = InMemoryOutboxStore()
+    assert store.find_by_idempotency_key("nope") is None
