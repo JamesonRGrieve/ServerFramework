@@ -561,30 +561,59 @@ if customer:
 
 ## Best Practices
 
-1. **Field Mappings** - Always define field mappings for different naming conventions
-2. **Error Handling** - Provide meaningful error messages and proper HTTP status codes
-3. **Pagination** - Handle different pagination styles (offset vs cursor-based)
-4. **Rate Limiting** - Consider API rate limits in provider rotation
-5. **Caching** - Implement caching for frequently accessed external data
-6. **Validation** - Validate data both before sending to API and after receiving
-7. **Testing** - Mock external API calls in tests using provider rotation patterns
+1. **Field Mappings** — declare them as a typed `field_mappings: List[FieldMapping]` rather than a `Dict[str, str]` rename map. Built-in transformers: `Rename`, `Compose`, `Decompose`, `DotPath`, `UnitConvert` (with helpers like `CentsToDecimal`), `EnumRemap`, `TimestampConvert`, plus a `Custom(fn_to, fn_from)` escape hatch. The framework derives `to_external_format` / `from_external_format` mechanically; the mapping list must be reversible so round-trip integrity is preserved, and round-trip tests run automatically as part of the provider's class-level test suite.
+2. **Error Handling** — raise typed `BaseExternalError` subclasses; never return success/error dicts from `*_via_provider`. The rotation policy interprets typed errors per failure class.
+3. **Pagination** — declare `paginator: ClassVar[Type[AbstractPaginator]]` — `OffsetPaginator`, `CursorPaginator`, `PageTokenPaginator`, `LinkHeaderPaginator`. Internal endpoints continue to expose offset/limit; the paginator round-trips opaque cursor state in `next_token` (a base64-encoded JSON envelope `{provider_cursor, page_size, query_hash}`). A `query_hash` mismatch is `400 invalid_pagination`. The typed `Pagination` model exposes `supports_random_access: bool`; cursor-only providers cannot jump arbitrarily to offset.
+4. **Search** — declare `query_translator: ClassVar[Type[AbstractQueryDSLTranslator]]`. Built-ins: `StripeSearchTranslator`, `SOQLTranslator`, `GraphQLFilterTranslator`, `MongoStyleTranslator`, `KeyValueTranslator`. The translator consumes the typed search models (`StringSearchModel`, `NumericalSearchModel`, `DateSearchModel`, `BooleanSearchModel`) and emits the upstream's filter format. A translator may declare `supported_operators` as a class set; unsupported operators surface as a typed error naming the operator and the provider.
+5. **Rate Limiting** — declare `rate_limit: ClassVar[Optional[RateLimit]]`. The framework's per-provider token bucket (backed by `DistributedCounter`) acquires before the call; 429 signals pause that provider rather than rotating.
+6. **Bulk endpoints** — implement optional `batch_create_via_provider` / `batch_update_via_provider` / `batch_delete_via_provider` when the upstream supports them (Stripe batch API, SendGrid bulk send, Salesforce Composite). When present, `AbstractExternalManager.batch_*` delegates; when absent, it falls back to a loop over single-resource calls. Per-item rejections surface as individual typed errors; batch-level idempotency keys derive from per-item keys.
+7. **N+1 prevention** — external navigation honors the `include` query parameter. With `include=stripe_customer`, the framework collects external IDs across the result set and issues one batched upstream call (`list_via_provider(ids=[...])`) instead of N individual calls; without `include`, navigation returns `None` (lenient mode, recommended for production) or raises `NavigationNotIncludedError` (strict mode, recommended for development). For providers whose upstream does not support list-by-id, the resolver falls back to bounded-concurrency individual calls subject to the provider's rate limit.
+8. **Caching** — per-request cache keyed by `(external_model, set_of_ids)` for batched resolution; persistent caching is opt-in per type via the `@cache(ttl=...)` directive on the merged GraphQL type.
+9. **Validation** — validate at the typed external-DTO boundary before the call, and again on response.
+10. **Idempotency** — decorate mutating `*_via_provider` methods with `@idempotent`. The framework guarantees the rotation system's retries carry the same key as the original attempt; the canonical store is the outbox row when the operation enrolls.
+11. **Mirror-on-create** — use the `@mirror_on_create(local=UserModel, external=Stripe_CustomerModel, link_field="external_payment_id")` decorator for the local-create + upstream-create + ID-write-back lifecycle. The outbox pattern is the default; the roll-forward saga is retained only for the narrow case where the upstream cannot survive at-least-once delivery and the local rollback is cheaper than reconciliation. Symmetric `@mirror_on_update` and `@mirror_on_delete` cover the corresponding events. The link-field write-back uses `AdvisoryLock` for serialization, not an ad-hoc row-level lock.
 
 ## Testing
 
-External models can be tested by mocking the provider rotation:
+External models are tested against real sandbox/test-mode credentials, not mocks. This is the no-mock pillar from `AGENTS.md` applied to external APIs.
 
 ```python
-def test_stripe_product_creation(mock_rotation):
-    """Test Stripe product creation."""
-    # Mock the rotation system
-    mock_rotation.rotate.return_value = {
-        "success": True,
-        "data": {"id": "prod_123", "name": "Test Product", "active": True}
-    }
-    
-    manager = StripeProductManager(requester_id="test_user", rotation_manager=mock_rotation, db_manager=self.db_manager)
+@pytest.mark.external_api(provider="stripe")
+def test_stripe_product_creation(model_registry):
+    """Test Stripe product creation against real sandbox credentials.
+
+    Automatically xfailed when STRIPE_API_KEY_TEST is absent, with the
+    reason naming the exact env var that would unblock the test.
+    """
+    manager = StripeProductManager(model_registry, requester_id="test_user")
     product = manager.create(display_name="Test Product")
-    
     assert product.display_name == "Test Product"
-    assert product.external_id == "prod_123"
+    assert product.external_id.startswith("prod_")
 ```
+
+Two markers govern external-API tests:
+
+- `@pytest.mark.external_api(provider="...")` — requires real (sandbox) credentials; auto-xfailed when missing with a clear skip reason naming the missing env vars; runs end-to-end against the sandbox when present.
+- `@pytest.mark.external_smoke` — deliberately runs without credentials and asserts that the framework's configuration-failure paths surface correctly.
+
+`PRV_Fake_*` providers are an opt-in for offline CI but the recommended path is sandbox credentials. No mocks of `RotationManager`, `*_via_provider` methods, or extension functionality.
+
+## Inbound Eventing
+
+Federations are bidirectional. External upstreams push events back to us; the framework provides typed primitives for both shapes.
+
+### Webhook handlers
+
+A canonical mount at `/webhook/{extension}/{provider}` and `/webhook/{extension}/{provider}/{event}` is registered automatically when an extension or provider declares an inbound handler. The decorator `@webhook_handler(EXT_Payment, provider="stripe", event="customer.updated")` registers static methods into a typed registry. Providers declaring webhook handlers must implement `verify_signature(headers, body) -> bool` on `AbstractStaticProvider`; signature verification is mandatory and the request is rejected before dispatch on failure. Inbound events fan into the same hook bus that internal mutations fire — an external `customer.updated` triggers the AFTER-update hook chain on `Stripe_CustomerManager` exactly as if the change had originated locally. Replay protection (timestamp window, nonce cache) is per-provider in `verify_signature`. Handlers receive a `WebhookContext` with the parsed payload, originating provider instance, and requester resolution chain. Unrecognized events log a warning and return 200 (rejecting with non-2xx tells the upstream to retry, which is unwanted for events we deliberately ignore).
+
+### Streaming services
+
+Real-time integrations (Stripe events firehose, Slack RTM, Kafka consumers, websocket-driven chat) do not fit request/response. They are long-lived, asynchronous, stateful. `StreamingService` is one of the four service flavors and has two sub-flavors: `ConsumerService` covers long-lived inbound connections (websocket subscribers, SSE listeners, Kafka consumers); its lifecycle is `connect → on_message(event) → disconnect` with automatic exponential-backoff reconnection capped at a configurable maximum. `ProducerService` covers long-lived outbound streams that we write to. Both fan into the same hook bus that internal mutations and webhooks use; per-service state (last-seen-event cursors, subscription tokens) lives in a small per-service state table or in the provider's external state store, not in process memory. Long-lived services participate in graceful shutdown: the service receives a stop signal, drains in-flight events with a deadline, and disconnects cleanly.
+
+## Schema drift detection
+
+External APIs change beneath us. Each provider targeting an upstream with a published OpenAPI spec declares `openapi_url: ClassVar[Optional[str]]`. A canonical snapshot lives at `src/extensions/{name}/contracts/{provider}.openapi.json`. CI fetches the live spec on a per-provider cadence (high-velocity upstreams daily, slow-moving ones weekly), runs a structural diff (`oasdiff`) against the snapshot, and fails on breaking changes (removed fields, narrowed types, removed enum values). Non-breaking diffs produce a warning and a PR that updates the snapshot. For upstreams without machine-readable specs, the snapshot is generated from real recorded responses normalized to remove instance-specific identifiers. The CI failure includes a clear diff summary; the snapshot files are reviewable artifacts in pull requests.
+
+## GraphQL upstreams
+
+When an upstream API is itself GraphQL, providers federate the schema rather than wrapping it as RPC. `AbstractGraphQLProvider(AbstractStaticProvider)` declares `upstream_url`, `upstream_auth_strategy`, `federation_style: Literal["apollo_v2", "stitching", "namespaced"]`, and `type_namespace: Optional[str]`. A startup pipeline introspects the upstream, runs a `SchemaTransformer` pipeline (rename, prefix, hide-fields, mask-arguments, override-resolvers), registers the transformed types into the local Strawberry schema via `MergedSchemaRegistry`, and generates resolvers that reconstruct the upstream selection set from `info.selected_fields`, build a real GraphQL document with the original variables, forward to the upstream, and return the parsed result. Selection-set push-down is the entire point — without it the framework has rebuilt RPC inside a GraphQL costume. Cross-subgraph joins use a `BatchedFieldResolver` that respects the `include` mechanism. Apollo Federation v2 honors `@key`, `@external`, `@requires`, `@provides`. Errors and partial data follow real GraphQL semantics: upstream `errors` arrays propagate through, attached to the affected fields.

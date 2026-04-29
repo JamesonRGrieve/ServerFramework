@@ -8,7 +8,7 @@ This document describes the migration system implemented in `Migration.py` and `
 app.instance(extensions=...)
   -> ModelRegistry.commit()
        -> MigrationManager(model_registry=self)
-            -> _compute_migration_order(extensions)        # Item 49 toposort
+            -> _compute_migration_order(extensions)        # FK-aware toposort
             -> run_alembic_command("upgrade", "head")     # core
             -> run_extension_migration(...)               # each extension
                  -> _make_alembic_config(...)             # in-memory Config
@@ -36,7 +36,7 @@ APP_EXTENSIONS="payment,auth_mfa"
 
 Extensions absent from this variable are skipped even if their files exist on disk.
 
-## Table ownership (Item 24)
+## Table ownership
 
 Every SQLAlchemy `Table` carries deterministic ownership stamps written by `ModelRegistry._stamp_extension_table_ownership` at commit time:
 
@@ -66,7 +66,7 @@ users             core        payment
 multifactor_methods   auth_mfa    -
 ```
 
-## Migration ordering (Item 49)
+## Migration ordering
 
 `MigrationManager._compute_migration_order(extensions: List[str]) -> List[str]` is a topological sort over two edge sources:
 
@@ -169,13 +169,11 @@ You don't need to write `__table_args__` or explicit `EXT_Dependency` for FK-imp
 - Use `test_versions_root=tmp_path` when calling `MigrationManager(...)` directly to keep `src/` pristine across the test run.
 - Tests should assert on `table.info["extension"]` / `info["extensions"]` rather than fuzzy module-name patterns.
 
-## Phase reference
+## Implementation reference
 
-This document reflects the state after the migration audit landed (Phases 0–7 of `claude/audit-migration-system-UKxW4`). The four migration-related items in `IMPROVEMENTS_ORDERED.md` are addressed:
-
-| Item | Phase | Where |
-|------|-------|-------|
-| 24 — Single canonical mechanism for ownership detection | 2 | `env_is_table_owned_by_extension` + `audit-ownership` CLI |
-| 49 — Cross-extension FK-aware migration ordering | 6 | `_compute_migration_order` |
-| P3 — Extension-aware migration discovery | 3+4 | `lib.Paths.extensions_dir()` + `version_locations` per extension |
-| P1 — Rename to `serverframework.database.migrations` | (separate track) | Forward-compat: paths route through `self.paths`/`lib.Paths` |
+| Concern | Where |
+|---------|-------|
+| Single canonical mechanism for ownership detection | `env_is_table_owned_by_extension` + `audit-ownership` CLI |
+| Cross-extension FK-aware migration ordering | `_compute_migration_order` |
+| Extension-aware migration discovery (in-tree and out-of-tree) | `lib.Paths.extensions_dir()` + `version_locations` per extension |
+| Forward-compat namespace (`serverframework.database.migrations`) | Paths route through `self.paths` / `lib.Paths` |

@@ -1537,3 +1537,43 @@ Provider Test Environment:
 5. **Environment Variables**: Document all required and optional environment variables
 6. **Hook Documentation**: Document hook registration and execution patterns
 7. **Ability Documentation**: Document ability registration and usage patterns
+
+## Field Injection Collision Detection
+
+After extension discovery completes, the registry walks the merged model graph and rejects field-name collisions across extensions. When two extensions both inject a field of the same name into the same core model (e.g. both `payment` and `legacy_billing` adding `external_payment_id` to `UserModel`), this is a startup error — the application refuses to start, the error message names both extensions, the model, the colliding field, and the file paths and line numbers of both declarations.
+
+The only exception is when both extensions declare an exactly identical field — same type, same default, same metadata. Type identity uses Pydantic's field-info comparison; "exactly identical" is strict. In that case the registry accepts the duplicate as a no-op duplication.
+
+## Migration Ownership
+
+Migration ownership has one authoritative resolution rule. File-path detection is the authoritative mechanism for extension-owned tables (tables whose models live in `src/extensions/{name}/BLL_*.py`). The `info={"extension": name}` entry on `__table_args__` is the authoritative mechanism for field injections into core tables via `@extension_model` — the decorator sets the info dict automatically, so authors do not write it by hand. The decorator-set info dict merges with any existing `__table_args__` rather than overwriting.
+
+`MigrationManager.env_is_table_owned_by_extension(table)` checks the info dict first (covering the injection case) and falls back to file-path inspection (covering the new-table case). A small CLI command lists every table and its owning extension (or core, when applicable), so operators can audit ownership.
+
+## Cross-Extension Migration Ordering
+
+Migration ordering is computed as a topological sort over the union of (a) declared `EXT_Dependency` relationships and (b) FK references discovered by inspecting model definitions. An extension whose model has an FK into another extension's model implicitly depends on that extension for migration purposes, even if it did not declare the dependency explicitly. Cycles in the merged graph (an FK from A to B and another from B to A) fail at startup with a clear error naming the offending tables and extensions.
+
+The topological sort runs once at startup and is cached. Cross-extension FK detection inspects both `@extension_model` field injections and standalone extension tables. FK detection requires the model classes to be loaded before migrations run; the framework's extension registry imports all models on startup before delegating to the Alembic env, and the migration runner depends on this load order. Extensions that genuinely need bidirectional references introduce a join table owned by one of the extensions, rather than direct FKs in both directions.
+
+## Out-of-Tree Extensions
+
+`ExtensionRegistry.__init__` accepts `extensions_path`, and the path-resolution helpers honor it. Module loading uses `importlib.util.spec_from_file_location` + `module_from_spec` + `spec.loader.exec_module` against a synthesized module name (e.g. `serverframework_ext_<name>_<file>`), registered under both its synthesized name and `extensions.<name>.<file>` in `sys.modules` so existing intra-extension imports (`from extensions.payment.BLL_Payment import ...`) keep resolving.
+
+Migration discovery for out-of-tree extensions uses the same mechanism: `database/migrations/env.py` consults `lib.Paths.extensions_dir()` instead of computing the path inline. When the registry is constructed with `extensions_path`, that path becomes the search root for migrations as well as for code. Alembic's `script_location` setup tolerates multiple roots — one for the framework's core migrations, N for each extension.
+
+A consumer pointing the framework at `./my_extensions` has every extension under that path discovered, imported, registered, and operational, identical to in-package extensions.
+
+## Optional Dependencies and Startup Banner
+
+Each `EXT_Dependency` declared as `optional=True` accepts an `on_optional_missing` callback. The default callback logs a structured warning naming the missing dependency and the abilities it would have enabled. At startup, the framework prints a banner listing every skipped optional dependency and the resulting disabled abilities, so operators see at a glance what the running configuration omits. Extensions can register richer fallback behavior (use a degraded local implementation, disable a feature flag, send an admin notification) via the callback hook.
+
+The banner is emitted on stdout during startup and also written to a structured event in the audit log, so post-mortem debugging can recover the configuration state. The disabled-abilities portion requires extensions to declare which abilities depend on which optional dependencies — a small additional metadata declaration. The condition is queryable at runtime via an admin endpoint.
+
+## Manifest-Driven Installation
+
+A `manifest.toml` per extension declares metadata, dependencies (extensions, pip, system), entry points, and version. An `install_from_manifest(url_or_path)` operation fetches, validates, runs migrations, and registers the extension. A SIGHUP-style signal or an admin API call triggers a clean stop, registry rebuild, and start that surfaces the new extension without manual operator action.
+
+Migrations during install must be reversible or at least non-destructive enough that a failed install can be rolled back without data loss; a documented rollback procedure exists. The manifest format is minimal — name, version, dependencies, entry-point module — and human-editable.
+
+True in-process hot reload of code without restart is not supported. The phrase "preserve static class identity across reloads" is the entire problem and cannot be solved without a class-registry rewrite that tracks every place a class object is captured (cached references in other modules, hook decorators that registered at import time, Pydantic models that cache `__pydantic_validator__` against class objects, SQLAlchemy mappers that cannot be cleanly unmapped, Strawberry schemas baked at startup). Deployments that need code-update-without-restart use blue-green at the process level. Install/uninstall via clean restart is the contract.

@@ -282,3 +282,19 @@ Request → Validate → Route → Extract Body → Manager → Response → JSO
 | `endpoints/AbstractEPTest.py`       | REST endpoint test base             |
 | `endpoints/AbstractEPMatrixTest.py` | Matrix testing                      |
 | `endpoints/AbstractGQLTest.py`      | GraphQL test base                   |
+
+## Per-Resource Versioning
+
+`RouterMixin` exposes `version: ClassVar[str] = "v1"` (default) and the prefix is computed from the version plus the resource name. Multiple managers may register the same resource at different versions; both versions route concurrently, both appear in OpenAPI, both are present in the generated SDK as version-suffixed methods.
+
+`deprecated_in: ClassVar[Optional[str]]` and `sunset_in: ClassVar[Optional[str]]` carry the deprecation contract — the framework adds `Deprecation` and `Sunset` HTTP headers automatically and emits a logged warning per-call after the deprecation date. Versions are alphanumeric tokens (`v1`, `v2`, `v2beta`, `v3rc1`); ordering for "latest" is lexicographic with documented quirks for prereleases.
+
+REST gets path-versioned routes (`/v1/user`, `/v2/user`); GraphQL gets field-level `@deprecated` and `@sunset` directives by default, since real GraphQL evolution is field-level deprecation plus additive change rather than wholesale type renaming. Full type-version namespacing in GraphQL is opt-in for breaking renames where field-level deprecation cannot express the change. A persisted query bound to v1 continues to resolve against v1 types after v2 ships, so persisted-query stores record the version they were registered against.
+
+## Custom Routes with SDK / GraphQL / Test Parity
+
+`@custom_route` is a typed decorator capturing everything the framework needs to extend the auto-generated surface beyond CRUD. The decorator declares: HTTP method, path (relative to the manager's prefix), input model (Pydantic), output model (Pydantic), authentication type, OpenAPI tags, and an optional `expose_in` set controlling whether the route appears in REST only, GraphQL only, SDK only, or all three.
+
+The SDK generator emits a method per custom route. The GraphQL generator emits a field (mutation by default, query for safe operations) per custom route. The test scaffolder generates a baseline test with the standard auth, validation, and happy-path checks. The GraphQL operation kind is inferred from the HTTP method by default — `GET` → query, anything else → mutation — with an explicit `graphql_kind` override for cases where the inference is wrong (a `POST` that is genuinely read-only, for example).
+
+For genuinely RPC-shaped routes (no clear resource), the decorator can be applied to a free-standing class derived from `AbstractActionEndpoint` rather than to a `RouterMixin` subclass; the same generators handle it. Custom routes must declare typed inputs and outputs — untyped routes are rejected at registration to preserve the framework's typing guarantees. The streaming case uses `@streaming_route`; the webhook case uses `@webhook_handler`. Subscriptions are not produced from `@custom_route`; they require a stream output type and use the streaming decorator.

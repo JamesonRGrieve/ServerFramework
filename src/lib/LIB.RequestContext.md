@@ -187,3 +187,25 @@ Minimal performance impact of context variables.
 5. **Testing**: Use isolated context for each test case
 6. **Documentation**: Document context requirements for each operation
 7. **Security**: Sanitize context data to prevent information leakage
+
+## Cross-Cutting Fields
+
+`RequestContext` carries three fields that the framework uses uniformly across every layer.
+
+### `deadline: Optional[datetime]`
+
+Set by inbound middleware from the request's `X-Request-Timeout-Ms` header (relative integer milliseconds; gRPC-style relative timeouts avoid clock-skew issues) or from a configurable default. The middleware converts the relative value to an absolute internal deadline at ingress so all subsequent measurements use a single time source.
+
+Every component that performs I/O — rotation, the shared HTTP client, the database session, event-bus publish — reads the deadline before scheduling work, computes the remaining budget, and either adjusts its own timeout to fit or raises `DeadlineExceededError` immediately if the budget is exhausted. `DeadlineExceededError` surfaces as HTTP 504 with a typed message identifying the elapsed budget and the layer that ran out.
+
+When an operation enrolls in the outbox via `queue_and_retry` degradation, the original deadline is satisfied at that point — the SLA shifts from synchronous to asynchronous. The outbox entry receives a fresh deadline driven by the operation's own retry policy, not the original request's deadline.
+
+### `correlation_id: str` and `traceparent: Optional[str]`
+
+`traceparent` is set by ASGI middleware reading the request header at ingress (W3C Trace Context format), set on the `_traceparent` contextvar via `set_traceparent`, and reset after the response. The `ProviderHTTPClient` reads the contextvar and injects the header on every outbound call, so trace context propagates from inbound request through outbound provider call.
+
+`correlation_id` is derived from the `traceparent` trace-id when present, otherwise minted. It is the field every structured log line carries. It propagates across `asyncio.to_thread` and `asyncio.create_task` via a context-var copying helper — `contextvars.copy_context().run(fn)` for `to_thread`, and a wrapper around `create_task` that snapshots the context. Service authors do not write the propagation themselves.
+
+### `read_only: bool`
+
+Forces all session binding within the request to use replicas. Useful for dedicated read-only endpoints (a public catalog browse, a metrics export). Composes with the method-level `@read_only` BLL decorator: a method annotated `@read_only` routes to a replica when one is configured; the request-context flag forces it everywhere within the request. Read-after-write consistency is preserved within a single logical request — once any write has occurred against primary, subsequent reads in the same request bind primary regardless of `read_only` annotation or flag.

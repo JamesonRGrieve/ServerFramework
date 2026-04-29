@@ -355,3 +355,21 @@ Consistent error responses:
 2. **Check System Flags**: Respect system table restrictions
 3. **Handle Soft Deletes**: Filter deleted records appropriately
 4. **Audit Access**: Log permission-related operations
+
+## Tenant Data Isolation via Row-Level Security
+
+Tenant filtering by convention works under code review but inevitably leaks under refactoring, custom queries, raw SQL, or simple typos. A single missed filter clause is a cross-tenant data exposure. The framework enforces isolation at the database layer regardless of what the application code does.
+
+Tenant-scoped models declare themselves via a `TenantScopedMixin` that adds `team_id` (or a configurable tenant-key field) and registers a Postgres Row-Level Security policy at table-creation migration time. The session binder sets a tuple of GUCs (`app.current_org_id`, `app.current_team_id`, `app.current_user_id`) on every connection; the RLS policy filters reads and writes by matching the configured keys. A missing or unset GUC variable causes the policy to return zero rows — an unauthenticated session or a forgotten tenant-context bind sees nothing rather than seeing everything.
+
+`TenantScopedMixin` is parameterized by which keys to filter against: `TenantScopedMixin.with_keys("team_id")` for team-only, `TenantScopedMixin.with_keys("org_id", "team_id")` for org→team hierarchy, etc. The generated RLS policy combines the active keys with `AND`. A missing GUC for any declared key returns zero rows. Cross-team admin views and per-user-within-team isolation both work without `BYPASSRLS` workarounds.
+
+System-level operations (admin endpoints, cross-tenant reporting, the framework's own internal operations) bind a privileged session that bypasses the RLS policy via a Postgres role with `BYPASSRLS`. The privilege boundary is at the session-bind layer, not at individual queries — there is no way to selectively bypass RLS for a single query without binding a privileged session, by design.
+
+Postgres RLS has known costs: queries on RLS-protected tables incur planner overhead, and policy expressions must be `STABLE` or simpler for the planner to optimize. The framework's policy template is the simplest possible (`USING (team_id = current_setting('app.current_team_id')::uuid)`) so the planner cost is predictable. Migration of an existing application to RLS is non-trivial: a phased rollout (RLS in `WARN` mode logging policy violations without enforcing, then `ENFORCE` mode) is documented. The framework includes a startup check that verifies every `TenantScopedMixin`-tagged table has an enforced RLS policy and refuses to start otherwise.
+
+## Field-Level Attribute-Based Access Control
+
+The row-level permission model controls whether a user can read a record at all. Field-level grants control which fields appear once the record is visible. A field marked `Field(..., requires=["payment.invoice.read_lines"])` is included in serialized output only when the requester has the named permission; the serialization layer applies the grant check at response time. Search and update operations honor the same grants — a user without `payment.invoice.write_lines` cannot update line items even if they can update the invoice's other fields. The same metadata applies to GraphQL: the resolver for a marked field returns null with a typed error attached when the requester lacks the grant.
+
+The grant string is the same string used for OAuth scopes — one canonical permission name serves as scope, role grant, and field-level gate. Restricted fields cannot be used for `ORDER BY` or filtering by requesters lacking the grant — both are rejected at request validation, since ordering by a restricted field leaks its values through inference attacks just as much as direct read does. The allowed-field set is computed once per `(manager, requester)` at request bind and cached for the request's lifetime, so the per-record cost is a single dictionary lookup.

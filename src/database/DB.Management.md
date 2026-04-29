@@ -52,11 +52,11 @@ Base = db_manager.Base
 ```
 
 ### Database Configuration (`DatabaseManager.py`)
-Consolidated database connectivity and engine setup with multi-database support.
+Consolidated database connectivity and engine setup. SQLite is the production-ready default — the only backend with a passing engine-config test. PostgreSQL/MariaDB/MSSQL/Vector engine-config branches exist and are wired through `init_engine_config`, but the Postgres path is gated by driver pinning (asyncpg/psycopg), CI provisioning of a live Postgres, and the corresponding Big-O / migration tests; the multi-DB claim is honest only after those land. Postgres-specific primitives (Row-Level Security for tenant isolation, `pg_advisory_lock` as the default `AdvisoryLock` backend, `UPDATE ... RETURNING` distributed-counter semantics) are gated on the Postgres path landing first.
 
-**Supported Databases:**
-- SQLite (with regex support, WAL mode optimization, and aiosqlite async support)
-- PostgreSQL (with asyncpg async support)
+**Backend Status:**
+- SQLite (production-ready default; regex support, WAL mode optimization, aiosqlite async support)
+- PostgreSQL (engine-config branch present; driver pinning + live-CI gating in progress; required for RLS, advisory locks, distributed counters)
 - MySQL (with aiomysql async support)
 - MariaDB (with aiomysql async support)
 - MSSQL (with aioodbc async support)
@@ -315,3 +315,23 @@ Note: The `env.py` and `script.py.mako` files are temporarily copied from core m
 - Migrations applied in extension dependency order
 
 This consolidated approach provides a robust, scalable database management system that supports multiple database types while maintaining thread safety, performance, and proper resource management.
+
+## Backup, Restore, Point-in-Time Recovery
+
+Each table declares `backup_class: ClassVar[BackupClass]`: `critical` (data loss unacceptable; nightly snapshots plus continuous WAL archiving), `recoverable` (recoverable from upstream federation; nightly snapshots only), `ephemeral` (cache, session, sticky-routing state; excluded from backups). A scheduled `BackupService` runs nightly and drives the underlying engine's snapshot/dump command (`pg_dump` for Postgres) into a configured `BackupTarget` (the object-storage abstract; S3/GCS/local-filesystem). PITR is supported for engines with WAL streaming via a separate continuous-archive job.
+
+A monthly automated CI job restores the latest backup into a scratch DB, runs a smoke test, and discards. Restore drills run on isolated infrastructure, not against the live DB. RTO/RPO targets are declared per deployment and tracked as `backup_age_seconds` and `last_successful_restore_drill_age_seconds` metrics. A documented runbook describes the manual restore procedure.
+
+Outbox entries past their deadline are marked DLQ on restore rather than re-fired, since the upstream may have already processed them. Quota counters are restored as-of backup time with the documented over-count window — the gap between backup and restore can produce a small over-count that is acknowledged rather than silently masked.
+
+## Zero-Downtime Migrations
+
+Every migration is split into two logical phases. **Expand** adds new structure while leaving the old structure in place so both old and new versions of the application run cleanly against the post-expand DB during a rolling deploy. **Contract** removes the old structure only after the new version has fully rolled out and the old version has been retired.
+
+Invariants the framework enforces at migration generation:
+
+- NOT NULL columns added by `@extension_model` must declare a default, so v1 inserts continue to succeed.
+- Column drops are gated by a `removed_in: str` declaration that the migration generator turns into a separate contract migration in a later release.
+- FK additions are split into "add column with FK" (expand) and "set NOT NULL on the FK" (contract).
+
+A startup check rejects a migration that violates these invariants. The expand/contract split mirrors the standard pattern from Liquibase, gh-ost, and Postgres operational guides; the framework extends Alembic templates to emit a stub for the contract migration in the next release.

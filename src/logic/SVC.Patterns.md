@@ -50,14 +50,14 @@ class MyService(AbstractService):
             self.external_client.close()
 ```
 
-## Service Execution Model and Lifecycle Contract (Item 44)
+## Service Execution Model and Lifecycle Contract
 
-This section pins the contract every service flavor (perpetual, scheduled, queue-consumer, streaming — see Item 28) inherits. Service authors write against these guarantees; the supervisor honors them.
+This section pins the contract every service flavor (perpetual, scheduled, queue-consumer, streaming) inherits. Service authors write against these guarantees; the supervisor honors them.
 
 ### Execution model: asyncio
 - **Services are coroutines** running on the framework's main event loop, or on a dedicated event loop in a worker process for CPU-heavy workloads. The choice is made by the supervisor, not the service.
 - **Blocking I/O is forbidden inside a service handler.** Use `asyncio.to_thread(fn, …)` for unavoidable blocking calls. The default `asyncio.to_thread` thread pool is unbounded and a footgun under load — the framework caps it via a configurable thread-pool size (default 32; per-deployment override via `SVC_THREAD_POOL_SIZE`).
-- **Cross-thread context.** When using `asyncio.to_thread`, propagate `RequestContext` (Item 47 deadline budget, correlation id once Item 85 lands) via `contextvars.copy_context().run(fn)` so logs and deadlines do not silently lose context at the thread boundary.
+- **Cross-thread context.** When using `asyncio.to_thread`, propagate `RequestContext` (deadline budget, `correlation_id`) via `contextvars.copy_context().run(fn)` so logs and deadlines do not silently lose context at the thread boundary.
 
 ### Cancellation: cooperative, with documented drain
 - **Stop signals.** Calling `service.stop()` sets the cancellation flag and sends `asyncio.CancelledError` into the running coroutine on the next `await` point.
@@ -66,11 +66,11 @@ This section pins the contract every service flavor (perpetual, scheduled, queue
 - **Pause / resume.** `pause()` stops scheduling new work but lets in-flight work complete normally. `resume()` re-enables scheduling. Neither raises `CancelledError`.
 
 ### Outbox interaction
-The `OutboxDrainService` (Item 14 / Item 35) **must complete in-flight outbox entries before exiting**, or the framework will produce duplicate sends after a restart. Outbox-style services declare a longer drain window (typical 60–120 seconds) to honor this; the default 30-second drain is too aggressive for outbox patterns.
+The `OutboxDrainService` must complete in-flight outbox entries before exiting, or the framework will produce duplicate sends after a restart. Outbox-style services declare a longer drain window (typical 60–120 seconds) to honor this; the default 30-second drain is too aggressive for outbox patterns.
 
-### Hot-reload interaction (Item 20)
-- The supervisor attempts a clean stop-and-restart of every running service on hot-reload.
-- Services that cannot survive a reload — for example a stateful streaming consumer with a costly re-handshake — opt out via `reloadable: ClassVar[bool] = False`. They fall back to "process restart only" semantics for their lifecycle: a hot-reload of the rest of the codebase logs a warning and leaves the service running on the old code; the operator restarts the process to pick up changes.
+### Hot-reload interaction
+- The supervisor attempts a clean stop-and-restart of every running service on a manifest-driven extension install/uninstall.
+- Services that cannot survive a reload — for example a stateful streaming consumer with a costly re-handshake — opt out via `reloadable: ClassVar[bool] = False`. They fall back to "process restart only" semantics for their lifecycle: an extension install elsewhere in the codebase logs a warning and leaves the service running on the old code; the operator restarts the process to pick up changes.
 
 ### Restart policy
 Each service declares its restart policy via a ClassVar:
@@ -100,8 +100,8 @@ A service that has crashed `crash_threshold` times within `crash_window_seconds`
 
 Recovery is a deliberate operator action:
 - **Admin endpoint.** `POST /admin/services/{name}/reset` resets the crash counter and re-enables the service. Requires admin authentication.
-- **CLI equivalent.** `python -m serverframework services reset <name>` (Item 63 console-entry follow-up, gated on Item 60 rename).
-- The admin reset emits an audit event (Item 56 retention applies) so the operator action is traceable.
+- **CLI equivalent.** `python -m serverframework services reset <name>`.
+- The admin reset emits an audit event (subject to the configured `RetentionPolicy`) so the operator action is traceable.
 
 ### Health surface
 Every service exposes:
@@ -119,16 +119,7 @@ def get_health_status(self) -> Dict[str, Any]:
     }
 ```
 
-The supervisor aggregates this into the operational health endpoint (Item 81).
-
-### Cross-references
-- Item 28 — service flavors (perpetual / scheduled / queue-consumer / streaming).
-- Item 14 / 35 — outbox drain interaction.
-- Item 20 — hot-reload interaction (`reloadable` opt-out).
-- Item 47 — `RequestContext` deadline propagation across `asyncio.to_thread`.
-- Item 56 — audit-log retention applies to admin-reset audit events.
-- Item 81 — operational health surface aggregates `get_health_status()`.
-- Item 85 — correlation-id propagation across `asyncio.to_thread` is the same context-copy mechanism used here.
+The supervisor aggregates this into the framework's `/healthz` and `/readyz` operational probes.
 
 ## Service Lifecycle Patterns
 
@@ -549,3 +540,41 @@ async def test_service():
 2. **Health Checks** - Implement service health endpoints
 3. **Alerting** - Set up alerts for service failures
 4. **Logging** - Use structured logging for better observability 
+
+## Service Flavors
+
+Four service flavors share a common lifecycle (`start`, `stop`, `pause`, `resume`, `health`). All four are discoverable as `SVC_*.py` files; all four can declare `@hook_bll`-style triggers; all four participate in graceful shutdown with documented draining behavior.
+
+- **`PerpetualService`** — perpetual time-based loop with a sleep interval. The default flavor. Useful for thirty-second agentic loops, background reconciliation passes.
+- **`ScheduledService`** — cron expression or fixed-interval execution. Useful for periodic syncs, daily reports, billing-cycle resets, retention archival, backup snapshots.
+- **`QueueConsumerService`** — pulls from a queue (Redis, SQS, Postgres-as-queue) with backoff, visibility-timeout semantics, and dead-letter handling. Useful for outbox workers, compensating actions, deferred webhook processing.
+- **`StreamingService`** — long-lived connection-oriented work, with `ConsumerService` (websocket subscriber, SSE listener, Kafka consumer) and `ProducerService` (long-lived outbound stream) sub-flavors.
+
+State that must persist across restarts (cron last-run-at, queue cursors, stream subscription tokens) lives in a small per-service state store and is the responsibility of the framework, not the service author.
+
+## Execution Model
+
+Services are asyncio coroutines running on the framework's main event loop, or on dedicated event loops in worker processes for CPU-heavy workloads. Cancellation is cooperative — services receive `asyncio.CancelledError` on stop and have a documented drain period (default thirty seconds, configurable per service) to finish in-flight work before the process exits. A service that exceeds the drain period is forcibly cancelled with a logged warning.
+
+Blocking I/O inside service handlers requires `asyncio.to_thread` with a configurable thread-pool size cap (the default `asyncio.to_thread` pool is unbounded and a footgun under load). The drain-period semantics interact with the outbox: the `OutboxDrainService` must complete in-flight outbox entries before exiting, or the framework risks producing duplicate sends after a restart.
+
+The supervisor restart policy is configurable per service: `always` (restart on any exit), `on_failure` (restart only on non-zero exit / unhandled exception), `never` (one-shot). Backoff between restarts is exponential with jitter. A service that has crashed N times within a window is held in a `failed` state with an admin-action requirement — no restart-storming. The framework exposes an admin endpoint (`POST /admin/services/{name}/reset`) and an equivalent CLI command that an operator runs after diagnosing the underlying cause; the service does not auto-recover from `failed` until reset.
+
+## Per-Tenant Fairness
+
+Two complementary mechanisms prevent a noisy tenant from starving the queue:
+
+- **Per-tenant fair queuing.** The queue-consumer service partitions work by tenant key (typically `team_id`) and drains partitions in round-robin or weighted-fair order. A single tenant's backlog is bounded above by its own throughput; a tenant with no submitted jobs is not penalized for another tenant's backlog. The consumer declares a `tenant_key_resolver: Callable[[Job], str]` and the framework's scheduler enforces fairness via Weighted Fair Queuing (virtual-time scheduling) at the worker level — there is no proliferation of database queues.
+- **Priority lanes.** Jobs declare a priority class — `high` (transactional, user-blocking; password resets, MFA), `normal` (default; marketing emails, eventually-consistent fan-out), `low` (batch; nightly reconciliation, archival sweeps). Within a tenant's partition, lanes drain in priority order; across tenants, fair-share enforces equal treatment within each lane. A high-priority job from any tenant runs before a low-priority job from any tenant; among same-lane jobs, fairness applies.
+
+Optional preemption (cancelling a low-priority job mid-execution to free a worker for a high-priority job) is offered but disabled by default. Cross-process consumers coordinate via the `DistributedCounter` primitive to avoid one process unfairly draining one tenant. Metrics: `queue_wait_seconds{tenant_id, lane}` histogram.
+
+## Audit Log Retention
+
+Each audit event class declares a retention window via `retention: ClassVar[RetentionPolicy]`. The policy carries a window (`30d`, `1y`, `7y`, `forever`), an archival target (S3, GCS, on-disk, none), and a `legal_hold: Optional[str]` field for operations that put a class on indefinite hold pending a regulatory action.
+
+A scheduled `RetentionService` (a `ScheduledService`) runs nightly: events past their window are first archived to the configured target as compressed, integrity-checked artifacts, then purged from the live audit table. The archival step is non-skippable for events with non-`none` archival targets — the purge step refuses to run if archival did not succeed for any event in the batch. Archives are written in a stable consumer-friendly format (JSONL or Parquet) so a regulator can be handed an artifact that a third-party tool can read without framework knowledge.
+
+The audit subsystem itself emits an audit event for each retention pass: how many events were archived, how many purged, the cryptographic digest of the archived artifact. This is the audit-of-the-audit and is itself subject to its own (typically `forever`) retention policy. Together, archival digests and the retention-pass audit trail give a regulator-defensible chain.
+
+Convenience presets cover GDPR (`1y` archived), HIPAA (`6y` archived), SOX (`7y` archived), short-lived (`30d` no-archive), and forever (indefinite, archived — used for the audit-of-the-audit). Legal hold is a runtime override that prevents purge regardless of retention window; releasing a hold requires a separate audit event and an admin-level operation.

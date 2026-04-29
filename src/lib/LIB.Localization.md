@@ -1,6 +1,6 @@
 # Localization Subsystem
 
-> Item 78 — primary reference for the Localization primitive. The architectural summary is here so extension authors can localize user-facing strings (email templates, error messages, audit-log copy) without spelunking through `src/Localization.py`. Public-symbol stability is governed by `EXT.Contracts.md` (Item 52).
+> Primary reference for the Localization primitive. The architectural summary is here so extension authors can localize user-facing strings (email templates, error messages, audit-log copy) without spelunking through `src/Localization.py`. Public-symbol stability is governed by `EXT.Contracts.md`.
 
 ## Purpose
 `src/Localization.py` (singleton `Localization` class plus four module-level helpers) loads `docs.<locale>.json` files from the project root, exposes per-entity / per-property / per-endpoint translated strings, and contributes a `@localized_model` SQLAlchemy decorator that derives `__tablename__`, foreign-key targets, and `back_populates` strings from the active locale's metadata. The subsystem is the single backing store for user-facing copy across BLL models, DB models, and Swagger/OpenAPI docs.
@@ -36,7 +36,7 @@ The Localization subsystem exposes one class, four helpers, and one decorator. A
 - `update_entity_definition(domain, entity, ...)` — programmatic editor for locale dictionaries. Tooling-only; not part of the runtime contract.
 
 ## Architectural Constraints
-- **Singleton, not per-request.** The locale is a process-global. Per-request locale switching (e.g. for an i18n-aware HTTP middleware) is currently out of scope; if and when it lands it will live behind the `RequestContext` (Item 47's request-scoped context vars).
+- **Singleton, not per-request.** The locale is a process-global. Per-request locale switching (e.g. for an i18n-aware HTTP middleware) is currently out of scope; if and when it lands it will live behind `RequestContext`'s request-scoped context vars.
 - **Locale files are JSON.** Reading them at startup is acceptable; the framework does not yet support hot-reload of translations. Operators who change strings restart the process.
 - **`@localized_model` is opt-in.** Models that do not need locale-derived metadata keep using the standard SQLAlchemy syntax. The decorator is purely additive.
 
@@ -44,7 +44,7 @@ The Localization subsystem exposes one class, four helpers, and one decorator. A
 - [`Framework.md`](../Framework.md) — top-level overview lists Localization alongside the other foundational subsystems.
 - [`LIB.Overview.md`](./LIB.Overview.md) — pointer to this file, kept under "System Utilities".
 - `docs.en.json` — the canonical English dictionary; consult before adding new entities so the keys match what `@localized_model` will look up.
-- `EXT.Contracts.md` (Item 52, when populated) — public-API contract entries for `Localization`, `localized_model`, `relationship`, `foreign_key`. Anything in `Localization.py` not enumerated in `EXT.Contracts.md` is internal and may change without notice.
+- `EXT.Contracts.md` — public-API contract entries for `Localization`, `localized_model`, `relationship`, `foreign_key`. Anything in `Localization.py` not enumerated in `EXT.Contracts.md` is internal and may change without notice.
 
 ## Extension Author Workflow
 1. Add an entry to `docs.<locale>.json` keyed by `<your_extension>.<EntityName>` describing the entity's translated copy.
