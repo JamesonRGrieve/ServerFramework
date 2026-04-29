@@ -153,6 +153,25 @@ class TestPageTokenPaginator:
         assert token is None
 
 
+class TestBuildPagination:
+    def test_offset_paginator_builds_random_access_envelope(self):
+        p = OffsetPaginator()
+        env = p.build_pagination("tok123", offset=20, limit=10, total=100)
+        assert env.supports_random_access is True
+        assert env.has_more is True
+        assert env.offset == 20
+        assert env.limit == 10
+        assert env.total == 100
+        assert env.next_token == "tok123"
+
+    def test_cursor_paginator_marks_no_random_access(self):
+        p = CursorPaginator()
+        env = p.build_pagination(None, limit=10)
+        assert env.supports_random_access is False
+        assert env.has_more is False
+        assert env.next_token is None
+
+
 class TestLinkHeaderPaginator:
     def test_extracts_next_link(self):
         p = LinkHeaderPaginator()

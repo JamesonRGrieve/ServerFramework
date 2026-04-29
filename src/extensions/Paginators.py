@@ -144,6 +144,28 @@ class AbstractPaginator(ABC):
     ) -> Tuple[List[Any], Optional[str]]:
         """Return `(items, next_token)`; next_token is None on the last page."""
 
+    def build_pagination(
+        self,
+        next_token: Optional[str],
+        *,
+        offset: Optional[int] = None,
+        limit: Optional[int] = None,
+        total: Optional[int] = None,
+    ) -> Pagination:
+        """Build a `Pagination` envelope reflecting this paginator's
+        capabilities. The `supports_random_access` flag is taken from the
+        paginator class so callers can hide page-number controls when the
+        upstream is cursor-based."""
+
+        return Pagination(
+            offset=offset,
+            limit=limit,
+            next_token=next_token,
+            total=total,
+            has_more=bool(next_token),
+            supports_random_access=self.supports_random_access,
+        )
+
 
 class OffsetPaginator(AbstractPaginator):
     """Trivial offset/limit -> offset/limit identity translator."""
