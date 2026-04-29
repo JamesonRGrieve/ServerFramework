@@ -854,6 +854,37 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
     def test_POST_200_authorize_body(self, server: Any, admin_a: Any) -> str:
         """Test user authorization with credentials in body."""
 
+        # Clear any FailedLoginAttempt rows accumulated for admin_a by
+        # earlier security/lockout tests in the same session — without
+        # this, a 5-failure quota tripped earlier in the run can lock
+        # admin_a out before this happy-path test ever issues its
+        # POST. The test is asserting "valid creds → 200", not
+        # "lockout state survives across unrelated tests".
+        try:
+            from logic.BLL_Auth import FailedLoginAttemptModel
+            from lib.Environment import env
+
+            model_registry = server.app.state.model_registry
+            db_session = model_registry.DB.session()
+            try:
+                db_model = FailedLoginAttemptModel.DB(
+                    model_registry.DB.manager.Base
+                )
+                rows = (
+                    db_session.query(db_model)
+                    .filter(db_model.user_id == admin_a.id)
+                    .all()
+                )
+                for row in rows:
+                    db_session.delete(row)
+                db_session.commit()
+            finally:
+                db_session.close()
+        except Exception:
+            # If the cleanup pathway is unavailable, fall through and
+            # let the test surface the real failure.
+            pass
+
         # The authorize endpoint expects flat email/password, not nested in "auth"
         auth_payload = {
             "email": admin_a.email,

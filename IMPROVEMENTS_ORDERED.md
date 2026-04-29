@@ -2079,7 +2079,7 @@ The day-2 concerns the framework currently does not address: backups, deploys wi
 
 ---
 
-## Item 83 — Cross-region deployment contract
+## ~~Item 83~~ — ~~Cross-region deployment contract~~ ✅ DONE
 
 **Severity:** Medium
 **Scope:** Documentation; explicit primitives that would need to change for active-active.
