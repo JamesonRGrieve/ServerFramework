@@ -1080,7 +1080,7 @@ If Strawberry Federation is the target architecture, document which Federation d
 
 ---
 
-## Item 76 — Reconcile documented WebSocket subscriptions with implementation
+## ~~Item 76~~ — ~~Reconcile documented WebSocket subscriptions with implementation~~ ✅ DONE
 
 **Severity:** Medium
 **Scope:** `Framework.md`, `endpoints/AbstractGQLTest.py`, Strawberry subscription routing.

@@ -125,7 +125,7 @@ Extensions and services use consistent configuration:
 ### GraphQL Integration
 - **Automatic Mapping**: Pydantic models automatically converted to GraphQL schemas
 - **Dynamic Schema**: Runtime schema generation with type safety
-- **Real-Time Subscriptions**: WebSocket-based real-time data updates
+- **Real-Time Subscriptions**: **Deferred** (Item 76). Strawberry's WebSocket subscription transport is not wired into the FastAPI app today; `endpoints/AbstractGQLTest.py` treats "WebSocket not supported" as an expected response. End-to-end subscription delivery depends on the streaming-service flavor (Item 13), the cross-process event bus (Item 42), and the GraphQL composition contract (Item 46). Until all three land, declaring a Strawberry subscription on a `RouterMixin` manager will not deliver events through this server. Track Item 76 for the unblock.
 - **Unified Queries**: Single endpoint for complex data retrieval patterns
 
 ## Extension System

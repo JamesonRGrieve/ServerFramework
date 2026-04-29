@@ -1004,8 +1004,13 @@ class AbstractGraphQLTest:
         }}
         """
 
-        # Note: Testing subscriptions requires WebSocket support
-        # For now, we just verify the subscription query is valid
+        # Item 76: subscriptions are deferred — Strawberry's WebSocket
+        # transport is not wired into the FastAPI app, so this test
+        # asserts only that the subscription query is syntactically
+        # valid. End-to-end subscription delivery is gated on Items 13
+        # (streaming services), 42 (cross-process event bus), 46
+        # (GraphQL composition). When all three land, replace this
+        # query-only check with a real WebSocket round-trip.
         response = server.post(
             "/graphql",
             json={"query": subscription},
@@ -1905,7 +1910,11 @@ class AbstractGraphQLTest:
                     pytest.skip(
                         "Navigation properties not yet implemented in subscriptions"
                     )
-                # Other errors (like WebSocket not supported) are expected
+                # Item 76: "WebSocket not supported" is the deferred-feature
+                # signal — subscriptions are gated on Items 13/42/46 per
+                # Framework.md. When that lands, this branch should assert
+                # actual subscription delivery instead of accepting the
+                # WebSocket-not-supported response.
 
         def test_GQL_comprehensive_navigation_integration(
             self, server: Any, admin_a: Any, team_a: Any
