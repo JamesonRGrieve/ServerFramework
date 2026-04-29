@@ -1700,7 +1700,7 @@ class ModelRegistry(AbstractRegistry):
         """
         # If model is already bound, nothing to do
         if model in self.bound_models:
-            print(f"DEBUG: Model {model.__name__} already bound, skipping")
+            logger.debug(f"Model {model.__name__} already bound, skipping")
             return
 
         # Check for duplicate model names with different class objects (this should never happen)
