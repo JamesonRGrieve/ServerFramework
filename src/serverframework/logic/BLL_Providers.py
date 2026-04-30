@@ -1757,6 +1757,28 @@ class RotationManager(AbstractBLLManager, RouterMixin):
                             )
                             current = RotationManager._cost_counter.get(key, Decimal("0"))
                             RotationManager._cost_counter[key] = current + cost_dec
+                            # Item 84 — emit cost into the audit log when an
+                            # emitter is registered. Source-of-truth for
+                            # finance reconstruction lives in the audit log;
+                            # the in-process counter is the same-process
+                            # roll-up optimization.
+                            try:
+                                from serverframework.extensions.CostAuditEmitter import (
+                                    get_cost_audit_emitter,
+                                )
+
+                                _emitter = get_cost_audit_emitter()
+                            except Exception:  # noqa: BLE001
+                                _emitter = None
+                            if _emitter is not None:
+                                _emitter(
+                                    {
+                                        "tenant_id": key[0],
+                                        "provider": key[1],
+                                        "ability": key[2],
+                                        "cost_usd": cost_dec,
+                                    }
+                                )
                             # Item 84 — true-up the per-tenant USD cap with
                             # the actual cost. Atomic via the Quota module's
                             # fallback lock so concurrent rotations agree.

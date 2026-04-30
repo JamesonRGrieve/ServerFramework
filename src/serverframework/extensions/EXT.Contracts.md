@@ -676,7 +676,7 @@ Canonical user record (extension-injectable via @extension_model).
 ### `Quota` (class)
 
 - Module: `serverframework.logic.Quota`
-- Signature: `Quota(*, user_id: Optional[str] = None, team_id: Optional[str] = None, ability: str, period: Literal['minute', 'hour', 'day', 'month', 'billing_cycle'], period_key: str, limit: int, consumed: int = 0, unit: Literal['call', 'token', 'byte', 'message', 'row'] = 'call') -> None`
+- Signature: `Quota(*, user_id: Optional[str] = None, team_id: Optional[str] = None, ability: str, period: Literal['minute', 'hour', 'day', 'month', 'billing_cycle'], period_key: str, limit: int, consumed: int = 0, unit: Literal['call', 'token', 'byte', 'message', 'row'] = 'call', limit_usd: Optional[decimal.Decimal] = None, consumed_usd: decimal.Decimal = Decimal('0')) -> None`
 - Live docstring: Unified per-user / per-team quota row.
 
 Unified per-user / per-team / per-user-within-team quota record.

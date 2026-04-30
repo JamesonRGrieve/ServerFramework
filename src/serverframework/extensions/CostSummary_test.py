@@ -71,6 +71,8 @@ def test_cost_summary_repr_contains_key_fields():
         id="cs-1",
         created_at=_now(),
         created_by_user_id="system",
+        updated_at=None,
+        updated_by_user_id=None,
         tenant_id="team-1",
         provider="openai",
         ability="complete",
