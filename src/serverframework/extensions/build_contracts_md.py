@@ -18,6 +18,7 @@ import difflib
 import importlib
 import inspect
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -72,6 +73,9 @@ def _resolve(entry: Dict[str, Any]) -> Tuple[Optional[Any], bool]:
     return (symbol, True)
 
 
+_MEMADDR_RE = re.compile(r" at 0x[0-9a-fA-F]+")
+
+
 def _signature_text(symbol: Any) -> Optional[str]:
     if not callable(symbol) and not inspect.isclass(symbol):
         return None
@@ -79,7 +83,10 @@ def _signature_text(symbol: Any) -> Optional[str]:
         sig = inspect.signature(symbol)
     except (TypeError, ValueError):
         return None
-    return f"{getattr(symbol, '__name__', '?')}{sig}"
+    text = f"{getattr(symbol, '__name__', '?')}{sig}"
+    # Default-arg reprs sometimes embed memory addresses (e.g., lambdas);
+    # scrub them so the rendered signature is byte-stable across runs.
+    return _MEMADDR_RE.sub("", text)
 
 
 def _docstring_summary(symbol: Any) -> Optional[str]:
