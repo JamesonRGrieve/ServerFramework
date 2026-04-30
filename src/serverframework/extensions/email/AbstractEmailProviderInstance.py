@@ -25,13 +25,122 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, ClassVar, Dict, FrozenSet, List, Optional
 
+from pydantic import BaseModel, Field
+
 from serverframework.extensions.AbstractExtensionProvider import AbstractProviderInstance
+from serverframework.extensions.email.EmailErrors import NotSupportedError
 
 
 __all__ = [
     "SentMessage",
     "AbstractEmailProviderInstance",
+    "EmailValidationResult",
+    "BulkSendResult",
+    "BulkSendRow",
+    "SuppressionEntry",
+    "SuppressionListPage",
+    "EmailStats",
+    "MessageListPage",
+    "MessageSummary",
 ]
+
+
+# ----------------------------------------------------------------------
+# Item 95 — typed result models for the capability ladder.
+# ----------------------------------------------------------------------
+
+
+class EmailValidationResult(BaseModel):
+    """Outcome of a pre-flight email-address validation call.
+
+    `verdict` is one of `"valid"`, `"risky"`, `"invalid"` per the
+    SendGrid-style three-tier verdict; `score` is 0.0-1.0 when the
+    upstream returns a probabilistic confidence (None otherwise).
+    """
+
+    email: str = Field(..., description="The address that was validated.")
+    verdict: str = Field(..., description="`valid` / `risky` / `invalid`.")
+    score: Optional[float] = Field(
+        None, ge=0.0, le=1.0, description="Optional 0-1 confidence."
+    )
+    checks: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Provider-specific check breakdown (mx, smtp, etc.).",
+    )
+    raw: Dict[str, Any] = Field(
+        default_factory=dict, description="Raw upstream response for diagnostics."
+    )
+
+
+class BulkSendRow(BaseModel):
+    """One per-recipient row inside a `BulkSendResult`."""
+
+    recipient: str
+    success: bool
+    message_id: Optional[str] = None
+    error: Optional[str] = None
+    error_type: Optional[str] = None
+
+
+class BulkSendResult(BaseModel):
+    """Aggregate result of a templated bulk send."""
+
+    succeeded: int = 0
+    failed: int = 0
+    rows: List[BulkSendRow] = Field(default_factory=list)
+    template_id: Optional[str] = None
+
+
+class SuppressionEntry(BaseModel):
+    """A single suppression-list row."""
+
+    email: str
+    suppression_type: str = Field(
+        ..., description="One of `bounce`, `block`, `spam_report`, `unsubscribe`, `invalid`."
+    )
+    reason: Optional[str] = None
+    created_at: Optional[datetime] = None
+    raw: Dict[str, Any] = Field(default_factory=dict)
+
+
+class SuppressionListPage(BaseModel):
+    """Cursor-paginated page of suppression entries."""
+
+    items: List[SuppressionEntry] = Field(default_factory=list)
+    next_token: Optional[str] = None
+
+
+class EmailStats(BaseModel):
+    """Aggregate send-history counters across a window."""
+
+    since: Optional[datetime] = None
+    until: Optional[datetime] = None
+    delivered: int = 0
+    opens: int = 0
+    clicks: int = 0
+    bounces: int = 0
+    spam_reports: int = 0
+    unsubscribes: int = 0
+    requests: int = 0
+    raw: Dict[str, Any] = Field(default_factory=dict)
+
+
+class MessageSummary(BaseModel):
+    """Per-message row used by `list_messages`."""
+
+    message_id: str
+    recipient: str
+    subject: Optional[str] = None
+    status: Optional[str] = None
+    sent_at: Optional[datetime] = None
+    raw: Dict[str, Any] = Field(default_factory=dict)
+
+
+class MessageListPage(BaseModel):
+    """Cursor-paginated page of `MessageSummary` rows."""
+
+    items: List[MessageSummary] = Field(default_factory=list)
+    next_token: Optional[str] = None
 
 
 @dataclass

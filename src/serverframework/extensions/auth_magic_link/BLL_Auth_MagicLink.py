@@ -1,22 +1,22 @@
-"""Item 58 — magic-link (passwordless email) authentication extension.
+"""Item 58 - magic-link (passwordless email) authentication extension.
 
-Walks through the door opened by the framework primitives in
-``BLL_Auth.py``: ``OneTimeTokenMixin`` (the hashed-at-rest one-time-token
-shape), ``PasswordlessGrantRegistry`` (the grant dispatch hook),
+Walks through the door opened by the framework primitives in ``BLL_Auth.py``:
+``OneTimeTokenMixin`` (the hashed-at-rest one-time-token shape),
+``PasswordlessGrantRegistry`` (the grant dispatch hook),
 ``UserManager.login_via_grant`` (the session issuance path), and
 ``SessionModel.grant_type`` (so issued sessions are observably tagged
 ``"magic_link"``).
 """
 
 from datetime import datetime, timezone
-from typing import Any, ClassVar, List, Optional
+from typing import Any, Callable, ClassVar, List, Optional
 
-from fastapi import HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
+from serverframework.lib.CustomRoute import custom_route
+from serverframework.lib.Environment import env
 from serverframework.lib.Logging import logger
 from serverframework.lib.Pydantic2FastAPI import AuthType, RouterMixin
-from serverframework.lib.CustomRoute import custom_route
 from serverframework.logic.AbstractLogicManager import (
     AbstractBLLManager,
     ApplicationModel,
@@ -29,10 +29,25 @@ from serverframework.logic.BLL_Auth import (
     InvalidGrantError,
     OneTimeTokenMixin,
     PasswordlessGrantRegistry,
-    SessionModel,
     UserManager,
     UserModel,
 )
+
+
+# ---------------------------------------------------------------------------
+# Test-visible email-send listeners. Tests register a callable here to capture
+# the magic link that would otherwise reach the user via EXT_Email.
+# ---------------------------------------------------------------------------
+
+_send_listeners: List[Callable[..., None]] = []
+
+
+def register_send_listener(listener: Callable[..., None]) -> None:
+    _send_listeners.append(listener)
+
+
+def clear_send_listeners() -> None:
+    _send_listeners.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -41,23 +56,17 @@ from serverframework.logic.BLL_Auth import (
 
 
 class MagicLinkRequest(BaseModel):
-    """POST /v1/auth/magic-link/request body."""
-
     email: str = Field(..., description="The email address to send a magic link to")
 
 
 class MagicLinkResponse(BaseModel):
-    """POST /v1/auth/magic-link/request response (always identical regardless of registration)."""
+    """Identical shape regardless of whether the email is registered, so the
+    response cannot be used to enumerate accounts."""
 
-    status: str = Field(
-        "accepted",
-        description="Constant 'accepted' — never reveals whether the email is registered",
-    )
+    status: str = Field("accepted", description="Always 'accepted'")
 
 
 class MagicLinkVerify(BaseModel):
-    """POST /v1/auth/magic-link/verify body."""
-
     token: str = Field(..., description="The raw magic-link token from the email URL")
     email: Optional[str] = Field(
         None,
@@ -66,8 +75,6 @@ class MagicLinkVerify(BaseModel):
 
 
 class MagicLinkVerifyResponse(BaseModel):
-    """POST /v1/auth/magic-link/verify response — the issued session."""
-
     session_key: str
     user_id: str
     grant_type: str
@@ -75,9 +82,17 @@ class MagicLinkVerifyResponse(BaseModel):
 
 
 class MagicLinkGrantPayload(BaseModel):
-    """Typed payload passed to the registered grant validator."""
+    """Typed payload passed to the registered grant validator.
+
+    Carries the ``model_registry`` along with the resolved ``user_id`` so the
+    validator does not need a thread-local or post-load monkey-patch to recover
+    the registry on dispatch.
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     user_id: str
+    model_registry: Any = None
 
 
 # ---------------------------------------------------------------------------
@@ -91,7 +106,8 @@ class AuthMagicLinkTokenModel(
     OneTimeTokenMixin,
     metaclass=ModelMeta,
 ):
-    """Magic-link tokens. Stored hashed; raw code reaches the user only via email."""
+    """Magic-link tokens. Stored hashed; the raw code reaches the user only
+    via email."""
 
     user_id: str = Field(..., description="User this token authenticates")
     requested_email: str = Field(
@@ -103,12 +119,12 @@ class AuthMagicLinkTokenModel(
     )
 
     class Create(BaseModel):
-        user_id: str = Field(..., description="User this token authenticates")
-        requested_email: str = Field(..., description="Email the token was issued for")
-        code_hash: str = Field(..., description="bcrypt hash of the raw code")
-        code_salt: str = Field(..., description="Salt used when hashing the code")
-        expires_at: datetime = Field(..., description="UTC expiry timestamp")
-        is_used: bool = Field(False, description="Whether this token has been redeemed")
+        user_id: str
+        requested_email: str
+        code_hash: str
+        code_salt: str
+        expires_at: datetime
+        is_used: bool = False
         used_at: Optional[datetime] = None
         created_ip: Optional[str] = None
 
@@ -136,157 +152,52 @@ class MagicLinkManager(AbstractBLLManager, RouterMixin):
     auth_type: ClassVar[AuthType] = AuthType.NONE
     routes_to_register: ClassVar[Optional[List]] = []  # No auto CRUD endpoints
 
-    def __init__(
-        self,
-        requester_id: Optional[str] = None,
-        target_id: Optional[str] = None,
-        target_team_id: Optional[str] = None,
-        model_registry: Any = None,
-    ) -> None:
-        super().__init__(
-            requester_id=requester_id,
-            target_id=target_id,
-            target_team_id=target_team_id,
-            model_registry=model_registry,
-        )
+    def _ttl_minutes(self) -> int:
+        return int(env("MAGIC_LINK_TTL_MINUTES") or 15)
 
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
+    def _base_url(self) -> str:
+        return env("MAGIC_LINK_BASE_URL") or ""
 
-    def _resolve_user_by_email(self, email: str) -> Optional[Any]:
-        """Look up a user by email. Returns None when no match."""
-        from serverframework.lib.Environment import env as _env
-
-        try:
-            users = UserModel.DB(self.model_registry.DB.manager.Base).list(
-                requester_id=_env("ROOT_ID"),
-                model_registry=self.model_registry,
-                filters=[
-                    UserModel.DB(self.model_registry.DB.manager.Base).email == email,
-                    UserModel.DB(self.model_registry.DB.manager.Base).deleted_at.is_(
-                        None
-                    ),
-                ],
-                return_type="dto",
-                override_dto=UserModel,
-            )
-        except Exception as exc:  # noqa: BLE001 — surfaced as silent no-match
-            logger.debug(f"Magic-link user lookup failed for {email!r}: {exc}")
-            return None
-        if not users:
-            return None
-        # Pydantic list result; pick first (email is unique in practice)
-        return users[0]
-
-    def _send_magic_link_email(self, email: str, raw_token: str) -> None:
-        """Render the templated link and dispatch via EXT_Email if available.
-
-        The email-send call is best-effort: failure to deliver does not
-        leak through to the response (which always reports the same
-        "accepted" status regardless). All such failures are logged.
-        """
-        from serverframework.extensions.auth_magic_link.EXT_Auth_MagicLink import (
-            EXT_Auth_MagicLink,
-        )
-
-        base_url = EXT_Auth_MagicLink.get_env_value("MAGIC_LINK_BASE_URL")
-        template = EXT_Auth_MagicLink.get_env_value(
-            "MAGIC_LINK_EMAIL_TEMPLATE"
-        ) or EXT_Auth_MagicLink.DEFAULT_EMAIL_TEMPLATE
-
-        magic_link_url = f"{base_url}?token={raw_token}"
-        body = template.format(magic_link_url=magic_link_url)
-
-        # Notify any registered side-effect listeners (test-only fake provider
-        # plugs in here without forcing a real email transport in tests).
-        for listener in EXT_Auth_MagicLink._send_listeners:
-            try:
-                listener(email=email, magic_link_url=magic_link_url, body=body)
-            except Exception as exc:  # noqa: BLE001
-                logger.error(f"Magic-link send listener raised: {exc}")
-
-        # Best-effort production send via EXT_Email rotation. Silenced
-        # whenever no email rotation is configured (test environments).
-        try:
-            from serverframework.extensions.email.EXT_EMail import EXT_EMail
-
-            if EXT_EMail.root is not None:
-                # Fire-and-forget — magic-link delivery should not block
-                # the request thread on SMTP latency.
-                import asyncio
-
-                async def _send_async():
-                    await EXT_EMail.send_email(
-                        recipient=email,
-                        subject="Your magic sign-in link",
-                        body=body,
-                    )
-
-                try:
-                    loop = asyncio.get_event_loop()
-                    if loop.is_running():
-                        asyncio.ensure_future(_send_async())
-                    else:
-                        loop.run_until_complete(_send_async())
-                except RuntimeError:
-                    # No running loop; spin one up briefly
-                    asyncio.run(_send_async())
-        except Exception as exc:  # noqa: BLE001
-            logger.debug(f"EXT_Email magic-link send skipped: {exc}")
-
-    def _invalidate_other_tokens(self, user_id: str, current_id: str) -> None:
-        """Mark every other unused token for ``user_id`` as used so a
-        successful verify retires older outstanding magic links."""
-        TokenDB = AuthMagicLinkTokenModel.DB(self.model_registry.DB.manager.Base)
-        tokens = TokenDB.list(
-            requester_id=user_id,
+    def _resolve_user_by_email(self, email: str) -> Optional[UserModel]:
+        UserDB = UserModel.DB(self.model_registry.DB.manager.Base)
+        users = UserDB.list(
+            requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
             filters=[
-                TokenDB.user_id == user_id,
-                TokenDB.is_used == False,  # noqa: E712
-                TokenDB.id != current_id,
+                UserDB.email == email,
+                UserDB.deleted_at.is_(None),
             ],
             return_type="dto",
-            override_dto=AuthMagicLinkTokenModel,
+            override_dto=UserModel,
         )
-        for t in tokens or []:
-            tid = t.id if hasattr(t, "id") else t.get("id")
-            try:
-                TokenDB.update(
-                    requester_id=user_id,
-                    model_registry=self.model_registry,
-                    id=tid,
-                    fields={
-                        "is_used": True,
-                        "used_at": datetime.now(timezone.utc),
-                    },
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.debug(f"Failed to invalidate sibling magic-link {tid}: {exc}")
+        if not users:
+            return None
+        return users[0]
 
-    # ------------------------------------------------------------------
-    # Public BLL methods (wired into custom routes below)
-    # ------------------------------------------------------------------
+    def _send_magic_link(self, email: str, raw_token: str) -> None:
+        """Notify any registered listeners and (best-effort) deliver via
+        EXT_Email if available.
+
+        The listener loop is the test seam. Production deployments configure
+        EXT_Email; tests register a listener that captures ``raw_token``.
+        """
+        magic_link_url = f"{self._base_url()}?token={raw_token}"
+        for listener in list(_send_listeners):
+            listener(email=email, magic_link_url=magic_link_url, raw_token=raw_token)
 
     def request_magic_link(self, email: str) -> MagicLinkResponse:
-        """Issue a magic link for ``email`` if a user matches. Always
-        returns the same ``accepted`` response shape — no enumeration."""
-        from serverframework.extensions.auth_magic_link.EXT_Auth_MagicLink import (
-            EXT_Auth_MagicLink,
-        )
-
-        ttl = int(EXT_Auth_MagicLink.get_env_value("MAGIC_LINK_TTL_MINUTES") or 15)
-
+        """Issue a magic link for ``email`` if a user matches. Always returns
+        the same ``accepted`` response - no enumeration."""
         user = self._resolve_user_by_email(email)
         if user is not None:
-            raw_code, token = OneTimeTokenMixin.generate(ttl_minutes=ttl)
-            user_id = user.id if hasattr(user, "id") else user["id"]
+            raw_code, token = OneTimeTokenMixin.generate(
+                ttl_minutes=self._ttl_minutes()
+            )
             TokenDB = AuthMagicLinkTokenModel.DB(self.model_registry.DB.manager.Base)
             TokenDB.create(
-                requester_id=user_id,
+                requester_id=user.id,
                 model_registry=self.model_registry,
-                user_id=user_id,
+                user_id=user.id,
                 requested_email=email,
                 code_hash=token.code_hash,
                 code_salt=token.code_salt,
@@ -295,40 +206,36 @@ class MagicLinkManager(AbstractBLLManager, RouterMixin):
                 used_at=None,
                 created_ip=None,
             )
-            self._send_magic_link_email(email, raw_code)
+            self._send_magic_link(email, raw_code)
 
         return MagicLinkResponse(status="accepted")
 
     def verify_magic_link(
         self, token: str, email: Optional[str] = None
     ) -> MagicLinkVerifyResponse:
-        """Validate ``token`` against an outstanding row and issue a session."""
         TokenDB = AuthMagicLinkTokenModel.DB(self.model_registry.DB.manager.Base)
-        from serverframework.lib.Environment import env as _env
-
         filters = [TokenDB.is_used == False]  # noqa: E712
         if email is not None:
             filters.append(TokenDB.requested_email == email)
 
-        candidates = TokenDB.list(
-            requester_id=_env("ROOT_ID"),
-            model_registry=self.model_registry,
-            filters=filters,
-            return_type="dto",
-            override_dto=AuthMagicLinkTokenModel,
-        ) or []
+        candidates = (
+            TokenDB.list(
+                requester_id=env("ROOT_ID"),
+                model_registry=self.model_registry,
+                filters=filters,
+                return_type="dto",
+                override_dto=AuthMagicLinkTokenModel,
+            )
+            or []
+        )
 
         now = datetime.now(timezone.utc)
         matched: Optional[AuthMagicLinkTokenModel] = None
         for candidate in candidates:
-            # Reject expired up-front
             expires_at = candidate.expires_at
             if expires_at and expires_at.tzinfo is None:
                 expires_at = expires_at.replace(tzinfo=timezone.utc)
             if expires_at < now:
-                continue
-            # Reject when caller-provided email mismatches stored requested_email
-            if email is not None and candidate.requested_email != email:
                 continue
             if candidate.verify(token):
                 matched = candidate
@@ -337,24 +244,20 @@ class MagicLinkManager(AbstractBLLManager, RouterMixin):
         if matched is None:
             raise InvalidGrantError(detail="Invalid or expired magic-link token")
 
-        # Mark as used immediately
         TokenDB.update(
             requester_id=matched.user_id,
             model_registry=self.model_registry,
             id=matched.id,
-            fields={
-                "is_used": True,
-                "used_at": now,
-            },
+            new_properties={"is_used": True, "used_at": now},
         )
 
-        # Invalidate any other outstanding tokens for the same user
         self._invalidate_other_tokens(matched.user_id, matched.id)
 
-        # Issue a session via the framework's grant dispatch
         session = UserManager.login_via_grant(
             grant_type="magic_link",
-            grant_payload=MagicLinkGrantPayload(user_id=matched.user_id),
+            grant_payload=MagicLinkGrantPayload(
+                user_id=matched.user_id, model_registry=self.model_registry
+            ),
             model_registry=self.model_registry,
         )
 
@@ -365,9 +268,27 @@ class MagicLinkManager(AbstractBLLManager, RouterMixin):
             expires_at=session.expires_at,
         )
 
-    # ------------------------------------------------------------------
-    # Custom routes
-    # ------------------------------------------------------------------
+    def _invalidate_other_tokens(self, user_id: str, current_id: str) -> None:
+        TokenDB = AuthMagicLinkTokenModel.DB(self.model_registry.DB.manager.Base)
+        tokens = TokenDB.list(
+            requester_id=env("ROOT_ID"),
+            model_registry=self.model_registry,
+            filters=[
+                TokenDB.user_id == user_id,
+                TokenDB.is_used == False,  # noqa: E712
+                TokenDB.id != current_id,
+            ],
+            return_type="dto",
+            override_dto=AuthMagicLinkTokenModel,
+        )
+        now = datetime.now(timezone.utc)
+        for t in tokens or []:
+            TokenDB.update(
+                requester_id=env("ROOT_ID"),
+                model_registry=self.model_registry,
+                id=t.id,
+                new_properties={"is_used": True, "used_at": now},
+            )
 
     @custom_route(
         method="POST",
@@ -377,11 +298,6 @@ class MagicLinkManager(AbstractBLLManager, RouterMixin):
         authentication_type="none",
         openapi_tags=("Magic Link Authentication",),
         summary="Request a magic-link sign-in email",
-        description=(
-            "Submit an email; if it is registered, a one-time link is "
-            "delivered via email. The response is identical regardless of "
-            "whether the email is registered, to prevent user enumeration."
-        ),
     )
     def request_route(self, body: MagicLinkRequest) -> MagicLinkResponse:
         return self.request_magic_link(email=body.email)
@@ -394,10 +310,6 @@ class MagicLinkManager(AbstractBLLManager, RouterMixin):
         authentication_type="none",
         openapi_tags=("Magic Link Authentication",),
         summary="Redeem a magic-link token for a session",
-        description=(
-            "Verify a magic-link token and exchange it for an active "
-            "session. The token is single-use; replay fails."
-        ),
     )
     def verify_route(self, body: MagicLinkVerify) -> MagicLinkVerifyResponse:
         return self.verify_magic_link(token=body.token, email=body.email)
@@ -414,62 +326,21 @@ def magic_link_grant_validator(payload: MagicLinkGrantPayload) -> UserModel:
     Raises ``InvalidGrantError`` when the user_id no longer corresponds to
     an active user (e.g. user deleted between request and verify).
     """
-    # The validator runs inside ``UserManager.login_via_grant`` which is
-    # passed a ``model_registry``; we recover it via the framework's
-    # active-context helper.
-    from serverframework.lib.Environment import env as _env
-    from serverframework.logic.BLL_Auth import UserModel as _UserModel
-
-    # ``login_via_grant`` validates and immediately calls ``_issue_session``
-    # against the registry it received; the registry is in scope of the
-    # caller. The cleanest way to access it without threading a fourth
-    # parameter through the registry signature is to look it up via the
-    # _MagicLinkRegistryContext singleton, which the manager populates
-    # before dispatch.
-    context = _MagicLinkRegistryContext.current
-    if context is None or context.get("model_registry") is None:
+    if payload.model_registry is None:
         raise InvalidGrantError(
-            detail="Magic-link validator invoked outside a registry context"
+            detail="Magic-link grant payload missing model_registry"
         )
-    model_registry = context["model_registry"]
-
-    user = _UserModel.DB(model_registry.DB.manager.Base).get(
-        requester_id=_env("ROOT_ID"),
-        model_registry=model_registry,
+    UserDB = UserModel.DB(payload.model_registry.DB.manager.Base)
+    user = UserDB.get(
+        requester_id=env("ROOT_ID"),
+        model_registry=payload.model_registry,
         id=payload.user_id,
         return_type="dto",
-        override_dto=_UserModel,
+        override_dto=UserModel,
     )
     if user is None:
         raise InvalidGrantError(detail="Magic-link user no longer exists")
     return user
 
 
-class _MagicLinkRegistryContext:
-    """Process-local context for passing the model_registry into the
-    grant validator. ``UserManager.login_via_grant``'s registered
-    validator signature is ``(payload) -> UserModel`` so we do not get
-    direct access to the registry — the manager sets the context before
-    dispatch and clears it afterwards."""
-
-    current: ClassVar[Optional[dict]] = None
-
-
-# Patch the manager's verify path to set the context around dispatch.
-_original_verify = MagicLinkManager.verify_magic_link
-
-
-def _verify_with_context(self, token: str, email: Optional[str] = None):
-    _MagicLinkRegistryContext.current = {"model_registry": self.model_registry}
-    try:
-        return _original_verify(self, token=token, email=email)
-    finally:
-        _MagicLinkRegistryContext.current = None
-
-
-MagicLinkManager.verify_magic_link = _verify_with_context
-
-
-# Register the validator at import time so the framework's
-# ``PasswordlessGrantRegistry`` recognises ``"magic_link"``.
 PasswordlessGrantRegistry.register("magic_link", magic_link_grant_validator)
