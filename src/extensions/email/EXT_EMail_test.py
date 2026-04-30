@@ -315,56 +315,78 @@ class TestEXTEMail(ExtensionServerMixin):
 
         Auto-xfailed when ``SENDGRID_API_KEY`` is unset (Item 15 marker).
         """
+        creds = sandbox_credentials_for("sendgrid")
+        assert creds.get("SENDGRID_API_KEY"), "SENDGRID_API_KEY required for live test"
         result = await EXT_EMail.send_email(
             recipient="test@example.com", subject="Test Subject", body="Test Body"
         )
         assert result is not None
+        assert "not configured" not in str(result).lower()
+        assert "failed" not in str(result).lower()
 
     @pytest.mark.external_api(provider="sendgrid")
     @pytest.mark.asyncio
     async def test_get_emails_static_method(self, sandbox_credentials_for):
         """Live sandbox: static email retrieval via rotation system."""
+        creds = sandbox_credentials_for("sendgrid")
+        assert creds.get("SENDGRID_API_KEY"), "SENDGRID_API_KEY required for live test"
         result = await EXT_EMail.get_emails()
         assert result is not None
+        assert "not configured" not in str(result).lower()
 
     @pytest.mark.external_api(provider="sendgrid")
     @pytest.mark.asyncio
     async def test_create_draft_email_static_method(self, sandbox_credentials_for):
         """Live sandbox: static draft creation via rotation system."""
+        creds = sandbox_credentials_for("sendgrid")
+        assert creds.get("SENDGRID_API_KEY"), "SENDGRID_API_KEY required for live test"
         result = await EXT_EMail.create_draft_email(
             recipient="test@example.com", subject="Test Subject", body="Test Body"
         )
         assert result is not None
+        assert "not configured" not in str(result).lower()
 
     @pytest.mark.external_api(provider="sendgrid")
     @pytest.mark.asyncio
     async def test_search_emails_static_method(self, sandbox_credentials_for):
         """Live sandbox: static email search via rotation system."""
+        creds = sandbox_credentials_for("sendgrid")
+        assert creds.get("SENDGRID_API_KEY"), "SENDGRID_API_KEY required for live test"
         result = await EXT_EMail.search_emails("test query")
         assert result is not None
+        assert "not configured" not in str(result).lower()
 
     @pytest.mark.external_api(provider="sendgrid")
     @pytest.mark.asyncio
     async def test_reply_to_email_static_method(self, sandbox_credentials_for):
         """Live sandbox: static email reply via rotation system."""
+        creds = sandbox_credentials_for("sendgrid")
+        assert creds.get("SENDGRID_API_KEY"), "SENDGRID_API_KEY required for live test"
         result = await EXT_EMail.reply_to_email(
             email_id="test_123", body="Reply body"
         )
         assert result is not None
+        assert "not configured" not in str(result).lower()
 
     @pytest.mark.external_api(provider="sendgrid")
     @pytest.mark.asyncio
     async def test_delete_email_static_method(self, sandbox_credentials_for):
         """Live sandbox: static email deletion via rotation system."""
+        creds = sandbox_credentials_for("sendgrid")
+        assert creds.get("SENDGRID_API_KEY"), "SENDGRID_API_KEY required for live test"
         result = await EXT_EMail.delete_email("test_123")
         assert result is not None
+        assert "not configured" not in str(result).lower()
 
     @pytest.mark.external_api(provider="sendgrid")
     @pytest.mark.asyncio
     async def test_process_attachments_static_method(self, sandbox_credentials_for):
         """Live sandbox: static attachment processing via rotation system."""
+        creds = sandbox_credentials_for("sendgrid")
+        assert creds.get("SENDGRID_API_KEY"), "SENDGRID_API_KEY required for live test"
         result = await EXT_EMail.process_attachments("test_123")
         assert result is not None
+        assert "not configured" not in str(result).lower()
 
     def test_required_permissions(self):
         """Test required permissions list"""
