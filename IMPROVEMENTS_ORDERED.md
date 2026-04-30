@@ -451,7 +451,7 @@ The single client every provider routes outbound calls through, and the cross-cu
 
 ---
 
-## Item 34 — Distributed tracing and provider-call metrics
+## ~~Item 34~~ — ~~Distributed tracing and provider-call metrics~~ ✅ DONE
 
 **Severity:** Medium
 **Scope:** `RotationManager.rotate`, shared HTTP client (Item 31), `RequestContext`, metrics emission layer.
@@ -495,7 +495,7 @@ The single client every provider routes outbound calls through, and the cross-cu
 
 ---
 
-## Item 85 — Structured application logging contract
+## ~~Item 85~~ — ~~Structured application logging contract~~ ✅ DONE
 
 **Severity:** Medium
 **Scope:** `lib/Logging.py`, `meta_logging` extension, `RequestContext`, asyncio context propagation, pluggable error-reporter.
@@ -636,7 +636,7 @@ Symmetric `@mirror_on_update` and `@mirror_on_delete` decorators handle the corr
 
 ---
 
-## Item 48 — Graceful degradation contract
+## ~~Item 48~~ — ~~Graceful degradation contract~~ ✅ DONE
 
 **Severity:** Medium
 **Scope:** Provider declarations, rotation system, outbox (Item 35).
@@ -908,7 +908,7 @@ The auto-generated REST surface, custom routes that participate in the same gene
 
 ---
 
-## Item 39 — Per-resource endpoint versioning
+## ~~Item 39~~ — ~~Per-resource endpoint versioning~~ ✅ DONE
 
 **Severity:** Medium
 **Scope:** `RouterMixin`, route generation, OpenAPI generation, SDK generation (Item 25).
@@ -930,7 +930,7 @@ The auto-generated REST surface, custom routes that participate in the same gene
 
 ---
 
-## Item 40 — Custom-route contract with SDK, GraphQL, and test parity
+## ~~Item 40~~ — ~~Custom-route contract with SDK, GraphQL, and test parity~~ ✅ DONE (REST surface)
 
 **Severity:** Medium
 **Scope:** `@custom_route` decorator (referenced but undefined), SDK generator (Item 25), GraphQL schema generator, auto-generated test scaffolds.
@@ -952,7 +952,7 @@ For genuinely RPC-shaped routes (no clear resource), the decorator can be applie
 
 ---
 
-## Item 25 — Generated SDK handlers from BLL `RouterMixin`
+## ~~Item 25~~ — ~~Generated SDK handlers from BLL `RouterMixin`~~ ✅ DONE
 
 **Severity:** Medium
 **Scope:** New SDK generator, existing `SDK_Auth.py`, `SDK_Providers.py`, `SDK_Extensions.py` (potentially regenerated), the `AbstractSDKHandler` contract.
@@ -1395,7 +1395,7 @@ System-scoped provider instances are unreachable to a user unless a quota row ex
 
 ---
 
-## Item 36 — Data residency and regional provider pools
+## ~~Item 36~~ — ~~Data residency and regional provider pools~~ ✅ DONE (framework primitives)
 
 **Severity:** Medium
 **Scope:** Provider instance metadata, resolution flow, per-tenant residency policy.
@@ -1424,7 +1424,7 @@ For providers that are inherently single-region (a regional payment processor), 
 
 ---
 
-## Item 55 — Tenant data-isolation primitives
+## ~~Item 55~~ — ~~Tenant data-isolation primitives~~ ✅ DONE (primitives; session-binder integration is a follow-up)
 
 **Severity:** Medium
 **Scope:** Postgres Row-Level Security policies, session GUC variables, tenant-scoped model declarations.
@@ -1448,7 +1448,7 @@ System-level operations (admin endpoints, cross-tenant reporting, the framework'
 
 ---
 
-## Item 54 — Read-replica routing for read-only operations
+## ~~Item 54~~ — ~~Read-replica routing for read-only operations~~ ✅ DONE (primitives; session-binder integration is a follow-up)
 
 **Severity:** Medium
 **Scope:** Database session binding, BLL method annotations, request-context routing.
@@ -1514,7 +1514,7 @@ Wildcard scopes are supported only at consent time (the user grants `payment.sub
 
 ---
 
-## Item 45 — Field- and column-level attribute-based access control
+## ~~Item 45~~ — ~~Field- and column-level attribute-based access control~~ ✅ DONE (primitives + serializer hook documented for follow-up integration)
 
 **Severity:** Medium
 **Scope:** Permission system, model field metadata, response serialization.
@@ -1540,7 +1540,7 @@ The same metadata applies to GraphQL: the resolver for a marked field returns nu
 
 The fan-out seam to other services, the fairness primitive that prevents one tenant from starving the queue, and the retention contract for the audit trail.
 
-## Item 42 — Cross-process event bus seam
+## ~~Item 42~~ — ~~Cross-process event bus seam~~ ✅ DONE (in-memory adapter; Kafka/NATS/Redis adapters are ABC stubs awaiting real-broker integration)
 
 **Severity:** Medium
 **Scope:** New event-bus abstraction, adapter pattern for Kafka / NATS / Redis Streams, integration with hooks and outbox.
@@ -1562,7 +1562,7 @@ Events on the bus are typed Pydantic models, versioned, with backward-compatibil
 
 ---
 
-## Item 57 — Background job priority and per-tenant fairness
+## ~~Item 57~~ — ~~Background job priority and per-tenant fairness~~ ✅ DONE
 
 **Severity:** Medium
 **Scope:** `QueueConsumerService` (Item 28), outbox (Item 35), event-bus consumers (Item 42), per-tenant queue partitioning.
@@ -1587,7 +1587,7 @@ The combination delivers bounded-latency for high-priority work regardless of lo
 
 ---
 
-## Item 56 — Audit log retention and archival
+## ~~Item 56~~ — ~~Audit log retention and archival~~ ✅ DONE (driver + audit-of-the-audit; archive-target adapters land alongside Item 43)
 
 **Severity:** Medium
 **Scope:** `meta_logging` extension, retention policy declarations, scheduled archival service.
@@ -1615,7 +1615,7 @@ The audit subsystem itself emits an audit event for each retention pass: how man
 
 The vocabulary of abstract providers the framework ships, plus the typing of seed data so initial state passes the same Pydantic gates as runtime creates.
 
-## Item 43 — Abstract provider templates for missing infrastructure categories
+## ~~Item 43~~ — ~~Abstract provider templates for missing infrastructure categories~~ ✅ DONE (six abstracts shipped; concrete implementations land in separate extensions)
 
 **Severity:** Medium
 **Scope:** New abstract providers and accompanying documentation for object storage, cache, queue/scheduler, search index, AI/LLM, and notification fan-out.
@@ -1674,7 +1674,7 @@ The vocabulary of abstract providers the framework ships, plus the typing of see
 
 ---
 
-## Item 84 — Cost observability per tenant
+## ~~Item 84~~ — ~~Cost observability per tenant~~ ✅ DONE
 
 **Severity:** Medium
 **Scope:** `AbstractProvider_AI` (Item 43) and any provider with billable upstream calls; new `CostModel` per provider; metrics emission.
@@ -1721,6 +1721,8 @@ The vocabulary of abstract providers the framework ships, plus the typing of see
 Two passwordless authentication flows. Each item specifies *both* the framework provisions required to leave the door open and the extension that walks through it. They share `OneTimeTokenMixin` and `PasswordlessGrantRegistry`.
 
 ## Item 58 — Magic-link (passwordless email) authentication
+
+**Status:** Framework provisions (the "door") landed; extension implementation still open.
 
 **Severity:** Medium
 **Scope:** Framework provisions in `BLL_Auth.py` (one-time-token primitive, passwordless grant abstraction, `UserManager.login_via_grant` hook target); new `EXT_Auth_MagicLink` extension implementing the user-facing flow.
@@ -1770,6 +1772,8 @@ Lives in `src/extensions/auth_magic_link/`. Files:
 ---
 
 ## Item 59 — QR-code device-pairing authentication (Steam Guard / Discord style)
+
+**Status:** Framework provisions (`OneTimeTokenMixin`, `PasswordlessGrantRegistry`, `SessionModel.grant_type` + `pending_state`) landed via Item 58's same-batch implementation; the SSE approval channel + extension itself still open.
 
 **Severity:** Medium
 **Scope:** Framework provisions in `BLL_Auth.py` (pending-session approval state, real-time approval channel, cross-device grant abstraction); new `EXT_Auth_DevicePairing` extension implementing the user-facing flow.
@@ -1891,7 +1895,7 @@ A single canonical reference for every primitive an extension author touches.
 
 The breaking and ecosystem-shaping pieces of the pip-package conversion that follow the additive groundwork commit `cf5cc68`, plus the supply-chain hygiene every PyPI release needs. The non-packaging former-P items (P2/61, P3/62, P5/64, P6/65, P9/68) live in their topical groups; this group holds the items whose primary concern is package layout and release safety.
 
-## Item 60 — Rename top-level packages under a single namespace (formerly P1)
+## ~~Item 60~~ — ~~Rename top-level packages under a single namespace (formerly P1)~~ ✅ DONE
 
 **Severity:** Critical
 **Scope:** `src/` layout; every absolute import in the tree; `extensions_path` synthesized module names; migration env scripts.
@@ -1911,7 +1915,7 @@ The breaking and ecosystem-shaping pieces of the pip-package conversion that fol
 
 ---
 
-## Item 63 — Console entry point and module entry (formerly P4)
+## ~~Item 63~~ — ~~Console entry point and module entry (formerly P4)~~ ✅ DONE
 
 **Severity:** High
 **Scope:** New `serverframework/__main__.py`, `[project.scripts]` entry in `pyproject.toml`, `serverframework.cli` module, `python app.py` forward.
@@ -1931,7 +1935,7 @@ The breaking and ecosystem-shaping pieces of the pip-package conversion that fol
 
 ---
 
-## Item 66 — Drop `sys.path` mutation from the façade (formerly P7)
+## ~~Item 66~~ — ~~Drop `sys.path` mutation from the façade (formerly P7)~~ ✅ DONE
 
 **Severity:** Medium
 **Scope:** `serverframework/__init__.py`.
@@ -2238,7 +2242,7 @@ The Phase-1 work that did **not** require any of those prereqs (typed value mode
 
 **Acceptance.** `mypy` rejects a concrete provider whose `bond_instance` returns a non-`AbstractEmailProviderInstance`. New callers use `bonded = Provider.bond_instance(model); await bonded.send(msg)`. The Phase-1 surface keeps working through deprecation warnings.
 
-## Item 90 — Email reshape: typed Settings, EnvSchema, Secret-marked credentials
+## ~~Item 90~~ — ~~Email reshape: typed Settings, EnvSchema, Secret-marked credentials~~ ✅ DONE
 
 **Severity:** Medium
 **Scope:** `AbstractEmailProvider`, all three concrete providers, BLL hook registration.
@@ -2316,7 +2320,7 @@ The Phase-1 work that did **not** require any of those prereqs (typed value mode
 
 **Acceptance.** A caller branches on `Capability.VALIDATE_ADDRESS in bonded.capabilities` before invoking; a SendGrid+SMTP2go deployment can dedup-validate addresses in batch before send; a Stalwart-only deployment skips the validation step. Suppression-list hooks (Item 66 webhook → Item 67 add_suppression) keep `bounces` current automatically.
 
-## Item 96 — Email reshape: ops policies (rate limit, health, degradation, deadlines, residency)
+## ~~Item 96~~ — ~~Email reshape: ops policies (rate limit, health, degradation, deadlines, residency)~~ ✅ DONE
 
 **Severity:** Medium
 **Scope:** Per-provider declarations; integration with rotation, health, deadline, outbox, residency primitives.
@@ -2329,7 +2333,7 @@ The Phase-1 work that did **not** require any of those prereqs (typed value mode
 
 **Acceptance.** An invitation send during a SendGrid outage surfaces 500 fast (FailFast); a marketing send during the same outage returns 202 with a tracking id and drains from the outbox once SendGrid recovers (QueueAndRetry). A SendGrid 429 storm pauses the provider per Item 17 without rotation. A health check failure marks the provider DOWN per Item 27.
 
-## Item 97 — Email reshape: shared HTTP client routing + credential vault migration
+## ~~Item 97~~ — ~~Email reshape: shared HTTP client routing + credential vault migration~~ ✅ DONE (SMTP2go routed; SendGrid SDK transport injection + credential-vault migration deferred to follow-up)
 
 **Severity:** Medium
 **Scope:** SendGrid SDK transport hook, SMTP2go HTTP calls, Stalwart credential resolution.

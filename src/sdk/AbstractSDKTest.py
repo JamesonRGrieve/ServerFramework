@@ -22,9 +22,9 @@ from typing import Any, Dict, List, Optional, Type
 import pytest
 from faker import Faker
 
-from AbstractTest import AbstractTest, CategoryOfTest, ClassOfTestsConfig, SkipThisTest
-from lib.Environment import env
-from lib.Logging import logger
+from serverframework.AbstractTest import AbstractTest, CategoryOfTest, ClassOfTestsConfig, SkipThisTest
+from serverframework.lib.Environment import env
+from serverframework.lib.Logging import logger
 from sdk.AbstractSDKHandler import AbstractSDKHandler, ResourceConfig, SDKException
 
 

@@ -53,19 +53,15 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, Optional, Union
 
-# Ensure the framework's top-level packages (``lib``, ``logic``, …) are
-# importable when this façade is consumed. The legacy layout puts those
-# packages directly under ``src/`` rather than under a single top-level
-# package; until that rename happens, we add ``src/`` to ``sys.path`` here.
-_THIS_DIR = Path(__file__).resolve().parent
-_SRC_DIR = _THIS_DIR.parent
-if str(_SRC_DIR) not in sys.path:
-    sys.path.insert(0, str(_SRC_DIR))
-
+# Item 66 — the sys.path mutation that bridged the legacy top-level
+# package layout (`lib/`, `logic/`, ...) is gone now that Item 60
+# moved every package under ``serverframework.*``. Imports resolve
+# through the standard package machinery; consumers can run the
+# framework from a zipapp or vendor it without surprise.
 
 # Re-exports. Importing ``app`` triggers ``lib.Logging`` etc., so callers
 # need their environment configured before importing this module.
-from app import build_app, instance  # noqa: E402
+from serverframework.app import build_app, instance  # noqa: E402
 
 __all__ = [
     "build_app",
@@ -81,7 +77,7 @@ def set_extensions_root(path: Optional[Union[str, os.PathLike]]) -> None:
     Equivalent to ``lib.Paths.set_extensions_root``; re-exported here so
     consumers don't need to know about internal modules.
     """
-    from lib.Paths import set_extensions_root as _set_root
+    from serverframework.lib.Paths import set_extensions_root as _set_root
 
     _set_root(path)
 
@@ -131,7 +127,7 @@ def run(
     # snapshots configuration at import time in places.
     import uvicorn
 
-    from lib.Environment import env
+    from serverframework.lib.Environment import env
 
     if workers is None:
         workers_str = env("UVICORN_WORKERS")

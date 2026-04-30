@@ -76,6 +76,9 @@ Homepage = "https://github.com/JamesonRGrieve/ServerFramework"
 Repository = "https://github.com/JamesonRGrieve/ServerFramework.git"
 Issues = "https://github.com/JamesonRGrieve/ServerFramework/issues"
 
+[project.scripts]
+server-framework = "serverframework.cli:main"
+
 [project.optional-dependencies]
 dev = [
     "pytest",
@@ -99,14 +102,8 @@ docs = [
 [tool.setuptools.packages.find]
 where = ["."]
 include = [
-    "lib*",
-    "logic*",
-    "database*",
-    "endpoints*",
-    "extensions*",
-    "sdk*",
-    "pydantic2*",
     "serverframework*",
+    "sdk*",
 ]
 exclude = [
     "*__pycache__*",
