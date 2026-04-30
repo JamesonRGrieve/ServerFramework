@@ -1895,7 +1895,7 @@ A single canonical reference for every primitive an extension author touches.
 
 The breaking and ecosystem-shaping pieces of the pip-package conversion that follow the additive groundwork commit `cf5cc68`, plus the supply-chain hygiene every PyPI release needs. The non-packaging former-P items (P2/61, P3/62, P5/64, P6/65, P9/68) live in their topical groups; this group holds the items whose primary concern is package layout and release safety.
 
-## Item 60 — Rename top-level packages under a single namespace (formerly P1)
+## ~~Item 60~~ — ~~Rename top-level packages under a single namespace (formerly P1)~~ ✅ DONE
 
 **Severity:** Critical
 **Scope:** `src/` layout; every absolute import in the tree; `extensions_path` synthesized module names; migration env scripts.
@@ -1935,7 +1935,7 @@ The breaking and ecosystem-shaping pieces of the pip-package conversion that fol
 
 ---
 
-## Item 66 — Drop `sys.path` mutation from the façade (formerly P7)
+## ~~Item 66~~ — ~~Drop `sys.path` mutation from the façade (formerly P7)~~ ✅ DONE
 
 **Severity:** Medium
 **Scope:** `serverframework/__init__.py`.
