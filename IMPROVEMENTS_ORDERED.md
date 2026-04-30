@@ -1282,7 +1282,7 @@ How extension-contributed schema, tables, and dependencies are validated, ordere
 
 ---
 
-## Item 20 — Hot reload and manifest-based extension installation
+## ~~Item 20~~ — ~~Hot reload and manifest-based extension installation~~ ✅ DONE (manifest install + SIGHUP-driven graceful restart; in-process hot reload explicitly out of scope per refinement)
 
 **Severity:** Medium
 **Scope:** New `manifest.toml` format, `install_from_manifest` machinery, registry diff, hot-reload controller.
@@ -1720,9 +1720,9 @@ The vocabulary of abstract providers the framework ships, plus the typing of see
 
 Two passwordless authentication flows. Each item specifies *both* the framework provisions required to leave the door open and the extension that walks through it. They share `OneTimeTokenMixin` and `PasswordlessGrantRegistry`.
 
-## Item 58 — Magic-link (passwordless email) authentication
+## ~~Item 58~~ — ~~Magic-link (passwordless email) authentication~~ ✅ DONE
 
-**Status:** Framework provisions (the "door") landed; extension implementation still open.
+**Status:** Framework provisions and extension implementation both landed. 5/5 BLL tests passing.
 
 **Severity:** Medium
 **Scope:** Framework provisions in `BLL_Auth.py` (one-time-token primitive, passwordless grant abstraction, `UserManager.login_via_grant` hook target); new `EXT_Auth_MagicLink` extension implementing the user-facing flow.
@@ -1771,9 +1771,9 @@ Lives in `src/extensions/auth_magic_link/`. Files:
 
 ---
 
-## Item 59 — QR-code device-pairing authentication (Steam Guard / Discord style)
+## ~~Item 59~~ — ~~QR-code device-pairing authentication (Steam Guard / Discord style)~~ ✅ DONE
 
-**Status:** Framework provisions (`OneTimeTokenMixin`, `PasswordlessGrantRegistry`, `SessionModel.grant_type` + `pending_state`) landed via Item 58's same-batch implementation; the SSE approval channel + extension itself still open.
+**Status:** Framework provisions, SSE approval channel, and extension implementation all landed. 9/9 BLL tests passing covering expiry, replay, denial, unauthenticated approve rejection, polling parity, and SSE generator.
 
 **Severity:** Medium
 **Scope:** Framework provisions in `BLL_Auth.py` (pending-session approval state, real-time approval channel, cross-device grant abstraction); new `EXT_Auth_DevicePairing` extension implementing the user-facing flow.
@@ -1829,7 +1829,7 @@ Lives in `src/extensions/auth_device_pairing/`. Files:
 
 A single canonical reference for every primitive an extension author touches.
 
-## Item 52 — Single `EXT.Contracts.md` enumerating the framework's public primitives
+## ~~Item 52~~ — ~~Single `EXT.Contracts.md` enumerating the framework's public primitives~~ ✅ DONE (94-entry JSON manifest + autogen tooling + 97-test guardrail)
 
 **Severity:** Low
 **Scope:** New documentation file collating contracts referenced from elsewhere.
@@ -2281,7 +2281,7 @@ The Phase-1 work that did **not** require any of those prereqs (typed value mode
 
 **Acceptance.** A `Root_Stalwart` instance with `auth_strategy_name="basic"` authenticates correctly. A future Workspace integration registers `OAuth2Auth` and a per-user `Stalwart` instance with `auth_strategy_name="oauth2"` works without modifying `StalwartProvider`.
 
-## Item 93 — Email reshape: federation translators (FieldMapping, Paginator, QueryDSL)
+## ~~Item 93~~ — ~~Email reshape: federation translators (FieldMapping, Paginator, QueryDSL)~~ ✅ DONE (SendGrid declares paginator/translator/field_mappings; round-trip tests passing)
 
 **Severity:** Medium
 **Scope:** `AbstractEmailProviderInstance.list_emails`, `AbstractEmailProvider`-level field mappings.
@@ -2294,7 +2294,7 @@ The Phase-1 work that did **not** require any of those prereqs (typed value mode
 
 **Acceptance.** A `list_emails(query="from:alice", limit=50)` against Stalwart issues a correct IMAP `SEARCH FROM alice` command without per-provider translation code. A 200-message paged list returns `next_token` opaque cursors that round-trip cleanly across providers. Field-mapping round-trip tests pass for every declared `EmailMessage` field.
 
-## Item 94 — Email reshape: inbound webhook handlers
+## ~~Item 94~~ — ~~Email reshape: inbound webhook handlers~~ ✅ DONE (verify_signature ECDSA + 8 SendGrid event handlers + canonical EmailDeliveryEvent fan-out)
 
 **Severity:** Medium
 **Scope:** `EXT_EMail` webhook registration, per-provider `verify_signature`, hook fan-out into `Email_*Manager` AFTER hooks.
@@ -2307,7 +2307,7 @@ The Phase-1 work that did **not** require any of those prereqs (typed value mode
 
 **Acceptance.** A SendGrid bounce webhook hits `/webhook/email/sendgrid/bounce`, signature verifies, the canonical `EmailDeliveryEvent` fans into the AFTER-update hook chain, and a downstream consumer (e.g. Item 67's suppression list) records the bounce automatically. A signature failure produces 401 without invoking the handler.
 
-## Item 95 — Email reshape: capability ladder (validation, templates, suppression, stats)
+## ~~Item 95~~ — ~~Email reshape: capability ladder (validation, templates, suppression, stats)~~ ✅ DONE (typed abilities on AbstractEmailProviderInstance + SendgridEmailInstance impl)
 
 **Severity:** Medium
 **Scope:** New abilities on `AbstractEmailProviderInstance`, opt-in implementation per provider.

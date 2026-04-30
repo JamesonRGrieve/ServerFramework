@@ -171,9 +171,19 @@ def create_webhook_router() -> APIRouter:
     ) -> Response:
         body_bytes = await request.body()
         try:
-            payload = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
+            parsed = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
         except (UnicodeDecodeError, json.JSONDecodeError):
-            payload = {"raw": body_bytes.decode("utf-8", errors="replace")}
+            parsed = {"raw": body_bytes.decode("utf-8", errors="replace")}
+        # `WebhookContext.payload` is a dict; wrap top-level JSON arrays
+        # (e.g. SendGrid Event Webhook deliveries) in `{"events": [...]}`
+        # so handlers receive a uniform dict envelope. Handlers that
+        # need the raw list inspect `ctx.payload["events"]`.
+        if isinstance(parsed, list):
+            payload = {"events": parsed}
+        elif isinstance(parsed, dict):
+            payload = parsed
+        else:
+            payload = {"raw": parsed}
 
         headers = {k.lower(): v for k, v in request.headers.items()}
 

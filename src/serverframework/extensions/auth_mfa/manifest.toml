@@ -1,0 +1,32 @@
+# Extension manifest (Item 20).
+#
+# This file is OPTIONAL. Extensions without a manifest continue to be
+# discovered via the legacy filesystem walk in ExtensionRegistry. When a
+# manifest is present, ``install_from_manifest`` and the SIGHUP-driven
+# rebuild use it as the authoritative metadata source for installs from
+# remote URLs / archives where the Python class cannot yet be loaded.
+
+name = "auth_mfa"
+version = "1.0.0"
+description = "Multi-Factor Authentication extension with TOTP, Email, and SMS support"
+author = "ZephyrexTechnologies"
+entry_module = "EXT_Auth_MFA"
+minimum_framework_version = "0.0.0"
+
+# PEP 508 strings -- mirrors the PIP_Dependency entries declared on the
+# class for parity with the legacy in-class declaration. The class-level
+# Dependencies object remains the source of truth at runtime; this list
+# is what the installer reads BEFORE the class is loaded.
+pip_dependencies = [
+    "pyotp>=2.8.0",
+    "qrcode[pil]>=7.4.0",
+]
+
+system_dependencies = []
+
+# Other extensions this one depends on. Resolved against the live
+# ExtensionRegistry by ``install_from_manifest`` -- a missing dep fails
+# the install fast rather than silently half-installing.
+[[extension_dependencies]]
+name = "email"
+optional = true

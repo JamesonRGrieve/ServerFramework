@@ -5,11 +5,13 @@ Fully static implementation compatible with the Provider Rotation System.
 """
 
 import base64
+import hashlib
+import hmac
 import mimetypes
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Any, ClassVar, Dict, List, Mapping, Optional, Set
+from typing import Any, ClassVar, Dict, List, Mapping, Optional, Set, Tuple, Type
 
 from pydantic import BaseModel, EmailStr, Field, HttpUrl, SecretStr
 
@@ -26,18 +28,54 @@ from serverframework.extensions.AbstractExternalModel import (
     idempotent,
 )
 from serverframework.extensions.CostModel import ConstantCostModel
+from serverframework.extensions.email.AbstractEmailProviderInstance import (
+    AbstractEmailProviderInstance,
+    BulkSendResult,
+    BulkSendRow,
+    EmailStats,
+    EmailValidationResult,
+    MessageListPage,
+    MessageSummary,
+    SentMessage,
+    SuppressionEntry,
+    SuppressionListPage,
+)
 from serverframework.extensions.email.EmailErrors import (
     EmailValidationError,
+    NotSupportedError,
     map_upstream_status,
     map_validation_error,
 )
 from serverframework.extensions.email.EXT_EMail import (
     AbstractEmailProvider,
     Capability,
+    EmailAddress,
+    EmailDeliveryEvent,
     EmailMessage,
+    Importance,
     _DeprecatedEnvDict,
+    dispatch_email_delivery_event,
 )
 from serverframework.extensions.ExternalErrors import DegradationPolicy, fail_fast
+from serverframework.extensions.FieldMappings import (
+    Compose,
+    Decompose,
+    EnumRemap,
+    FieldMapping,
+    Rename,
+    apply_to_external,
+)
+from serverframework.extensions.Paginators import (
+    AbstractPaginator,
+    PageTokenPaginator,
+    decode_token,
+    encode_token,
+    query_hash,
+)
+from serverframework.extensions.QueryTranslators import (
+    AbstractQueryDSLTranslator,
+    KeyValueTranslator,
+)
 from serverframework.extensions.RateLimit import RateLimit
 from serverframework.lib.Dependencies import Dependencies, PIP_Dependency
 from serverframework.lib.Environment import env
@@ -119,8 +157,69 @@ class SendgridProvider(AbstractEmailProvider):
 
     # Capability flags. SendGrid is a hosted HTTP API for outbound mail
     # only; receive-side abilities (list/read/update/threads) are not
-    # part of the API and remain stubbed at the abstract level.
-    capabilities: ClassVar = frozenset({Capability.SEND, Capability.ATTACHMENTS})
+    # part of the API and remain stubbed at the abstract level. Item 95
+    # adds the ladder capabilities SendGrid does support: address
+    # validation, dynamic templates, suppression-list mgmt, stats, and
+    # message history.
+    capabilities: ClassVar = frozenset(
+        {
+            Capability.SEND,
+            Capability.ATTACHMENTS,
+            Capability.VALIDATE_ADDRESS,
+            Capability.TEMPLATES,
+            Capability.SUPPRESSIONS,
+            Capability.STATS,
+            Capability.MESSAGES,
+            Capability.INBOUND_WEBHOOK,
+        }
+    )
+
+    # Item 93 — federation translators. SendGrid's messages-search and
+    # suppressions endpoints page via `next_page_token`; the search query
+    # surface is `?email=foo&status=delivered`-style flat key/value.
+    paginator: ClassVar[Type[AbstractPaginator]] = PageTokenPaginator
+    query_translator: ClassVar[Type[AbstractQueryDSLTranslator]] = KeyValueTranslator
+
+    # Item 93 — declarative `EmailMessage` ↔ SendGrid Mail JSON mappings.
+    # These replace open-coded conversions in `send_email`/`send`. Each
+    # `EmailAddress(name, address)` pair becomes a `Compose` that
+    # round-trips through SendGrid's `{"email": addr, "name": name}`
+    # mailbox dict shape. `Importance` ↔ SendGrid's `priority`/`X-Priority`
+    # header is an `EnumRemap`. The bytes-side `Attachment` shape stays
+    # in the imperative path because SendGrid's helpers consume bytes
+    # directly; declarative mapping there is unnecessary churn.
+    field_mappings: ClassVar[List[FieldMapping]] = [
+        Rename(internal="subject", external="subject"),
+        Rename(internal="body_text", external="plain_content"),
+        Rename(internal="body_html", external="html_content"),
+        Rename(internal="template_id", external="template_id"),
+        Compose(
+            externals=["from_address", "from_name"],
+            internal="from",
+            fn=lambda addr, name: {"email": addr, "name": name} if name else {"email": addr},
+            inverse_fn=lambda d: (d.get("email", ""), d.get("name")),
+        ),
+        EnumRemap(
+            internal="importance",
+            external="priority",
+            mapping={
+                Importance.HIGH.value: "high",
+                Importance.NORMAL.value: "normal",
+                Importance.LOW.value: "low",
+            },
+        ),
+    ]
+
+    # Item 94 — webhook signature verification public key. SendGrid's
+    # Event Webhook signs each delivery with ECDSA-SHA256; the public key
+    # is published in the SendGrid dashboard. We accept either a PEM-
+    # encoded ECDSA key (preferred) or a shared HMAC secret as fallback
+    # (`SENDGRID_WEBHOOK_SECRET`); the latter is documented as a gap
+    # because the upstream is ECDSA-only.
+    SENDGRID_WEBHOOK_PUBLIC_KEY_ENV: ClassVar[str] = "SENDGRID_WEBHOOK_PUBLIC_KEY"
+    SENDGRID_WEBHOOK_SECRET_ENV: ClassVar[str] = "SENDGRID_WEBHOOK_SECRET"
+    SENDGRID_SIGNATURE_HEADER: ClassVar[str] = "x-twilio-email-event-webhook-signature"
+    SENDGRID_TIMESTAMP_HEADER: ClassVar[str] = "x-twilio-email-event-webhook-timestamp"
 
     # Item 92 — declare the default auth strategy this provider uses.
     # SendGrid authenticates via an API key in an ``Authorization: Bearer``
@@ -237,6 +336,101 @@ class SendgridProvider(AbstractEmailProvider):
     def get_platform_name(cls) -> str:
         """Get the platform name."""
         return "SendGrid"
+
+    # ------------------------------------------------------------------
+    # Item 94 — Event Webhook signature verification.
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def verify_signature(cls, headers: Mapping[str, str], body: bytes) -> bool:
+        """Verify a SendGrid Event Webhook delivery.
+
+        Preferred path: ECDSA-SHA256 with the public key from the
+        `SENDGRID_WEBHOOK_PUBLIC_KEY` env var (`cryptography` library).
+        Fallback path: HMAC-SHA256 with `SENDGRID_WEBHOOK_SECRET`. The
+        fallback is a documented gap — SendGrid's Event Webhook is
+        ECDSA-only on the wire, so HMAC support exists only for
+        deployments that proxy the webhook through a signing intermediary.
+
+        Returns False on missing key/secret, missing headers, or signature
+        mismatch. Never raises.
+        """
+        normalized = {k.lower(): v for k, v in (headers or {}).items()}
+        signature = normalized.get(cls.SENDGRID_SIGNATURE_HEADER)
+        timestamp = normalized.get(cls.SENDGRID_TIMESTAMP_HEADER)
+        if not signature or not timestamp:
+            logger.debug(
+                "SendGrid webhook missing signature or timestamp header; rejecting."
+            )
+            return False
+
+        public_key_pem = env(cls.SENDGRID_WEBHOOK_PUBLIC_KEY_ENV)
+        if public_key_pem:
+            return cls._verify_ecdsa(public_key_pem, signature, timestamp, body)
+
+        shared_secret = env(cls.SENDGRID_WEBHOOK_SECRET_ENV)
+        if shared_secret:
+            return cls._verify_hmac(shared_secret, signature, timestamp, body)
+
+        logger.warning(
+            "SendGrid webhook verification: neither "
+            f"{cls.SENDGRID_WEBHOOK_PUBLIC_KEY_ENV} nor "
+            f"{cls.SENDGRID_WEBHOOK_SECRET_ENV} set; rejecting."
+        )
+        return False
+
+    @staticmethod
+    def _verify_ecdsa(
+        public_key_pem: str, signature_b64: str, timestamp: str, body: bytes
+    ) -> bool:
+        """ECDSA-SHA256 path. Returns False on any error (defensive)."""
+        try:
+            from cryptography.exceptions import InvalidSignature
+            from cryptography.hazmat.primitives import hashes, serialization
+            from cryptography.hazmat.primitives.asymmetric import ec
+            from cryptography.hazmat.primitives.asymmetric.utils import (
+                decode_dss_signature,
+            )
+        except ImportError:
+            logger.debug(
+                "cryptography library unavailable; cannot verify SendGrid ECDSA signature."
+            )
+            return False
+
+        signed_payload = timestamp.encode("utf-8") + body
+        try:
+            key = serialization.load_pem_public_key(public_key_pem.encode("utf-8"))
+            sig_bytes = base64.b64decode(signature_b64)
+            # SendGrid's signature is DER-encoded ECDSA; cryptography
+            # verifies DER directly, so we pass it through.
+            key.verify(sig_bytes, signed_payload, ec.ECDSA(hashes.SHA256()))
+            return True
+        except InvalidSignature:
+            logger.debug("SendGrid webhook ECDSA signature invalid.")
+            return False
+        except Exception as exc:
+            logger.debug(f"SendGrid webhook ECDSA verification error: {exc}")
+            return False
+
+    @staticmethod
+    def _verify_hmac(
+        secret: str, signature_b64: str, timestamp: str, body: bytes
+    ) -> bool:
+        """HMAC-SHA256 fallback path.
+
+        Documented gap: SendGrid's Event Webhook is ECDSA-only on the
+        wire, so this path only fires for deployments that proxy through
+        a signing intermediary that re-signs with HMAC.
+        """
+        signed_payload = timestamp.encode("utf-8") + body
+        expected = hmac.new(
+            secret.encode("utf-8"), signed_payload, hashlib.sha256
+        ).digest()
+        try:
+            received = base64.b64decode(signature_b64)
+        except Exception:
+            return False
+        return hmac.compare_digest(expected, received)
 
     @classmethod
     def validate_config(cls, instance: Optional[ProviderInstanceModel] = None) -> bool:
@@ -607,6 +801,586 @@ class SendgridProvider(AbstractEmailProvider):
                 )
                 failed += 1
         return {"results": results, "succeeded": succeeded, "failed": failed}
+
+
+# ============================================================================
+# Item 95 — SendGrid concrete `AbstractEmailProviderInstance` with the
+# capability ladder. Wires `validate_address`, `send_with_template`,
+# `*_suppression*`, `get_stats`, `list_messages` against the SendGrid
+# REST API, declaring them only when SendGrid actually exposes the
+# upstream endpoint.
+# ============================================================================
+
+
+def _sendgrid_message_to_sg_payload(message: EmailMessage) -> Dict[str, Any]:
+    """Item 93 — declarative `EmailMessage` → SendGrid mail-send JSON.
+
+    Routes through the `SendgridProvider.field_mappings` pipeline so the
+    conversion is declared once rather than open-coded in every send
+    path. The `personalizations` array, `attachments` byte-shape, and
+    multi-recipient address arrays are still composed imperatively
+    here because their nested-array structure does not collapse cleanly
+    into the flat-key `FieldMapping` contract.
+    """
+    flat: Dict[str, Any] = {
+        "subject": message.subject,
+        "body_text": message.body_text,
+        "body_html": message.body_html,
+        "template_id": message.template_id,
+        "importance": message.importance.value,
+    }
+    if message.from_:
+        flat["from_address"] = message.from_.address
+        flat["from_name"] = message.from_.name
+    payload = apply_to_external(SendgridProvider.field_mappings, flat)
+    payload.pop("from_address", None)
+    payload.pop("from_name", None)
+    payload.pop("body_text", None)
+    payload.pop("body_html", None)
+
+    # Per-recipient personalization. SendGrid's contract requires this
+    # to be a non-empty list of `{"to": [...]}` dicts.
+    personalization: Dict[str, Any] = {
+        "to": [
+            {"email": a.address, **({"name": a.name} if a.name else {})}
+            for a in message.to
+        ]
+    }
+    if message.cc:
+        personalization["cc"] = [
+            {"email": a.address, **({"name": a.name} if a.name else {})}
+            for a in message.cc
+        ]
+    if message.bcc:
+        personalization["bcc"] = [
+            {"email": a.address, **({"name": a.name} if a.name else {})}
+            for a in message.bcc
+        ]
+    if message.template_vars:
+        personalization["dynamic_template_data"] = dict(message.template_vars)
+    payload["personalizations"] = [personalization]
+
+    content: List[Dict[str, str]] = []
+    if message.body_text:
+        content.append({"type": "text/plain", "value": message.body_text})
+    if message.body_html:
+        content.append({"type": "text/html", "value": message.body_html})
+    if content:
+        payload["content"] = content
+
+    if message.reply_to:
+        payload["reply_to"] = {"email": message.reply_to.address}
+        if message.reply_to.name:
+            payload["reply_to"]["name"] = message.reply_to.name
+    if message.tags:
+        payload["categories"] = list(message.tags)
+    if message.headers:
+        payload["headers"] = dict(message.headers)
+    return payload
+
+
+def _sendgrid_payload_to_message_kwargs(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Item 93 — declarative SendGrid mail-send JSON → `EmailMessage` kwargs.
+
+    Inverse of `_sendgrid_message_to_sg_payload`; round-trip integrity is
+    covered by the field-mapping round-trip tests.
+    """
+    from_block = payload.get("from") or {}
+    personal = (payload.get("personalizations") or [{}])[0]
+
+    importance_map = {"high": Importance.HIGH, "normal": Importance.NORMAL, "low": Importance.LOW}
+    body_text = None
+    body_html = None
+    for chunk in payload.get("content", []) or []:
+        if chunk.get("type") == "text/plain":
+            body_text = chunk.get("value")
+        elif chunk.get("type") == "text/html":
+            body_html = chunk.get("value")
+
+    return {
+        "subject": payload.get("subject", ""),
+        "body_text": body_text,
+        "body_html": body_html,
+        "template_id": payload.get("template_id"),
+        "importance": importance_map.get(
+            payload.get("priority", "normal"), Importance.NORMAL
+        ),
+        "from_": (
+            EmailAddress(address=from_block.get("email", ""), name=from_block.get("name"))
+            if from_block.get("email")
+            else None
+        ),
+        "to": [
+            EmailAddress(address=t.get("email", ""), name=t.get("name"))
+            for t in personal.get("to", [])
+        ],
+        "cc": [
+            EmailAddress(address=t.get("email", ""), name=t.get("name"))
+            for t in personal.get("cc", [])
+        ],
+        "bcc": [
+            EmailAddress(address=t.get("email", ""), name=t.get("name"))
+            for t in personal.get("bcc", [])
+        ],
+        "tags": list(payload.get("categories", []) or []),
+        "headers": dict(payload.get("headers", {}) or {}),
+    }
+
+
+_SUPPRESSION_PATHS: Dict[str, str] = {
+    "bounce": "/v3/suppression/bounces",
+    "block": "/v3/suppression/blocks",
+    "spam_report": "/v3/suppression/spam_reports",
+    "unsubscribe": "/v3/asm/suppressions/global",
+    "invalid": "/v3/suppression/invalid_emails",
+}
+
+
+class SendgridEmailInstance(AbstractEmailProviderInstance):
+    """Item 95 — bonded SendGrid email instance with the capability ladder.
+
+    Construction: pass the `ProviderInstanceModel` and an optional
+    `httpx.AsyncClient` (or an SDK shim with a `.send`-compatible client
+    on `_client`). The SendGrid REST API is consumed directly via
+    `httpx` here rather than through the SendGrid SDK because the SDK's
+    surface is mail-send-only; the suppression / validation / stats
+    endpoints require their own HTTP path.
+    """
+
+    capabilities = SendgridProvider.capabilities
+
+    def __init__(
+        self,
+        instance: Optional[ProviderInstanceModel] = None,
+        api_key: Optional[str] = None,
+        from_email: Optional[str] = None,
+        http_client: Optional[Any] = None,
+    ) -> None:
+        super().__init__(instance=instance)
+        self._api_key = api_key or env("SENDGRID_API_KEY")
+        self._from_email = from_email or env("SENDGRID_FROM_EMAIL")
+        self._http_client = http_client
+
+    # The eight Phase-1 abilities are not implemented at the typed-instance
+    # layer yet; the legacy `AbstractEmailProvider.send_email` path is the
+    # canonical send route. Item 89's `bond_instance` follow-up will rewire
+    # those over the typed instance. Until then, satisfy the abstracts by
+    # delegating to the legacy provider classmethods where possible.
+
+    async def send(self, message: EmailMessage) -> SentMessage:
+        result = await SendgridProvider.send(self.model, message)
+        recipient = message.to[0].format() if message.to else ""
+        if isinstance(result, str) and result.lower().startswith("failed"):
+            raise map_validation_error(result)
+        return SentMessage(
+            message_id="",
+            provider=SendgridProvider.name,
+            accepted_at=datetime.now(timezone.utc),
+            recipient=recipient,
+            upstream_response={"raw": result},
+        )
+
+    async def send_bulk(self, messages):
+        from serverframework.extensions.email.AbstractEmailProviderInstance import (
+            BulkSendResult as _BR,
+        )
+
+        rows = []
+        succeeded = 0
+        failed = 0
+        for m in messages:
+            try:
+                sent = await self.send(m)
+                rows.append(
+                    BulkSendRow(
+                        recipient=sent.recipient, success=True, message_id=sent.message_id
+                    )
+                )
+                succeeded += 1
+            except Exception as exc:
+                rows.append(
+                    BulkSendRow(
+                        recipient=(m.to[0].format() if m.to else ""),
+                        success=False,
+                        error=str(exc),
+                        error_type=type(exc).__name__,
+                    )
+                )
+                failed += 1
+        return _BR(rows=rows, succeeded=succeeded, failed=failed)
+
+    async def list_emails(
+        self,
+        *,
+        folder: Optional[str] = None,
+        query: Optional[str] = None,
+        limit: int = 10,
+        cursor: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        page = await self.list_messages(limit=limit, cursor=cursor)
+        return [m.model_dump() for m in page.items]
+
+    async def get_email(self, message_id: str) -> Dict[str, Any]:
+        raise NotSupportedError(provider="sendgrid", capability="get_email")
+
+    async def update_email(self, message_id, *, read=None, flagged=None, folder=None, deleted=False):
+        raise NotSupportedError(provider="sendgrid", capability="update_email")
+
+    async def reply(self, message_id, body, attachments=None):
+        raise NotSupportedError(provider="sendgrid", capability="reply")
+
+    async def download_attachment(self, message_id, attachment_id):
+        raise NotSupportedError(provider="sendgrid", capability="download_attachment")
+
+    async def list_threads(self, folder=None, limit=10):
+        raise NotSupportedError(provider="sendgrid", capability="list_threads")
+
+    # ------------------------------------------------------------------
+    # Item 95 — capability ladder.
+    # ------------------------------------------------------------------
+
+    def _provider_name(self) -> str:
+        return "sendgrid"
+
+    async def _request(
+        self, method: str, path: str, *, params=None, json_body=None
+    ) -> Tuple[int, Dict[str, Any]]:
+        """Issue an authenticated SendGrid REST call.
+
+        Routes through the shared `ProviderHTTPClient` per Item 97 so the
+        request carries trace propagation + redaction. Returns
+        `(status_code, parsed_json_body_or_text)`.
+        """
+        from serverframework.lib.ProviderHTTPClient import (
+            ClientPolicy,
+            get_async_client,
+        )
+
+        client = self._http_client or get_async_client(ClientPolicy(timeout=30.0))
+        url = f"https://api.sendgrid.com{path}"
+        headers = {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+        }
+        response = await client.request(
+            method, url, params=params, json=json_body, headers=headers
+        )
+        status = response.status_code
+        body: Any
+        try:
+            body = response.json()
+        except Exception:
+            body = {"text": getattr(response, "text", "")}
+        if status >= 400:
+            raise map_upstream_status(status, str(body), provider="sendgrid")
+        return status, body
+
+    async def validate_address(self, email: str) -> EmailValidationResult:
+        _, data = await self._request(
+            "POST",
+            "/v3/validations/email",
+            json_body={"email": email, "source": "framework"},
+        )
+        result = (data or {}).get("result", {})
+        verdict = (result.get("verdict") or "").lower() or "valid"
+        return EmailValidationResult(
+            email=email,
+            verdict=verdict,
+            score=result.get("score"),
+            checks=result.get("checks", {}) or {},
+            raw=data or {},
+        )
+
+    async def send_with_template(
+        self,
+        template_id: str,
+        recipients: List[str],
+        substitutions: Optional[Dict[str, Any]] = None,
+    ) -> BulkSendResult:
+        rows: List[BulkSendRow] = []
+        succeeded = 0
+        failed = 0
+        for r in recipients:
+            try:
+                _, body = await self._request(
+                    "POST",
+                    "/v3/mail/send",
+                    json_body={
+                        "from": {"email": self._from_email or "noreply@example.com"},
+                        "personalizations": [
+                            {
+                                "to": [{"email": r}],
+                                "dynamic_template_data": dict(substitutions or {}),
+                            }
+                        ],
+                        "template_id": template_id,
+                    },
+                )
+                rows.append(BulkSendRow(recipient=r, success=True))
+                succeeded += 1
+            except Exception as exc:
+                rows.append(
+                    BulkSendRow(
+                        recipient=r,
+                        success=False,
+                        error=str(exc),
+                        error_type=type(exc).__name__,
+                    )
+                )
+                failed += 1
+        return BulkSendResult(
+            rows=rows, succeeded=succeeded, failed=failed, template_id=template_id
+        )
+
+    async def list_suppressions(
+        self,
+        suppression_type: str,
+        *,
+        limit: int = 50,
+        cursor: Optional[str] = None,
+    ) -> SuppressionListPage:
+        path = _SUPPRESSION_PATHS.get(suppression_type)
+        if path is None:
+            raise EmailValidationError(
+                f"Unknown suppression_type {suppression_type!r}; "
+                f"supported: {sorted(_SUPPRESSION_PATHS)}"
+            )
+
+        params = {"limit": limit}
+        if cursor:
+            envelope = decode_token(cursor, query_hash({"type": suppression_type, "limit": limit}))
+            cursor_value = envelope.get("provider_cursor")
+            if cursor_value is not None:
+                # SendGrid suppression endpoints page via `offset`.
+                params["offset"] = cursor_value
+
+        _, data = await self._request("GET", path, params=params)
+        rows = data if isinstance(data, list) else (data.get("data") or data.get("items") or [])
+
+        items = [
+            SuppressionEntry(
+                email=row.get("email", ""),
+                suppression_type=suppression_type,
+                reason=row.get("reason"),
+                created_at=(
+                    datetime.fromtimestamp(row["created"], tz=timezone.utc)
+                    if isinstance(row.get("created"), (int, float))
+                    else None
+                ),
+                raw=row,
+            )
+            for row in rows
+        ]
+        next_token: Optional[str] = None
+        if len(items) >= limit:
+            next_offset = (params.get("offset") or 0) + len(items)
+            next_token = encode_token(
+                next_offset, limit, query_hash({"type": suppression_type, "limit": limit})
+            )
+        return SuppressionListPage(items=items, next_token=next_token)
+
+    async def add_suppression(
+        self, email: str, suppression_type: str, reason: Optional[str] = None
+    ) -> None:
+        path = _SUPPRESSION_PATHS.get(suppression_type)
+        if path is None:
+            raise EmailValidationError(
+                f"Unknown suppression_type {suppression_type!r}"
+            )
+        await self._request(
+            "POST", path, json_body={"recipient_emails": [email]}
+        )
+
+    async def remove_suppression(self, email: str, suppression_type: str) -> None:
+        path = _SUPPRESSION_PATHS.get(suppression_type)
+        if path is None:
+            raise EmailValidationError(
+                f"Unknown suppression_type {suppression_type!r}"
+            )
+        await self._request("DELETE", f"{path}/{email}")
+
+    async def get_stats(
+        self,
+        *,
+        since: Optional[datetime] = None,
+        until: Optional[datetime] = None,
+    ) -> EmailStats:
+        params: Dict[str, Any] = {}
+        if since is not None:
+            params["start_date"] = since.date().isoformat()
+        if until is not None:
+            params["end_date"] = until.date().isoformat()
+        _, data = await self._request("GET", "/v3/stats", params=params)
+        # SendGrid returns a list of `{date, stats: [{metrics: {...}}]}`;
+        # aggregate across the window.
+        delivered = opens = clicks = bounces = spam = unsub = requests = 0
+        for row in data if isinstance(data, list) else []:
+            for stat in row.get("stats", []) or []:
+                metrics = stat.get("metrics", {}) or {}
+                delivered += int(metrics.get("delivered", 0))
+                opens += int(metrics.get("opens", 0))
+                clicks += int(metrics.get("clicks", 0))
+                bounces += int(metrics.get("bounces", 0))
+                spam += int(metrics.get("spam_reports", 0))
+                unsub += int(metrics.get("unsubscribes", 0))
+                requests += int(metrics.get("requests", 0))
+        return EmailStats(
+            since=since,
+            until=until,
+            delivered=delivered,
+            opens=opens,
+            clicks=clicks,
+            bounces=bounces,
+            spam_reports=spam,
+            unsubscribes=unsub,
+            requests=requests,
+            raw={"rows": data} if isinstance(data, list) else (data or {}),
+        )
+
+    async def list_messages(
+        self,
+        *,
+        since: Optional[datetime] = None,
+        status: Optional[str] = None,
+        limit: int = 50,
+        cursor: Optional[str] = None,
+    ) -> MessageListPage:
+        # SendGrid's email-activity API uses a `query` string + `limit`.
+        # We round-trip the cursor through the framework's `next_token`
+        # envelope per Item 7 so the surface is uniform with other
+        # providers.
+        query_params: Dict[str, Any] = {"limit": limit}
+        if status:
+            query_params["status"] = status
+        if since is not None:
+            query_params["last_event_time"] = since.isoformat()
+
+        if cursor:
+            envelope = decode_token(cursor, query_hash(query_params))
+            page_cursor = envelope.get("provider_cursor")
+            if page_cursor:
+                query_params["page_token"] = page_cursor
+
+        _, data = await self._request(
+            "GET", "/v3/messages", params=query_params
+        )
+        messages = data.get("messages", []) if isinstance(data, dict) else []
+        items = [
+            MessageSummary(
+                message_id=str(row.get("msg_id", "")),
+                recipient=row.get("to_email", "") or row.get("recipient", ""),
+                subject=row.get("subject"),
+                status=row.get("status"),
+                sent_at=(
+                    datetime.fromisoformat(row["last_event_time"].replace("Z", "+00:00"))
+                    if isinstance(row.get("last_event_time"), str)
+                    else None
+                ),
+                raw=row,
+            )
+            for row in messages
+        ]
+        next_token: Optional[str] = None
+        next_page_token = data.get("next_page_token") if isinstance(data, dict) else None
+        if next_page_token:
+            next_token = encode_token(
+                next_page_token, limit, query_hash(query_params)
+            )
+        return MessageListPage(items=items, next_token=next_token)
+
+
+# ============================================================================
+# Item 94 — SendGrid Event Webhook handlers.
+#
+# Each event type registers via `@webhook_handler(EXT_EMail, provider="sendgrid",
+# event=...)`; on dispatch the handler normalises the upstream payload
+# into a canonical `EmailDeliveryEvent` and fans into the
+# `dispatch_email_delivery_event` hook bus.
+# ============================================================================
+
+
+def _coerce_sendgrid_event(raw: Dict[str, Any], event_type: str) -> EmailDeliveryEvent:
+    """Translate one SendGrid event row into an `EmailDeliveryEvent`."""
+    timestamp = raw.get("timestamp")
+    if isinstance(timestamp, str):
+        try:
+            timestamp = float(timestamp)
+        except ValueError:
+            timestamp = None
+    return EmailDeliveryEvent(
+        message_id=str(raw.get("sg_message_id", "") or raw.get("smtp-id", "") or ""),
+        provider="sendgrid",
+        event_type=event_type,
+        recipient=raw.get("email", "") or "",
+        timestamp=timestamp,
+        raw=raw,
+    )
+
+
+async def _dispatch_sendgrid_events(payload: Any, fallback_event: str) -> None:
+    """Walk a SendGrid Event-Webhook payload (list-of-dicts, single dict,
+    or `{"events": [...]}` envelope from the webhook router) and fan
+    each row through the canonical hook bus."""
+    rows: List[Dict[str, Any]]
+    if isinstance(payload, list):
+        rows = payload
+    elif isinstance(payload, dict):
+        if isinstance(payload.get("events"), list):
+            rows = payload["events"]
+        else:
+            rows = [payload]
+    else:
+        return
+    for row in rows:
+        event_type = row.get("event") or fallback_event
+        event = _coerce_sendgrid_event(row, event_type)
+        await dispatch_email_delivery_event(event)
+
+
+class _EmailExtensionStub:
+    """Pass-through stub for `webhook_handler`'s `extension_class`
+    parameter. The decorator only reads `extension_name` and uses the
+    class for best-effort provider-class discovery; pinning it to
+    `"email"` here decouples handler registration from `EXT_EMail`'s
+    module-load order so we don't trigger a circular import."""
+
+    extension_name = "email"
+
+
+def _register_sendgrid_webhook_handlers() -> None:
+    """Register handlers for SendGrid's documented Event Webhook event types.
+
+    Idempotent: re-importing this module re-registers the same handlers
+    (`webhook_handler` overwrites with a warning, which is acceptable
+    during reload).
+    """
+    from serverframework.endpoints.Webhook import (
+        WEBHOOK_REGISTRY,
+        WebhookContext,
+        _PROVIDER_CLASSES,
+        webhook_handler,
+    )
+
+    for event_name in (
+        "bounce",
+        "delivered",
+        "open",
+        "click",
+        "spam_report",
+        "unsubscribe",
+        "dropped",
+        "processed",
+    ):
+        @webhook_handler(_EmailExtensionStub, provider="sendgrid", event=event_name)
+        async def _handler(ctx: "WebhookContext", _evt: str = event_name) -> None:
+            await _dispatch_sendgrid_events(ctx.payload, _evt)
+
+    # Wire SendGrid as the verifier for `(email, sendgrid)` so the webhook
+    # router calls `SendgridProvider.verify_signature` at dispatch time.
+    _PROVIDER_CLASSES[("email", "sendgrid")] = SendgridProvider
+
+
+_register_sendgrid_webhook_handlers()
 
 
 # ============================================================================

@@ -285,6 +285,76 @@ def instance(db_prefix: str = "", extensions: Optional[str] = None):
         return build_app(instance_model_registry)
 
 
+# Sentinel exit code used by the SIGHUP handler so the supervisor can tell
+# "operator asked us to restart" apart from "we crashed". 75 == EX_TEMPFAIL.
+SIGHUP_RESTART_EXIT_CODE = 75
+
+
+def install_sighup_handler(app: FastAPI) -> None:
+    """Register a SIGHUP handler that performs a clean graceful restart.
+
+    Item 20 refinement: in-process rebind of FastAPI routers, hooks, and
+    background services is intentionally out of scope -- it requires
+    rewriting Pydantic/SQLAlchemy/Strawberry registration paths to
+    survive class-identity changes. Instead we perform the diff
+    computation in-process (so the operator's logs document what
+    changed) and then exit with ``SIGHUP_RESTART_EXIT_CODE`` so the
+    supervisor (systemd ``Restart=on-failure``, k8s ``restartPolicy:
+    Always``, ``docker --restart=always``) respawns us with the new
+    extension state.
+
+    This handler is a no-op on platforms that do not have ``SIGHUP``
+    (e.g. Windows) and inside pytest runs (the env-var check below).
+    """
+    import signal
+
+    if not hasattr(signal, "SIGHUP"):
+        # Windows etc. -- no SIGHUP. Operators on those platforms run a
+        # blue-green deployment instead.
+        return
+
+    def _handle_sighup(signum, frame):  # pragma: no cover -- signal path
+        from serverframework.extensions.HotReload import rebuild_registry
+        from serverframework.lib.Logging import logger
+
+        logger.info("SIGHUP received -- computing extension registry diff")
+        try:
+            registry = getattr(app.state, "model_registry", None)
+            ext_registry = getattr(registry, "extension_registry", None) if registry else None
+            if ext_registry is None:
+                logger.warning("SIGHUP: no extension registry on app.state; exiting anyway")
+            else:
+                _, diff = rebuild_registry(ext_registry, run_migrations=True)
+                logger.info(f"SIGHUP: {diff.summary()}")
+        except Exception as e:
+            logger.error(f"SIGHUP diff/migration failed: {e}", exc_info=True)
+
+        # Suppress the actual exit when running under pytest so test
+        # assertions can verify handler installation without aborting
+        # the test runner.
+        if os.environ.get("PYTEST_CURRENT_TEST"):
+            return
+
+        logger.info(
+            f"SIGHUP graceful restart: exiting with code {SIGHUP_RESTART_EXIT_CODE} "
+            f"so the supervisor respawns with new extension state"
+        )
+        # Use os._exit so we drop in-flight requests rather than risking a
+        # deadlock during shutdown. The supervisor restarts us immediately
+        # so dropped requests cost a single retry, not a multi-second
+        # graceful shutdown. Operators that need bounded request drain run
+        # blue-green at the LB level instead.
+        os._exit(SIGHUP_RESTART_EXIT_CODE)
+
+    try:
+        signal.signal(signal.SIGHUP, _handle_sighup)
+    except (ValueError, OSError) as e:
+        # ``signal.signal`` only works on the main thread. Workers in some
+        # uvicorn configurations call ``build_app`` off-main; in that
+        # case we silently skip -- the master process owns the signal.
+        logger.debug(f"Could not install SIGHUP handler: {e}")
+
+
 def build_app(model_registry: ModelRegistry):
     """
     FastAPI application factory function with ModelRegistry.
@@ -869,6 +939,25 @@ def build_app(model_registry: ModelRegistry):
         mcp = FastApiMCP(app)
         mcp.mount()
     app.state.model_registry = model_registry
+
+    # ------------------------------------------------------------------
+    # SIGHUP-driven graceful restart (Item 20).
+    #
+    # On SIGHUP we compute a registry diff against on-disk state and then
+    # exit cleanly with code 75 (EX_TEMPFAIL). The supervisor (systemd /
+    # k8s / docker --restart=always) interprets that as restart-me and
+    # respawns us with the new code on disk. This is the "graceful exit
+    # and respawn" fallback explicitly permitted by the Item 20
+    # refinement -- true in-process rebind of routers/hooks/services
+    # without a process restart is out of scope, because Pydantic
+    # validators, SQLAlchemy mappers, and Strawberry schemas all cache
+    # class identity at registration time and cannot be re-bound without
+    # a full registry rewrite.
+    #
+    # Tests skip the actual exit (PYTEST_CURRENT_TEST) and rely on the
+    # in-process ``rebuild_registry`` helper directly.
+    # ------------------------------------------------------------------
+    install_sighup_handler(app)
 
     # Test all models for PydanticUndefinedType before OpenAPI generation
     def test_all_models_for_undefined_types():
