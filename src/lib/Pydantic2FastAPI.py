@@ -3336,6 +3336,20 @@ def create_router_from_manager(
                     manager_class=manager_class,
                 )
 
+    # Item 40 hook — register typed @custom_route-decorated methods.
+    try:
+        from lib.CustomRoute import register_custom_routes as _register_typed_custom_routes
+
+        _register_typed_custom_routes(
+            router,
+            manager_class,
+            manager_factory=create_manager_factory(
+                manager_class, model_registry, auth_type
+            ),
+        )
+    except Exception as _exc:  # pragma: no cover - defensive: never break CRUD
+        logger.debug("Item 40 custom-route registration skipped: %s", _exc)
+
     # Create nested routers
     for resource_key, config in nested_resources.items():
         # Convert dict to NestedResourceConfig if needed

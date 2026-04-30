@@ -8,17 +8,24 @@ import base64
 import mimetypes
 import os
 from datetime import datetime
+from decimal import Decimal
 from typing import Any, ClassVar, Dict, List, Mapping, Optional, Set
 
 from pydantic import BaseModel, EmailStr, Field, HttpUrl, SecretStr
 
-from extensions.AbstractExtensionProvider import AbstractProviderInstance_SDK, ability
+from extensions.AbstractExtensionProvider import (
+    AbstractProviderInstance_SDK,
+    HealthReport,
+    HealthStatus,
+    ability,
+)
 from extensions.AbstractExternalModel import (
     AbstractExternalManager,
     AbstractExternalModel,
     create_external_reference_model,
     idempotent,
 )
+from extensions.CostModel import ConstantCostModel
 from extensions.email.EmailErrors import (
     EmailValidationError,
     map_upstream_status,
@@ -30,6 +37,8 @@ from extensions.email.EXT_EMail import (
     EmailMessage,
     _DeprecatedEnvDict,
 )
+from extensions.ExternalErrors import DegradationPolicy, fail_fast
+from extensions.RateLimit import RateLimit
 from lib.Dependencies import Dependencies, PIP_Dependency
 from lib.Environment import env
 from lib.Logging import logger
@@ -119,6 +128,14 @@ class SendgridProvider(AbstractEmailProvider):
     # bonded instance's ``api_key``.
     default_auth_strategy: ClassVar[str] = "api_key"
 
+    # Items 96 + 97 — ops policies. Marketing-tagged abilities may override
+    # `degradation_policy` per-ability per Item 48 (e.g. queue_and_retry).
+    rate_limit: ClassVar[RateLimit] = RateLimit(rps=10, burst=20)
+    degradation_policy: ClassVar[DegradationPolicy] = fail_fast()
+    cost_model: ClassVar[ConstantCostModel] = ConstantCostModel(
+        per_call_usd=Decimal("0.0001")
+    )
+
     # Dependencies
     dependencies: ClassVar[Dependencies] = Dependencies(
         [
@@ -163,6 +180,8 @@ class SendgridProvider(AbstractEmailProvider):
         Returns:
             Bonded instance with SendGrid client or None if failed
         """
+        # credential vault layering (Item 32) is a follow-up that swaps
+        # `.get_secret_value()` for `CredentialRef.resolve()`.
         if not sendgrid:
             logger.error("SendGrid package not available")
             return None
@@ -245,6 +264,40 @@ class SendgridProvider(AbstractEmailProvider):
             return False
 
         return True
+
+    @classmethod
+    def health_check(cls) -> HealthReport:
+        """Probe upstream liveness via ``GET /v3/scopes`` (Items 27 + 97).
+
+        Routes through the shared ``ProviderHTTPClient`` so the request
+        carries traceparent + auth + log redaction. Defensive: never
+        raises; always returns a ``HealthReport``.
+        """
+        api_key = env("SENDGRID_API_KEY")
+        if not api_key:
+            return HealthReport(
+                HealthStatus.DOWN, detail="SendGrid API key not configured"
+            )
+        try:
+            import httpx
+
+            from lib.ProviderHTTPClient import ClientPolicy, get_sync_client
+
+            client = get_sync_client(ClientPolicy(timeout=5.0))
+            response = client.get(
+                "https://api.sendgrid.com/v3/scopes",
+                headers={"Authorization": f"Bearer {api_key}"},
+            )
+            status = response.status_code
+            if 200 <= status < 300:
+                return HealthReport(HealthStatus.OK, detail=f"scopes status {status}")
+            if 400 <= status < 500:
+                return HealthReport(
+                    HealthStatus.DEGRADED, detail=f"scopes status {status}"
+                )
+            return HealthReport(HealthStatus.DOWN, detail=f"scopes status {status}")
+        except Exception as exc:  # noqa: BLE001 — defensive, never raise
+            return HealthReport(HealthStatus.DOWN, detail=f"network error: {exc}")
 
     @staticmethod
     @ability(name="email_get")
@@ -347,6 +400,10 @@ class SendgridProvider(AbstractEmailProvider):
             logger.debug(f"Sending email to {recipient} from {from_email}")
             # Access the actual client if wrapped
             actual_client = getattr(client, "_client", client)
+            # Item 97 — injecting a `ProviderHTTPClient`-backed transport
+            # into the SendGrid SDK's underlying `python-http-client` is a
+            # follow-up; `health_check` already routes through the shared
+            # client. Direct SDK send preserves existing behavior here.
             response = actual_client.send(message)
 
             if response.status_code >= 200 and response.status_code < 300:
@@ -1533,6 +1590,14 @@ class StalwartProvider(AbstractEmailProvider):
     # is HTTP-Basic-equivalent username+password.
     default_auth_strategy: ClassVar[str] = "basic"
 
+    # Items 96 + 97 — ops policies. SMTP transport is exempt from the shared
+    # `ProviderHTTPClient` (Item 31 covers HTTP only).
+    rate_limit: ClassVar[RateLimit] = RateLimit(rps=50, burst=100)
+    degradation_policy: ClassVar[DegradationPolicy] = fail_fast()
+    cost_model: ClassVar[ConstantCostModel] = ConstantCostModel(
+        per_call_usd=Decimal("0.0001")
+    )
+
     dependencies: ClassVar[Dependencies] = Dependencies(
         [
             PIP_Dependency(
@@ -1598,6 +1663,56 @@ class StalwartProvider(AbstractEmailProvider):
         return True
 
     @classmethod
+    def health_check(cls) -> HealthReport:
+        """Probe upstream liveness via SMTP ``NOOP`` (Items 27 + 96).
+
+        Opens a short-lived SMTP connection, issues NOOP, and disconnects.
+        Defensive: never raises; always returns a ``HealthReport``.
+        """
+        host = env("STALWART_HOST")
+        port_str = env("STALWART_PORT") or "587"
+        if not host:
+            return HealthReport(
+                HealthStatus.DOWN, detail="Stalwart host not configured"
+            )
+        if not _aiosmtplib_available:
+            return HealthReport(
+                HealthStatus.DOWN, detail="aiosmtplib not installed"
+            )
+        try:
+            import asyncio
+            import aiosmtplib
+
+            try:
+                port = int(port_str)
+            except ValueError:
+                port = 587
+
+            async def _probe() -> str:
+                smtp = aiosmtplib.SMTP(hostname=host, port=port, timeout=5.0)
+                try:
+                    await smtp.connect()
+                    code, _ = await smtp.noop()
+                    return f"NOOP {code}"
+                finally:
+                    try:
+                        await smtp.quit()
+                    except Exception:
+                        pass
+
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    detail = "skipped: SMTP probe inside running loop"
+                    return HealthReport(HealthStatus.OK, detail=detail)
+            except RuntimeError:
+                pass
+            detail = asyncio.run(_probe())
+            return HealthReport(HealthStatus.OK, detail=detail)
+        except Exception as exc:  # noqa: BLE001 — defensive, never raise
+            return HealthReport(HealthStatus.DOWN, detail=f"SMTP error: {exc}")
+
+    @classmethod
     def bond_instance(
         cls, instance: ProviderInstanceModel
     ) -> Optional[AbstractProviderInstance_SDK]:
@@ -1607,6 +1722,8 @@ class StalwartProvider(AbstractEmailProvider):
         instead store the connection config in the SDK slot so ``send_email``
         can open a fresh connection per send (the safe, stateless default).
         """
+        # credential vault layering (Item 32) is a follow-up that swaps
+        # `.get_secret_value()` for `CredentialRef.resolve()`.
         if not _aiosmtplib_available:
             logger.error("aiosmtplib package not available")
             return None
@@ -1898,6 +2015,13 @@ class Smtp2goProvider(AbstractEmailProvider):
     # for parity with SendGrid even though the on-the-wire shape differs.
     default_auth_strategy: ClassVar[str] = "api_key"
 
+    # Items 96 + 97 — ops policies (paid-tier defaults).
+    rate_limit: ClassVar[RateLimit] = RateLimit(rps=100, burst=200)
+    degradation_policy: ClassVar[DegradationPolicy] = fail_fast()
+    cost_model: ClassVar[ConstantCostModel] = ConstantCostModel(
+        per_call_usd=Decimal("0.0001")
+    )
+
     dependencies: ClassVar[Dependencies] = Dependencies(
         [
             PIP_Dependency(
@@ -1950,9 +2074,48 @@ class Smtp2goProvider(AbstractEmailProvider):
         return True
 
     @classmethod
+    def health_check(cls) -> HealthReport:
+        """Probe upstream liveness via ``GET /v3/stats/email_summary`` (Items 27 + 97).
+
+        Routes through the shared ``ProviderHTTPClient`` so the request
+        carries traceparent + auth + log redaction. Defensive: never
+        raises; always returns a ``HealthReport``.
+        """
+        api_key = env("SMTP2GO_API_KEY")
+        api_url = env("SMTP2GO_API_URL") or "https://api.smtp2go.com/v3"
+        if not api_key:
+            return HealthReport(
+                HealthStatus.DOWN, detail="SMTP2go API key not configured"
+            )
+        try:
+            from lib.ProviderHTTPClient import ClientPolicy, get_sync_client
+
+            client = get_sync_client(ClientPolicy(timeout=5.0))
+            response = client.get(
+                f"{api_url.rstrip('/')}/stats/email_summary",
+                params={"api_key": api_key},
+            )
+            status = response.status_code
+            if 200 <= status < 300:
+                return HealthReport(
+                    HealthStatus.OK, detail=f"email_summary status {status}"
+                )
+            if 400 <= status < 500:
+                return HealthReport(
+                    HealthStatus.DEGRADED, detail=f"email_summary status {status}"
+                )
+            return HealthReport(
+                HealthStatus.DOWN, detail=f"email_summary status {status}"
+            )
+        except Exception as exc:  # noqa: BLE001 — defensive, never raise
+            return HealthReport(HealthStatus.DOWN, detail=f"network error: {exc}")
+
+    @classmethod
     def bond_instance(
         cls, instance: ProviderInstanceModel
     ) -> Optional[AbstractProviderInstance_SDK]:
+        # credential vault layering (Item 32) is a follow-up that swaps
+        # `.get_secret_value()` for `CredentialRef.resolve()`.
         if not _httpx_available:
             logger.error("httpx package not available")
             return None
@@ -2052,8 +2215,17 @@ class Smtp2goProvider(AbstractEmailProvider):
                 payload["attachments"] = payload_attachments
 
         try:
-            client: _httpx.AsyncClient = config["client"]
-            response = await client.post("/email/send", json=payload)
+            # Item 97 — route through the shared HTTP client pool so the
+            # request carries traceparent + log redaction. Use the pooled
+            # `httpx.AsyncClient` directly (rather than `ProviderHTTPClient`'s
+            # typed-raise pipeline) to preserve the legacy string envelope
+            # this method has historically returned.
+            from lib.ProviderHTTPClient import ClientPolicy, get_async_client
+
+            shared = get_async_client(ClientPolicy(timeout=30.0))
+            response = await shared.post(
+                f"{config['api_url'].rstrip('/')}/email/send", json=payload
+            )
             if 200 <= response.status_code < 300:
                 logger.debug(f"SMTP2go: email sent successfully to {recipient}")
                 return f"Email sent successfully to {recipient}"

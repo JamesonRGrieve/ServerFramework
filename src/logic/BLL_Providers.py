@@ -607,6 +607,12 @@ class ProviderInstanceModel(
         "user",
         description="Provider scope: root (framework-internal), system (SaaS-owned), team (team-owned), user (user-owned).",
     )
+    # Item 36: physical placement of this provider instance (e.g. "eu-west-1").
+    # Consumed by the unmerged residency extension to filter chains by jurisdiction.
+    region: Optional[str] = Field(
+        default=None,
+        description="Item 36 residency region (consumed by the residency extension).",
+    )
 
     # Database metadata for SQLAlchemy generation
     table_comment: ClassVar[str] = (
@@ -704,6 +710,8 @@ class ProviderInstanceModel(
         user_id: Optional[str] = None
         team_id: Optional[str] = None
         scope: Literal["root", "system", "team", "user"] = "user"
+        # Item 36: residency region (optional; consumed by residency extension).
+        region: Optional[str] = None
 
         @model_validator(mode="after")
         def validate_name_length(self):
@@ -721,6 +729,8 @@ class ProviderInstanceModel(
         user_id: Optional[str] = None
         team_id: Optional[str] = None
         scope: Optional[Literal["root", "system", "team", "user"]] = None
+        # Item 36: residency region (optional; consumed by residency extension).
+        region: Optional[str] = None
 
     class Search(
         ApplicationModel.Search,
@@ -733,6 +743,8 @@ class ProviderInstanceModel(
         model_name: Optional[StringSearchModel] = None
         api_key: Optional[StringSearchModel] = None
         scope: Optional[StringSearchModel] = None
+        # Item 36: residency region (consumed by residency extension).
+        region: Optional[StringSearchModel] = None
 
 
 class ProviderInstanceManager(AbstractBLLManager, RouterMixin):

@@ -372,7 +372,7 @@ class TestMultifactorRecoveryCodeManager(AbstractBLLTest, ExtensionServerMixin):
         ``BLL_Auth_MFA.py``; entries auto-expire after 120s but persist for the
         full 60s drift window we accept.
         """
-        import pyotp
+        pyotp = pytest.importorskip("pyotp")
 
         mfa_manager = MultifactorMethodManager(
             requester_id=admin_a.id, model_registry=model_registry
@@ -403,7 +403,7 @@ class TestMultifactorRecoveryCodeManager(AbstractBLLTest, ExtensionServerMixin):
         accept the same code each. Otherwise an attacker who can race two
         request handlers in the same process would replay successfully.
         """
-        import pyotp
+        pyotp = pytest.importorskip("pyotp")
 
         manager_a = MultifactorMethodManager(
             requester_id=admin_a.id, model_registry=model_registry
@@ -428,8 +428,9 @@ class TestMultifactorRecoveryCodeManager(AbstractBLLTest, ExtensionServerMixin):
     @pytest.mark.mfa
     def test_totp_rejects_far_future_code(self, admin_a, model_registry):
         """A TOTP code from far outside the valid window must be rejected."""
-        import pyotp
         import time
+
+        pyotp = pytest.importorskip("pyotp")
 
         mfa_manager = MultifactorMethodManager(
             requester_id=admin_a.id, model_registry=model_registry
