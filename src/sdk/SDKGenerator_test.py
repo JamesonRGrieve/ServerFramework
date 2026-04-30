@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from lib.Pydantic2FastAPI import RouterMixin
+from serverframework.lib.Pydantic2FastAPI import RouterMixin
 from sdk.SDKGenerator import (
     generate_sdk_handler_for,
     generate_sdk_handlers,

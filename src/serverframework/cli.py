@@ -65,12 +65,12 @@ def _cmd_run(args: argparse.Namespace) -> int:
 
 def _cmd_bootstrap(_args: argparse.Namespace) -> int:
     try:
-        from bootstrap import run_venv_bootstrap
+        from serverframework.bootstrap import run_venv_bootstrap
     except Exception:
         import subprocess
         from pathlib import Path
 
-        bootstrap_path = Path(__file__).resolve().parent.parent / "bootstrap.py"
+        bootstrap_path = Path(__file__).resolve().parent.parent / "serverframework.bootstrap.py"
         completed = subprocess.run([sys.executable, str(bootstrap_path)])
         return completed.returncode
     return 0 if run_venv_bootstrap() else 1
@@ -133,7 +133,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         raise
     except Exception as exc:
         try:
-            from lib.Logging import logger
+            from serverframework.lib.Logging import logger
 
             logger.exception(f"server-framework: command '{args.command}' failed: {exc}")
         except Exception:
