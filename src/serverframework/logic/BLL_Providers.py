@@ -1164,6 +1164,12 @@ class RotationManager(AbstractBLLManager, RouterMixin):
     _cost_counter: ClassVar[Dict[Tuple[str, str, str], Decimal]] = {}
     # Item 48 — pluggable outbox store; tests inject an `InMemoryOutboxStore`.
     _outbox_store: ClassVar[Optional[Any]] = None
+    # Item 4 — in-process idempotency cache for retry budget. Same-process
+    # retries hitting the same key short-circuit; cross-process safety is
+    # the outbox row's job.
+    _idempotency_cache: ClassVar[Dict[str, Any]] = {}
+    _idempotency_hits: ClassVar[int] = 0
+    _idempotency_misses: ClassVar[int] = 0
 
     @classmethod
     def get_silent_drop_counter(cls) -> Dict[Tuple[str, str], int]:
@@ -1174,9 +1180,37 @@ class RotationManager(AbstractBLLManager, RouterMixin):
         return dict(cls._cost_counter)
 
     @classmethod
+    def get_idempotency_counters(cls) -> Tuple[int, int]:
+        return cls._idempotency_hits, cls._idempotency_misses
+
+    @classmethod
     def reset_observability_counters(cls) -> None:
         cls._silent_drop_counter.clear()
         cls._cost_counter.clear()
+        cls._idempotency_cache.clear()
+        cls._idempotency_hits = 0
+        cls._idempotency_misses = 0
+
+    @classmethod
+    def _cached_idempotency_get(cls, key: str) -> Tuple[bool, Any]:
+        """Return ``(hit, value)``. On a hit emit the cache-hit counter;
+        on a miss emit the cache-miss counter. Telemetry failures are
+        swallowed via :func:`_safe_metric`."""
+        from serverframework.lib.Metrics import get_metrics_backend
+
+        metrics = get_metrics_backend()
+        if key in cls._idempotency_cache:
+            cls._idempotency_hits += 1
+            _safe_metric(metrics.counter, "idempotency_cache.hit")
+            return True, cls._idempotency_cache[key]
+        cls._idempotency_misses += 1
+        _safe_metric(metrics.counter, "idempotency_cache.miss")
+        return False, None
+
+    @classmethod
+    def _cached_idempotency_set(cls, key: str, value: Any) -> None:
+        """Record a fresh idempotency-key value in the cache."""
+        cls._idempotency_cache[key] = value
 
     @classmethod
     def set_outbox_store(cls, store: Optional[Any]) -> None:
@@ -1290,6 +1324,28 @@ class RotationManager(AbstractBLLManager, RouterMixin):
             return None
         return getattr(provider_cls, "cost_model", None)
 
+    def _emit_health_for(self, provider_instance) -> None:
+        """Item 34 — best-effort: read the provider's health and emit
+        ``provider_health_status{provider, status}`` as a gauge. Never
+        raises; telemetry must not break a rotation."""
+        from serverframework.lib.Metrics import emit_provider_health_gauge
+
+        try:
+            provider_cls = getattr(provider_instance, "provider_class", None)
+            if provider_cls is None:
+                return
+            check = getattr(provider_cls, "cached_health_check", None) or getattr(
+                provider_cls, "health_check", None
+            )
+            if check is None:
+                return
+            report = check()
+            status = getattr(report, "status", report)
+            name = str(getattr(provider_instance, "name", "unknown"))
+            _safe_metric(emit_provider_health_gauge, name, status)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(f"health-gauge emit failed (ignored): {exc}")
+
     def _tenant_id(self) -> str:
         """Item 84 — best-effort tenant identifier for cost metric labels."""
         team_id = getattr(self.requester, "team_id", None)
@@ -1398,6 +1454,10 @@ class RotationManager(AbstractBLLManager, RouterMixin):
         # Item 51 — extract sticky-session controls before passing kwargs through.
         routing_hint: Optional[RoutingHint] = kwargs.pop("routing_hint", None)
         ability: Optional[str] = kwargs.pop("ability", None)
+        # Item 84 — optional per-tenant USD-cap quota. When supplied, the
+        # rotation pre-checks the estimated USD cost against the quota's
+        # remaining headroom and updates `consumed_usd` post-call.
+        usd_quota: Optional[Any] = kwargs.pop("usd_quota", None)
 
         # Get all rotation provider instances for this rotation
         if not self.target_id:
@@ -1487,6 +1547,7 @@ class RotationManager(AbstractBLLManager, RouterMixin):
                 attempted_providers=attempted_providers,
                 attempted_provider_instances=attempted_provider_instances,
                 metrics=metrics,
+                usd_quota=usd_quota,
             )
         finally:
             if rotate_span_cm is not None:
@@ -1508,6 +1569,7 @@ class RotationManager(AbstractBLLManager, RouterMixin):
         attempted_providers,
         attempted_provider_instances,
         metrics,
+        usd_quota=None,
     ):
         """Item 34 — extracted body of `rotate()` so the parent
         rotation span (and the attempt-span / metrics emissions) can
@@ -1575,6 +1637,10 @@ class RotationManager(AbstractBLLManager, RouterMixin):
             transient_attempt = 0
             rate_limit_attempt = 0
             advance_after_loop = False
+            # Item 34 — emit current health gauge for this provider before
+            # the attempt so dashboards reflect the per-provider state in
+            # the same scrape window as the attempt latency.
+            self._emit_health_for(provider_instance)
             # Item 34 — attempt-span: one span per outer-loop attempt.
             # `attempt_index` increments per outer-loop iteration so the
             # multi-provider chain shows up as N children of the parent.
@@ -1602,6 +1668,30 @@ class RotationManager(AbstractBLLManager, RouterMixin):
                     logger.debug(
                         f"Attempting to use provider instance: {provider_instance.name}"
                     )
+                    # Item 84 — per-tenant USD-cap pre-check. Refuse the
+                    # call when the estimated cost would push the quota's
+                    # `consumed_usd` past `limit_usd`. Skipped entirely
+                    # when `usd_quota` is None or the row has no USD cap.
+                    if (
+                        usd_quota is not None
+                        and getattr(usd_quota, "limit_usd", None) is not None
+                    ):
+                        cost_model_for_pre = self._resolve_cost_model(provider_instance)
+                        estimated = self._estimate_pre_call_cost(
+                            cost_model_for_pre, args, kwargs
+                        )
+                        if estimated is not None and usd_quota.is_usd_exhausted(
+                            additional=estimated
+                        ):
+                            from serverframework.logic.Quota import (
+                                QuotaExhaustedError,
+                            )
+
+                            raise QuotaExhaustedError(
+                                scope="usd",
+                                ability=str(ability or "unknown"),
+                                period=str(getattr(usd_quota, "period", "unknown")),
+                            )
                     result = callable_func(provider_instance, *args, **kwargs)
                     # Success metrics — Item 34. Emission is best-effort.
                     elapsed_ms = (time.monotonic() - attempt_started_at) * 1000.0
@@ -1642,13 +1732,28 @@ class RotationManager(AbstractBLLManager, RouterMixin):
                     if cost_model is not None:
                         try:
                             cost = cost_model((args, kwargs), result)
+                            cost_dec = Decimal(str(cost))
                             key = (
                                 self._tenant_id(),
                                 str(getattr(provider_instance, "name", "unknown")),
                                 str(ability or "unknown"),
                             )
                             current = RotationManager._cost_counter.get(key, Decimal("0"))
-                            RotationManager._cost_counter[key] = current + Decimal(str(cost))
+                            RotationManager._cost_counter[key] = current + cost_dec
+                            # Item 84 — true-up the per-tenant USD cap with
+                            # the actual cost. Atomic via the Quota module's
+                            # fallback lock so concurrent rotations agree.
+                            if usd_quota is not None and getattr(
+                                usd_quota, "limit_usd", None
+                            ) is not None:
+                                from serverframework.logic.Quota import (
+                                    _FALLBACK_LOCK,
+                                )
+
+                                with _FALLBACK_LOCK:
+                                    usd_quota.consumed_usd = (
+                                        usd_quota.consumed_usd + cost_dec
+                                    )
                         except Exception as cost_exc:
                             logger.warning(
                                 "cost_model raised for provider %s: %s",

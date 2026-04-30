@@ -31,9 +31,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 from serverframework.extensions.RetentionPolicy import RetentionPolicy, forever_default
 
@@ -121,10 +122,55 @@ class RetentionService:
         self._audit_emit = audit_emit
         self._clock = clock
         self._self_audit_policy = forever_default()
+        self._released: Set[str] = set()
 
     @property
     def registrations(self) -> List[RetentionRegistration]:
         return list(self._registrations)
+
+    def release_legal_hold(
+        self,
+        registration_name: str,
+        *,
+        reason: str,
+        requester_id: str,
+    ) -> str:
+        """Release the legal hold for ``registration_name`` for subsequent passes.
+
+        Emits an audit event with class ``retention_legal_hold_release`` and
+        returns its event id. Idempotent — re-releasing is allowed but each
+        call emits a fresh audit event.
+        """
+        event_id = uuid.uuid4().hex
+        self._released.add(registration_name)
+        if self._audit_emit is not None:
+            payload: Dict[str, Any] = {
+                "event_id": event_id,
+                "event_class": "retention_legal_hold_release",
+                "registration_name": registration_name,
+                "reason": reason,
+                "requester_id": requester_id,
+                "released_at": self._clock().isoformat(),
+                "retention_policy": {
+                    "window": self._self_audit_policy.window,
+                    "archive_to": self._self_audit_policy.archive_to,
+                },
+            }
+            try:
+                self._audit_emit(payload)
+            except Exception:  # noqa: BLE001
+                pass
+        return event_id
+
+    def clear_release(self, registration_name: str) -> None:
+        """Re-engage a previously released legal hold."""
+        self._released.discard(registration_name)
+
+    def is_released(self, registration_name: str) -> bool:
+        return registration_name in self._released
+
+    def list_released(self) -> List[str]:
+        return sorted(self._released)
 
     def run_pass(self) -> List[RetentionPassReport]:
         """Walk every registration once. Returns one report per entry."""
