@@ -451,7 +451,7 @@ The single client every provider routes outbound calls through, and the cross-cu
 
 ---
 
-## Item 34 — Distributed tracing and provider-call metrics
+## ~~Item 34~~ — ~~Distributed tracing and provider-call metrics~~ ✅ DONE
 
 **Severity:** Medium
 **Scope:** `RotationManager.rotate`, shared HTTP client (Item 31), `RequestContext`, metrics emission layer.
@@ -908,7 +908,7 @@ The auto-generated REST surface, custom routes that participate in the same gene
 
 ---
 
-## Item 39 — Per-resource endpoint versioning
+## ~~Item 39~~ — ~~Per-resource endpoint versioning~~ ✅ DONE
 
 **Severity:** Medium
 **Scope:** `RouterMixin`, route generation, OpenAPI generation, SDK generation (Item 25).
@@ -1424,7 +1424,7 @@ For providers that are inherently single-region (a regional payment processor), 
 
 ---
 
-## Item 55 — Tenant data-isolation primitives
+## ~~Item 55~~ — ~~Tenant data-isolation primitives~~ ✅ DONE (primitives; session-binder integration is a follow-up)
 
 **Severity:** Medium
 **Scope:** Postgres Row-Level Security policies, session GUC variables, tenant-scoped model declarations.
@@ -1448,7 +1448,7 @@ System-level operations (admin endpoints, cross-tenant reporting, the framework'
 
 ---
 
-## Item 54 — Read-replica routing for read-only operations
+## ~~Item 54~~ — ~~Read-replica routing for read-only operations~~ ✅ DONE (primitives; session-binder integration is a follow-up)
 
 **Severity:** Medium
 **Scope:** Database session binding, BLL method annotations, request-context routing.
@@ -1540,7 +1540,7 @@ The same metadata applies to GraphQL: the resolver for a marked field returns nu
 
 The fan-out seam to other services, the fairness primitive that prevents one tenant from starving the queue, and the retention contract for the audit trail.
 
-## Item 42 — Cross-process event bus seam
+## ~~Item 42~~ — ~~Cross-process event bus seam~~ ✅ DONE (in-memory adapter; Kafka/NATS/Redis adapters are ABC stubs awaiting real-broker integration)
 
 **Severity:** Medium
 **Scope:** New event-bus abstraction, adapter pattern for Kafka / NATS / Redis Streams, integration with hooks and outbox.
@@ -1615,7 +1615,7 @@ The audit subsystem itself emits an audit event for each retention pass: how man
 
 The vocabulary of abstract providers the framework ships, plus the typing of seed data so initial state passes the same Pydantic gates as runtime creates.
 
-## Item 43 — Abstract provider templates for missing infrastructure categories
+## ~~Item 43~~ — ~~Abstract provider templates for missing infrastructure categories~~ ✅ DONE (six abstracts shipped; concrete implementations land in separate extensions)
 
 **Severity:** Medium
 **Scope:** New abstract providers and accompanying documentation for object storage, cache, queue/scheduler, search index, AI/LLM, and notification fan-out.
