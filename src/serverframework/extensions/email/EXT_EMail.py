@@ -125,6 +125,89 @@ class Importance(str, Enum):
     LOW = "low"
 
 
+# ----------------------------------------------------------------------
+# Item 94 — canonical email-delivery event + hook fan-out.
+# ----------------------------------------------------------------------
+
+
+class EmailDeliveryEvent(BaseModel):
+    """Provider-normalised inbound delivery event.
+
+    Webhook handlers in concrete providers translate the upstream's wire
+    payload (SendGrid Event Webhook, SMTP2go bounce-activity, Stalwart
+    custom hooks) into this canonical shape and fan it through
+    `dispatch_email_delivery_event`. Downstream consumers (Item 67's
+    suppression-list maintainer, bounce metrics, inbound-parse routing)
+    bind to the canonical model so they don't have to re-discriminate
+    per provider.
+    """
+
+    message_id: str = Field("", description="Provider's `X-Message-Id` or equivalent.")
+    provider: str = Field(..., description="Provider short name (e.g. `sendgrid`).")
+    event_type: str = Field(
+        ...,
+        description=(
+            "One of `bounce`, `delivered`, `open`, `click`, `spam_report`, "
+            "`unsubscribe`, `dropped`, `processed`."
+        ),
+    )
+    recipient: str = Field("", description="The email address the event is about.")
+    timestamp: Optional[float] = Field(
+        None, description="Unix epoch seconds at which the event was emitted upstream."
+    )
+    raw: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Raw upstream payload, preserved for diagnostic / debugging use.",
+    )
+
+
+# Process-local subscriber list. Webhook handlers call
+# `dispatch_email_delivery_event(event)` which fans into every registered
+# subscriber. Item 94 spec calls for "the same hook bus that internal
+# `Email_*Manager` mutations fire"; the framework has no central typed
+# hook bus today, so this list-based fan-out is the minimum that keeps
+# the extension self-contained without forcing a cross-cutting refactor.
+_EMAIL_DELIVERY_SUBSCRIBERS: List[Any] = []
+
+
+def subscribe_email_delivery(callback: Any) -> None:
+    """Register a callback for `EmailDeliveryEvent` fan-out.
+
+    Callbacks may be sync or async; async callbacks are awaited by
+    `dispatch_email_delivery_event`. Idempotent: re-registering the same
+    callback object no-ops.
+    """
+    if callback in _EMAIL_DELIVERY_SUBSCRIBERS:
+        return
+    _EMAIL_DELIVERY_SUBSCRIBERS.append(callback)
+
+
+def unsubscribe_email_delivery(callback: Any) -> None:
+    """Remove a previously-registered subscriber. No-op when not present."""
+    if callback in _EMAIL_DELIVERY_SUBSCRIBERS:
+        _EMAIL_DELIVERY_SUBSCRIBERS.remove(callback)
+
+
+def list_email_delivery_subscribers() -> List[Any]:
+    """Return the current subscriber list (copy)."""
+    return list(_EMAIL_DELIVERY_SUBSCRIBERS)
+
+
+async def dispatch_email_delivery_event(event: "EmailDeliveryEvent") -> None:
+    """Fan an `EmailDeliveryEvent` to every registered subscriber.
+
+    Subscribers may be sync or async. Failures in one subscriber are
+    logged and do not block subsequent subscribers — webhook delivery
+    must remain idempotent for upstream retries.
+    """
+    import inspect
+
+    for cb in list(_EMAIL_DELIVERY_SUBSCRIBERS):
+        result = cb(event)
+        if inspect.isawaitable(result):
+            await result
+
+
 class Capability(str, Enum):
     """Coarse-grained ability flags. A provider declares the subset it
     actually implements; callers branch on capability rather than catching
@@ -143,6 +226,12 @@ class Capability(str, Enum):
     VALIDATE_ADDRESS = "validate_address"
     SUPPRESSIONS = "suppressions"
     INBOUND_WEBHOOK = "inbound_webhook"
+    # Item 95 — additional ladder capabilities. STATS exposes
+    # `get_stats`; MESSAGES exposes `list_messages`. TEMPLATES already
+    # gates `send_with_template`; SUPPRESSIONS gates the
+    # `*_suppression*` trio.
+    STATS = "stats"
+    MESSAGES = "messages"
 
 
 class EmailAddress(BaseModel):
@@ -296,6 +385,27 @@ class AbstractEmailProvider(AbstractStaticProvider):
     @abstractmethod
     def services(cls) -> List[str]:
         """Return a list of services provided by this provider."""
+
+    # Item 94 — webhook signature verification.
+    #
+    # Providers that emit inbound webhooks (SendGrid Event Webhook, SMTP2go
+    # bounce-activity, Stalwart custom hooks) MUST implement this; the
+    # `endpoints.Webhook` mount calls it before dispatching to any handler
+    # and rejects with 401 on failure. Providers that don't expose webhooks
+    # leave the default in place; the webhook router treats the absence
+    # of a matching `(extension, provider)` registration as "no handlers
+    # configured" and returns 200 + warn instead of invoking this.
+    @classmethod
+    def verify_signature(cls, headers: Mapping[str, str], body: bytes) -> bool:
+        """Verify an incoming webhook signature.
+
+        Webhook-emitting providers must override; the default raises
+        `NotImplementedError` so a misconfigured provider fails closed.
+        """
+        raise NotImplementedError(
+            f"{cls.__name__}.verify_signature must be implemented by "
+            "webhook-emitting providers."
+        )
 
     @classmethod
     def get_extension_info(cls) -> Dict[str, Any]:

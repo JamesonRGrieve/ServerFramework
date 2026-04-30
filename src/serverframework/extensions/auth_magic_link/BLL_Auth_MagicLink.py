@@ -15,7 +15,6 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from serverframework.lib.CustomRoute import custom_route
 from serverframework.lib.Environment import env
-from serverframework.lib.Logging import logger
 from serverframework.lib.Pydantic2FastAPI import AuthType, RouterMixin
 from serverframework.logic.AbstractLogicManager import (
     AbstractBLLManager,

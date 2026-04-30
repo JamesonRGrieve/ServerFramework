@@ -245,3 +245,111 @@ class AbstractEmailProviderInstance(AbstractProviderInstance):
         self, folder: Optional[str] = None, limit: int = 10
     ) -> List[Dict[str, Any]]:
         """List conversation threads in a folder."""
+
+    # ------------------------------------------------------------------
+    # Item 95 — capability ladder.
+    #
+    # These are concrete defaults rather than @abstractmethod so providers
+    # opt in to a subset rather than being forced to stub each one. The
+    # default raises NotSupportedError; callers should branch on
+    # `capability in bonded.capabilities` before invoking.
+    # ------------------------------------------------------------------
+
+    def _provider_name(self) -> str:
+        """Return the bonded provider's short name for error messages."""
+        owner = type(self).__name__
+        return owner.replace("ProviderInstance", "").replace("Provider", "").lower() or owner
+
+    async def validate_address(self, email: str) -> EmailValidationResult:
+        """Pre-flight an address against the upstream's validation API.
+
+        Default: raise `NotSupportedError`. Providers declaring
+        `Capability.VALIDATE_ADDRESS` override this with a real call.
+        """
+        raise NotSupportedError(
+            provider=self._provider_name(), capability="validate_address"
+        )
+
+    async def send_with_template(
+        self,
+        template_id: str,
+        recipients: List[str],
+        substitutions: Optional[Dict[str, Any]] = None,
+    ) -> BulkSendResult:
+        """Render and send a server-side template to N recipients.
+
+        Default: raise `NotSupportedError`. Providers declaring
+        `Capability.TEMPLATES` override this.
+        """
+        raise NotSupportedError(
+            provider=self._provider_name(), capability="send_with_template"
+        )
+
+    async def list_suppressions(
+        self,
+        suppression_type: str,
+        *,
+        limit: int = 50,
+        cursor: Optional[str] = None,
+    ) -> SuppressionListPage:
+        """Page through one of the suppression lists (`bounce`, `block`,
+        `spam_report`, `unsubscribe`, `invalid`).
+
+        Default: raise `NotSupportedError`.
+        """
+        raise NotSupportedError(
+            provider=self._provider_name(), capability="list_suppressions"
+        )
+
+    async def add_suppression(
+        self,
+        email: str,
+        suppression_type: str,
+        reason: Optional[str] = None,
+    ) -> None:
+        """Add an address to a suppression list.
+
+        Default: raise `NotSupportedError`.
+        """
+        raise NotSupportedError(
+            provider=self._provider_name(), capability="add_suppression"
+        )
+
+    async def remove_suppression(self, email: str, suppression_type: str) -> None:
+        """Remove an address from a suppression list.
+
+        Default: raise `NotSupportedError`.
+        """
+        raise NotSupportedError(
+            provider=self._provider_name(), capability="remove_suppression"
+        )
+
+    async def get_stats(
+        self,
+        *,
+        since: Optional[datetime] = None,
+        until: Optional[datetime] = None,
+    ) -> EmailStats:
+        """Fetch aggregate counters across a window.
+
+        Default: raise `NotSupportedError`.
+        """
+        raise NotSupportedError(
+            provider=self._provider_name(), capability="get_stats"
+        )
+
+    async def list_messages(
+        self,
+        *,
+        since: Optional[datetime] = None,
+        status: Optional[str] = None,
+        limit: int = 50,
+        cursor: Optional[str] = None,
+    ) -> MessageListPage:
+        """Cursor-paginated history of sent messages.
+
+        Default: raise `NotSupportedError`.
+        """
+        raise NotSupportedError(
+            provider=self._provider_name(), capability="list_messages"
+        )
