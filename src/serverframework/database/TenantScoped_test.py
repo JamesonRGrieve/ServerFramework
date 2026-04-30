@@ -59,20 +59,20 @@ def test_rls_policy_sql_single_key():
     assert "CREATE POLICY" in sql
     assert "foo_tenant_isolation" in sql
     assert "ON foo" in sql
-    assert "current_setting('serverframework.app.current_team_id', true)::uuid" in sql
+    assert "current_setting('app.current_team_id', true)::uuid" in sql
     assert "USING (" in sql
     assert "WITH CHECK (" in sql
 
 
 def test_rls_policy_sql_multi_key_joins_with_and():
     sql = rls_policy_sql("foo", ("org_id", "team_id"))
-    assert "current_setting('serverframework.app.current_org_id', true)::uuid" in sql
-    assert "current_setting('serverframework.app.current_team_id', true)::uuid" in sql
+    assert "current_setting('app.current_org_id', true)::uuid" in sql
+    assert "current_setting('app.current_team_id', true)::uuid" in sql
     # The conjunction binds the two keys together.
     assert " AND " in sql
     # Ordering is preserved.
-    org_idx = sql.index("serverframework.app.current_org_id")
-    team_idx = sql.index("serverframework.app.current_team_id")
+    org_idx = sql.index("app.current_org_id")
+    team_idx = sql.index("app.current_team_id")
     assert org_idx < team_idx
 
 
