@@ -82,7 +82,12 @@ def _download_to_tempfile(
     if parsed.scheme not in {"http", "https", "file"}:
         raise InstallError(f"unsupported URL scheme: {parsed.scheme!r}")
 
-    suffix = Path(parsed.path).suffix or ""
+    # Preserve full suffix chain (e.g. ``.tar.gz``) so the archive
+    # detector downstream picks the right extractor. ``Path.suffix``
+    # only returns the last component (".gz"), which would mis-route
+    # ``.tar.gz`` archives.
+    parsed_path = Path(parsed.path)
+    suffix = "".join(parsed_path.suffixes)
     fd, tmp_path = tempfile.mkstemp(suffix=suffix, prefix="ext_install_")
     os.close(fd)
     tmp = Path(tmp_path)

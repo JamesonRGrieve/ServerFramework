@@ -1318,19 +1318,33 @@ def _coerce_sendgrid_event(raw: Dict[str, Any], event_type: str) -> EmailDeliver
 
 
 async def _dispatch_sendgrid_events(payload: Any, fallback_event: str) -> None:
-    """Walk a SendGrid Event-Webhook payload (list-of-dicts or dict) and
-    fan each row through the canonical hook bus."""
+    """Walk a SendGrid Event-Webhook payload (list-of-dicts, single dict,
+    or `{"events": [...]}` envelope from the webhook router) and fan
+    each row through the canonical hook bus."""
     rows: List[Dict[str, Any]]
     if isinstance(payload, list):
         rows = payload
     elif isinstance(payload, dict):
-        rows = [payload]
+        if isinstance(payload.get("events"), list):
+            rows = payload["events"]
+        else:
+            rows = [payload]
     else:
         return
     for row in rows:
         event_type = row.get("event") or fallback_event
         event = _coerce_sendgrid_event(row, event_type)
         await dispatch_email_delivery_event(event)
+
+
+class _EmailExtensionStub:
+    """Pass-through stub for `webhook_handler`'s `extension_class`
+    parameter. The decorator only reads `extension_name` and uses the
+    class for best-effort provider-class discovery; pinning it to
+    `"email"` here decouples handler registration from `EXT_EMail`'s
+    module-load order so we don't trigger a circular import."""
+
+    extension_name = "email"
 
 
 def _register_sendgrid_webhook_handlers() -> None:
@@ -1340,8 +1354,12 @@ def _register_sendgrid_webhook_handlers() -> None:
     (`webhook_handler` overwrites with a warning, which is acceptable
     during reload).
     """
-    from serverframework.endpoints.Webhook import WebhookContext, webhook_handler
-    from serverframework.extensions.email.EXT_EMail import EXT_EMail
+    from serverframework.endpoints.Webhook import (
+        WEBHOOK_REGISTRY,
+        WebhookContext,
+        _PROVIDER_CLASSES,
+        webhook_handler,
+    )
 
     for event_name in (
         "bounce",
@@ -1353,9 +1371,13 @@ def _register_sendgrid_webhook_handlers() -> None:
         "dropped",
         "processed",
     ):
-        @webhook_handler(EXT_EMail, provider="sendgrid", event=event_name)
+        @webhook_handler(_EmailExtensionStub, provider="sendgrid", event=event_name)
         async def _handler(ctx: "WebhookContext", _evt: str = event_name) -> None:
             await _dispatch_sendgrid_events(ctx.payload, _evt)
+
+    # Wire SendGrid as the verifier for `(email, sendgrid)` so the webhook
+    # router calls `SendgridProvider.verify_signature` at dispatch time.
+    _PROVIDER_CLASSES[("email", "sendgrid")] = SendgridProvider
 
 
 _register_sendgrid_webhook_handlers()

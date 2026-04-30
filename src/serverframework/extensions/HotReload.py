@@ -169,6 +169,16 @@ def rebuild_registry(
         extensions_path=extensions_path,
     )
 
+    # Augment loaded_extensions from manifests so the diff reflects
+    # everything declared on disk -- even extensions whose Python class
+    # could not be loaded (e.g. fresh install where the entry module
+    # has not yet been imported, or environments where module discovery
+    # failed). The class-driven path remains authoritative for hooks /
+    # routers; the manifest-driven path drives the diff.
+    for name, version in on_disk.items():
+        if name not in new_registry.loaded_extensions:
+            new_registry.loaded_extensions[name] = version
+
     diff = compute_diff(previous_snapshot, dict(new_registry.loaded_extensions))
 
     if run_migrations and (diff.added or diff.changed_version):
