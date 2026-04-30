@@ -24,6 +24,7 @@ import strawberry
 import stringcase
 from broadcaster import Broadcast
 from pydantic import BaseModel
+from strawberry.schema_directive import Location
 from strawberry.types import Info
 
 from lib.AbstractPydantic2 import (
@@ -159,6 +160,67 @@ class ModelInfo:
     gql_type: Optional[Type] = None
     plural_name: str = ""
     singular_name: str = ""
+
+
+# -- Item 39 — per-resource versioning / deprecation in GraphQL ---------------
+
+
+@strawberry.schema_directive(locations=[Location.FIELD_DEFINITION])
+class Sunset:
+    """Custom GraphQL ``@sunset(date: ...)`` directive.
+
+    Attached to fields whose source ``RouterMixin`` manager declares
+    ``sunset_in``. The companion ``@deprecated`` directive is the built-in
+    one (driven by Strawberry's ``deprecation_reason`` argument), so we
+    only need a custom directive for the sunset half of the contract.
+    """
+
+    date: str
+
+
+def _versioning_metadata_for(manager_class: Any) -> Tuple[Optional[str], Optional[str]]:
+    """Read ``deprecated_in`` / ``sunset_in`` from a manager class.
+
+    Returns ``(deprecated_in, sunset_in)``. Either or both may be ``None``.
+    Tolerates managers that aren't ``RouterMixin``-tagged (returns ``(None, None)``).
+    """
+    if manager_class is None:
+        return None, None
+    return (
+        getattr(manager_class, "deprecated_in", None),
+        getattr(manager_class, "sunset_in", None),
+    )
+
+
+def _build_field_kwargs(manager_class: Any) -> Dict[str, Any]:
+    """Build the kwargs forwarded to ``strawberry.field`` for a manager.
+
+    When ``deprecated_in`` is set, the field gains a ``deprecation_reason``
+    that includes the date plus the sunset date (when also set). When
+    ``sunset_in`` is set, the field also gains the custom ``Sunset``
+    schema directive. Returns an empty dict when neither is set so the
+    caller's existing ``strawberry.field(resolver)`` call is byte-identical.
+    """
+    deprecated_in, sunset_in = _versioning_metadata_for(manager_class)
+    kwargs: Dict[str, Any] = {}
+    if deprecated_in:
+        if sunset_in:
+            kwargs["deprecation_reason"] = (
+                f"Deprecated in {deprecated_in}; sunset in {sunset_in}"
+            )
+        else:
+            kwargs["deprecation_reason"] = f"Deprecated in {deprecated_in}"
+    if sunset_in:
+        kwargs["directives"] = [Sunset(date=sunset_in)]
+    return kwargs
+
+
+def _versioned_field(resolver: Any, manager_class: Any) -> Any:
+    """Wrap ``strawberry.field`` so deprecation/sunset metadata is applied."""
+    kwargs = _build_field_kwargs(manager_class)
+    if not kwargs:
+        return strawberry.field(resolver)
+    return strawberry.field(resolver, **kwargs)
 
 
 # Removed FilterTypeGenerator - functionality moved to GraphQLManager
@@ -968,7 +1030,9 @@ class GraphQLManager(ErrorHandlerMixin):
                     logger.error(f"Error in {field_name} resolver: {e}")
                     raise
 
-            self._query_fields[field_name] = strawberry.field(user_resolver)
+            self._query_fields[field_name] = _versioned_field(
+                user_resolver, manager_class
+            )
         else:
             # Create resolver with only ID parameter to avoid unknown argument errors
             async def resolver(id: str, info: Info) -> return_type:
@@ -990,7 +1054,9 @@ class GraphQLManager(ErrorHandlerMixin):
                     logger.error(f"Error in {field_name} resolver: {e}")
                     raise
 
-            self._query_fields[field_name] = strawberry.field(resolver)
+            self._query_fields[field_name] = _versioned_field(
+                resolver, manager_class
+            )
 
     def _add_list_query_resolver(
         self,
@@ -1045,7 +1111,9 @@ class GraphQLManager(ErrorHandlerMixin):
                     logger.error(f"Error in {field_name} resolver: {e}")
                     return []
 
-            self._query_fields[field_name] = strawberry.field(user_list_resolver)
+            self._query_fields[field_name] = _versioned_field(
+                user_list_resolver, manager_class
+            )
         else:
 
             async def resolver(
@@ -1077,7 +1145,9 @@ class GraphQLManager(ErrorHandlerMixin):
                     logger.error(f"Error in {field_name} resolver: {e}")
                     return []
 
-            self._query_fields[field_name] = strawberry.field(resolver)
+            self._query_fields[field_name] = _versioned_field(
+                resolver, manager_class
+            )
 
     def _add_create_mutation_resolver(
         self,
@@ -1138,7 +1208,9 @@ class GraphQLManager(ErrorHandlerMixin):
                 logger.error(f"Error in {field_name} resolver: {e}")
                 raise
 
-        self._mutation_fields[field_name] = strawberry.field(resolver)
+        self._mutation_fields[field_name] = _versioned_field(
+            resolver, manager_class
+        )
 
     def _add_update_mutation_resolver(
         self,
@@ -1199,7 +1271,9 @@ class GraphQLManager(ErrorHandlerMixin):
                     logger.error(f"Error in {field_name} resolver: {e}")
                     raise
 
-            self._mutation_fields[field_name] = strawberry.field(user_update_resolver)
+            self._mutation_fields[field_name] = _versioned_field(
+                user_update_resolver, manager_class
+            )
         else:
 
             async def resolver(id: str, input: input_type, info: Info) -> return_type:
@@ -1241,7 +1315,9 @@ class GraphQLManager(ErrorHandlerMixin):
                     logger.error(f"Error in {field_name} resolver: {e}")
                     raise
 
-            self._mutation_fields[field_name] = strawberry.field(resolver)
+            self._mutation_fields[field_name] = _versioned_field(
+                resolver, manager_class
+            )
 
     def _add_delete_mutation_resolver(
         self, field_name: str, manager_class: Type[AbstractBLLManager]
@@ -1281,7 +1357,9 @@ class GraphQLManager(ErrorHandlerMixin):
                     logger.error(f"Error in {field_name} resolver: {e}")
                     return False
 
-            self._mutation_fields[field_name] = strawberry.field(user_delete_resolver)
+            self._mutation_fields[field_name] = _versioned_field(
+                user_delete_resolver, manager_class
+            )
         else:
 
             async def resolver(id: str, info: Info) -> bool:
@@ -1313,7 +1391,9 @@ class GraphQLManager(ErrorHandlerMixin):
                     logger.error(f"Error in {field_name} resolver: {e}")
                     return False
 
-            self._mutation_fields[field_name] = strawberry.field(resolver)
+            self._mutation_fields[field_name] = _versioned_field(
+                resolver, manager_class
+            )
 
     def _add_subscription_resolver(self, field_name: str, model_name: str) -> None:
         """Add a subscription resolver for model events"""

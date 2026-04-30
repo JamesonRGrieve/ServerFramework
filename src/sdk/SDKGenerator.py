@@ -18,6 +18,22 @@ that returns a list of ``(path, drift_kind)`` tuples for files whose on-disk
 contents differ from the regenerated output, without writing to disk. This
 is suitable for CI drift checks.
 
+Versioning (Item 39)
+--------------------
+Each ``RouterMixin``-tagged manager carries a ``version`` ClassVar
+(default ``"v1"``). When ``version != "v1"`` the generated SDK class name
+gains a Pascal-cased version suffix (``"v2"`` -> ``UserV2SDK_generated``,
+``"v2beta"`` -> ``UserV2BetaSDK_generated``) and every emitted method name
+gains a lower-case ``_<version>`` suffix (``list_v2``, ``get_v2``, ...).
+The default version (``v1``) is left untouched so existing generated files
+remain byte-identical.
+
+Generated files include the following metadata comments near the top:
+
+    * ``# version: <version>`` — always emitted
+    * ``# deprecated_in: <iso-8601>`` — when ``RouterMixin.deprecated_in`` is set
+    * ``# sunset_in: <iso-8601>`` — when ``RouterMixin.sunset_in`` is set
+
 Future cleanup item: ``Pydantic2SDKHandler`` is currently fully commented
 out; once it ships a public API for resource-name / endpoint inference,
 this generator should consume that API rather than re-implementing the
@@ -122,14 +138,59 @@ def _endpoint_for(manager_cls: Type, resource_name: str) -> str:
     return f"/{version}/{resource_name}"
 
 
-def _sdk_class_name_for(resource_name: str) -> str:
-    """Generated SDK class name (PascalCase + ``SDK`` suffix)."""
-    return f"{stringcase.pascalcase(resource_name)}SDK"
+def _version_suffix_for(version: str) -> str:
+    """Pascal-cased version suffix used in generated class / file names.
+
+    Returns the empty string for the default ``v1`` so existing output is
+    preserved byte-for-byte. For other versions a deterministic
+    Pascal-cased token is produced (``"v2"`` -> ``"V2"``,
+    ``"v2beta"`` -> ``"V2Beta"``, ``"v2_beta"`` -> ``"V2Beta"``).
+    """
+    if not version or version == "v1":
+        return ""
+    cleaned = version.replace("-", "_")
+    if "_" in cleaned:
+        parts = [p for p in cleaned.split("_") if p]
+    else:
+        # Split on the leading vN... numeric chunk so trailing alpha
+        # ("beta", "alpha", ...) becomes its own pascalcase token.
+        parts = []
+        idx = 0
+        if cleaned and cleaned[0].lower() == "v":
+            num_end = 1
+            while num_end < len(cleaned) and cleaned[num_end].isdigit():
+                num_end += 1
+            if num_end > 1:
+                parts.append(cleaned[:num_end])
+                idx = num_end
+        if idx < len(cleaned):
+            parts.append(cleaned[idx:])
+        if not parts:
+            parts = [cleaned]
+    return "".join(p[:1].upper() + p[1:].lower() for p in parts if p)
 
 
-def _sdk_filename_for(resource_name: str) -> str:
-    """Generated file name (PascalCase + ``SDK_generated.py``)."""
-    return f"{stringcase.pascalcase(resource_name)}SDK_generated.py"
+def _method_version_suffix_for(version: str) -> str:
+    """Lower-case method-name suffix (``""`` for default ``v1``)."""
+    if not version or version == "v1":
+        return ""
+    return f"_{version}"
+
+
+def _sdk_class_name_for(resource_name: str, version: str = "v1") -> str:
+    """Generated SDK class name (PascalCase + version suffix + ``SDK``)."""
+    return (
+        f"{stringcase.pascalcase(resource_name)}"
+        f"{_version_suffix_for(version)}SDK"
+    )
+
+
+def _sdk_filename_for(resource_name: str, version: str = "v1") -> str:
+    """Generated file name (PascalCase + version suffix + ``SDK_generated.py``)."""
+    return (
+        f"{stringcase.pascalcase(resource_name)}"
+        f"{_version_suffix_for(version)}SDK_generated.py"
+    )
 
 
 def generate_sdk_handler_for(manager_cls: Type) -> str:
@@ -151,7 +212,11 @@ def generate_sdk_handler_for(manager_cls: Type) -> str:
     resource_name = _resource_name_for(manager_cls)
     resource_name_plural = _resource_name_plural_for(resource_name)
     endpoint = _endpoint_for(manager_cls, resource_name)
-    class_name = _sdk_class_name_for(resource_name)
+    version = getattr(manager_cls, "version", "v1") or "v1"
+    deprecated_in = getattr(manager_cls, "deprecated_in", None)
+    sunset_in = getattr(manager_cls, "sunset_in", None)
+    method_suffix = _method_version_suffix_for(version)
+    class_name = _sdk_class_name_for(resource_name, version)
     manager_qualname = f"{manager_cls.__module__}.{manager_cls.__qualname__}"
 
     imports = sorted(
@@ -184,6 +249,27 @@ def generate_sdk_handler_for(manager_cls: Type) -> str:
     lines.append(f"Source manager: ``{manager_qualname}``")
     lines.append('"""')
     lines.append("")
+    # Item 39 — emit version + deprecation metadata as comments.
+    # To preserve byte-identical output for the default ``v1`` case
+    # (existing behavior), the version comment is only emitted when
+    # ``version != "v1"`` *or* when deprecation / sunset metadata is
+    # present. Deprecation / sunset comments are emitted whenever the
+    # corresponding ClassVars are set, regardless of version.
+    metadata_lines: List[str] = []
+    if version != "v1":
+        metadata_lines.append(f"# version: {version}")
+    if deprecated_in:
+        metadata_lines.append(f"# deprecated_in: {deprecated_in}")
+    if sunset_in:
+        metadata_lines.append(f"# sunset_in: {sunset_in}")
+    if metadata_lines:
+        # When deprecation/sunset are present without a version override,
+        # still emit the version line so the comment block is self-describing.
+        if version == "v1" and metadata_lines and not metadata_lines[0].startswith("# version:"):
+            metadata_lines.insert(0, f"# version: {version}")
+        for line in metadata_lines:
+            lines.append(line)
+        lines.append("")
     for imp in imports:
         lines.append(imp)
     lines.append("")
@@ -199,7 +285,7 @@ def generate_sdk_handler_for(manager_cls: Type) -> str:
     lines.append("        }")
     lines.append("")
     lines.append(
-        "    def list("
+        f"    def list{method_suffix}("
         "\n        self,"
         "\n        offset: int = 0,"
         "\n        limit: int = 100,"
@@ -221,7 +307,7 @@ def generate_sdk_handler_for(manager_cls: Type) -> str:
     )
     lines.append("")
     lines.append(
-        "    def get("
+        f"    def get{method_suffix}("
         "\n        self,"
         "\n        resource_id: str,"
         "\n        fields: Optional[List[str]] = None,"
@@ -241,7 +327,7 @@ def generate_sdk_handler_for(manager_cls: Type) -> str:
     )
     lines.append("")
     lines.append(
-        "    def create(self, data: Dict[str, Any]) -> Dict[str, Any]:"
+        f"    def create{method_suffix}(self, data: Dict[str, Any]) -> Dict[str, Any]:"
     )
     lines.append(f'        """Create a new ``{resource_name}``."""')
     lines.append(
@@ -249,7 +335,7 @@ def generate_sdk_handler_for(manager_cls: Type) -> str:
     )
     lines.append("")
     lines.append(
-        "    def update("
+        f"    def update{method_suffix}("
         "\n        self,"
         "\n        resource_id: str,"
         "\n        updates: Dict[str, Any],"
@@ -261,14 +347,14 @@ def generate_sdk_handler_for(manager_cls: Type) -> str:
         "resource_id, updates)"
     )
     lines.append("")
-    lines.append("    def delete(self, resource_id: str) -> None:")
+    lines.append(f"    def delete{method_suffix}(self, resource_id: str) -> None:")
     lines.append(f'        """Delete a ``{resource_name}`` by id."""')
     lines.append(
         f"        getattr(self, \"{manager_attr}\").delete(resource_id)"
     )
     lines.append("")
     lines.append(
-        "    def search("
+        f"    def search{method_suffix}("
         "\n        self,"
         "\n        criteria: Dict[str, Any],"
         "\n        offset: int = 0,"
@@ -290,7 +376,7 @@ def generate_sdk_handler_for(manager_cls: Type) -> str:
     )
     lines.append("")
     lines.append(
-        "    def batch_create(self, items: List[Dict[str, Any]]) -> Dict[str, Any]:"
+        f"    def batch_create{method_suffix}(self, items: List[Dict[str, Any]]) -> Dict[str, Any]:"
     )
     lines.append(f'        """Create multiple ``{resource_name_plural}`` in one call."""')
     lines.append(
@@ -298,7 +384,7 @@ def generate_sdk_handler_for(manager_cls: Type) -> str:
     )
     lines.append("")
     lines.append(
-        "    def batch_update("
+        f"    def batch_update{method_suffix}("
         "\n        self,"
         "\n        updates: Dict[str, Any],"
         "\n        resource_ids: List[str],"
@@ -311,7 +397,7 @@ def generate_sdk_handler_for(manager_cls: Type) -> str:
     )
     lines.append("")
     lines.append(
-        "    def batch_delete(self, resource_ids: List[str]) -> Dict[str, Any]:"
+        f"    def batch_delete{method_suffix}(self, resource_ids: List[str]) -> Dict[str, Any]:"
     )
     lines.append(f'        """Delete multiple ``{resource_name_plural}`` in one call."""')
     lines.append(
@@ -324,7 +410,8 @@ def generate_sdk_handler_for(manager_cls: Type) -> str:
 
 def _path_for(manager_cls: Type, output_dir: Path) -> Path:
     resource_name = _resource_name_for(manager_cls)
-    return output_dir / _sdk_filename_for(resource_name)
+    version = getattr(manager_cls, "version", "v1") or "v1"
+    return output_dir / _sdk_filename_for(resource_name, version)
 
 
 def generate_sdk_handlers(

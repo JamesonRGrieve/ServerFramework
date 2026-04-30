@@ -161,3 +161,126 @@ def test_generate_sdk_handlers_accepts_registry_with_managers_attribute(
 
     written = generate_sdk_handlers(FakeRegistry(), tmp_path)
     assert len(written) == 2
+
+
+# -- Item 39 — per-resource versioning ----------------------------------------
+
+
+class _GenTestUserV2Manager(RouterMixin):
+    """v2 variant of UserManager — exercises the version-suffix path.
+
+    Underscore prefix mirrors how versioned BLL managers register
+    themselves alongside the v1 sibling without conflict, and is stripped
+    by the resource-name derivation.
+    """
+
+    __qualname__ = "UserManager"
+    prefix = None
+    version = "v2"
+
+
+class _GenTestUserV2BetaManager(RouterMixin):
+    """Mixed-token version (e.g. ``v2beta``) — exercises Pascal-casing."""
+
+    __qualname__ = "UserManager"
+    prefix = None
+    version = "v2beta"
+
+
+class _GenTestUserDeprecatedManager(RouterMixin):
+    """Deprecation/sunset metadata is surfaced as comments."""
+
+    __qualname__ = "UserManager"
+    prefix = "/v1/user"
+    deprecated_in = "2026-01-01"
+    sunset_in = "2026-07-01"
+
+
+def _set_qualname(cls, name):
+    cls.__name__ = name
+    cls.__qualname__ = name
+    return cls
+
+
+# Re-set ``__name__`` after class creation so the generator's
+# ``_resource_name_for`` derives ``user`` from the class name (not the
+# Python-internal ``_GenTest...`` placeholder).
+_set_qualname(_GenTestUserV2Manager, "UserManager")
+_set_qualname(_GenTestUserV2BetaManager, "UserManager")
+_set_qualname(_GenTestUserDeprecatedManager, "UserManager")
+
+
+def test_v1_default_handler_emits_no_version_comment_and_no_method_suffix():
+    src = generate_sdk_handler_for(GenTestFooManager)
+    # v1 is the silent default — no metadata comments, no method suffix.
+    assert "# version:" not in src
+    assert "# deprecated_in:" not in src
+    assert "# sunset_in:" not in src
+    assert "def list(" in src
+    assert "def list_v1(" not in src
+
+
+def test_v2_handler_uses_version_suffixed_class_and_method_names():
+    src = generate_sdk_handler_for(_GenTestUserV2Manager)
+    assert "class UserV2SDK(AbstractSDKHandler)" in src
+    assert "# version: v2" in src
+    for op in (
+        "def list_v2(",
+        "def get_v2(",
+        "def create_v2(",
+        "def update_v2(",
+        "def delete_v2(",
+        "def search_v2(",
+        "def batch_create_v2(",
+        "def batch_update_v2(",
+        "def batch_delete_v2(",
+    ):
+        assert op in src, f"missing versioned op: {op}"
+    # Endpoint should reflect /v2/<resource> when prefix is None.
+    assert 'endpoint="/v2/user"' in src
+    compile(src, "<generated UserV2SDK>", "exec")
+
+
+def test_v2beta_pascal_cases_alpha_suffix():
+    src = generate_sdk_handler_for(_GenTestUserV2BetaManager)
+    assert "class UserV2BetaSDK(AbstractSDKHandler)" in src
+    assert "# version: v2beta" in src
+    assert "def list_v2beta(" in src
+    compile(src, "<generated UserV2BetaSDK>", "exec")
+
+
+def test_deprecation_metadata_emitted_as_comments():
+    src = generate_sdk_handler_for(_GenTestUserDeprecatedManager)
+    # version is v1 default — version comment is forced when deprecation is set
+    # so the metadata block is self-describing.
+    assert "# version: v1" in src
+    assert "# deprecated_in: 2026-01-01" in src
+    assert "# sunset_in: 2026-07-01" in src
+    # Methods remain unsuffixed because the version is still v1.
+    assert "def list(" in src
+    assert "def list_v1(" not in src
+
+
+def test_v2_filename_includes_version_suffix(tmp_path: Path):
+    written = generate_sdk_handlers([_GenTestUserV2Manager], tmp_path)
+    assert len(written) == 1
+    assert written[0].name == "UserV2SDK_generated.py"
+
+
+def test_v2_regeneration_is_byte_identical(tmp_path: Path):
+    out_a = tmp_path / "a"
+    out_b = tmp_path / "b"
+    paths_a = generate_sdk_handlers([_GenTestUserV2Manager], out_a)
+    paths_b = generate_sdk_handlers([_GenTestUserV2Manager], out_b)
+    assert paths_a[0].read_bytes() == paths_b[0].read_bytes()
+
+
+def test_v1_and_v2_managers_produce_distinct_handler_files(tmp_path: Path):
+    written = generate_sdk_handlers(
+        [GenTestFooManager, _GenTestUserV2Manager], tmp_path
+    )
+    names = sorted(p.name for p in written)
+    assert names == [
+        "GenTestFooSDK_generated.py",
+        "UserV2SDK_generated.py",
+    ]
