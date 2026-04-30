@@ -956,6 +956,18 @@ class TestProviderExtensionAbilityEndpoints(AbstractEPTest):
     update_fields = {}  # No updateable fields besides system fields
     unique_fields = []
 
+    # ProviderExtensionAbility is a high-volume system-seeded join table.
+    # Generic timestamp-based searches (created_at eq/on, updated_at eq/on)
+    # match every row created within the same second; without an additional
+    # narrow filter the result set hits the test's limit (1000) before the
+    # newly-created test entity is reached. Including the parent
+    # ``provider_extension_id`` and ``ability_id`` foreign keys narrows the
+    # search to the row under test.
+    search_default_filters = {
+        "provider_extension_id": None,
+        "ability_id": None,
+    }
+
     def create_payload(
         self,
         name: Optional[str] = None,
