@@ -8,9 +8,9 @@ import base64
 import mimetypes
 import os
 from datetime import datetime
-from typing import Any, ClassVar, Dict, List, Optional, Set
+from typing import Any, ClassVar, Dict, List, Mapping, Optional, Set
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, EmailStr, Field, HttpUrl, SecretStr
 
 from extensions.AbstractExtensionProvider import AbstractProviderInstance_SDK, ability
 from extensions.AbstractExternalModel import (
@@ -28,6 +28,7 @@ from extensions.email.EXT_EMail import (
     AbstractEmailProvider,
     Capability,
     EmailMessage,
+    _DeprecatedEnvDict,
 )
 from lib.Dependencies import Dependencies, PIP_Dependency
 from lib.Environment import env
@@ -130,11 +131,24 @@ class SendgridProvider(AbstractEmailProvider):
         ]
     )
 
-    # Environment variables required by this provider
-    _env: ClassVar[Dict[str, Any]] = {
-        "SENDGRID_API_KEY": "",
-        "SENDGRID_FROM_EMAIL": "",
-    }
+    # Item 90 — typed Settings model is the source of truth; the legacy
+    # ``_env`` dict is kept for one release as a backward-compat alias and
+    # warns on read via ``_DeprecatedEnvDict``.
+    class Settings(AbstractEmailProvider.Settings):
+        from_email: EmailStr
+        api_key: SecretStr
+
+        _env_field_map: ClassVar[Dict[str, str]] = {
+            "from_email": "SENDGRID_FROM_EMAIL",
+            "api_key": "SENDGRID_API_KEY",
+        }
+
+    _env: ClassVar[Dict[str, Any]] = _DeprecatedEnvDict(
+        {
+            "SENDGRID_API_KEY": "",
+            "SENDGRID_FROM_EMAIL": "",
+        }
+    )
 
     @classmethod
     def bond_instance(
@@ -1530,14 +1544,33 @@ class StalwartProvider(AbstractEmailProvider):
         ]
     )
 
-    _env: ClassVar[Dict[str, Any]] = {
-        "STALWART_HOST": "",
-        "STALWART_PORT": "587",
-        "STALWART_USERNAME": "",
-        "STALWART_PASSWORD": "",
-        "STALWART_FROM_EMAIL": "",
-        "STALWART_USE_TLS": "true",
-    }
+    class Settings(AbstractEmailProvider.Settings):
+        from_email: EmailStr
+        host: str
+        port: int = 587
+        username: str
+        password: SecretStr
+        use_tls: bool = True
+
+        _env_field_map: ClassVar[Dict[str, str]] = {
+            "from_email": "STALWART_FROM_EMAIL",
+            "host": "STALWART_HOST",
+            "port": "STALWART_PORT",
+            "username": "STALWART_USERNAME",
+            "password": "STALWART_PASSWORD",
+            "use_tls": "STALWART_USE_TLS",
+        }
+
+    _env: ClassVar[Dict[str, Any]] = _DeprecatedEnvDict(
+        {
+            "STALWART_HOST": "",
+            "STALWART_PORT": "587",
+            "STALWART_USERNAME": "",
+            "STALWART_PASSWORD": "",
+            "STALWART_FROM_EMAIL": "",
+            "STALWART_USE_TLS": "true",
+        }
+    )
 
     @classmethod
     def services(cls) -> List[str]:
@@ -1876,11 +1909,24 @@ class Smtp2goProvider(AbstractEmailProvider):
         ]
     )
 
-    _env: ClassVar[Dict[str, Any]] = {
-        "SMTP2GO_API_KEY": "",
-        "SMTP2GO_FROM_EMAIL": "",
-        "SMTP2GO_API_URL": "https://api.smtp2go.com/v3",
-    }
+    class Settings(AbstractEmailProvider.Settings):
+        from_email: EmailStr
+        api_key: SecretStr
+        api_url: HttpUrl = "https://api.smtp2go.com/v3"  # type: ignore[assignment]
+
+        _env_field_map: ClassVar[Dict[str, str]] = {
+            "from_email": "SMTP2GO_FROM_EMAIL",
+            "api_key": "SMTP2GO_API_KEY",
+            "api_url": "SMTP2GO_API_URL",
+        }
+
+    _env: ClassVar[Dict[str, Any]] = _DeprecatedEnvDict(
+        {
+            "SMTP2GO_API_KEY": "",
+            "SMTP2GO_FROM_EMAIL": "",
+            "SMTP2GO_API_URL": "https://api.smtp2go.com/v3",
+        }
+    )
 
     @classmethod
     def services(cls) -> List[str]:

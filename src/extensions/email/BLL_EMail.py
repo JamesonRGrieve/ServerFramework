@@ -3,51 +3,121 @@ Email extension business logic - integrates the configured email providers
 (SendGrid, Stalwart, SMTP2go) into the core Provider system.
 """
 
+import os
+
 from lib.Environment import env
 from lib.Logging import logger
 from logic.AbstractLogicManager import HookTiming, hook_bll
 from logic.BLL_Auth import InviteeManager
 
-# Single source of truth for which email providers exist and how to detect
-# whether each is configured. Each tuple is (provider_name, friendly_name,
-# credential_env_var, from_email_env_var). Adding a new provider requires
-# only an entry here plus the corresponding PRV_ class.
-_EMAIL_PROVIDER_REGISTRY = (
-    ("SendGrid", "SendGrid Email Service", "SENDGRID_API_KEY", "SENDGRID_FROM_EMAIL"),
-    ("Stalwart", "Stalwart Mail Server", "STALWART_PASSWORD", "STALWART_FROM_EMAIL"),
-    ("SMTP2go", "SMTP2go Email Service", "SMTP2GO_API_KEY", "SMTP2GO_FROM_EMAIL"),
-)
+
+# Item 90 — provider discovery is now driven by each PRV_ class's typed
+# ``Settings`` inner model rather than a hardcoded tuple in this module.
+# We resolve provider classes lazily so the hooks remain importable even
+# before the email extension's provider modules have been loaded.
+def _email_provider_classes():
+    """Return loaded email-provider classes (lazy import to avoid cycles)."""
+    try:
+        from extensions.email.EXT_EMail import EXT_EMail
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.debug(f"EXT_EMail import failed in BLL_EMail: {exc}")
+        return []
+    return list(EXT_EMail.providers)
+
+
+def _provider_friendly_name(provider_cls) -> str:
+    return (
+        getattr(provider_cls, "description", None)
+        or getattr(provider_cls, "friendly_name", None)
+        or getattr(provider_cls, "name", provider_cls.__name__)
+    )
+
+
+def _provider_display_name(provider_cls) -> str:
+    """Stable, human-readable display name used as the seed-row name."""
+    name = getattr(provider_cls, "name", provider_cls.__name__)
+    aliases = {"sendgrid": "SendGrid", "stalwart": "Stalwart", "smtp2go": "SMTP2go"}
+    return aliases.get(str(name).lower(), str(name))
 
 
 def register_email_providers_hook():
-    """Hook to register every configured email provider in the core Provider table."""
+    """Hook to register every configured email provider in the core Provider table.
+
+    Iterates loaded provider classes whose ``Settings.is_configured(os.environ)``
+    is True; replaces the legacy hardcoded ``_EMAIL_PROVIDER_REGISTRY`` tuple.
+    """
     providers_to_add = []
-    for name, friendly_name, key_var, from_var in _EMAIL_PROVIDER_REGISTRY:
-        if env(key_var) and env(from_var):
-            providers_to_add.append({"name": name, "friendly_name": friendly_name})
-            logger.debug(f"Registering {name} provider via email extension hook")
+    env_map = os.environ
+    for provider_cls in _email_provider_classes():
+        settings_cls = getattr(provider_cls, "Settings", None)
+        if settings_cls is None:
+            continue
+        try:
+            ok = settings_cls.is_configured(env_map)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(f"Settings.is_configured raised: {exc}")
+            continue
+        if not ok:
+            continue
+        display = _provider_display_name(provider_cls)
+        providers_to_add.append(
+            {
+                "name": display,
+                "friendly_name": _provider_friendly_name(provider_cls),
+            }
+        )
+        logger.debug(f"Registering {display} provider via email extension hook")
     return providers_to_add
 
 
 def register_email_provider_instances_hook():
     """Hook to register a Root_<Provider> instance for every configured provider."""
     instances_to_add = []
-    for name, _friendly, key_var, from_var in _EMAIL_PROVIDER_REGISTRY:
-        key = env(key_var)
-        from_email = env(from_var)
-        if key and from_email:
-            instances_to_add.append(
-                {
-                    "name": f"Root_{name}",
-                    "_provider_name": name,  # Resolved to provider_id during seeding
-                    "api_key": key,
-                    "model_name": from_email,  # Carries from_email through the schema
-                    "enabled": True,
-                }
-            )
+    env_map = os.environ
+    for provider_cls in _email_provider_classes():
+        settings_cls = getattr(provider_cls, "Settings", None)
+        if settings_cls is None:
+            continue
+        try:
+            if not settings_cls.is_configured(env_map):
+                continue
+            settings = settings_cls.from_env(env_map)
+        except Exception as exc:  # noqa: BLE001 — surfaced in startup banner
             logger.debug(
-                f"Registering Root_{name} provider instance via email extension hook"
+                f"Could not build Settings for {provider_cls.__name__}: {exc}"
             )
+            continue
+
+        # Use SecretStr's get_secret_value when available; the legacy seed
+        # row carried the raw API key in the `api_key` column.
+        secret = None
+        for cred_field in ("api_key", "password"):
+            value = getattr(settings, cred_field, None)
+            if value is None:
+                continue
+            secret = (
+                value.get_secret_value() if hasattr(value, "get_secret_value") else value
+            )
+            break
+        if secret is None:
+            # Fall back to legacy env-var lookup so providers without an
+            # api_key/password (none of the current ones) still seed.
+            secret = env(getattr(settings_cls, "_env_field_map", {}).get("api_key", ""))
+
+        from_email = str(getattr(settings, "from_email", ""))
+        display = _provider_display_name(provider_cls)
+        instances_to_add.append(
+            {
+                "name": f"Root_{display}",
+                "_provider_name": display,
+                "api_key": secret,
+                "model_name": from_email,
+                "enabled": True,
+            }
+        )
+        logger.debug(
+            f"Registering Root_{display} provider instance via email extension hook"
+        )
     return instances_to_add
 
     # @AbstractStaticExtension.db_hook("Seed", "Provider", "inject_seed_data", "before")

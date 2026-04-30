@@ -3,8 +3,10 @@ from __future__ import annotations
 import inspect
 import random
 import time
+import uuid
 import warnings
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Any, ClassVar, Dict, List, Literal, Optional, Tuple
 
 import stringcase
@@ -1129,6 +1131,30 @@ class RotationManager(AbstractBLLManager, RouterMixin):
     factory_params: ClassVar[List[str]] = ["target_id", "target_team_id"]
     auth_dependency: ClassVar[Optional[str]] = "get_auth_user"
 
+    # Item 48 — in-process counter for `provider_silent_drop_total{provider, ability}`.
+    _silent_drop_counter: ClassVar[Dict[Tuple[str, str], int]] = {}
+    # Item 84 — in-process counter for `provider_cost_usd_total{tenant, provider, ability}`.
+    _cost_counter: ClassVar[Dict[Tuple[str, str, str], Decimal]] = {}
+    # Item 48 — pluggable outbox store; tests inject an `InMemoryOutboxStore`.
+    _outbox_store: ClassVar[Optional[Any]] = None
+
+    @classmethod
+    def get_silent_drop_counter(cls) -> Dict[Tuple[str, str], int]:
+        return dict(cls._silent_drop_counter)
+
+    @classmethod
+    def get_cost_counter(cls) -> Dict[Tuple[str, str, str], Decimal]:
+        return dict(cls._cost_counter)
+
+    @classmethod
+    def reset_observability_counters(cls) -> None:
+        cls._silent_drop_counter.clear()
+        cls._cost_counter.clear()
+
+    @classmethod
+    def set_outbox_store(cls, store: Optional[Any]) -> None:
+        cls._outbox_store = store
+
     def __init__(
         self,
         model_registry: Optional[Any] = None,
@@ -1207,6 +1233,45 @@ class RotationManager(AbstractBLLManager, RouterMixin):
         if hasattr(mod, "default_rotation_policy"):
             return mod.default_rotation_policy()
         return None
+
+    def _resolve_degradation_policy(self, provider_instances):
+        """Item 48 — walk attempted provider instances and pick the
+        `DegradationPolicy` from the first one whose provider class
+        declares one. Falls back to `default_degradation_policy()` (which
+        is `FAIL_FAST`)."""
+        mod = self._load_rotation_policy_module()
+        for provider_instance in provider_instances:
+            if provider_instance is None:
+                continue
+            provider_cls = getattr(provider_instance, "provider_class", None)
+            if provider_cls is None or not inspect.isclass(provider_cls):
+                continue
+            policy = getattr(provider_cls, "degradation_policy", None)
+            if policy is not None:
+                return policy
+        if mod is not None and hasattr(mod, "default_degradation_policy"):
+            return mod.default_degradation_policy()
+        return None
+
+    def _resolve_cost_model(self, provider_instance):
+        """Item 84 — read the per-provider `CostModel` from the bonded
+        provider class. Returns None when the provider does not declare
+        one (the framework treats absence as "not metered" rather than
+        emitting zero-cost noise)."""
+        provider_cls = getattr(provider_instance, "provider_class", None)
+        if provider_cls is None or not inspect.isclass(provider_cls):
+            return None
+        return getattr(provider_cls, "cost_model", None)
+
+    def _tenant_id(self) -> str:
+        """Item 84 — best-effort tenant identifier for cost metric labels."""
+        team_id = getattr(self.requester, "team_id", None)
+        if team_id:
+            return str(team_id)
+        user_id = getattr(self.requester, "id", None)
+        if user_id:
+            return str(user_id)
+        return "unknown"
 
     def _backoff_sleep(self, base_ms: int, max_ms: int, jitter: float, attempt: int) -> None:
         """Exponential backoff with jitter; honors `max_ms` ceiling."""
@@ -1364,6 +1429,7 @@ class RotationManager(AbstractBLLManager, RouterMixin):
                     _sticky_invalidate(sticky_key, ability)
 
         attempted_providers = []
+        attempted_provider_instances: List[Any] = []
         last_exception = None
         policy_mod = self._load_rotation_policy_module()
 
@@ -1420,6 +1486,7 @@ class RotationManager(AbstractBLLManager, RouterMixin):
                 continue
 
             policy = self._resolve_rotation_policy(provider_instance)
+            attempted_provider_instances.append(provider_instance)
             transient_attempt = 0
             rate_limit_attempt = 0
             advance_after_loop = False
@@ -1433,6 +1500,25 @@ class RotationManager(AbstractBLLManager, RouterMixin):
                     logger.debug(
                         f"Successfully used provider instance: {provider_instance.name}"
                     )
+                    # Item 84 — emit per-tenant cost metric. Failure here
+                    # must NEVER fail the rotation call.
+                    cost_model = self._resolve_cost_model(provider_instance)
+                    if cost_model is not None:
+                        try:
+                            cost = cost_model((args, kwargs), result)
+                            key = (
+                                self._tenant_id(),
+                                str(getattr(provider_instance, "name", "unknown")),
+                                str(ability or "unknown"),
+                            )
+                            current = RotationManager._cost_counter.get(key, Decimal("0"))
+                            RotationManager._cost_counter[key] = current + Decimal(str(cost))
+                        except Exception as cost_exc:
+                            logger.warning(
+                                "cost_model raised for provider %s: %s",
+                                getattr(provider_instance, "name", "unknown"),
+                                cost_exc,
+                            )
                     # Item 51 — on a successful default-rotation attempt with a
                     # stickiness key, the winning provider becomes the new pin.
                     if sticky_key:
@@ -1534,6 +1620,65 @@ class RotationManager(AbstractBLLManager, RouterMixin):
             "attempted_providers": attempted_providers,
             "total_attempts": len(attempted_providers),
         }
+
+        # Item 48 — graceful degradation dispatch on chain exhaustion.
+        degradation = self._resolve_degradation_policy(attempted_provider_instances)
+        mode = getattr(degradation, "mode", None) if degradation else None
+        mode_value = getattr(mode, "value", mode)
+
+        if mode_value == "queue_and_retry":
+            store = RotationManager._outbox_store
+            if store is None:
+                raise HTTPException(status_code=500, detail=error_detail)
+            from logic.Outbox import OutboxEntry
+
+            first_pi = next(
+                (pi for pi in attempted_provider_instances if pi is not None),
+                None,
+            )
+            target_provider = str(getattr(first_pi, "name", "unknown")) if first_pi else "unknown"
+            entry = OutboxEntry(
+                operation_type="rotation_call",
+                target_provider=target_provider,
+                target_ability=str(ability or "unknown"),
+                payload={
+                    "rotation_id": str(self.target_id),
+                    "attempted_providers": [
+                        str(p.get("provider_instance_id"))
+                        for p in attempted_providers
+                    ],
+                },
+                idempotency_key=f"rotation:{self.target_id}:{uuid.uuid4()}",
+            )
+            tracking_id = store.enqueue(entry)
+            from extensions.ExternalErrors import QueuedForRetry
+
+            return QueuedForRetry(tracking_id=tracking_id)
+
+        if mode_value == "silent_drop":
+            first_pi = next(
+                (pi for pi in attempted_provider_instances if pi is not None),
+                None,
+            )
+            provider_name = (
+                str(getattr(first_pi, "name", "unknown")) if first_pi else "unknown"
+            )
+            ability_name = str(ability or "unknown")
+            key = (provider_name, ability_name)
+            RotationManager._silent_drop_counter[key] = (
+                RotationManager._silent_drop_counter.get(key, 0) + 1
+            )
+            logger.warning(
+                "provider_silent_drop provider=%s ability=%s rotation=%s "
+                "attempted=%d",
+                provider_name,
+                ability_name,
+                self.target_id,
+                len(attempted_providers),
+            )
+            from extensions.ExternalErrors import SilentDropped
+
+            return SilentDropped(provider=provider_name, ability=ability_name)
 
         raise HTTPException(status_code=500, detail=error_detail)
 

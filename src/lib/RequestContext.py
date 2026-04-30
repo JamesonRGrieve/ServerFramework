@@ -1,6 +1,11 @@
+import asyncio
+import contextvars
+import functools
+import inspect
 import time
+import uuid
 from contextvars import ContextVar
-from typing import Optional, Dict, Any
+from typing import Any, Callable, Coroutine, Dict, Optional, Union
 
 # Context variable to store current request's user information
 _request_user_context: ContextVar[Optional[Dict[str, Any]]] = ContextVar(
@@ -13,6 +18,16 @@ _request_user_context: ContextVar[Optional[Dict[str, Any]]] = ContextVar(
 # event bus) call `remaining_deadline_ms()` to scope their own timeouts.
 _request_deadline: ContextVar[Optional[float]] = ContextVar(
     "request_deadline", default=None
+)
+
+# Item 85 — per-request correlation id used to stitch together every
+# log line for a single inbound request. Derived at ingress either from
+# the W3C ``traceparent`` header (the 32-hex trace-id segment) or minted
+# as a fresh ``uuid4().hex`` when no traceparent is present. Propagates
+# across ``asyncio.to_thread`` and ``asyncio.create_task`` boundaries via
+# :func:`wrap_in_context`.
+_request_correlation_id: ContextVar[Optional[str]] = ContextVar(
+    "request_correlation_id", default=None
 )
 
 
@@ -95,7 +110,122 @@ def check_deadline_or_raise(layer: str = "unknown") -> None:
         raise DeadlineExceededError(elapsed_ms=-remaining if remaining < 0 else 0, layer=layer)
 
 
+# ----- Item 85 — correlation id ---------------------------------------------
+
+
+def set_correlation_id(value: Optional[str]) -> None:
+    """Item 85 — set the per-request correlation id. ``None`` clears it.
+
+    Inbound middleware derives the value at ingress: when a W3C
+    ``traceparent`` header is present, the 32-hex trace-id segment is used
+    so log lines correlate with distributed-tracing backends; otherwise a
+    fresh ``uuid4().hex`` is minted so every request still has an id.
+    """
+    _request_correlation_id.set(value)
+
+
+def get_correlation_id() -> Optional[str]:
+    """Item 85 — return the current request's correlation id, or None
+    when no inbound request is active (background workers, startup, etc.).
+    """
+    return _request_correlation_id.get()
+
+
+def clear_correlation_id() -> None:
+    """Item 85 — explicitly clear the correlation id. Folded into
+    :func:`clear_request_context`; exposed for symmetry with the
+    setters/getters and for tests that want to scrub a single field."""
+    _request_correlation_id.set(None)
+
+
+def mint_correlation_id() -> str:
+    """Item 85 — return a fresh hex correlation id. Inbound middleware
+    uses this when no ``traceparent`` header is present."""
+    return uuid.uuid4().hex
+
+
+def wrap_in_context(
+    target: Union[Callable[..., Any], Coroutine[Any, Any, Any]],
+    *args: Any,
+    **kwargs: Any,
+) -> Any:
+    """Item 85 — snapshot the current contextvars and bind them around a
+    coroutine or callable so the correlation id (and every other
+    contextvar) propagates across ``asyncio.to_thread`` /
+    ``asyncio.create_task`` boundaries.
+
+    The helper accepts either:
+
+    * a coroutine object — returns a new coroutine that, when awaited,
+      runs the original to completion under the snapshotted context.
+      Suitable for ``asyncio.create_task(wrap_in_context(my_coro()))``.
+    * a sync callable + ``*args`` / ``**kwargs`` — returns a zero-arg
+      callable that, when invoked, runs the function under the snapshot.
+      Suitable for
+      ``asyncio.to_thread(wrap_in_context(fn, *args, **kwargs))``.
+    * an async callable + ``*args`` / ``**kwargs`` — returns a coroutine
+      that runs the function under the snapshot.
+
+    Why a snapshot is needed: ``asyncio.to_thread`` runs the callable in
+    a worker thread; we use :meth:`contextvars.Context.run` to bind the
+    snapshot explicitly so the correlation id reaches the worker even
+    when a custom executor or older Python bypasses PEP 567 inheritance.
+    For coroutines the snapshot is bound by stepping the coroutine
+    inside ``ctx.run`` so each resumption observes the same contextvars.
+    """
+    ctx = contextvars.copy_context()
+
+    # Coroutine object — driver that steps the coroutine under the snapshot.
+    if inspect.iscoroutine(target):
+        return _drive_coro_in_context(ctx, target)
+
+    if not callable(target):
+        raise TypeError(
+            "wrap_in_context expected a coroutine or callable; "
+            f"got {type(target).__name__}"
+        )
+
+    # Async callable: return a coroutine that drives it under the snapshot.
+    if inspect.iscoroutinefunction(target):
+        coro = target(*args, **kwargs)  # type: ignore[misc]
+        return _drive_coro_in_context(ctx, coro)
+
+    # Sync callable: return a zero-arg callable to feed asyncio.to_thread.
+    @functools.wraps(target)  # type: ignore[arg-type]
+    def _runner_sync() -> Any:
+        return ctx.run(target, *args, **kwargs)  # type: ignore[arg-type]
+
+    return _runner_sync
+
+
+async def _drive_coro_in_context(
+    ctx: contextvars.Context, coro: Coroutine[Any, Any, Any]
+) -> Any:
+    """Step ``coro`` to completion with each ``send``/``throw`` executed
+    inside ``ctx``. Mirrors :class:`asyncio.Task`'s contextvar binding
+    semantics so explicit users get the same guarantees regardless of
+    whether the coroutine is later wrapped in a task or awaited directly.
+    """
+    value: Any = None
+    exc: Optional[BaseException] = None
+    while True:
+        try:
+            if exc is not None:
+                to_send = exc
+                exc = None
+                yielded = ctx.run(coro.throw, to_send)
+            else:
+                yielded = ctx.run(coro.send, value)
+        except StopIteration as stop:
+            return stop.value
+        try:
+            value = await yielded
+        except BaseException as e:
+            exc = e
+
+
 def clear_request_context() -> None:
     """Clear the request context"""
     _request_user_context.set(None)
     _request_deadline.set(None)
+    _request_correlation_id.set(None)

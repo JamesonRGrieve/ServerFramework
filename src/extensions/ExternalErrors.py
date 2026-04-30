@@ -306,6 +306,34 @@ def default_degradation_policy() -> DegradationPolicy:
     return DegradationPolicy()
 
 
+@dataclass(frozen=True)
+class QueuedForRetry:
+    """Item 48 — sentinel returned by `RotationManager.rotate` when the
+    active provider's `DegradationPolicy` is `QUEUE_AND_RETRY` and the
+    rotation chain has been exhausted.
+
+    Carries the outbox `tracking_id` so HTTP routes can render
+    ``{"status": "accepted", "tracking_id": ...}`` with status 202.
+    Callers that care about 202 semantics check
+    ``isinstance(result, QueuedForRetry)``.
+    """
+
+    tracking_id: str
+    status: str = "accepted"
+
+
+@dataclass(frozen=True)
+class SilentDropped:
+    """Item 48 — sentinel returned by `RotationManager.rotate` when the
+    active provider's `DegradationPolicy` is `SILENT_DROP` and the
+    rotation chain has been exhausted. The framework logs and emits the
+    `provider_silent_drop_total` metric before returning this sentinel.
+    """
+
+    provider: Optional[str] = None
+    ability: Optional[str] = None
+
+
 __all__ = [
     "BaseExternalError",
     "TransientExternalError",
@@ -324,4 +352,6 @@ __all__ = [
     "queue_and_retry",
     "silent_drop",
     "default_degradation_policy",
+    "QueuedForRetry",
+    "SilentDropped",
 ]

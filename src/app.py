@@ -37,6 +37,8 @@ from lib.Pydantic import ModelRegistry
 from lib.RequestContext import (
     DeadlineExceededError,
     clear_request_context,
+    mint_correlation_id,
+    set_correlation_id,
     set_request_deadline_ms,
     set_request_user,
 )
@@ -462,6 +464,27 @@ def build_app(model_registry: ModelRegistry):
                 # ProviderHTTPClient not on path (test isolation, etc.) — no-op.
                 traceparent_token = None
 
+        # Item 85 — derive the per-request correlation id. When a
+        # ``traceparent`` header is present, parse out the 32-hex
+        # trace-id segment so log lines correlate with distributed-
+        # tracing backends (W3C format:
+        # ``<version>-<trace-id>-<parent-id>-<flags>``). Otherwise mint
+        # a fresh ``uuid4().hex`` so every request still has an id.
+        correlation_id_value: Optional[str] = None
+        if traceparent_header:
+            parts = traceparent_header.split("-")
+            if len(parts) >= 2 and len(parts[1]) == 32:
+                # Strict W3C trace-id is 32 lowercase hex chars.
+                trace_id = parts[1]
+                try:
+                    int(trace_id, 16)
+                    correlation_id_value = trace_id
+                except ValueError:
+                    correlation_id_value = None
+        if correlation_id_value is None:
+            correlation_id_value = mint_correlation_id()
+        set_correlation_id(correlation_id_value)
+
         try:
             response = await call_next(request)
         except DeadlineExceededError as exc:
@@ -596,6 +619,36 @@ def build_app(model_registry: ModelRegistry):
 
         return JSONResponse(
             status_code=exc.status_code, content={"detail": detail}, headers=exc.headers
+        )
+
+    # Item 85 — generic uncaught-exception handler. Routes the exception
+    # to the configured ``ErrorReporter`` (Sentry, Rollbar, or no-op)
+    # after logging, so production deployments get a single integration
+    # point for error aggregation. The handler always returns a generic
+    # 500 — handlers above (HTTPException, RequestValidationError,
+    # JSONDecodeError) own the structured-error responses for the
+    # framework's typed failure modes.
+    @app.exception_handler(Exception)
+    async def unhandled_exception_handler(request: Request, exc: Exception):
+        from lib.Logging import get_error_reporter
+
+        logger.error(
+            f"Unhandled exception in {request.method} {request.url.path}: {exc}",
+            exc_info=True,
+        )
+        try:
+            get_error_reporter().report(
+                exc,
+                {"path": request.url.path, "method": request.method},
+            )
+        except Exception as reporter_error:
+            logger.warning(
+                "ErrorReporter.report raised; swallowing to avoid masking "
+                f"the original exception. ({reporter_error})"
+            )
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "Internal Server Error"},
         )
 
     # Add exception handler for request validation errors that might include JSON parsing issues

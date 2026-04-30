@@ -1,7 +1,20 @@
+import base64 as _b64
+import hmac
 import secrets
 import string
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Any, ClassVar, Dict, List, Optional, Type
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    ClassVar,
+    Dict,
+    List,
+    Literal,
+    Optional,
+    Tuple,
+    Type,
+)
 
 if TYPE_CHECKING:
     from logic.BLL_Auth import (
@@ -54,6 +67,110 @@ from logic.AbstractLogicManager import (
     StringSearchModel,
     UpdateMixinModel,
 )
+
+
+class InvalidGrantError(HTTPException):
+    """Raised when a passwordless grant cannot be validated or no validator
+    is registered for the requested grant_type."""
+
+    def __init__(self, detail: str = "Invalid grant") -> None:
+        super().__init__(status_code=401, detail=detail)
+
+
+class PendingSessionError(HTTPException):
+    """Raised when an authenticated request hits a session that is still in
+    the ``awaiting_approval`` pending state (Item 59 cross-device pairing)."""
+
+    def __init__(
+        self, detail: str = "Session is awaiting approval and cannot be used"
+    ) -> None:
+        super().__init__(status_code=401, detail=detail)
+
+
+class OneTimeTokenMixin(BaseModel):
+    """Reusable primitive for short-lived, single-use tokens hashed at rest.
+
+    Captures the recovery-code shape (see ``MultifactorRecoveryCodeModel`` —
+    next consumer) so passwordless extensions (magic-link Item 58, device
+    pairing Item 59) can share one verified implementation.
+    """
+
+    code_hash: str = Field(..., description="bcrypt hash of the raw code")
+    code_salt: str = Field(..., description="Salt used when hashing the code")
+    expires_at: datetime = Field(..., description="UTC expiry timestamp")
+    is_used: bool = Field(False, description="Whether this token has been redeemed")
+    used_at: Optional[datetime] = Field(
+        None, description="When this token was redeemed, if any"
+    )
+    created_ip: Optional[str] = Field(
+        None, description="IP address that generated the token"
+    )
+
+    def verify(self, submitted_code: str) -> bool:
+        """Constant-time verification of a submitted raw code."""
+        try:
+            computed = bcrypt.hashpw(
+                submitted_code.encode(), self.code_salt.encode()
+            ).decode()
+        except Exception:
+            return False
+        return hmac.compare_digest(computed, self.code_hash)
+
+    def mark_used(self) -> None:
+        self.is_used = True
+        self.used_at = datetime.now(timezone.utc)
+
+    @classmethod
+    def generate(cls, ttl_minutes: int) -> Tuple[str, "OneTimeTokenMixin"]:
+        """Generate 256 bits of entropy, return ``(raw_code, instance)``.
+
+        The raw code is base64url-encoded for URL safety; only the bcrypt
+        hash and salt are persisted. The instance can be merged into a
+        concrete subclass via ``.model_dump()``.
+        """
+        raw_bytes = secrets.token_bytes(32)
+        raw_code = _b64.urlsafe_b64encode(raw_bytes).rstrip(b"=").decode("ascii")
+        salt = bcrypt.gensalt()
+        code_hash = bcrypt.hashpw(raw_code.encode(), salt).decode()
+        instance = cls(
+            code_hash=code_hash,
+            code_salt=salt.decode(),
+            expires_at=datetime.now(timezone.utc) + timedelta(minutes=ttl_minutes),
+            is_used=False,
+            used_at=None,
+            created_ip=None,
+        )
+        return raw_code, instance
+
+
+class PasswordlessGrantRegistry:
+    """Process-global registry of passwordless grant validators.
+
+    Extensions (e.g. ``EXT_Auth_MagicLink``, ``EXT_Auth_DevicePairing``)
+    populate this at load time with a callable that maps a grant payload to
+    the resolved ``UserModel``. ``UserManager.login_via_grant`` dispatches
+    here without knowing the grant kinds.
+    """
+
+    _validators: ClassVar[Dict[str, Callable[[BaseModel], "UserModel"]]] = {}
+
+    @classmethod
+    def register(
+        cls, grant_type: str, validator: Callable[[BaseModel], "UserModel"]
+    ) -> None:
+        cls._validators[grant_type] = validator
+
+    @classmethod
+    def get(cls, grant_type: str) -> Callable[[BaseModel], "UserModel"]:
+        if grant_type not in cls._validators:
+            raise KeyError(
+                f"No passwordless grant validator registered for grant_type={grant_type!r}"
+            )
+        return cls._validators[grant_type]
+
+    @classmethod
+    def list_grant_types(cls) -> List[str]:
+        return list(cls._validators.keys())
 
 
 class UserModel(
@@ -765,6 +882,13 @@ class UserManager(AbstractBLLManager, RouterMixin):
             raise HTTPException(
                 status_code=401, detail="Session has been revoked"
             )
+        pending_state = (
+            session_dto["pending_state"]
+            if isinstance(session_dto, dict)
+            else getattr(session_dto, "pending_state", None)
+        )
+        if pending_state == "awaiting_approval":
+            raise PendingSessionError()
 
     @staticmethod
     def verify_token(
@@ -1360,6 +1484,78 @@ class UserManager(AbstractBLLManager, RouterMixin):
             # Close session if we created it
             if close_session:
                 model_registry.DB.session().close()
+
+    @staticmethod
+    def _issue_session(
+        user: "UserModel",
+        model_registry,
+        grant_type: Optional[str] = None,
+        pending_state: Optional[str] = None,
+    ) -> "SessionModel":
+        """Persist a fresh ``SessionModel`` for ``user`` and return it.
+
+        Shared by passwordless grant flows (``login_via_grant``); the legacy
+        password ``login`` keeps its inlined session creation for
+        bug-for-bug compatibility with the rest of its response shape.
+        """
+        user_id = user.id if hasattr(user, "id") else user["id"]
+        session_key = secrets.token_hex(16)
+        now = datetime.now(timezone.utc)
+        SessionModel.DB(model_registry.DB.manager.Base).create(
+            requester_id=user_id,
+            model_registry=model_registry,
+            user_id=user_id,
+            session_key=session_key,
+            jwt_issued_at=now,
+            device_type="web",
+            browser="unknown",
+            is_active=True,
+            last_activity=now,
+            expires_at=now + timedelta(days=30),
+            revoked=False,
+            trust_score=50,
+            grant_type=grant_type,
+            pending_state=pending_state,
+        )
+        return SessionModel(
+            id=None,
+            user_id=user_id,
+            session_key=session_key,
+            jwt_issued_at=now,
+            is_active=True,
+            last_activity=now,
+            expires_at=now + timedelta(days=30),
+            revoked=False,
+            trust_score=50,
+            requires_verification=False,
+            grant_type=grant_type,
+            pending_state=pending_state,
+        )
+
+    @staticmethod
+    def login_via_grant(
+        grant_type: str, grant_payload: BaseModel, model_registry=None
+    ) -> "SessionModel":
+        """Dispatch a passwordless grant to its registered validator and
+        issue a fresh session bound to the resolved user.
+
+        Extensions register validators via
+        ``PasswordlessGrantRegistry.register``. Validator raises any
+        domain-specific failure; we wrap the missing-grant case as
+        ``InvalidGrantError`` for a typed 401.
+        """
+        if model_registry is None:
+            raise ValueError("model_registry is required for login_via_grant")
+        try:
+            validator = PasswordlessGrantRegistry.get(grant_type)
+        except KeyError as exc:
+            raise InvalidGrantError(detail=str(exc))
+        user = validator(grant_payload)
+        if user is None:
+            raise InvalidGrantError(detail="Grant validator returned no user")
+        return UserManager._issue_session(
+            user=user, model_registry=model_registry, grant_type=grant_type
+        )
 
     def get(
         self,
@@ -5110,8 +5306,18 @@ class SessionModel(
         False, description="Whether this session has been explicitly revoked"
     )
     trust_score: int = Field(50, description="Trust level of this session (0-100)")
+    # Real DB column kept; relationship: when ``pending_state`` is added, a
+    # session in ``awaiting_approval`` implicitly requires verification.
     requires_verification: bool = Field(
         False, description="Whether additional verification is required"
+    )
+    grant_type: Optional[str] = Field(
+        None,
+        description="Identifier of the grant kind that issued this session (observability only)",
+    )
+    pending_state: Optional[Literal["awaiting_approval", "approved", "denied"]] = Field(
+        None,
+        description="Pending approval state for cross-device passwordless flows",
     )
 
     # Database metadata for SQLAlchemy generation
@@ -5193,6 +5399,13 @@ class SessionModel(
         requires_verification: Optional[bool] = Field(
             False, description="Whether additional verification is required"
         )
+        grant_type: Optional[str] = Field(
+            None,
+            description="Identifier of the grant kind that issued this session",
+        )
+        pending_state: Optional[
+            Literal["awaiting_approval", "approved", "denied"]
+        ] = Field(None, description="Pending approval state for passwordless flows")
 
     class Update(BaseModel):
         is_active: Optional[bool] = Field(
@@ -5216,6 +5429,9 @@ class SessionModel(
         refresh_token_hash: Optional[str] = Field(
             None, description="Hash of refresh token if refresh mechanism is enabled"
         )
+        pending_state: Optional[
+            Literal["awaiting_approval", "approved", "denied"]
+        ] = Field(None, description="Pending approval state for passwordless flows")
 
     class Search(ApplicationModel.Search, UserModel.Reference.ID.Search):
         session_key: Optional[StringSearchModel] = None
@@ -5226,6 +5442,8 @@ class SessionModel(
         browser: Optional[StringSearchModel] = None
         requires_verification: Optional[bool] = None
         trust_score: Optional[NumericalSearchModel] = None
+        grant_type: Optional[StringSearchModel] = None
+        pending_state: Optional[StringSearchModel] = None
 
 
 class SessionManager(AbstractBLLManager, RouterMixin):

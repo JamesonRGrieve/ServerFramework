@@ -12,14 +12,23 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from decimal import Decimal
+
+from extensions.CostModel import ConstantCostModel
 from extensions.ExternalErrors import (
     AuthExternalError,
     InvalidInputExternalError,
     PermanentExternalError,
+    QueuedForRetry,
     RateLimitExternalError,
     RotationPolicy,
+    SilentDropped,
     TransientExternalError,
+    fail_fast,
+    queue_and_retry,
+    silent_drop,
 )
+from logic.Outbox import InMemoryOutboxStore
 
 # `lib.Dependencies` is being mutated by a parallel agent and currently
 # fails to import in some sandboxed runs (`Optional[Any]` referenced
@@ -479,5 +488,155 @@ def test_sticky_no_routing_hint_no_pin():
     try:
         rm.rotate(lambda inst: "ok")
         assert len(_bll_mod._STICKY_SESSIONS) == 0
+    finally:
+        rm._restore_db()
+
+
+# ----- Item 48 degradation tests ------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _reset_observability_counters():
+    RotationManager.reset_observability_counters()
+    RotationManager.set_outbox_store(None)
+    yield
+    RotationManager.reset_observability_counters()
+    RotationManager.set_outbox_store(None)
+
+
+@pytest.mark.unit
+def test_exhausted_chain_fail_fast_raises_http_500():
+    a = MagicMock()
+    a.name = "prov-A"
+    a.provider_class = type("P", (), {"degradation_policy": fail_fast()})
+    rm = _make_rotation_manager_with_fake_instances([a])
+
+    def call(_inst):
+        raise TransientExternalError("503")
+
+    a.provider_class.rotation_policy = RotationPolicy(
+        transient_max_retries=0, transient_base_ms=1, transient_max_ms=1, transient_jitter=0.0
+    )
+    try:
+        from fastapi import HTTPException
+
+        with pytest.raises(HTTPException) as ei:
+            rm.rotate(call)
+        assert ei.value.status_code == 500
+    finally:
+        rm._restore_db()
+
+
+@pytest.mark.unit
+def test_exhausted_chain_queue_and_retry_returns_sentinel_and_writes_outbox():
+    a = MagicMock()
+    a.name = "prov-A"
+    a.provider_class = type(
+        "P",
+        (),
+        {
+            "degradation_policy": queue_and_retry(),
+            "rotation_policy": RotationPolicy(
+                transient_max_retries=0,
+                transient_base_ms=1,
+                transient_max_ms=1,
+                transient_jitter=0.0,
+            ),
+        },
+    )
+    store = InMemoryOutboxStore()
+    RotationManager.set_outbox_store(store)
+    rm = _make_rotation_manager_with_fake_instances([a])
+
+    def call(_inst):
+        raise TransientExternalError("503")
+
+    try:
+        result = rm.rotate(call, ability="charge.create")
+        assert isinstance(result, QueuedForRetry)
+        assert result.tracking_id
+        assert result.status == "accepted"
+        # Outbox should have one entry.
+        entry = store.find_by_idempotency_key_starts_with = None  # noqa: F841
+        # We didn't expose a "list" helper but enqueue returns the id; verify
+        # by claiming pending.
+        claimed = store.claim_pending(limit=10)
+        assert len(claimed) == 1
+        assert claimed[0].target_provider == "prov-A"
+        assert claimed[0].target_ability == "charge.create"
+    finally:
+        rm._restore_db()
+
+
+@pytest.mark.unit
+def test_exhausted_chain_silent_drop_returns_sentinel_and_increments_counter():
+    a = MagicMock()
+    a.name = "prov-A"
+    a.provider_class = type(
+        "P",
+        (),
+        {
+            "degradation_policy": silent_drop(),
+            "rotation_policy": RotationPolicy(
+                transient_max_retries=0,
+                transient_base_ms=1,
+                transient_max_ms=1,
+                transient_jitter=0.0,
+            ),
+        },
+    )
+    rm = _make_rotation_manager_with_fake_instances([a])
+
+    def call(_inst):
+        raise TransientExternalError("503")
+
+    try:
+        result = rm.rotate(call, ability="beacon.fire")
+        assert isinstance(result, SilentDropped)
+        assert result.provider == "prov-A"
+        assert result.ability == "beacon.fire"
+        counters = RotationManager.get_silent_drop_counter()
+        assert counters[("prov-A", "beacon.fire")] == 1
+    finally:
+        rm._restore_db()
+
+
+# ----- Item 84 cost-observability test -----------------------------------
+
+
+@pytest.mark.unit
+def test_successful_rotation_with_cost_model_increments_counter():
+    a = MagicMock()
+    a.name = "prov-A"
+    a.provider_class = type(
+        "P", (), {"cost_model": ConstantCostModel(per_call_usd=Decimal("0.25"))}
+    )
+    rm = _make_rotation_manager_with_fake_instances([a])
+    rm.requester = MagicMock(id="user-1", team_id="team-7")
+
+    try:
+        result = rm.rotate(lambda inst: "ok", ability="charge.create")
+        assert result == "ok"
+        counters = RotationManager.get_cost_counter()
+        assert counters[("team-7", "prov-A", "charge.create")] == Decimal("0.25")
+    finally:
+        rm._restore_db()
+
+
+@pytest.mark.unit
+def test_cost_model_failure_does_not_break_rotation():
+    a = MagicMock()
+    a.name = "prov-A"
+
+    class _Boom:
+        def __call__(self, request, response):
+            raise RuntimeError("model busted")
+
+    a.provider_class = type("P", (), {"cost_model": _Boom()})
+    rm = _make_rotation_manager_with_fake_instances([a])
+
+    try:
+        # Cost model raising must NOT fail the rotation call.
+        assert rm.rotate(lambda inst: "ok", ability="x") == "ok"
     finally:
         rm._restore_db()

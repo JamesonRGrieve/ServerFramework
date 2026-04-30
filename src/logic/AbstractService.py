@@ -8,7 +8,8 @@ import uuid
 from abc import ABC, abstractmethod
 from collections import deque
 from datetime import datetime, timezone
-from typing import Any, Callable, Deque, Dict, List, Literal, Optional, TypeVar
+from enum import Enum
+from typing import Any, Callable, ClassVar, Deque, Dict, List, Literal, Optional, Tuple, TypeVar
 
 from sqlalchemy.orm import Session
 
@@ -523,6 +524,12 @@ class ScheduledService(AbstractService):
 # ----- QueueConsumer ----------------------------------------------------------
 
 
+class JobPriority(str, Enum):
+    HIGH = "high"
+    NORMAL = "normal"
+    LOW = "low"
+
+
 class QueueSource(ABC):
     """Abstract pull-model queue source."""
 
@@ -541,6 +548,12 @@ class QueueSource(ABC):
     @abstractmethod
     async def move_to_dlq(self, item: dict, reason: str) -> None:
         ...
+
+    def tenant_key(self, item: Any) -> str:
+        return "_default"
+
+    def priority(self, item: Any) -> "JobPriority":
+        return JobPriority.NORMAL
 
 
 class InMemoryQueueSource(QueueSource):
@@ -631,6 +644,141 @@ class QueueConsumerService(AbstractService):
                     f" attempt {attempts}/{self.max_retries}; nacking. error={e}"
                 )
                 if self.queue_source is not None:
+                    await self.queue_source.nack(item)
+
+
+# ----- FairQueueConsumer ------------------------------------------------------
+
+
+class FairQueueConsumerService(QueueConsumerService):
+    """QueueConsumer with strict-priority lanes and per-tenant fair round-robin.
+
+    On each ``update()``: drains up to ``batch_size`` items from the source and
+    partitions them into ``_partitions[lane][tenant]`` deques; then dispatches
+    exactly one item using priority lane order (HIGH, NORMAL, LOW) with a
+    per-lane round-robin cursor across tenants. Dispatch invokes
+    ``self.handler(item)`` (defaults to ``self.process(item)``).
+    """
+
+    _drain_counter: ClassVar[Dict[Tuple[str, str], int]] = {}
+    _wait_summary: ClassVar[Dict[Tuple[str, str], Dict[str, float]]] = {}
+
+    _LANE_ORDER: ClassVar[Tuple[JobPriority, ...]] = (
+        JobPriority.HIGH,
+        JobPriority.NORMAL,
+        JobPriority.LOW,
+    )
+
+    def __init__(
+        self,
+        *args: Any,
+        batch_size: int = 16,
+        handler: Optional[Callable[[Any], Any]] = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(*args, **kwargs)
+        self.batch_size = batch_size
+        self._handler = handler
+        self._partitions: Dict[JobPriority, Dict[str, Deque[Tuple[Any, float]]]] = {
+            lane: {} for lane in self._LANE_ORDER
+        }
+        self._lane_cursors: Dict[JobPriority, int] = {lane: 0 for lane in self._LANE_ORDER}
+
+    async def handler(self, item: Any) -> None:
+        if self._handler is not None:
+            result = self._handler(item)
+            if asyncio.iscoroutine(result):
+                await result
+            return
+        await self.process(item)
+
+    async def _drain_into_partitions(self) -> None:
+        if self.queue_source is None:
+            return
+        for _ in range(self.batch_size):
+            item = await self.queue_source.pull_one()
+            if item is None:
+                break
+            lane = self.queue_source.priority(item)
+            tenant = self.queue_source.tenant_key(item)
+            self._partitions[lane].setdefault(tenant, deque()).append((item, time.time()))
+
+    def _select_next(self) -> Optional[Tuple[JobPriority, str, Any, float]]:
+        for lane in self._LANE_ORDER:
+            tenants_map = self._partitions[lane]
+            tenants = [t for t, q in tenants_map.items() if q]
+            if not tenants:
+                continue
+            tenants.sort()
+            cursor = self._lane_cursors[lane] % len(tenants)
+            tenant = tenants[cursor]
+            self._lane_cursors[lane] = (cursor + 1) % len(tenants)
+            item, enqueued_at = tenants_map[tenant].popleft()
+            return lane, tenant, item, enqueued_at
+        return None
+
+    @classmethod
+    def get_drain_counter(cls) -> Dict[Tuple[str, str], int]:
+        return dict(cls._drain_counter)
+
+    @classmethod
+    def get_wait_summary(cls) -> Dict[Tuple[str, str], Dict[str, float]]:
+        return {k: dict(v) for k, v in cls._wait_summary.items()}
+
+    @classmethod
+    def reset_metrics(cls) -> None:
+        cls._drain_counter = {}
+        cls._wait_summary = {}
+
+    def _record_metrics(self, lane: JobPriority, tenant: str, wait: float) -> None:
+        key = (tenant, lane.value)
+        cls = type(self)
+        cls._drain_counter[key] = cls._drain_counter.get(key, 0) + 1
+        summary = cls._wait_summary.get(key)
+        if summary is None:
+            cls._wait_summary[key] = {
+                "min": wait,
+                "max": wait,
+                "count": 1,
+                "sum": wait,
+            }
+        else:
+            summary["min"] = min(summary["min"], wait)
+            summary["max"] = max(summary["max"], wait)
+            summary["count"] = summary["count"] + 1
+            summary["sum"] = summary["sum"] + wait
+
+    async def update(self) -> None:  # type: ignore[override]
+        await self._drain_into_partitions()
+        selected = self._select_next()
+        if selected is None:
+            return
+        lane, tenant, item, enqueued_at = selected
+        wait = max(0.0, time.time() - enqueued_at)
+        key = self._item_key(item) if isinstance(item, dict) else str(id(item))
+        try:
+            await self.handler(item)
+            if self.queue_source is not None and isinstance(item, dict):
+                await self.queue_source.ack(item)
+            self._attempts.pop(key, None)
+            self._record_metrics(lane, tenant, wait)
+        except Exception as e:  # noqa: BLE001
+            attempts = self._attempts.get(key, 0) + 1
+            self._attempts[key] = attempts
+            if attempts > self.max_retries:
+                logger.error(
+                    f"FairQueueConsumerService {self.service_id}: item {key} exhausted"
+                    f" retries ({attempts}); moving to DLQ. error={e}"
+                )
+                if self.queue_source is not None and isinstance(item, dict):
+                    await self.queue_source.move_to_dlq(item, str(e))
+                self._attempts.pop(key, None)
+            else:
+                logger.warning(
+                    f"FairQueueConsumerService {self.service_id}: item {key} failed"
+                    f" attempt {attempts}/{self.max_retries}; nacking. error={e}"
+                )
+                if self.queue_source is not None and isinstance(item, dict):
                     await self.queue_source.nack(item)
 
 
