@@ -1834,6 +1834,11 @@ def register_route(
             return current
         return manager_instance
 
+    # Item 48 — best-effort 202/QueuedForRetry annotation for managers
+    # whose underlying provider declares ``QUEUE_AND_RETRY``. Empty for
+    # managers that do not opt in.
+    degradation_responses = _degradation_responses_annotation(manager_class)
+
     if route_type == RouteType.GET:
         path = "/{id}" if not parent_param_name else "/{id}"
         summary = f"Get {resource_name}" + (
@@ -1846,6 +1851,7 @@ def register_route(
             responses[200] = {
                 "content": {"application/json": {"example": examples["get"]}}
             }
+        responses.update(degradation_responses)
 
         get_query_dependency = create_query_model_dependency(network_model.GET)
 
@@ -1903,6 +1909,9 @@ def register_route(
                 result = actual_manager.get(
                     id=id, include=include_param, fields=fields_param
                 )
+
+                if (resp := _render_degradation_sentinel(result)) is not None:
+                    return resp
 
                 if result is None:
                     raise HTTPException(
@@ -2057,6 +2066,7 @@ def register_route(
             responses[200] = {
                 "content": {"application/json": {"example": examples["list"]}}
             }
+        responses.update(degradation_responses)
 
         list_query_dependency = create_query_model_dependency(network_model.LIST)
 
@@ -2172,6 +2182,9 @@ def register_route(
                     sort_order=query_params.sort_order or "asc",
                     **search_params,
                 )
+
+                if (resp := _render_degradation_sentinel(results)) is not None:
+                    return resp
 
                 # Serialize list items before constructing response model
                 serialized_results = serialize_for_response(results)
@@ -2310,6 +2323,7 @@ def register_route(
             responses[201] = {
                 "content": {"application/json": {"example": examples["create"]}}
             }
+        responses.update(degradation_responses)
 
         @router.post(
             path,
@@ -2424,6 +2438,7 @@ def register_route(
             responses[200] = {
                 "content": {"application/json": {"example": examples["update"]}}
             }
+        responses.update(degradation_responses)
 
         @router.put(
             path,
@@ -3218,6 +3233,9 @@ def register_custom_route(
             # Call the static method
             result = method(**method_args)
 
+            if (resp := _render_degradation_sentinel(result)) is not None:
+                return resp
+
             # Wrap result if needed
             if custom_route.response_model and isinstance(
                 custom_route.response_model, str
@@ -3262,6 +3280,9 @@ def register_custom_route(
                 result = method_func(**method_args, body=body)
             else:
                 result = method_func(**method_args)
+
+            if (resp := _render_degradation_sentinel(result)) is not None:
+                return resp
 
             # Wrap result if needed (same logic as static routes)
             if custom_route.response_model and isinstance(

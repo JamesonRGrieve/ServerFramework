@@ -1324,6 +1324,23 @@ class RotationManager(AbstractBLLManager, RouterMixin):
             return None
         return getattr(provider_cls, "cost_model", None)
 
+    def _estimate_pre_call_cost(self, cost_model, args, kwargs) -> Optional[Decimal]:
+        """Item 84 — best-effort pre-call cost estimate. Returns ``None``
+        when the cost model declines (raises) — TokenBasedCostModel-style
+        post-only models cannot pre-estimate, in which case the framework
+        skips the pre-check and relies on post-call true-up.
+        """
+        if cost_model is None:
+            return None
+        try:
+            cost = cost_model((args, kwargs), None)
+        except Exception:
+            return None
+        try:
+            return Decimal(str(cost))
+        except Exception:
+            return None
+
     def _emit_health_for(self, provider_instance) -> None:
         """Item 34 — best-effort: read the provider's health and emit
         ``provider_health_status{provider, status}`` as a gauge. Never
@@ -1768,6 +1785,13 @@ class RotationManager(AbstractBLLManager, RouterMixin):
                         )
                     return result
                 except Exception as exc:
+                    # Item 84 — USD-cap pre-check refusal must surface
+                    # immediately (operator-visible quota error), not get
+                    # absorbed by the back-compat advance path.
+                    from serverframework.logic.Quota import QuotaExhaustedError as _QE
+
+                    if isinstance(exc, _QE):
+                        raise
                     # Item 34 — emit per-attempt failure counter. Skip
                     # rate-limit (we stay on the same provider, the
                     # attempt continues on the next iteration) but emit

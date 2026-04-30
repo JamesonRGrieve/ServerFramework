@@ -193,7 +193,7 @@ class RetentionService:
         now: datetime,
         report: RetentionPassReport,
     ) -> None:
-        if reg.policy.under_legal_hold():
+        if reg.policy.under_legal_hold() and not self.is_released(reg.name):
             cutoff = _cutoff_for(reg.policy, now)
             if cutoff is None:
                 return
@@ -309,10 +309,12 @@ def make_retention_scheduled_service(
     inner = RetentionService(registrations, audit_emit=audit_emit)
 
     class _RetentionScheduled(ScheduledService):
+        retention_service: RetentionService = inner  # type: ignore[assignment]
+
         async def update(self) -> None:
             inner.run_pass()
 
-    return _RetentionScheduled(
+    scheduled = _RetentionScheduled(
         requester_id=requester_id,
         service_id=service_id,
         interval_seconds=interval_seconds,
@@ -320,6 +322,8 @@ def make_retention_scheduled_service(
         cron_evaluator=cron_evaluator,
         state_store=state_store,
     )
+    scheduled.retention_service = inner
+    return scheduled
 
 
 __all__ = [
