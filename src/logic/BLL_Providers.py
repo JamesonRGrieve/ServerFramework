@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field, model_validator
 from database.DatabaseManager import DatabaseManager
 from lib.Environment import env
 from lib.Logging import logger
+from lib.Metrics import get_metrics_backend
 from lib.Pydantic import BaseModel
 from lib.Pydantic2FastAPI import AuthType, RouterMixin
 from logic.AbstractLogicManager import (
@@ -1133,6 +1134,20 @@ class RotationModel(
         description: Optional[StringSearchModel] = None
 
 
+# Item 34 — telemetry helper. Wraps individual `counter`/`histogram`/
+# `gauge` calls so a misbehaving metrics backend can NEVER fail a
+# rotation call. Span enter/exit calls in `RotationManager.rotate`
+# follow the same swallow-and-log pattern inline.
+
+
+def _safe_metric(fn, *args, **kwargs):
+    """Invoke ``fn(*args, **kwargs)``; log-and-swallow any exception."""
+    try:
+        fn(*args, **kwargs)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(f"telemetry call failed (ignored): {exc}")
+
+
 class RotationManager(AbstractBLLManager, RouterMixin):
     _model = RotationModel
 
@@ -1442,8 +1457,66 @@ class RotationManager(AbstractBLLManager, RouterMixin):
 
         attempted_providers = []
         attempted_provider_instances: List[Any] = []
-        last_exception = None
         policy_mod = self._load_rotation_policy_module()
+
+        # Item 34 — parent rotation span. Telemetry must NEVER fail the
+        # rotation, so the span is driven through the explicit cm
+        # protocol with try/except around every interaction.
+        metrics = get_metrics_backend()
+        rotate_span_cm = None
+        try:
+            rotate_span_cm = metrics.span(
+                "rotation.rotate",
+                target_id=str(self.target_id),
+                ability=str(ability or "unknown"),
+            )
+            rotate_span_cm.__enter__()
+        except Exception as _exc:  # noqa: BLE001
+            logger.debug(f"telemetry span open failed (ignored): {_exc}")
+            rotate_span_cm = None
+
+        try:
+            return self._rotate_chain(
+                callable_func,
+                args,
+                kwargs,
+                ordered_chain=ordered_chain,
+                ability=ability,
+                sticky_key=sticky_key,
+                policy_mod=policy_mod,
+                attempted_providers=attempted_providers,
+                attempted_provider_instances=attempted_provider_instances,
+                metrics=metrics,
+            )
+        finally:
+            if rotate_span_cm is not None:
+                try:
+                    rotate_span_cm.__exit__(None, None, None)
+                except Exception as _exc:  # noqa: BLE001
+                    logger.debug(f"telemetry span close failed (ignored): {_exc}")
+
+    def _rotate_chain(
+        self,
+        callable_func,
+        args,
+        kwargs,
+        *,
+        ordered_chain,
+        ability,
+        sticky_key,
+        policy_mod,
+        attempted_providers,
+        attempted_provider_instances,
+        metrics,
+    ):
+        """Item 34 — extracted body of `rotate()` so the parent
+        rotation span (and the attempt-span / metrics emissions) can
+        wrap the chain-walk without re-indenting the whole method.
+        """
+        from fastapi import HTTPException
+
+        last_exception = None
+        attempt_index = -1
 
         for rpi in ordered_chain:
             # Item 2: skip providers still inside their auth cooldown window.
@@ -1502,13 +1575,64 @@ class RotationManager(AbstractBLLManager, RouterMixin):
             transient_attempt = 0
             rate_limit_attempt = 0
             advance_after_loop = False
+            # Item 34 — attempt-span: one span per outer-loop attempt.
+            # `attempt_index` increments per outer-loop iteration so the
+            # multi-provider chain shows up as N children of the parent.
+            attempt_index += 1
 
             while True:
+                # Item 34 — open a child span per inner-loop attempt and
+                # measure latency. Telemetry MUST never derail the
+                # rotation, so the span open and the metric emissions
+                # are individually wrapped in try/except.
+                attempt_span_cm = None
+                try:
+                    attempt_span_cm = metrics.span(
+                        "rotation.attempt",
+                        provider=getattr(provider_instance, "name", "unknown"),
+                        attempt_index=attempt_index,
+                        transient_attempt=transient_attempt,
+                    )
+                    attempt_span_cm.__enter__()
+                except Exception as _exc:  # noqa: BLE001
+                    logger.debug(f"telemetry attempt-span enter failed (ignored): {_exc}")
+                    attempt_span_cm = None
+                attempt_started_at = time.monotonic()
                 try:
                     logger.debug(
                         f"Attempting to use provider instance: {provider_instance.name}"
                     )
                     result = callable_func(provider_instance, *args, **kwargs)
+                    # Success metrics — Item 34. Emission is best-effort.
+                    elapsed_ms = (time.monotonic() - attempt_started_at) * 1000.0
+                    _safe_metric(
+                        metrics.histogram,
+                        "rotation.attempt.latency_ms",
+                        elapsed_ms,
+                        labels={
+                            "provider": str(getattr(provider_instance, "name", "unknown")),
+                            "ability": str(ability or "unknown"),
+                        },
+                    )
+                    _safe_metric(
+                        metrics.counter,
+                        "rotation.attempt.success",
+                        labels={
+                            "provider": str(getattr(provider_instance, "name", "unknown")),
+                            "ability": str(ability or "unknown"),
+                        },
+                    )
+                    _safe_metric(
+                        metrics.counter,
+                        "rotation.success_total",
+                        labels={"ability": str(ability or "unknown")},
+                    )
+                    _safe_metric(
+                        metrics.histogram,
+                        "rotation.attempts_until_success",
+                        float(attempt_index),
+                        labels={"ability": str(ability or "unknown")},
+                    )
                     logger.debug(
                         f"Successfully used provider instance: {provider_instance.name}"
                     )
@@ -1539,6 +1663,12 @@ class RotationManager(AbstractBLLManager, RouterMixin):
                         )
                     return result
                 except Exception as exc:
+                    # Item 34 — emit per-attempt failure counter. Skip
+                    # rate-limit (we stay on the same provider, the
+                    # attempt continues on the next iteration) but emit
+                    # for auth/transient-exhausted/bare so dashboards
+                    # see real failures rather than back-pressure.
+                    _failure_already_counted = False
                     # Item 2 dispatch — only when the typed error module is loaded.
                     if policy_mod is not None and isinstance(
                         exc, getattr(policy_mod, "BaseExternalError", ())
@@ -1583,6 +1713,16 @@ class RotationManager(AbstractBLLManager, RouterMixin):
                                     "error": f"auth: {exc}",
                                 }
                             )
+                            _safe_metric(
+                                metrics.counter,
+                                "rotation.attempt.failure",
+                                labels={
+                                    "provider": str(getattr(provider_instance, "name", "unknown")),
+                                    "ability": str(ability or "unknown"),
+                                    "error_class": type(exc).__name__,
+                                },
+                            )
+                            _failure_already_counted = True
                             last_exception = exc
                             advance_after_loop = True
                             break
@@ -1604,6 +1744,16 @@ class RotationManager(AbstractBLLManager, RouterMixin):
                                     "error": f"transient (exhausted): {exc}",
                                 }
                             )
+                            _safe_metric(
+                                metrics.counter,
+                                "rotation.attempt.failure",
+                                labels={
+                                    "provider": str(getattr(provider_instance, "name", "unknown")),
+                                    "ability": str(ability or "unknown"),
+                                    "error_class": type(exc).__name__,
+                                },
+                            )
+                            _failure_already_counted = True
                             last_exception = exc
                             advance_after_loop = True
                             break
@@ -1619,9 +1769,31 @@ class RotationManager(AbstractBLLManager, RouterMixin):
                             "error": str(exc),
                         }
                     )
+                    if not _failure_already_counted:
+                        _safe_metric(
+                            metrics.counter,
+                            "rotation.attempt.failure",
+                            labels={
+                                "provider": str(getattr(provider_instance, "name", "unknown")),
+                                "ability": str(ability or "unknown"),
+                                "error_class": type(exc).__name__,
+                            },
+                        )
                     last_exception = exc
                     advance_after_loop = True
                     break
+                finally:
+                    # Item 34 — close the attempt span on every exit
+                    # path (success-return, retry-continue, advance-break,
+                    # surface-raise). Telemetry must NEVER fail rotation,
+                    # so the close is wrapped.
+                    if attempt_span_cm is not None:
+                        try:
+                            attempt_span_cm.__exit__(None, None, None)
+                        except Exception as _exc:  # noqa: BLE001
+                            logger.debug(
+                                f"telemetry attempt-span close failed (ignored): {_exc}"
+                            )
 
             if advance_after_loop:
                 continue
@@ -1632,6 +1804,15 @@ class RotationManager(AbstractBLLManager, RouterMixin):
             "attempted_providers": attempted_providers,
             "total_attempts": len(attempted_providers),
         }
+
+        # Item 34 — chain-exhaustion counter. Always emit on full
+        # exhaustion regardless of degradation policy so on-call sees
+        # the rotation give up before the policy decides what to do.
+        _safe_metric(
+            metrics.counter,
+            "rotation.exhausted_total",
+            labels={"ability": str(ability or "unknown")},
+        )
 
         # Item 48 — graceful degradation dispatch on chain exhaustion.
         degradation = self._resolve_degradation_policy(attempted_provider_instances)

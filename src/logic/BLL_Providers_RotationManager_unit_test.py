@@ -15,6 +15,11 @@ import pytest
 from decimal import Decimal
 
 from extensions.CostModel import ConstantCostModel
+from lib.Metrics import (
+    InMemoryMetricsBackend,
+    reset_metrics_backend,
+    set_metrics_backend,
+)
 from extensions.ExternalErrors import (
     AuthExternalError,
     InvalidInputExternalError,
@@ -640,3 +645,205 @@ def test_cost_model_failure_does_not_break_rotation():
         assert rm.rotate(lambda inst: "ok", ability="x") == "ok"
     finally:
         rm._restore_db()
+
+
+# ----- Item 34 — distributed-tracing + provider-call metrics -------------
+
+
+@pytest.mark.unit
+def test_rotation_emits_attempt_spans_and_metrics_for_multi_provider_chain():
+    """Item 34: a 3-provider rotation where the first 2 fail with
+    `TransientExternalError` (zero retries configured) and the 3rd
+    succeeds should record:
+
+      - 1 parent rotation span enclosing 3 attempt-children,
+      - `rotation.attempt.failure` == 2,
+      - `rotation.attempt.success` == 1,
+      - `rotation.success_total` == 1.
+
+    Uses the real `InMemoryMetricsBackend` — no mocks per the no-mock
+    pillar in AGENTS.md.
+    """
+    backend = InMemoryMetricsBackend()
+    set_metrics_backend(backend)
+    try:
+        zero_retry_policy = RotationPolicy(
+            transient_max_retries=0,
+            transient_base_ms=1,
+            transient_max_ms=1,
+            transient_jitter=0.0,
+        )
+        a = MagicMock()
+        a.name = "prov-A"
+        a.provider_class = type("PA", (), {"rotation_policy": zero_retry_policy})
+        b = MagicMock()
+        b.name = "prov-B"
+        b.provider_class = type("PB", (), {"rotation_policy": zero_retry_policy})
+        c = MagicMock()
+        c.name = "prov-C"
+        c.provider_class = type("PC", (), {"rotation_policy": zero_retry_policy})
+
+        rm = _make_rotation_manager_with_fake_instances([a, b, c])
+        seen: list = []
+
+        def call(inst):
+            seen.append(inst.name)
+            if inst.name in ("prov-A", "prov-B"):
+                raise TransientExternalError("503")
+            return "C-ok"
+
+        try:
+            result = rm.rotate(call, ability="charge.create")
+            assert result == "C-ok"
+            assert seen == ["prov-A", "prov-B", "prov-C"]
+        finally:
+            rm._restore_db()
+
+        # ----- span tree -------------------------------------------------
+        rotation_spans = [s for s in backend.spans if s["name"] == "rotation.rotate"]
+        attempt_spans = [s for s in backend.spans if s["name"] == "rotation.attempt"]
+        assert len(rotation_spans) == 1
+        assert len(attempt_spans) == 3
+        # Every attempt should point at the rotation span as parent.
+        parent_id = id(rotation_spans[0])
+        for s in attempt_spans:
+            assert s["parent"] == parent_id
+        # attempt_index increments 0/1/2; provider names tagged.
+        assert [s["tags"]["attempt_index"] for s in attempt_spans] == [0, 1, 2]
+        assert [s["tags"]["provider"] for s in attempt_spans] == [
+            "prov-A",
+            "prov-B",
+            "prov-C",
+        ]
+
+        # ----- counters --------------------------------------------------
+        # Failure counter: 1 per failed provider, labelled by provider+error_class.
+        a_fail_key = (
+            "rotation.attempt.failure",
+            frozenset(
+                {
+                    ("provider", "prov-A"),
+                    ("ability", "charge.create"),
+                    ("error_class", "TransientExternalError"),
+                }
+            ),
+        )
+        b_fail_key = (
+            "rotation.attempt.failure",
+            frozenset(
+                {
+                    ("provider", "prov-B"),
+                    ("ability", "charge.create"),
+                    ("error_class", "TransientExternalError"),
+                }
+            ),
+        )
+        assert backend.counters[a_fail_key] == 1.0
+        assert backend.counters[b_fail_key] == 1.0
+        total_failures = sum(
+            v for (n, _), v in backend.counters.items()
+            if n == "rotation.attempt.failure"
+        )
+        assert total_failures == 2.0
+
+        # Success counter: 1 for prov-C.
+        c_success_key = (
+            "rotation.attempt.success",
+            frozenset(
+                {("provider", "prov-C"), ("ability", "charge.create")}
+            ),
+        )
+        assert backend.counters[c_success_key] == 1.0
+
+        # rotation.success_total: 1 for the whole rotation.
+        success_total_key = (
+            "rotation.success_total",
+            frozenset({("ability", "charge.create")}),
+        )
+        assert backend.counters[success_total_key] == 1.0
+
+        # No exhaustion counter — chain succeeded on the 3rd provider.
+        assert not any(
+            n == "rotation.exhausted_total" for (n, _) in backend.counters
+        )
+    finally:
+        reset_metrics_backend()
+
+
+@pytest.mark.unit
+def test_rotation_emits_exhausted_counter_when_chain_exhausted():
+    """Item 34: when every provider in the chain fails and the
+    degradation policy raises HTTPException, `rotation.exhausted_total`
+    increments exactly once."""
+    backend = InMemoryMetricsBackend()
+    set_metrics_backend(backend)
+    try:
+        zero_retry_policy = RotationPolicy(
+            transient_max_retries=0,
+            transient_base_ms=1,
+            transient_max_ms=1,
+            transient_jitter=0.0,
+        )
+        a = MagicMock()
+        a.name = "prov-A"
+        a.provider_class = type(
+            "PA",
+            (),
+            {
+                "rotation_policy": zero_retry_policy,
+                "degradation_policy": fail_fast(),
+            },
+        )
+        rm = _make_rotation_manager_with_fake_instances([a])
+
+        def call(_inst):
+            raise TransientExternalError("503")
+
+        try:
+            from fastapi import HTTPException
+
+            with pytest.raises(HTTPException):
+                rm.rotate(call, ability="x")
+        finally:
+            rm._restore_db()
+
+        exhausted_key = (
+            "rotation.exhausted_total",
+            frozenset({("ability", "x")}),
+        )
+        assert backend.counters[exhausted_key] == 1.0
+    finally:
+        reset_metrics_backend()
+
+
+@pytest.mark.unit
+def test_rotation_telemetry_failure_does_not_break_rotation():
+    """Item 34: a misbehaving metrics backend must NEVER fail the
+    rotation. Install a backend whose every method raises and assert
+    rotation still returns the callable's success value."""
+    from lib.Metrics import MetricsBackend
+
+    class BoomBackend(MetricsBackend):
+        def counter(self, *a, **k):
+            raise RuntimeError("boom")
+
+        def gauge(self, *a, **k):
+            raise RuntimeError("boom")
+
+        def histogram(self, *a, **k):
+            raise RuntimeError("boom")
+
+        def span(self, *a, **k):
+            raise RuntimeError("boom")
+
+    set_metrics_backend(BoomBackend())
+    try:
+        a = MagicMock()
+        a.name = "prov-A"
+        rm = _make_rotation_manager_with_fake_instances([a])
+        try:
+            assert rm.rotate(lambda inst: "ok", ability="x") == "ok"
+        finally:
+            rm._restore_db()
+    finally:
+        reset_metrics_backend()
