@@ -1062,6 +1062,91 @@ class ExampleGenerator:
         return ExampleGenerator._boolean_generators.copy()
 
 
+def _render_degradation_sentinel(result: Any) -> Optional[Response]:
+    """Item 48 — convert rotation degradation sentinels into HTTP responses.
+
+    Returns ``None`` when ``result`` is not a degradation sentinel so the
+    caller can fall through to the regular response path.
+    """
+    try:
+        from serverframework.extensions.ExternalErrors import (
+            QueuedForRetry,
+            SilentDropped,
+        )
+    except Exception:
+        return None
+    if isinstance(result, QueuedForRetry):
+        return JSONResponse(
+            status_code=status.HTTP_202_ACCEPTED,
+            content={"status": "accepted", "tracking_id": result.tracking_id},
+        )
+    if isinstance(result, SilentDropped):
+        return JSONResponse(
+            status_code=status.HTTP_200_OK,
+            content={
+                "status": "silent_dropped",
+                "provider": result.provider,
+                "ability": result.ability,
+            },
+        )
+    return None
+
+
+def _degradation_responses_annotation(manager_class: Any) -> Dict[int, Dict[str, Any]]:
+    """Item 48 — build OpenAPI ``responses`` entries for managers whose
+    underlying provider declares ``degradation_policy = QUEUE_AND_RETRY``.
+
+    Best-effort: returns an empty dict if the manager does not expose any
+    introspectable degradation policy. The 202 entry is intentionally
+    additive — callers merge the result into their existing ``responses``
+    dict so the existing 200/201 entries are preserved.
+    """
+    try:
+        from serverframework.extensions.ExternalErrors import (
+            DegradationMode,
+            QueuedForRetryModel,
+        )
+    except Exception:
+        return {}
+
+    # Look for a ``degradation_policy`` attribute on the manager itself or
+    # any of its declared providers / provider chain. The probe is
+    # deliberately permissive — anything raising during introspection is
+    # treated as "no annotation" so OpenAPI generation is never broken.
+    candidates: List[Any] = []
+    if manager_class is not None:
+        candidates.append(manager_class)
+        for attr in ("provider", "providers", "_provider", "_providers"):
+            value = getattr(manager_class, attr, None)
+            if value is None:
+                continue
+            if isinstance(value, (list, tuple, set)):
+                candidates.extend(value)
+            else:
+                candidates.append(value)
+
+    for cand in candidates:
+        try:
+            policy = getattr(cand, "degradation_policy", None)
+            if policy is None:
+                continue
+            mode = getattr(policy, "mode", None)
+            mode_value = getattr(mode, "value", mode)
+            if mode_value == getattr(DegradationMode.QUEUE_AND_RETRY, "value", "queue_and_retry"):
+                return {
+                    202: {
+                        "model": QueuedForRetryModel,
+                        "description": (
+                            "Operation queued for retry; poll tracking_id "
+                            "for completion"
+                        ),
+                    }
+                }
+        except Exception:
+            continue
+    return {}
+
+
 class AuthType(Enum):
     """Authentication types supported by the API."""
 
@@ -1749,6 +1834,11 @@ def register_route(
             return current
         return manager_instance
 
+    # Item 48 — best-effort 202/QueuedForRetry annotation for managers
+    # whose underlying provider declares ``QUEUE_AND_RETRY``. Empty for
+    # managers that do not opt in.
+    degradation_responses = _degradation_responses_annotation(manager_class)
+
     if route_type == RouteType.GET:
         path = "/{id}" if not parent_param_name else "/{id}"
         summary = f"Get {resource_name}" + (
@@ -1761,6 +1851,7 @@ def register_route(
             responses[200] = {
                 "content": {"application/json": {"example": examples["get"]}}
             }
+        responses.update(degradation_responses)
 
         get_query_dependency = create_query_model_dependency(network_model.GET)
 
@@ -1818,6 +1909,9 @@ def register_route(
                 result = actual_manager.get(
                     id=id, include=include_param, fields=fields_param
                 )
+
+                if (resp := _render_degradation_sentinel(result)) is not None:
+                    return resp
 
                 if result is None:
                     raise HTTPException(
@@ -1972,6 +2066,7 @@ def register_route(
             responses[200] = {
                 "content": {"application/json": {"example": examples["list"]}}
             }
+        responses.update(degradation_responses)
 
         list_query_dependency = create_query_model_dependency(network_model.LIST)
 
@@ -2087,6 +2182,9 @@ def register_route(
                     sort_order=query_params.sort_order or "asc",
                     **search_params,
                 )
+
+                if (resp := _render_degradation_sentinel(results)) is not None:
+                    return resp
 
                 # Serialize list items before constructing response model
                 serialized_results = serialize_for_response(results)
@@ -2225,6 +2323,7 @@ def register_route(
             responses[201] = {
                 "content": {"application/json": {"example": examples["create"]}}
             }
+        responses.update(degradation_responses)
 
         @router.post(
             path,
@@ -2259,7 +2358,10 @@ def register_route(
                                 parent_param_name
                             ]
                         actual_manager: Any = get_manager(manager, manager_property)
-                        items.append(actual_manager.create(**item_data))
+                        created = actual_manager.create(**item_data)
+                        if (resp := _render_degradation_sentinel(created)) is not None:
+                            return resp
+                        items.append(created)
                     return network_model.ResponsePlural(
                         **{resource_name_plural: serialize_for_response(items)}
                     )
@@ -2278,6 +2380,8 @@ def register_route(
                     created_instance = get_manager(manager, manager_property).create(
                         **item_data
                     )
+                    if (resp := _render_degradation_sentinel(created_instance)) is not None:
+                        return resp
                     logger.debug(
                         f"Type of created_instance: {type(created_instance)}"
                     )
@@ -2334,6 +2438,7 @@ def register_route(
             responses[200] = {
                 "content": {"application/json": {"example": examples["update"]}}
             }
+        responses.update(degradation_responses)
 
         @router.put(
             path,
@@ -2372,6 +2477,10 @@ def register_route(
                 actual_manager = get_manager(manager, manager_property)
                 try:
                     update_result = actual_manager.update(id, **update_data)
+                    if (
+                        resp := _render_degradation_sentinel(update_result)
+                    ) is not None:
+                        return resp
                 except HTTPException as he:
                     # If update fails with 404 (often due to read-permission checks
                     # performed inside manager.update which calls get()), attempt a
@@ -3124,6 +3233,9 @@ def register_custom_route(
             # Call the static method
             result = method(**method_args)
 
+            if (resp := _render_degradation_sentinel(result)) is not None:
+                return resp
+
             # Wrap result if needed
             if custom_route.response_model and isinstance(
                 custom_route.response_model, str
@@ -3168,6 +3280,9 @@ def register_custom_route(
                 result = method_func(**method_args, body=body)
             else:
                 result = method_func(**method_args)
+
+            if (resp := _render_degradation_sentinel(result)) is not None:
+                return resp
 
             # Wrap result if needed (same logic as static routes)
             if custom_route.response_model and isinstance(

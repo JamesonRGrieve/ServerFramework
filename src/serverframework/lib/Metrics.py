@@ -583,3 +583,37 @@ def reset_metrics_backend() -> None:
     """Test helper: restore the default :class:`NoopMetricsBackend`."""
     global _active_backend
     _active_backend = NoopMetricsBackend()
+
+
+# ---------------------------------------------------------------------------
+# Item 34 — per-provider health gauge
+# ---------------------------------------------------------------------------
+
+
+_HEALTH_GAUGE_VALUES: Dict[str, float] = {
+    "ok": 1.0,
+    "degraded": 0.5,
+    "down": 0.0,
+}
+
+
+def emit_provider_health_gauge(provider_name: str, status: Any) -> None:
+    """Emit ``provider_health_status{provider, status}`` as a gauge.
+
+    Numeric mapping: OK -> 1.0, DEGRADED -> 0.5, DOWN -> 0.0. The
+    ``status`` argument accepts either a ``HealthStatus`` enum (whose
+    ``.value`` is read) or a bare string. Unknown values map to 0.0
+    so dashboards err on the safe side.
+    """
+    raw = getattr(status, "value", status)
+    key = str(raw).lower()
+    value = _HEALTH_GAUGE_VALUES.get(key, 0.0)
+    backend = get_metrics_backend()
+    try:
+        backend.gauge(
+            "provider_health_status",
+            value,
+            labels={"provider": str(provider_name), "status": key},
+        )
+    except Exception:
+        return None

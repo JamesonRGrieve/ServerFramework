@@ -21,7 +21,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, ClassVar, Optional
+from typing import Any, Callable, ClassVar, Literal, Optional
+
+from pydantic import BaseModel
 
 
 class BaseExternalError(Exception):
@@ -334,6 +336,22 @@ class SilentDropped:
     ability: Optional[str] = None
 
 
+# Item 48 — OpenAPI surface model for QUEUE_AND_RETRY 202 responses.
+class QueuedForRetryModel(BaseModel):
+    """OpenAPI representation of a `QueuedForRetry` 202 response body."""
+
+    tracking_id: str
+    status: Literal["accepted"] = "accepted"
+
+
+class SilentDroppedModel(BaseModel):
+    """OpenAPI representation of a `SilentDropped` 200 response body."""
+
+    status: Literal["silent_dropped"] = "silent_dropped"
+    provider: Optional[str] = None
+    ability: Optional[str] = None
+
+
 __all__ = [
     "BaseExternalError",
     "TransientExternalError",
@@ -354,4 +372,6 @@ __all__ = [
     "default_degradation_policy",
     "QueuedForRetry",
     "SilentDropped",
+    "QueuedForRetryModel",
+    "SilentDroppedModel",
 ]

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import threading
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Any, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -112,6 +113,12 @@ class Quota(BaseModel):
     )
     consumed: int = 0
     unit: UnitLiteral = "call"
+    # Item 84 — optional per-quota USD ceiling. When non-None the row also
+    # caps spend in USD: the framework refuses any pre-call where the
+    # in-period cost would exceed `(limit_usd - consumed_usd)`. A None
+    # value preserves token/call-only semantics (back-compat).
+    limit_usd: Optional[Decimal] = None
+    consumed_usd: Decimal = Decimal("0")
 
     # --- Convenience predicates -----------------------------------------
 
@@ -122,6 +129,19 @@ class Quota(BaseModel):
     def is_exhausted(self, additional: int = 0) -> bool:
         """True if consuming ``additional`` more units would exceed limit."""
         return (self.consumed + additional) > self.limit
+
+    def remaining_usd(self) -> Optional[Decimal]:
+        """USD headroom left in the period. ``None`` if no USD cap is set."""
+        if self.limit_usd is None:
+            return None
+        return self.limit_usd - self.consumed_usd
+
+    def is_usd_exhausted(self, additional: Decimal = Decimal("0")) -> bool:
+        """True if spending ``additional`` more USD would exceed ``limit_usd``.
+        Always False when ``limit_usd`` is None (no cap configured)."""
+        if self.limit_usd is None:
+            return False
+        return (self.consumed_usd + additional) > self.limit_usd
 
 
 # ---------------------------------------------------------------------------
