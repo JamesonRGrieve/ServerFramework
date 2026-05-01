@@ -32,16 +32,16 @@ The eight gating items that must land before provider authorship are:
 2. ~~Item 2 — Failure classification and rotation policy.~~ ✅
 3. ~~Item 4 — Idempotency primitive for external operations.~~ ✅
 4. ~~Item 5 — Inbound webhook handler infrastructure.~~ ✅
-5. ~~Item 10 — Pluggable authentication strategies on provider instances.~~ ✅
+5. Item 10 — Pluggable authentication strategies on provider instances. **Partial** — strategy registry shipped; per-instance `auth_strategy_name` field on `ProviderInstanceModel` is missing.
 6. ~~Item 14 — Mirror-on-create lifecycle primitive.~~ ✅
 7. ~~Item 26 — Explicit `AbstractProviderInstance` contract.~~ ✅
 8. ~~Item 70 — Manager constructor contract consistency (RotationManager violates the documented `model_registry`-first signature; every provider author derives from a moving target until this is fixed).~~ ✅
 
 A separate critical-path applies to the public PyPI release of the package (the items in former Group 21, plus the supply-chain hardening surfaced by the fourth-round audit):
 
-1. Item 60 — Rename top-level packages under a single namespace.
+1. ~~Item 60 — Rename top-level packages under a single namespace.~~ ✅
 2. ~~Item 61 — Out-of-tree extension import support.~~ ✅
-3. ~~Item 86 — Supply-chain hygiene (SBOM, signed releases, pinned hashes, vuln scanning).~~ ✅
+3. Item 86 — Supply-chain hygiene (SBOM, signed releases, pinned hashes, vuln scanning). **Partial** — `SECURITY.md`, `requirements.lock` with hashes, and `pip-audit` configured. SBOM generation and sigstore signing CI workflow are still outstanding and gate the first PyPI publish.
 
 Everything else can iterate without retrofit once these are in place.
 
@@ -119,7 +119,7 @@ The provider class declares `_instance: ClassVar[Optional[AbstractProviderInstan
 
 ---
 
-## ~~Item 10~~ — ~~Pluggable authentication strategies on provider instances~~ ✅ DONE
+## Item 10 — Pluggable authentication strategies on provider instances
 
 **Severity:** Critical
 **Scope:** `AbstractStaticProvider.bond_instance`, `ProviderInstanceModel`, new `AuthStrategy` ABC and concrete subclasses; integration point for the OAuth extension.
@@ -138,6 +138,8 @@ The provider class declares `_instance: ClassVar[Optional[AbstractProviderInstan
 **Dependencies.** Anticipates the external OAuth extension. Cross-references Items 32 (credential vault — strategies dereference `CredentialRef` rather than reading raw secrets) and 50 (sandbox/live discriminator applies inside `CredentialRef.resolve`, not inside the strategy).
 
 **Refinement after audit.** Items 10, 32, and 50 each touch credential resolution; the canonical layering is now pinned: `AuthStrategy.headers_for(requester)` calls `CredentialRef.resolve(env=APP_ENV)` (Item 32), which dispatches in the documented OpenBao → env → encrypted-DB tier order. Item 50's paired-name (`{PROVIDER}_API_KEY_TEST`/`_LIVE`) discriminator applies **only** when the resolved tier is the env-var fallback; OpenBao paths embed the environment at storage time so the discriminator does not double-fire. The shared HTTP client (Item 31) does not select credentials — it routes through whatever the `AuthStrategy` returned. This eliminates the "two layers fighting over the same logic" condition the audit surfaced.
+
+**Status: PARTIAL.** Framework primitives shipped: `AuthStrategy` ABC with the four-method contract and the six concrete subclasses (`APIKeyAuth`, `OAuth2Auth`, `JWTBearerAuth`, `BasicAuth`, `MTLSAuth`, `AWSSigV4Auth`) live in `src/serverframework/extensions/AuthStrategy.py:29-320`; `AuthStrategyRegistry` accepts extension-contributed registrations; the class-level `default_auth_strategy_name` ClassVar is consulted in `bond_instance` at `src/serverframework/extensions/AbstractExtensionProvider.py:1345,1354-1355`. **Outstanding:** `ProviderInstanceModel.auth_strategy_name` is read via `getattr(instance, "auth_strategy_name", None)` but is **never declared as a model field** (`src/serverframework/logic/BLL_Providers.py:588-749`). The per-instance override path the item requires (a Stripe Connect user attaches `OAuth2Auth` to their own provider instance while the class default remains `APIKeyAuth`) does not work end-to-end — only the class-level default reaches the bonded instance. Closing the gap requires declaring `auth_strategy_name: Optional[str]` as a real Pydantic + SQLAlchemy field on `ProviderInstanceModel`, writing the migration, and adding a bonding-with-override integration test.
 
 ---
 
@@ -636,7 +638,7 @@ Symmetric `@mirror_on_update` and `@mirror_on_delete` decorators handle the corr
 
 ---
 
-## ~~Item 48~~ — ~~Graceful degradation contract~~ ✅ DONE
+## Item 48 — Graceful degradation contract
 
 **Severity:** Medium
 **Scope:** Provider declarations, rotation system, outbox (Item 35).
@@ -656,7 +658,7 @@ The `queue_and_retry` mode integrates with Item 35's outbox: the request returns
 
 **Dependencies.** Cross-references Item 35 (outbox), Item 39 (versioning).
 
-**Status: ✅ DONE (REST + Outbox tracking; GraphQL conversion deferred).** All three remaining pieces have landed: (a) rotation-exhaustion dispatch in `RotationManager.rotate` consults `degradation_policy` and branches into outbox enrollment via `OutboxEntry` returning a `QueuedForRetry(tracking_id=...)` sentinel for `QUEUE_AND_RETRY`, or increments `_silent_drop_counter`+logs+emits `provider_silent_drop_total` and returns a `SilentDropped(...)` sentinel for `SILENT_DROP`; (b) the 202-tracking-id endpoint shape lives in `lib/Pydantic2FastAPI.py::_render_degradation_sentinel` which converts `QueuedForRetry` → HTTP 202 `{"status":"accepted","tracking_id":...}` and `SilentDropped` → HTTP 200 `{"status":"silent_dropped",...}`, plus a new `endpoints/EP_Outbox.py` exposing `GET /v1/outbox/{tracking_id}` for tracking-id polling; (c) OpenAPI annotations via `_degradation_responses_annotation(manager_class)` flag `QUEUE_AND_RETRY` operations with the 202 response model `QueuedForRetryModel`. The Strawberry/GraphQL resolver-side conversion is documented as a follow-up via xfail in `lib/Pydantic2Strawberry_degradation_test.py` (`reason="Item 48 GraphQL conversion deferred to follow-up"`). Tests: `lib/Pydantic2FastAPI_degradation_test.py` (7 new), `endpoints/EP_Outbox_test.py` (5 new). Closed by verification on the REST surface.
+**Status: PARTIAL (REST + Outbox tracking complete; GraphQL conversion deferred).** All three REST-side pieces have landed: (a) rotation-exhaustion dispatch in `RotationManager.rotate` consults `degradation_policy` and branches into outbox enrollment via `OutboxEntry` returning a `QueuedForRetry(tracking_id=...)` sentinel for `QUEUE_AND_RETRY`, or increments `_silent_drop_counter`+logs+emits `provider_silent_drop_total` and returns a `SilentDropped(...)` sentinel for `SILENT_DROP`; (b) the 202-tracking-id endpoint shape lives in `lib/Pydantic2FastAPI.py::_render_degradation_sentinel` which converts `QueuedForRetry` → HTTP 202 `{"status":"accepted","tracking_id":...}` and `SilentDropped` → HTTP 200 `{"status":"silent_dropped",...}`, plus a new `endpoints/EP_Outbox.py` exposing `GET /v1/outbox/{tracking_id}` for tracking-id polling; (c) OpenAPI annotations via `_degradation_responses_annotation(manager_class)` flag `QUEUE_AND_RETRY` operations with the 202 response model `QueuedForRetryModel`. The Strawberry/GraphQL resolver-side conversion is documented as a follow-up via xfail in `lib/Pydantic2Strawberry_degradation_test.py` (`reason="Item 48 GraphQL conversion deferred to follow-up"`). Tests: `lib/Pydantic2FastAPI_degradation_test.py` (7 new), `endpoints/EP_Outbox_test.py` (5 new). Closed by verification on the REST surface.
 
 ---
 
@@ -930,7 +932,9 @@ The auto-generated REST surface, custom routes that participate in the same gene
 
 ---
 
-## ~~Item 40~~ — ~~Custom-route contract with SDK, GraphQL, and test parity~~ ✅ DONE (REST surface)
+## Item 40 — Custom-route contract with SDK, GraphQL, and test parity
+
+**Status: PARTIAL.** REST surface complete: `@custom_route` decorator captures HTTP method/path/input/output/auth/tags/`expose_in`; auto-generated REST routes, OpenAPI surface, and SDK methods all derive from it. **Outstanding:** the GraphQL field/mutation generation half of the contract is deferred — custom routes do not yet produce corresponding Strawberry mutations or queries automatically. Test scaffolding generation is also pending the GraphQL half.
 
 **Severity:** Medium
 **Scope:** `@custom_route` decorator (referenced but undefined), SDK generator (Item 25), GraphQL schema generator, auto-generated test scaffolds.
@@ -994,7 +998,7 @@ For genuinely RPC-shaped routes (no clear resource), the decorator can be applie
 
 ---
 
-## ~~Item 87~~ — ~~BLL-level field-selection and include test coverage (GitHub #10)~~ ✅ DONE
+## Item 87 — BLL-level field-selection and include test coverage (GitHub #10)
 
 **Severity:** Medium
 **Scope:** New abstract test cases under `src/logic/AbstractBLLTest.py` covering `load_only` and related-entity loading at the BLL layer, plus per-manager test files that consume them.
@@ -1012,6 +1016,8 @@ For genuinely RPC-shaped routes (no clear resource), the decorator can be applie
 **Acceptance criteria.** Every concrete BLL manager has BLL-level tests for `load_only`, `includes`, and combined `fields`+`includes` against its model. A regression in the BLL field-selection layer is caught at the BLL test boundary, not at the EP boundary. GitHub #10 is closed.
 
 **Dependencies.** Independent. Cross-references Item 9 (batched include resolver) and Item 41 (typed hook context — the test helpers benefit from the typed signature once Item 41 lands).
+
+**Status: PARTIAL.** `AbstractBLLTest` (`src/serverframework/logic/AbstractBLLTest.py:18`) gained `test_field_selection_pushes_load_only` (line 1245) and `test_field_selection_empty_list_skips_load_only` (line 1293). **Outstanding:** the abstract methods the item promised but does not yet implement — `test_load_only` (per-manager `load_only` SQL shape across `get`/`list`/`search`), `test_includes` (asserting `joinedload` vs `selectinload` choice per relation and zero N+1 across the result set), `test_fields` (the combined `fields`+`includes` SQL-surface matrix). Per-manager test files do not yet inherit and bind these methods. Until the full matrix lands and is wired into every concrete manager test, GitHub #10 is not closed.
 
 ---
 
@@ -1287,7 +1293,9 @@ How extension-contributed schema, tables, and dependencies are validated, ordere
 
 ---
 
-## ~~Item 20~~ — ~~Hot reload and manifest-based extension installation~~ ✅ DONE (manifest install + SIGHUP-driven graceful restart; in-process hot reload explicitly out of scope per refinement)
+## Item 20 — Hot reload and manifest-based extension installation
+
+**Status: PARTIAL (within scope: complete; original scope: partial).** Manifest-driven install (`ExtensionManifest`, `install_from_manifest`) and SIGHUP-driven graceful restart shipped per the post-audit refinement. The original scope's "true in-process hot reload" is explicitly out-of-scope per the refinement below; deployments that need it use blue-green at the process level. If you treat the refined scope as the contract, this item is complete; if you treat the original target state as the contract, the in-process hot-reload portion is unimplemented by design.
 
 **Severity:** Medium
 **Scope:** New `manifest.toml` format, `install_from_manifest` machinery, registry diff, hot-reload controller.
@@ -1400,7 +1408,9 @@ System-scoped provider instances are unreachable to a user unless a quota row ex
 
 ---
 
-## ~~Item 36~~ — ~~Data residency and regional provider pools~~ ✅ DONE (framework primitives)
+## Item 36 — Data residency and regional provider pools
+
+**Status: PARTIAL.** Framework primitives shipped (`ResidencyJurisdiction`, `ResidencyRegion`, `JurisdictionRegistry`, `ProviderInstance.region`, resolution-time jurisdiction filtering); the concrete residency-policy extension lives in a separate, unmerged repository. Once that extension lands as a registration-only change, this item closes.
 
 **Severity:** Medium
 **Scope:** Provider instance metadata, resolution flow, per-tenant residency policy.
@@ -1429,7 +1439,9 @@ For providers that are inherently single-region (a regional payment processor), 
 
 ---
 
-## ~~Item 55~~ — ~~Tenant data-isolation primitives~~ ✅ DONE (primitives; session-binder integration is a follow-up)
+## Item 55 — Tenant data-isolation primitives
+
+**Status: PARTIAL.** `TenantScopedMixin.with_keys(...)`, RLS policy generation (`rls_policy_sql()`), and the multi-key (`org_id`/`team_id`/`user_id`) GUC variable scheme shipped in `database/TenantScoped.py`. **Outstanding:** the session binder that actually sets `app.current_*_id` GUCs on every connection has not been wired in. Until that lands, the RLS policies exist but no session populates the variables they read, so the policy filters return zero rows on read paths and tenant isolation is not yet enforced end-to-end.
 
 **Severity:** Medium
 **Scope:** Postgres Row-Level Security policies, session GUC variables, tenant-scoped model declarations.
@@ -1453,7 +1465,9 @@ System-level operations (admin endpoints, cross-tenant reporting, the framework'
 
 ---
 
-## ~~Item 54~~ — ~~Read-replica routing for read-only operations~~ ✅ DONE (primitives; session-binder integration is a follow-up)
+## Item 54 — Read-replica routing for read-only operations
+
+**Status: PARTIAL.** `@read_only` decorator and `RequestContext.read_only` flag landed in `database/ReadReplica.py`; replica-pool round-robin selection and replica-health gating are present. **Outstanding:** the session-binder integration that actually routes the bound session to a replica when `@read_only` fires is still a follow-up. Today the decorator/flag are observable but the framework still binds primary unless integration code is added.
 
 **Severity:** Medium
 **Scope:** Database session binding, BLL method annotations, request-context routing.
@@ -1519,7 +1533,9 @@ Wildcard scopes are supported only at consent time (the user grants `payment.sub
 
 ---
 
-## ~~Item 45~~ — ~~Field- and column-level attribute-based access control~~ ✅ DONE (primitives + serializer hook documented for follow-up integration)
+## Item 45 — Field- and column-level attribute-based access control
+
+**Status: PARTIAL.** Field metadata primitives shipped (`Field(..., requires=[...])`, `Sensitive[T]` annotation, allowed-field-set computation cached per `(manager, requester)` per request, and a documented serializer hook). **Outstanding:** the serializer hook is not yet wired into REST and GraphQL response generation, so disallowed fields are not actually filtered out at response time. Search/order-by rejection for restricted fields is also pending integration. Per-deployment configurable sentinel (omit vs. mask) is documented but not enforced.
 
 **Severity:** Medium
 **Scope:** Permission system, model field metadata, response serialization.
@@ -1545,7 +1561,9 @@ The same metadata applies to GraphQL: the resolver for a marked field returns nu
 
 The fan-out seam to other services, the fairness primitive that prevents one tenant from starving the queue, and the retention contract for the audit trail.
 
-## ~~Item 42~~ — ~~Cross-process event bus seam~~ ✅ DONE (in-memory adapter; Kafka/NATS/Redis adapters are ABC stubs awaiting real-broker integration)
+## Item 42 — Cross-process event bus seam
+
+**Status: PARTIAL.** `AbstractEventBus` ABC, `@on_event` decorator, typed Pydantic event models, and the `InMemoryEventBus` adapter shipped — sufficient for single-process deployments and tests. **Outstanding:** the Kafka, NATS, and Redis Streams adapters are ABC stubs awaiting real-broker integration; the Item 11-style schema-compatibility CI checker for additive-only event evolution is not yet implemented. Multi-process fan-out is not yet operational.
 
 **Severity:** Medium
 **Scope:** New event-bus abstraction, adapter pattern for Kafka / NATS / Redis Streams, integration with hooks and outbox.
@@ -1620,7 +1638,9 @@ The audit subsystem itself emits an audit event for each retention pass: how man
 
 The vocabulary of abstract providers the framework ships, plus the typing of seed data so initial state passes the same Pydantic gates as runtime creates.
 
-## ~~Item 43~~ — ~~Abstract provider templates for missing infrastructure categories~~ ✅ DONE (six abstracts shipped; concrete implementations land in separate extensions)
+## Item 43 — Abstract provider templates for missing infrastructure categories
+
+**Status: PARTIAL.** Six `AbstractProvider_*` templates and their `PRV.X.md` contracts shipped (object storage, cache, queue/scheduler, search index, AI/LLM, notification fan-out), along with toy reference implementations. The pre-estimate/post-true-up quota pattern for AI/LLM is implemented in `AbstractProvider_AI`. **Outstanding:** concrete production-grade provider implementations (S3/GCS/Azure for object storage, Redis/memcached for cache, Elasticsearch/OpenSearch for search, OpenAI/Anthropic for AI/LLM, push/SMS for notifications) live in separate extensions and have not all landed. Tool-calling testing harness is also a documented follow-on.
 
 **Severity:** Medium
 **Scope:** New abstract providers and accompanying documentation for object storage, cache, queue/scheduler, search index, AI/LLM, and notification fan-out.
@@ -1876,7 +1896,7 @@ A single canonical reference for every primitive an extension author touches.
 
 ---
 
-## ~~Item 78~~ — ~~Document and contract the Localization subsystem~~ ✅ DONE
+## Item 78 — Document and contract the Localization subsystem
 
 **Severity:** Low
 **Scope:** `src/Localization.py` (1163 lines, undocumented at audit time), `Framework.md`, `lib/LIB.Overview.md`, new `LIB.Localization.md`, `EXT.Contracts.md` entry from Item 52.
@@ -1893,6 +1913,8 @@ A single canonical reference for every primitive an extension author touches.
 **Acceptance criteria.** `lib/LIB.Localization.md` exists and accurately describes the live module. `Framework.md` cross-references it. `EXT.Contracts.md` lists the public surface. `lib/LIB.Overview.md:9` no longer references a nonexistent file.
 
 **Dependencies.** Cross-references Item 52 (contracts manifest), Item 68 (public API surface).
+
+**Status: PARTIAL.** `lib/LIB.Localization.md` exists and the public Localization surface is documented; the contracts-manifest entry from Item 52 covers it. **Outstanding:** `lib/LIB.Overview.md:9` **still references the nonexistent `LIB.Environment.md`** — exactly the broken cross-reference Item 78 promised to fix in the same change. The remaining work is a one-line xref change pointing at `LIB.Dependencies.md`.
 
 ---
 
@@ -1980,7 +2002,7 @@ The breaking and ecosystem-shaping pieces of the pip-package conversion that fol
 
 ---
 
-## ~~Item 86~~ — ~~Supply-chain hygiene for the published package~~ ✅ DONE
+## Item 86 — Supply-chain hygiene for the published package
 
 **Severity:** High
 **Scope:** PyPI release pipeline; `pyproject.toml` and CI configuration; SBOM generation; signed releases; pinned-hash policy; vuln scanning.
@@ -1998,13 +2020,15 @@ The breaking and ecosystem-shaping pieces of the pip-package conversion that fol
 
 **Dependencies.** Cross-references Item 60 (rename ships before the first signed release), Item 67 (version string is the input to release tagging). Blocks the first PyPI publish.
 
+**Status: PARTIAL.** Three of the five target-state pieces are in place: (c) `requirements.lock` exists with pinned hashes, (d) `pip-audit` is wired up via `pyproject.toml:130` (`vuln_scanner = "pip-audit"`), and (e) `SECURITY.md` is published at the repo root. **Outstanding:** (a) CycloneDX SBOM (`bom.json`) generation at build time and publication as a release asset is not implemented, and (b) sigstore wheel signing in CI is not implemented — `.github/workflows/` contains no jobs that produce either artifact. These are gating for the first PyPI publish per this item's own dependency clause; the package cannot ship until both land.
+
 ---
 
 # Group 22 — Inbound Surface Hardening
 
 The framework already documents and partially implements per-extension rate limits (e.g. `meta_logging_rate_limiting_hook`) and per-flow throttling (Items 58, 59), but there is no canonical primitive for "this endpoint is publicly exposed and needs to be defended against abuse." Group 22 fills that gap.
 
-## ~~Item 71~~ — ~~CORS policy, inbound rate limiting, and brute-force/lockout protection~~ ✅ DONE
+## Item 71 — CORS policy, inbound rate limiting, and brute-force/lockout protection
 
 **Severity:** High
 **Scope:** `app.py:334` CORS middleware; new `@rate_limit(...)` endpoint decorator; new `LockoutPolicy` per auth flow; integration with Item 69's distributed counter.
@@ -2022,13 +2046,15 @@ The framework already documents and partially implements per-extension rate limi
 
 **Dependencies.** Depends on Item 69 (distributed counter). Cross-references Items 17 (outbound rate limit — different dimension), 58, 59 (auth flows consume `LockoutPolicy` rather than inventing per-flow throttling), 85 (lockout events route through the structured-log/error-reporter pipeline).
 
+**Status: PARTIAL.** The `RateLimit` dataclass and `TokenBucket` primitive landed under `extensions/RateLimit.py` (consumed by outbound rotation per Item 17). **Outstanding:** none of the three target-state pieces have shipped: (a) the production-mode CORS startup assertion is not present in `app.py` — wildcard origins still pass without warning; (b) the `@rate_limit("100/min", scope="ip")` endpoint decorator that would wrap `RouterMixin` methods, custom routes (Item 40), and webhook endpoints (Item 5) does not exist; (c) `LockoutPolicy`, the lockout DB table, the per-(actor, flow) enforcement on auth flows, and the `AnomalyDetector` ABC are absent. Items 58 and 59 still rely on per-flow throttling defaults rather than consuming the (missing) `LockoutPolicy`. Acceptance criteria are not yet met.
+
 ---
 
 # Group 23 — Operational Resilience
 
 The day-2 concerns the framework currently does not address: backups, deploys without downtime, multi-region placement, and the operator surface that runs all of it. None of these gate provider authorship; all of them gate production deployment.
 
-## ~~Item 79~~ — ~~Backup, restore, and point-in-time recovery primitive~~ ✅ DONE
+## Item 79 — Backup, restore, and point-in-time recovery primitive
 
 **Severity:** High
 **Scope:** Per-table classification (`backup-critical` vs `ephemeral`), scheduled DB snapshot service, integrity-verified restore drill, RTO/RPO documentation.
@@ -2045,6 +2071,8 @@ The day-2 concerns the framework currently does not address: backups, deploys wi
 **Acceptance criteria.** A scheduled snapshot lands in the `BackupTarget` nightly. The restore drill runs monthly in CI and asserts the smoke test passes. `backup_age_seconds` and `last_successful_restore_drill_age_seconds` metrics are emitted and observable. A documented runbook describes the manual restore procedure.
 
 **Dependencies.** Depends on Items 28 (scheduled service) and 43 (object-storage abstract for the backup target). Cross-references Items 35 (outbox restore semantics), 19 (quota restore semantics), 56 (audit-log archival is independent of DB backup).
+
+**Status: PARTIAL.** The `BackupClass` Literal (`critical|recoverable|ephemeral`) and the `_backup_metrics` plumbing exist in `src/serverframework/lib/Backup.py`. **Outstanding:** the actual `BackupService` `ScheduledService` flavor that drives `pg_dump`/`pg_basebackup` into the `BackupTarget` is not implemented; only docstring stubs reference it. `RestoreDrillService` is similarly absent. No monthly restore-drill CI job exists. The `backup_age_seconds` and `last_successful_restore_drill_age_seconds` metrics are not emitted. Today only the classification primitive is wired; no nightly snapshot is being taken and no drill verifies restorability. Acceptance criteria are not yet met.
 
 ---
 
@@ -2286,7 +2314,9 @@ The Phase-1 work that did **not** require any of those prereqs (typed value mode
 
 **Acceptance.** A `Root_Stalwart` instance with `auth_strategy_name="basic"` authenticates correctly. A future Workspace integration registers `OAuth2Auth` and a per-user `Stalwart` instance with `auth_strategy_name="oauth2"` works without modifying `StalwartProvider`.
 
-## ~~Item 93~~ — ~~Email reshape: federation translators (FieldMapping, Paginator, QueryDSL)~~ ✅ DONE (SendGrid declares paginator/translator/field_mappings; round-trip tests passing)
+## Item 93 — Email reshape: federation translators (FieldMapping, Paginator, QueryDSL)
+
+**Status: PARTIAL.** SendGrid declares `paginator`, `query_translator`, and `field_mappings = [...]` per Items 6/7/8; round-trip tests pass for the SendGrid surface. **Outstanding:** the equivalent declarations on Stalwart (IMAP search translator, page-token paginator) and SMTP2go (key-value translator) are not yet shipped — these providers still rely on the Phase-1 free-form `query` string and raw `cursor` shape rather than the typed federation surface.
 
 **Severity:** Medium
 **Scope:** `AbstractEmailProviderInstance.list_emails`, `AbstractEmailProvider`-level field mappings.
@@ -2299,7 +2329,9 @@ The Phase-1 work that did **not** require any of those prereqs (typed value mode
 
 **Acceptance.** A `list_emails(query="from:alice", limit=50)` against Stalwart issues a correct IMAP `SEARCH FROM alice` command without per-provider translation code. A 200-message paged list returns `next_token` opaque cursors that round-trip cleanly across providers. Field-mapping round-trip tests pass for every declared `EmailMessage` field.
 
-## ~~Item 94~~ — ~~Email reshape: inbound webhook handlers~~ ✅ DONE (verify_signature ECDSA + 8 SendGrid event handlers + canonical EmailDeliveryEvent fan-out)
+## Item 94 — Email reshape: inbound webhook handlers
+
+**Status: PARTIAL.** SendGrid: `verify_signature` (ECDSA-SHA256) + 8 event handlers (`bounce/delivered/open/click/spam_report/unsubscribe/dropped/processed`) + canonical `EmailDeliveryEvent` fan-out. **Outstanding:** SMTP2go bounce-activity webhook handlers (bearer-token check on `SMTP2GO_WEBHOOK_SECRET`) and Stalwart inbound-mail webhook handlers (HMAC-SHA256 over body) are not yet registered. The target state called for each provider; today only SendGrid is wired.
 
 **Severity:** Medium
 **Scope:** `EXT_EMail` webhook registration, per-provider `verify_signature`, hook fan-out into `Email_*Manager` AFTER hooks.
@@ -2312,7 +2344,9 @@ The Phase-1 work that did **not** require any of those prereqs (typed value mode
 
 **Acceptance.** A SendGrid bounce webhook hits `/webhook/email/sendgrid/bounce`, signature verifies, the canonical `EmailDeliveryEvent` fans into the AFTER-update hook chain, and a downstream consumer (e.g. Item 67's suppression list) records the bounce automatically. A signature failure produces 401 without invoking the handler.
 
-## ~~Item 95~~ — ~~Email reshape: capability ladder (validation, templates, suppression, stats)~~ ✅ DONE (typed abilities on AbstractEmailProviderInstance + SendgridEmailInstance impl)
+## Item 95 — Email reshape: capability ladder (validation, templates, suppression, stats)
+
+**Status: PARTIAL.** Typed abilities (`validate_address`, `send_with_template`, `list_suppressions`, `add_suppression`, `remove_suppression`, `get_stats`, `list_messages`) declared on `AbstractEmailProviderInstance`; `SendgridEmailInstance` implements the SendGrid-supported subset and declares its `capabilities`. **Outstanding:** SMTP2go and Stalwart have not yet declared their capability subsets or implemented the supported abilities; calling these abilities against either provider raises `NotImplementedError` rather than the typed `NotSupportedError(provider, capability)` the contract requires.
 
 **Severity:** Medium
 **Scope:** New abilities on `AbstractEmailProviderInstance`, opt-in implementation per provider.
@@ -2338,7 +2372,9 @@ The Phase-1 work that did **not** require any of those prereqs (typed value mode
 
 **Acceptance.** An invitation send during a SendGrid outage surfaces 500 fast (FailFast); a marketing send during the same outage returns 202 with a tracking id and drains from the outbox once SendGrid recovers (QueueAndRetry). A SendGrid 429 storm pauses the provider per Item 17 without rotation. A health check failure marks the provider DOWN per Item 27.
 
-## ~~Item 97~~ — ~~Email reshape: shared HTTP client routing + credential vault migration~~ ✅ DONE (SMTP2go routed; SendGrid SDK transport injection + credential-vault migration deferred to follow-up)
+## Item 97 — Email reshape: shared HTTP client routing + credential vault migration
+
+**Status: PARTIAL.** SMTP2go's outbound calls route through `ProviderHTTPClient` and inherit shared trace/retry/rate-limit/log-redaction behavior. **Outstanding:** SendGrid SDK transport injection (the `python-http-client` session swap) is deferred — SendGrid still bypasses the shared HTTP client. Credential-vault migration of `SENDGRID_API_KEY`/`STALWART_PASSWORD`/`SMTP2GO_API_KEY` to `CredentialRef` resolved through OpenBao + Item 50's discriminator is also deferred. Today only SMTP2go enjoys the cross-cutting concerns.
 
 **Severity:** Medium
 **Scope:** SendGrid SDK transport hook, SMTP2go HTTP calls, Stalwart credential resolution.
