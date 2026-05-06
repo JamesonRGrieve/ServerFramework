@@ -169,27 +169,62 @@ Internal cross-extension navigation (e.g. extension B's resolver accesses extens
 
 The merged schema is rebuilt on extension install/uninstall and the rebuild diff is logged so operators can see what changed. Extensions may declare Strawberry Federation directives on their types (`@key`, `@external`, `@requires`, `@provides`); these compose with external GraphQL provider federation.
 
-## Federation of External GraphQL Upstreams
+## Federation of External Upstreams (Item 16)
 
-When an upstream API is itself GraphQL, the framework federates the schema rather than wrapping it as RPC. `AbstractGraphQLProvider(AbstractStaticProvider)` declares:
+> **Detailed reference:** [lib/LIB.Federation.md](../lib/LIB.Federation.md)
+
+External federation lifts upstream APIs — GraphQL or REST — into the framework's model registry so a single inbound request can transparently traverse local data and federated upstreams. Two modules cover the four directions:
+
+| Module | Upstream kind | Inbound surfaces |
+|--------|---------------|------------------|
+| `lib/Federation_GQL.py` | GraphQL | GraphQL (true federation) + REST (`project_gql_as_rest`) |
+| `lib/Federation_REST.py` | REST | REST (existing `AbstractExternalModel`) + GraphQL (Pydantic lift) |
+
+### `AbstractGraphQLProvider`
+
+Declares an upstream GraphQL endpoint:
 
 - `upstream_url: ClassVar[str]`
-- `upstream_auth_strategy: ClassVar[Type[AuthStrategy]]`
+- `auth_strategy_name: ClassVar[str]` (inherited)
 - `federation_style: Literal["apollo_v2", "stitching", "namespaced"]` — Apollo Federation v2 if the upstream advertises `_service { sdl }`, schema stitching if introspection-only, namespaced (last resort) if all upstream types must be prefixed
 - `type_namespace: Optional[str]` — e.g. `Stripe_*` prefix when stitching or namespacing
+- `schema_rename`, `schema_hide_fields`, `schema_mask_arguments`, `schema_override_resolvers` — transformer pipeline configuration
+- `lift_into_pydantic: bool = True` — when True, the SDL is also lifted into Pydantic models so `Pydantic2Strawberry` and `Pydantic2FastAPI` project the upstream onto BOTH inbound surfaces.
 
-A startup pipeline runs per provider instance, with results cached:
+### Startup pipeline
 
-1. Introspect the upstream and fetch the SDL.
-2. Run a `SchemaTransformer` pipeline supporting rename, prefix, hide-fields, mask-arguments, and override-resolvers transformations.
-3. Register the transformed types into the local Strawberry schema via `MergedSchemaRegistry`.
-4. Generate Strawberry resolvers that take the Strawberry `Info` object, reconstruct the upstream selection set from `info.selected_fields`, build a real GraphQL document with the original variables, forward to the upstream, and return the parsed result. **Selection-set push-down is the entire point** — without it the framework has rebuilt RPC inside a GraphQL costume.
-5. Cache the merged SDL hash. Refresh introspection on a TTL or on webhook-triggered invalidation.
+`Federation_Bootstrap.install_external_federation()` runs per provider in the FastAPI lifespan event:
 
-The Apollo Federation v2 path applies when the upstream is a compliant subgraph. The framework honors `@key`, `@external`, `@requires`, and `@provides`. Local types declare `@key` references to upstream entities (`extend type Stripe_Customer @key(fields: "id")`), and a local `User` type gains a `stripe_customer: Stripe_Customer` field that the gateway resolves through the federated subgraph.
+1. **Introspect** — Apollo: send `_service { sdl }`. Stitching/namespaced: standard introspection query.
+2. **Transform** — `SchemaTransformer` applies rename / prefix / hide-fields / mask-arguments / override-resolvers in order.
+3. **Register** — store the transformed SDL on `MergedSchemaRegistry` keyed by provider name.
+4. **Lift** — when `lift_into_pydantic=True`, generate Pydantic models from the SDL via `sdl_to_pydantic_models(sdl, prefix=...)` for downstream registry integration.
+5. **Build** — `MergedSchemaRegistry.build()` materializes the merged `GraphQLSchema` once. Subsequent calls return the cache unless an SDL hash has changed.
 
-The stitching path applies for upstreams with introspection but no Federation directives. The framework becomes the gateway. `MergedSchemaRegistry` holds the merged schema. Resolvers are generated, not handwritten. Cross-subgraph joins are handled by a `BatchedFieldResolver` that respects `include` — the resolver collects N requests for `user.stripe_customer` into a single upstream call.
+Selection-set push-down is wired into every generated resolver via `build_proxy_resolver`: the resolver reconstructs the upstream selection from `info.selected_fields` before forwarding the document. Without push-down the framework has rebuilt RPC inside a GraphQL costume.
 
-Authentication and per-request context propagate via `AuthStrategy.headers_for(requester)`. A per-request response cache is keyed by `(query_hash, variables_hash, requester_credentials_hash)` and dedupes identical sub-requests within a single outer GraphQL operation. A persistent cache (Redis-backed) is opt-in per type via a `@cache(ttl=...)` directive on the merged type.
+The Apollo Federation v2 path honors `@key`, `@external`, `@requires`, `@provides`. The merged registry prepends `APOLLO_DIRECTIVES_PREAMBLE` to every SDL it builds so subgraphs that ship raw federation SDL parse cleanly.
 
-Errors and partial data follow real GraphQL semantics: upstream `errors` arrays propagate through, attached to the affected fields, not raised globally — the partial-data, partial-errors contract is preserved for clients.
+The stitching path uses `BatchedFieldResolver`: N concurrent resolutions of `user.stripe_customer` collapse into one upstream call when the upstream supports list-by-id; otherwise the resolver falls back to bounded individual calls subject to the provider's rate limit.
+
+### REST upstream → GraphQL surface
+
+`Federation_REST.openapi_to_pydantic_models(spec, prefix=...)` imports an OpenAPI document into Pydantic models, enums, and an `OperationSpec` table. `derive_external_models(pydantic_result, transport=RESTUpstreamTransport(...))` synthesizes `AbstractExternalModel` subclasses whose `*_via_provider` methods dispatch through the transport. Once registered with the framework's model registry, `Pydantic2Strawberry` projects them onto the GraphQL surface automatically.
+
+### GraphQL upstream → REST surface
+
+`Federation_GQL.project_gql_as_rest(subgraph, transport, prefix)` walks the upstream's `Query` and `Mutation` types and mounts a FastAPI `APIRouter` with one route per root field. Default selection covers every leaf scalar plus one composite layer so REST clients receive a flat result without GraphQL knowledge.
+
+### Per-request response cache
+
+`ResponseCache` deduplicates identical sub-requests within a single outer GraphQL operation. The cache key is `sha256(query_hash | variables_hash | requester_credentials_hash)` so two distinct requesters never share a cached upstream result. The cache is bound on a contextvar by the GraphQL request middleware and torn down at request end.
+
+A persistent (Redis-shaped) cache is opt-in per upstream type via `AbstractGraphQLProvider.persistent_cache_ttls = {"Stripe_Customer": 30.0}`.
+
+### Authentication and context propagation
+
+`AuthStrategy.headers_for(requester)` from the framework's auth system is invoked by `ProviderHTTPClient` on every outbound call, so federated requests carry the right credentials per-request. Rotation, idempotency, rate limiting, and trace propagation all participate identically — the federation modules do not re-implement any of these.
+
+### Errors
+
+Upstream `errors` arrays propagate through, attached to the affected fields, not raised globally — the partial-data, partial-errors contract is preserved for clients.

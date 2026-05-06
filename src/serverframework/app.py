@@ -407,6 +407,25 @@ def build_app(model_registry: ModelRegistry):
             db_mgr = DatabaseManager(db_prefix)
             db_mgr.init_engine_config()
         db_mgr.init_worker()
+
+        # Item 16 — run external GraphQL/REST federation pipeline. Errors
+        # surface via provider health checks, not by failing the worker, so
+        # an unreachable upstream doesn't keep the framework from booting.
+        if env("GQL_FEDERATION", default="true").lower() == "true":
+            try:
+                from serverframework.lib.Federation_Bootstrap import (
+                    install_external_federation,
+                )
+
+                lifted = await install_external_federation()
+                if lifted:
+                    logger.info(
+                        "Federation installed for providers: %s",
+                        ", ".join(sorted(lifted.keys())),
+                    )
+            except Exception as exc:
+                logger.warning("Federation bootstrap failed: %s", exc)
+
         try:
             yield
         finally:
@@ -924,6 +943,26 @@ def build_app(model_registry: ModelRegistry):
                         logger.error(
                             f"Failed to authenticate user from GraphQL context: {e}"
                         )
+
+                # Item 16 — bind a per-request federation response cache and
+                # batched-field resolver. Both contextvars are read by
+                # generated upstream resolvers; tearing them down at request
+                # end happens automatically because they live on the request
+                # contextvar copy.
+                from serverframework.lib.Federation_GQL import (
+                    BatchedFieldResolver,
+                    ResponseCache,
+                    bind_batched_resolver,
+                    bind_response_cache,
+                )
+
+                bind_response_cache(ResponseCache())
+                bind_batched_resolver(BatchedFieldResolver())
+
+                # The requester's credentials hash anchors the cache so two
+                # distinct requesters never share cached upstream results.
+                cred_hash = api_key or auth_header or ""
+                context["federation_credentials_hash"] = cred_hash
 
                 logger.debug(f"GraphQL context: Final context={context}")
                 return context

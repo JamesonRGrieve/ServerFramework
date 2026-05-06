@@ -1019,7 +1019,12 @@ For genuinely RPC-shaped routes (no clear resource), the decorator can be applie
 
 Item 16 covers federating *external* GraphQL upstreams into our schema. Item 46 covers how *our own* extensions compose into a single merged schema. They share machinery (selection-set push-down, batched resolvers, type-name conflict resolution) and travel together.
 
-## Item 16 — Real GraphQL federation, not RPC wrapping
+## ~~Item 16~~ — ~~Real GraphQL federation, not RPC wrapping~~ ✅ DONE
+
+**Severity:** High
+**Scope:** New `AbstractGraphQLProvider`, new `MergedSchemaRegistry`, schema introspection and stitching pipeline, generated resolvers, gateway integration. Extended in implementation to also cover REST upstream federation and bidirectional projection (REST→GQL via Pydantic lift, GQL→REST via FastAPI route generation) so the framework's "an external resource looks like a local row" claim holds for either inbound channel regardless of upstream wire format.
+
+**Status.** Landed in `lib/Federation_GQL.py` (GraphQL upstream federation: Apollo v2 / stitching / namespaced styles, `SchemaTransformer` pipeline, `MergedSchemaRegistry`, `BatchedFieldResolver`, per-request `ResponseCache`, persistent cache hook, selection-set push-down, `build_proxy_resolver`, SDL→Pydantic lift, GQL→REST route projection), `lib/Federation_REST.py` (REST upstream federation: OpenAPI→Pydantic importer with `$ref`/`allOf`/`oneOf`/`enum` handling, `RESTUpstreamTransport`, `derive_external_models` for REST→GQL projection), `lib/Federation_Bootstrap.py` (lifespan-event entry point), `extensions/AbstractGraphQLProvider.py` (provider abstract). Tests in `lib/Federation_GQL_test.py`, `lib/Federation_REST_test.py`, and `extensions/AbstractGraphQLProvider_test.py` exercise the full pipeline against real in-process upstreams (no mocks). Documentation lives in `lib/LIB.Federation.md` with cross-references from `endpoints/EP.GQL.md` and `extensions/PRV.External.md`.
 
 **Severity:** High
 **Scope:** New `AbstractGraphQLProvider`, new `MergedSchemaRegistry`, schema introspection and stitching pipeline, generated resolvers, gateway integration.
