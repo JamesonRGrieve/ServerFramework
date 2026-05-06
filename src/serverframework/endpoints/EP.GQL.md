@@ -155,19 +155,71 @@ For GraphQL generation, BLL models need:
 | Subscription not firing | Broadcast channel name matches, broadcaster initialized |
 | Auth failure | `Authorization` header present, valid JWT |
 
-## Multi-Extension Schema Composition
+## Multi-Extension Schema Composition (Item 46)
 
-Each extension's `RouterMixin`-tagged managers contribute their Query/Mutation/Subscription roots into a merged schema. Custom routes participate via the same `expose_in` flag. The merge resolves conflicts in three stages:
+CRUD-on-managers is automatic: every `RouterMixin`-tagged manager registered in the `ModelRegistry` auto-emits `query/list/create/update/delete` plus `*_created/_updated/_deleted` subscriptions. The composition contract below covers everything that **cannot** be derived from a CRUD manager: custom root fields, non-CRUD subscriptions, custom types, federation directives, and per-request DataLoaders. The registry lives in `lib/Pydantic2Strawberry.py` (`gql_contribution_registry()`).
 
-1. **Identical contributions** — same name, same signature — merge as a single field.
-2. **Non-identical contributions** on the same field name fail at startup with a clear error naming the offending extensions (mirroring the field-injection collision rule).
-3. **Namespacing under the extension name** is offered as an opt-in for extensions that explicitly want to avoid collisions.
+### Decorators
 
-Extensions can also contribute new types (not just root fields) to the schema; type-name collisions follow the same three-stage resolution.
+```python
+from serverframework.lib.Pydantic2Strawberry import (
+    gql_query, gql_mutation, gql_subscription, gql_type,
+    register_dataloader, FederationDirective,
+)
 
-Internal cross-extension navigation (e.g. extension B's resolver accesses extension A's model) participates in the same `include`-driven batched-resolver mechanism that prevents N+1 at the federation boundary. A per-request DataLoader keyed by `(model, set_of_ids)` collects N parallel resolutions of `field.related` into a single batched fetch, so cross-extension joins do not N+1 the database.
+@gql_query(name="searchProjects", return_type=SearchResults)
+async def search_projects(info, query: str, limit: int = 25) -> SearchResults: ...
 
-The merged schema is rebuilt on extension install/uninstall and the rebuild diff is logged so operators can see what changed. Extensions may declare Strawberry Federation directives on their types (`@key`, `@external`, `@requires`, `@provides`); these compose with external GraphQL provider federation.
+@gql_subscription(name="taskAssigned", return_type=str)
+async def task_assigned(info, user_id: str): ...
+```
+
+`extension_name` is auto-derived from the caller's `extensions.<name>` module path; pass it explicitly otherwise.
+
+### Three-stage collision resolution
+
+1. **Identical contributions** — same callable, return type, args, and kind — merge as one (no-op duplicate).
+2. **Non-identical** on the same emitted name — `GraphQLCompositionCollisionError` at schema build time, naming every contributing extension. Mirrors `CollisionDetection.FieldCollisionError`.
+3. **Namespacing** opt-in via `namespace=True` emits as `{extension}_{name}` (fields) or `{Extension.capitalize()}{TypeName}` (types).
+
+### Custom types and federation directives
+
+```python
+@gql_type(
+    federation_directives=(
+        FederationDirective(name="key", args={"fields": "id"}),
+        FederationDirective(name="shareable"),
+    ),
+)
+@strawberry.type
+class ProjectAggregate:
+    id: str
+    total: int
+```
+
+Allowed directives: `key`, `external`, `requires`, `provides`, `shareable`, `inaccessible`, `override`, `tag`. Anything else raises at registration. Directives are appended to `__strawberry_definition__.directives` so SDL emission preserves the framework's `Sunset` directive (Item 39). Use these to make our merged schema a valid Apollo Federation v2 subgraph composable with the inbound federation pipeline from Item 16.
+
+### Per-request DataLoader
+
+```python
+def batch_load_users(user_ids):
+    return UserManager.list(filter={"id__in": list(user_ids)})
+
+register_dataloader("users", batch_load_users)
+
+@gql_query(name="messageAuthor", return_type=User)
+async def message_author(info, message_id: str) -> User:
+    msg = await MessageManager.get(id=message_id)
+    return await info.context["dataloaders"]["users"].load(msg.author_id)
+```
+
+`RequestDataLoader.load(key)` returns a future that resolves on the next event-loop tick. Parallel `load()` calls collapse into a single `batch_load_fn(deduped_keys)` call. Length-mismatched returns and non-sequence returns raise into every awaiting future. Sync and async batch functions are both supported. The framework builds a fresh DataLoader dict per request and attaches it at `info.context["dataloaders"]`. DataLoader name collisions with the same function are idempotent; with a different function they raise.
+
+### Rebuild on install/uninstall
+
+`GraphQLManager` subscribes to registry mutations at construction. Each registration logs a structured diff (`added: [...], removed: [...]`); the merged schema is recomputed on the next `create_schema()` call so a flurry of installs only triggers one rebuild. Operators that need an immediate rebuild call `GraphQLManager.rebuild()` (Item 20 install/uninstall hot path). `suspend()/resume()` batches multiple registrations into a single notification.
+
+Custom routes (Item 40) participate in REST via the same `expose_in` flag; an extension that also wants the route on GraphQL registers the corresponding `@gql_query` / `@gql_mutation`.
 
 ## Federation of External Upstreams (Item 16)
 

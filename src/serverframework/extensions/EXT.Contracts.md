@@ -598,7 +598,7 @@ Service driven by a cron-like schedule.
 ### `StreamingService` (class)
 
 - Module: `serverframework.logic.AbstractService`
-- Signature: `StreamingService(requester_id: 'str', db: 'Optional[Session]' = None, interval_seconds: 'int' = 60, max_failures: 'int' = 3, retry_delay_seconds: 'int' = 5, service_id: 'Optional[str]' = None, **kwargs)`
+- Signature: `StreamingService(*args: 'Any', state_store: 'Optional[Callable[..., Any]]' = None, event_bus: 'Optional[Any]' = None, **kwargs: 'Any') -> 'None'`
 - Live docstring: Long-lived connection-oriented work.
 
 Service consuming or producing a continuous stream.

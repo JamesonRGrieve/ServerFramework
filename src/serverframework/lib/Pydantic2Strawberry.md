@@ -1,10 +1,10 @@
 # Pydantic2Strawberry
 
-This module provides automatic GraphQL schema generation from Pydantic models using Strawberry GraphQL.
+This module provides automatic GraphQL schema generation from Pydantic models using Strawberry GraphQL. It also hosts the **GraphQL composition contract (Item 46)** for our own extensions: custom Query / Mutation / Subscription roots, custom types, federation directives, and per-request DataLoaders are registered into a process-wide registry that the schema builder consumes alongside the auto-generated CRUD surface.
 
 ## Overview
 
-The `Pydantic2Strawberry` module dynamically generates GraphQL schemas from Pydantic models registered in the ModelRegistry. It creates complete CRUD operations (queries, mutations, subscriptions) for each model without requiring manual schema definitions.
+The `Pydantic2Strawberry` module dynamically generates GraphQL schemas from Pydantic models registered in the ModelRegistry. It creates complete CRUD operations (queries, mutations, subscriptions) for each model without requiring manual schema definitions, then folds in extension-contributed roots and types from `GraphQLContributionRegistry`.
 
 ## Key Components
 
@@ -103,6 +103,53 @@ The module handles extension models specially:
 - Extension enums get prefixed with the extension name to avoid collisions
 - Type names from extensions are prefixed to ensure uniqueness
 - Extension-specific resolver handling
+
+## GraphQL Composition Contract (Item 46)
+
+Distinct from external federation (`Federation_GQL.py`, Item 16): this contract governs how *our own* extensions contribute non-CRUD surface to the merged schema. The CRUD-on-managers path is unchanged and continues to auto-emit `query/list/create/update/delete` plus `*_created/_updated/_deleted` subscriptions per `RouterMixin`-tagged manager.
+
+### Registration surface
+
+Extensions register four kinds of contribution into the process-wide `GraphQLContributionRegistry` (accessor: `gql_contribution_registry()`):
+
+- **Root fields** via `@gql_query`, `@gql_mutation`, `@gql_subscription`. Each carries `return_type`, optional `args`, optional `description`, optional `extension_name` (auto-derived from the caller's `extensions.<name>` module path), `namespace=False`, and `priority=50`.
+- **Custom types** via `@gql_type` applied to a Strawberry-decorated class. Carries an optional `name` override, `federation_directives` tuple, and `namespace`.
+- **DataLoaders** via `register_dataloader(name, batch_load_fn)`. Names are global; resolvers retrieve the per-request loader via `info.context["dataloaders"][name]`.
+- **Federation directives** via `FederationDirective(name, args)` attached to a `TypeContribution`. Allowed names: `key`, `external`, `requires`, `provides`, `shareable`, `inaccessible`, `override`, `tag`. Anything else raises at registration time.
+
+### Three-stage collision resolution
+
+When two extensions contribute the same emitted root-field name or type name, the registry resolves as follows:
+
+1. **Identical** — same callable, same return type, same args, same kind → merged as one. Duplicate registrations are no-ops.
+2. **Non-identical** — `GraphQLCompositionCollisionError` at schema build time, naming every contributing extension and the offending field/type. Mirrors `CollisionDetection.FieldCollisionError`.
+3. **Namespaced opt-in** — `namespace=True` on the contribution emits the field as `{extension}_{name}` (or the type as `{Extension.capitalize()}{TypeName}`), bypassing both. Two extensions both wanting `query.search` declare `namespace=True` and emit `query.ext_a_search` and `query.ext_b_search`.
+
+DataLoader name collisions follow a stricter rule: the same name with the same `batch_load_fn` is idempotent (so multiple consumers can share a loader); the same name with a different function raises immediately.
+
+### Per-request DataLoader
+
+`RequestDataLoader.load(key)` returns a `Future` that resolves once the deferred batch fires on the next event-loop tick. Parallel resolutions of `thing.related_in_other_extension` collapse into a single `batch_load_fn(deduped_keys)` call. Sync and async batch functions are both accepted. The framework constructs a fresh DataLoader per request via `build_request_dataloaders()` and exposes the dict at `info.context["dataloaders"]`. Length-mismatched returns and non-sequence returns raise into every awaiting future.
+
+### Rebuild on extension install/uninstall
+
+`GraphQLManager` subscribes to `GraphQLContributionRegistry` mutations at construction. Registrations log a structured diff (`"GraphQL contribution registry changed -- added: [...], removed: [...]"`); the schema is recomputed on the next `create_schema()` call so a flurry of installs only triggers one rebuild. Operators that need an immediate rebuild call `GraphQLManager.rebuild()` directly. The `suspend()/resume()` pair on the registry batches multiple registrations into a single notification.
+
+### Federation directive emission
+
+Directives attached to a type contribution are appended to `__strawberry_definition__.directives` so Strawberry emits them in SDL. The framework's own `Sunset` directive (Item 39) is preserved when extension-contributed directives are added. Use `key`/`shareable`/etc. to make our merged schema a valid Apollo Federation v2 subgraph; this composes with the inbound federation pipeline from Item 16.
+
+### Public API
+
+```python
+from serverframework.lib.Pydantic2Strawberry import (
+    gql_query, gql_mutation, gql_subscription, gql_type,
+    register_dataloader, FederationDirective,
+    gql_contribution_registry, reset_gql_contribution_registry,
+    GraphQLCompositionCollisionError, FieldKind,
+    RequestDataLoader, build_request_dataloaders,
+)
+```
 
 ## Error Handling
 

@@ -548,9 +548,70 @@ Four service flavors share a common lifecycle (`start`, `stop`, `pause`, `resume
 - **`PerpetualService`** — perpetual time-based loop with a sleep interval. The default flavor. Useful for thirty-second agentic loops, background reconciliation passes.
 - **`ScheduledService`** — cron expression or fixed-interval execution. Useful for periodic syncs, daily reports, billing-cycle resets, retention archival, backup snapshots.
 - **`QueueConsumerService`** — pulls from a queue (Redis, SQS, Postgres-as-queue) with backoff, visibility-timeout semantics, and dead-letter handling. Useful for outbox workers, compensating actions, deferred webhook processing.
-- **`StreamingService`** — long-lived connection-oriented work, with `ConsumerService` (websocket subscriber, SSE listener, Kafka consumer) and `ProducerService` (long-lived outbound stream) sub-flavors.
+- **`StreamingService`** — long-lived connection-oriented work, with `ConsumerStreamingService` (websocket subscriber, SSE listener, Kafka consumer) and `ProducerStreamingService` (long-lived outbound stream) sub-flavors. See **Streaming Services (Item 13)** below.
 
 State that must persist across restarts (cron last-run-at, queue cursors, stream subscription tokens) lives in a small per-service state store and is the responsibility of the framework, not the service author.
+
+## Streaming Services (Item 13)
+
+`StreamingService` completes the broadened service contract from Item 28 with three additions on top of the connect/iter/on_message/disconnect skeleton: a typed handler registry that mirrors the inbound webhook contract from Item 5, cursor / subscription-token persistence via an injectable `state_store`, and graceful drain on stop.
+
+### Subclass shape
+
+```python
+class StripeEventsStream(ConsumerStreamingService):
+    extension_name = "payment"
+    provider_name = "stripe"
+
+    async def connect(self):
+        return await stripe_client.events.subscribe(starting_after=self.cursor)
+
+    async def iter_messages(self, connection):
+        async for raw in connection:
+            yield raw
+
+    def classify(self, message):
+        return message["type"], message["data"], {"x-id": message["id"]}, message["id"]
+```
+
+The base class's default `on_message` invokes `classify(message)` -> `fan_out(...)` which dispatches to the streaming handler registry. Subclasses that need full lifecycle control override `on_message` directly.
+
+### Handler registry
+
+```python
+from serverframework.logic.AbstractService import streaming_handler, StreamingMessageContext
+
+@streaming_handler(EXT_Payment, provider="stripe", event="customer.updated")
+async def on_customer_updated(ctx: StreamingMessageContext) -> None:
+    # ctx.payload, ctx.headers, ctx.event_name, ctx.cursor, ctx.service_id
+    ...
+```
+
+Lookup is by `(extension_name, provider_name, event_name)`. If no event-specific handler is registered, the wildcard `(extension, provider, None)` handler is invoked. Re-registration overwrites with a warning. Handlers may be sync or async; async handlers are awaited.
+
+The Stripe events firehose and the Stripe webhook deliver the same canonical event into the same downstream chain — `Webhook.WebhookContext` and `StreamingMessageContext` carry equivalent fields, so a downstream `@hook_bll` or business handler does not need to know which transport delivered the event.
+
+### Cursor persistence
+
+`state_store` is an injectable `Callable[[service_id], cursor]` / `Callable[[service_id, value=cursor], None]` (matching the `ScheduledService` shape). On construction the service loads the last-acknowledged cursor; after each successful `fan_out` the cursor is persisted. Subclasses consume `self.cursor` to resume from the last position on reconnect. Failures inside `state_store` log a warning and continue — cursor persistence is durable but not transactional with the upstream stream.
+
+### Cross-process fan-out
+
+When `event_bus` is provided (any object with an `async publish(payload)` method, e.g. an Item 42 `AbstractEventBus`), the canonical payload is published after successful handler dispatch so out-of-process subscribers see the event. The handler registry path is in-process; `event_bus` is the cross-process upgrade.
+
+### Reconnection + graceful drain
+
+Reconnection backoff is exponential with jitter (±25%), capped at `reconnect_max_seconds` (default 60s, initial 1s). On stop:
+
+- `stop()` flips `running=False`; the loop exits its iteration.
+- `await stop_and_drain()` waits up to `drain_period_seconds` (default 30s) for the in-flight `on_message` to finish, then cancels it on timeout with a logged warning.
+- `disconnect()` runs in the loop's `finally` block regardless of how the loop exits.
+
+The `_drained` event is set when no message is in flight, so `stop_and_drain()` returns immediately when the service is idle.
+
+### Acceptance per Item 13
+
+A `StreamingService` author declares an upstream subscriber, has the framework manage connection lifecycle, reconnect automatically on transient failures, and route received events into the existing handler chain on the corresponding `*Manager` classes — all without writing connection-management or backoff code.
 
 ## Execution Model
 

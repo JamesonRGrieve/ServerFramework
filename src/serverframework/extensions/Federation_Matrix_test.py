@@ -25,6 +25,9 @@ import os
 from typing import Any, Dict, List
 
 import pytest
+# Module-level import so PEP 563 string annotations on nested handlers resolve
+# against module globals when FastAPI calls ``get_type_hints``.
+from fastapi import FastAPI, Request
 
 from serverframework.extensions.AbstractFederationMatrixTest import (
     AbstractFederationMatrixTest,
@@ -111,7 +114,6 @@ def _build_gql_upstream_transport() -> GQLUpstreamTransport:
     """
 
     import httpx
-    from fastapi import FastAPI, Request
 
     SEED = {
         "1": {"id": "1", "name": "Alpha", "size": 10},
@@ -185,7 +187,6 @@ def _build_rest_upstream_transport() -> RESTUpstreamTransport:
     """Build a REST transport pointing at an in-process FastAPI widget app."""
 
     import httpx
-    from fastapi import FastAPI
 
     SEED = {
         "1": {"id": "1", "name": "Alpha", "size": 10},
@@ -218,10 +219,12 @@ def _build_rest_upstream_transport() -> RESTUpstreamTransport:
     async def delete_w(wid: str):
         return {"deleted": True, "id": wid}
 
-    sync_client = httpx.Client(
-        transport=httpx.ASGITransport(app=app),
-        base_url="http://upstream",
-    )
+    # ``httpx.Client`` no longer drives ``ASGITransport`` (httpx 0.28+ made
+    # the ASGI transport async-only). Use FastAPI's TestClient, which wraps
+    # the same ASGI app behind a sync interface.
+    from fastapi.testclient import TestClient
+
+    sync_client = TestClient(app, base_url="http://upstream")
 
     class _SyncHTTP:
         """Sync HTTP client adapter that ``RESTUpstreamTransport.send_sync`` wants."""

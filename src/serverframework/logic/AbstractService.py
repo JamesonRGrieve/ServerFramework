@@ -785,20 +785,177 @@ class FairQueueConsumerService(QueueConsumerService):
 # ----- Streaming --------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Item 13 -- Streaming, websocket, SSE, long-poll support
+# ---------------------------------------------------------------------------
+#
+# StreamingService completes the broadened service contract from Item 28 by
+# adding three things on top of the connect/iter/on_message/disconnect skeleton:
+#
+#   1. A typed ``streaming_handler`` registry (mirrors ``Webhook.webhook_handler``
+#      from Item 5) so a Stripe events firehose and a Stripe webhook deliver
+#      the same canonical event into the same downstream hook chain.
+#   2. ``state_store``-backed cursor / subscription-token persistence so a
+#      restart resumes from the last acknowledged event.
+#   3. Graceful drain on stop: the loop receives the stop signal, finishes
+#      in-flight ``on_message`` invocations within ``drain_period_seconds``,
+#      and then disconnects cleanly.
+
+
+# Key: (extension_name, provider_name, event_name_or_None)
+StreamingHandlerKey = Tuple[str, str, Optional[str]]
+STREAMING_HANDLER_REGISTRY: Dict[StreamingHandlerKey, Callable[..., Any]] = {}
+
+
+class StreamingMessageContext:
+    """Payload delivered to a ``@streaming_handler``-tagged callable.
+
+    Mirrors :class:`endpoints.Webhook.WebhookContext` so a Stripe event
+    arriving via the streaming firehose and an equivalent webhook delivery
+    drop the same shape into the same handler chain.
+    """
+
+    __slots__ = (
+        "payload",
+        "headers",
+        "extension_name",
+        "provider_name",
+        "event_name",
+        "cursor",
+        "service_id",
+    )
+
+    def __init__(
+        self,
+        *,
+        payload: Any,
+        headers: Optional[Dict[str, str]] = None,
+        extension_name: str,
+        provider_name: str,
+        event_name: Optional[str] = None,
+        cursor: Optional[str] = None,
+        service_id: Optional[str] = None,
+    ) -> None:
+        self.payload = payload
+        self.headers = dict(headers or {})
+        self.extension_name = extension_name
+        self.provider_name = provider_name
+        self.event_name = event_name
+        self.cursor = cursor
+        self.service_id = service_id
+
+
+def streaming_handler(
+    extension_class_or_name: Any,
+    provider: str,
+    event: Optional[str] = None,
+) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    """Register a handler for ``(extension, provider, event)`` streaming events.
+
+    ``extension_class_or_name`` accepts either an extension class (the
+    framework extracts ``extension_name`` / strips the ``EXT_`` prefix on
+    the class name) or a plain string.
+
+    If ``event`` is ``None`` the handler matches any event for the provider
+    that has no more-specific registration -- same fallback semantics as
+    ``Webhook.webhook_handler``.
+    """
+
+    if isinstance(extension_class_or_name, str):
+        extension_name = extension_class_or_name.lower()
+    else:
+        name = getattr(extension_class_or_name, "extension_name", None)
+        if name:
+            extension_name = str(name).lower()
+        else:
+            cls_name = getattr(
+                extension_class_or_name, "__name__", str(extension_class_or_name)
+            )
+            if cls_name.startswith("EXT_"):
+                cls_name = cls_name[4:]
+            extension_name = cls_name.lower()
+    provider_norm = provider.lower()
+
+    def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
+        key = (extension_name, provider_norm, event)
+        if key in STREAMING_HANDLER_REGISTRY:
+            logger.warning(
+                f"Streaming handler for {key} already registered; overwriting."
+            )
+        STREAMING_HANDLER_REGISTRY[key] = func
+        logger.debug(f"Registered streaming handler {func.__name__} for {key}")
+        return func
+
+    return decorator
+
+
+def _lookup_streaming_handler(
+    extension: str, provider: str, event: Optional[str]
+) -> Optional[Callable[..., Any]]:
+    extension = extension.lower()
+    provider = provider.lower()
+    if event is not None:
+        handler = STREAMING_HANDLER_REGISTRY.get((extension, provider, event))
+        if handler is not None:
+            return handler
+    return STREAMING_HANDLER_REGISTRY.get((extension, provider, None))
+
+
 class StreamingService(AbstractService):
     """Long-lived connection-oriented work.
 
     Lifecycle: ``connect() -> on_message(message) -> disconnect()``. Reconnection
     backoff is exponential with jitter, capped at ``reconnect_max_seconds``.
+
+    Subclasses set ``extension_name`` / ``provider_name`` and override
+    :meth:`classify` to return ``(event_name, payload, headers, cursor)``
+    for each raw message; :meth:`on_message` then fans out to the
+    ``streaming_handler`` registry and (optionally) to a cross-process
+    event bus from Item 42.
+
+    Cursor persistence: when ``state_store`` is provided, the service
+    invokes ``state_store(service_id, value=cursor)`` after each successful
+    handler dispatch and ``state_store(service_id)`` on first connect so the
+    subclass can resume from the last acknowledged position. Subclasses
+    consume ``self.cursor`` to filter the stream on reconnect.
+
+    Graceful drain: ``stop()`` flips ``running=False`` and the loop drains
+    any in-flight ``on_message`` task within ``drain_period_seconds`` before
+    disconnecting. Use :meth:`stop_and_drain` for an awaitable variant in
+    tests and shutdown handlers.
     """
 
     reconnect_initial_seconds: float = 1.0
     reconnect_max_seconds: float = 60.0
 
-    async def connect(self) -> Any:  # pragma: no cover - override me
-        raise NotImplementedError
+    # Subclasses set these so the default ``on_message`` can route events to
+    # the streaming-handler registry without bespoke wiring per subclass.
+    extension_name: ClassVar[Optional[str]] = None
+    provider_name: ClassVar[Optional[str]] = None
 
-    async def on_message(self, message: Any) -> None:  # pragma: no cover - override me
+    def __init__(
+        self,
+        *args: Any,
+        state_store: Optional[Callable[..., Any]] = None,
+        event_bus: Optional[Any] = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(*args, **kwargs)
+        self._state_store = state_store
+        self._event_bus = event_bus
+        self.cursor: Optional[str] = None
+        if self._state_store is not None:
+            try:
+                self.cursor = self._state_store(self.service_id)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    f"StreamingService {self.service_id}: state_store load failed: {e}"
+                )
+        self._inflight: Optional[asyncio.Task] = None
+        self._drained: asyncio.Event = asyncio.Event()
+        self._drained.set()
+
+    async def connect(self) -> Any:  # pragma: no cover - override me
         raise NotImplementedError
 
     async def disconnect(self) -> None:
@@ -810,10 +967,121 @@ class StreamingService(AbstractService):
             yield None
         return
 
+    def classify(
+        self, message: Any
+    ) -> Tuple[Optional[str], Any, Optional[Dict[str, str]], Optional[str]]:
+        """Return ``(event_name, payload, headers, cursor)`` for ``message``.
+
+        Default: ``(None, message, None, None)`` -- subclasses override to
+        extract upstream-specific event names, headers, and cursor tokens.
+        """
+        return None, message, None, None
+
+    async def on_message(self, message: Any) -> None:
+        """Default fan-out: classify the message, dispatch to the registry.
+
+        A subclass that wants to fully customize the lifecycle can override
+        this. The default behavior is the right one for ~90% of streaming
+        upstreams: classify the raw frame into a canonical event, dispatch
+        to the handler chain, optionally publish to the event bus.
+        """
+        event_name, payload, headers, cursor = self.classify(message)
+        await self.fan_out(
+            payload=payload,
+            event_name=event_name,
+            headers=headers,
+            cursor=cursor,
+        )
+
+    async def fan_out(
+        self,
+        *,
+        payload: Any,
+        event_name: Optional[str],
+        headers: Optional[Dict[str, str]] = None,
+        cursor: Optional[str] = None,
+    ) -> None:
+        """Dispatch a classified event into the streaming handler registry.
+
+        Resolves the handler keyed by ``(extension_name, provider_name,
+        event_name)``; falls back to the wildcard handler when no
+        event-specific entry is registered. After successful dispatch:
+          - the ``cursor`` is persisted via ``state_store`` (if provided),
+          - the payload is published to ``event_bus`` (if provided) so
+            cross-process subscribers (Item 42) see the event.
+        """
+        if self.extension_name is None or self.provider_name is None:
+            raise RuntimeError(
+                f"StreamingService {self.__class__.__name__} did not declare"
+                " extension_name / provider_name; set them on the subclass"
+                " or override on_message to dispatch directly."
+            )
+        handler = _lookup_streaming_handler(
+            self.extension_name, self.provider_name, event_name
+        )
+        if handler is None:
+            logger.debug(
+                f"StreamingService {self.service_id}: no handler for "
+                f"({self.extension_name}, {self.provider_name}, {event_name})"
+            )
+            return
+        ctx = StreamingMessageContext(
+            payload=payload,
+            headers=headers,
+            extension_name=self.extension_name,
+            provider_name=self.provider_name,
+            event_name=event_name,
+            cursor=cursor,
+            service_id=self.service_id,
+        )
+        result = handler(ctx)
+        if asyncio.iscoroutine(result):
+            await result
+        if cursor is not None:
+            self.cursor = cursor
+            self._persist_cursor()
+        if self._event_bus is not None and hasattr(self._event_bus, "publish"):
+            try:
+                await self._event_bus.publish(payload)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    f"StreamingService {self.service_id}: event_bus publish failed: {e}"
+                )
+
+    def _persist_cursor(self) -> None:
+        if self._state_store is None:
+            return
+        try:
+            self._state_store(self.service_id, value=self.cursor)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                f"StreamingService {self.service_id}: state_store save failed: {e}"
+            )
+
     async def update(self) -> None:
         # ``run_service_loop`` is overridden; ``update`` exists only to satisfy
         # the abstract contract from AbstractService.
         return None
+
+    async def stop_and_drain(self) -> None:
+        """Awaitable graceful shutdown: stop, drain, return.
+
+        Sets ``running=False`` so the loop exits its iteration, then waits
+        up to ``drain_period_seconds`` for any in-flight ``on_message``
+        invocation to complete.
+        """
+        self.stop()
+        try:
+            await asyncio.wait_for(
+                self._drained.wait(), timeout=self.drain_period_seconds
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                f"StreamingService {self.service_id}: drain timed out after"
+                f" {self.drain_period_seconds:.1f}s; cancelling in-flight task."
+            )
+            if self._inflight is not None and not self._inflight.done():
+                self._inflight.cancel()
 
     async def run_service_loop(self) -> None:  # type: ignore[override]
         attempt = 0
@@ -832,12 +1100,19 @@ class StreamingService(AbstractService):
                         if self.paused:
                             await asyncio.sleep(0.1)
                             continue
+                        # Track this dispatch so stop_and_drain can wait on it.
+                        self._drained.clear()
+                        self._inflight = asyncio.ensure_future(self.on_message(message))
                         try:
-                            await self.on_message(message)
+                            await self._inflight
                         except Exception as e:  # noqa: BLE001
                             logger.error(
-                                f"StreamingService {self.service_id} on_message error: {e}"
+                                f"StreamingService {self.service_id} on_message"
+                                f" error: {e}"
                             )
+                        finally:
+                            self._inflight = None
+                            self._drained.set()
                 finally:
                     try:
                         await self.disconnect()

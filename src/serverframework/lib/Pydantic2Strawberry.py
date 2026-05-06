@@ -1,6 +1,8 @@
+import asyncio
+import inspect as _inspect
 import json
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field as _dc_field
 from datetime import date, datetime
 from enum import Enum, IntEnum
 from typing import (
@@ -8,8 +10,11 @@ from typing import (
     AsyncGenerator,
     Callable,
     Dict,
+    Hashable,
+    Iterable,
     List,
     Optional,
+    Sequence,
     Set,
     Tuple,
     Type,
@@ -223,6 +228,59 @@ def _versioned_field(resolver: Any, manager_class: Any) -> Any:
     return strawberry.field(resolver, **kwargs)
 
 
+# -- Item 46 helpers ----------------------------------------------------------
+
+
+def _apply_federation_directives(type_class: type, directives: Tuple[Any, ...]) -> None:
+    """Attach Apollo Federation v2 directive metadata to a type.
+
+    Strawberry's federation support reads ``__strawberry_definition__.directives``
+    when emitting SDL. We append rather than replace so the framework's own
+    ``Sunset`` directive (Item 39) survives this call.
+    """
+    if not directives:
+        return
+    definition = getattr(type_class, "__strawberry_definition__", None)
+    if definition is None:
+        logger.warning(
+            f"Cannot attach federation directives to {type_class.__name__}: "
+            "type is not a Strawberry-decorated class."
+        )
+        return
+    existing = list(getattr(definition, "directives", []) or [])
+    for d in directives:
+        existing.append(d)
+    try:
+        definition.directives = existing
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            f"Failed to attach federation directives to {type_class.__name__}: {e}"
+        )
+
+
+def _diff_signatures(
+    previous: Tuple[Tuple[str, ...], ...],
+    current: Tuple[Tuple[str, ...], ...],
+) -> Tuple[Set[str], Set[str]]:
+    """Return ``(added, removed)`` between two signature snapshots.
+
+    Each signature is ``(query, mutation, subscription, types)``; entries are
+    namespaced by kind so the diff is unambiguous.
+    """
+    labels = ("query", "mutation", "subscription", "type")
+
+    def _flatten(sig: Tuple[Tuple[str, ...], ...]) -> Set[str]:
+        flat: Set[str] = set()
+        for label, names in zip(labels, sig):
+            for name in names:
+                flat.add(f"{label}:{name}")
+        return flat
+
+    prev = _flatten(previous)
+    curr = _flatten(current)
+    return curr - prev, prev - curr
+
+
 # Removed FilterTypeGenerator - functionality moved to GraphQLManager
 
 
@@ -235,16 +293,485 @@ def _versioned_field(resolver: Any, manager_class: Any) -> Any:
 # Removed ResolverGenerator - functionality moved to GraphQLManager
 
 
+# ---------------------------------------------------------------------------
+# Item 46 -- composition contract for our own extensions
+# ---------------------------------------------------------------------------
+# Distinct from the external-federation work in ``Federation_GQL.py``: this
+# block is how *our own* extensions contribute Query / Mutation / Subscription
+# root fields, custom types, federation directives, and per-request DataLoaders
+# into the merged schema. The CRUD-on-managers path is unchanged.
+#
+# Collision rule (mirrors ``CollisionDetection.FieldCollisionError``):
+#   - Same root field name with byte-identical resolver + signature -> merge.
+#   - Same root field name with non-identical signature -> startup-time
+#     :class:`GraphQLCompositionCollisionError` naming both extensions.
+#   - Same type name with non-identical body -> same error.
+#   - Namespacing under the extension name is opt-in via ``namespace=True``.
+
+
+class GraphQLCompositionCollisionError(Exception):
+    """Two extensions registered conflicting GraphQL contributions."""
+
+    def __init__(
+        self,
+        kind: str,
+        name: str,
+        extensions: Sequence[str],
+        detail: Optional[str] = None,
+    ) -> None:
+        self.kind = kind
+        self.name = name
+        self.extensions = list(extensions)
+        suffix = f" -- {detail}" if detail else ""
+        super().__init__(
+            f"GraphQL {kind} collision on '{name}': "
+            f"contributed by {sorted(set(self.extensions))}. "
+            "Either rename one contribution, opt in to namespacing "
+            "(`namespace=True`), or ensure both contributions are byte-identical"
+            f"{suffix}."
+        )
+
+
+class FieldKind(str, Enum):
+    QUERY = "query"
+    MUTATION = "mutation"
+    SUBSCRIPTION = "subscription"
+
+
+@dataclass(frozen=True)
+class FederationDirective:
+    """Apollo Federation v2 directive applied to a contributed type."""
+
+    name: str
+    args: Dict[str, Any] = _dc_field(default_factory=dict)
+
+
+_ALLOWED_FED_DIRECTIVES: Set[str] = {
+    "key",
+    "external",
+    "requires",
+    "provides",
+    "shareable",
+    "inaccessible",
+    "override",
+    "tag",
+}
+
+
+@dataclass
+class FieldContribution:
+    """A root-field contribution from an extension."""
+
+    extension_name: str
+    kind: FieldKind
+    name: str
+    resolver: Callable[..., Any]
+    return_type: Any
+    args: Dict[str, Any] = _dc_field(default_factory=dict)
+    description: Optional[str] = None
+    namespace: bool = False
+    priority: int = 50
+
+    @property
+    def emitted_name(self) -> str:
+        if self.namespace:
+            return f"{self.extension_name}_{self.name}"
+        return self.name
+
+
+@dataclass
+class TypeContribution:
+    """A custom type contribution (not backed by a BLL manager)."""
+
+    extension_name: str
+    type_class: type
+    name: Optional[str] = None
+    federation_directives: Tuple[FederationDirective, ...] = ()
+    namespace: bool = False
+
+    @property
+    def emitted_name(self) -> str:
+        base = self.name or self.type_class.__name__
+        if self.namespace:
+            return f"{self.extension_name.capitalize()}{base}"
+        return base
+
+
+DataLoaderBatchFn = Callable[[Sequence[Hashable]], Any]
+
+
+@dataclass
+class DataLoaderSpec:
+    """Per-request DataLoader registration."""
+
+    extension_name: str
+    name: str
+    batch_load_fn: DataLoaderBatchFn
+    description: Optional[str] = None
+
+
+RebuildCallback = Callable[[], None]
+
+
+class GraphQLContributionRegistry:
+    """Process-wide store of extension-contributed GraphQL surface."""
+
+    def __init__(self) -> None:
+        self._fields: Dict[FieldKind, Dict[str, List[FieldContribution]]] = {
+            FieldKind.QUERY: {},
+            FieldKind.MUTATION: {},
+            FieldKind.SUBSCRIPTION: {},
+        }
+        self._types: Dict[str, List[TypeContribution]] = {}
+        self._dataloaders: Dict[str, DataLoaderSpec] = {}
+        self._rebuild_subscribers: List[RebuildCallback] = []
+        self._suspended: bool = False
+
+    def register_field(self, contribution: FieldContribution) -> None:
+        bucket = self._fields[contribution.kind].setdefault(
+            contribution.emitted_name, []
+        )
+        bucket.append(contribution)
+        self._notify()
+
+    def register_type(self, contribution: TypeContribution) -> None:
+        for d in contribution.federation_directives:
+            if d.name not in _ALLOWED_FED_DIRECTIVES:
+                raise ValueError(
+                    f"Unsupported federation directive '@{d.name}' on type "
+                    f"'{contribution.emitted_name}'. Allowed: "
+                    f"{sorted(_ALLOWED_FED_DIRECTIVES)}."
+                )
+        self._types.setdefault(contribution.emitted_name, []).append(contribution)
+        self._notify()
+
+    def register_dataloader(self, spec: DataLoaderSpec) -> None:
+        existing = self._dataloaders.get(spec.name)
+        if existing is not None and existing.batch_load_fn is not spec.batch_load_fn:
+            raise GraphQLCompositionCollisionError(
+                kind="dataloader",
+                name=spec.name,
+                extensions=[existing.extension_name, spec.extension_name],
+                detail="DataLoader names are global; rename one or share the function.",
+            )
+        self._dataloaders[spec.name] = spec
+        self._notify()
+
+    def fields(self, kind: FieldKind) -> Dict[str, List[FieldContribution]]:
+        return {k: list(v) for k, v in self._fields[kind].items()}
+
+    def types(self) -> Dict[str, List[TypeContribution]]:
+        return {k: list(v) for k, v in self._types.items()}
+
+    def dataloaders(self) -> Dict[str, DataLoaderSpec]:
+        return dict(self._dataloaders)
+
+    def subscribe_rebuild(self, cb: RebuildCallback) -> None:
+        self._rebuild_subscribers.append(cb)
+
+    def unsubscribe_rebuild(self, cb: RebuildCallback) -> None:
+        if cb in self._rebuild_subscribers:
+            self._rebuild_subscribers.remove(cb)
+
+    def _notify(self) -> None:
+        if self._suspended:
+            return
+        for cb in list(self._rebuild_subscribers):
+            try:
+                cb()
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"GQL rebuild subscriber failed: {e}")
+
+    def suspend(self) -> "GraphQLContributionRegistry":
+        """Defer rebuild notifications until :meth:`resume` is called."""
+        self._suspended = True
+        return self
+
+    def resume(self) -> None:
+        self._suspended = False
+        self._notify()
+
+    def resolve_fields(self, kind: FieldKind) -> Dict[str, FieldContribution]:
+        winners: Dict[str, FieldContribution] = {}
+        for emitted_name, contributions in self._fields[kind].items():
+            if len(contributions) == 1:
+                winners[emitted_name] = contributions[0]
+                continue
+            if all(_field_identical(c, contributions[0]) for c in contributions[1:]):
+                winners[emitted_name] = contributions[0]
+                continue
+            raise GraphQLCompositionCollisionError(
+                kind=f"{kind.value} field",
+                name=emitted_name,
+                extensions=[c.extension_name for c in contributions],
+            )
+        return winners
+
+    def resolve_types(self) -> Dict[str, TypeContribution]:
+        winners: Dict[str, TypeContribution] = {}
+        for emitted_name, contributions in self._types.items():
+            if len(contributions) == 1:
+                winners[emitted_name] = contributions[0]
+                continue
+            if all(_type_identical(c, contributions[0]) for c in contributions[1:]):
+                winners[emitted_name] = contributions[0]
+                continue
+            raise GraphQLCompositionCollisionError(
+                kind="type",
+                name=emitted_name,
+                extensions=[c.extension_name for c in contributions],
+            )
+        return winners
+
+    def reset(self) -> None:
+        for kind in FieldKind:
+            self._fields[kind].clear()
+        self._types.clear()
+        self._dataloaders.clear()
+        self._rebuild_subscribers.clear()
+        self._suspended = False
+
+
+def _field_identical(a: FieldContribution, b: FieldContribution) -> bool:
+    return (
+        a.resolver is b.resolver
+        and a.return_type == b.return_type
+        and a.args == b.args
+        and a.kind == b.kind
+    )
+
+
+def _type_identical(a: TypeContribution, b: TypeContribution) -> bool:
+    return (
+        a.type_class is b.type_class
+        and a.federation_directives == b.federation_directives
+    )
+
+
+_GLOBAL_CONTRIBUTION_REGISTRY = GraphQLContributionRegistry()
+
+
+def gql_contribution_registry() -> GraphQLContributionRegistry:
+    """Process-wide contribution registry singleton."""
+    return _GLOBAL_CONTRIBUTION_REGISTRY
+
+
+def reset_gql_contribution_registry() -> None:
+    """Test helper -- clear the process-wide contribution registry."""
+    _GLOBAL_CONTRIBUTION_REGISTRY.reset()
+
+
+def _extension_name_for_caller(explicit: Optional[str]) -> str:
+    """Best-effort extension name from the caller's module path."""
+    if explicit:
+        return explicit
+    frame = _inspect.currentframe()
+    try:
+        outer = frame.f_back if frame else None
+        while outer is not None:
+            mod = outer.f_globals.get("__name__", "")
+            parts = mod.split(".")
+            if "extensions" in parts:
+                idx = parts.index("extensions")
+                if idx + 1 < len(parts):
+                    return parts[idx + 1]
+            outer = outer.f_back
+    finally:
+        del frame
+    return "core"
+
+
+def _make_field_decorator(kind: FieldKind):
+    def decorator(
+        *,
+        return_type: Any,
+        name: Optional[str] = None,
+        args: Optional[Dict[str, Any]] = None,
+        description: Optional[str] = None,
+        extension_name: Optional[str] = None,
+        namespace: bool = False,
+        priority: int = 50,
+    ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+        def deco(fn: Callable[..., Any]) -> Callable[..., Any]:
+            field_name = name or fn.__name__
+            ext = _extension_name_for_caller(extension_name)
+            _GLOBAL_CONTRIBUTION_REGISTRY.register_field(
+                FieldContribution(
+                    extension_name=ext,
+                    kind=kind,
+                    name=field_name,
+                    resolver=fn,
+                    return_type=return_type,
+                    args=dict(args or {}),
+                    description=description,
+                    namespace=namespace,
+                    priority=priority,
+                )
+            )
+            return fn
+
+        return deco
+
+    return decorator
+
+
+gql_query = _make_field_decorator(FieldKind.QUERY)
+gql_mutation = _make_field_decorator(FieldKind.MUTATION)
+gql_subscription = _make_field_decorator(FieldKind.SUBSCRIPTION)
+
+
+def gql_type(
+    *,
+    name: Optional[str] = None,
+    federation_directives: Iterable[FederationDirective] = (),
+    extension_name: Optional[str] = None,
+    namespace: bool = False,
+) -> Callable[[type], type]:
+    """Register a Strawberry-decorated type as an extension contribution."""
+
+    def deco(cls: type) -> type:
+        ext = _extension_name_for_caller(extension_name)
+        _GLOBAL_CONTRIBUTION_REGISTRY.register_type(
+            TypeContribution(
+                extension_name=ext,
+                type_class=cls,
+                name=name,
+                federation_directives=tuple(federation_directives),
+                namespace=namespace,
+            )
+        )
+        return cls
+
+    return deco
+
+
+def register_dataloader(
+    name: str,
+    batch_load_fn: DataLoaderBatchFn,
+    *,
+    extension_name: Optional[str] = None,
+    description: Optional[str] = None,
+) -> None:
+    """Register a per-request DataLoader.
+
+    Resolvers retrieve it via ``info.context['dataloaders'][name]`` and call
+    ``.load(key)`` to enqueue a fetch; the framework batches all loads in
+    the request into a single ``batch_load_fn(keys)`` call.
+    """
+    ext = _extension_name_for_caller(extension_name)
+    _GLOBAL_CONTRIBUTION_REGISTRY.register_dataloader(
+        DataLoaderSpec(
+            extension_name=ext,
+            name=name,
+            batch_load_fn=batch_load_fn,
+            description=description,
+        )
+    )
+
+
+class RequestDataLoader:
+    """Minimal per-request DataLoader.
+
+    ``load(key)`` returns an awaitable that resolves once the deferred batch
+    fires. Batches fire on the next event-loop tick after the first ``load``,
+    so all parallel resolutions of ``thing.related`` collapse into a single
+    ``batch_load_fn(keys)`` call.
+    """
+
+    def __init__(self, batch_load_fn: DataLoaderBatchFn) -> None:
+        self._batch_load_fn = batch_load_fn
+        self._queue: List[Hashable] = []
+        self._futures: Dict[Hashable, "asyncio.Future[Any]"] = {}
+        self._scheduled: bool = False
+
+    def load(self, key: Hashable) -> "asyncio.Future[Any]":
+        loop = asyncio.get_event_loop()
+        if key in self._futures:
+            return self._futures[key]
+        fut: "asyncio.Future[Any]" = loop.create_future()
+        self._futures[key] = fut
+        self._queue.append(key)
+        if not self._scheduled:
+            self._scheduled = True
+            loop.call_soon(lambda: asyncio.ensure_future(self._fire()))
+        return fut
+
+    async def _fire(self) -> None:
+        keys = list(self._queue)
+        self._queue.clear()
+        self._scheduled = False
+        try:
+            result = self._batch_load_fn(keys)
+            if _inspect.isawaitable(result):
+                result = await result
+        except Exception as e:  # noqa: BLE001
+            for key in keys:
+                fut = self._futures.pop(key, None)
+                if fut is not None and not fut.done():
+                    fut.set_exception(e)
+            return
+        if not isinstance(result, (list, tuple)):
+            err = TypeError(
+                f"DataLoader batch_load_fn must return a sequence aligned with"
+                f" keys; got {type(result).__name__}."
+            )
+            for key in keys:
+                fut = self._futures.pop(key, None)
+                if fut is not None and not fut.done():
+                    fut.set_exception(err)
+            return
+        if len(result) != len(keys):
+            err = ValueError(
+                f"DataLoader batch_load_fn returned {len(result)} results for"
+                f" {len(keys)} keys; lengths must match."
+            )
+            for key in keys:
+                fut = self._futures.pop(key, None)
+                if fut is not None and not fut.done():
+                    fut.set_exception(err)
+            return
+        for key, value in zip(keys, result):
+            fut = self._futures.pop(key, None)
+            if fut is not None and not fut.done():
+                fut.set_result(value)
+
+
+def build_request_dataloaders(
+    registry: Optional[GraphQLContributionRegistry] = None,
+) -> Dict[str, RequestDataLoader]:
+    """Build a fresh per-request DataLoader for every registered spec."""
+    reg = registry or _GLOBAL_CONTRIBUTION_REGISTRY
+    return {name: RequestDataLoader(spec.batch_load_fn) for name, spec in reg.dataloaders().items()}
+
+
 class GraphQLManager(ErrorHandlerMixin):
     """Main GraphQL schema manager that generates schemas from ModelRegistry"""
 
-    def __init__(self, model_registry: ModelRegistry) -> None:
-        """Initialize SchemaManager with ModelRegistry"""
+    def __init__(
+        self,
+        model_registry: ModelRegistry,
+        contribution_registry: Optional[GraphQLContributionRegistry] = None,
+    ) -> None:
+        """Initialize SchemaManager with ModelRegistry.
+
+        ``contribution_registry`` defaults to the process-wide singleton from
+        :mod:`serverframework.lib.GraphQLContribution`. Item 46 -- extension-
+        contributed Query/Mutation/Subscription roots, custom types,
+        federation directives, and DataLoaders are merged into the schema
+        on every :meth:`create_schema` call. The manager subscribes to
+        registry mutations so a subsequent extension install/uninstall
+        rebuilds the schema with a logged diff.
+        """
         if not model_registry:
             raise ValueError("ModelRegistry instance is required")
 
         self.model_registry = model_registry
         self.broadcast = Broadcast("memory://")
+        self._contributions: GraphQLContributionRegistry = (
+            contribution_registry or gql_contribution_registry()
+        )
+        self._last_schema_signature: Optional[Tuple[Tuple[str, ...], ...]] = None
+        self._contributions.subscribe_rebuild(self._on_contributions_changed)
 
         # Legacy generator references for backward compatibility with tests
         class MockGenerator:
@@ -303,6 +830,10 @@ class GraphQLManager(ErrorHandlerMixin):
         # Generate all types, queries, mutations, and subscriptions
         self._generate_all_components()
 
+        # Item 46 -- merge extension-contributed roots, custom types, and
+        # federation directives. Collisions raise here at build time.
+        self._apply_contributions()
+
         # Create Query, Mutation, and Subscription types
         query_type = self._create_query_type()
         mutation_type = self._create_mutation_type()
@@ -347,7 +878,119 @@ class GraphQLManager(ErrorHandlerMixin):
             extensions=schema_extensions,
         )
 
+        self._last_schema_signature = self._snapshot_signature()
         return schema
+
+    # -- Item 46 ------------------------------------------------------------
+
+    def _apply_contributions(self) -> None:
+        """Merge extension-contributed roots/types/directives into the schema.
+
+        Walks the contribution registry, applies the three-stage collision
+        rule, and folds the winners into ``_query_fields`` /
+        ``_mutation_fields`` / ``_subscription_fields``. Custom types are
+        registered as known type names so collision detection in
+        ``_create_gql_type_from_model`` doesn't double-register the same name.
+        """
+        if not hasattr(self, "_global_type_names"):
+            self._global_type_names: Dict[str, str] = {}
+
+        for kind, bucket in (
+            (FieldKind.QUERY, self._query_fields),
+            (FieldKind.MUTATION, self._mutation_fields),
+            (FieldKind.SUBSCRIPTION, self._subscription_fields),
+        ):
+            winners = self._contributions.resolve_fields(kind)
+            for emitted_name, contribution in winners.items():
+                if emitted_name in bucket:
+                    logger.warning(
+                        f"Extension contribution '{emitted_name}' overrides an"
+                        f" auto-generated {kind.value} field; the extension"
+                        f" version wins."
+                    )
+                bucket[emitted_name] = self._wrap_contribution(contribution)
+
+        for emitted_name, contribution in self._contributions.resolve_types().items():
+            self._global_type_names.setdefault(
+                emitted_name,
+                f"{contribution.type_class.__module__}.{contribution.type_class.__name__}",
+            )
+            if contribution.federation_directives:
+                _apply_federation_directives(
+                    contribution.type_class, contribution.federation_directives
+                )
+
+    def _wrap_contribution(self, contribution: FieldContribution) -> Any:
+        """Wrap a contribution's resolver as a Strawberry field/subscription.
+
+        Resolvers receive the Strawberry ``Info`` plus any declared ``args``.
+        Subscriptions are wrapped with ``strawberry.subscription``; queries
+        and mutations with ``strawberry.field``.
+        """
+        resolver = contribution.resolver
+        if contribution.kind == FieldKind.SUBSCRIPTION:
+            return strawberry.subscription(resolver, description=contribution.description)
+        return strawberry.field(resolver, description=contribution.description)
+
+    def _on_contributions_changed(self) -> None:
+        """Subscriber callback for registry mutations.
+
+        Logs the diff. The actual schema rebuild is performed lazily on the
+        next :meth:`create_schema` call (so a flurry of extension installs
+        only triggers one rebuild). Callers that need an immediate rebuild
+        (extension install/uninstall hot path) call :meth:`rebuild`.
+        """
+        new_sig = self._snapshot_signature()
+        if self._last_schema_signature is None:
+            return
+        added, removed = _diff_signatures(self._last_schema_signature, new_sig)
+        if added or removed:
+            logger.info(
+                f"GraphQL contribution registry changed -- added: {sorted(added)},"
+                f" removed: {sorted(removed)}. Schema will rebuild on next access."
+            )
+
+    def rebuild(self) -> strawberry.Schema:
+        """Rebuild the merged schema and log the structural diff.
+
+        Called by the extension install/uninstall path (Item 20) when the
+        operator wants the new contributions visible immediately rather than
+        on the next scheduled rebuild.
+        """
+        previous = self._last_schema_signature
+        # Reset the per-call buckets so a rebuild is a clean recomputation
+        # rather than an additive overlay.
+        self._query_fields.clear()
+        self._mutation_fields.clear()
+        self._subscription_fields.clear()
+        schema = self.create_schema()
+        if previous is not None:
+            added, removed = _diff_signatures(previous, self._last_schema_signature or ())
+            if added or removed:
+                logger.info(
+                    f"GraphQL schema rebuilt -- added: {sorted(added)},"
+                    f" removed: {sorted(removed)}."
+                )
+        return schema
+
+    def _snapshot_signature(self) -> Tuple[Tuple[str, ...], ...]:
+        """Return a structural signature for diffing across rebuilds."""
+        return (
+            tuple(sorted(self._query_fields.keys())),
+            tuple(sorted(self._mutation_fields.keys())),
+            tuple(sorted(self._subscription_fields.keys())),
+            tuple(sorted(getattr(self, "_global_type_names", {}).keys())),
+        )
+
+    def build_request_context(self, base_context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Build the per-request GraphQL context with DataLoaders attached.
+
+        FastAPI/Strawberry callers pass the result as ``context_getter`` so
+        every resolver finds ``info.context['dataloaders']``.
+        """
+        ctx: Dict[str, Any] = dict(base_context or {})
+        ctx["dataloaders"] = build_request_dataloaders(self._contributions)
+        return ctx
 
     def _generate_all_components(self) -> None:
         """Generate all GraphQL components from models"""

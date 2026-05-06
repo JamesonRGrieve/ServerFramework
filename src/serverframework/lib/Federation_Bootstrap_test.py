@@ -19,6 +19,9 @@ from typing import Any, Dict, List
 
 import httpx
 import pytest
+# Module-level import so PEP 563 string annotations on nested handlers resolve
+# against module globals when FastAPI calls ``get_type_hints``.
+from fastapi import FastAPI, Request
 
 from serverframework.lib.Federation_Bootstrap import (
     FederationCommitReport,
@@ -50,9 +53,12 @@ class _RecordingRegistry:
 # ---------------------------------------------------------------------------
 
 
-def _build_strict_gql_upstream() -> "httpx.Client":
-    from fastapi import FastAPI, Request
+def _build_strict_gql_upstream():
+    """Build a sync HTTP-shaped client backed by a FastAPI ASGI app.
 
+    httpx 0.28+ removed sync support from ``ASGITransport``; FastAPI's
+    ``TestClient`` keeps the same ASGI app behind a sync facade.
+    """
     app = FastAPI()
 
     @app.post("/graphql")
@@ -82,9 +88,8 @@ def _build_strict_gql_upstream() -> "httpx.Client":
             return {"data": result.data}
         return {"data": {"__typename": "Query"}}
 
-    return httpx.Client(
-        transport=httpx.ASGITransport(app=app), base_url="http://upstream"
-    )
+    from fastapi.testclient import TestClient
+    return TestClient(app, base_url="http://upstream")
 
 
 # ---------------------------------------------------------------------------
