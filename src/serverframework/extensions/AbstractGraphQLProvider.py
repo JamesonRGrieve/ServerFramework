@@ -270,6 +270,79 @@ class AbstractGraphQLProvider(AbstractStaticProvider):
         """
 
         ingested = await cls.introspect(instance=instance)
+        return cls._post_introspection_register(ingested, instance, registry)
+
+    @classmethod
+    def introspect_sync(
+        cls, *, instance: Optional[ProviderInstanceModel] = None
+    ) -> IngestedSchema:
+        """Synchronous twin of :meth:`introspect`.
+
+        Used by :func:`Federation_Bootstrap.install_external_federation_sync`
+        when the federation pipeline runs inside ``ModelRegistry.commit()``,
+        which is itself synchronous. Blocks the caller for the duration of
+        the upstream HTTP round trip — at startup that's an acceptable cost
+        for the seam-time-once-per-process schema lift.
+        """
+
+        client = cls.http_client_sync(instance=instance)
+        if cls.federation_style == "apollo_v2":
+            try:
+                response = client.post(
+                    cls.upstream_url, json={"query": APOLLO_SDL_QUERY}
+                )
+                sdl = (
+                    response.get("data", {}).get("_service", {}).get("sdl")
+                    if isinstance(response, dict)
+                    else None
+                )
+                if sdl:
+                    return ingest_apollo_sdl(sdl)
+                if cls.require_apollo_v2_when_advertised:
+                    raise RuntimeError(
+                        f"{cls.__name__} declared federation_style=apollo_v2 "
+                        f"but upstream {cls.upstream_url!r} did not return "
+                        f"a `_service.sdl`."
+                    )
+            except Exception as exc:
+                if cls.require_apollo_v2_when_advertised:
+                    raise
+                logger.warning(
+                    "Apollo Federation v2 probe failed for %s; falling back to "
+                    "introspection: %s",
+                    cls.__name__,
+                    exc,
+                )
+        response = client.post(
+            cls.upstream_url, json={"query": INTROSPECTION_QUERY}
+        )
+        if not isinstance(response, dict) or "data" not in response:
+            raise RuntimeError(
+                f"{cls.__name__}: introspection returned unexpected envelope: {response!r}"
+            )
+        return ingest_introspection(response["data"])
+
+    @classmethod
+    def register_with_registry_sync(
+        cls,
+        *,
+        instance: Optional[ProviderInstanceModel] = None,
+        registry: Optional[MergedSchemaRegistry] = None,
+    ) -> IngestedSchema:
+        """Synchronous twin of :meth:`register_with_registry`."""
+
+        ingested = cls.introspect_sync(instance=instance)
+        return cls._post_introspection_register(ingested, instance, registry)
+
+    @classmethod
+    def _post_introspection_register(
+        cls,
+        ingested: IngestedSchema,
+        instance: Optional[ProviderInstanceModel],
+        registry: Optional[MergedSchemaRegistry],
+    ) -> IngestedSchema:
+        """Shared transform → register tail used by both async and sync paths."""
+
         transformer = cls.transformer()
         rewritten_sdl = transformer.transform(ingested.sdl)
         if cls.federation_style == "apollo_v2":

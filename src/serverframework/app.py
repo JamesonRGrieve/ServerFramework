@@ -407,25 +407,9 @@ def build_app(model_registry: ModelRegistry):
             db_mgr = DatabaseManager(db_prefix)
             db_mgr.init_engine_config()
         db_mgr.init_worker()
-
-        # Item 16 — run external GraphQL/REST federation pipeline. Errors
-        # surface via provider health checks, not by failing the worker, so
-        # an unreachable upstream doesn't keep the framework from booting.
-        if env("GQL_FEDERATION", default="true").lower() == "true":
-            try:
-                from serverframework.lib.Federation_Bootstrap import (
-                    install_external_federation,
-                )
-
-                lifted = await install_external_federation()
-                if lifted:
-                    logger.info(
-                        "Federation installed for providers: %s",
-                        ", ".join(sorted(lifted.keys())),
-                    )
-            except Exception as exc:
-                logger.warning("Federation bootstrap failed: %s", exc)
-
+        # Item 16 — federation already ran inside ``ModelRegistry.commit()``;
+        # the FastAPI router from any GQL→REST projection is mounted below
+        # in ``build_app`` so the lifespan body has nothing more to do.
         try:
             yield
         finally:
@@ -972,12 +956,24 @@ def build_app(model_registry: ModelRegistry):
             )
             app.include_router(graphql_app, prefix="/graphql")
 
+    # Item 16 — mount the GQL→REST projection routers from federation.
+    # Each router exposes one REST route per upstream root field so REST
+    # clients can hit a GraphQL upstream without learning GraphQL.
+    federation_report = getattr(model_registry, "_federation_report", None)
+    if federation_report is not None and federation_report.rest_routers:
+        for router in federation_report.rest_routers:
+            try:
+                app.include_router(router)
+            except Exception as exc:
+                logger.warning("Failed to mount federation REST router: %s", exc)
+
     if env("MCP").strip().lower() == "true":
         from fastapi_mcp import FastApiMCP
 
         mcp = FastApiMCP(app)
         mcp.mount()
     app.state.model_registry = model_registry
+    app.state.federation_report = federation_report
 
     # ------------------------------------------------------------------
     # SIGHUP-driven graceful restart (Item 20).
