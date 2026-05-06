@@ -229,7 +229,7 @@ class TestDevicePairing(ExtensionServerMixin):
                 chunks.append(chunk)
             return chunks
 
-        chunks = asyncio.get_event_loop().run_until_complete(collect())
+        chunks = asyncio.run(collect())
         assert len(chunks) == 1
         assert chunks[0].startswith("event: approved\n")
         assert "session_key" in chunks[0]
@@ -247,6 +247,6 @@ class TestDevicePairing(ExtensionServerMixin):
                 chunks.append(chunk)
             return chunks
 
-        chunks = asyncio.get_event_loop().run_until_complete(collect())
+        chunks = asyncio.run(collect())
         assert len(chunks) == 1
         assert chunks[0].startswith("event: denied\n")

@@ -94,7 +94,7 @@ class _BareInstance(AbstractEmailProviderInstance):
 
 
 def _run(coro):
-    return asyncio.get_event_loop().run_until_complete(coro)
+    return asyncio.run(coro)
 
 
 def test_capability_ladder_default_raises_not_supported():

@@ -608,7 +608,7 @@ Service consuming or producing a continuous stream.
 ### `ProviderInstanceModel` (class)
 
 - Module: `serverframework.logic.BLL_Providers`
-- Signature: `ProviderInstanceModel(*, provider_id: str, provider: Optional[serverframework.logic.BLL_Providers.ProviderModel] = None, team_id: Optional[str] = None, team: Optional[serverframework.logic.BLL_Auth.TeamModel] = None, user_id: Optional[str] = None, user: Optional[serverframework.logic.BLL_Auth.UserModel] = None, name: str, updated_at: Optional[datetime.datetime], updated_by_user_id: Optional[str], id: str, created_at: datetime.datetime, created_by_user_id: str, model_name: Optional[str] = None, api_key: Optional[str] = None, enabled: Optional[bool] = True, scope: Literal['root', 'system', 'team', 'user'] = 'user', region: Optional[str] = None) -> None`
+- Signature: `ProviderInstanceModel(*, provider_id: str, provider: Optional[serverframework.logic.BLL_Providers.ProviderModel] = None, team_id: Optional[str] = None, team: Optional[serverframework.logic.BLL_Auth.TeamModel] = None, user_id: Optional[str] = None, user: Optional[serverframework.logic.BLL_Auth.UserModel] = None, name: str, updated_at: Optional[datetime.datetime], updated_by_user_id: Optional[str], id: str, created_at: datetime.datetime, created_by_user_id: str, model_name: Optional[str] = None, api_key: Optional[str] = None, enabled: Optional[bool] = True, scope: Literal['root', 'system', 'team', 'user'] = 'user', region: Optional[str] = None, auth_strategy_name: Optional[str] = None) -> None`
 - Live docstring: Base mixin for all models with common audit fields.
 
 Persisted credential-and-configuration record for a bonded provider.

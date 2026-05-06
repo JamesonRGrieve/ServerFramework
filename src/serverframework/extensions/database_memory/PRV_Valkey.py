@@ -1,28 +1,37 @@
-"""PRV_Valkey — concrete provider for the Valkey wire protocol.
+"""PRV_Valkey — concrete in-memory-store provider for the Valkey wire protocol.
 
 Wraps the ``redis.asyncio`` client (the canonical Python implementation
-of the Valkey/Redis wire protocol). Same client works against Valkey,
-Redis, and any drop-in replacement that speaks the protocol.
+of the Valkey/Redis wire protocol). Same client works against Valkey
+itself (the FOSS continuation of Redis), Redis OSS (≤7.2), Redis Inc.'s
+commercial distribution, KeyDB, DragonflyDB — anything that speaks the
+Valkey/Redis wire protocol.
 
 Per Item 19, this provider is reachable as a *root* instance for
 framework-internal use (EventBus streams transport, inbound rate
 limiter, distributed counter Redis backend) and as *team*/*user*
 instances for application-level per-tenant Valkey usage.
+
+Per Item 98, ``PRV_Valkey`` lives under the ``database_memory``
+extension as one concrete provider in the in-memory-store protocol
+family — alongside future ``PRV_Memcached``, ``PRV_DragonflyDB``,
+``PRV_KeyDB``, ``PRV_Garnet`` siblings.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Awaitable, Callable, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List
 
-from serverframework.extensions.valkey.EXT_Valkey import AbstractValkeyProvider
+from serverframework.extensions.database_memory.EXT_DatabaseMemory import (
+    AbstractDatabaseMemoryProvider,
+)
 from serverframework.lib.Environment import env
 
 _logger = logging.getLogger(__name__)
 
 
-class PRV_Valkey(AbstractValkeyProvider):
+class PRV_Valkey(AbstractDatabaseMemoryProvider):
     """Concrete Valkey/Redis-protocol provider.
 
     Connections are managed through a per-instance pool. The pool is
@@ -34,20 +43,25 @@ class PRV_Valkey(AbstractValkeyProvider):
     friendly_name: str = "Valkey (Redis-protocol)"
     description: str = (
         "Valkey/Redis-protocol provider via redis-py asyncio client. "
-        "Drop-in compatible with Valkey, Redis OSS (≤7.2), and Redis Inc.'s "
-        "commercial distribution."
+        "Drop-in compatible with Valkey, Redis OSS (≤7.2), Redis Inc.'s "
+        "commercial distribution, KeyDB, and DragonflyDB."
     )
 
     _connections: Dict[str, Any] = {}
 
     @classmethod
     def _resolve_url(cls, instance: Any) -> str:
-        """Pick the Valkey URL from the instance's `api_key` (the
+        """Pick the connection URL from the instance's `api_key` (the
         canonical credentials slot per `ProviderInstanceModel`) or from
-        the `VALKEY_URL` env var. Falls back to localhost so the
-        development reference workflow works out-of-box."""
+        the env var. ``DATABASE_MEMORY_URL`` is the canonical
+        protocol-family env name; ``VALKEY_URL`` is honored as a
+        provider-specific fallback so deployments that pre-dated the
+        Item 98 rename keep working without a config edit. Falls back
+        to localhost so the development reference workflow works
+        out-of-box."""
         url = (
             getattr(instance, "api_key", None)
+            or env("DATABASE_MEMORY_URL")
             or env("VALKEY_URL")
             or "redis://localhost:6379/0"
         )
@@ -69,7 +83,7 @@ class PRV_Valkey(AbstractValkeyProvider):
         except ImportError as exc:
             raise RuntimeError(
                 "PRV_Valkey requires the `redis>=4.2` package on the "
-                "Python path. The Valkey extension declares the "
+                "Python path. The DatabaseMemory extension declares the "
                 "dependency; install missing dependencies via the "
                 "framework's dependency manager."
             ) from exc

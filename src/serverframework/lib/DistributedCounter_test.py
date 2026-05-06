@@ -74,7 +74,7 @@ async def test_concurrent_consumers_respect_limit():
 def test_postgres_counter_requires_session_provider():
     counter = PostgresDistributedCounter("k", limit=10)
     with pytest.raises(RuntimeError):
-        asyncio.get_event_loop().run_until_complete(counter.try_consume(1))
+        asyncio.run(counter.try_consume(1))
 
 
 @pytest.mark.unit

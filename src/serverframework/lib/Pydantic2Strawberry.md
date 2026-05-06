@@ -20,6 +20,7 @@ The main class that orchestrates schema generation with comprehensive error hand
 - **`_create_gql_type_from_model(model_class)`**: Create GraphQL output types with relationship navigation support
 - **`_create_input_type_from_model(model_class, suffix)`**: Create GraphQL input types for mutations
 - **`_create_filter_type_from_model(model_class)`**: Create filter input types for queries
+- **`_apply_field_acl(manager, result)`**: **Item 45 — field-level ABAC.** Strips disallowed fields from a resolver result before Strawberry hands it back to the client. Walks `manager.requester.has_permission` and the model's `Field(..., requires=[...])` metadata; honors the `FIELD_ACL_SENTINEL=omit|mask` deployment override. The four CRUD resolvers (`_add_query_resolver`, `_add_list_query_resolver`, `_add_create_mutation_resolver`, `_add_update_mutation_resolver`) call into this helper before returning, so REST and GraphQL share one field-stripping policy. No-op for managers without a resolvable permission resolver (system-key audit jobs, framework-internal callers).
 
 ### Type Conversion
 
