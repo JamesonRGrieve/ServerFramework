@@ -61,7 +61,7 @@ python -m pip install sigstore
 # OIDC token issued for the tagged release; the issuer is GitHub.
 sigstore verify identity \
     --bundle serverframework-<version>.whl.sigstore \
-    --cert-identity "https://github.com/JamesonRGrieve/ServerFramework/.github/workflows/release.yml@refs/tags/v<version>" \
+    --cert-identity "https://github.com/JamesonRGrieve/ServerFramework/.github/workflows/release-sign-and-sbom.yml@refs/tags/v<version>" \
     --cert-oidc-issuer "https://token.actions.githubusercontent.com" \
     serverframework-<version>.whl
 ```

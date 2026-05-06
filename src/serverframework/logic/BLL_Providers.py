@@ -614,6 +614,20 @@ class ProviderInstanceModel(
         default=None,
         description="Item 36 residency region (consumed by the residency extension).",
     )
+    # Item 10 — per-instance AuthStrategy override. NULL inherits the
+    # provider class's `auth_strategy_name` ClassVar. Bonding consults this
+    # field via `AbstractStaticProvider.build_auth_strategy(instance, ...)`.
+    # Use case: a Stripe provider class defaulting to "api_key" lets a
+    # Stripe Connect user override their own instance to "oauth2" without
+    # touching the provider class.
+    auth_strategy_name: Optional[str] = Field(
+        default=None,
+        description=(
+            "Item 10 per-instance AuthStrategy name override. NULL inherits "
+            "the provider class default. Common values: 'api_key', 'oauth2', "
+            "'jwt_bearer', 'basic', 'mtls', 'aws_sigv4'."
+        ),
+    )
 
     # Database metadata for SQLAlchemy generation
     table_comment: ClassVar[str] = (
@@ -713,6 +727,8 @@ class ProviderInstanceModel(
         scope: Literal["root", "system", "team", "user"] = "user"
         # Item 36: residency region (optional; consumed by residency extension).
         region: Optional[str] = None
+        # Item 10: per-instance AuthStrategy override (optional).
+        auth_strategy_name: Optional[str] = None
 
         @model_validator(mode="after")
         def validate_name_length(self):
@@ -732,6 +748,8 @@ class ProviderInstanceModel(
         scope: Optional[Literal["root", "system", "team", "user"]] = None
         # Item 36: residency region (optional; consumed by residency extension).
         region: Optional[str] = None
+        # Item 10: per-instance AuthStrategy override (optional).
+        auth_strategy_name: Optional[str] = None
 
     class Search(
         ApplicationModel.Search,
@@ -746,6 +764,8 @@ class ProviderInstanceModel(
         scope: Optional[StringSearchModel] = None
         # Item 36: residency region (consumed by residency extension).
         region: Optional[StringSearchModel] = None
+        # Item 10: per-instance AuthStrategy override (search-by-name).
+        auth_strategy_name: Optional[StringSearchModel] = None
 
 
 class ProviderInstanceManager(AbstractBLLManager, RouterMixin):

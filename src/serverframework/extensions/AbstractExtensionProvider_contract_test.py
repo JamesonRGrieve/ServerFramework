@@ -209,3 +209,75 @@ def test_build_auth_strategy_honors_per_instance_override():
 
     strat = _Provider.build_auth_strategy(_Instance(), {"token": "abc"})
     assert isinstance(strat, JWTBearerAuth)
+
+
+# ----- Item 10 — ProviderInstanceModel.auth_strategy_name field ----------
+
+
+@pytest.mark.unit
+def test_provider_instance_model_declares_auth_strategy_name_field():
+    """The model declares `auth_strategy_name` as a real Optional[str] field
+    (Item 10's outstanding gap). `getattr` on a fresh instance returns None
+    rather than raising AttributeError, and the field is in `.model_fields`."""
+    from serverframework.logic.BLL_Providers import ProviderInstanceModel
+
+    assert "auth_strategy_name" in ProviderInstanceModel.model_fields
+    field = ProviderInstanceModel.model_fields["auth_strategy_name"]
+    # default is None and the type is Optional[str]
+    assert field.default is None
+
+
+@pytest.mark.unit
+def test_provider_instance_model_create_accepts_auth_strategy_name():
+    """`ProviderInstanceModel.Create` accepts `auth_strategy_name` so the
+    POST endpoint, the SDK, and the GraphQL surface all expose the override."""
+    from serverframework.logic.BLL_Providers import ProviderInstanceModel
+
+    create = ProviderInstanceModel.Create(
+        name="connect_user_42",
+        provider_id="prov_stripe",
+        auth_strategy_name="oauth2",
+    )
+    assert create.auth_strategy_name == "oauth2"
+
+
+@pytest.mark.unit
+def test_provider_instance_model_update_accepts_auth_strategy_name():
+    from serverframework.logic.BLL_Providers import ProviderInstanceModel
+
+    update = ProviderInstanceModel.Update(auth_strategy_name="api_key")
+    assert update.auth_strategy_name == "api_key"
+
+
+@pytest.mark.unit
+def test_build_auth_strategy_reads_field_from_real_model_instance():
+    """End-to-end: a `ProviderInstanceModel.Create` (the typed wire-shape with
+    just the user-settable subset) with `auth_strategy_name="basic"` overrides
+    a provider class default of `"api_key"`. This is the gap Item 10 closes —
+    previously the field did not exist on the model, so `getattr` returned
+    None on real instances regardless of what the caller intended."""
+    from serverframework.extensions.AuthStrategy import BasicAuth
+    from serverframework.logic.BLL_Providers import ProviderInstanceModel
+
+    create = ProviderInstanceModel.Create(
+        name="stalwart_user_42",
+        provider_id="prov_stalwart",
+        auth_strategy_name="basic",
+    )
+
+    class _Provider(AbstractStaticProvider):
+        name = "p_default_api_with_real_model_override"
+        auth_strategy_name = "api_key"
+
+        @classmethod
+        def bond_instance(cls, instance):  # type: ignore[override]
+            return AbstractProviderInstance(instance)
+
+        @classmethod
+        def root(cls):  # type: ignore[override]
+            return None
+
+    strat = _Provider.build_auth_strategy(
+        create, {"username": "alice", "password": "p"}
+    )
+    assert isinstance(strat, BasicAuth)
