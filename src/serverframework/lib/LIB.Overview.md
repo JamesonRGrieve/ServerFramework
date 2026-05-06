@@ -5,11 +5,8 @@ The `src/lib` directory contains foundational utilities and abstractions that po
 
 ## Component Architecture
 
-### Configuration & Environment
-- **[LIB.Environment.md](./LIB.Environment.md)**: Centralized application configuration with type-safe environment variable handling, domain extraction, and runtime configuration registration using Pydantic BaseModel
-
-### Dependency Management  
-- **[LIB.Dependencies.md](./LIB.Dependencies.md)**: Comprehensive dependency management supporting system packages, Python packages, and extensions with cross-platform installation and resolution
+### Configuration, Environment & Dependency Management
+- **[LIB.Dependencies.md](./LIB.Dependencies.md)**: Comprehensive dependency management supporting system packages, Python packages, and extensions with cross-platform installation and resolution. Also covers `Environment.py` integration (Pydantic-typed application configuration with environment variable handling, domain extraction, and runtime configuration registration) under "Environment Integration".
 
 ### Model Utilities
 - **[LIB.Pydantic.md](./LIB.Pydantic.md)**: Pydantic model introspection, relationship discovery, schema generation, and model registry management for GraphQL and API integration

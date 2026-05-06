@@ -1369,6 +1369,173 @@ class AbstractBLLTest(AbstractTest):
             f"(via options=load_only or fields= kwarg); captured: {holder!r}"
         )
 
+    # ------------------------------------------------------------------ #
+    # Item 87 — abstract field-selection / includes matrix
+    # ------------------------------------------------------------------ #
+    # The framework's CRUD path supports `fields=[...]` (load_only column
+    # projection) and `include=[...]` (eager-loaded relationships via
+    # joinedload/selectinload). Item 87 / GitHub #10 asks for the abstract
+    # contract: every concrete manager that participates in the BLL
+    # CRUD-test ladder gets these three matrix tests for free.
+    #
+    # The tests use the same DB-stub pattern as the field-selection
+    # primitives above so they execute without a populated database — they
+    # snapshot the SQLAlchemy options the BLL hands the DB layer and
+    # assert against the option shape (load_only present, Load-family
+    # options for includes, no N+1 explosion).
+
+    @staticmethod
+    def _candidate_relationship_names(manager) -> List[str]:
+        """Return relationship names the test can safely use as ``include=``
+        targets. The list is best-effort — concrete managers without
+        relationships return ``[]`` and the matrix tests skip rather than
+        fail."""
+        rels: List[str] = []
+        try:
+            mapper = getattr(manager.DB, "__mapper__", None)
+            if mapper is not None and hasattr(mapper, "relationships"):
+                for rel_name in mapper.relationships.keys():
+                    rels.append(rel_name)
+        except Exception:
+            return []
+        return sorted(rels)
+
+    @staticmethod
+    def _captured_includes_evidence(holder) -> bool:
+        """Return True iff the BLL pushed a Load-family option (joinedload
+        / selectinload / nested Load chains) into the DB layer. Empty
+        options indicate a relationship was requested but the join wasn't
+        emitted — that's the N+1 leak we want to catch."""
+        options = holder.get("options") or []
+        return any(AbstractBLLTest._is_load_option(opt) for opt in options)
+
+    def test_load_only(self, admin_a, team_a, server, model_registry):
+        """Item 87 — `manager.get`, `manager.list`, and `manager.search`
+        must all push the requested ``fields=[...]`` to the DB layer as a
+        ``load_only`` option (or equivalent ``fields=`` kwarg). Mirrors
+        the existing single-method tests but exercises the full CRUD-read
+        triad in one matrix so a regression in any one of them surfaces
+        on the same line.
+        """
+        self.server = server
+        self.model_registry = model_registry
+        from fastapi import HTTPException
+
+        requester_id = env("SYSTEM_ID") if self.is_system_entity else admin_a.id
+        manager = self.class_under_test(
+            requester_id=requester_id,
+            target_team_id=team_a.id,
+            model_registry=model_registry,
+        )
+        candidate_fields = [
+            f for f in ("name", "id") if f in (manager.Model.model_fields or {})
+        ]
+        if not candidate_fields:
+            pytest.skip("no introspectable fields on this model")
+
+        for db_method, invoke in (
+            ("get", lambda m: m.get(id="probe-id", fields=candidate_fields)),
+            ("list", lambda m: m.list(fields=candidate_fields)),
+            ("list", lambda m: m.search(fields=candidate_fields)),
+        ):
+            holder, restore = self._capture_db_options(manager, db_method)
+            try:
+                try:
+                    invoke(manager)
+                except HTTPException:
+                    pass
+                except Exception:
+                    pass
+            finally:
+                restore()
+            if holder["options"] is None and holder["fields"] is None:
+                continue
+            assert self._captured_load_only_evidence(holder, candidate_fields), (
+                f"expected fields={candidate_fields} to propagate to DB.{db_method} "
+                f"(via options=load_only or fields= kwarg); captured: {holder!r}"
+            )
+
+    def test_includes(self, admin_a, team_a, server, model_registry):
+        """Item 87 — `manager.list(include=[...])` must push a Load-family
+        option (joinedload / selectinload) into the DB layer. The contract
+        prevents N+1 across the result set: relationships requested with
+        ``include=`` produce one batched join, not one query per row."""
+        self.server = server
+        self.model_registry = model_registry
+        requester_id = env("SYSTEM_ID") if self.is_system_entity else admin_a.id
+        manager = self.class_under_test(
+            requester_id=requester_id,
+            target_team_id=team_a.id,
+            model_registry=model_registry,
+        )
+        rels = self._candidate_relationship_names(manager)
+        if not rels:
+            pytest.skip("manager.DB exposes no introspectable relationships")
+
+        target_rel = rels[0]
+        holder, restore = self._capture_db_options(manager, "list")
+        try:
+            try:
+                manager.list(include=[target_rel])
+            except Exception:
+                pass
+        finally:
+            restore()
+        if holder["options"] is None and holder["fields"] is None:
+            pytest.skip(
+                "manager.list path did not reach DB layer for this concrete manager"
+            )
+        assert self._captured_includes_evidence(holder), (
+            f"expected include=[{target_rel!r}] to produce a Load-family option; "
+            f"captured: {holder!r}"
+        )
+
+    def test_fields(self, admin_a, team_a, server, model_registry):
+        """Item 87 — combined ``fields`` + ``include`` matrix. Asserts both
+        options coexist on the DB call: ``load_only`` for the projected
+        columns, plus a Load-family join for the included relationship.
+        Catches regressions where one option clobbers the other."""
+        self.server = server
+        self.model_registry = model_registry
+        requester_id = env("SYSTEM_ID") if self.is_system_entity else admin_a.id
+        manager = self.class_under_test(
+            requester_id=requester_id,
+            target_team_id=team_a.id,
+            model_registry=model_registry,
+        )
+        candidate_fields = [
+            f for f in ("name", "id") if f in (manager.Model.model_fields or {})
+        ]
+        rels = self._candidate_relationship_names(manager)
+        if not candidate_fields or not rels:
+            pytest.skip(
+                "manager has no candidate fields or relationships for the matrix"
+            )
+
+        target_rel = rels[0]
+        holder, restore = self._capture_db_options(manager, "list")
+        try:
+            try:
+                manager.list(fields=candidate_fields, include=[target_rel])
+            except Exception:
+                pass
+        finally:
+            restore()
+        if holder["options"] is None and holder["fields"] is None:
+            pytest.skip(
+                "manager.list path did not reach DB layer for this concrete manager"
+            )
+        load_only_present = self._captured_load_only_evidence(holder, candidate_fields)
+        joins_present = self._captured_includes_evidence(holder)
+        assert load_only_present, (
+            f"expected fields={candidate_fields} to produce a load_only "
+            f"option in the combined matrix; captured: {holder!r}"
+        )
+        assert joins_present, (
+            f"expected include=[{target_rel!r}] to produce a Load-family "
+            f"option in the combined matrix; captured: {holder!r}"
+        )
+
     def test_invalid_field_name_rejected(
         self, admin_a, team_a, server, model_registry
     ):

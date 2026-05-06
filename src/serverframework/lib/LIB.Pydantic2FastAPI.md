@@ -430,3 +430,12 @@ Consistent error handling across generated routes.
    - Leverage `example_overrides` ClassVar for custom business logic examples
    - Clear cache periodically in long-running applications after model changes
    - Use `ExampleGenerator.add_field_generator()` for application-specific patterns
+
+## Field-Level ACL Integration (Item 45)
+
+REST response generation honors the `FieldACL` primitive's `requires=[...]` / `Sensitive[T]` field metadata. The integration is in two layers:
+
+- **Response filtering** — `apply_field_acl_to_payload(payload, manager, model_cls)` is called after include attachment in the GET, LIST, and include-population paths. When the manager's requester exposes `has_permission(name)`, disallowed fields are stripped from each row in the response (or replaced with the configured sentinel: `omit` by default, `mask` when `FIELD_ACL_SENTINEL=mask` is set per deployment). List handlers share a single `FieldACLCache` across rows so the per-row cost is one dictionary lookup.
+- **Search / order-by / projection rejection** — `validate_field_acl_query(manager, model_cls, fields, context)` is invoked in the LIST handler before SQL is generated. Restricted-field references in `sort_by`, `fields=`, or filter parameters raise HTTP 403 with `context` ∈ `{"sort_by", "filter", "projection"}` so audit logs distinguish the inference-attack vector. Inference attacks via `ORDER BY` on a restricted column are equivalent to direct read; both are blocked at the same gate.
+
+The integration is conservative: when `manager.requester` lacks `has_permission` (system-internal callers, framework-internal jobs, the not-yet-fully-wired permission-resolver path on the User model), the helpers no-op so the existing behavior is preserved.
