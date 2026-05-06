@@ -179,3 +179,116 @@ class EXT_Payment(AbstractStaticExtension):
     )
     types = {ExtensionType.DATABASE, ExtensionType.EXTERNAL}
     AbstractProvider = AbstractPaymentProvider
+
+    # Item 16 — federation matrix descriptors. The framework's programmatic
+    # test generator picks these up at collection time and emits one
+    # ``Test_Federation_EXT_Payment_<Type>_Matrix`` class per declared
+    # external type. The schema snapshot is loaded lazily so a missing
+    # snapshot doesn't break extension import.
+    @classmethod
+    def federation_matrix_fixtures(cls):
+        """Return :class:`FederationFixture` instances for matrix coverage.
+
+        Each fixture exercises a single Stripe upstream type through the
+        4-quadrant matrix. By default we use the bundled snapshot under
+        ``contracts/stripe.openapi.json`` and a deterministic in-process
+        upstream so the matrix runs in CI without credentials. Real-upstream
+        runs are gated on ``STRIPE_API_KEY`` per ``EXT.Test.External.md``.
+        """
+
+        from serverframework.extensions.AbstractFederationMatrixTest import (
+            FederationFixture,
+        )
+        from serverframework.lib.Environment import env
+
+        # Minimal in-process spec covering Stripe's most-used resource.
+        # Real coverage attaches when the extension's snapshot is committed.
+        spec = {
+            "components": {
+                "schemas": {
+                    "Customer": {
+                        "type": "object",
+                        "required": ["id"],
+                        "properties": {
+                            "id": {"type": "string"},
+                            "email": {"type": "string"},
+                            "name": {"type": "string"},
+                        },
+                    }
+                }
+            },
+            "paths": {
+                "/v1/customers/{id}": {
+                    "get": {
+                        "operationId": "get_customer",
+                        "parameters": [{"name": "id", "in": "path"}],
+                    }
+                },
+                "/v1/customers": {"get": {"operationId": "list_customer"}},
+            },
+        }
+
+        return [
+            FederationFixture(
+                name="EXT_Payment.Customer",
+                upstream_kind="rest",
+                transport=cls._build_in_process_transport(spec),
+                sample_id="cus_test",
+                type_name="Customer",
+                sdl_or_spec=spec,
+                operations_supported=["get", "list"],
+                crud_map={"get": "get_customer", "list": "list_customer"},
+                requires_credentials=False,  # in-process upstream
+                credentials_present=lambda: bool(env("STRIPE_API_KEY")),
+            )
+        ]
+
+    @staticmethod
+    def _build_in_process_transport(spec):
+        """Build a deterministic in-process REST upstream for matrix tests."""
+
+        import httpx
+        from fastapi import FastAPI
+
+        from serverframework.lib.Federation_REST import (
+            RESTUpstreamTransport,
+            openapi_to_pydantic_models,
+        )
+
+        SEED = {
+            "cus_test": {"id": "cus_test", "email": "test@x.com", "name": "Test"},
+        }
+        app = FastAPI()
+
+        @app.get("/v1/customers/{cid}")
+        async def _get(cid: str):
+            return SEED.get(cid)
+
+        @app.get("/v1/customers")
+        async def _list():
+            return list(SEED.values())
+
+        sync_client = httpx.Client(
+            transport=httpx.ASGITransport(app=app), base_url="http://stripe-test"
+        )
+
+        class _SyncHTTP:
+            def get(self, url, **kw):
+                return sync_client.get(url, params=kw.get("params") or None).json()
+
+            def post(self, url, **kw):
+                return sync_client.post(url, json=kw.get("json")).json()
+
+            def put(self, url, **kw):
+                return sync_client.put(url, json=kw.get("json")).json()
+
+            def patch(self, url, **kw):
+                return sync_client.patch(url, json=kw.get("json")).json()
+
+            def delete(self, url, **kw):
+                return sync_client.delete(url).json()
+
+        operations = openapi_to_pydantic_models(spec).operations
+        return RESTUpstreamTransport(
+            _SyncHTTP(), base_url="http://stripe-test", operations=operations
+        )

@@ -19,6 +19,9 @@ The `src/lib` directory contains foundational utilities and abstractions that po
 - **[LIB.Pydantic2FastAPI.md](./LIB.Pydantic2FastAPI.md)**: Automatic FastAPI router generation from BLL managers through RouterMixin pattern with authentication and documentation support
 - **[Pydantic2Strawberry.md](./Pydantic2Strawberry.md)**: Automatic GraphQL schema generation from Pydantic models using Strawberry GraphQL
 
+### External Federation
+- **[LIB.Federation.md](./LIB.Federation.md)**: GraphQL and REST upstream federation. `Federation_GQL.py` ingests GraphQL upstreams (Apollo Federation v2, schema stitching, namespacing), pushes selection sets through `BatchedFieldResolver`, and projects upstreams onto either inbound surface. `Federation_REST.py` lifts OpenAPI specs into Pydantic models so the existing `Pydantic2FastAPI`/`Pydantic2Strawberry` pipelines project REST upstreams onto both surfaces. `Federation_Bootstrap.py` runs the introspect→transform→register→lift pipeline at startup.
+
 ### System Utilities
 - **[LIB.Logging.md](./LIB.Logging.md)**: Centralized logging system with custom levels, environment configuration, and structured output
 - **[LIB.RequestContext.md](./LIB.RequestContext.md)**: Context variable management for storing request-specific user information, timezone data, per-request deadline budget, `correlation_id`, `traceparent`, and `read_only` flag

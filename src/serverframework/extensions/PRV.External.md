@@ -614,6 +614,29 @@ Real-time integrations (Stripe events firehose, Slack RTM, Kafka consumers, webs
 
 External APIs change beneath us. Each provider targeting an upstream with a published OpenAPI spec declares `openapi_url: ClassVar[Optional[str]]`. A canonical snapshot lives at `src/extensions/{name}/contracts/{provider}.openapi.json`. CI fetches the live spec on a per-provider cadence (high-velocity upstreams daily, slow-moving ones weekly), runs a structural diff (`oasdiff`) against the snapshot, and fails on breaking changes (removed fields, narrowed types, removed enum values). Non-breaking diffs produce a warning and a PR that updates the snapshot. For upstreams without machine-readable specs, the snapshot is generated from real recorded responses normalized to remove instance-specific identifiers. The CI failure includes a clear diff summary; the snapshot files are reviewable artifacts in pull requests.
 
-## GraphQL upstreams
+## External federation (GraphQL or REST upstream)
 
-When an upstream API is itself GraphQL, providers federate the schema rather than wrapping it as RPC. `AbstractGraphQLProvider(AbstractStaticProvider)` declares `upstream_url`, `upstream_auth_strategy`, `federation_style: Literal["apollo_v2", "stitching", "namespaced"]`, and `type_namespace: Optional[str]`. A startup pipeline introspects the upstream, runs a `SchemaTransformer` pipeline (rename, prefix, hide-fields, mask-arguments, override-resolvers), registers the transformed types into the local Strawberry schema via `MergedSchemaRegistry`, and generates resolvers that reconstruct the upstream selection set from `info.selected_fields`, build a real GraphQL document with the original variables, forward to the upstream, and return the parsed result. Selection-set push-down is the entire point — without it the framework has rebuilt RPC inside a GraphQL costume. Cross-subgraph joins use a `BatchedFieldResolver` that respects the `include` mechanism. Apollo Federation v2 honors `@key`, `@external`, `@requires`, `@provides`. Errors and partial data follow real GraphQL semantics: upstream `errors` arrays propagate through, attached to the affected fields.
+> **Detailed reference:** [../lib/LIB.Federation.md](../lib/LIB.Federation.md)
+
+External federation lifts upstream APIs into the framework's model registry so a single inbound request can transparently traverse local data and federated upstreams. Two modules cover the four directions:
+
+| Module | Upstream kind | Inbound surfaces |
+|--------|---------------|------------------|
+| `lib/Federation_GQL.py` | GraphQL | GraphQL (true federation) + REST (`project_gql_as_rest`) |
+| `lib/Federation_REST.py` | REST | REST (existing `AbstractExternalModel`) + GraphQL (Pydantic lift) |
+
+### GraphQL upstreams
+
+`AbstractGraphQLProvider(AbstractStaticProvider)` declares `upstream_url`, `auth_strategy_name`, `federation_style: Literal["apollo_v2", "stitching", "namespaced"]`, `type_namespace: Optional[str]`, and optional transformer overrides (`schema_rename`, `schema_hide_fields`, `schema_mask_arguments`, `schema_override_resolvers`). A startup pipeline introspects the upstream, runs the `SchemaTransformer` pipeline, registers the transformed types into `MergedSchemaRegistry`, and generates resolvers that reconstruct the upstream selection set from `info.selected_fields`, build a real GraphQL document with the original variables, forward to the upstream, and return the parsed result. Selection-set push-down is the entire point — without it the framework has rebuilt RPC inside a GraphQL costume. Cross-subgraph joins use a `BatchedFieldResolver` that collapses N concurrent resolutions of `user.stripe_customer` into one upstream call when the upstream supports list-by-id, and falls back to bounded individual calls otherwise.
+
+Apollo Federation v2 honors `@key`, `@external`, `@requires`, `@provides`. The merged registry prepends `APOLLO_DIRECTIVES_PREAMBLE` so subgraphs that ship raw federation SDL parse cleanly. Errors and partial data follow real GraphQL semantics: upstream `errors` arrays propagate through, attached to the affected fields.
+
+When `lift_into_pydantic=True` (default) the upstream SDL is also lifted into Pydantic models via `sdl_to_pydantic_models(sdl, prefix=...)`. Once registered with the framework's model registry, the existing `Pydantic2Strawberry` and `Pydantic2FastAPI` pipelines project the upstream onto BOTH inbound surfaces — REST clients get the upstream as REST routes, GraphQL clients get it as GraphQL types.
+
+### REST upstreams
+
+`Federation_REST.openapi_to_pydantic_models(spec, prefix=...)` imports an OpenAPI document into Pydantic models, enums, and an `OperationSpec` table. `derive_external_models(pydantic_result, transport=RESTUpstreamTransport(...))` synthesizes `AbstractExternalModel` subclasses whose `*_via_provider` methods dispatch through the transport. The transport substitutes path placeholders (`{id}`), maps `GET`/`DELETE` arguments to query strings, maps mutating method arguments to JSON bodies, and forwards optional idempotency keys. Once the models are registered, `Pydantic2Strawberry` projects them onto the GraphQL surface so the REST upstream is queryable as GraphQL automatically.
+
+### Per-request response cache and selection-set push-down
+
+`ResponseCache` (bound on a contextvar by the inbound GraphQL middleware) deduplicates identical sub-requests within a single outer GraphQL operation. The cache key is `sha256(query_hash | variables_hash | requester_credentials_hash)` so two distinct requesters never share a cached upstream result. A persistent (Redis-shaped) cache is opt-in per upstream type via `AbstractGraphQLProvider.persistent_cache_ttls`.

@@ -1796,6 +1796,34 @@ class ModelRegistry(AbstractRegistry):
         # Phase 1: Process extensions
         self._process_extensions()
 
+        # Phase 1.6 — external federation (Item 16). Lifts external GraphQL
+        # and REST upstreams into Pydantic models, synthesizes managers, and
+        # binds them with this registry so the existing Pydantic2{Strawberry,
+        # FastAPI} pipelines project them onto BOTH inbound surfaces. Errors
+        # surface via provider health checks; an unreachable upstream MUST
+        # NOT prevent the registry from committing.
+        from serverframework.lib.Environment import env as _env
+        if (_env("GQL_FEDERATION", default="true") or "true").lower() == "true":
+            try:
+                from serverframework.lib.Federation_Bootstrap import (
+                    install_external_federation_sync,
+                )
+
+                self._federation_report = install_external_federation_sync(
+                    model_registry=self
+                )
+                if self._federation_report.models:
+                    logger.info(
+                        "Federation lifted %d external types: %s",
+                        len(self._federation_report.models),
+                        ", ".join(sorted(self._federation_report.models.keys())),
+                    )
+            except Exception as exc:
+                logger.warning("Federation bootstrap failed during commit: %s", exc)
+                self._federation_report = None
+        else:
+            self._federation_report = None
+
         # Phase 1.5: Generate Network classes for all bound models
         logger.debug(
             f"Generating Network classes for {len(self.bound_models)} bound models"

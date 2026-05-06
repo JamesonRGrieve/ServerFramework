@@ -1018,6 +1018,102 @@ class EXT_EMail(AbstractStaticExtension):
         ]
     )
 
+    # Item 16 — federation matrix descriptors. The framework's programmatic
+    # test generator picks these up at collection time and emits one
+    # ``Test_Federation_EXT_EMail_<Type>_Matrix`` class per declared external
+    # type. SendGrid is REST; an in-process upstream covers the deterministic
+    # CI path. Live-upstream runs activate when ``SENDGRID_API_KEY`` is set.
+    @classmethod
+    def federation_matrix_fixtures(cls):
+        from serverframework.extensions.AbstractFederationMatrixTest import (
+            FederationFixture,
+        )
+        from serverframework.lib.Environment import env
+
+        spec = {
+            "components": {
+                "schemas": {
+                    "Mail": {
+                        "type": "object",
+                        "required": ["id"],
+                        "properties": {
+                            "id": {"type": "string"},
+                            "subject": {"type": "string"},
+                            "to": {"type": "string"},
+                        },
+                    }
+                }
+            },
+            "paths": {
+                "/v3/mail/{id}": {
+                    "get": {
+                        "operationId": "get_mail",
+                        "parameters": [{"name": "id", "in": "path"}],
+                    }
+                },
+                "/v3/mail/send": {"post": {"operationId": "create_mail"}},
+            },
+        }
+
+        return [
+            FederationFixture(
+                name="EXT_EMail.Mail",
+                upstream_kind="rest",
+                transport=cls._build_in_process_transport(spec),
+                sample_id="mail_test",
+                type_name="Mail",
+                sdl_or_spec=spec,
+                operations_supported=["get"],
+                crud_map={"get": "get_mail"},
+                requires_credentials=False,
+                credentials_present=lambda: bool(env("SENDGRID_API_KEY")),
+            )
+        ]
+
+    @staticmethod
+    def _build_in_process_transport(spec):
+        import httpx
+        from fastapi import FastAPI
+
+        from serverframework.lib.Federation_REST import (
+            RESTUpstreamTransport,
+            openapi_to_pydantic_models,
+        )
+
+        SEED = {
+            "mail_test": {"id": "mail_test", "subject": "Hi", "to": "x@y.com"},
+        }
+        app = FastAPI()
+
+        @app.get("/v3/mail/{mid}")
+        async def _get(mid: str):
+            return SEED.get(mid)
+
+        sync_client = httpx.Client(
+            transport=httpx.ASGITransport(app=app), base_url="http://sendgrid-test"
+        )
+
+        class _SyncHTTP:
+            def get(self, url, **kw):
+                return sync_client.get(url, params=kw.get("params") or None).json()
+
+            def post(self, url, **kw):
+                return sync_client.post(url, json=kw.get("json")).json()
+
+            def put(self, url, **kw):
+                return sync_client.put(url, json=kw.get("json")).json()
+
+            def patch(self, url, **kw):
+                return sync_client.patch(url, json=kw.get("json")).json()
+
+            def delete(self, url, **kw):
+                return sync_client.delete(url).json()
+
+        operations = openapi_to_pydantic_models(spec).operations
+        return RESTUpstreamTransport(
+            _SyncHTTP(), base_url="http://sendgrid-test", operations=operations
+        )
+
     # Meta abilities - extension-level abilities that work regardless of provider
     _abilities: ClassVar[Set[str]] = {
         "email_status",  # Meta ability to check email service status

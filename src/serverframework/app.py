@@ -407,6 +407,9 @@ def build_app(model_registry: ModelRegistry):
             db_mgr = DatabaseManager(db_prefix)
             db_mgr.init_engine_config()
         db_mgr.init_worker()
+        # Item 16 — federation already ran inside ``ModelRegistry.commit()``;
+        # the FastAPI router from any GQL→REST projection is mounted below
+        # in ``build_app`` so the lifespan body has nothing more to do.
         try:
             yield
         finally:
@@ -925,6 +928,26 @@ def build_app(model_registry: ModelRegistry):
                             f"Failed to authenticate user from GraphQL context: {e}"
                         )
 
+                # Item 16 — bind a per-request federation response cache and
+                # batched-field resolver. Both contextvars are read by
+                # generated upstream resolvers; tearing them down at request
+                # end happens automatically because they live on the request
+                # contextvar copy.
+                from serverframework.lib.Federation_GQL import (
+                    BatchedFieldResolver,
+                    ResponseCache,
+                    bind_batched_resolver,
+                    bind_response_cache,
+                )
+
+                bind_response_cache(ResponseCache())
+                bind_batched_resolver(BatchedFieldResolver())
+
+                # The requester's credentials hash anchors the cache so two
+                # distinct requesters never share cached upstream results.
+                cred_hash = api_key or auth_header or ""
+                context["federation_credentials_hash"] = cred_hash
+
                 logger.debug(f"GraphQL context: Final context={context}")
                 return context
 
@@ -933,12 +956,24 @@ def build_app(model_registry: ModelRegistry):
             )
             app.include_router(graphql_app, prefix="/graphql")
 
+    # Item 16 — mount the GQL→REST projection routers from federation.
+    # Each router exposes one REST route per upstream root field so REST
+    # clients can hit a GraphQL upstream without learning GraphQL.
+    federation_report = getattr(model_registry, "_federation_report", None)
+    if federation_report is not None and federation_report.rest_routers:
+        for router in federation_report.rest_routers:
+            try:
+                app.include_router(router)
+            except Exception as exc:
+                logger.warning("Failed to mount federation REST router: %s", exc)
+
     if env("MCP").strip().lower() == "true":
         from fastapi_mcp import FastApiMCP
 
         mcp = FastApiMCP(app)
         mcp.mount()
     app.state.model_registry = model_registry
+    app.state.federation_report = federation_report
 
     # ------------------------------------------------------------------
     # SIGHUP-driven graceful restart (Item 20).
