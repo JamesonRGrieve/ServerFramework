@@ -390,7 +390,7 @@ class AbstractEmailProvider(AbstractStaticProvider):
     #
     # Providers that emit inbound webhooks (SendGrid Event Webhook, SMTP2go
     # bounce-activity, Stalwart custom hooks) MUST implement this; the
-    # `endpoints.Webhook` mount calls it before dispatching to any handler
+    # `extensions.webhooks` mount calls it before dispatching to any handler
     # and rejects with 401 on failure. Providers that don't expose webhooks
     # leave the default in place; the webhook router treats the absence
     # of a matching `(extension, provider)` registration as "no handlers
@@ -1075,7 +1075,7 @@ class EXT_EMail(AbstractStaticExtension):
         import httpx
         from fastapi import FastAPI
 
-        from serverframework.lib.Federation_REST import (
+        from serverframework.extensions.federation.BLL_Federation_REST import (
             RESTUpstreamTransport,
             openapi_to_pydantic_models,
         )

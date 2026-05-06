@@ -18,7 +18,7 @@ from decimal import Decimal
 import pytest
 
 from serverframework.extensions.AbstractExtensionProvider import HealthReport, HealthStatus
-from serverframework.extensions.CostModel import ConstantCostModel
+from serverframework.extensions.billing.BLL_CostModel import ConstantCostModel
 from serverframework.extensions.ExternalErrors import DegradationMode
 from serverframework.extensions.RateLimit import RateLimit
 from serverframework.extensions.email.PRV_SendGrid_EMail import (

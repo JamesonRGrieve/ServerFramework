@@ -1,0 +1,9 @@
+name = "privacy"
+version = "1.0.0"
+description = "PII classification, redaction, right-to-erasure, GDPR/CCPA data export"
+author = "ZephyrexTechnologies"
+entry_module = "EXT_Privacy"
+minimum_framework_version = "0.0.0"
+
+pip_dependencies = []
+system_dependencies = []

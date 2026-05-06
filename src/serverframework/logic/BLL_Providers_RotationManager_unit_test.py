@@ -14,7 +14,7 @@ import pytest
 
 from decimal import Decimal
 
-from serverframework.extensions.CostModel import ConstantCostModel
+from serverframework.extensions.billing.BLL_CostModel import ConstantCostModel
 from serverframework.lib.Metrics import (
     InMemoryMetricsBackend,
     reset_metrics_backend,

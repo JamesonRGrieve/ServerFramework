@@ -21,7 +21,7 @@ from fastapi import FastAPI, Request
 
 from serverframework.extensions.AbstractGraphQLProvider import AbstractGraphQLProvider
 from serverframework.extensions.AuthStrategy import APIKeyAuth
-from serverframework.lib.Federation_GQL import (
+from serverframework.extensions.federation.BLL_Federation_GQL import (
     APOLLO_DIRECTIVES_PREAMBLE,
     APOLLO_SDL_QUERY,
     INTROSPECTION_QUERY,
@@ -343,7 +343,7 @@ async def test_apollo_v2_strict_mode_raises_when_unsupported(monkeypatch):
 
 @pytest.mark.unit
 def test_lift_to_pydantic_returns_models():
-    from serverframework.lib.Federation_GQL import IngestedSchema, ingest_apollo_sdl
+    from serverframework.extensions.federation.BLL_Federation_GQL import IngestedSchema, ingest_apollo_sdl
 
     sdl = "type User { id: ID! name: String }\ntype Query { user: User }\n"
     ingested = ingest_apollo_sdl(sdl)
@@ -357,7 +357,7 @@ def test_lift_to_pydantic_returns_models():
 
 @pytest.mark.unit
 def test_lift_to_pydantic_can_be_disabled():
-    from serverframework.lib.Federation_GQL import ingest_apollo_sdl
+    from serverframework.extensions.federation.BLL_Federation_GQL import ingest_apollo_sdl
 
     sdl = "type User { id: ID! }\ntype Query { user: User }\n"
     ingested = ingest_apollo_sdl(sdl)

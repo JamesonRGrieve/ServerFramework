@@ -92,7 +92,7 @@
       "entries": [
         {
           "name": "RetentionPolicy",
-          "module": "serverframework.extensions.RetentionPolicy",
+          "module": "serverframework.extensions.audit_retention.BLL_RetentionPolicy",
           "kind": "class",
           "summary": "Window-and-archive policy attached to retention-eligible models.",
           "invariants": [
@@ -107,7 +107,7 @@
       "entries": [
         {
           "name": "CostModel",
-          "module": "serverframework.extensions.CostModel",
+          "module": "serverframework.extensions.billing.BLL_CostModel",
           "kind": "protocol",
           "summary": "Protocol mapping (request, response) to a Decimal cost.",
           "invariants": [
@@ -116,31 +116,31 @@
         },
         {
           "name": "ConstantCostModel",
-          "module": "serverframework.extensions.CostModel",
+          "module": "serverframework.extensions.billing.BLL_CostModel",
           "kind": "class",
           "summary": "Fixed cost per call regardless of payload."
         },
         {
           "name": "TokenBasedCostModel",
-          "module": "serverframework.extensions.CostModel",
+          "module": "serverframework.extensions.billing.BLL_CostModel",
           "kind": "class",
           "summary": "Cost computed from input/output token counts."
         },
         {
           "name": "PercentOfAmountCostModel",
-          "module": "serverframework.extensions.CostModel",
+          "module": "serverframework.extensions.billing.BLL_CostModel",
           "kind": "class",
           "summary": "Cost as a percentage of a monetary amount on the request."
         },
         {
           "name": "FreeCostModel",
-          "module": "serverframework.extensions.CostModel",
+          "module": "serverframework.extensions.billing.BLL_CostModel",
           "kind": "class",
           "summary": "Always-zero cost; the canonical no-op model."
         },
         {
           "name": "TenantCostCap",
-          "module": "serverframework.extensions.CostModel",
+          "module": "serverframework.extensions.billing.BLL_CostModel",
           "kind": "class",
           "summary": "Per-tenant maximum cost over a window; rejects calls past the cap."
         }
@@ -392,13 +392,13 @@
       "entries": [
         {
           "name": "webhook_handler",
-          "module": "serverframework.endpoints.Webhook",
+          "module": "serverframework.extensions.webhooks",
           "kind": "decorator",
           "summary": "Registers a static method as a webhook handler at /webhook/{ext}/{provider}/{event}."
         },
         {
           "name": "WebhookContext",
-          "module": "serverframework.endpoints.Webhook",
+          "module": "serverframework.extensions.webhooks",
           "kind": "class",
           "summary": "Verified-payload context delivered to webhook handlers."
         }
@@ -580,7 +580,7 @@
       "entries": [
         {
           "name": "RetentionService",
-          "module": "serverframework.extensions.RetentionService",
+          "module": "serverframework.extensions.audit_retention.BLL_RetentionService",
           "kind": "class",
           "summary": "Sweeps RetentionPolicy-bearing models and archives or purges expired rows."
         }

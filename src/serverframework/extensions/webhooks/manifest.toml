@@ -1,0 +1,13 @@
+name = "webhooks"
+version = "1.0.0"
+description = "Inbound webhook handler registry and router with mandatory signature verification and optional replay protection"
+author = "ZephyrexTechnologies"
+entry_module = "EXT_Webhooks"
+minimum_framework_version = "0.0.0"
+
+pip_dependencies = []
+system_dependencies = []
+
+# No extension dependencies. Provider extensions (email, payment) declare
+# webhooks as an optional dependency in their own manifests when they ship
+# verify_signature handlers — webhooks itself stands alone.

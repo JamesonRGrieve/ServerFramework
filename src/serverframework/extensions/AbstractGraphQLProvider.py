@@ -40,7 +40,7 @@ from serverframework.extensions.AbstractExtensionProvider import (
     HealthStatus,
 )
 from serverframework.extensions.AuthStrategy import AuthStrategy
-from serverframework.lib.Federation_GQL import (
+from serverframework.extensions.federation.BLL_Federation_GQL import (
     APOLLO_SDL_QUERY,
     GQLUpstreamTransport,
     INTROSPECTION_QUERY,

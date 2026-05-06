@@ -14,7 +14,7 @@ Two backends are provided:
   bind.
 
 A no-arg factory :func:`default_counter` is provided so callers (e.g. the
-``Quota.try_consume`` integration in :mod:`logic.Quota`) can ask for a
+``Quota.try_consume`` integration in :mod:`extensions.quota.BLL_Quota`) can ask for a
 ready-to-use counter without first knowing key/limit. The factory returns
 an :class:`InMemoryDistributedCounter` with sensible defaults plus a
 ``try_consume(quotas, amount)`` shape that operates on Quota-like rows.

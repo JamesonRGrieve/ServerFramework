@@ -1,0 +1,9 @@
+name = "billing"
+version = "1.0.0"
+description = "Cost model registry, daily summaries, per-tenant cost audit emission"
+author = "ZephyrexTechnologies"
+entry_module = "EXT_Billing"
+minimum_framework_version = "0.0.0"
+
+pip_dependencies = []
+system_dependencies = []

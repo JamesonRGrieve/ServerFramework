@@ -58,11 +58,27 @@ jobs:
           python -c "import json; d=json.load(open('src/dist/bom.json')); print(f\"SBOM components: {len(d.get('components', []))}\")"
 
       - name: Run pip-audit gate (HIGH+)
-        # Fails the build if a HIGH-or-CRITICAL CVE is in the lock file.
+        # Fails the release if a HIGH-or-CRITICAL CVE is in the lock file.
+        # Releases must satisfy the same gate as the nightly cron — between
+        # the last cron run and the tag push, a vulnerability can land in
+        # transit, so the release pipeline is its own enforcement point.
         run: |
-          pip-audit -r requirements.lock --strict || true
-          # We capture the report but don't block the release here; the
-          # scheduled `pip-audit-cron.yml` workflow is the gating pipeline.
+          pip-audit -r requirements.lock --format json > audit-report.json || true
+          python - <<'PY'
+          import json, sys
+          report = json.loads(open("audit-report.json").read() or "{}")
+          deps = report.get("dependencies") if isinstance(report, dict) else report or []
+          ranking = {"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "MODERATE": 2, "LOW": 1}
+          findings = [
+              (d.get("name"), d.get("version"), v.get("id"), (v.get("severity") or "UNKNOWN").upper())
+              for d in deps or []
+              for v in d.get("vulns") or []
+              if ranking.get((v.get("severity") or "UNKNOWN").upper(), 0) >= ranking["HIGH"]
+          ]
+          for f in findings:
+              print("HIGH+ CVE:", f)
+          sys.exit(1 if findings else 0)
+          PY
 
       - name: Sign wheel + sdist via sigstore (keyless OIDC)
         run: |

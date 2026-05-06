@@ -1742,7 +1742,7 @@ class RotationManager(AbstractBLLManager, RouterMixin):
                         if estimated is not None and usd_quota.is_usd_exhausted(
                             additional=estimated
                         ):
-                            from serverframework.logic.Quota import (
+                            from serverframework.extensions.quota.BLL_Quota import (
                                 QuotaExhaustedError,
                             )
 
@@ -1805,7 +1805,7 @@ class RotationManager(AbstractBLLManager, RouterMixin):
                             # the in-process counter is the same-process
                             # roll-up optimization.
                             try:
-                                from serverframework.extensions.CostAuditEmitter import (
+                                from serverframework.extensions.billing.BLL_CostAuditEmitter import (
                                     get_cost_audit_emitter,
                                 )
 
@@ -1827,7 +1827,7 @@ class RotationManager(AbstractBLLManager, RouterMixin):
                             if usd_quota is not None and getattr(
                                 usd_quota, "limit_usd", None
                             ) is not None:
-                                from serverframework.logic.Quota import (
+                                from serverframework.extensions.quota.BLL_Quota import (
                                     _FALLBACK_LOCK,
                                 )
 
@@ -1851,10 +1851,17 @@ class RotationManager(AbstractBLLManager, RouterMixin):
                 except Exception as exc:
                     # Item 84 — USD-cap pre-check refusal must surface
                     # immediately (operator-visible quota error), not get
-                    # absorbed by the back-compat advance path.
-                    from serverframework.logic.Quota import QuotaExhaustedError as _QE
+                    # absorbed by the back-compat advance path. The quota
+                    # module lives in an optional extension; degrade
+                    # gracefully if it isn't installed.
+                    try:
+                        from serverframework.extensions.quota.BLL_Quota import (
+                            QuotaExhaustedError as _QE,
+                        )
+                    except ImportError:
+                        _QE = None  # type: ignore[assignment]
 
-                    if isinstance(exc, _QE):
+                    if _QE is not None and isinstance(exc, _QE):
                         raise
                     # Item 34 — emit per-attempt failure counter. Skip
                     # rate-limit (we stay on the same provider, the

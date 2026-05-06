@@ -1805,7 +1805,7 @@ class ModelRegistry(AbstractRegistry):
         from serverframework.lib.Environment import env as _env
         if (_env("GQL_FEDERATION", default="true") or "true").lower() == "true":
             try:
-                from serverframework.lib.Federation_Bootstrap import (
+                from serverframework.extensions.federation.BLL_Federation_Bootstrap import (
                     install_external_federation_sync,
                 )
 

@@ -93,28 +93,26 @@ class AppSettings(BaseModel):
 
     @model_validator(mode="after")
     def _enforce_production_fail_closed(self):
-        """In ENVIRONMENT=production, refuse insecure defaults.
+        """In ENVIRONMENT=production/staging, refuse insecure defaults.
 
-        - ROOT_API_KEY must not be the unset-default sentinel "n0ne".
-        - JWT_SECRET must be non-empty.
-        - ALLOWED_DOMAINS wildcard "*" is not acceptable when paired with
-          credentialed CORS (the rest of the framework currently sets
-          allow_credentials=True).
-        These checks short-circuit application start-up rather than rely on
-        runtime checks scattered through the auth path.
+        Short-circuits application start-up rather than relying on runtime
+        checks scattered through the auth path.
         """
-        if self.ENVIRONMENT != "production":
+        if self.ENVIRONMENT not in ("production", "staging"):
             return self
         problems: List[str] = []
         if (self.ROOT_API_KEY or "").strip() in ("", "n0ne"):
-            problems.append(
-                "ROOT_API_KEY is unset or left at the default 'n0ne'"
-            )
-        if not (self.JWT_SECRET or "").strip():
+            problems.append("ROOT_API_KEY is unset or left at the default 'n0ne'")
+        secret = (self.JWT_SECRET or "").strip()
+        if not secret:
             problems.append("JWT_SECRET is empty")
+        elif len(secret) < 32:
+            problems.append("JWT_SECRET must be at least 32 characters")
         if (self.ALLOWED_DOMAINS or "").strip() == "*":
+            problems.append("ALLOWED_DOMAINS='*' is not allowed in production")
+        if (self.DATABASE_PASSWORD or "").strip() in ("", "Password1!"):
             problems.append(
-                "ALLOWED_DOMAINS='*' is not allowed in production"
+                "DATABASE_PASSWORD is unset or left at the development default"
             )
         if problems:
             raise ValueError(

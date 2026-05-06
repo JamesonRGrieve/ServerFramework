@@ -1,0 +1,9 @@
+name = "backup_restore"
+version = "1.0.0"
+description = "Backup commands, archival targets, and restore-drill runner"
+author = "ZephyrexTechnologies"
+entry_module = "EXT_BackupRestore"
+minimum_framework_version = "0.0.0"
+
+pip_dependencies = []
+system_dependencies = []
