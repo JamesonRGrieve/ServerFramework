@@ -228,6 +228,108 @@ def _versioned_field(resolver: Any, manager_class: Any) -> Any:
     return strawberry.field(resolver, **kwargs)
 
 
+# -- Item 48 — GraphQL conversion of degradation sentinels --------------------
+
+
+@strawberry.type(
+    description=(
+        "Item 48 — typed GraphQL surface for QUEUE_AND_RETRY rotation "
+        "exhaustion. Equivalent to the REST 202 response."
+    )
+)
+class QueuedForRetryGQL:
+    """GraphQL projection of the QueuedForRetry sentinel."""
+
+    status: str = "accepted"
+    tracking_id: str = ""
+
+
+@strawberry.type(
+    description=(
+        "Item 48 — typed GraphQL surface for SILENT_DROP rotation "
+        "exhaustion. Carries the (provider, ability) pair so operators can "
+        "correlate with the provider_silent_drop_total metric."
+    )
+)
+class SilentDroppedGQL:
+    """GraphQL projection of the SilentDropped sentinel."""
+
+    status: str = "silent_dropped"
+    provider: Optional[str] = None
+    ability: Optional[str] = None
+
+
+def render_degradation_sentinel_gql(result: Any) -> Optional[Any]:
+    """Item 48 — convert a rotation degradation sentinel into a typed
+    Strawberry GraphQL result.
+
+    Returns the Strawberry type instance for ``QueuedForRetry`` /
+    ``SilentDropped``, or ``None`` when ``result`` is neither sentinel so
+    the caller can fall through to its regular response.
+
+    Mirrors :func:`Pydantic2FastAPI._render_degradation_sentinel` on the
+    GraphQL side: the schema author opts in by declaring the resolver's
+    return type as a union of the payload type and these GQL types
+    (typically via ``Annotated[Union[..., QueuedForRetryGQL, SilentDroppedGQL]]``)
+    and calling this helper before returning.
+    """
+    try:
+        from serverframework.extensions.ExternalErrors import (
+            QueuedForRetry,
+            SilentDropped,
+        )
+    except Exception:  # pragma: no cover - defensive
+        return None
+
+    if isinstance(result, QueuedForRetry):
+        return QueuedForRetryGQL(
+            status=result.status,
+            tracking_id=result.tracking_id,
+        )
+    if isinstance(result, SilentDropped):
+        return SilentDroppedGQL(
+            status="silent_dropped",
+            provider=result.provider,
+            ability=result.ability,
+        )
+    return None
+
+
+def degradation_aware(resolver: Callable[..., Any]) -> Callable[..., Any]:
+    """Item 48 — decorator that converts a resolver's degradation sentinel
+    return values into typed Strawberry GraphQL results.
+
+    Wraps both sync and async resolvers. The wrapped resolver signature is
+    preserved so Strawberry's introspection still sees the original ``Info``
+    parameter and any declared arguments. The resolver's declared return
+    type should be a union of its happy-path payload, ``QueuedForRetryGQL``,
+    and ``SilentDroppedGQL`` to surface the degradation arms in the SDL.
+    """
+    if asyncio.iscoroutinefunction(resolver):
+
+        async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
+            result = await resolver(*args, **kwargs)
+            converted = render_degradation_sentinel_gql(result)
+            return converted if converted is not None else result
+
+        async_wrapper.__name__ = resolver.__name__
+        async_wrapper.__qualname__ = resolver.__qualname__
+        async_wrapper.__doc__ = resolver.__doc__
+        async_wrapper.__wrapped__ = resolver  # type: ignore[attr-defined]
+        return async_wrapper
+
+    def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
+        result = resolver(*args, **kwargs)
+        converted = render_degradation_sentinel_gql(result)
+        return converted if converted is not None else result
+
+    sync_wrapper.__name__ = resolver.__name__
+    sync_wrapper.__qualname__ = resolver.__qualname__
+    sync_wrapper.__doc__ = resolver.__doc__
+    sync_wrapper.__wrapped__ = resolver  # type: ignore[attr-defined]
+    return sync_wrapper
+
+
 # -- Item 46 helpers ----------------------------------------------------------
 
 
@@ -1017,6 +1119,7 @@ class GraphQLManager(ErrorHandlerMixin):
             model_name = model_class.__name__ if model_class else "Unknown"
             try:
                 self._generate_components_for_model(model_class, manager_class)
+                self._register_custom_routes_for_manager(manager_class)
                 successful_models.append(model_name)
             except Exception as e:
                 module_name = model_class.__module__ if model_class else "unknown"
@@ -1038,6 +1141,28 @@ class GraphQLManager(ErrorHandlerMixin):
             logger.error("Failed models:")
             for model_name, module_name, error in failed_models:
                 logger.error(f"  - {model_name} ({module_name}): {error}")
+
+    def _register_custom_routes_for_manager(self, manager_class: Any) -> None:
+        """Item 40 GraphQL half: project ``@custom_route`` methods into the
+        contribution registry so they appear in the merged Query/Mutation.
+
+        Defensive — any failure during registration is logged but never
+        breaks CRUD generation, mirroring the REST-side hook.
+        """
+        try:
+            from serverframework.lib.CustomRoute import (
+                register_custom_routes_to_graphql,
+            )
+
+            register_custom_routes_to_graphql(
+                manager_class,
+                contribution_registry=self._contributions,
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug(
+                f"Item 40 GraphQL custom-route registration skipped for "
+                f"{getattr(manager_class, '__name__', manager_class)}: {exc}"
+            )
 
     def _generate_components_for_model(
         self, model_class: Type[BaseModel], manager_class: Type[AbstractBLLManager]

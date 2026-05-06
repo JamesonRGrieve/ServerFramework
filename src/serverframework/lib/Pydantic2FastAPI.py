@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import uuid
 from dataclasses import dataclass, field
@@ -1481,6 +1482,121 @@ def serialize_for_response(
     return data
 
 
+# ---------------------------------------------------------------------------
+# Item 45 — REST integration helpers for the FieldACL primitive
+# ---------------------------------------------------------------------------
+
+
+def _resolve_has_permission(manager: Any) -> Optional[Callable[[str], bool]]:
+    """Best-effort resolver for the ``has_permission`` callable on a manager.
+
+    The framework's mainline User model doesn't currently expose
+    ``has_permission`` directly; extension and future versions wire it via
+    ``manager.requester.has_permission``. Return ``None`` so the caller
+    no-ops the ACL when the manager has no policy to enforce — this keeps
+    framework-internal callers (system-key audit jobs) functioning.
+    """
+    if manager is None:
+        return None
+    requester = getattr(manager, "requester", None)
+    if requester is None:
+        return None
+    fn = getattr(requester, "has_permission", None)
+    if not callable(fn):
+        return None
+
+    def _check(name: str) -> bool:
+        try:
+            return bool(fn(name))
+        except Exception:  # pragma: no cover - defensive
+            return False
+
+    return _check
+
+
+def apply_field_acl_to_payload(
+    payload: Any,
+    manager: Any,
+    model_cls: Optional[Type[BaseModel]],
+    *,
+    sentinel_mode: Optional[str] = None,
+    cache: Optional[Any] = None,
+) -> Any:
+    """Item 45 — REST hook that filters disallowed fields from a serialized
+    payload using the manager's requester permission resolver.
+
+    Pass through unchanged when the manager has no resolvable
+    ``has_permission`` callable so framework-internal callers continue to
+    function. The sentinel mode (``omit`` | ``mask``) defaults to the
+    deployment-wide ``FIELD_ACL_SENTINEL`` env var, falling back to
+    ``omit`` per the FieldACL contract.
+    """
+    from serverframework.lib.FieldACL import (
+        DEFAULT_SENTINEL_MODE,
+        apply_field_acl_to_response,
+    )
+
+    has_perm = _resolve_has_permission(manager)
+    if has_perm is None or model_cls is None:
+        return payload
+
+    mode = sentinel_mode or os.getenv("FIELD_ACL_SENTINEL") or DEFAULT_SENTINEL_MODE
+    requester_id = None
+    requester = getattr(manager, "requester", None)
+    if requester is not None:
+        requester_id = getattr(requester, "id", None)
+        if requester_id is not None:
+            requester_id = id(requester)
+    return apply_field_acl_to_response(
+        payload,
+        model_cls,
+        has_perm,
+        sentinel_mode=mode,
+        cache=cache,
+        requester_id=requester_id,
+    )
+
+
+def validate_field_acl_query(
+    manager: Any,
+    model_cls: Optional[Type[BaseModel]],
+    fields: List[str],
+    context: str,
+) -> None:
+    """Item 45 — reject requests using restricted fields the requester
+    cannot access.
+
+    Raises HTTP 403 when the requester references restricted fields in
+    sort, filter, or projection clauses. ``context`` is folded into the
+    audit-log error message ("sort_by", "filter", "projection") so the
+    inference-attack vector is distinguishable in operational dashboards.
+    """
+    if not fields or model_cls is None:
+        return
+
+    from serverframework.lib.FieldACL import validate_query_field_access
+
+    has_perm = _resolve_has_permission(manager)
+    if has_perm is None:
+        return
+
+    disallowed = validate_query_field_access(
+        model_cls, fields, has_perm, context=context
+    )
+    if disallowed:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": (
+                    f"Access denied to restricted fields in {context}: "
+                    f"{sorted(disallowed)}"
+                ),
+                "context": context,
+                "fields": sorted(disallowed),
+            },
+        )
+
+
 def _populate_includes_on_serialized(
     serialized: Union[Dict[str, Any], List[Dict[str, Any]]],
     include_selection: Optional[List[str]],
@@ -2023,6 +2139,12 @@ def register_route(
                 # Attach invitees for Invitation resources when requested
                 _attach_invitees_to_entity(serialized_entity)
 
+                # Item 45 — apply field-level ACL after include attachment so
+                # disallowed fields are stripped from the final response shape.
+                serialized_entity = apply_field_acl_to_payload(
+                    serialized_entity, manager, target_model
+                )
+
                 # If fields projection requested, apply it now and return JSON
                 if fields_selection:
                     projected_entity = _apply_field_projection_to_entity(
@@ -2037,6 +2159,9 @@ def register_route(
                     populated = _populate_includes_on_serialized(
                         serialized_result, include_selection, model_registry
                     )
+                    populated = apply_field_acl_to_payload(
+                        populated, manager, target_model
+                    )
                     return JSONResponse(
                         content=jsonable_encoder({resource_name: populated}),
                         status_code=status.HTTP_200_OK,
@@ -2046,6 +2171,14 @@ def register_route(
                 # Note: response_model_instance is only created when fields_selection is empty
                 if fields_selection:
                     # This shouldn't happen since we return early for fields, but handle it just in case
+                    return JSONResponse(
+                        content=jsonable_encoder({resource_name: serialized_entity}),
+                        status_code=status.HTTP_200_OK,
+                    )
+                # Item 45 — for the Pydantic-validated path, also re-render
+                # with field-acl filtering applied so the contract holds
+                # uniformly across all return shapes.
+                if _resolve_has_permission(manager) is not None:
                     return JSONResponse(
                         content=jsonable_encoder({resource_name: serialized_entity}),
                         status_code=status.HTTP_200_OK,
@@ -2163,6 +2296,26 @@ def register_route(
                         },
                     )
 
+                # Item 45 — reject restricted-field references in sort_by /
+                # filters / projection before SQL is generated. Inference
+                # attacks via ORDER BY on a restricted column are equivalent
+                # to direct read.
+                if sort_by_param:
+                    validate_field_acl_query(
+                        manager, target_model, [sort_by_param], "sort_by"
+                    )
+                if fields_param:
+                    validate_field_acl_query(
+                        manager, target_model, fields_param, "projection"
+                    )
+                if search_params:
+                    validate_field_acl_query(
+                        manager,
+                        target_model,
+                        list(search_params.keys()),
+                        "filter",
+                    )
+
                 page_param = getattr(query_params, "page", None)
                 page_size_param = getattr(query_params, "pageSize", None)
 
@@ -2276,6 +2429,20 @@ def register_route(
 
                 fields_selection = _normalize_projection_values(query_params.fields)
 
+                # Item 45 — apply field-level ACL across the list response.
+                # Shared cache so the per-row cost is one dictionary lookup
+                # rather than re-evaluating every restricted-field permission.
+                from serverframework.lib.FieldACL import FieldACLCache
+
+                _acl_cache = FieldACLCache()
+                if isinstance(serialized_items, list):
+                    serialized_items = [
+                        apply_field_acl_to_payload(
+                            item, manager, target_model, cache=_acl_cache
+                        )
+                        for item in serialized_items
+                    ]
+
                 if fields_selection:
                     try:
                         logger.debug(
@@ -2300,6 +2467,13 @@ def register_route(
                     populated_items = _populate_includes_on_serialized(
                         serialized_results, include_selection, model_registry
                     )
+                    if isinstance(populated_items, list):
+                        populated_items = [
+                            apply_field_acl_to_payload(
+                                item, manager, target_model, cache=_acl_cache
+                            )
+                            for item in populated_items
+                        ]
                     return JSONResponse(
                         content=jsonable_encoder(
                             {resource_name_plural: populated_items}
@@ -2307,6 +2481,13 @@ def register_route(
                         status_code=status.HTTP_200_OK,
                     )
 
+                if _resolve_has_permission(manager) is not None:
+                    return JSONResponse(
+                        content=jsonable_encoder(
+                            {resource_name_plural: serialized_items}
+                        ),
+                        status_code=status.HTTP_200_OK,
+                    )
                 return response_model_instance
             except Exception as err:
                 handle_resource_operation_error(err)

@@ -10,22 +10,25 @@ field kind.
 This module ships the decorator, the spec dataclass, and helpers to walk a
 class for tagged methods. REST integration is wired into
 ``Pydantic2FastAPI.create_router_from_manager`` via ``register_custom_routes``.
-
-GraphQL field emission lands alongside Item 46 (GraphQL composition); SDK
-method emission lands alongside Item 25 (already shipped — extend
-``SDKGenerator.py`` in a follow-up).
+GraphQL field emission is wired through Item 46's contribution registry via
+``register_custom_routes_to_graphql``; both are invoked once per manager at
+schema-build time.
 """
 
 from __future__ import annotations
 
+import inspect
 from dataclasses import dataclass
 from enum import Enum
 from typing import (
+    Any,
     Callable,
+    Dict,
     FrozenSet,
     Iterable,
     List,
     Optional,
+    Set,
     Tuple,
     Type,
 )
@@ -215,3 +218,193 @@ def register_custom_routes(router, manager_cls, manager_factory: Optional[Callab
         registered += 1
 
     return registered
+
+
+# ---------------------------------------------------------------------------
+# GraphQL emission (Item 40 GraphQL half + Item 46 contribution-registry hook)
+# ---------------------------------------------------------------------------
+
+# Registrations are tracked per (manager_cls, method_name) so repeated calls
+# during schema rebuilds are idempotent. The contribution registry's identity
+# check on resolvers requires the same callable object across registrations,
+# which is what this set guarantees.
+_GRAPHQL_REGISTERED: Set[Tuple[type, str]] = set()
+_GRAPHQL_RESOLVER_CACHE: Dict[Tuple[type, str], Callable[..., Any]] = {}
+
+
+def _infer_graphql_kind(spec: CustomRouteSpec) -> str:
+    """GET → query, anything else → mutation, with explicit override.
+
+    The decorator's ``graphql_kind`` parameter wins when set. Otherwise the
+    HTTP verb dictates: read-only methods go into ``Query``; write methods
+    go into ``Mutation``. Subscriptions are not emitted from ``@custom_route``
+    — streaming routes use the dedicated streaming decorator (Item 13).
+    """
+    if spec.graphql_kind is not None:
+        kind = spec.graphql_kind.lower()
+        if kind in ("query", "mutation"):
+            return kind
+        raise ValueError(
+            f"Invalid graphql_kind={spec.graphql_kind!r}; expected 'query' or 'mutation'"
+        )
+    return "query" if spec.method == "GET" else "mutation"
+
+
+def _build_graphql_resolver(
+    manager_cls: type,
+    method_name: str,
+    spec: CustomRouteSpec,
+    manager_factory: Optional[Callable[..., Any]] = None,
+) -> Callable[..., Any]:
+    """Wrap a tagged method as a Strawberry-compatible resolver.
+
+    The resolver accepts a single optional ``input`` argument typed to the
+    spec's ``input_model`` and returns an instance of ``output_model``.
+    Path parameters embedded in ``spec.path`` (``{id}`` style) become
+    keyword arguments on the resolver so GraphQL clients can pass them
+    natively.
+    """
+    bound_method = getattr(manager_cls, method_name)
+    method_sig = inspect.signature(bound_method)
+
+    def _instantiate_manager(info: Any) -> Any:
+        if manager_factory is not None:
+            return manager_factory(info=info)
+        try:
+            return manager_cls()
+        except Exception:
+            return None
+
+    def _split_kwargs(payload: Dict[str, Any]) -> Dict[str, Any]:
+        accepted: Dict[str, Any] = {}
+        for key, value in payload.items():
+            if key in method_sig.parameters:
+                accepted[key] = value
+        return accepted
+
+    if spec.method in ("POST", "PUT", "PATCH") and spec.input_model is not None:
+        async def resolver(info: Any, input: spec.input_model) -> spec.output_model:  # type: ignore[name-defined]
+            instance = _instantiate_manager(info)
+            payload = input.model_dump() if hasattr(input, "model_dump") else dict(input)
+            target = (
+                getattr(instance, method_name) if instance is not None else bound_method
+            )
+            if "body" in method_sig.parameters:
+                kwargs: Dict[str, Any] = {"body": input}
+            else:
+                kwargs = _split_kwargs(payload)
+            result = target(**kwargs) if instance is not None else target(instance, **kwargs)
+            if inspect.isawaitable(result):
+                result = await result
+            return _coerce_output(result, spec.output_model)
+    else:
+        async def resolver(info: Any, **kwargs: Any) -> spec.output_model:  # type: ignore[name-defined]
+            instance = _instantiate_manager(info)
+            target = (
+                getattr(instance, method_name) if instance is not None else bound_method
+            )
+            accepted = _split_kwargs(kwargs)
+            result = target(**accepted) if instance is not None else target(instance, **accepted)
+            if inspect.isawaitable(result):
+                result = await result
+            return _coerce_output(result, spec.output_model)
+
+    resolver.__name__ = method_name
+    resolver.__qualname__ = f"{manager_cls.__name__}.{method_name}"
+    return resolver
+
+
+def _coerce_output(result: Any, output_model: Optional[Type[BaseModel]]) -> Any:
+    """Normalize a tagged-method result into an ``output_model`` instance.
+
+    Mirrors the REST helper's coercion rules: model instances pass through,
+    dicts get validated, anything else is returned untouched (the resolver's
+    declared return type is the contract; Strawberry surfaces type mismatches
+    as schema errors).
+    """
+    if output_model is None:
+        return result
+    if isinstance(result, output_model):
+        return result
+    if isinstance(result, dict):
+        return output_model.model_validate(result)
+    return result
+
+
+def register_custom_routes_to_graphql(
+    manager_cls: type,
+    manager_factory: Optional[Callable[..., Any]] = None,
+    *,
+    contribution_registry: Optional[Any] = None,
+    extension_name: str = "core",
+) -> int:
+    """Walk ``manager_cls`` for ``@custom_route`` methods and register them
+    as GraphQL ``FieldContribution``s.
+
+    Each tagged method becomes a typed Strawberry root field — query for
+    ``GET`` (and explicit ``graphql_kind="query"`` overrides), mutation for
+    everything else (and explicit ``graphql_kind="mutation"`` overrides).
+    Routes whose ``expose_in`` excludes ``GRAPHQL`` (and ``ALL``) are skipped
+    so an author can opt out per-route.
+
+    Returns the number of fields registered (or skipped because the route is
+    GraphQL-excluded).
+    """
+    from serverframework.lib.Pydantic2Strawberry import (
+        FieldContribution,
+        FieldKind,
+        gql_contribution_registry,
+    )
+
+    registry = contribution_registry or gql_contribution_registry()
+    registered = 0
+
+    for method_name, spec in iter_custom_routes(manager_cls):
+        if (
+            ExposeIn.GRAPHQL not in spec.expose_in
+            and ExposeIn.ALL not in spec.expose_in
+        ):
+            continue
+
+        cache_key = (manager_cls, method_name)
+        if cache_key in _GRAPHQL_REGISTERED:
+            continue
+
+        resolver = _GRAPHQL_RESOLVER_CACHE.get(cache_key)
+        if resolver is None:
+            resolver = _build_graphql_resolver(
+                manager_cls, method_name, spec, manager_factory
+            )
+            _GRAPHQL_RESOLVER_CACHE[cache_key] = resolver
+
+        kind_str = _infer_graphql_kind(spec)
+        kind = FieldKind.QUERY if kind_str == "query" else FieldKind.MUTATION
+
+        registry.register_field(
+            FieldContribution(
+                extension_name=extension_name,
+                kind=kind,
+                name=method_name,
+                resolver=resolver,
+                return_type=spec.output_model,
+                args={"input": spec.input_model} if spec.input_model is not None else {},
+                description=spec.description or spec.summary,
+                namespace=False,
+                priority=50,
+            )
+        )
+        _GRAPHQL_REGISTERED.add(cache_key)
+        registered += 1
+
+    return registered
+
+
+def reset_graphql_registrations() -> None:
+    """Test helper -- clear the per-process registration cache.
+
+    Pair with ``Pydantic2Strawberry.reset_gql_contribution_registry`` when a
+    test needs to re-register the same ``@custom_route`` after wiping the
+    contribution registry.
+    """
+    _GRAPHQL_REGISTERED.clear()
+    _GRAPHQL_RESOLVER_CACHE.clear()

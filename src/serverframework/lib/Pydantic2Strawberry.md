@@ -151,6 +151,41 @@ from serverframework.lib.Pydantic2Strawberry import (
 )
 ```
 
+## Custom-Route GraphQL Emission (Item 40)
+
+`@custom_route`-tagged methods on `RouterMixin` managers (and `AbstractActionEndpoint` subclasses) now project automatically onto the GraphQL surface alongside REST and the auto-generated SDK. The hook lives in `GraphQLManager._register_custom_routes_for_manager`, which calls `CustomRoute.register_custom_routes_to_graphql(manager_class)` for every model during schema build.
+
+Mapping rules:
+
+- HTTP `GET` → `FieldKind.QUERY`. Anything else (`POST`/`PUT`/`PATCH`/`DELETE`) → `FieldKind.MUTATION`.
+- `@custom_route(graphql_kind="query"|"mutation")` overrides the inferred kind. Subscriptions are emitted by the dedicated streaming decorator (Item 13), not by `@custom_route`.
+- Routes whose `expose_in` excludes both `GRAPHQL` and `ALL` are skipped.
+- Per-`(manager_cls, method_name)` registration is idempotent so schema rebuilds don't re-emit duplicate fields.
+
+Resolvers wrap the bound method, validate the input model, and coerce dict returns into the spec's `output_model`. The contribution flows through the same Item 46 collision rules as any other extension-contributed field.
+
+## Graceful Degradation in GraphQL (Item 48)
+
+Rotation-exhaustion sentinels (`QueuedForRetry`, `SilentDropped`) project onto GraphQL via two strawberry-decorated mirrors:
+
+- `QueuedForRetryGQL { status, trackingId }` — equivalent to the REST 202 response.
+- `SilentDroppedGQL { status, provider, ability }` — equivalent to the REST 200 silent-drop response.
+
+The schema author opts in by declaring the resolver's return type as a union arm, e.g.:
+
+```python
+SendResult = Annotated[
+    Union[WidgetGQL, QueuedForRetryGQL, SilentDroppedGQL],
+    strawberry.union("SendResult"),
+]
+
+@degradation_aware
+async def send(info: Info) -> SendResult:
+    return await widget_manager.send(...)
+```
+
+`@degradation_aware` wraps both sync and async resolvers, calling `render_degradation_sentinel_gql` after the resolver returns to convert sentinels into the typed GraphQL arm. Non-sentinel returns pass through unchanged. The decorator preserves `__name__` / `__qualname__` / `__doc__` so Strawberry introspection sees the original signature.
+
 ## Error Handling
 
 The schema generation is resilient to individual model failures:
