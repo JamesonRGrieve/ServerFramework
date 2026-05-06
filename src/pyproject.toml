@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=42", "wheel"]
+requires = ["setuptools>=82.0.1", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -24,7 +24,7 @@ classifiers = [
 keywords = ["api", "server", "framework"]
 dependencies = [
     # Build system
-    "setuptools<58",
+    "setuptools<83",
 
     # Core Web Framework
     "fastapi",
