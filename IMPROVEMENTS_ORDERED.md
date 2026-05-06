@@ -32,7 +32,7 @@ The eight gating items that must land before provider authorship are:
 2. ~~Item 2 — Failure classification and rotation policy.~~ ✅
 3. ~~Item 4 — Idempotency primitive for external operations.~~ ✅
 4. ~~Item 5 — Inbound webhook handler infrastructure.~~ ✅
-5. Item 10 — Pluggable authentication strategies on provider instances. **Partial** — strategy registry shipped; per-instance `auth_strategy_name` field on `ProviderInstanceModel` is missing.
+5. ~~Item 10 — Pluggable authentication strategies on provider instances.~~ ✅
 6. ~~Item 14 — Mirror-on-create lifecycle primitive.~~ ✅
 7. ~~Item 26 — Explicit `AbstractProviderInstance` contract.~~ ✅
 8. ~~Item 70 — Manager constructor contract consistency (RotationManager violates the documented `model_registry`-first signature; every provider author derives from a moving target until this is fixed).~~ ✅
@@ -41,7 +41,7 @@ A separate critical-path applies to the public PyPI release of the package (the 
 
 1. ~~Item 60 — Rename top-level packages under a single namespace.~~ ✅
 2. ~~Item 61 — Out-of-tree extension import support.~~ ✅
-3. Item 86 — Supply-chain hygiene (SBOM, signed releases, pinned hashes, vuln scanning). **Partial** — `SECURITY.md`, `requirements.lock` with hashes, and `pip-audit` configured. SBOM generation and sigstore signing CI workflow are still outstanding and gate the first PyPI publish.
+3. ~~Item 86 — Supply-chain hygiene (SBOM, signed releases, pinned hashes, vuln scanning).~~ ✅
 
 Everything else can iterate without retrofit once these are in place.
 
@@ -638,7 +638,7 @@ Symmetric `@mirror_on_update` and `@mirror_on_delete` decorators handle the corr
 
 ---
 
-## Item 48 — Graceful degradation contract
+## ~~Item 48~~ — ~~Graceful degradation contract~~ ✅ DONE
 
 **Severity:** Medium
 **Scope:** Provider declarations, rotation system, outbox (Item 35).
@@ -994,7 +994,7 @@ For genuinely RPC-shaped routes (no clear resource), the decorator can be applie
 
 ---
 
-## Item 87 — BLL-level field-selection and include test coverage (GitHub #10)
+## ~~Item 87~~ — ~~BLL-level field-selection and include test coverage (GitHub #10)~~ ✅ DONE
 
 **Severity:** Medium
 **Scope:** New abstract test cases under `src/logic/AbstractBLLTest.py` covering `load_only` and related-entity loading at the BLL layer, plus per-manager test files that consume them.
@@ -1901,7 +1901,7 @@ A single canonical reference for every primitive an extension author touches.
 
 ---
 
-## Item 78 — Document and contract the Localization subsystem
+## ~~Item 78~~ — ~~Document and contract the Localization subsystem~~ ✅ DONE
 
 **Severity:** Low
 **Scope:** `src/Localization.py` (1163 lines, undocumented at audit time), `Framework.md`, `lib/LIB.Overview.md`, new `LIB.Localization.md`, `EXT.Contracts.md` entry from Item 52.
@@ -2391,5 +2391,50 @@ The Phase-1 work that did **not** require any of those prereqs (typed value mode
 **Implementation.** SendGrid SDK accepts a custom HTTP transport (the `python-http-client` underlying it has a `session` setter); replace with `ProviderHTTPClient` instance. SMTP2go is direct `httpx` already; swap for shared client. Stalwart's SMTP transport is exempt from HTTP cross-cutting (documented; SMTP submission is a long-lived TCP stream, not request/response). Credential resolution moves to per-request through `instance.api_key.resolve()` rather than per-bond. A SendGrid 401 cache-busts the credential per Item 32.
 
 **Acceptance.** A SendGrid send produces a coherent trace across the framework's tracing backend (Item 34). A SendGrid 429 is throttled by the shared token bucket without producing a 429 storm. Credentials never appear in log output. Rotating `SENDGRID_API_KEY` in OpenBao takes effect within one renewal cycle without a framework restart.
+
+---
+
+# Group 27 — Provider/Extension Restructuring
+
+Items in this group correct extensions whose initial shape mistakenly placed a single concrete provider at the extension level rather than under a properly-named protocol-family extension. The framework's canonical pattern (mirroring `EXT_Database` over `PRV_SQLite`, `PRV_InfluxDB`, `PRV_Fake_Database`) is "the extension owns the protocol family; providers implement specific backends." Provider/extension drift here violates Item 19's scope contract (root vs. team vs. user instances) and the Item 23 collision-detection invariants because the extension namespace is taken by a single product when it should belong to a family.
+
+## Item 98 — Restructure Valkey from extension to provider under `EXT_DatabaseMemory`
+
+**Severity:** Medium
+**Scope:** `src/serverframework/extensions/valkey/` → `src/serverframework/extensions/database_memory/`; rename `EXT_Valkey` → `EXT_DatabaseMemory`; keep `PRV_Valkey` and `PRV_Fake_Valkey` as concrete providers under the new extension.
+**Owner area:** Extensions / packaging.
+
+**Purpose.** Today `extensions/valkey/EXT_Valkey.py` claims the entire `valkey` extension namespace for a single concrete product (Valkey/Redis-protocol). This is the same shape mistake `EXT_Database` does *not* make — the SQL extension is named for its **protocol family** ("database"), and `PRV_SQLite`, `PRV_InfluxDB`, `PRV_Fake_Database` live as concrete providers under it. The Valkey work followed a different convention by accident: the protocol family is "in-memory data store" (anything that speaks the Valkey/Redis wire protocol or a competing in-memory protocol — Memcached, KeyDB, DragonflyDB, Garnet), not "Valkey." A future Memcached or DragonflyDB provider authored against the framework today has no natural extension home; either it shadows `EXT_Valkey` (incorrect — Memcached does not speak Valkey protocol) or it ships as its own extension (incorrect — it shares all of the same abilities and the in-memory-store family contract). The correct shape is **Valkey is a provider, not an extension**; the extension is `EXT_DatabaseMemory`.
+
+This also restores parity with the existing `EXT_Database` precedent so any future extension author looking at the two side-by-side sees one consistent rule: "extensions are named for protocol families; providers implement specific backends."
+
+**Current state.** `extensions/valkey/` contains:
+
+- `EXT_Valkey.py` (extension manifest + `AbstractValkeyProvider` ABC)
+- `PRV_Valkey.py` (concrete Valkey/Redis-protocol provider via `redis-py asyncio`)
+- `PRV_Fake_Valkey.py` (in-memory fake for tests)
+- `EXT.valkey.md`, `EXT_Valkey_test.py`
+
+Downstream consumers — the `EventBus` Redis-Streams adapter (Item 42), the inbound rate-limit counter (Item 71), the `DistributedCounter` Redis backend (Item 69) — currently import `EXT_Valkey` directly to reach the bonded provider.
+
+**Target state.** Move the directory to `extensions/database_memory/` and rename:
+
+- `EXT_Valkey.py` → `EXT_DatabaseMemory.py` (extension manifest + `AbstractDatabaseMemoryProvider` ABC, the protocol-family abstract). The abstract retains the four canonical abilities — `key_value`, `streams`, `pubsub`, `counter` — that any in-memory data store may implement.
+- `PRV_Valkey.py` stays as the Valkey/Redis-protocol concrete provider, now subclassing `AbstractDatabaseMemoryProvider` rather than `AbstractValkeyProvider`. Class name `PRV_Valkey` retained.
+- `PRV_Fake_Valkey.py` → `PRV_Fake_DatabaseMemory.py` (the framework-level fake; the protocol-agnostic in-memory test double belongs to the family, not to one product). The class is renamed `PRV_Fake_DatabaseMemory`.
+- `EXT.valkey.md` → `EXT.database_memory.md`. Cross-references in `Framework.md`, `EXT.Patterns.md`, and `EXT.Contracts.md` (Item 52) update accordingly.
+
+Future providers (`PRV_Memcached`, `PRV_DragonflyDB`, `PRV_KeyDB`, `PRV_Garnet`) land under the same extension as siblings to `PRV_Valkey` without further restructuring. Providers that do not speak the same protocol declare which abilities they support via the existing `Capability` flag mechanism (Item 95's pattern).
+
+**Implementation notes.** The migration is mostly mechanical. Three substantive concerns:
+
+- **Downstream import sites.** Every consumer of `EXT_Valkey` (EventBus broker transport in `logic/EventBus.py`, inbound rate-limit middleware via Item 71, Item 69's Redis-backed `DistributedCounter`) updates to `EXT_DatabaseMemory`. The bonded-provider lookup is the same shape regardless of name; only the import statement changes.
+- **Backwards compatibility.** Because the framework has not yet shipped to PyPI (Item 86 supply-chain hygiene is the gating item), there are no external consumers depending on `serverframework.extensions.valkey`. No deprecation alias is required. Drop the old name in the same change rather than carrying a back-compat shim.
+- **Item 23 collision detection.** The extension-name field-injection registry (`@extension_model` collision check) keys off the extension name. The rename surfaces in the registry as a normal namespace change; no code in the registry needs updating.
+- **Migration files.** The Valkey extension does not currently own any tables (it is a connection-management extension, like `EXT_Database`'s connection-pool concern). No Alembic migration needs renaming. If a future in-memory-store provider grows tables (rare; would be unusual for an in-memory store), Item 24's file-path detection picks up the new path automatically.
+
+**Acceptance criteria.** A fresh checkout has `src/serverframework/extensions/database_memory/{EXT_DatabaseMemory.py, PRV_Valkey.py, PRV_Fake_DatabaseMemory.py, EXT.database_memory.md}` and no `extensions/valkey/` directory. `EventBus` Redis-Streams transport, the Item 71 rate-limit counter, and the Item 69 `DistributedCounter` Redis backend all consume the renamed extension and pass their existing tests against `PRV_Fake_DatabaseMemory`. A future `PRV_Memcached` author can land their provider as a sibling to `PRV_Valkey` without changing `EXT_DatabaseMemory` or any other framework code (Item 23/26 contracts are unchanged). Cross-references in `Framework.md`, `EXT.Patterns.md`, and `EXT.Contracts.md` are updated.
+
+**Dependencies.** Independent. Cross-references Item 19 (provider scope — root/team/user instances of `PRV_Valkey` continue to behave per Item 19), Item 23 (collision detection — the extension-namespace rename is observed by the registry), Item 24 (migration ownership — file-path detection picks up the renamed directory), Item 26 (`AbstractProviderInstance` contract — `AbstractDatabaseMemoryProvider` retains the abstract-provider shape), Item 42 (EventBus broker transport consumes the renamed extension), Item 69 (DistributedCounter Redis backend consumes the renamed extension), Item 71 (rate-limit counter consumes the renamed extension), Item 86 (no external PyPI consumers yet, so no compat shim needed).
 
 
