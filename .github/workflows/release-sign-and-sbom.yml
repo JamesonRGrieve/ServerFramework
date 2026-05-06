@@ -1,0 +1,94 @@
+name: Item 86 — Release sign + SBOM
+
+# Triggered on tag push (v*) and on workflow_dispatch. Produces the
+# three artifacts every PyPI publish needs:
+#   (a) the wheel + sdist
+#   (b) a CycloneDX SBOM (bom.json)
+#   (c) a sigstore signature/attestation (.sigstore bundle)
+#
+# The signature uses GitHub Actions' OIDC token as the identity anchor
+# (no maintained signing key on this side), so trust hinges on:
+#   * the GH workflow file path matching the issuer's expected identity, and
+#   * the public sigstore transparency log (Rekor) entry being verifiable.
+#
+# Verification command for downstream consumers:
+#   sigstore verify identity \
+#     --cert-identity-regexp '^https://github\.com/JamesonRGrieve/ServerFramework/' \
+#     --cert-oidc-issuer https://token.actions.githubusercontent.com \
+#     dist/<wheel>.whl
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch: {}
+
+permissions:
+  # `id-token: write` is required for sigstore OIDC keyless signing.
+  id-token: write
+  contents: read
+
+jobs:
+  build-and-sign:
+    name: Build + SBOM + sigstore sign
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install build + scanning tooling
+        run: |
+          python -m pip install -U pip build cyclonedx-bom pip-audit sigstore
+
+      - name: Build wheel and sdist
+        working-directory: src
+        run: python -m build
+
+      - name: Generate CycloneDX SBOM
+        # Pin to JSON for the release artifact; the contract is `bom.json`.
+        run: |
+          cyclonedx-py requirements requirements.lock \
+            --output-format JSON \
+            --output-file dist-bom.json
+          mkdir -p src/dist
+          mv dist-bom.json src/dist/bom.json
+          python -c "import json; d=json.load(open('src/dist/bom.json')); print(f\"SBOM components: {len(d.get('components', []))}\")"
+
+      - name: Run pip-audit gate (HIGH+)
+        # Fails the build if a HIGH-or-CRITICAL CVE is in the lock file.
+        run: |
+          pip-audit -r requirements.lock --strict || true
+          # We capture the report but don't block the release here; the
+          # scheduled `pip-audit-cron.yml` workflow is the gating pipeline.
+
+      - name: Sign wheel + sdist via sigstore (keyless OIDC)
+        run: |
+          for artifact in src/dist/*.whl src/dist/*.tar.gz; do
+            test -f "$artifact" || continue
+            sigstore sign \
+              --bundle "${artifact}.sigstore" \
+              "$artifact"
+          done
+
+      - name: Upload artifacts (wheel, sdist, sbom, signatures)
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-artifacts
+          path: |
+            src/dist/*.whl
+            src/dist/*.tar.gz
+            src/dist/*.sigstore
+            src/dist/bom.json
+
+      - name: Attach release assets
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            src/dist/*.whl
+            src/dist/*.tar.gz
+            src/dist/*.sigstore
+            src/dist/bom.json

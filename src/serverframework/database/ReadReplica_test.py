@@ -151,3 +151,122 @@ def test_replica_pool_all_unhealthy_returns_none():
     pool.mark_unhealthy("r1")
     pool.mark_unhealthy("r2")
     assert pool.next_url() is None
+
+
+# ---------------------------------------------------------------------------
+# Item 54 session-binder integration tests
+# ---------------------------------------------------------------------------
+
+
+def test_database_manager_select_session_factory_returns_primary_when_no_replicas(
+    monkeypatch, tmp_path
+):
+    """Without `DB_REPLICA_URLS`, `_select_session_factory` always returns
+    the primary factory regardless of `@read_only` state."""
+    from serverframework.database.DatabaseManager import DatabaseManager
+
+    db_file = tmp_path / "primary.db"
+    monkeypatch.setenv("DATABASE_TYPE", "sqlite")
+    monkeypatch.setenv("DATABASE_NAME", str(db_file))
+    monkeypatch.delenv("DB_REPLICA_URLS", raising=False)
+
+    dm = DatabaseManager(db_prefix="", test_connection=False)
+    dm.init_worker()
+    try:
+        set_read_only(True)
+        assert dm._select_session_factory() is dm._session_factory
+        # Even with read-only set, no replicas means primary.
+    finally:
+        set_read_only(False)
+
+
+def test_database_manager_select_session_factory_picks_replica(
+    monkeypatch, tmp_path
+):
+    """With `DB_REPLICA_URLS` configured AND `@read_only` set,
+    `_select_session_factory` returns a replica factory. The primary
+    factory is the fallback when read-only is unset."""
+    from serverframework.database.DatabaseManager import DatabaseManager
+
+    primary = tmp_path / "primary.db"
+    replica = tmp_path / "replica.db"
+    monkeypatch.setenv("DATABASE_TYPE", "sqlite")
+    monkeypatch.setenv("DATABASE_NAME", str(primary))
+    monkeypatch.setenv("DB_REPLICA_URLS", f"sqlite:///{replica}")
+
+    dm = DatabaseManager(db_prefix="", test_connection=False)
+    dm.init_worker()
+    try:
+        # Read-only off → primary
+        assert dm._select_session_factory() is dm._session_factory
+
+        # Read-only on → replica
+        set_read_only(True)
+        factory = dm._select_session_factory()
+        assert factory is not dm._session_factory
+        assert factory in dm._replica_session_factories.values()
+    finally:
+        set_read_only(False)
+
+
+def test_database_manager_replica_routing_falls_back_after_primary_write(
+    monkeypatch, tmp_path
+):
+    """Read-after-write: once `mark_primary_write_seen()` has fired in
+    the request context, even `@read_only` reads bind primary."""
+    from serverframework.database.DatabaseManager import DatabaseManager
+
+    primary = tmp_path / "primary.db"
+    replica = tmp_path / "replica.db"
+    monkeypatch.setenv("DATABASE_TYPE", "sqlite")
+    monkeypatch.setenv("DATABASE_NAME", str(primary))
+    monkeypatch.setenv("DB_REPLICA_URLS", f"sqlite:///{replica}")
+
+    dm = DatabaseManager(db_prefix="", test_connection=False)
+    dm.init_worker()
+    try:
+        set_read_only(True)
+        # Pre-write: replica
+        assert dm._select_session_factory() is not dm._session_factory
+        mark_primary_write_seen()
+        # Post-write: primary even though read_only is still set
+        assert dm._select_session_factory() is dm._session_factory
+    finally:
+        set_read_only(False)
+
+
+def test_database_manager_attaches_primary_write_listener_on_primary_session(
+    monkeypatch, tmp_path
+):
+    """When `get_session()` returns a primary session, the SA `before_flush`
+    listener is registered. The contract we verify: a real flush against
+    the session trips `primary_write_seen()`."""
+    from sqlalchemy import Column, Integer
+    from sqlalchemy.orm import declarative_base
+
+    from serverframework.database.DatabaseManager import DatabaseManager
+
+    primary = tmp_path / "primary.db"
+    monkeypatch.setenv("DATABASE_TYPE", "sqlite")
+    monkeypatch.setenv("DATABASE_NAME", str(primary))
+    monkeypatch.delenv("DB_REPLICA_URLS", raising=False)
+
+    dm = DatabaseManager(db_prefix="", test_connection=False)
+    dm.init_worker()
+
+    Base = declarative_base()
+
+    class _Probe(Base):
+        __tablename__ = "_item54_probe"
+        id = Column(Integer, primary_key=True, autoincrement=True)
+
+    Base.metadata.create_all(dm.engine)
+
+    session = dm.get_session()
+    try:
+        assert primary_write_seen() is False
+        session.add(_Probe())
+        session.flush()
+        assert primary_write_seen() is True
+    finally:
+        session.close()

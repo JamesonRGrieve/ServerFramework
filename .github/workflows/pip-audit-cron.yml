@@ -1,0 +1,97 @@
+name: Item 86 — pip-audit nightly + PR
+
+# Vulnerability scan against the lock file. Runs:
+#   * on every PR that touches `requirements.lock` or `pyproject.toml`,
+#   * nightly at 06:00 UTC,
+#   * on workflow_dispatch.
+#
+# Findings at or above HIGH severity fail the build and open an issue
+# (the `gh issue create` step is gated on the scheduled run so PRs do
+# not double-create issues).
+
+on:
+  pull_request:
+    paths:
+      - "requirements.lock"
+      - "src/pyproject.toml"
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  audit:
+    name: pip-audit (HIGH+ gate)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install pip-audit
+        run: python -m pip install -U pip pip-audit
+
+      - name: Run pip-audit (JSON report)
+        id: audit
+        run: |
+          set +e
+          pip-audit -r requirements.lock --format json > audit-report.json
+          rc=$?
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          # Always succeed at this step; the gate logic is below.
+          exit 0
+
+      - name: Filter findings at HIGH+
+        id: filter
+        run: |
+          python - <<'PY'
+          import json, os, sys
+          report = json.loads(open("audit-report.json").read() or "{}")
+          deps = report.get("dependencies") if isinstance(report, dict) else report or []
+          ranking = {"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "MODERATE": 2, "LOW": 1}
+          gate_findings = []
+          for dep in deps or []:
+              for v in dep.get("vulns") or []:
+                  sev = (v.get("severity") or "UNKNOWN").upper()
+                  if ranking.get(sev, 0) >= ranking["HIGH"]:
+                      gate_findings.append({
+                          "package": dep.get("name"),
+                          "version": dep.get("version"),
+                          "id": v.get("id"),
+                          "severity": sev,
+                          "fix_versions": v.get("fix_versions") or [],
+                      })
+          with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
+              fh.write(f"count={len(gate_findings)}\n")
+          open("gate-findings.json", "w").write(json.dumps(gate_findings, indent=2))
+          if gate_findings:
+              print("HIGH+ vulnerabilities detected:")
+              for f in gate_findings:
+                  print(f"  - {f['package']} {f['version']} {f['id']} ({f['severity']})")
+          sys.exit(1 if gate_findings else 0)
+          PY
+
+      - name: Open issue on scheduled failure
+        if: failure() && github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue create \
+            --title "pip-audit: HIGH+ vulnerability detected ($(date -u +%Y-%m-%d))" \
+            --body-file gate-findings.json \
+            --label security,supply-chain || true
+
+      - name: Upload report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pip-audit-report
+          path: |
+            audit-report.json
+            gate-findings.json

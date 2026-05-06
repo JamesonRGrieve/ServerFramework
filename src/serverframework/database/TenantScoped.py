@@ -26,9 +26,15 @@ This module ships:
     - rls_policy_sql(table, keys): generates the CREATE POLICY DDL
     - set_tenant_guc(session, key, value): runtime GUC setter helper
     - clear_tenant_gucs(session): clear all tenant GUCs
+    - tenant_context contextvar: the per-request tenant-key mapping
+      consumed by the session binder's after-begin hook
+    - bind_session_tenant_gucs(session): the SA-event-driven binder that
+      reads `tenant_context` and emits `SET LOCAL app.current_<key>`
+      statements at the start of each transaction
 """
 
-from typing import ClassVar, Tuple, Type
+from contextvars import ContextVar
+from typing import ClassVar, Dict, Optional, Tuple, Type
 
 
 class _TenantScopedBase:
@@ -122,10 +128,128 @@ def clear_tenant_gucs(connection, keys: Tuple[str, ...]) -> None:
         connection.execute(f"RESET app.current_{k}")
 
 
+# ---------------------------------------------------------------------------
+# Tenant-context contextvar + session-binder integration (Item 55)
+# ---------------------------------------------------------------------------
+
+
+# Per-request tenant-key mapping. Populated by middleware (or a request
+# handler) at request ingress; consumed by the SQLAlchemy `after_begin`
+# event handler the framework attaches to every primary session.
+#
+# Contract: keys are the column names declared on `TenantScopedMixin`
+# (e.g. "team_id", "org_id", "user_id"); values are stringified UUIDs.
+# An empty mapping means "no tenant context" — the RLS policy will see
+# unset GUCs and filter every row out, which is the documented safe
+# default per `DB.Patterns.md`'s defense-in-depth section.
+_tenant_context_var: ContextVar[Dict[str, str]] = ContextVar(
+    "_tenant_context", default={}
+)
+
+# Per-request privileged-bypass flag. When True, the binder emits
+# `RESET app.current_<key>` for every key (clearing the GUCs entirely)
+# AND assumes the session was bound under a Postgres role with the
+# BYPASSRLS attribute, so the policy is not enforced at all. This is
+# the only path that escapes RLS, and it is intentionally not reachable
+# from per-query code — the binder reads it once at transaction begin.
+_privileged_bypass_var: ContextVar[bool] = ContextVar(
+    "_privileged_bypass", default=False
+)
+
+
+def set_tenant_context(**keys: str) -> None:
+    """Set the per-request tenant-key mapping.
+
+    Typically called from middleware after authentication resolves the
+    requester's team/org/user. Values are stringified UUIDs; empty
+    strings are filtered (the GUC stays unset, the policy filters every
+    row out as the documented zero-row failure mode).
+
+    Example::
+
+        set_tenant_context(team_id="...", user_id="...")
+    """
+    _tenant_context_var.set({k: v for k, v in keys.items() if v})
+
+
+def get_tenant_context() -> Dict[str, str]:
+    """Return the current per-request tenant context (read-only view)."""
+    return dict(_tenant_context_var.get())
+
+
+def clear_tenant_context() -> None:
+    """Reset the contextvar to the empty mapping. Called by middleware
+    on response — important so a long-running worker process does not
+    leak one request's tenant onto the next."""
+    _tenant_context_var.set({})
+
+
+def set_privileged_bypass(value: bool = True) -> None:
+    """Mark the current request as privileged (BYPASSRLS).
+
+    Admin endpoints, cross-tenant reporting jobs, and the framework's
+    own internal cleanup processes call this. The flag is read once at
+    transaction begin; flipping it mid-transaction has no effect.
+    """
+    _privileged_bypass_var.set(value)
+
+
+def is_privileged_bypass() -> bool:
+    return _privileged_bypass_var.get()
+
+
+def bind_session_tenant_gucs(session) -> None:
+    """Attach the `after_begin` listener that emits the per-tenant GUCs.
+
+    Called once per session checkout from the framework's session
+    binder. The listener fires at every transaction begin and runs
+    `SET LOCAL app.current_<key> = '<value>'` for each key in the
+    contextvar — `LOCAL` scopes the setting to the current transaction
+    so concurrent transactions on a pool-recycled connection cannot see
+    each other's tenant.
+
+    For non-Postgres engines (SQLite under tests), the SQL is a no-op
+    because SQLite ignores the `app.*` namespace. The listener gates
+    on the connection dialect; tests on SQLite never observe an error,
+    and Postgres deployments get correctness.
+    """
+    from sqlalchemy import event, text
+
+    @event.listens_for(session, "after_begin")
+    def _set_gucs(_session, transaction, connection):
+        dialect = getattr(getattr(connection, "dialect", None), "name", "")
+        if dialect != "postgresql":
+            # SQLite/MySQL/etc. don't have GUCs in the `app.` namespace.
+            # Item 55 is Postgres-specific by design; other engines
+            # silently no-op so the test suite stays portable.
+            return
+        if is_privileged_bypass():
+            # BYPASSRLS path: clear the GUCs so a misbehaving policy
+            # cannot accidentally re-engage filtering.
+            for k in _tenant_context_var.get().keys():
+                connection.execute(text(f"RESET app.current_{k}"))
+            return
+        ctx = _tenant_context_var.get()
+        for k, v in ctx.items():
+            # Use parameterized text() to avoid string-injection on the
+            # value side. The key side is concatenated into the SQL but
+            # validated by the static set of TenantScopedMixin keys.
+            connection.execute(
+                text(f"SET LOCAL app.current_{k} = :value"),
+                {"value": str(v)},
+            )
+
+
 __all__ = [
     "TenantScopedMixin",
+    "bind_session_tenant_gucs",
+    "clear_tenant_context",
     "clear_tenant_gucs",
+    "get_tenant_context",
+    "is_privileged_bypass",
     "rls_policy_drop_sql",
     "rls_policy_sql",
+    "set_privileged_bypass",
+    "set_tenant_context",
     "set_tenant_guc",
 ]

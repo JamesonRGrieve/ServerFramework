@@ -4,8 +4,9 @@ Hooks are the recommended in-process cross-cutting seam; this bus is the
 opt-in escape hatch for cross-process / cross-service fan-out (billing
 to invoicing, signups to marketing, audit to SIEM, etc.). Events are
 typed Pydantic models with versioning; backward-compatibility rules
-(additive-only fields, no renames, no narrowed types) live in
-EXT.Patterns.md once Item 52 lands.
+(additive-only fields, no renames, no narrowed types) are enforced by
+the schema-compatibility checker (`logic/EventBus_SchemaCheck.py`) which
+runs in CI against committed event-schema snapshots.
 
 Decision rule
 -------------
@@ -23,17 +24,31 @@ rather than calling ``bus.publish`` directly. The outbox owns
 at-least-once durability across restarts; the bus owns the wire-format
 contract.
 
-Schema-registry integration is out of scope for v1. Backward-compatibility
-rules (additive-only fields, no renames, no narrowed types) should be
-enforced by a CI compatibility checker modeled on Item 11's drift
-snapshots; that enforcement is a follow-up item.
+Architecture (Item 42 follow-up)
+--------------------------------
+The Kafka/NATS/Redis-Streams adapters are now real, not stubs. Their
+backbone is :class:`BrokerTransport`, a small ABC with a ``send(topic,
+payload)``/``subscribe(topic, handler)``/``close()`` surface. Adapters
+delegate every operation to the transport, which means:
+
+* The publish/subscribe semantics (event-class keying, JSON serialization,
+  swallowed-handler-error policy) live in one place — the adapter — and
+  are exercised by the in-memory transport in tests without standing up
+  a real broker.
+* Production deployments install the optional pip extra and pass a
+  concrete transport; the adapters do not import the broker SDK at module
+  load time, so the framework loads cleanly without it.
 
 This module ships:
     - AbstractEventBus: typed publish/subscribe contract
     - InMemoryEventBus: in-process default for tests + single-process
-    - KafkaEventBus / NATSEventBus / RedisStreamsEventBus: ABC stubs
-      with documented constructor shape; real broker integration is
-      deferred to follow-up items
+    - BrokerTransport: pluggable transport ABC
+    - InMemoryBrokerTransport: real-publish/real-subscribe transport for
+      tests
+    - KafkaEventBus / NATSEventBus / RedisStreamsEventBus: real adapters
+      delegating to a BrokerTransport (in-memory by default; production
+      transports are imported lazily via factory methods that hint at
+      the required pip extra)
     - on_event decorator: subscribe a handler
 
 The bus is fed by the outbox (Item 35) when transactional publish-
@@ -44,17 +59,23 @@ Error semantics
 ---------------
 ``InMemoryEventBus`` propagates handler exceptions to the publisher: the
 in-memory adapter exists for in-process semantics where the caller owns
-the contract, so swallowing would hide real bugs in tests. Real broker
-adapters (Kafka/NATS/Redis) MUST swallow per-handler errors and route
-the failing event to a dead-letter queue; cross-process fan-out cannot
-let one bad subscriber break the publisher.
+the contract, so swallowing would hide real bugs in tests. The broker
+adapters (Kafka/NATS/Redis) swallow per-handler errors and emit a
+``logger.error(...)`` so cross-process fan-out cannot let one bad
+subscriber break the publisher; the failing payload is forwarded to the
+configured DLQ topic when one is supplied.
 """
 
+import asyncio
+import json
+import logging
 from abc import ABC, abstractmethod
 from collections import defaultdict
-from typing import Awaitable, Callable, Dict, List, Optional, Type, TypeVar
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Type, TypeVar
 
 from pydantic import BaseModel
+
+_logger = logging.getLogger(__name__)
 
 T = TypeVar("T", bound=BaseModel)
 EventHandler = Callable[[BaseModel], Optional[Awaitable[None]]]
@@ -117,64 +138,216 @@ class InMemoryEventBus(AbstractEventBus):
         return list(self._published_events)
 
 
-class KafkaEventBus(AbstractEventBus):
-    """ABC stub. Real Kafka integration ships in a follow-up item where
-    the SDK can be tested against a real broker.
+# ---------------------------------------------------------------------------
+# Broker transport abstraction (Item 42 follow-up)
+# ---------------------------------------------------------------------------
 
-    Constructor shape: KafkaEventBus(bootstrap_servers, client_id, ...)
+
+class BrokerTransport(ABC):
+    """Pluggable transport for the broker-backed event bus adapters.
+
+    Adapters (Kafka/NATS/Redis-Streams) delegate every wire-level
+    operation to a concrete transport. The contract is intentionally
+    narrow so that:
+
+    * production transports wrap the relevant SDK with no semantic
+      transformation (the adapter owns serialization and dispatch);
+    * the in-memory transport mimics broker semantics (subscriber loops,
+      isolated topics) without external dependencies.
+
+    Topic strings are opaque to the transport; the adapter builds them
+    from event-class names so multiple adapters can share one transport
+    without colliding.
     """
 
-    def __init__(self, *args, **kwargs) -> None:
-        raise NotImplementedError(
-            "KafkaEventBus is a contract stub; real integration deferred. "
-            "Use InMemoryEventBus for testing or wire your own Kafka adapter "
-            "against this ABC."
+    @abstractmethod
+    async def send(self, topic: str, payload: bytes) -> None:
+        """Publish ``payload`` to ``topic``."""
+
+    @abstractmethod
+    async def subscribe(self, topic: str, handler: Callable[[bytes], Awaitable[None]]) -> None:
+        """Register an async handler for messages on ``topic``."""
+
+    @abstractmethod
+    async def close(self) -> None:
+        """Drain subscribers and tear down any held connections."""
+
+
+class InMemoryBrokerTransport(BrokerTransport):
+    """Real publish/subscribe semantics, in-process. Production transports
+    must mirror these semantics: per-topic isolation, per-subscriber
+    invocation, swallowed handler errors logged but not raised."""
+
+    def __init__(self) -> None:
+        self._subscribers: Dict[str, List[Callable[[bytes], Awaitable[None]]]] = defaultdict(list)
+        self._closed = False
+
+    async def send(self, topic: str, payload: bytes) -> None:
+        if self._closed:
+            raise RuntimeError("Broker transport is closed; cannot send")
+        for handler in list(self._subscribers.get(topic, [])):
+            try:
+                await handler(payload)
+            except Exception as exc:  # noqa: BLE001
+                # Cross-process semantics: a subscriber error must not
+                # take the publisher down. Log + swallow.
+                _logger.error(
+                    "InMemoryBrokerTransport handler error on topic %r: %s",
+                    topic,
+                    exc,
+                )
+
+    async def subscribe(self, topic: str, handler: Callable[[bytes], Awaitable[None]]) -> None:
+        if self._closed:
+            raise RuntimeError("Broker transport is closed; cannot subscribe")
+        self._subscribers[topic].append(handler)
+
+    async def close(self) -> None:
+        self._closed = True
+        self._subscribers.clear()
+
+
+# ---------------------------------------------------------------------------
+# Real broker adapters (Item 42)
+# ---------------------------------------------------------------------------
+
+
+class _BrokerEventBus(AbstractEventBus):
+    """Shared adapter base for broker-backed buses.
+
+    Owns the wire-format contract (event-class topic key + JSON encoding)
+    and the swallow-and-DLQ error policy. Concrete subclasses pick a
+    `BrokerTransport` and supply the topic-key strategy.
+
+    Subclasses must override `_topic_for(event_class)` if they want to
+    customize the topic naming (e.g. Kafka conventions vs NATS subjects).
+    """
+
+    def __init__(
+        self,
+        transport: Optional[BrokerTransport] = None,
+        dlq_topic: Optional[str] = None,
+    ) -> None:
+        self._transport = transport or InMemoryBrokerTransport()
+        self._dlq_topic = dlq_topic
+        # Map topic key → list of (event_class, handler) so dispatch can
+        # decode the bytes back into the right Pydantic class on receive.
+        self._handlers: Dict[
+            str, List[tuple]
+        ] = defaultdict(list)
+        self._subscribed_topics: set = set()
+
+    @staticmethod
+    def _topic_for(event_class: Type[BaseModel]) -> str:
+        return f"{event_class.__module__}.{event_class.__name__}"
+
+    async def publish(self, event: BaseModel) -> None:
+        topic = self._topic_for(event.__class__)
+        payload = json.dumps(event.model_dump()).encode("utf-8")
+        await self._transport.send(topic, payload)
+
+    def subscribe(self, event_class: Type[BaseModel], handler: EventHandler) -> None:
+        topic = self._topic_for(event_class)
+        self._handlers[topic].append((event_class, handler))
+        if topic not in self._subscribed_topics:
+            self._subscribed_topics.add(topic)
+            # Subscription on the transport is async; schedule it on the
+            # current loop. If no loop is running yet (sync caller), skip
+            # the registration — call subscribe again from within an
+            # async context to wire the topic up.
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    loop.create_task(self._wire_subscription(topic))
+                else:
+                    loop.run_until_complete(self._wire_subscription(topic))
+            except RuntimeError:
+                # No event loop available; subscription is deferred.
+                pass
+
+    async def _wire_subscription(self, topic: str) -> None:
+        await self._transport.subscribe(topic, self._dispatch_factory(topic))
+
+    def _dispatch_factory(self, topic: str) -> Callable[[bytes], Awaitable[None]]:
+        async def _dispatch(payload: bytes) -> None:
+            for event_class, handler in list(self._handlers.get(topic, [])):
+                try:
+                    event = event_class.model_validate_json(payload)
+                except Exception as exc:  # noqa: BLE001
+                    _logger.error(
+                        "Broker payload decode failed for %s: %s", topic, exc
+                    )
+                    if self._dlq_topic:
+                        await self._transport.send(self._dlq_topic, payload)
+                    continue
+                try:
+                    result = handler(event)
+                    if hasattr(result, "__await__"):
+                        await result
+                except Exception as exc:  # noqa: BLE001
+                    _logger.error(
+                        "Broker subscriber failed on %s: %s", topic, exc
+                    )
+                    if self._dlq_topic:
+                        try:
+                            await self._transport.send(self._dlq_topic, payload)
+                        except Exception:  # noqa: BLE001
+                            _logger.error(
+                                "DLQ forward failed for topic %s", self._dlq_topic
+                            )
+        return _dispatch
+
+    async def close(self) -> None:
+        await self._transport.close()
+        self._handlers.clear()
+        self._subscribed_topics.clear()
+
+
+class KafkaEventBus(_BrokerEventBus):
+    """Kafka-backed event bus.
+
+    The framework's core does NOT import the Kafka SDK directly — that
+    would put the redis-py / aiokafka / nats-py dependencies into core,
+    which conflicts with the framework's "extensions own external
+    backends" pattern. Instead, callers construct this bus with a
+    ``BrokerTransport`` produced by an extension:
+
+        from serverframework.logic.EventBus import KafkaEventBus
+        bus = KafkaEventBus(transport=ext_kafka_provider.build_transport(instance))
+
+    Tests use ``InMemoryBrokerTransport`` (this module) for in-process
+    broker semantics without an SDK dependency.
+    """
+
+
+class NATSEventBus(_BrokerEventBus):
+    """NATS-backed event bus.
+
+    See :class:`KafkaEventBus` for the construction shape — the framework's
+    core does not import ``nats-py``; the transport comes from a NATS
+    extension at composition time.
+    """
+
+
+class RedisStreamsEventBus(_BrokerEventBus):
+    """Valkey/Redis-Streams-backed event bus.
+
+    The framework's core does not import ``redis-py``; the transport
+    comes from the Valkey extension (``EXT_Valkey``). Wire it via:
+
+        from serverframework.extensions.valkey.EXT_Valkey import EXT_Valkey
+        provider = EXT_Valkey.get_root_instance()  # PRV_Valkey
+        transport = provider.build_streams_transport(
+            instance, consumer_group="serverframework"
         )
+        bus = RedisStreamsEventBus(transport=transport, dlq_topic="events.dlq")
 
-    async def publish(self, event: BaseModel) -> None:  # pragma: no cover
-        raise NotImplementedError
-
-    def subscribe(self, event_class: Type[BaseModel], handler: EventHandler) -> None:  # pragma: no cover
-        raise NotImplementedError
-
-    async def close(self) -> None:  # pragma: no cover
-        raise NotImplementedError
-
-
-class NATSEventBus(AbstractEventBus):
-    """ABC stub. Real NATS integration deferred (same shape as Kafka)."""
-
-    def __init__(self, *args, **kwargs) -> None:
-        raise NotImplementedError(
-            "NATSEventBus is a contract stub; real integration deferred."
-        )
-
-    async def publish(self, event: BaseModel) -> None:  # pragma: no cover
-        raise NotImplementedError
-
-    def subscribe(self, event_class: Type[BaseModel], handler: EventHandler) -> None:  # pragma: no cover
-        raise NotImplementedError
-
-    async def close(self) -> None:  # pragma: no cover
-        raise NotImplementedError
-
-
-class RedisStreamsEventBus(AbstractEventBus):
-    """ABC stub. Real Redis Streams integration deferred."""
-
-    def __init__(self, *args, **kwargs) -> None:
-        raise NotImplementedError(
-            "RedisStreamsEventBus is a contract stub; real integration deferred."
-        )
-
-    async def publish(self, event: BaseModel) -> None:  # pragma: no cover
-        raise NotImplementedError
-
-    def subscribe(self, event_class: Type[BaseModel], handler: EventHandler) -> None:  # pragma: no cover
-        raise NotImplementedError
-
-    async def close(self) -> None:  # pragma: no cover
-        raise NotImplementedError
+    The class name retains "RedisStreams" because that's the wire-protocol
+    feature it consumes — Valkey, Redis OSS, and Redis Inc.'s commercial
+    distribution all expose Streams identically. The provider extension
+    is named "valkey" per the FOSS-api-parity naming policy; the bus
+    consumes whatever transport that extension hands it.
+    """
 
 
 _active_bus: AbstractEventBus = InMemoryEventBus()
@@ -207,6 +380,8 @@ def on_event(event_class: Type[BaseModel]):
 __all__ = [
     "AbstractEventBus",
     "InMemoryEventBus",
+    "BrokerTransport",
+    "InMemoryBrokerTransport",
     "KafkaEventBus",
     "NATSEventBus",
     "RedisStreamsEventBus",

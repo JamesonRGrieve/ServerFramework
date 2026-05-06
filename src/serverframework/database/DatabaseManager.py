@@ -198,6 +198,19 @@ class DatabaseManager:
         self._async_session_factory: Optional[async_sessionmaker] = None
         self._worker_initialized = False
 
+        # Item 54 — read-replica routing state.
+        # Replica engines and session factories are keyed by URL. The
+        # `_replica_pool` (from `database/ReadReplica.py`) drives selection
+        # via round-robin with health gating. `replica_urls` is parsed at
+        # engine-config time from `DB_REPLICA_URLS`; an empty list disables
+        # replica routing entirely (every read still binds primary).
+        self.replica_urls: list = []
+        self._replica_pool = None  # ReplicaPool, populated in init_worker
+        self._replica_engines: dict = {}
+        self._replica_session_factories: dict = {}
+        self._replica_async_engines: dict = {}
+        self._replica_async_session_factories: dict = {}
+
         # Database-specific declarative base and metadata
         self._base = None
         self._database_type = None
@@ -319,6 +332,16 @@ class DatabaseManager:
         if database_type not in ["sqlite", "postgresql", "mysql", "mariadb", "mssql"]:
             raise ValueError(f"Unsupported database type: {database_type}")
 
+        # Item 54 — parse DB_REPLICA_URLS into the per-instance replica list.
+        # Empty (default) means no replicas; reads always bind primary.
+        # Each URL is a complete connection string of the same shape as
+        # DATABASE_URI; per-replica engine/session-factory pairs are built
+        # in init_worker().
+        replica_env = os.getenv("DB_REPLICA_URLS") or env("DB_REPLICA_URLS") or ""
+        self.replica_urls = [
+            u.strip() for u in replica_env.split(",") if u.strip()
+        ]
+
         # Create setup engine for parent process initialization
         self._setup_engine = create_engine(**self.engine_config)
 
@@ -404,7 +427,100 @@ class DatabaseManager:
             autoflush=False,
         )
 
+        # Item 54 — build per-replica engines + session factories and the
+        # `ReplicaPool` that drives round-robin selection. Each replica URL
+        # uses the same engine kwargs as primary (pool sizing, pre-ping)
+        # but no setup-engine equivalent — replicas are always read-only
+        # in the deployment topology, so they never run setup operations.
+        self._replica_engines.clear()
+        self._replica_session_factories.clear()
+        self._replica_async_engines.clear()
+        self._replica_async_session_factories.clear()
+
+        for url in self.replica_urls:
+            try:
+                cfg = dict(self.engine_config)
+                cfg["url"] = url
+                engine = create_engine(**cfg)
+                if self._database_type == "sqlite":
+                    setup_sqlite_for_regex(engine)
+                    setup_sqlite_for_concurrency(engine)
+                self._replica_engines[url] = engine
+                self._replica_session_factories[url] = sessionmaker(
+                    autocommit=False,
+                    autoflush=False,
+                    bind=engine,
+                    expire_on_commit=False,
+                )
+                # Async replica
+                async_cfg = dict(self.async_engine_config)
+                # Translate sync URL to async per the same rules used for
+                # primary at init_engine_config time.
+                async_url = url
+                if self._database_type == "sqlite":
+                    async_url = url.replace("sqlite://", "sqlite+aiosqlite://")
+                elif self._database_type == "postgresql":
+                    async_url = url.replace("postgresql://", "postgresql+asyncpg://")
+                async_cfg["url"] = async_url
+                async_engine = create_async_engine(**async_cfg)
+                self._replica_async_engines[url] = async_engine
+                self._replica_async_session_factories[url] = async_sessionmaker(
+                    async_engine,
+                    class_=AsyncSession,
+                    expire_on_commit=False,
+                    autoflush=False,
+                )
+            except Exception as exc:
+                logger.warning(
+                    f"Item 54 replica engine init failed for {url}: {exc}"
+                )
+
+        # Build the replica pool now that we know which URLs were created.
+        from serverframework.database.ReadReplica import ReplicaPool
+
+        self._replica_pool = ReplicaPool(list(self._replica_engines.keys()))
+
         self._worker_initialized = True
+
+    # ------------------------------------------------------------------
+    # Item 54 — replica session selection
+    # ------------------------------------------------------------------
+
+    def _select_session_factory(self) -> "sessionmaker":
+        """Pick a session factory: replica when @read_only fires AND a
+        replica is configured AND no primary write has occurred in this
+        request; primary otherwise.
+
+        Read-after-write consistency: once `mark_primary_write_seen()` has
+        been called in the current request context, this method binds
+        primary regardless of `@read_only`. The contextvar is set by the
+        before-flush event listener registered on every primary session.
+        """
+        from serverframework.database.ReadReplica import should_route_to_replica
+
+        if (
+            should_route_to_replica()
+            and self._replica_pool is not None
+            and self._replica_session_factories
+        ):
+            url = self._replica_pool.next_url()
+            if url is not None and url in self._replica_session_factories:
+                return self._replica_session_factories[url]
+        return self._session_factory
+
+    def _select_async_session_factory(self) -> "async_sessionmaker":
+        """Async counterpart of `_select_session_factory`."""
+        from serverframework.database.ReadReplica import should_route_to_replica
+
+        if (
+            should_route_to_replica()
+            and self._replica_pool is not None
+            and self._replica_async_session_factories
+        ):
+            url = self._replica_pool.next_url()
+            if url is not None and url in self._replica_async_session_factories:
+                return self._replica_async_session_factories[url]
+        return self._async_session_factory
 
     async def close_worker(self) -> None:
         """Clean up database connections for this worker."""
@@ -442,6 +558,23 @@ class DatabaseManager:
             except Exception:
                 pass
 
+        # Item 54 — dispose replica engines
+        for engine in self._replica_engines.values():
+            try:
+                engine.dispose()
+            except Exception:
+                pass
+        for async_engine in self._replica_async_engines.values():
+            try:
+                await async_engine.dispose()
+            except Exception:
+                pass
+        self._replica_engines.clear()
+        self._replica_session_factories.clear()
+        self._replica_async_engines.clear()
+        self._replica_async_session_factories.clear()
+        self._replica_pool = None
+
         # Dispose setup engine if it exists
         if self._setup_engine:
             try:
@@ -470,15 +603,36 @@ class DatabaseManager:
         WARNING: This method returns a raw session that MUST be manually closed!
         Consider using get_db() context manager instead for automatic cleanup.
 
+        Item 54 — when `@read_only` is active and a replica is configured,
+        the returned session is bound to a replica engine. Otherwise it's
+        bound to primary. Read-after-write consistency is preserved by the
+        before-flush listener attached below: the first flush against a
+        primary session marks the request `primary_write_seen` so subsequent
+        reads in the same request bind primary regardless of `@read_only`.
+
         Returns:
-            SQLAlchemy Session connected to this database instance
+            SQLAlchemy Session connected to this database instance.
         """
         if not self._worker_initialized:
             self.init_worker()
 
-        session = self._session_factory()
+        factory = self._select_session_factory()
+        session = factory()
         # Attach the db_manager instance to the session
         setattr(session, "_db_manager", self)
+
+        # Item 54 — register the primary-write watcher only on primary
+        # sessions; replica sessions cannot write so the listener would be
+        # a misleading no-op there.
+        if factory is self._session_factory:
+            self._attach_primary_write_listener(session)
+
+        # Item 55 — emit `SET LOCAL app.current_<key>` GUCs at every
+        # transaction begin. No-op on non-Postgres dialects so SQLite
+        # tests stay portable.
+        from serverframework.database.TenantScoped import bind_session_tenant_gucs
+
+        bind_session_tenant_gucs(session)
 
         # Track the session for cleanup
         with self._sessions_lock:
@@ -486,19 +640,55 @@ class DatabaseManager:
 
         return session
 
+    @staticmethod
+    def _attach_primary_write_listener(session: Session) -> None:
+        """Register a one-shot before-flush hook that calls
+        `mark_primary_write_seen()` on the first non-empty flush.
+
+        Item 54 read-after-write contract: once the request has flushed
+        any pending changes against primary, every subsequent read in the
+        same request binds primary regardless of `@read_only`. The flush
+        is the canonical "we wrote" signal because SA bundles all dirty/
+        new/deleted instances into a flush call.
+        """
+        from sqlalchemy import event
+
+        from serverframework.database.ReadReplica import mark_primary_write_seen
+
+        def _before_flush(_session, flush_context, instances):
+            if _session.new or _session.dirty or _session.deleted:
+                mark_primary_write_seen()
+
+        event.listen(session, "before_flush", _before_flush)
+
     @contextmanager
     def _get_db_session(
         self, *, auto_commit: bool = True
     ) -> Generator[Session, None, None]:
         """
         Internal method for getting a database session.
+
+        Item 54 — when `@read_only` is active and a replica is configured,
+        the session is bound to a replica engine; otherwise primary. The
+        before-flush listener on primary sessions trips
+        `mark_primary_write_seen()` so subsequent reads in the same logical
+        request bind primary regardless of `@read_only`.
+
         Args:
             auto_commit: If True, automatically commits if no exceptions occur
         """
         if not self._worker_initialized:
             self.init_worker()
 
-        session = self._session_factory()
+        factory = self._select_session_factory()
+        session = factory()
+        if factory is self._session_factory:
+            self._attach_primary_write_listener(session)
+
+        # Item 55 — RLS GUC binder (no-op on SQLite).
+        from serverframework.database.TenantScoped import bind_session_tenant_gucs
+
+        bind_session_tenant_gucs(session)
 
         # Track the session
         with self._sessions_lock:
@@ -530,13 +720,32 @@ class DatabaseManager:
     ) -> AsyncGenerator[AsyncSession, None]:
         """
         Internal method for getting an async database session.
+
+        Item 54 — replica routing applies symmetrically to async sessions:
+        `@read_only` + replica configured → bind a replica session; else
+        bind primary. The async before-flush listener trips
+        `mark_primary_write_seen()` on primary sessions only.
+
         Args:
             auto_commit: If True, automatically commits if no exceptions occur
         """
         if not self._worker_initialized:
             self.init_worker()
 
-        async with self._async_session_factory() as session:
+        factory = self._select_async_session_factory()
+        async with factory() as session:
+            if factory is self._async_session_factory:
+                self._attach_primary_write_listener_async(session)
+            # Item 55 — async RLS GUC binder. SA's async session exposes
+            # `sync_session` as a proxy for SA event hooks; the binder
+            # attaches the same `after_begin` listener there.
+            from serverframework.database.TenantScoped import (
+                bind_session_tenant_gucs,
+            )
+
+            sync_proxy = getattr(session, "sync_session", None)
+            if sync_proxy is not None:
+                bind_session_tenant_gucs(sync_proxy)
             try:
                 yield session
                 if auto_commit:
@@ -544,6 +753,27 @@ class DatabaseManager:
             except Exception:
                 await session.rollback()
                 raise
+
+    @staticmethod
+    def _attach_primary_write_listener_async(session: AsyncSession) -> None:
+        """Async counterpart of `_attach_primary_write_listener`.
+
+        SA's async session exposes a `sync_session` proxy whose `before_flush`
+        event is the right hook for the same write-detection contract.
+        """
+        from sqlalchemy import event
+
+        from serverframework.database.ReadReplica import mark_primary_write_seen
+
+        sync_proxy = getattr(session, "sync_session", None)
+        if sync_proxy is None:
+            return
+
+        def _before_flush(_session, flush_context, instances):
+            if _session.new or _session.dirty or _session.deleted:
+                mark_primary_write_seen()
+
+        event.listen(sync_proxy, "before_flush", _before_flush)
 
     def get_db(self, auto_commit: bool = True) -> Generator[Session, None, None]:
         """

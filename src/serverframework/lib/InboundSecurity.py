@@ -61,6 +61,8 @@ __all__ = [
     "RateLimitMiddleware",
     "register_rate_limited_route",
     "reset_rate_limit_state",
+    "discover_rate_limited_routes",
+    "set_rate_limit_counter",
     "LockoutPolicy",
     "LockoutTracker",
     "AnomalyDetector",
@@ -323,17 +325,31 @@ _inmemory_counter = _InMemoryCounter()
 
 
 def _get_counter() -> Any:
-    """Return Item 69's `DistributedCounter` if available, else in-memory.
+    """Return the rate-limit counter backend.
 
-    Imported lazily so the module loads cleanly even before Batch C lands
-    `lib/DistributedCounter.py`.
+    The default is `_inmemory_counter` — single-process correctness with the
+    `incr(key, window_seconds) -> int` shape this middleware needs. Multi-
+    process deployments wire a Redis-backed (or equivalent) counter that
+    exposes the same shape via `set_rate_limit_counter(...)`.
+
+    Note: Item 69's `DistributedCounter` is intentionally NOT used here —
+    its API is quota-/sliding-window-consumption shaped (`try_consume`),
+    not request-counter shaped. Conflating the two would force callers to
+    bridge two semantically different primitives in the hot path.
     """
-    try:  # pragma: no cover — exercised only when the module is present
-        from serverframework.lib.DistributedCounter import DistributedCounter
+    return _rate_limit_counter or _inmemory_counter
 
-        return DistributedCounter
-    except Exception:
-        return _inmemory_counter
+
+_rate_limit_counter: Optional[Any] = None
+
+
+def set_rate_limit_counter(counter: Any) -> None:
+    """Wire a custom counter backend (e.g. Redis-backed) for multi-process
+    consistency. The backend must expose `incr(key: str, window_seconds: int) -> int`
+    returning the post-increment count for the sliding window. Pass `None`
+    to revert to the in-memory fallback."""
+    global _rate_limit_counter
+    _rate_limit_counter = counter
 
 
 # ---------------------------------------------------------------------------
@@ -483,3 +499,253 @@ class NoOpAnomalyDetector(AnomalyDetector):
             "Auth-flow failure recorded (no-op anomaly detector)",
             extra={"actor_key": actor_key, "flow": flow},
         )
+
+
+# ---------------------------------------------------------------------------
+# Rate-limit registry + FastAPI middleware (Item 71b enforcement)
+# ---------------------------------------------------------------------------
+
+
+# Registry maps `(method, path)` -> (count, window_seconds, scope). Populated
+# at app startup from `@rate_limit`-decorated handlers. Key is normalized
+# `path` (FastAPI's templated form, e.g. `/v1/user/{id}`).
+_RATE_LIMIT_REGISTRY: Dict[Tuple[str, str], Tuple[int, int, str]] = {}
+
+
+def register_rate_limited_route(
+    method: str, path: str, count: int, window_seconds: int, scope: str
+) -> None:
+    """Register a route's rate-limit policy.
+
+    Called at app-startup time after route discovery — the FastAPI app
+    walks every registered route and, when the endpoint callable carries
+    `_rate_limit_count`/`_rate_limit_window_seconds`/`_rate_limit_scope`
+    attributes (set by `@rate_limit(...)`), records the policy here.
+    The middleware looks up `(method, path)` on every request.
+    """
+    if count <= 0 or window_seconds <= 0:
+        raise ValueError(
+            f"register_rate_limited_route: count and window_seconds must be > 0 "
+            f"(got count={count}, window_seconds={window_seconds})"
+        )
+    _RATE_LIMIT_REGISTRY[(method.upper(), path)] = (count, window_seconds, scope)
+
+
+def reset_rate_limit_state() -> None:
+    """Test helper: clear the registry and the in-memory counter.
+
+    Each test that exercises rate-limit enforcement should call this in
+    setup so previous tests do not bleed counter state. The registry is
+    also cleared so a `@rate_limit("1/min")` decorator stamped in one test
+    does not gate the same path in the next.
+    """
+    _RATE_LIMIT_REGISTRY.clear()
+    _inmemory_counter.reset()
+
+
+def _resolve_actor_key(scope: str, request: Any) -> Optional[str]:
+    """Compute the actor identity for a `(scope, request)` pair.
+
+    Returns None when the scope cannot be resolved (e.g. `user` scope on an
+    unauthenticated request). Caller decides what to do with None — the
+    middleware skips enforcement so an anonymous request is never refused
+    by a `scope='user'` rule it cannot satisfy.
+    """
+    if scope == "ip" or scope == "(ip, endpoint)":
+        client = getattr(request, "client", None)
+        host = getattr(client, "host", None) if client else None
+        if not host:
+            # Fall back to forwarded headers for proxied deployments.
+            headers = getattr(request, "headers", {}) or {}
+            xff = headers.get("X-Forwarded-For", "") if hasattr(headers, "get") else ""
+            host = xff.split(",")[0].strip() if xff else None
+        if not host:
+            return None
+        return f"ip:{host}" if scope == "ip" else f"ip:{host}:{request.url.path}"
+
+    if scope == "user" or scope == "(user, endpoint)":
+        # RequestContext is the canonical user-id source per LIB.RequestContext.md.
+        try:
+            from serverframework.lib.RequestContext import get_request_user
+
+            user = get_request_user()
+            uid = user.get("user_id") if isinstance(user, dict) else None
+        except Exception:
+            uid = None
+        if not uid:
+            return None
+        return f"user:{uid}" if scope == "user" else f"user:{uid}:{request.url.path}"
+
+    if scope == "tenant":
+        try:
+            from serverframework.lib.RequestContext import get_request_user
+
+            user = get_request_user()
+            tid = user.get("team_id") if isinstance(user, dict) else None
+        except Exception:
+            tid = None
+        if not tid:
+            return None
+        return f"tenant:{tid}"
+
+    return None
+
+
+class RateLimitMiddleware:
+    """ASGI middleware that enforces `@rate_limit`-stamped policies.
+
+    Lookups are O(1) on `(method, path)` from the registry. On a hit, the
+    middleware computes the actor key (`scope`-dependent), increments the
+    counter, and returns HTTP 429 with `Retry-After` if the count exceeds
+    the policy. On a miss, the request flows untouched.
+
+    Multi-process deployments must wire `DistributedCounter` from Item 69
+    via `_get_counter()` for cross-process consistency. Single-process
+    deployments and tests get correct semantics from the in-memory fallback.
+
+    Attaches `request.state.rate_limited` (the `(count_used, count_limit)`
+    tuple) for downstream handlers / logging that want to introspect.
+    """
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope_dict: Dict[str, Any], receive: Any, send: Any) -> None:
+        if scope_dict.get("type") != "http":
+            await self.app(scope_dict, receive, send)
+            return
+
+        method = scope_dict.get("method", "").upper()
+        path = scope_dict.get("path", "")
+        # Match against templated paths in the registry. The router populates
+        # `scope_dict["route"]` once routing has resolved; before that we walk
+        # the registry. Cheap enough for the typical sub-100-route surface.
+        policy = _RATE_LIMIT_REGISTRY.get((method, path))
+        if policy is None:
+            # Try resolved-route path template if FastAPI has populated it.
+            route = scope_dict.get("route")
+            template = getattr(route, "path", None) if route else None
+            if template:
+                policy = _RATE_LIMIT_REGISTRY.get((method, template))
+
+        if policy is None:
+            await self.app(scope_dict, receive, send)
+            return
+
+        count_limit, window_seconds, rl_scope = policy
+
+        # Build a tiny request facade for `_resolve_actor_key`. Avoids
+        # importing FastAPI's Request here so the module stays lightweight.
+        class _Req:
+            client = type(
+                "_C",
+                (),
+                {
+                    "host": (
+                        scope_dict.get("client", (None, None))[0]
+                        if scope_dict.get("client")
+                        else None
+                    )
+                },
+            )()
+            headers = {
+                k.decode("latin-1").title(): v.decode("latin-1")
+                for k, v in scope_dict.get("headers", [])
+            }
+            url = type("_U", (), {"path": path})()
+
+        actor = _resolve_actor_key(rl_scope, _Req)
+        if actor is None:
+            # Cannot resolve actor (e.g. user-scope on anonymous request).
+            # Skip enforcement rather than refuse a request the rule cannot
+            # gate; the alternative is to reject every anonymous user
+            # because of a scope mis-pick by the route author.
+            await self.app(scope_dict, receive, send)
+            return
+
+        counter = _get_counter()
+        # Both implementations expose `incr(key, window_seconds)`.
+        key = f"rl:{method}:{path}:{rl_scope}:{actor}"
+        try:
+            current = counter.incr(key, window_seconds)
+        except Exception:
+            # Counter outage must not take the request path down. Fail open
+            # with a logged warning; deployments that need fail-closed wire
+            # a `DistributedCounter` whose `incr` is monitored separately.
+            logger.warning(
+                "Rate-limit counter unavailable; failing open",
+                extra={"key": key},
+            )
+            await self.app(scope_dict, receive, send)
+            return
+
+        if current > count_limit:
+            # 429 with Retry-After. The simple deque-based fallback does
+            # not expose the oldest-entry timestamp cleanly, so we use the
+            # window as the conservative bound.
+            from json import dumps as _json_dumps
+
+            body = _json_dumps(
+                {
+                    "detail": "Rate limit exceeded",
+                    "scope": rl_scope,
+                    "limit": count_limit,
+                    "window_seconds": window_seconds,
+                }
+            ).encode("utf-8")
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 429,
+                    "headers": [
+                        (b"content-type", b"application/json"),
+                        (b"retry-after", str(window_seconds).encode("ascii")),
+                        (
+                            b"x-ratelimit-limit",
+                            str(count_limit).encode("ascii"),
+                        ),
+                        (
+                            b"x-ratelimit-remaining",
+                            b"0",
+                        ),
+                    ],
+                }
+            )
+            await send({"type": "http.response.body", "body": body})
+            return
+
+        await self.app(scope_dict, receive, send)
+
+
+def discover_rate_limited_routes(app: Any) -> int:
+    """Walk a FastAPI app's router and register every `@rate_limit`-stamped
+    endpoint. Returns the number of routes registered. Idempotent — calling
+    twice with the same app produces the same registry contents.
+
+    Called from `build_app` after every router has been mounted.
+    """
+    count = 0
+    routes = getattr(app, "routes", None) or []
+    for route in routes:
+        endpoint = getattr(route, "endpoint", None)
+        if endpoint is None:
+            continue
+        spec_count = getattr(endpoint, "_rate_limit_count", None)
+        if spec_count is None:
+            continue
+        window = getattr(endpoint, "_rate_limit_window_seconds", None)
+        scope = getattr(endpoint, "_rate_limit_scope", None)
+        path = getattr(route, "path", None)
+        methods = getattr(route, "methods", None) or {"GET"}
+        if window is None or scope is None or path is None:
+            continue
+        for method in methods:
+            register_rate_limited_route(
+                method=method,
+                path=path,
+                count=spec_count,
+                window_seconds=window,
+                scope=scope,
+            )
+            count += 1
+    return count

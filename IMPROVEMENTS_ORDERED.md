@@ -119,7 +119,7 @@ The provider class declares `_instance: ClassVar[Optional[AbstractProviderInstan
 
 ---
 
-## Item 10 — Pluggable authentication strategies on provider instances
+## ~~Item 10~~ — ~~Pluggable authentication strategies on provider instances~~ ✅ DONE
 
 **Severity:** Critical
 **Scope:** `AbstractStaticProvider.bond_instance`, `ProviderInstanceModel`, new `AuthStrategy` ABC and concrete subclasses; integration point for the OAuth extension.
@@ -139,7 +139,7 @@ The provider class declares `_instance: ClassVar[Optional[AbstractProviderInstan
 
 **Refinement after audit.** Items 10, 32, and 50 each touch credential resolution; the canonical layering is now pinned: `AuthStrategy.headers_for(requester)` calls `CredentialRef.resolve(env=APP_ENV)` (Item 32), which dispatches in the documented OpenBao → env → encrypted-DB tier order. Item 50's paired-name (`{PROVIDER}_API_KEY_TEST`/`_LIVE`) discriminator applies **only** when the resolved tier is the env-var fallback; OpenBao paths embed the environment at storage time so the discriminator does not double-fire. The shared HTTP client (Item 31) does not select credentials — it routes through whatever the `AuthStrategy` returned. This eliminates the "two layers fighting over the same logic" condition the audit surfaced.
 
-**Status: PARTIAL.** Framework primitives shipped: `AuthStrategy` ABC with the four-method contract and the six concrete subclasses (`APIKeyAuth`, `OAuth2Auth`, `JWTBearerAuth`, `BasicAuth`, `MTLSAuth`, `AWSSigV4Auth`) live in `src/serverframework/extensions/AuthStrategy.py:29-320`; `AuthStrategyRegistry` accepts extension-contributed registrations; the class-level `default_auth_strategy_name` ClassVar is consulted in `bond_instance` at `src/serverframework/extensions/AbstractExtensionProvider.py:1345,1354-1355`. **Outstanding:** `ProviderInstanceModel.auth_strategy_name` is read via `getattr(instance, "auth_strategy_name", None)` but is **never declared as a model field** (`src/serverframework/logic/BLL_Providers.py:588-749`). The per-instance override path the item requires (a Stripe Connect user attaches `OAuth2Auth` to their own provider instance while the class default remains `APIKeyAuth`) does not work end-to-end — only the class-level default reaches the bonded instance. Closing the gap requires declaring `auth_strategy_name: Optional[str]` as a real Pydantic + SQLAlchemy field on `ProviderInstanceModel`, writing the migration, and adding a bonding-with-override integration test.
+**Status: ✅ DONE.** Framework primitives shipped earlier: `AuthStrategy` ABC + six concrete subclasses (`APIKeyAuth`, `OAuth2Auth`, `JWTBearerAuth`, `BasicAuth`, `MTLSAuth`, `AWSSigV4Auth`) in `src/serverframework/extensions/AuthStrategy.py:29-320`; `AuthStrategyRegistry`; `default_auth_strategy_name` ClassVar consulted in `bond_instance`. Closed by adding the per-instance override field on `ProviderInstanceModel` itself: `auth_strategy_name: Optional[str]` Pydantic field at `src/serverframework/logic/BLL_Providers.py:617-630`, exposed in `Create`, `Update`, `Search` inner classes; Alembic migration `d4e5f6a7b8c9_provider_instance_auth_strategy_name.py` adds the nullable column; integration test `test_build_auth_strategy_reads_field_from_real_model_instance` in `extensions/AbstractExtensionProvider_contract_test.py:217+` verifies that a `ProviderInstanceModel.Create(... auth_strategy_name="basic")` against a provider class whose default is `"api_key"` correctly resolves to `BasicAuth`. The Stripe Connect per-user override path now works end-to-end without touching the Stripe provider class.
 
 ---
 
@@ -1440,9 +1440,9 @@ For providers that are inherently single-region (a regional payment processor), 
 
 ---
 
-## Item 55 — Tenant data-isolation primitives
+## ~~Item 55~~ — ~~Tenant data-isolation primitives~~ ✅ DONE
 
-**Status: PARTIAL.** `TenantScopedMixin.with_keys(...)`, RLS policy generation (`rls_policy_sql()`), and the multi-key (`org_id`/`team_id`/`user_id`) GUC variable scheme shipped in `database/TenantScoped.py`. **Outstanding:** the session binder that actually sets `app.current_*_id` GUCs on every connection has not been wired in. Until that lands, the RLS policies exist but no session populates the variables they read, so the policy filters return zero rows on read paths and tenant isolation is not yet enforced end-to-end.
+**Status: ✅ DONE.** Session-binder integration completed in `database/TenantScoped.py` and wired through `database/DatabaseManager.py`. (a) New `_tenant_context_var: ContextVar[Dict[str, str]]` holds the per-request mapping of tenant keys (e.g. `{"team_id": "...", "org_id": "..."}`); set by middleware via `set_tenant_context(...)`, read by the binder. (b) New `_privileged_bypass_var: ContextVar[bool]` carries the BYPASSRLS flag for admin endpoints; the binder reads it once at transaction begin. (c) New `bind_session_tenant_gucs(session)` registers an SA `after_begin` listener that, when the connection's dialect is `postgresql`, emits `SET LOCAL app.current_<key> = <value>` for every key in the contextvar (or `RESET app.current_<key>` under privileged-bypass). Non-Postgres dialects (SQLite tests) silently no-op so the test suite stays portable. (d) `DatabaseManager.get_session`, `_get_db_session`, and `_get_async_db_session` all call `bind_session_tenant_gucs(session)` after construction, so every framework-issued session enforces tenant isolation by default. The audit-flagged failure mode — RLS policies exist but no session populates their GUCs — is closed: tenant isolation is now enforced end-to-end on Postgres. Tests: `database/TenantScoped_test.py` (existing 12 + 8 new integration tests) covering contextvar round-trips, privileged-bypass semantics, dialect gating, and the framework-managed-session attachment path.
 
 **Severity:** Medium
 **Scope:** Postgres Row-Level Security policies, session GUC variables, tenant-scoped model declarations.
@@ -1466,9 +1466,9 @@ System-level operations (admin endpoints, cross-tenant reporting, the framework'
 
 ---
 
-## Item 54 — Read-replica routing for read-only operations
+## ~~Item 54~~ — ~~Read-replica routing for read-only operations~~ ✅ DONE
 
-**Status: PARTIAL.** `@read_only` decorator and `RequestContext.read_only` flag landed in `database/ReadReplica.py`; replica-pool round-robin selection and replica-health gating are present. **Outstanding:** the session-binder integration that actually routes the bound session to a replica when `@read_only` fires is still a follow-up. Today the decorator/flag are observable but the framework still binds primary unless integration code is added.
+**Status: ✅ DONE.** Session-binder integration completed in `database/DatabaseManager.py`. (a) `init_engine_config` parses `DB_REPLICA_URLS` (comma-separated) into `self.replica_urls`. (b) `init_worker` builds per-replica engines (sync + async) and per-replica session factories, populates the `ReplicaPool` keyed by URL. (c) New `_select_session_factory()` / `_select_async_session_factory()` consults `should_route_to_replica()` (true ↔ `@read_only` is active AND no primary write has occurred in this request) and returns a replica factory when one is configured, else primary. (d) `get_session()`, `_get_db_session()` (sync), `_get_async_db_session()` (async) all route through the selectors. (e) Read-after-write consistency: `_attach_primary_write_listener(session)` registers a `before_flush` SA event handler on every primary session that calls `mark_primary_write_seen()` whenever the session has any new/dirty/deleted instances — the contextvar trips and subsequent reads in the same request bind primary regardless of `@read_only`. (f) `close_worker` disposes replica engines symmetrically. Tests: `database/ReadReplica_test.py` (existing 14 + 4 new integration tests) covering the no-replica passthrough, replica selection, post-write fallback, and primary-only listener attachment.
 
 **Severity:** Medium
 **Scope:** Database session binding, BLL method annotations, request-context routing.
@@ -1562,9 +1562,13 @@ The same metadata applies to GraphQL: the resolver for a marked field returns nu
 
 The fan-out seam to other services, the fairness primitive that prevents one tenant from starving the queue, and the retention contract for the audit trail.
 
-## Item 42 — Cross-process event bus seam
+## ~~Item 42~~ — ~~Cross-process event bus seam~~ ✅ DONE
 
-**Status: PARTIAL.** `AbstractEventBus` ABC, `@on_event` decorator, typed Pydantic event models, and the `InMemoryEventBus` adapter shipped — sufficient for single-process deployments and tests. **Outstanding:** the Kafka, NATS, and Redis Streams adapters are ABC stubs awaiting real-broker integration; the Item 11-style schema-compatibility CI checker for additive-only event evolution is not yet implemented. Multi-process fan-out is not yet operational.
+**Status: ✅ DONE.** Two-part landing. (a) **Adapter refactor.** The `Kafka`, `NATS`, and `RedisStreams` event-bus classes are no longer SDK-importing stubs. They share a `_BrokerEventBus` parent that delegates every wire-level operation to a `BrokerTransport` ABC (`send` / `subscribe` / `close`). The framework's core (`logic/EventBus.py`) ships exactly two concrete transports: `InMemoryBrokerTransport` (production single-process + tests) and `BrokerTransport` (the contract). **All native broker SDK clients live in extensions, not in core.** The Valkey extension (`extensions/valkey/`) is the canonical home for Valkey/Redis-protocol clients — it owns `redis-py` connection-pool lifecycle and exposes `PRV_Valkey.build_streams_transport(instance)` returning a `BrokerTransport` the EventBus consumes. Future Kafka and NATS extensions wire the same way. (b) **Schema-compatibility checker.** `logic/EventBus_SchemaCheck.py` ships `event_schema(...)`, `write_snapshot(path, classes)`, `read_snapshot(path)`, `check_compatibility(snapshot, live)`, and `discover_event_classes(modules)`. The checker walks every Pydantic event class and detects breaking changes (field removed, renamed, type narrowed, optional → required). Additive changes (new fields, new event types) are allowed. CI workflow `.github/workflows/event-schema-check.yml` runs the checker on every PR touching `logic/` or `extensions/`; failure blocks merge. Tests: 19 in `logic/EventBus_test.py` (broker semantics + DLQ + transport contract) + 11 in `logic/EventBus_SchemaCheck_test.py` + 15 in `extensions/valkey/EXT_Valkey_test.py` (extension metadata, URL resolution, fake-transport publish/subscribe round trips, end-to-end EventBus consumption of the Valkey transport, missing-redis error contract).
+
+**Architectural note.** The original Item 42 prose called for "real Kafka/NATS/Redis Streams adapters" inside `lib/EventBus.py`. The user pushed back at audit-close time: native broker SDK clients in core conflict with the framework's "extensions own external backends" pattern (the `database` extension model). The refactor pulled all three SDK-importing transports out of core; the Valkey extension is the in-tree reference for how a backend extension produces a `BrokerTransport`. A future Kafka extension and NATS extension follow the same shape (root provider, `build_*_transport(instance)` method, fake provider for tests).
+
+**Naming policy.** The Valkey extension is named "valkey" (not "redis") per the framework's "FOSS api-parity naming" policy. Valkey is the Linux Foundation–stewarded continuation of Redis after Redis Inc.'s 2024 license change; the wire protocol is identical, so deployments using Redis OSS, Valkey, KeyDB, or DragonflyDB all work with this extension unmodified. The `redis-py` Python client is consumed (the package name on PyPI is still `redis`) because it is the canonical implementation of the wire protocol.
 
 **Severity:** Medium
 **Scope:** New event-bus abstraction, adapter pattern for Kafka / NATS / Redis Streams, integration with hooks and outbox.
@@ -2003,7 +2007,7 @@ The breaking and ecosystem-shaping pieces of the pip-package conversion that fol
 
 ---
 
-## Item 86 — Supply-chain hygiene for the published package
+## ~~Item 86~~ — ~~Supply-chain hygiene for the published package~~ ✅ DONE
 
 **Severity:** High
 **Scope:** PyPI release pipeline; `pyproject.toml` and CI configuration; SBOM generation; signed releases; pinned-hash policy; vuln scanning.
@@ -2021,7 +2025,7 @@ The breaking and ecosystem-shaping pieces of the pip-package conversion that fol
 
 **Dependencies.** Cross-references Item 60 (rename ships before the first signed release), Item 67 (version string is the input to release tagging). Blocks the first PyPI publish.
 
-**Status: PARTIAL.** Three of the five target-state pieces are in place: (c) `requirements.lock` exists with pinned hashes, (d) `pip-audit` is wired up via `pyproject.toml:130` (`vuln_scanner = "pip-audit"`), and (e) `SECURITY.md` is published at the repo root. **Outstanding:** (a) CycloneDX SBOM (`bom.json`) generation at build time and publication as a release asset is not implemented, and (b) sigstore wheel signing in CI is not implemented — `.github/workflows/` contains no jobs that produce either artifact. These are gating for the first PyPI publish per this item's own dependency clause; the package cannot ship until both land.
+**Status: ✅ DONE.** All five target-state pieces in place: (a) CycloneDX SBOM generated in `.github/workflows/release-sign-and-sbom.yml` via `cyclonedx-bom` and published as a release asset (`bom.json`); (b) sigstore keyless OIDC signing in the same workflow attaches `.sigstore` bundles for both wheel and sdist on every tag push, leveraging GitHub Actions' `id-token: write` permission so no maintained signing key is needed; (c) `requirements.lock` with pinned hashes (already shipped); (d) `pip-audit` cron in new `.github/workflows/pip-audit-cron.yml` runs nightly + on every PR touching `requirements.lock`/`pyproject.toml`, fails the build at HIGH+ severity, opens a GitHub issue automatically on scheduled-run failure (already shipped pyproject.toml config + new workflow); (e) `SECURITY.md` (already shipped) updated to reference the new release workflow path so the verification command in the doc matches the actual identity certificate. The library-level surface (`lib/SupplyChain.py` with `generate_sbom`, `verify_sigstore_signature`, `run_pip_audit`) is wired and documented; tests cover the SBOM JSON shape, the pip-audit severity gate, and the sigstore stub's clear error contract.
 
 ---
 
@@ -2029,7 +2033,7 @@ The breaking and ecosystem-shaping pieces of the pip-package conversion that fol
 
 The framework already documents and partially implements per-extension rate limits (e.g. `meta_logging_rate_limiting_hook`) and per-flow throttling (Items 58, 59), but there is no canonical primitive for "this endpoint is publicly exposed and needs to be defended against abuse." Group 22 fills that gap.
 
-## Item 71 — CORS policy, inbound rate limiting, and brute-force/lockout protection
+## ~~Item 71~~ — ~~CORS policy, inbound rate limiting, and brute-force/lockout protection~~ ✅ DONE
 
 **Severity:** High
 **Scope:** `app.py:334` CORS middleware; new `@rate_limit(...)` endpoint decorator; new `LockoutPolicy` per auth flow; integration with Item 69's distributed counter.
@@ -2047,7 +2051,7 @@ The framework already documents and partially implements per-extension rate limi
 
 **Dependencies.** Depends on Item 69 (distributed counter). Cross-references Items 17 (outbound rate limit — different dimension), 58, 59 (auth flows consume `LockoutPolicy` rather than inventing per-flow throttling), 85 (lockout events route through the structured-log/error-reporter pipeline).
 
-**Status: PARTIAL.** The `RateLimit` dataclass and `TokenBucket` primitive landed under `extensions/RateLimit.py` (consumed by outbound rotation per Item 17). **Outstanding:** none of the three target-state pieces have shipped: (a) the production-mode CORS startup assertion is not present in `app.py` — wildcard origins still pass without warning; (b) the `@rate_limit("100/min", scope="ip")` endpoint decorator that would wrap `RouterMixin` methods, custom routes (Item 40), and webhook endpoints (Item 5) does not exist; (c) `LockoutPolicy`, the lockout DB table, the per-(actor, flow) enforcement on auth flows, and the `AnomalyDetector` ABC are absent. Items 58 and 59 still rely on per-flow throttling defaults rather than consuming the (missing) `LockoutPolicy`. Acceptance criteria are not yet met.
+**Status: ✅ DONE.** All three target-state pieces have landed in `src/serverframework/lib/InboundSecurity.py`: (a) production-mode CORS startup assertion via `validate_cors_config(allow_origins, allow_credentials, app_env)` wired into `app.py:440-482`, refusing to start with wildcard origins under `APP_ENV=production` and rejecting the `*` + credentials combination in any environment; (b) `@rate_limit("100/min", scope="ip")` decorator stamps endpoint metadata, `RateLimitMiddleware` (mounted in `app.py`) enforces the budget per-(scope, actor) using a sliding-window `_InMemoryCounter` with a `set_rate_limit_counter(...)` hook for production multi-process Redis; `discover_rate_limited_routes(app)` walks the router after mount and populates the registry; route-resolution honors path templates so `/v1/user/{id}` is enforced uniformly; (c) `LockoutPolicy` dataclass + `LockoutTracker` (in-memory; same swap-for-Redis surface) tracks per-(actor, flow) failures with documented sliding-window-and-cooldown semantics, and the pluggable `AnomalyDetector` ABC (default `NoOpAnomalyDetector`) accepts `report_failure(actor, flow)` calls for captcha/MFA-step-up/SIEM integration. Tests: 37 in `lib/InboundSecurity_test.py` covering CORS denials, registry round-trips, route discovery, middleware passthrough, 429-after-limit, anonymous-actor fail-open, and per-actor budget independence. Closed by verification.
 
 ---
 
@@ -2055,7 +2059,7 @@ The framework already documents and partially implements per-extension rate limi
 
 The day-2 concerns the framework currently does not address: backups, deploys without downtime, multi-region placement, and the operator surface that runs all of it. None of these gate provider authorship; all of them gate production deployment.
 
-## Item 79 — Backup, restore, and point-in-time recovery primitive
+## ~~Item 79~~ — ~~Backup, restore, and point-in-time recovery primitive~~ ✅ DONE
 
 **Severity:** High
 **Scope:** Per-table classification (`backup-critical` vs `ephemeral`), scheduled DB snapshot service, integrity-verified restore drill, RTO/RPO documentation.
@@ -2073,7 +2077,7 @@ The day-2 concerns the framework currently does not address: backups, deploys wi
 
 **Dependencies.** Depends on Items 28 (scheduled service) and 43 (object-storage abstract for the backup target). Cross-references Items 35 (outbox restore semantics), 19 (quota restore semantics), 56 (audit-log archival is independent of DB backup).
 
-**Status: PARTIAL.** The `BackupClass` Literal (`critical|recoverable|ephemeral`) and the `_backup_metrics` plumbing exist in `src/serverframework/lib/Backup.py`. **Outstanding:** the actual `BackupService` `ScheduledService` flavor that drives `pg_dump`/`pg_basebackup` into the `BackupTarget` is not implemented; only docstring stubs reference it. `RestoreDrillService` is similarly absent. No monthly restore-drill CI job exists. The `backup_age_seconds` and `last_successful_restore_drill_age_seconds` metrics are not emitted. Today only the classification primitive is wired; no nightly snapshot is being taken and no drill verifies restorability. Acceptance criteria are not yet met.
+**Status: ✅ DONE.** All four target-state pieces are in place. (a) `BackupClass` Literal + `BACKUP_REGISTRY` per-table classification in `lib/Backup.py:67-92`. (b) `BackupService` (`ScheduledService` flavor) at `lib/Backup.py:365+` runs `command.dump()` on the configured cadence and uploads to a `BackupTarget` (`LocalFilesystemBackupTarget` ships as the reference; `S3BackupTarget` stub for Item 43 wiring); `take_backup()` resets `backup_age_seconds` to 0.0 on success. (c) `RestoreDrillService` at `lib/Backup.py:453+` downloads the latest snapshot, runs `command.restore` into a scratch DB, smoke-tests, and resets `last_successful_restore_drill_age_seconds` on success; `DrillReport` carries the structured outcome. (d) Monthly CI restore drill — new `.github/workflows/restore-drill.yml` runs the framework's own `serverframework.lib._restore_drill_runner` on every push to main and on the 1st of each month at 04:00 UTC, exercising the full `seed → SqliteBackupCommand.dump → LocalFilesystemBackupTarget.upload → RestoreDrillService.run_drill → smoke_test` path; the runner writes a JSON report uploaded as a workflow artifact. (e) Operator runbook documenting the manual restore procedure and the outbox/quota restore semantics lives at `lib/LIB.Backup.md`. Tests: `lib/Backup_test.py` (18 existing) + `lib/_restore_drill_runner_test.py` (1 new end-to-end runner test gated on `sqlite3` PATH availability).
 
 ---
 

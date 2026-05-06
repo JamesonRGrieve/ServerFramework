@@ -481,6 +481,15 @@ def build_app(model_registry: ModelRegistry):
         allow_headers=["*"],
     )
 
+    # Item 71b — inbound rate-limit enforcement.
+    #
+    # The middleware is mounted unconditionally; it is a no-op for routes
+    # that have not been stamped with @rate_limit. Route discovery runs
+    # below after every router has been mounted onto the app.
+    from serverframework.lib.InboundSecurity import RateLimitMiddleware
+
+    app.add_middleware(RateLimitMiddleware)
+
     # JWT extraction middleware
     @app.middleware("http")
     async def extract_jwt_context(request: Request, call_next):
@@ -1180,6 +1189,19 @@ def build_app(model_registry: ModelRegistry):
                 raise
 
     app.openapi = custom_openapi
+
+    # Item 71b — populate the rate-limit registry from every mounted route
+    # whose endpoint carries `@rate_limit(...)` metadata. This runs once at
+    # build_app time; subsequent route additions (hot reload, install) must
+    # call discover_rate_limited_routes themselves.
+    try:
+        from serverframework.lib.InboundSecurity import discover_rate_limited_routes
+
+        registered = discover_rate_limited_routes(app)
+        if registered:
+            logger.info(f"Item 71 rate-limit: registered {registered} route policies")
+    except Exception as exc:
+        logger.warning(f"Item 71 rate-limit registry population failed: {exc}")
 
     return app
 
