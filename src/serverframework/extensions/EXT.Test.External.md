@@ -117,3 +117,14 @@ No test in the suite uses `unittest.mock` against an external API.
 - Running the same suite with sandbox credentials configured produces
   real-pass results from real upstream calls.
 - No test in the suite uses a mock for an external API.
+
+## Federation matrix tests
+
+> **Detailed reference:** [../lib/LIB.Federation.md](../lib/LIB.Federation.md#matrix-homologation-testing) | **Extension creation:** [EXT.Patterns.md](EXT.Patterns.md#step-5-external-federation-optional)
+
+Extensions that federate an external upstream — REST or GraphQL — get 4 quadrants × 5 CRUD = 20 cells of homologation coverage automatically via the programmatic test generator. The fixtures follow the same credentials-gating contract as `external_api`-marked tests:
+
+- **In-process upstreams** (the default) bind to a tiny FastAPI ASGI app. These run on every CI branch, including PRs from forks, and are deterministic. The fixture's `requires_credentials` is False.
+- **Live upstreams** activate when `requires_credentials=True` and the fixture's `credentials_present()` callable returns True. The same env-var check that gates `external_api` markers gates the matrix's live runs (e.g., Stripe's matrix runs live when `STRIPE_API_KEY` is set; otherwise pytest auto-xfails the suite).
+
+The bundled `EXT_Payment` (Stripe) and `EXT_EMail` (SendGrid) extensions ship `federation_matrix_fixtures` classmethods showing both shapes — see their `EXT_*.py` files for reference. Adding a new external extension's matrix is a single classmethod and zero new test files; the generator picks the fixture up at collection time.

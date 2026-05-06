@@ -19,9 +19,10 @@ Extensions are the primary mechanism for extending server functionality in Serve
 10. [Root Rotations](#root-rotations)
 11. [Component Organization](#component-organization)
 12. [Creating an Extension](#creating-an-extension)
-13. [Testing Integration](#testing-integration)
-14. [Best Practices](#best-practices)
-15. [Architectural Improvements](#architectural-improvements)
+13. [External Federation (REST + GraphQL)](#step-5-external-federation-optional)
+14. [Testing Integration](#testing-integration)
+15. [Best Practices](#best-practices)
+16. [Architectural Improvements](#architectural-improvements)
 
 ## Extension Architecture
 
@@ -1357,6 +1358,158 @@ class PRV_MyProvider_MyExtension(AbstractProvider_MyExtension):
         return self._instance.process_data(data)
 ```
 
+### Step 5: External Federation (Optional)
+
+> **Detailed reference:** [../lib/LIB.Federation.md](../lib/LIB.Federation.md)
+
+If your extension talks to a third-party API — REST or GraphQL — federation lifts the upstream into the framework's model registry so the same upstream becomes queryable through BOTH inbound surfaces (REST and GraphQL) without per-resource hand-coding. Pick the path that matches your upstream's wire format:
+
+#### 5a. GraphQL upstream (`AbstractGraphQLProvider`)
+
+When the upstream speaks GraphQL, declare a provider that subclasses `AbstractGraphQLProvider`. The framework introspects the upstream at startup, transforms the SDL through the configured pipeline (rename / prefix / hide-fields / mask-arguments / override-resolvers), registers the transformed types into the merged schema, and lifts them into Pydantic so `Pydantic2Strawberry` and `Pydantic2FastAPI` project them onto both surfaces.
+
+```python
+# extensions/my_extension/PRV_MyGQL.py
+from serverframework.extensions.AbstractGraphQLProvider import AbstractGraphQLProvider
+
+class PRV_MyGQL_Federated(AbstractGraphQLProvider):
+    name: str = "my_gql"
+
+    upstream_url: str = "https://api.example.com/graphql"
+    federation_style: str = "stitching"      # | "apollo_v2" | "namespaced"
+    type_namespace: Optional[str] = "Acme_"  # prefix every upstream type
+    auth_strategy_name: str = "api_key"      # AuthStrategy registry key
+
+    # Optional transformer overrides; the introspect→transform→register
+    # pipeline reads these.
+    schema_rename: Dict[str, str] = {}
+    schema_hide_fields: Dict[str, set] = {"User": {"password"}}
+    schema_mask_arguments: Dict[str, Dict[str, set]] = {}
+
+    # Persistent (Redis-shaped) cache TTLs by upstream type.
+    persistent_cache_ttls: Dict[str, float] = {"Acme_Customer": 30.0}
+
+    # When True (default), the SDL is also lifted into Pydantic models so
+    # the upstream appears on the local REST surface in addition to GQL.
+    lift_into_pydantic: bool = True
+
+    @classmethod
+    def bond_instance(cls, instance):
+        from serverframework.extensions.AbstractExtensionProvider import (
+            AbstractProviderInstance,
+        )
+        return AbstractProviderInstance(instance)
+```
+
+That's it — the framework handles introspection, schema transformation, registration with `MergedSchemaRegistry`, batched cross-subgraph resolution, per-request response caching, and selection-set push-down on every outbound call.
+
+#### 5b. REST upstream (OpenAPI lift)
+
+When the upstream speaks REST and ships an OpenAPI document, the extension advertises the document and a transport factory; the framework lifts every `components.schemas` entry into Pydantic, derives `AbstractExternalModel` subclasses bound to the transport, and routes their `*_via_provider` calls through `RESTUpstreamTransport`. The lifted models flow through both surfaces automatically.
+
+```python
+class EXT_MyExtension(AbstractStaticExtension):
+    name: str = "my_extension"
+
+    @classmethod
+    def openapi_spec_provider(cls) -> Mapping[str, Any]:
+        """Return the OpenAPI document for the upstream this extension federates."""
+
+        # Load from the bundled snapshot under contracts/upstream.openapi.json,
+        # or fetch live and cache. The snapshot path is preferred for
+        # deterministic CI.
+        import json
+        from pathlib import Path
+
+        snapshot = Path(__file__).parent / "contracts" / "upstream.openapi.json"
+        return json.loads(snapshot.read_text())
+
+    @classmethod
+    def federation_rest_transport_factory(cls):
+        """Build the RESTUpstreamTransport used by lifted models."""
+
+        from serverframework.lib.Federation_REST import (
+            RESTUpstreamTransport,
+            openapi_to_pydantic_models,
+        )
+        from serverframework.lib.ProviderHTTPClient import ProviderHTTPClientSync
+
+        spec = cls.openapi_spec_provider()
+        operations = openapi_to_pydantic_models(spec).operations
+        http = ProviderHTTPClientSync(
+            provider_name=cls.name,
+            # AuthStrategy / rotation / rate-limit pulled from the bonded
+            # provider instance per the standard provider pipeline.
+        )
+        return RESTUpstreamTransport(
+            http, base_url="https://api.example.com", operations=operations
+        )
+```
+
+#### 5c. Federation matrix tests
+
+Every extension that federates an external upstream gets 4 quadrants × 5 CRUD = 20 cells of homologation coverage automatically once it advertises a `federation_matrix_fixtures` classmethod (or relies on the OpenAPI/SDL shape from §5a/5b). The classmethod returns one or more `FederationFixture` instances; the framework's programmatic test generator emits a `Test_Federation_<extension>_<type>_Matrix` class per fixture into `extensions/Federation_Matrix_test.py`'s globals, and pytest collects them on the next run.
+
+```python
+class EXT_MyExtension(AbstractStaticExtension):
+    @classmethod
+    def federation_matrix_fixtures(cls):
+        from serverframework.extensions.AbstractFederationMatrixTest import (
+            FederationFixture,
+        )
+
+        return [
+            FederationFixture(
+                name="EXT_MyExtension.Customer",
+                upstream_kind="rest",                 # | "gql"
+                transport=cls.federation_rest_transport_factory(),
+                sample_id="cus_test",                 # seeded id the upstream knows
+                type_name="Customer",                 # the lifted Pydantic class
+                sdl_or_spec=cls.openapi_spec_provider(),
+                create_payload={"name": "X"},         # body for create-test
+                update_payload={"name": "Y"},         # body for update-test
+                operations_supported=["get", "list", "create", "update", "delete"],
+                crud_map={"get": "get_customer", "list": "list_customer", ...},
+                requires_credentials=False,           # in-process upstream by default
+                credentials_present=lambda: bool(os.getenv("MY_API_KEY")),
+            )
+        ]
+```
+
+The matrix asserts that the same logical operation through `/graphql` and through the REST surface returns equivalent payloads on every shared field. In-process upstreams (a tiny FastAPI ASGI app served via `httpx.ASGITransport`) are the default for CI determinism; live upstreams activate when `requires_credentials=True` and `credentials_present()` returns True (otherwise pytest auto-xfails per [EXT.Test.External.md](EXT.Test.External.md)).
+
+#### 5d. Cross-linking external models with local ones
+
+Local models reference federated entities via a single hand-written FK field; the rest of the external graph propagates through `@key`-driven federation (Apollo v2) or the matching `FederationLink` registry (stitching/REST). For example:
+
+```python
+class UserModel(ApplicationModel, DatabaseMixin):
+    id: str
+    # External FK — anchors the User → Stripe_Customer cross-link.
+    # `external_navigation_property` reads the field at GraphQL resolve
+    # time and dispatches through the BatchedNavigationResolver to honor
+    # the request's `include` set (Item 9).
+    stripe_customer_id: Optional[str] = None
+    stripe_customer = external_navigation_property(
+        Stripe_CustomerModel,
+        local_field="stripe_customer_id",
+    )
+```
+
+Referential integrity at the seam is best-effort eventual consistency — external systems do not enforce our FKs. The framework supports four enforcement points: write-time GET-before-persist (opt-in per field), inbound-webhook-driven invalidation (Item 5), periodic reconciliation jobs, and read-time tolerance (navigation returns `None` on upstream 404 in lenient mode).
+
+#### 5e. What the framework runs at startup
+
+`ModelRegistry.commit()` Phase 1.6 runs the federation pipeline synchronously:
+
+1. Discover concrete `AbstractGraphQLProvider` subclasses and extensions exposing `openapi_spec_provider`.
+2. For GraphQL upstreams: introspect (Apollo `_service { sdl }` probe or standard introspection), apply `SchemaTransformer`, register with `MergedSchemaRegistry`, lift to Pydantic, synthesize `AbstractExternalManager` subclasses, bind with the registry.
+3. For REST upstreams: import OpenAPI, derive external models bound to the transport, synthesize managers, bind.
+4. Mount GQL→REST projection routers under `/federated/{provider}/...` so REST clients can hit GQL upstreams.
+5. Build the merged schema once.
+
+Failures are isolated per provider — an unreachable upstream MUST NOT prevent the registry from committing or the rest of the framework from starting. The lifted classes appear on `model_registry._federation_report.models`; the GQL→REST routers are on `model_registry._federation_report.rest_routers`; per-provider errors are on `.errors`.
+
 ## Testing Integration
 
 ### Extension Test Environment Isolation
@@ -1418,6 +1571,30 @@ Provider Test Environment:
 │ Mixin: Uses extension's ServerMixin  │
 └─────────────────────────────────────┘
 ```
+
+### Federation Matrix Tests (Auto-Generated)
+
+> **Detailed reference:** [../lib/LIB.Federation.md](../lib/LIB.Federation.md#matrix-homologation-testing)
+
+Extensions that federate an external upstream — REST or GraphQL — get 4 quadrants × 5 CRUD = 20 cells of homologation coverage automatically. The matrix proves that regardless of whether the upstream speaks REST or GraphQL, the same logical operation through `/graphql` and through the REST surface returns equivalent payloads on every shared field.
+
+```
+                │ external GQL │ external REST │
+────────────────┼──────────────┼───────────────┤
+local GQL surf  │   GQL→GQL    │   REST→GQL    │
+local REST surf │   GQL→REST   │   REST→REST   │
+────────────────┴──────────────┴───────────────┘
+```
+
+**To get matrix coverage for your extension:**
+
+1. Declare a `federation_matrix_fixtures` classmethod returning one or more `FederationFixture` instances (see Step 5c above). Each fixture exercises one upstream type through the matrix.
+2. Pytest's collection hook in `extensions/Federation_Matrix_test.py` calls `generate_matrix_tests(target_namespace=globals())` at import time, which mutates the test module's globals to inject one `Test_Federation_<extension>_<type>_Matrix` class per discovered fixture.
+3. Run `pytest extensions/Federation_Matrix_test.py -v` and the matrix runs against your upstream alongside the framework's reference suites and every other extension's matrix.
+
+**In-process by default, live runs gated on credentials.** The reference fixtures bind to in-process FastAPI ASGI apps so CI is deterministic. Real-upstream runs activate when the fixture's `requires_credentials=True` and `credentials_present()` returns True; otherwise pytest auto-xfails the suite per [EXT.Test.External.md](EXT.Test.External.md). The bundled `EXT_Payment` (Stripe) and `EXT_EMail` (SendGrid) extensions show both shapes.
+
+**No mocks.** The matrix uses real Pydantic models, real `Pydantic2{Strawberry,FastAPI}` projections, real `RESTUpstreamTransport` / `GQLUpstreamTransport`, and real httpx ASGI transports. A failing cell points at a real divergence between surfaces, not a quirk of how the test set up its fakes.
 
 ## Best Practices
 
@@ -1503,6 +1680,7 @@ Provider Test Environment:
 4. **Server Isolation**: Run tests with only the target extension loaded
 5. **Environment Consistency**: Maintain consistent environment configuration across tests
 6. **Extension Linking**: Always link providers to parent extensions for test inheritance
+7. **Federation Matrix Coverage**: When the extension federates an external upstream, declare a `federation_matrix_fixtures` classmethod so the programmatic test generator emits 4×CRUD = 20 cells of homologation coverage automatically. In-process upstreams cover CI; live-credential runs activate when the fixture's `requires_credentials` and `credentials_present()` are True.
 
 ### Testing and Validation
 1. **Static Testing**: Test all functionality through class methods without instantiation
