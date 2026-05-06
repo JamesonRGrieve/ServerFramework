@@ -34,6 +34,11 @@ if TYPE_CHECKING:
 
 import bcrypt
 from fastapi import Header, HTTPException, Request, status
+
+# Pin bcrypt cost. Using gensalt() without a rounds argument leaves the cost
+# at whatever the installed bcrypt's default is, which has shifted across
+# library versions and is invisible to operators.
+_BCRYPT_ROUNDS = 12
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 from sqlalchemy import or_
 
@@ -130,7 +135,7 @@ class OneTimeTokenMixin(BaseModel):
         """
         raw_bytes = secrets.token_bytes(32)
         raw_code = _b64.urlsafe_b64encode(raw_bytes).rstrip(b"=").decode("ascii")
-        salt = bcrypt.gensalt()
+        salt = bcrypt.gensalt(rounds=_BCRYPT_ROUNDS)
         code_hash = bcrypt.hashpw(raw_code.encode(), salt).decode()
         instance = cls(
             code_hash=code_hash,
@@ -900,7 +905,12 @@ class UserManager(AbstractBLLManager, RouterMixin):
             raise ValueError("model_registry is required for verify_token")
 
         try:
-            payload = jwt.decode(token, env("JWT_SECRET"), algorithms=["HS256"])
+            payload = jwt.decode(
+                token,
+                env("JWT_SECRET"),
+                algorithms=["HS256"],
+                options={"require": ["exp"]},
+            )
 
             UserManager._enforce_session_not_revoked(payload, model_registry)
 
@@ -916,15 +926,12 @@ class UserManager(AbstractBLLManager, RouterMixin):
                 raise HTTPException(status_code=401, detail="Inactive user")
 
             return {"id": user.id, "email": user.email}
-        except Exception as e:
-            raise HTTPException(
-                status_code=401, detail=f"Token verification failed: {str(e)}"
-            )
-
         except jwt.ExpiredSignatureError:
             raise HTTPException(status_code=401, detail="Token has expired")
         except jwt.InvalidTokenError:
             raise HTTPException(status_code=401, detail="Invalid token")
+        except HTTPException:
+            raise
         except Exception as e:
             raise HTTPException(
                 status_code=401, detail=f"Token verification failed: {str(e)}"
@@ -1010,7 +1017,10 @@ class UserManager(AbstractBLLManager, RouterMixin):
                         jwt=token,
                         key=env("JWT_SECRET"),
                         algorithms=["HS256"],
-                        leeway=timedelta(minutes=5),
+                        # Tight skew tolerance, not session extension. Five
+                        # minutes was a token-replay-friendly default.
+                        leeway=timedelta(seconds=30),
+                        options={"require": ["exp"]},
                         i=ip,
                         s=server,
                     )
@@ -2202,7 +2212,7 @@ class UserCredentialManager(AbstractBLLManager, RouterMixin):
             new_properties={"password_changed_at": datetime.now(timezone.utc)},
             allow_nonexistent=True,  # Skip if no previous password exists
         )
-        salt = bcrypt.gensalt()
+        salt = bcrypt.gensalt(rounds=_BCRYPT_ROUNDS)
         password_hash = bcrypt.hashpw(kwargs.pop("password").encode(), salt).decode()
 
         return super().create(
@@ -2230,7 +2240,7 @@ class UserCredentialManager(AbstractBLLManager, RouterMixin):
             else:
                 # Otherwise, just update this old password record
                 password = kwargs.pop("password")
-                salt = bcrypt.gensalt()
+                salt = bcrypt.gensalt(rounds=_BCRYPT_ROUNDS)
                 kwargs["password_hash"] = bcrypt.hashpw(
                     password.encode(), salt
                 ).decode()
@@ -2386,7 +2396,7 @@ class UserRecoveryQuestionManager(AbstractBLLManager, RouterMixin):
         if "answer" in kwargs:
             answer = kwargs.pop("answer")
             normalized_answer = answer.lower().strip()
-            salt = bcrypt.gensalt()
+            salt = bcrypt.gensalt(rounds=_BCRYPT_ROUNDS)
             kwargs["answer"] = bcrypt.hashpw(normalized_answer.encode(), salt).decode()
 
         return super().create(**kwargs)
@@ -2396,7 +2406,7 @@ class UserRecoveryQuestionManager(AbstractBLLManager, RouterMixin):
         if "answer" in kwargs:
             answer = kwargs.pop("answer")
             normalized_answer = answer.lower().strip()
-            salt = bcrypt.gensalt()
+            salt = bcrypt.gensalt(rounds=_BCRYPT_ROUNDS)
             kwargs["answer"] = bcrypt.hashpw(normalized_answer.encode(), salt).decode()
 
         return super().update(id, **kwargs)

@@ -25,11 +25,11 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from serverframework.endpoints.Webhook import (
+from serverframework.extensions.webhooks import (
     WEBHOOK_REGISTRY,
-    _PROVIDER_CLASSES,
     create_webhook_router,
 )
+from serverframework.extensions.webhooks.BLL_Webhooks import _PROVIDER_CLASSES
 from serverframework.extensions.email.AbstractEmailProviderInstance import (
     AbstractEmailProviderInstance,
     BulkSendResult,

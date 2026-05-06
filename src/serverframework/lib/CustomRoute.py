@@ -184,11 +184,18 @@ def register_custom_routes(router, manager_cls, manager_factory: Optional[Callab
                     sig = inspect.signature(func)
                     accepted = {k: v for k, v in method_args.items() if k in sig.parameters}
                     if "body" in method_args and "body" not in sig.parameters:
-                        # Splat validated body fields into method kwargs.
+                        # Splat validated body fields into method kwargs, but
+                        # ONLY for fields the input model declares — i.e. the
+                        # network model is the writability gate. Without this
+                        # check, a manager method whose signature happens to
+                        # name a privileged column (is_admin, role, etc.)
+                        # would silently accept that column from any request
+                        # whose Pydantic input contained it.
                         body = method_args["body"]
                         if hasattr(body, "model_dump"):
+                            allowed = set(getattr(_spec.input_model, "model_fields", {}).keys())
                             for k, v in body.model_dump().items():
-                                if k in sig.parameters:
+                                if k in sig.parameters and k in allowed:
                                     accepted[k] = v
                     result = func(**accepted)
                 else:

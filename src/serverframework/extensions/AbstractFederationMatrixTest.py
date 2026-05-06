@@ -35,7 +35,7 @@ from typing import Any, Callable, ClassVar, Dict, List, Optional
 
 import pytest
 
-from serverframework.lib.Federation_GQL import (
+from serverframework.extensions.federation.BLL_Federation_GQL import (
     BatchedFieldResolver,
     MergedSchemaRegistry,
     ResponseCache,
@@ -163,7 +163,7 @@ class AbstractFederationMatrixTest(ABC):
         """Run the appropriate schema importer for the fixture."""
 
         if fixture.upstream_kind == "gql":
-            from serverframework.lib.Federation_GQL import sdl_to_pydantic_models
+            from serverframework.extensions.federation.BLL_Federation_GQL import sdl_to_pydantic_models
 
             return {
                 "models": sdl_to_pydantic_models(
@@ -172,7 +172,7 @@ class AbstractFederationMatrixTest(ABC):
                 "operations": None,
             }
         if fixture.upstream_kind == "rest":
-            from serverframework.lib.Federation_REST import openapi_to_pydantic_models
+            from serverframework.extensions.federation.BLL_Federation_REST import openapi_to_pydantic_models
 
             result = openapi_to_pydantic_models(fixture.sdl_or_spec)
             return {"models": result.models, "operations": result.operations}
@@ -365,7 +365,7 @@ class AbstractFederationMatrixTest(ABC):
     def _build_external_model_for_rest(
         self, fixture: FederationFixture
     ) -> type:
-        from serverframework.lib.Federation_REST import (
+        from serverframework.extensions.federation.BLL_Federation_REST import (
             derive_external_models,
             openapi_to_pydantic_models,
         )
@@ -387,10 +387,10 @@ class AbstractFederationMatrixTest(ABC):
     def _build_external_model_for_gql(
         self, fixture: FederationFixture
     ) -> type:
-        from serverframework.lib.Federation_Bootstrap import (
+        from serverframework.extensions.federation.BLL_Federation_Bootstrap import (
             _synthesize_gql_external_model,
         )
-        from serverframework.lib.Federation_GQL import sdl_to_pydantic_models
+        from serverframework.extensions.federation.BLL_Federation_GQL import sdl_to_pydantic_models
 
         lift = sdl_to_pydantic_models(fixture.sdl_or_spec, prefix=None)
         model_cls = lift.models.get(fixture.type_name)

@@ -1,0 +1,9 @@
+name = "audit_retention"
+version = "1.0.0"
+description = "Retention policies, archival to S3/GCS/local, and legal-hold workflows"
+author = "ZephyrexTechnologies"
+entry_module = "EXT_AuditRetention"
+minimum_framework_version = "0.0.0"
+
+pip_dependencies = []
+system_dependencies = []

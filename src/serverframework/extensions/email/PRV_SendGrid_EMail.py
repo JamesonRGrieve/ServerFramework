@@ -27,7 +27,7 @@ from serverframework.extensions.AbstractExternalModel import (
     create_external_reference_model,
     idempotent,
 )
-from serverframework.extensions.CostModel import ConstantCostModel
+from serverframework.extensions.billing.BLL_CostModel import ConstantCostModel
 from serverframework.extensions.email.AbstractEmailProviderInstance import (
     AbstractEmailProviderInstance,
     BulkSendResult,
@@ -1354,12 +1354,20 @@ def _register_sendgrid_webhook_handlers() -> None:
     (`webhook_handler` overwrites with a warning, which is acceptable
     during reload).
     """
-    from serverframework.endpoints.Webhook import (
-        WEBHOOK_REGISTRY,
-        WebhookContext,
-        _PROVIDER_CLASSES,
-        webhook_handler,
-    )
+    # Lazy import — webhooks is an optional extension. If it isn't loaded,
+    # SendGrid's Event Webhook simply won't be wired and the rest of the
+    # email provider continues to work.
+    try:
+        from serverframework.extensions.webhooks import (
+            WEBHOOK_REGISTRY,
+            WebhookContext,
+            webhook_handler,
+        )
+        from serverframework.extensions.webhooks.BLL_Webhooks import (
+            _PROVIDER_CLASSES,
+        )
+    except ImportError:
+        return
 
     for event_name in (
         "bounce",

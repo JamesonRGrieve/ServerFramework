@@ -24,6 +24,8 @@ on `LockoutTracker`.
 
 from __future__ import annotations
 
+import ipaddress
+import os
 import re
 import time
 from abc import ABC, abstractmethod
@@ -41,6 +43,41 @@ from typing import (
     Tuple,
     TypeVar,
 )
+
+
+def _trusted_proxy_networks() -> List[ipaddress._BaseNetwork]:
+    """Parse TRUSTED_PROXIES into a list of ip_network objects. Empty unless
+    explicitly configured. Wildcards and malformed entries are rejected.
+    """
+    raw = (os.environ.get("TRUSTED_PROXIES") or "").strip()
+    if not raw:
+        return []
+    nets: List[ipaddress._BaseNetwork] = []
+    for part in (p.strip() for p in raw.split(",") if p.strip()):
+        if part == "*" or "*" in part:
+            raise ValueError(
+                f"TRUSTED_PROXIES rejects wildcard entries: {part!r}. "
+                "Use explicit CIDRs (e.g. 10.0.0.0/8)."
+            )
+        try:
+            nets.append(ipaddress.ip_network(part, strict=False))
+        except ValueError as e:
+            raise ValueError(f"TRUSTED_PROXIES entry {part!r}: {e}") from e
+    return nets
+
+
+def _peer_is_trusted_proxy(peer_host: Optional[str]) -> bool:
+    """Return True iff the immediate connection peer is in TRUSTED_PROXIES."""
+    if not peer_host:
+        return False
+    try:
+        peer = ipaddress.ip_address(peer_host)
+    except ValueError:
+        return False
+    for net in _trusted_proxy_networks():
+        if peer in net:
+            return True
+    return False
 
 try:
     from serverframework.lib.Logging import logger
@@ -553,12 +590,17 @@ def _resolve_actor_key(scope: str, request: Any) -> Optional[str]:
     """
     if scope == "ip" or scope == "(ip, endpoint)":
         client = getattr(request, "client", None)
-        host = getattr(client, "host", None) if client else None
-        if not host:
-            # Fall back to forwarded headers for proxied deployments.
+        peer_host = getattr(client, "host", None) if client else None
+        # Only honour X-Forwarded-For when the immediate peer is a configured
+        # trusted proxy. Otherwise an attacker can spoof the header to rotate
+        # IPs and defeat per-IP rate limits including login throttling.
+        host: Optional[str] = peer_host
+        if _peer_is_trusted_proxy(peer_host):
             headers = getattr(request, "headers", {}) or {}
             xff = headers.get("X-Forwarded-For", "") if hasattr(headers, "get") else ""
-            host = xff.split(",")[0].strip() if xff else None
+            forwarded = xff.split(",")[0].strip() if xff else None
+            if forwarded:
+                host = forwarded
         if not host:
             return None
         return f"ip:{host}" if scope == "ip" else f"ip:{host}:{request.url.path}"
@@ -577,6 +619,10 @@ def _resolve_actor_key(scope: str, request: Any) -> Optional[str]:
         return f"user:{uid}" if scope == "user" else f"user:{uid}:{request.url.path}"
 
     if scope == "tenant":
+        # Fail closed: a route author requesting tenant-scoped rate limits
+        # has explicitly required tenant context. Returning None would skip
+        # enforcement and let any header that breaks context resolution
+        # bypass the limit. Use a sentinel so the middleware can refuse.
         try:
             from serverframework.lib.RequestContext import get_request_user
 
@@ -585,7 +631,7 @@ def _resolve_actor_key(scope: str, request: Any) -> Optional[str]:
         except Exception:
             tid = None
         if not tid:
-            return None
+            return "tenant:__unresolved__"
         return f"tenant:{tid}"
 
     return None
@@ -661,6 +707,27 @@ class RateLimitMiddleware:
             # gate; the alternative is to reject every anonymous user
             # because of a scope mis-pick by the route author.
             await self.app(scope_dict, receive, send)
+            return
+        if actor == "tenant:__unresolved__":
+            # Fail-closed sentinel from `_resolve_actor_key`: tenant-scoped
+            # policies require tenant context. Refuse the request rather
+            # than let header-crafting bypass the limit.
+            from json import dumps as _json_dumps
+
+            body = _json_dumps(
+                {"detail": "Tenant scope unresolved"}
+            ).encode("utf-8")
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 401,
+                    "headers": [
+                        (b"content-type", b"application/json"),
+                        (b"content-length", str(len(body)).encode("ascii")),
+                    ],
+                }
+            )
+            await send({"type": "http.response.body", "body": body})
             return
 
         counter = _get_counter()

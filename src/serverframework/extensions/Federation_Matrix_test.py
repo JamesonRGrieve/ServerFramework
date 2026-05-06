@@ -34,8 +34,8 @@ from serverframework.extensions.AbstractFederationMatrixTest import (
     FederationFixture,
 )
 from serverframework.extensions.Federation_Matrix_Generator import generate_matrix_tests
-from serverframework.lib.Federation_GQL import GQLUpstreamTransport
-from serverframework.lib.Federation_REST import (
+from serverframework.extensions.federation.BLL_Federation_GQL import GQLUpstreamTransport
+from serverframework.extensions.federation.BLL_Federation_REST import (
     OperationSpec,
     RESTUpstreamTransport,
     openapi_to_pydantic_models,

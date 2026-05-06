@@ -1,4 +1,5 @@
 import os
+import re
 import sqlite3
 from datetime import datetime, timezone
 from typing import Optional
@@ -181,20 +182,28 @@ class SQLiteProvider(AbstractDatabaseProvider):
             tables = cursor.fetchall()
 
             # Get schema for each table
+            _ident_re = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
             for table_info in tables:
                 table_name = table_info[0]
+                # SQLite does not bind identifiers in PRAGMA arguments and the
+                # CREATE TABLE lookup interpolates the name; reject anything
+                # that is not a plain identifier to close off SQL injection.
+                if not isinstance(table_name, str) or not _ident_re.match(table_name):
+                    continue
                 try:
-                    # Get the CREATE TABLE statement
+                    # Get the CREATE TABLE statement (parameterised lookup).
                     cursor.execute(
-                        f"SELECT sql FROM sqlite_master WHERE type='table' AND name='{table_name}';"
+                        "SELECT sql FROM sqlite_master WHERE type='table' AND name=?;",
+                        (table_name,),
                     )
                     create_table_result = cursor.fetchone()
                     if create_table_result and create_table_result[0]:
                         create_table_sql = str(create_table_result[0])
                         schemas.append(create_table_sql + ";")
 
-                    # Get foreign key relationships
-                    cursor.execute(f"PRAGMA foreign_key_list('{table_name}');")
+                    # Get foreign key relationships. PRAGMA cannot bind the
+                    # identifier; safe because table_name was just validated.
+                    cursor.execute(f'PRAGMA foreign_key_list("{table_name}");')
                     foreign_keys = cursor.fetchall()
 
                     for fk in foreign_keys:

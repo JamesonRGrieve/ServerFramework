@@ -112,9 +112,19 @@ def fetch_openapi_spec(
     if auth_strategy is not None:
         headers = auth_strategy(headers)
 
-    response = httpx.get(url, headers=headers, follow_redirects=True, timeout=30.0)
-    response.raise_for_status()
-    return response.json()
+    # Bound redirect chain. Unbounded follow_redirects allows a hostile
+    # endpoint to bounce the fetcher to internal services (cloud-metadata,
+    # localhost) — the SSRF cousin of an open redirect.
+    transport = httpx.HTTPTransport(retries=0)
+    with httpx.Client(
+        transport=transport,
+        follow_redirects=True,
+        max_redirects=3,
+        timeout=30.0,
+    ) as client:
+        response = client.get(url, headers=headers)
+        response.raise_for_status()
+        return response.json()
 
 
 # ---------------------------------------------------------------------------

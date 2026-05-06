@@ -6,9 +6,9 @@ name: Item 79 — Restore drill
 # / restore code is caught at PR time rather than at the next monthly cron.
 #
 # The drill uses `SqliteBackupCommand` + `LocalFilesystemBackupTarget` —
-# both ship in `lib/Backup.py` — so the CI host needs only `sqlite3` on
-# its PATH. Production deployments using `PgDumpBackupCommand` should
-# replicate this workflow against a sandbox Postgres.
+# both ship in the `backup_restore` extension — so the CI host needs only
+# `sqlite3` on its PATH. Production deployments using `PgDumpBackupCommand`
+# should replicate this workflow against a sandbox Postgres.
 
 on:
   push:
@@ -45,7 +45,7 @@ jobs:
         env:
           PYTHONPATH: src
         run: |
-          python -m serverframework.lib._restore_drill_runner
+          python -m serverframework.extensions.backup_restore.BLL_RestoreDrillRunner
 
       - name: Upload drill report
         if: always()

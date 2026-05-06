@@ -490,7 +490,10 @@ def build_app(model_registry: ModelRegistry):
 
     app.add_middleware(RateLimitMiddleware)
 
-    # JWT extraction middleware
+    # JWT extraction middleware. RequestContext.user is the canonical actor
+    # identity for rate limiting (InboundSecurity), tenancy filters, and
+    # downstream BLL authorization. It MUST only be populated from a
+    # signature-verified token, otherwise this is a global auth bypass.
     @app.middleware("http")
     async def extract_jwt_context(request: Request, call_next):
         """Extract JWT token data and set request context"""
@@ -502,9 +505,18 @@ def build_app(model_registry: ModelRegistry):
             try:
                 import jwt
 
+                from serverframework.lib.Environment import env
+
                 token = auth_header.replace("Bearer ", "").strip()
-                # Decode without verification to get payload (verification happens elsewhere)
-                payload = jwt.decode(token, options={"verify_signature": False})
+                jwt_secret = env("JWT_SECRET")
+                if not jwt_secret:
+                    raise jwt.InvalidTokenError("JWT_SECRET unset")
+                payload = jwt.decode(
+                    token,
+                    key=jwt_secret,
+                    algorithms=["HS256"],
+                    options={"verify_signature": True, "require": ["exp"]},
+                )
 
                 # Set user context with timezone info
                 user_info = {
@@ -514,7 +526,8 @@ def build_app(model_registry: ModelRegistry):
                 }
                 set_request_user(user_info)
             except Exception:
-                # If JWT decode fails, just continue without setting context
+                # Verification failed — leave context empty; downstream auth
+                # dependencies will produce the 401.
                 pass
 
         # Item 47 — read X-Request-Timeout-Ms (gRPC-style relative ms)
@@ -938,19 +951,20 @@ def build_app(model_registry: ModelRegistry):
                         )
 
                 # Item 16 — bind a per-request federation response cache and
-                # batched-field resolver. Both contextvars are read by
-                # generated upstream resolvers; tearing them down at request
-                # end happens automatically because they live on the request
-                # contextvar copy.
-                from serverframework.lib.Federation_GQL import (
-                    BatchedFieldResolver,
-                    ResponseCache,
-                    bind_batched_resolver,
-                    bind_response_cache,
-                )
+                # batched-field resolver. The federation extension is
+                # optional; degrade silently when it isn't loaded.
+                try:
+                    from serverframework.extensions.federation.BLL_Federation_GQL import (
+                        BatchedFieldResolver,
+                        ResponseCache,
+                        bind_batched_resolver,
+                        bind_response_cache,
+                    )
 
-                bind_response_cache(ResponseCache())
-                bind_batched_resolver(BatchedFieldResolver())
+                    bind_response_cache(ResponseCache())
+                    bind_batched_resolver(BatchedFieldResolver())
+                except ImportError:
+                    pass
 
                 # The requester's credentials hash anchors the cache so two
                 # distinct requesters never share cached upstream results.

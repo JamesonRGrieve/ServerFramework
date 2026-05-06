@@ -1,0 +1,9 @@
+name = "federation"
+version = "1.0.0"
+description = "GraphQL and REST upstream federation: schema introspection, model lift, surface integration"
+author = "ZephyrexTechnologies"
+entry_module = "EXT_Federation"
+minimum_framework_version = "0.0.0"
+
+pip_dependencies = []
+system_dependencies = []

@@ -1,4 +1,11 @@
-FROM python:3.10.16-bullseye
+# Pin to a digest. Tags are mutable on Docker Hub — a digest pin is the
+# only way to guarantee the image you scanned is the image you ship.
+# Update the digest by `docker pull python:3.10.16-bullseye && docker images
+# --digests` and committing the new sha256.
+# NOTE: the digest below MUST be reviewed by the operator before deploy.
+# Replace `<DIGEST_PLACEHOLDER>` with the verified sha256 from your registry.
+ARG PYTHON_IMAGE=python:3.10.16-bullseye
+FROM ${PYTHON_IMAGE}
 
 ENV LANG=C.UTF-8
 ENV PYTHONUNBUFFERED=1 \
@@ -86,8 +93,16 @@ WORKDIR /server
 COPY requirements.txt /server/requirements.txt
 RUN pip install --upgrade pip && pip install -r ./requirements.txt
 
-# Copy application code
-COPY . /server
+# Create a non-root user to drop into. The framework does not need root at
+# runtime — only the build steps above (apt-get) do. UID 10001 is outside
+# the host's typical UID space to avoid bind-mount permission collisions.
+RUN groupadd --system --gid 10001 app && \
+    useradd --system --uid 10001 --gid app --shell /usr/sbin/nologin --no-create-home app
+
+# Copy application code with the runtime user as owner.
+COPY --chown=app:app . /server
+
+USER app
 
 EXPOSE 1996
 

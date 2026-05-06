@@ -113,7 +113,7 @@ Invariants:
 
 ### `RetentionPolicy` (class)
 
-- Module: `serverframework.extensions.RetentionPolicy`
+- Module: `serverframework.extensions.audit_retention.BLL_RetentionPolicy`
 - Signature: `RetentionPolicy(window: 'str' = '30d', archive_to: 'str' = 'none', legal_hold: 'Optional[str]' = None) -> None`
 - Live docstring: Item 56 — per-class retention contract.
 
@@ -127,7 +127,7 @@ Invariants:
 
 ### `ConstantCostModel` (class)
 
-- Module: `serverframework.extensions.CostModel`
+- Module: `serverframework.extensions.billing.BLL_CostModel`
 - Signature: `ConstantCostModel(per_call_usd: 'Decimal') -> None`
 - Live docstring: A flat per-call cost. Useful for upstreams with a fixed fee per
 
@@ -135,7 +135,7 @@ Fixed cost per call regardless of payload.
 
 ### `CostModel` (protocol)
 
-- Module: `serverframework.extensions.CostModel`
+- Module: `serverframework.extensions.billing.BLL_CostModel`
 - Signature: `CostModel(*args, **kwargs)`
 - Live docstring: Pure callable: ``(request, response) -> Decimal`` returning the
 
@@ -146,7 +146,7 @@ Invariants:
 
 ### `FreeCostModel` (class)
 
-- Module: `serverframework.extensions.CostModel`
+- Module: `serverframework.extensions.billing.BLL_CostModel`
 - Signature: `FreeCostModel() -> None`
 - Live docstring: Zero-cost. Provider explicitly declares "free" (e.g. health
 
@@ -154,7 +154,7 @@ Always-zero cost; the canonical no-op model.
 
 ### `PercentOfAmountCostModel` (class)
 
-- Module: `serverframework.extensions.CostModel`
+- Module: `serverframework.extensions.billing.BLL_CostModel`
 - Signature: `PercentOfAmountCostModel(percent: 'Decimal', per_transaction_usd: 'Decimal' = Decimal('0')) -> None`
 - Live docstring: Payment-processor-style cost: a percentage of the transaction
 
@@ -162,7 +162,7 @@ Cost as a percentage of a monetary amount on the request.
 
 ### `TenantCostCap` (class)
 
-- Module: `serverframework.extensions.CostModel`
+- Module: `serverframework.extensions.billing.BLL_CostModel`
 - Signature: `TenantCostCap(cap_usd: 'Decimal', window: 'str' = '30d', behavior: 'str' = 'hard_fail') -> None`
 - Live docstring: Per-tenant USD ceiling that pairs with the ``CostModel``. When
 
@@ -170,7 +170,7 @@ Per-tenant maximum cost over a window; rejects calls past the cap.
 
 ### `TokenBasedCostModel` (class)
 
-- Module: `serverframework.extensions.CostModel`
+- Module: `serverframework.extensions.billing.BLL_CostModel`
 - Signature: `TokenBasedCostModel(prompt_price_per_1k: 'Decimal', completion_price_per_1k: 'Decimal', per_request_fixed_usd: 'Decimal' = Decimal('0')) -> None`
 - Live docstring: AI/LLM-style cost: prompt tokens × prompt price + completion
 
@@ -472,7 +472,7 @@ Invariants:
 
 ### `WebhookContext` (class)
 
-- Module: `serverframework.endpoints.Webhook`
+- Module: `serverframework.extensions.webhooks`
 - Signature: `WebhookContext(*, payload: dict, headers: Dict[str, str], extension_name: str, provider_name: str, event_name: Optional[str] = None, requester_id: Optional[str] = None) -> None`
 - Live docstring: !!! abstract "Usage Documentation"
 
@@ -480,7 +480,7 @@ Verified-payload context delivered to webhook handlers.
 
 ### `webhook_handler` (decorator)
 
-- Module: `serverframework.endpoints.Webhook`
+- Module: `serverframework.extensions.webhooks`
 - Signature: `webhook_handler(extension_class: 'Any', provider: 'str', event: 'Optional[str]' = None) -> 'Callable[[Callable], Callable]'`
 - Live docstring: Register ``func`` as the handler for ``(extension, provider, event)``.
 
@@ -675,7 +675,7 @@ Canonical user record (extension-injectable via @extension_model).
 
 ### `Quota` (class)
 
-- Module: `serverframework.logic.Quota`
+- Module: `serverframework.extensions.quota.BLL_Quota`
 - Signature: `Quota(*, user_id: Optional[str] = None, team_id: Optional[str] = None, ability: str, period: Literal['minute', 'hour', 'day', 'month', 'billing_cycle'], period_key: str, limit: int, consumed: int = 0, unit: Literal['call', 'token', 'byte', 'message', 'row'] = 'call', limit_usd: Optional[decimal.Decimal] = None, consumed_usd: decimal.Decimal = Decimal('0')) -> None`
 - Live docstring: Unified per-user / per-team quota row.
 
@@ -685,7 +685,7 @@ Unified per-user / per-team / per-user-within-team quota record.
 
 ### `RetentionService` (class)
 
-- Module: `serverframework.extensions.RetentionService`
+- Module: `serverframework.extensions.audit_retention.BLL_RetentionService`
 - Signature: `RetentionService(registrations: 'Iterable[RetentionRegistration]', *, audit_emit: 'Optional[Callable[[Dict[str, Any]], None]]' = None, clock: 'Callable[[], datetime]' = <function RetentionService.<lambda>>) -> 'None'`
 - Live docstring: Item 56 driver. Use :func:`make_retention_scheduled_service` to
 

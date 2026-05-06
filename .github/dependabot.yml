@@ -1,0 +1,36 @@
+version: 2
+
+# Track GitHub Actions and Python dependencies. The actions ecosystem is
+# configured with insecure-external-code-execution=allow only for trusted
+# sources; the goal here is supply-chain visibility and SHA pinning so the
+# workflow files cannot silently re-pull a tampered tag.
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "github-actions"
+    commit-message:
+      prefix: "ci"
+      include: "scope"
+    # Pin actions by commit SHA. Dependabot rewrites version tags into SHA
+    # pins on first run and keeps them current via PRs.
+    groups:
+      actions:
+        patterns:
+          - "*"
+
+  - package-ecosystem: "pip"
+    directory: "/src"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "python"
+    commit-message:
+      prefix: "deps"
+      include: "scope"

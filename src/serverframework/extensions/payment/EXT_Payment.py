@@ -250,7 +250,7 @@ class EXT_Payment(AbstractStaticExtension):
         import httpx
         from fastapi import FastAPI
 
-        from serverframework.lib.Federation_REST import (
+        from serverframework.extensions.federation.BLL_Federation_REST import (
             RESTUpstreamTransport,
             openapi_to_pydantic_models,
         )

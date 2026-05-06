@@ -810,7 +810,7 @@ STREAMING_HANDLER_REGISTRY: Dict[StreamingHandlerKey, Callable[..., Any]] = {}
 class StreamingMessageContext:
     """Payload delivered to a ``@streaming_handler``-tagged callable.
 
-    Mirrors :class:`endpoints.Webhook.WebhookContext` so a Stripe event
+    Mirrors :class:`extensions.webhooks.WebhookContext` so a Stripe event
     arriving via the streaming firehose and an equivalent webhook delivery
     drop the same shape into the same handler chain.
     """
