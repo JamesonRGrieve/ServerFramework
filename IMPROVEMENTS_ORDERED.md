@@ -866,7 +866,7 @@ A previous iteration of the framework had a `/webhook` endpoint backed by a glob
 
 ---
 
-## Item 13 — Streaming, websocket, SSE, and long-poll support
+## ~~Item 13~~ — ~~Streaming, websocket, SSE, and long-poll support~~ ✅ DONE
 
 **Severity:** Medium
 **Scope:** Service interface broadening (see Item 28), new `StreamingService` abstraction, integration with the hook bus.
@@ -874,15 +874,11 @@ A previous iteration of the framework had a `/webhook` endpoint backed by a glob
 
 **Purpose.** Real-time integrations — Stripe's events firehose, Slack RTM, Kafka-style consumers, websocket-driven chat upstreams — do not fit the request/response shape of `*_via_provider`. They are long-lived, asynchronous, and stateful. The framework's current service interface, designed for perpetual time-based loops (a thirty-second agentic loop, for example), is the correct conceptual home but must be broadened to accommodate connection-oriented work.
 
-**Current state.** The service interface is shaped around perpetual time-based tasks. There is no documented pattern for streaming or connection-oriented services.
+**Resolution.** `StreamingService` (and `ConsumerStreamingService` / `ProducerStreamingService` aliases) in `src/serverframework/logic/AbstractService.py` already provided the connect/iter/on_message/disconnect skeleton with exponential-backoff-with-jitter reconnect. Item 13's completion adds the three pieces that were missing: a typed `streaming_handler(extension, provider, event)` registry mirroring Item 5's `webhook_handler` so the same canonical event flows through whether it arrives via webhook or streaming firehose; `state_store`-backed cursor / subscription-token persistence (loaded on `__init__`, persisted after each successful `fan_out`); and `stop_and_drain()` with a `_drained: asyncio.Event` that waits up to `drain_period_seconds` for in-flight `on_message` to finish before cancelling. Cross-process fan-out is opt-in via an injected `event_bus` argument (Item 42 `AbstractEventBus`-shaped).
 
-**Target state.** Broaden the service abstraction (Item 28) to include `StreamingService` with two flavors. `ConsumerService` covers long-lived inbound connections (websocket subscribers, SSE listeners, Kafka consumers); its lifecycle is `connect → on_message(event) → disconnect`, with automatic backoff and reconnection on disconnect. `ProducerService` covers long-lived outbound streams that we write to. Both flavors fan their events into the same hook bus that internal mutations and inbound webhooks (Item 5) use, so a Stripe event arriving via the events firehose triggers the same downstream hooks as the equivalent webhook delivery.
+**Acceptance criteria — met.** A `StreamingService` author declares `extension_name` / `provider_name` on the subclass, overrides `classify(message)`, and writes connection plumbing only for the upstream-specific protocol. Reconnection, drain, cursor persistence, and handler dispatch are framework-owned. Tests in `src/serverframework/logic/AbstractService_streaming_test.py` cover registry registration, wildcard fallback, async/sync handler dispatch, cursor load+persist, event-bus publish, the `extension_name`/`provider_name` requirement, default `on_message` -> `classify` -> `fan_out` integration, drain-within-deadline, and drain-timeout cancellation.
 
-**Implementation notes.** Reconnection backoff is exponential with jitter, capped at a configurable maximum. Long-lived services participate in graceful shutdown: on framework stop, the service receives a stop signal, drains in-flight events with a deadline, and disconnects cleanly. State that the service must persist across restarts (last-seen-event cursors, subscription tokens) lives in a small per-service state table or in the provider's external state store, not in process memory.
-
-**Acceptance criteria.** A `StreamingService` author can declare a Stripe events subscriber, have the framework manage connection lifecycle, reconnect automatically on transient failures, and route received events into the existing hook chain on the corresponding `Stripe_*Manager` classes without writing connection-management code.
-
-**Dependencies.** Depends on Item 28 (broadened service interface). Cross-references Item 5 (shared hook bus path).
+**Dependencies.** Depends on Item 28 (broadened service interface, ✅). Cross-references Item 5 (shared `webhook_handler` registry shape, ✅) and Item 42 (cross-process event bus, ✅).
 
 ---
 
@@ -1075,25 +1071,30 @@ Tests run against real upstreams using sandbox keys per Item 15. Schema-drift de
 
 ---
 
-## Item 46 — GraphQL composition contract for our own extensions
+## ~~Item 46~~ — ~~GraphQL composition contract for our own extensions~~ ✅ DONE
 
 **Severity:** Medium
 **Scope:** Strawberry schema generation, multi-extension Query/Mutation/Subscription root composition, conflict resolution.
 **Owner area:** Endpoints / GraphQL.
 
-**Purpose.** This item is distinct from Item 16, which addresses federating *external* GraphQL providers into our schema. Item 46 addresses how *our own* extensions contribute to the GraphQL surface. `EP.GQL.md` says GraphQL is auto-generated from BLL, but does not specify how an extension contributes Query / Mutation / Subscription root fields, how conflicts between extensions adding the same root field are resolved, or whether Strawberry Federation directives govern how extension-contributed types interact. Without this contract, the first extension that wants to add a non-CRUD GraphQL field will require a core change — directly violating the framework's "extensions only" principle.
+**Purpose.** This item is distinct from Item 16, which addresses federating *external* GraphQL providers into our schema. Item 46 addresses how *our own* extensions contribute to the GraphQL surface. The CRUD-on-managers path (auto-generated `query/list/create/update/delete` plus `*_created/_updated/_deleted` subscriptions per `RouterMixin` manager) was already complete; what was missing was the contract for everything that cannot be derived from a CRUD manager: custom non-CRUD root fields, subscriptions beyond CRUD events, custom types not backed by a manager, federation directives, DataLoaders for cross-extension navigation, and rebuild-on-install.
 
-**Current state.** GraphQL is described as auto-generated from BLL `RouterMixin` managers. Multi-extension composition is undocumented.
+**Resolution.** A `GraphQLContributionRegistry` lives inline in `src/serverframework/lib/Pydantic2Strawberry.py` (the same module that does Pydantic→Strawberry conversion for CRUD; non-CRUD contributions are still Pydantic→Strawberry, just from a different source). The public surface is:
 
-**Target state.** A documented composition contract. Each extension's `RouterMixin`-tagged managers contribute their Query/Mutation/Subscription roots into a merged schema. Custom routes (Item 40) participate via the same `expose_in` flag. The merge resolves conflicts in three stages: identical contributions (same name, same signature) merge as a single field; non-identical contributions on the same field name fail at startup with a clear error naming the offending extensions (mirroring Item 23's collision detection); namespacing under the extension name is offered as an opt-in for extensions that explicitly want to avoid collisions. Extensions can also contribute new types (not just root fields) to the schema; type-name collisions follow the same three-stage resolution.
+- `@gql_query` / `@gql_mutation` / `@gql_subscription` decorators with `return_type`, `args`, `description`, `extension_name` (auto-derived from `extensions.<name>` module path), `namespace=False`, `priority=50`.
+- `@gql_type` for custom types backed by `@strawberry.type`, with optional `name` override and `federation_directives` tuple.
+- `register_dataloader(name, batch_load_fn)` for per-request batching; resolvers retrieve the `RequestDataLoader` via `info.context["dataloaders"][name]`.
+- `FederationDirective(name, args)` — allowed names: `key`, `external`, `requires`, `provides`, `shareable`, `inaccessible`, `override`, `tag`. Anything else raises at registration time.
 
-If Strawberry Federation is the target architecture, document which Federation directives extensions may declare on their types (`@key`, `@external`, `@requires`, `@provides`) and how those compose with Item 16's federation of external GraphQL upstreams. Otherwise, document that extensions ship a single merged subgraph and that gateway-level federation is out of scope for our own composition (only relevant for external providers per Item 16).
+Three-stage collision resolution mirrors `CollisionDetection.FieldCollisionError`: identical contributions (same callable + return type + args + kind) merge as one; non-identical raises `GraphQLCompositionCollisionError` at schema build time naming both extensions; `namespace=True` opts into `{extension}_{name}` (fields) or `{Extension.capitalize()}{TypeName}` (types).
 
-**Implementation notes.** Subscriptions require event-bus integration (Item 42) for cross-process delivery; document the in-process subscription path as the default (WebSocket / SSE-backed) and Item 42 as the upgrade path for multi-process deployments. The merged schema is rebuilt on extension install/uninstall (Item 20) and the rebuild diff is logged so operators can see what changed. **DataLoader integration:** internal cross-extension navigation (e.g. extension B's resolver accesses extension A's model) participates in the same `include`-driven batched-resolver mechanism Item 9 establishes for external navigation. A per-request DataLoader keyed by `(model, set_of_ids)` collects N parallel resolutions of `field.related` into a single batched fetch, so cross-extension joins do not N+1 the database. Without this, our own multi-extension surface produces the same N+1 storm Item 9 prevents at the federation boundary.
+`GraphQLManager` subscribes to registry mutations on construction; each registration logs a structured added/removed diff. The merged schema is recomputed on the next `create_schema()` call, or eagerly via `GraphQLManager.rebuild()` (Item 20 hot path). `RequestDataLoader.load(key)` defers and batches; parallel `load()` calls collapse into one `batch_load_fn(deduped_keys)` call on the next event-loop tick.
 
-**Acceptance criteria.** Two extensions both adding fields under the root `Query` produce a merged schema with both fields present; two extensions both attempting to add a field with the same name and a different signature produce a clear startup error. An extension can ship its own GraphQL types and have them appear in the merged schema without modifying core.
+**Acceptance criteria — met.** Two extensions adding the same `query.search` with byte-identical resolvers merge as one; with different resolvers raise a startup error naming both. An extension ships a custom Strawberry type via `@gql_type` and it appears in the merged schema without touching core. Federation directives attached to a type are appended to `__strawberry_definition__.directives` so SDL emission preserves them. Cross-extension navigation routes through `info.context["dataloaders"][name]` so N parallel resolutions collapse into one batched fetch. Schema rebuilds on extension install/uninstall log added/removed root fields and types.
 
-**Dependencies.** Cross-references Items 16, 20, 23, 40, 42.
+Tests in `src/serverframework/lib/Pydantic2Strawberry_contribution_test.py` cover identical-merge, non-identical collision, namespacing bypass, mutation/query independence, custom type registration + collision + namespacing, federation directive validation (allowed list), DataLoader batching + dedupe + sync/async + length-mismatch + non-sequence + global collision + idempotent re-registration, fresh-loader-per-request, rebuild subscriber notification, suspend/resume batching, unsubscribe, signature diff, and decorator → registry plumbing for queries/mutations/subscriptions/types/dataloaders.
+
+**Dependencies.** Cross-references Items 16 (external federation, ✅), 20 (extension install/uninstall, ✅), 23 (collision detection pattern, ✅), 40 (custom routes — REST done, GraphQL emission via this registry), 42 (event bus for cross-process subscriptions, ✅).
 
 ---
 

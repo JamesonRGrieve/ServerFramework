@@ -15,6 +15,9 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 import pytest
+# Module-level import so PEP 563 string annotations on nested handlers resolve
+# against module globals when FastAPI calls ``get_type_hints``.
+from fastapi import FastAPI, Request
 
 from serverframework.extensions.AbstractGraphQLProvider import AbstractGraphQLProvider
 from serverframework.extensions.AuthStrategy import APIKeyAuth
@@ -38,8 +41,6 @@ pytestmark = [pytest.mark.gql]
 
 def _make_stitching_app() -> "httpx.AsyncClient":
     """Tiny upstream that supports plain introspection (no Apollo SDL)."""
-
-    from fastapi import FastAPI, Request
 
     app = FastAPI()
 
@@ -98,8 +99,6 @@ def _make_stitching_app() -> "httpx.AsyncClient":
 
 def _make_apollo_app() -> "httpx.AsyncClient":
     """Upstream that implements the Apollo Federation v2 SDL probe."""
-
-    from fastapi import FastAPI, Request
 
     app = FastAPI()
     SDL = (
