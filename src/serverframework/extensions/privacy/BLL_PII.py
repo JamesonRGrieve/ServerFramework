@@ -317,6 +317,60 @@ class DataExporter:
         return out
 
 
+# ----- Log-line redaction filter (Scope #10) -------------------------------
+#
+# Moved here from `lib/Credentials.py`. The privacy extension is the single
+# owner of redaction policy; core's `Credentials` module re-exports through
+# this implementation when the extension is loaded. When the extension is
+# absent the core falls back to its own minimal scrubber.
+
+import logging as _logging
+import re as _re
+
+
+class PIILogFilter(_logging.Filter):
+    """`logging.Filter` that scrubs registered secret values AND PII-shaped
+    substrings (emails, bearer tokens, common API-key prefixes) from log
+    records before they reach handlers.
+
+    Combines two layers:
+
+    * Exact-match: any value previously passed to
+      `Credentials.register_secret(...)` is replaced verbatim.
+    * Pattern-match: emails, bearer tokens, common cloud-provider key
+      shapes are replaced with a typed sentinel.
+    """
+
+    _PATTERNS = [
+        (_re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"), "<email>"),
+        (_re.compile(r"Bearer\s+[A-Za-z0-9._\-]{8,}", _re.IGNORECASE), "Bearer <redacted>"),
+        (_re.compile(r"sk-[A-Za-z0-9]{20,}"), "<api_key>"),
+        (_re.compile(r"AKIA[0-9A-Z]{16}"), "<aws_access_key>"),
+    ]
+
+    def filter(self, record: _logging.LogRecord) -> bool:
+        try:
+            from serverframework.lib.Credentials import registered_secrets, redact
+
+            msg = record.getMessage()
+            scrubbed = redact(msg)
+            for pat, repl in self._PATTERNS:
+                scrubbed = pat.sub(repl, scrubbed)
+            if scrubbed != msg:
+                record.msg = scrubbed
+                record.args = ()
+        except Exception:
+            return True
+        return True
+
+
+def install_log_filter(target_logger: Optional[_logging.Logger] = None) -> None:
+    """Attach the privacy log filter to a logger (default: root)."""
+    target = target_logger if target_logger is not None else _logging.getLogger()
+    if not any(isinstance(f, PIILogFilter) for f in target.filters):
+        target.addFilter(PIILogFilter())
+
+
 __all__ = [
     "PIIClass",
     "PIIAnnotation",
@@ -324,6 +378,8 @@ __all__ = [
     "enumerate_pii",
     "redact_pii",
     "REDACTION_SENTINEL",
+    "PIILogFilter",
+    "install_log_filter",
     "ErasureReport",
     "ErasureOrchestrator",
     "DataExporter",

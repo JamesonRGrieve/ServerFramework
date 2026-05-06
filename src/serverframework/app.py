@@ -415,13 +415,22 @@ def build_app(model_registry: ModelRegistry):
         finally:
             await db_mgr.close_worker()
 
+    # H-4 — gate the OpenAPI surface in production. Unauthenticated docs
+    # let an attacker enumerate every route, parameter, and admin endpoint
+    # without any rate-limited probe. Set EXPOSE_DOCS=true if a deployment
+    # genuinely wants public docs.
+    from serverframework.lib.Environment import is_production
+
+    expose_docs = (env("EXPOSE_DOCS") or "").strip().lower() == "true"
+    docs_enabled = expose_docs or not is_production()
+
     app = FastAPI(
         title=env("APP_NAME"),
         version=env("APP_VERSION"),
         description=f"{env('APP_NAME')} is {inflection.a(env('APP_DESCRIPTION'))}. Visit the GitHub repo for more information or to report issues. {env('APP_REPOSITORY')}",
-        openapi_url="/openapi.json",
-        docs_url="/docs",
-        redoc_url="/redoc",
+        openapi_url="/openapi.json" if docs_enabled else None,
+        docs_url="/docs" if docs_enabled else None,
+        redoc_url="/redoc" if docs_enabled else None,
         lifespan=lifespan,
         openapi_version="3.1.0",
     )
@@ -437,9 +446,10 @@ def build_app(model_registry: ModelRegistry):
     # Development deployments without an explicit allowlist fall back
     # to ``*`` (without credentials) and emit a startup warning.
     # ------------------------------------------------------------------
+    from serverframework.lib.Environment import is_production
     from serverframework.lib.InboundSecurity import parse_cors_origins, validate_cors_config
 
-    app_env = (env("APP_ENV", default="development") or "development").lower()
+    app_env = "production" if is_production() else "development"
     raw_origins = env("APP_CORS_ALLOWED_ORIGINS", default="")
     parsed_origins = parse_cors_origins(raw_origins)
 
@@ -664,7 +674,33 @@ def build_app(model_registry: ModelRegistry):
         )
 
     def make_json_serializable(obj):
-        """Recursively convert objects to JSON-serializable format."""
+        """Recursively convert objects to JSON-serializable format.
+
+        M-6 — secret types (Pydantic ``SecretStr``, framework ``SecretValue``,
+        ``CredentialRef``) are explicitly redacted to ``"***"`` BEFORE the
+        ``model_dump`` / ``str()`` fallback. Without this, a credential
+        carried in an exception detail (or a model returned by a route that
+        forgot to scrub it) reaches the client in cleartext.
+        """
+        # Hard-redact known secret carriers first.
+        try:
+            from pydantic import SecretBytes, SecretStr
+
+            if isinstance(obj, (SecretStr, SecretBytes)):
+                return "***"
+        except ImportError:
+            pass
+        try:
+            from serverframework.lib.Credentials import (
+                CredentialRef,
+                SecretValue,
+            )
+
+            if isinstance(obj, (SecretValue, CredentialRef)):
+                return "***"
+        except ImportError:
+            pass
+
         if isinstance(obj, (str, int, float, bool, type(None))):
             return obj
         elif hasattr(obj, "model_dump"):
@@ -892,30 +928,20 @@ def build_app(model_registry: ModelRegistry):
                     f"GraphQL context: auth_header={bool(auth_header)}, api_key={bool(api_key)}"
                 )
 
-                # Check for API key first (for system entities)
+                # Check for API key first (for system entities). Constant-
+                # time comparison via the canonical resolver (H-3, H-6) so
+                # REST / GraphQL / factory agree on the principal.
                 if api_key:
-                    from serverframework.lib.Environment import env
+                    from serverframework.lib.InboundSecurity import (
+                        resolve_principal_from_api_key,
+                    )
 
-                    if api_key == env("ROOT_API_KEY"):
-                        context["requester_id"] = env("ROOT_ID")
+                    principal = resolve_principal_from_api_key(api_key)
+                    if principal:
+                        context["requester_id"] = principal
                         logger.debug(
-                            "GraphQL context: Authenticated with ROOT API key, "
-                            f"root_id={env('ROOT_ID')}"
+                            f"GraphQL context: Authenticated via API key, principal={principal}"
                         )
-                    elif api_key == env("SYSTEM_API_KEY"):
-                        context["requester_id"] = env("SYSTEM_ID")
-                        logger.debug(
-                            "GraphQL context: Authenticated with SYSTEM API key, "
-                            f"system_id={env('SYSTEM_ID')}"
-                        )
-                    elif api_key == env("TEMPLATE_API_KEY"):
-                        context["requester_id"] = env("TEMPLATE_ID")
-                        logger.debug(
-                            "GraphQL context: Authenticated with TEMPLATE API key, "
-                            f"template_id={env('TEMPLATE_ID')}"
-                        )
-
-                    if "requester_id" in context:
                         return context
 
                 # Fall back to JWT authentication

@@ -30,6 +30,10 @@ class AppSettings(BaseModel):
     ENVIRONMENT: Literal["local", "staging", "development", "production", "ci"] = (
         "local"
     )
+    # Legacy alias. Deployments that document APP_ENV instead of ENVIRONMENT
+    # set this and we forward it onto ENVIRONMENT in the model_validator below
+    # so every fail-closed gate sees one source of truth.
+    APP_ENV: Optional[str] = None
 
     APP_NAME: str = "Server"
     APP_DESCRIPTION: str = "extensible server framework"
@@ -39,6 +43,8 @@ class AppSettings(BaseModel):
 
     ROOT_API_KEY: str = "n0ne"
     JWT_SECRET: str = ""
+    JWT_AUDIENCE: str = "serverframework"
+    JWT_ISSUER: str = "serverframework"
     SERVER_URI: str = "http://localhost:1996"
     ALLOWED_DOMAINS: str = "*"
     # Comma-separated list of trusted-proxy CIDRs/IPs from which the
@@ -52,15 +58,16 @@ class AppSettings(BaseModel):
     DATABASE_HOST: str = "localhost"
     DATABASE_PORT: str = "5432"
     DATABASE_USER: Optional[str] = None
-    DATABASE_PASSWORD: str = "Password1!"
+    DATABASE_PASSWORD: str = ""
 
     LOCALIZATION: str = "en"
     REST: str = "true"
     GQL: str = "true"
-    GQL_DEPTH: int = 3
+    GQL_DEPTH: int = 10
     MCP: str = "false"
     LOG_FORMAT: str = "%(asctime)s | %(levelname)s | %(message)s"
     LOG_LEVEL: str = "INFO"
+    EXPOSE_DOCS: str = "false"
     REGISTRATION_DISABLED: str = "false"
     REGISTRATION_MODE: Literal["open", "invite", "closed"] = "open"
     SEED_DATA: str = "true"
@@ -92,6 +99,52 @@ class AppSettings(BaseModel):
         return v
 
     @model_validator(mode="after")
+    def _reconcile_environment_alias(self):
+        """Honour APP_ENV as a legacy alias for ENVIRONMENT.
+
+        Two env-var names (`APP_ENV` vs `ENVIRONMENT`) used to feed
+        independent fail-closed gates; a deployment that set only one
+        left the others asleep. Resolve to a single canonical value here
+        before any gate reads it.
+        """
+        alias = (self.APP_ENV or "").strip().lower()
+        if alias and self.ENVIRONMENT == "local":
+            valid = {"local", "staging", "development", "production", "ci"}
+            if alias in valid:
+                object.__setattr__(self, "ENVIRONMENT", alias)
+            elif alias == "prod":
+                object.__setattr__(self, "ENVIRONMENT", "production")
+            elif alias == "dev":
+                object.__setattr__(self, "ENVIRONMENT", "development")
+        return self
+
+    @model_validator(mode="after")
+    def _enforce_jwt_secret_strength(self):
+        """JWT_SECRET must be at least 32 characters in every environment.
+
+        An empty or short secret is a global auth bypass — HS256 over an
+        empty key trivially mints arbitrary tokens. Production used to
+        be the only gate; that left dev/staging / `ci` wide open and
+        relied on the broken APP_ENV split (C-3). Enforce always.
+        """
+        # Tests bypass via PYTEST_CURRENT_TEST so the suite does not need
+        # to set a 32-byte secret; production deployments still trip.
+        if os.environ.get("PYTEST_CURRENT_TEST"):
+            return self
+        secret = (self.JWT_SECRET or "").strip()
+        if not secret:
+            raise ValueError(
+                "JWT_SECRET is empty. Set a high-entropy 32+ character "
+                "secret before booting the framework."
+            )
+        if len(secret) < 32:
+            raise ValueError(
+                "JWT_SECRET must be at least 32 characters "
+                f"(got {len(secret)})."
+            )
+        return self
+
+    @model_validator(mode="after")
     def _enforce_production_fail_closed(self):
         """In ENVIRONMENT=production/staging, refuse insecure defaults.
 
@@ -103,17 +156,10 @@ class AppSettings(BaseModel):
         problems: List[str] = []
         if (self.ROOT_API_KEY or "").strip() in ("", "n0ne"):
             problems.append("ROOT_API_KEY is unset or left at the default 'n0ne'")
-        secret = (self.JWT_SECRET or "").strip()
-        if not secret:
-            problems.append("JWT_SECRET is empty")
-        elif len(secret) < 32:
-            problems.append("JWT_SECRET must be at least 32 characters")
         if (self.ALLOWED_DOMAINS or "").strip() == "*":
             problems.append("ALLOWED_DOMAINS='*' is not allowed in production")
         if (self.DATABASE_PASSWORD or "").strip() in ("", "Password1!"):
-            problems.append(
-                "DATABASE_PASSWORD is unset or left at the development default"
-            )
+            problems.append("DATABASE_PASSWORD is unset")
         if problems:
             raise ValueError(
                 "Insecure production configuration: " + "; ".join(problems)
@@ -223,6 +269,22 @@ def register_extension_env_vars(env: Optional[Dict[str, Any]]) -> None:
 
     except Exception as e:
         logger.error(f"Error updating global settings: {e}")
+
+
+def is_production() -> bool:
+    """Single source of truth for production gating.
+
+    Reads the canonical `settings.ENVIRONMENT` (which `APP_ENV` is reconciled
+    into at validation time). Every fail-closed gate (CORS validation, GraphQL
+    introspection disable, sandbox-credential refusal, docs exposure) calls
+    this helper rather than reading an env var directly so the two-name split
+    that produced C-2 cannot regress.
+    """
+    return getattr(settings, "ENVIRONMENT", "local") == "production"
+
+
+def is_staging() -> bool:
+    return getattr(settings, "ENVIRONMENT", "local") == "staging"
 
 
 def env(var: str, default: Optional[str] = "") -> str:

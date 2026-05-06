@@ -102,6 +102,18 @@ class OneTimeTokenMixin(BaseModel):
 
     code_hash: str = Field(..., description="bcrypt hash of the raw code")
     code_salt: str = Field(..., description="Salt used when hashing the code")
+    # H-5 — indexable HMAC fingerprint of the raw code so verify-time
+    # lookup is a single indexed row read instead of a bcrypt-against-
+    # every-unused-token loop. The bcrypt comparison still runs to
+    # constant-time-confirm the match; the fingerprint just narrows the
+    # candidate set to exactly one row (or zero).
+    code_fingerprint: Optional[str] = Field(
+        None,
+        description=(
+            "HMAC-SHA256(FRAMEWORK_FERNET_KEY or JWT_SECRET, raw_code) hex. "
+            "Indexed; replaces the unbounded bcrypt-loop verify."
+        ),
+    )
     expires_at: datetime = Field(..., description="UTC expiry timestamp")
     is_used: bool = Field(False, description="Whether this token has been redeemed")
     used_at: Optional[datetime] = Field(
@@ -110,6 +122,26 @@ class OneTimeTokenMixin(BaseModel):
     created_ip: Optional[str] = Field(
         None, description="IP address that generated the token"
     )
+
+    @staticmethod
+    def fingerprint(raw_code: str) -> str:
+        """HMAC fingerprint used for indexed token lookup (H-5).
+
+        Keyed on FRAMEWORK_FERNET_KEY when set, falling back to
+        JWT_SECRET. Both rotate independently of token issuance, so we
+        accept that fingerprints become invalid on key rotation — that is
+        the expected blast radius (re-issue outstanding tokens) rather
+        than the alternative of a static unkeyed hash that lets anyone
+        with read access to the table validate tokens offline.
+        """
+        import hashlib
+
+        key_material = (
+            env("FRAMEWORK_FERNET_KEY") or env("JWT_SECRET") or ""
+        ).encode("utf-8")
+        return hmac.new(
+            key_material, raw_code.encode("utf-8"), hashlib.sha256
+        ).hexdigest()
 
     def verify(self, submitted_code: str) -> bool:
         """Constant-time verification of a submitted raw code."""
@@ -130,8 +162,8 @@ class OneTimeTokenMixin(BaseModel):
         """Generate 256 bits of entropy, return ``(raw_code, instance)``.
 
         The raw code is base64url-encoded for URL safety; only the bcrypt
-        hash and salt are persisted. The instance can be merged into a
-        concrete subclass via ``.model_dump()``.
+        hash, salt, and fingerprint are persisted. The instance can be
+        merged into a concrete subclass via ``.model_dump()``.
         """
         raw_bytes = secrets.token_bytes(32)
         raw_code = _b64.urlsafe_b64encode(raw_bytes).rstrip(b"=").decode("ascii")
@@ -140,6 +172,7 @@ class OneTimeTokenMixin(BaseModel):
         instance = cls(
             code_hash=code_hash,
             code_salt=salt.decode(),
+            code_fingerprint=cls.fingerprint(raw_code),
             expires_at=datetime.now(timezone.utc) + timedelta(minutes=ttl_minutes),
             is_used=False,
             used_at=None,
@@ -822,37 +855,44 @@ class UserManager(AbstractBLLManager, RouterMixin):
     ) -> str:
         """Generate a JWT token for authentication.
 
-        If `session_key` is provided, it is embedded as the `jti` claim and
-        the verifier will look up the associated SessionModel row at request
-        time, rejecting tokens whose session has been revoked.
+        Always carries `jti` (M-1) so token verification can enforce
+        session revocation. Callers that historically passed
+        ``session_key=None`` now mint a per-token jti so tokens cannot
+        bypass the SessionModel revocation gate.
         """
         expiration = datetime.now(timezone.utc) + timedelta(hours=expiration_hours)
+        # M-1 — `aud` and `iss` so tokens minted by another deployment
+        # sharing the same JWT_SECRET (dev↔staging accident) do not
+        # cross-validate. Mandatory `jti` so revocation always engages.
         payload = {
             "sub": user_id,
             "email": email,
             "timezone": timezone_str,
             "exp": expiration,
             "iat": datetime.now(timezone.utc),
+            "aud": env("JWT_AUDIENCE"),
+            "iss": env("JWT_ISSUER"),
+            "jti": session_key or secrets.token_hex(16),
         }
-        if session_key:
-            payload["jti"] = session_key
         return jwt.encode(payload, env("JWT_SECRET"), algorithm="HS256")
 
     @staticmethod
     def _enforce_session_not_revoked(
         payload: Dict[str, Any], model_registry, db=None
     ) -> None:
-        """If a JWT carries a `jti` (session_key), the matching SessionModel
-        row must exist, be active, and not be revoked. Otherwise the token is
-        rejected.
+        """Every JWT must carry a `jti` (M-1). The bound SessionModel row
+        must exist, be active, and not revoked.
 
-        Tokens without a `jti` are accepted as legacy/long-lived bearer tokens
-        and bypass this check; new tokens issued by the login flow always
-        carry one.
+        The legacy "jti-less is accepted" branch was an unrevokable-token
+        loophole: any pre-revocation token kept working until the secret
+        rotated. Tokens without `jti` are now refused outright.
         """
         session_key = payload.get("jti") if isinstance(payload, dict) else None
         if not session_key:
-            return
+            raise HTTPException(
+                status_code=401,
+                detail="Token missing required `jti`; reauthenticate.",
+            )
         try:
             db_manager = (
                 model_registry.DB.manager
@@ -909,7 +949,9 @@ class UserManager(AbstractBLLManager, RouterMixin):
                 token,
                 env("JWT_SECRET"),
                 algorithms=["HS256"],
-                options={"require": ["exp"]},
+                audience=env("JWT_AUDIENCE"),
+                issuer=env("JWT_ISSUER"),
+                options={"require": ["exp", "jti", "aud", "iss"]},
             )
 
             UserManager._enforce_session_not_revoked(payload, model_registry)
@@ -962,24 +1004,21 @@ class UserManager(AbstractBLLManager, RouterMixin):
         ip = None
         server = None
         if request:
-            forwarded_for = request.headers.get("X-Forwarded-For")
-            if forwarded_for:
-                ip = forwarded_for.split(",")[0].strip()
-            elif request.client:
-                if hasattr(request.client, "host"):
-                    # Named tuple or object with host attribute
-                    ip = request.client.host
-                elif (
-                    isinstance(request.client, (tuple, list))
-                    and len(request.client) > 0
-                ):
-                    # Plain tuple/list (host, port)
-                    ip = request.client[0]
-                elif isinstance(request.client, dict) and "host" in request.client:
-                    # Dictionary format
-                    ip = request.client["host"]
-                else:
-                    ip = None
+            # H-7 — never trust X-Forwarded-For unless the immediate peer is
+            # a configured trusted proxy. Centralized in `resolve_client_ip`
+            # so spoofing one transport doesn't bypass another.
+            from serverframework.lib.InboundSecurity import resolve_client_ip
+
+            peer_host: Optional[str] = None
+            client_obj = getattr(request, "client", None)
+            if client_obj is not None:
+                if hasattr(client_obj, "host"):
+                    peer_host = client_obj.host
+                elif isinstance(client_obj, (tuple, list)) and client_obj:
+                    peer_host = client_obj[0]
+                elif isinstance(client_obj, dict) and "host" in client_obj:
+                    peer_host = client_obj["host"]
+            ip = resolve_client_ip(request, peer_host=peer_host)
             host = request.headers.get("Host")
             scheme = request.headers.get("X-Forwarded-Proto", "http")
             if host:
@@ -998,29 +1037,43 @@ class UserManager(AbstractBLLManager, RouterMixin):
                     authorization.replace("Bearer ", "").replace("bearer ", "").strip()
                 )
 
-                # Check if this is API key authentication (X-API-Key header present)
-                # Only process as API key if X-API-Key header is present in the request
-                if (
-                    request
-                    and request.headers.get("X-API-Key")
-                    and token == env("ROOT_API_KEY")
-                ):
+                # H-6 — API-key path uses the canonical resolver. X-API-Key
+                # takes precedence; if the Bearer token itself is one of the
+                # configured keys (legacy clients) honour that too. The
+                # mapping is consistent with the REST factory and GraphQL
+                # context — three transports, one decision.
+                from serverframework.lib.InboundSecurity import (
+                    resolve_principal_from_api_key,
+                )
+
+                api_key_header = (
+                    request.headers.get("X-API-Key") if request else None
+                )
+                principal = resolve_principal_from_api_key(api_key_header)
+                if not principal and token:
+                    principal = resolve_principal_from_api_key(token)
+                if principal:
                     return (
                         db.query(UserModel.DB(db_manager.Base))
-                        .filter(UserModel.DB(db_manager.Base).id == env("SYSTEM_ID"))
+                        .filter(UserModel.DB(db_manager.Base).id == principal)
                         .first()
                     )
 
                 try:
                     # Regular JWT auth
+                    jwt_secret = env("JWT_SECRET")
+                    if not jwt_secret:
+                        raise jwt.InvalidTokenError("JWT_SECRET unset")
                     payload = jwt.decode(
                         jwt=token,
-                        key=env("JWT_SECRET"),
+                        key=jwt_secret,
                         algorithms=["HS256"],
+                        audience=env("JWT_AUDIENCE"),
+                        issuer=env("JWT_ISSUER"),
                         # Tight skew tolerance, not session extension. Five
                         # minutes was a token-replay-friendly default.
                         leeway=timedelta(seconds=30),
-                        options={"require": ["exp"]},
+                        options={"require": ["exp", "jti", "aud", "iss"]},
                         i=ip,
                         s=server,
                     )
@@ -1193,6 +1246,16 @@ class UserManager(AbstractBLLManager, RouterMixin):
         """Revoke all sessions for a user (nested custom route method)"""
         return self.sessions.revoke_all_user_sessions(user_id=user_id)
 
+    # H-8 — IP-keyed brute-force lockout. Per-user counting (the existing
+    # FailedLoginAttempt-driven gate) is necessary but insufficient: an
+    # attacker rotating across hundreds of usernames never trips it. This
+    # tracker is process-local; multi-worker deployments wire a shared
+    # backend via `LockoutTracker.set_backend(...)` (same swap as the
+    # rate-limit counter).
+    _lockout_tracker: ClassVar[LockoutTracker] = LockoutTracker(
+        LockoutPolicy(failures_per_window=10, window_seconds=900, lockout_seconds=1800)
+    )
+
     # Login-specific models (not part of the main entity model system)
     class UserLoginModel(BaseModel):
         email: str = Field(..., description="User's email or username")
@@ -1255,6 +1318,20 @@ class UserManager(AbstractBLLManager, RouterMixin):
                     status_code=400, detail="Invalid Authorization header."
                 )
 
+            # H-8 — IP-keyed lockout check before any DB work. An attacker
+            # rotating usernames against a single IP trips this even if no
+            # individual user account is locked.
+            lockout_key = ip_address or "unknown"
+            if UserManager._lockout_tracker.is_locked(lockout_key, "password_login"):
+                remaining = UserManager._lockout_tracker.remaining_lockout_seconds(
+                    lockout_key, "password_login"
+                )
+                raise HTTPException(
+                    status_code=429,
+                    detail="Too many failed attempts. Try again later.",
+                    headers={"Retry-After": str(int(remaining or 60))},
+                )
+
             login_model = UserManager.UserLoginModel(**login_data)
             normalized_identifier = login_model.email.lower().strip()
 
@@ -1273,6 +1350,12 @@ class UserManager(AbstractBLLManager, RouterMixin):
             )
             if len(user) != 1:
                 logger.warning("This should never have multiple users!")
+                # H-8 — failed lookup against an unknown email still counts
+                # toward the IP-keyed lockout so credential-stuffing leaves
+                # a fingerprint.
+                UserManager._lockout_tracker.record_failure(
+                    lockout_key, "password_login"
+                )
                 # Use the exact same detail string as the wrong-password
                 # branch below — distinguishing them lets a remote attacker
                 # enumerate which emails are registered.
@@ -1280,48 +1363,25 @@ class UserManager(AbstractBLLManager, RouterMixin):
 
             user = user[0]
 
-            # Check for too many failed login attempts
-            one_hour_ago = datetime.now(timezone.utc) - timedelta(hours=1)
-            failed_login_count = FailedLoginAttemptModel.DB(
-                model_registry.DB.manager.Base
-            ).count(
-                requester_id=user["id"],
-                model_registry=model_registry,
-                user_id=user["id"],
-                filters=[
-                    FailedLoginAttemptModel.DB(
-                        model_registry.DB.manager.Base
-                    ).created_at
-                    >= one_hour_ago
-                ],
-            )
-
-            max_failed_attempts = 5
-            if failed_login_count >= max_failed_attempts:
-                raise HTTPException(
-                    status_code=429,
-                    detail="Too many failed login attempts. Please try again later.",
-                )
+            # Per-user threshold gate (auth_lockout extension when loaded).
+            # The IP-keyed in-memory lockout above is the always-on defense.
+            if _lockout_hooks["assert_within_threshold"] is not None:
+                _lockout_hooks["assert_within_threshold"](user["id"], model_registry)
 
             # Check if user account is active
             if not user["active"]:
-                FailedLoginAttemptModel.DB(model_registry.DB.manager.Base).create(
-                    requester_id=user["id"],
-                    model_registry=model_registry,
-                    user_id=user["id"],
-                    ip_address=ip_address,
-                )
+                if _lockout_hooks["record_failure"] is not None:
+                    _lockout_hooks["record_failure"](
+                        user["id"], ip_address, model_registry
+                    )
                 raise HTTPException(status_code=401, detail="Invalid credentials")
 
             # Check if user account was deleted
-            # TODO: This is a temporary fix to block users from logging in after they have been deleted but the DB layer should handle this
             if user["deleted_at"]:
-                FailedLoginAttemptModel.DB(model_registry.DB.manager.Base).create(
-                    requester_id=user["id"],
-                    model_registry=model_registry,
-                    user_id=user["id"],
-                    ip_address=ip_address,
-                )
+                if _lockout_hooks["record_failure"] is not None:
+                    _lockout_hooks["record_failure"](
+                        user["id"], ip_address, model_registry
+                    )
                 raise HTTPException(status_code=401, detail="Invalid credentials")
 
             # Handle password-based login
@@ -1375,13 +1435,13 @@ class UserManager(AbstractBLLManager, RouterMixin):
                             detail=f"Your password was changed during {change_date}.",
                         )
                     else:
-                        FailedLoginAttemptModel.DB(
-                            model_registry.DB.manager.Base
-                        ).create(
-                            requester_id=user["id"],
-                            model_registry=model_registry,
-                            user_id=user["id"],
-                            ip_address=ip_address,
+                        if _lockout_hooks["record_failure"] is not None:
+                            _lockout_hooks["record_failure"](
+                                user["id"], ip_address, model_registry
+                            )
+                        # H-8 — record IP-keyed failure too.
+                        UserManager._lockout_tracker.record_failure(
+                            lockout_key, "password_login"
                         )
                         raise HTTPException(
                             status_code=401, detail="Invalid credentials"
@@ -1391,6 +1451,11 @@ class UserManager(AbstractBLLManager, RouterMixin):
                 raise HTTPException(
                     status_code=400, detail="Either password or token is required"
                 )
+
+            # H-8 — successful auth clears the IP-keyed counter so a user
+            # who misremembered their password once does not carry the
+            # failure into the next legitimate attempt.
+            UserManager._lockout_tracker.clear(lockout_key, "password_login")
 
             # Login successful — generate session key first so the JWT can
             # bind to it via `jti`. Revoking this session in
@@ -2357,145 +2422,112 @@ class UserCredentialManager(AbstractBLLManager, RouterMixin):
         return {"message": "Password changed successfully"}
 
 
-class UserRecoveryQuestionModel(
-    ApplicationModel,
-    UpdateMixinModel,
-    UserModel.Reference,
-    metaclass=ModelMeta,
-):
-    Manager: ClassVar[Type["UserRecoveryQuestionManager"]] = None
-    question: str = Field(..., description="Recovery question")
-    answer: str = Field(..., description="Hashed answer to recovery question")
-
-    # Database metadata for SQLAlchemy generation
-    table_comment: ClassVar[str] = (
-        "Security questions for account recovery when a user forgets their password"
+# UserRecoveryQuestion model+manager moved to extension `auth_recovery_questions`
+# (Scope #1). Apps that want question-based recovery enable that extension via
+# APP_EXTENSIONS. Re-export the names so existing imports of
+# `BLL_Auth.UserRecoveryQuestionModel` continue to resolve when the extension
+# is loaded; otherwise raise a clear error pointing to the migration path.
+def _moved_to_extension(name: str, extension: str):
+    raise ImportError(
+        f"{name} was extracted to extension {extension!r}. Add {extension!r} "
+        f"to APP_EXTENSIONS or import from "
+        f"serverframework.extensions.{extension}.BLL_Recovery_Questions."
     )
 
-    class Create(BaseModel, UserModel.Reference.ID):
-        question: str = Field(..., description="Recovery question")
-        answer: str = Field(
-            ..., description="Answer to recovery question (will be hashed)"
-        )
 
-    class Update(BaseModel):
-        question: Optional[str] = Field(None, description="Recovery question")
-        answer: Optional[str] = Field(
-            None, description="Answer to recovery question (will be hashed)"
-        )
-
-    class Search(ApplicationModel.Search, UserModel.Reference.ID.Search):
-        question: Optional[StringSearchModel] = None
-
-
-class UserRecoveryQuestionManager(AbstractBLLManager, RouterMixin):
-    _model = UserRecoveryQuestionModel
-
-    def create(self, **kwargs):
-        """Create a recovery question with hashed answer"""
-        if "answer" in kwargs:
-            answer = kwargs.pop("answer")
-            normalized_answer = answer.lower().strip()
-            salt = bcrypt.gensalt(rounds=_BCRYPT_ROUNDS)
-            kwargs["answer"] = bcrypt.hashpw(normalized_answer.encode(), salt).decode()
-
-        return super().create(**kwargs)
-
-    def update(self, id: str, **kwargs):
-        """Update a recovery question with hashed answer"""
-        if "answer" in kwargs:
-            answer = kwargs.pop("answer")
-            normalized_answer = answer.lower().strip()
-            salt = bcrypt.gensalt(rounds=_BCRYPT_ROUNDS)
-            kwargs["answer"] = bcrypt.hashpw(normalized_answer.encode(), salt).decode()
-
-        return super().update(id, **kwargs)
-
-    def verify_answer(self, question_id: str, answer: str) -> bool:
-        """Verify a recovery question answer"""
-        question = UserRecoveryQuestionModel.DB(
-            self.model_registry.DB.manager.Base
-        ).get(
-            requester_id=self.requester.id,
-            model_registry=self.model_registry,
-            id=question_id,
-        )
-
-        if not question:
-            return False
-
-        normalized_answer = answer.lower().strip()
-        return bcrypt.checkpw(normalized_answer.encode(), question.answer.encode())
+_EXTRACTED = {
+    "UserRecoveryQuestionModel": (
+        "auth_recovery_questions",
+        "BLL_Recovery_Questions",
+    ),
+    "UserRecoveryQuestionManager": (
+        "auth_recovery_questions",
+        "BLL_Recovery_Questions",
+    ),
+    "FailedLoginAttemptModel": ("auth_lockout", "BLL_Lockout"),
+    "FailedLoginAttemptManager": ("auth_lockout", "BLL_Lockout"),
+    "MetadataModel": ("metadata", "BLL_Metadata"),
+    "UserMetadataManager": ("metadata", "BLL_Metadata"),
+    "TeamMetadataManager": ("metadata", "BLL_Metadata"),
+    "PermissionModel": ("acl_rbac", "BLL_ACL"),
+    "PermissionManager": ("acl_rbac", "BLL_ACL"),
+    "InvitationModel": ("auth_invitations", "BLL_Invitations"),
+    "InvitationManager": ("auth_invitations", "BLL_Invitations"),
+    "InviteeModel": ("auth_invitations", "BLL_Invitations"),
+    "InviteeManager": ("auth_invitations", "BLL_Invitations"),
+}
 
 
-class FailedLoginAttemptModel(
-    ApplicationModel.Optional,
-    UserModel.Reference.Optional,
-    metaclass=ModelMeta,
-):
-    Manager: ClassVar[Type["FailedLoginAttemptManager"]] = None
-    ip_address: Optional[str] = Field(
-        None, description="IP address of failed login attempt"
-    )
-
-    # Database metadata for SQLAlchemy generation
-    table_comment: ClassVar[str] = (
-        "Records of failed login attempts for security monitoring and lockout enforcement"
-    )
-
-    class Create(BaseModel, UserModel.Reference.ID):
-        ip_address: Optional[str] = Field(
-            None, description="IP address of the failed login attempt"
-        )
-
-    class Update(BaseModel):
-        pass
-
-    class Search(ApplicationModel.Search, UserModel.Reference.ID.Search):
-        ip_address: Optional[StringSearchModel] = None
-        created_at: Optional[DateSearchModel] = None
+# Hook callables — populated by extensions at registration time. None when
+# the extension isn't loaded; core code falls back to a safe default.
+_lockout_hooks: dict = {
+    "assert_within_threshold": None,  # (user_id, model_registry) -> None | raises
+    "record_failure": None,            # (user_id, ip, model_registry) -> None
+}
 
 
-class FailedLoginAttemptManager(AbstractBLLManager, RouterMixin):
-    _model = FailedLoginAttemptModel
+def register_lockout_hooks(
+    *,
+    assert_within_threshold=None,
+    record_failure=None,
+) -> None:
+    """Called by `auth_lockout.EXT_Lockout.AuthLockoutExtension.on_load`."""
+    if assert_within_threshold is not None:
+        _lockout_hooks["assert_within_threshold"] = assert_within_threshold
+    if record_failure is not None:
+        _lockout_hooks["record_failure"] = record_failure
 
-    def _register_search_transformers(self):
-        self.register_search_transformer("recent", self._transform_recent_search)
 
-    def _transform_recent_search(self, hours):
-        """Transform a 'recent' search parameter to filter by recent time period"""
-        if not hours or not isinstance(hours, int):
-            hours = 1
+# Metadata extension hook — populated by `metadata.on_load`. Returns
+# `{key: value}` for a user's preferences, or `{}` when the extension
+# isn't loaded.
+_metadata_hooks: dict = {"list_preferences": None}
 
-        cutoff_time = datetime.now(timezone.utc) - timedelta(hours=hours)
-        return [
-            FailedLoginAttemptModel.DB(self.model_registry.DB.manager.Base).created_at
-            >= cutoff_time
-        ]
 
-    def count_recent(self, user_id: str, hours: int = 1) -> int:
-        """Count recent failed login attempts for a user"""
-        cutoff_time = datetime.now(timezone.utc) - timedelta(hours=hours)
+def register_metadata_hooks(*, list_preferences=None) -> None:
+    if list_preferences is not None:
+        _metadata_hooks["list_preferences"] = list_preferences
 
-        return FailedLoginAttemptModel.DB(self.model_registry.DB.manager.Base).count(
-            requester_id=self.requester.id,
-            model_registry=self.model_registry,
-            user_id=user_id,
-            filters=[
-                FailedLoginAttemptModel.DB(
-                    self.model_registry.DB.manager.Base
-                ).created_at
-                >= cutoff_time
-            ],
-        )
 
-    def is_account_locked(
-        self, user_id: str, max_attempts: int = 5, hours: int = 1
-    ) -> bool:
-        """Check if an account is locked due to too many failed attempts"""
-        recent_count = self.count_recent(user_id, hours)
-        return recent_count >= max_attempts
+# auth_invitations extension hooks — populated by `auth_invitations.on_load`.
+_invitation_hooks: dict = {
+    "lookup_by_id": None,
+    "lookup_by_code": None,
+    "apply_to_user": None,  # called from register() once user row is created
+}
 
+
+def register_invitation_hooks(
+    *,
+    lookup_by_id=None,
+    lookup_by_code=None,
+    apply_to_user=None,
+) -> None:
+    if lookup_by_id is not None:
+        _invitation_hooks["lookup_by_id"] = lookup_by_id
+    if lookup_by_code is not None:
+        _invitation_hooks["lookup_by_code"] = lookup_by_code
+    if apply_to_user is not None:
+        _invitation_hooks["apply_to_user"] = apply_to_user
+
+
+def __getattr__(name: str):  # PEP 562 — lazy module-level attribute access
+    if name in _EXTRACTED:
+        ext, module = _EXTRACTED[name]
+        try:
+            mod = __import__(
+                f"serverframework.extensions.{ext}.{module}",
+                fromlist=[name],
+            )
+            return getattr(mod, name)
+        except (ImportError, AttributeError):
+            _moved_to_extension(name, ext)
+    raise AttributeError(name)
+
+
+# FailedLoginAttempt extracted to extension `auth_lockout` (Scope #2). Core
+# `UserManager.login` consults it via the optional callable hooks below — when
+# the extension isn't loaded the gate is the IP-keyed `LockoutTracker` only.
 
 class TeamModel(
     ApplicationModel.Optional,

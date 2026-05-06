@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from serverframework.lib.CustomRoute import custom_route
 from serverframework.lib.Environment import env
+from serverframework.lib.InboundSecurity import DEFAULT_AUTH_RATE_LIMIT, rate_limit
 from serverframework.lib.Pydantic2FastAPI import AuthType, RouterMixin
 from serverframework.logic.AbstractLogicManager import (
     AbstractBLLManager,
@@ -212,8 +213,15 @@ class MagicLinkManager(AbstractBLLManager, RouterMixin):
     def verify_magic_link(
         self, token: str, email: Optional[str] = None
     ) -> MagicLinkVerifyResponse:
+        # H-5 — indexed lookup via the HMAC fingerprint. Replaces the
+        # bcrypt-against-every-unused-token loop that was a CPU DoS
+        # primitive against unauthenticated callers.
         TokenDB = AuthMagicLinkTokenModel.DB(self.model_registry.DB.manager.Base)
-        filters = [TokenDB.is_used == False]  # noqa: E712
+        fingerprint = OneTimeTokenMixin.fingerprint(token)
+        filters = [
+            TokenDB.is_used == False,  # noqa: E712
+            TokenDB.code_fingerprint == fingerprint,
+        ]
         if email is not None:
             filters.append(TokenDB.requested_email == email)
 
@@ -236,6 +244,8 @@ class MagicLinkManager(AbstractBLLManager, RouterMixin):
                 expires_at = expires_at.replace(tzinfo=timezone.utc)
             if expires_at < now:
                 continue
+            # Constant-time bcrypt confirm — the fingerprint narrows the
+            # candidate set to ~1 row; bcrypt is the authoritative match.
             if candidate.verify(token):
                 matched = candidate
                 break
@@ -298,6 +308,7 @@ class MagicLinkManager(AbstractBLLManager, RouterMixin):
         openapi_tags=("Magic Link Authentication",),
         summary="Request a magic-link sign-in email",
     )
+    @rate_limit(DEFAULT_AUTH_RATE_LIMIT, scope="ip")
     def request_route(self, body: MagicLinkRequest) -> MagicLinkResponse:
         return self.request_magic_link(email=body.email)
 
@@ -310,6 +321,7 @@ class MagicLinkManager(AbstractBLLManager, RouterMixin):
         openapi_tags=("Magic Link Authentication",),
         summary="Redeem a magic-link token for a session",
     )
+    @rate_limit(DEFAULT_AUTH_RATE_LIMIT, scope="ip")
     def verify_route(self, body: MagicLinkVerify) -> MagicLinkVerifyResponse:
         return self.verify_magic_link(token=body.token, email=body.email)
 

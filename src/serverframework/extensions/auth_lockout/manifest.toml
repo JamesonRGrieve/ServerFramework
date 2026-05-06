@@ -1,0 +1,12 @@
+name = "auth_lockout"
+version = "0.1.0"
+description = "Persisted failed-login records and per-user lockout policy"
+
+# meta_logging owns the audit channel that lockout events stream to. Optional —
+# without meta_logging the records still persist; they just don't appear in the
+# central audit feed.
+[[extension_dependencies]]
+name = "meta_logging"
+optional = true
+
+[python_dependencies]

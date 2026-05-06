@@ -1,0 +1,9 @@
+name = "acl_rbac"
+version = "0.1.0"
+description = "Per-record ACL with VIEW/EXECUTE/COPY/EDIT/DELETE/SHARE verbs"
+
+# Foundational. No upstream extensions; downstream extensions that want to
+# share resources go through this manager.
+[[extension_dependencies]]
+
+[python_dependencies]

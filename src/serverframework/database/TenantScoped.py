@@ -33,8 +33,44 @@ This module ships:
       statements at the start of each transaction
 """
 
+import re
 from contextvars import ContextVar
-from typing import ClassVar, Dict, Optional, Tuple, Type
+from threading import RLock
+from typing import ClassVar, Dict, Optional, Set, Tuple, Type
+
+
+# M-2 — registry of every key name declared via TenantScopedMixin or
+# `with_keys`. The session binder validates each key against this set
+# before formatting it into `SET LOCAL app.current_<key>`. The value side
+# is parameterized; the key side is concatenated. Without a registry,
+# a misuse that ever sourced a key from request data would be SQLi.
+_REGISTERED_TENANT_KEYS: Set[str] = {"team_id"}
+_REGISTRY_LOCK = RLock()
+_KEY_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def register_tenant_key(*keys: str) -> None:
+    """Register a tenant-key column name. Refuses anything that is not a
+    valid SQL identifier so a key cannot smuggle SQL through the session
+    binder. Called by `TenantScopedMixin.with_keys`."""
+    with _REGISTRY_LOCK:
+        for k in keys:
+            if not isinstance(k, str) or not _KEY_PATTERN.match(k):
+                raise ValueError(
+                    f"Refusing to register tenant key {k!r}: must match "
+                    f"[A-Za-z_][A-Za-z0-9_]*"
+                )
+            _REGISTERED_TENANT_KEYS.add(k)
+
+
+def is_registered_tenant_key(key: str) -> bool:
+    with _REGISTRY_LOCK:
+        return key in _REGISTERED_TENANT_KEYS
+
+
+def registered_tenant_keys() -> Set[str]:
+    with _REGISTRY_LOCK:
+        return set(_REGISTERED_TENANT_KEYS)
 
 
 class _TenantScopedBase:
@@ -66,6 +102,8 @@ class TenantScopedMixin(_TenantScopedBase):
         """
         if not keys:
             raise ValueError("with_keys requires at least one tenant key")
+        # M-2 — validate-and-register before the keys ever reach SQL.
+        register_tenant_key(*keys)
         new_cls = type(
             f"_TenantScoped_{'_'.join(keys)}",
             (_TenantScopedBase,),
@@ -225,15 +263,23 @@ def bind_session_tenant_gucs(session) -> None:
             return
         if is_privileged_bypass():
             # BYPASSRLS path: clear the GUCs so a misbehaving policy
-            # cannot accidentally re-engage filtering.
+            # cannot accidentally re-engage filtering. Skip unregistered
+            # keys defensively (M-2) — they should never appear, but a
+            # RESET on a typo is a no-op so this is just hygiene.
             for k in _tenant_context_var.get().keys():
-                connection.execute(text(f"RESET app.current_{k}"))
+                if is_registered_tenant_key(k):
+                    connection.execute(text(f"RESET app.current_{k}"))
             return
         ctx = _tenant_context_var.get()
         for k, v in ctx.items():
-            # Use parameterized text() to avoid string-injection on the
-            # value side. The key side is concatenated into the SQL but
-            # validated by the static set of TenantScopedMixin keys.
+            # M-2 — validate against the registry before string-formatting
+            # the key into the SQL. Anything outside the registry is a
+            # bug (or worse) and we refuse to emit the statement.
+            if not is_registered_tenant_key(k):
+                raise ValueError(
+                    f"Unregistered tenant key {k!r} in tenant_context; "
+                    f"refusing to emit SET LOCAL"
+                )
             connection.execute(
                 text(f"SET LOCAL app.current_{k} = :value"),
                 {"value": str(v)},
