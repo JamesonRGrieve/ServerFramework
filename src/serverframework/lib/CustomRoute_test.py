@@ -14,10 +14,13 @@ from serverframework.lib.CustomRoute import (
     ExposeIn,
     _infer_graphql_kind,
     custom_route,
+    generate_test_scaffold,
     get_custom_route_spec,
+    has_existing_scaffold,
     iter_custom_routes,
     register_custom_routes_to_graphql,
     reset_graphql_registrations,
+    write_test_scaffold,
 )
 from serverframework.lib.Pydantic2Strawberry import (
     FieldKind,
@@ -240,7 +243,7 @@ def _isolated_graphql_registrations():
 
 
 def _run(coro):
-    return asyncio.get_event_loop().run_until_complete(coro)
+    return asyncio.run(coro)
 
 
 def test_infer_graphql_kind_get_is_query():
@@ -531,3 +534,256 @@ def test_multiple_routes_on_one_manager_register_independently():
     queries = reg.resolve_fields(FieldKind.QUERY)
     assert {"promote", "demote"} == set(mutations.keys())
     assert "list_things" in queries
+
+
+# ---------------------------------------------------------------------------
+# Test scaffolding generation (Item 40 — auto-emitted baseline tests)
+# ---------------------------------------------------------------------------
+
+
+class _ScaffoldManager:
+    """Module-level so the generated scaffold has a stable import path."""
+
+    @custom_route(
+        method="POST",
+        path="/promote",
+        input_model=PromoteIn,
+        output_model=PromoteOut,
+        summary="Promote a member",
+    )
+    def promote(self, body: PromoteIn) -> PromoteOut:
+        return PromoteOut(ok=True, new_role=body.role)
+
+    @custom_route(
+        method="GET",
+        path="/items",
+        output_model=FetchOut,
+    )
+    def list_items(self) -> FetchOut:
+        return FetchOut(items=[])
+
+    @custom_route(
+        method="DELETE",
+        path="/items/{item_id}",
+        output_model=DemoteOut,
+    )
+    def delete_item(self, item_id: str) -> DemoteOut:
+        return DemoteOut(ok=True)
+
+
+def test_generate_test_scaffold_emits_three_tests_per_post_route():
+    """A POST route with input_model produces auth + validation + happy
+    path tests (3 tests total)."""
+
+    class M:
+        @custom_route(
+            method="POST",
+            path="/promote",
+            input_model=PromoteIn,
+            output_model=PromoteOut,
+        )
+        def promote(self, body): ...
+
+    text = generate_test_scaffold(M)
+    assert "def test_promote_unauthenticated_returns_401" in text
+    assert "def test_promote_invalid_body_returns_422" in text
+    assert "def test_promote_happy_path" in text
+
+
+def test_generate_test_scaffold_skips_validation_for_get_routes():
+    """A GET route has no body to malform, so the validation test
+    is skipped — only auth and happy-path tests are emitted."""
+
+    class M:
+        @custom_route(method="GET", path="/items", output_model=FetchOut)
+        def list_items(self): ...
+
+    text = generate_test_scaffold(M)
+    assert "def test_list_items_unauthenticated_returns_401" in text
+    assert "def test_list_items_invalid_body_returns_422" not in text
+    assert "def test_list_items_happy_path" in text
+
+
+def test_generate_test_scaffold_skips_validation_for_delete_routes():
+    """DELETE behaves like GET for the scaffold (no body validation)."""
+
+    class M:
+        @custom_route(method="DELETE", path="/x", output_model=DemoteOut)
+        def remove(self): ...
+
+    text = generate_test_scaffold(M)
+    assert "def test_remove_invalid_body_returns_422" not in text
+
+
+def test_generate_test_scaffold_substitutes_path_params():
+    """``{id}`` style path params get scaffold values inlined into the
+    request URL so the generated test doesn't 404."""
+
+    class M:
+        @custom_route(method="GET", path="/items/{item_id}", output_model=FetchOut)
+        def get_item(self): ...
+
+    text = generate_test_scaffold(M)
+    assert "/items/scaffold-item_id" in text
+
+
+def test_generate_test_scaffold_populates_required_fields():
+    """Body fields with str annotations get ``scaffold-{name}`` values;
+    int fields get ``1``; the generator picks deterministic defaults so
+    the scaffold is byte-stable across regenerations."""
+
+    class IntInput(BaseModel):
+        amount: int
+        memo: str
+
+    class M:
+        @custom_route(
+            method="POST",
+            path="/charge",
+            input_model=IntInput,
+            output_model=DemoteOut,
+        )
+        def charge(self, body): ...
+
+    text = generate_test_scaffold(M)
+    assert "'amount': 1" in text
+    assert "'memo': 'scaffold-memo'" in text
+
+
+def test_generate_test_scaffold_is_byte_stable():
+    """Item 25's deterministic-regeneration contract: regenerating the
+    scaffold produces the same bytes."""
+
+    class M:
+        @custom_route(
+            method="POST",
+            path="/promote",
+            input_model=PromoteIn,
+            output_model=PromoteOut,
+        )
+        def promote(self, body): ...
+
+    a = generate_test_scaffold(M)
+    b = generate_test_scaffold(M)
+    assert a == b
+
+
+def test_generate_test_scaffold_empty_for_no_routes():
+    """A class with no @custom_route methods returns the empty string."""
+
+    class M:
+        def regular_method(self): ...
+
+    assert generate_test_scaffold(M) == ""
+
+
+def test_generate_test_scaffold_includes_import_for_manager():
+    """The generated header imports the manager class from its real
+    module path so the test client can build a router against it."""
+
+    text = generate_test_scaffold(_ScaffoldManager)
+    assert "from serverframework.lib.CustomRoute_test import _ScaffoldManager" in text
+
+
+def test_generate_test_scaffold_emits_test_client_fixture():
+    """The fixture builds a FastAPI app with register_custom_routes
+    so generated tests share the production routing path."""
+
+    text = generate_test_scaffold(_ScaffoldManager)
+    assert "def client():" in text
+    assert "register_custom_routes(app.router, _ScaffoldManager)" in text
+
+
+def test_generate_test_scaffold_handles_multi_route_manager():
+    """A manager with multiple routes emits all three test functions
+    per POST/PUT/PATCH route, two per GET/DELETE route."""
+
+    text = generate_test_scaffold(_ScaffoldManager)
+    # promote: 3 tests (POST)
+    assert "def test_promote_unauthenticated_returns_401" in text
+    assert "def test_promote_invalid_body_returns_422" in text
+    assert "def test_promote_happy_path" in text
+    # list_items: 2 tests (GET)
+    assert "def test_list_items_unauthenticated_returns_401" in text
+    assert "def test_list_items_happy_path" in text
+    assert "def test_list_items_invalid_body_returns_422" not in text
+    # delete_item: 2 tests (DELETE) + path-param substitution
+    assert "def test_delete_item_unauthenticated_returns_401" in text
+    assert "def test_delete_item_happy_path" in text
+    assert "def test_delete_item_invalid_body_returns_422" not in text
+
+
+def test_generate_test_scaffold_output_compiles():
+    """The generated source is valid Python — compile() must succeed."""
+
+    text = generate_test_scaffold(_ScaffoldManager)
+    compile(text, "<scaffold>", "exec")
+
+
+def test_write_test_scaffold_creates_file(tmp_path):
+    """``write_test_scaffold`` writes the scaffold under the convention
+    ``{ManagerName}_custom_routes_scaffold_test.py``."""
+
+    target = write_test_scaffold(_ScaffoldManager, str(tmp_path))
+    assert target is not None
+    assert target.endswith("_ScaffoldManager_custom_routes_scaffold_test.py")
+    import os
+
+    assert os.path.exists(target)
+
+
+def test_write_test_scaffold_preserves_existing_by_default(tmp_path):
+    """Codegen must not clobber author-edited scaffolds — the second
+    call returns None and leaves the existing file untouched."""
+
+    first = write_test_scaffold(_ScaffoldManager, str(tmp_path))
+    assert first is not None
+    with open(first, "r", encoding="utf-8") as fh:
+        contents = fh.read()
+    # Author "edits" the scaffold.
+    sentinel = "# AUTHOR EDIT: do not regenerate"
+    with open(first, "w", encoding="utf-8") as fh:
+        fh.write(sentinel + "\n" + contents)
+    second = write_test_scaffold(_ScaffoldManager, str(tmp_path))
+    assert second is None
+    with open(first, "r", encoding="utf-8") as fh:
+        assert sentinel in fh.read()
+
+
+def test_write_test_scaffold_overwrites_when_explicit(tmp_path):
+    """``overwrite=True`` re-emits the scaffold even when the file
+    exists — used by the ``regenerate-all`` codegen command."""
+
+    first = write_test_scaffold(_ScaffoldManager, str(tmp_path))
+    assert first is not None
+    with open(first, "w", encoding="utf-8") as fh:
+        fh.write("# author edit")
+    second = write_test_scaffold(_ScaffoldManager, str(tmp_path), overwrite=True)
+    assert second == first
+    with open(first, "r", encoding="utf-8") as fh:
+        assert "# author edit" not in fh.read()
+
+
+def test_has_existing_scaffold(tmp_path):
+    """The codegen helper that callers consult before regenerating."""
+
+    assert not has_existing_scaffold(_ScaffoldManager, str(tmp_path))
+    write_test_scaffold(_ScaffoldManager, str(tmp_path))
+    assert has_existing_scaffold(_ScaffoldManager, str(tmp_path))
+
+
+def test_write_test_scaffold_returns_none_for_no_routes(tmp_path):
+    """A manager with no @custom_route methods does not emit a scaffold."""
+
+    class M: ...
+
+    assert write_test_scaffold(M, str(tmp_path)) is None
+
+
+def test_generate_test_scaffold_no_header_omits_imports():
+    """``include_header=False`` produces just the test functions — used
+    when appending scaffolds to an existing test file."""
+
+    text = generate_test_scaffold(_ScaffoldManager, include_header=False)
+    assert "from fastapi.testclient" not in text
+    assert "def test_promote_" in text

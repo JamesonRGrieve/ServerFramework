@@ -1,15 +1,18 @@
-"""Tests for the Valkey extension.
+"""Tests for the DatabaseMemory extension.
 
 Covers:
     - Extension metadata + ability declarations
-    - Provider URL resolution (instance.api_key vs env vs default)
-    - PRV_Fake_Valkey publish/subscribe semantics (the no-broker test seam)
-    - PRV_Fake_Valkey end-to-end through `RedisStreamsEventBus`
+    - Provider URL resolution (instance.api_key vs env vs default,
+      including the legacy VALKEY_URL fallback)
+    - PRV_Fake_DatabaseMemory publish/subscribe semantics (the no-broker test seam)
+    - PRV_Fake_DatabaseMemory end-to-end through `RedisStreamsEventBus`
     - PRV_Valkey raises a clear error when redis-py is missing
+    - Item 98: restructure validates against the EXT_Database precedent
+      (extensions are named for protocol families, providers for backends)
 
-Real PRV_Valkey integration tests against a sandbox Valkey instance run
-under the `external_api` marker (Item 15) and are auto-xfailed when
-`VALKEY_URL` is not configured.
+Real PRV_Valkey integration tests against a sandbox instance run under
+the `external_api` marker (Item 15) and are auto-xfailed when
+`DATABASE_MEMORY_URL` (or `VALKEY_URL`) is not configured.
 """
 
 from __future__ import annotations
@@ -21,25 +24,20 @@ import sys
 import pytest
 from pydantic import BaseModel
 
-from serverframework.extensions.valkey.EXT_Valkey import (
-    AbstractValkeyProvider,
-    EXT_Valkey,
+from serverframework.extensions.database_memory.EXT_DatabaseMemory import (
+    AbstractDatabaseMemoryProvider,
+    EXT_DatabaseMemory,
 )
-from serverframework.extensions.valkey.PRV_Fake_Valkey import (
-    PRV_Fake_Valkey,
-    _FakeValkeyStreamsTransport,
+from serverframework.extensions.database_memory.PRV_Fake_DatabaseMemory import (
+    PRV_Fake_DatabaseMemory,
+    _FakeDatabaseMemoryStreamsTransport,
 )
-from serverframework.extensions.valkey.PRV_Valkey import PRV_Valkey
+from serverframework.extensions.database_memory.PRV_Valkey import PRV_Valkey
 from serverframework.logic.EventBus import (
     BrokerTransport,
     InMemoryBrokerTransport,
     RedisStreamsEventBus,
 )
-
-
-# ---------------------------------------------------------------------------
-# Test event class
-# ---------------------------------------------------------------------------
 
 
 class _UserSignedUp(BaseModel):
@@ -55,22 +53,21 @@ class _FakeInstance:
 
 
 # ---------------------------------------------------------------------------
-# Extension metadata
+# Extension metadata — Item 98 protocol-family naming
 # ---------------------------------------------------------------------------
 
 
-def test_extension_name_is_valkey():
-    """Naming policy: FOSS api-parity. Valkey is the FOSS continuation
-    of Redis post-license-change; the extension is named after the
-    project, not the wire protocol."""
-    assert EXT_Valkey.name == "valkey"
-    assert EXT_Valkey.friendly_name == "Valkey (Redis-protocol)"
+def test_extension_name_is_database_memory():
+    """Item 98: the extension is named for the protocol family
+    (in-memory data stores), not for any one product."""
+    assert EXT_DatabaseMemory.name == "database_memory"
+    assert EXT_DatabaseMemory.friendly_name == "Database (In-Memory)"
 
 
 def test_extension_declares_canonical_abilities():
     """The four core abilities the framework relies on, plus the
     broker-transport ability the EventBus consumes."""
-    abilities = EXT_Valkey._abilities
+    abilities = EXT_DatabaseMemory._abilities
     assert "key_value" in abilities
     assert "streams" in abilities
     assert "pubsub" in abilities
@@ -79,15 +76,31 @@ def test_extension_declares_canonical_abilities():
 
 
 def test_extension_declares_redis_py_dependency():
-    """`Dependencies` is a `List[Dependency]` subclass — iterate directly."""
-    names = {d.name for d in EXT_Valkey.dependencies}
+    """`Dependencies` is a `List[Dependency]` subclass — iterate directly.
+
+    redis-py is the dep for the default reference backend (PRV_Valkey);
+    future Memcached / DragonflyDB providers add their own client deps
+    when they land."""
+    names = {d.name for d in EXT_DatabaseMemory.dependencies}
     assert "redis" in names
 
 
 def test_get_root_instance_returns_concrete_provider():
-    """Item 19: root-scoped provider for system functionality. The
-    framework's EventBus and rate-limiter call this to bond a connection."""
-    assert EXT_Valkey.get_root_instance() is PRV_Valkey
+    """Item 19 + Item 98: the default root provider is PRV_Valkey
+    (the reference Valkey/Redis-protocol implementation)."""
+    assert EXT_DatabaseMemory.get_root_instance() is PRV_Valkey
+
+
+def test_prv_valkey_subclasses_database_memory_abstract():
+    """Item 98: PRV_Valkey is a concrete provider under the
+    AbstractDatabaseMemoryProvider family (not the deprecated
+    AbstractValkeyProvider)."""
+    assert issubclass(PRV_Valkey, AbstractDatabaseMemoryProvider)
+
+
+def test_fake_subclasses_database_memory_abstract():
+    """Item 98: the protocol-agnostic fake lives at the family level."""
+    assert issubclass(PRV_Fake_DatabaseMemory, AbstractDatabaseMemoryProvider)
 
 
 # ---------------------------------------------------------------------------
@@ -100,16 +113,37 @@ def test_resolve_url_prefers_instance_api_key():
     assert PRV_Valkey._resolve_url(instance) == "redis://specific-host:6380/2"
 
 
-def test_resolve_url_falls_back_to_env(monkeypatch):
-    monkeypatch.setenv("VALKEY_URL", "redis://from-env:6379/0")
+def test_resolve_url_falls_back_to_database_memory_env(monkeypatch):
+    """Item 98: the canonical env name is DATABASE_MEMORY_URL (matching
+    the protocol-family extension name)."""
+    monkeypatch.delenv("VALKEY_URL", raising=False)
+    monkeypatch.setenv("DATABASE_MEMORY_URL", "redis://from-env-canonical:6379/0")
     instance = _FakeInstance(api_key=None)
-    assert PRV_Valkey._resolve_url(instance) == "redis://from-env:6379/0"
+    assert PRV_Valkey._resolve_url(instance) == "redis://from-env-canonical:6379/0"
+
+
+def test_resolve_url_legacy_valkey_env_still_honored(monkeypatch):
+    """Item 98: deployments that pre-dated the rename keep working —
+    the legacy VALKEY_URL env var is consulted when the canonical
+    DATABASE_MEMORY_URL is not set."""
+    monkeypatch.delenv("DATABASE_MEMORY_URL", raising=False)
+    monkeypatch.setenv("VALKEY_URL", "redis://legacy-env:6379/0")
+    instance = _FakeInstance(api_key=None)
+    assert PRV_Valkey._resolve_url(instance) == "redis://legacy-env:6379/0"
+
+
+def test_resolve_url_canonical_wins_over_legacy(monkeypatch):
+    """Item 98: when both env vars are set, the canonical name wins."""
+    monkeypatch.setenv("DATABASE_MEMORY_URL", "redis://canonical:6379/0")
+    monkeypatch.setenv("VALKEY_URL", "redis://legacy:6379/0")
+    instance = _FakeInstance(api_key=None)
+    assert PRV_Valkey._resolve_url(instance) == "redis://canonical:6379/0"
 
 
 def test_resolve_url_default_when_unset(monkeypatch):
+    monkeypatch.delenv("DATABASE_MEMORY_URL", raising=False)
     monkeypatch.delenv("VALKEY_URL", raising=False)
     instance = _FakeInstance(api_key=None)
-    # Default is the localhost dev URL.
     url = PRV_Valkey._resolve_url(instance)
     assert url.startswith("redis://localhost:6379")
 
@@ -119,14 +153,12 @@ def test_prv_valkey_connect_raises_clear_error_when_redis_missing(monkeypatch):
     a RuntimeError pointing at the dependency manager. The framework's
     extension loader installs missing pip deps before the provider is
     exercised at runtime; this guards against import-time crashes."""
-    # Stash redis if present, replace with a sentinel that imports as None.
     original = sys.modules.get("redis")
     original_async = sys.modules.get("redis.asyncio")
     sys.modules["redis"] = None  # type: ignore[assignment]
     sys.modules["redis.asyncio"] = None  # type: ignore[assignment]
 
     instance = _FakeInstance(api_key="redis://no-host/0")
-    # Must clear cached connection from earlier tests.
     PRV_Valkey._connections.clear()
     try:
         with pytest.raises(RuntimeError, match="redis>=4.2"):
@@ -148,8 +180,8 @@ def test_prv_valkey_connect_raises_clear_error_when_redis_missing(monkeypatch):
 @pytest.mark.asyncio
 async def test_fake_streams_transport_round_trip():
     instance = _FakeInstance()
-    transport = PRV_Fake_Valkey.build_streams_transport(instance)
-    assert isinstance(transport, _FakeValkeyStreamsTransport)
+    transport = PRV_Fake_DatabaseMemory.build_streams_transport(instance)
+    assert isinstance(transport, _FakeDatabaseMemoryStreamsTransport)
 
     received: list = []
 
@@ -165,7 +197,7 @@ async def test_fake_streams_transport_round_trip():
 @pytest.mark.asyncio
 async def test_fake_streams_transport_isolates_topics():
     instance = _FakeInstance()
-    transport = PRV_Fake_Valkey.build_streams_transport(instance)
+    transport = PRV_Fake_DatabaseMemory.build_streams_transport(instance)
 
     a_received: list = []
     b_received: list = []
@@ -189,15 +221,14 @@ async def test_fake_streams_transport_isolates_topics():
 async def test_fake_streams_transport_swallows_handler_errors():
     """Cross-process broker semantics: a subscriber failure must not
     take the publisher down. The fake transport mirrors the contract
-    so tests verify the right behavior without standing up Valkey."""
+    so tests verify the right behavior without standing up a backend."""
     instance = _FakeInstance()
-    transport = PRV_Fake_Valkey.build_streams_transport(instance)
+    transport = PRV_Fake_DatabaseMemory.build_streams_transport(instance)
 
     async def bad(payload: bytes) -> None:
         raise RuntimeError("subscriber blew up")
 
     await transport.subscribe("topic", bad)
-    # Must not raise.
     await transport.send("topic", b"payload")
     await transport.close()
 
@@ -205,7 +236,7 @@ async def test_fake_streams_transport_swallows_handler_errors():
 @pytest.mark.asyncio
 async def test_fake_transport_close_blocks_further_send():
     instance = _FakeInstance()
-    transport = PRV_Fake_Valkey.build_streams_transport(instance)
+    transport = PRV_Fake_DatabaseMemory.build_streams_transport(instance)
     await transport.close()
     with pytest.raises(RuntimeError, match="closed"):
         await transport.send("topic", b"x")
@@ -214,7 +245,7 @@ async def test_fake_transport_close_blocks_further_send():
 @pytest.mark.asyncio
 async def test_fake_transport_close_blocks_further_subscribe():
     instance = _FakeInstance()
-    transport = PRV_Fake_Valkey.build_streams_transport(instance)
+    transport = PRV_Fake_DatabaseMemory.build_streams_transport(instance)
     await transport.close()
 
     async def h(p: bytes) -> None:
@@ -225,19 +256,19 @@ async def test_fake_transport_close_blocks_further_subscribe():
 
 
 # ---------------------------------------------------------------------------
-# End-to-end: RedisStreamsEventBus consuming the Valkey transport
+# End-to-end: RedisStreamsEventBus consuming the DatabaseMemory transport
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_event_bus_consumes_valkey_transport_end_to_end():
-    """`RedisStreamsEventBus(transport=PRV_Fake_Valkey.build_streams_transport(...))`
+async def test_event_bus_consumes_database_memory_transport_end_to_end():
+    """`RedisStreamsEventBus(transport=PRV_Fake_DatabaseMemory.build_streams_transport(...))`
     publishes through the fake transport and dispatches into the
     subscribed handler. Verifies the EventBus duck-types correctly
     against the extension-supplied transport without any redis SDK
     on the framework's path."""
     instance = _FakeInstance()
-    transport = PRV_Fake_Valkey.build_streams_transport(instance)
+    transport = PRV_Fake_DatabaseMemory.build_streams_transport(instance)
     bus = RedisStreamsEventBus(transport=transport)
 
     received: list = []
@@ -246,7 +277,6 @@ async def test_event_bus_consumes_valkey_transport_end_to_end():
         received.append(event.user_id)
 
     bus.subscribe(_UserSignedUp, handler)
-    # Subscribe schedules an async transport.subscribe call; give it a tick.
     await asyncio.sleep(0)
     await bus.publish(_UserSignedUp(user_id="u-42", email="x@x"))
 
@@ -259,10 +289,39 @@ def test_streams_transport_conforms_to_broker_transport_contract():
     same surface as `BrokerTransport`. No nominal subclass relationship
     is required (the EventBus duck-types), but every method must exist."""
     instance = _FakeInstance()
-    transport = PRV_Fake_Valkey.build_streams_transport(instance)
+    transport = PRV_Fake_DatabaseMemory.build_streams_transport(instance)
     for method in ("send", "subscribe", "close"):
         assert hasattr(transport, method)
         assert callable(getattr(transport, method))
+
+
+# ---------------------------------------------------------------------------
+# Item 98 acceptance: the old valkey package is gone
+# ---------------------------------------------------------------------------
+
+
+def test_old_valkey_extension_directory_removed():
+    """Item 98 acceptance criterion: a fresh checkout has no
+    extensions/valkey/ directory. The framework has not yet shipped
+    to PyPI (Item 86) so no compat shim is required."""
+    import pathlib
+
+    from serverframework.extensions.database_memory import EXT_DatabaseMemory as _self
+
+    extensions_dir = pathlib.Path(_self.__file__).parent.parent
+    assert not (extensions_dir / "valkey").exists(), (
+        "extensions/valkey/ should be removed by the Item 98 restructure"
+    )
+
+
+def test_old_valkey_imports_no_longer_resolvable():
+    """Item 98 acceptance criterion: the old import paths are gone.
+    No back-compat shim is needed because the framework has not shipped
+    to PyPI yet."""
+    import importlib
+
+    with pytest.raises(ImportError):
+        importlib.import_module("serverframework.extensions.valkey.EXT_Valkey")
 
 
 # ---------------------------------------------------------------------------
@@ -272,13 +331,14 @@ def test_streams_transport_conforms_to_broker_transport_contract():
 
 @pytest.mark.external_api
 @pytest.mark.skipif(
-    not os.environ.get("VALKEY_URL"),
-    reason="Requires VALKEY_URL pointing at a sandbox Valkey instance",
+    not (os.environ.get("DATABASE_MEMORY_URL") or os.environ.get("VALKEY_URL")),
+    reason="Requires DATABASE_MEMORY_URL (or legacy VALKEY_URL) pointing at a sandbox instance",
 )
 def test_real_prv_valkey_against_sandbox():
     """End-to-end against a real Valkey/Redis instance. Auto-xfailed in
     branches without the credential per Item 15."""
-    instance = _FakeInstance(api_key=os.environ["VALKEY_URL"])
+    url = os.environ.get("DATABASE_MEMORY_URL") or os.environ["VALKEY_URL"]
+    instance = _FakeInstance(api_key=url)
     PRV_Valkey._connections.clear()
     client = PRV_Valkey.connect(instance)
     assert client is not None

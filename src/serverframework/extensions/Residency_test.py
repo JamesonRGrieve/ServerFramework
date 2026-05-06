@@ -19,6 +19,9 @@ from serverframework.extensions.Residency import (
     NoInJurisdictionProviderError,
     ResidencyJurisdiction,
     ResidencyRegion,
+    filter_chain_by_jurisdiction,
+    get_tenant_jurisdiction_resolver,
+    set_tenant_jurisdiction_resolver,
 )
 
 
@@ -30,8 +33,27 @@ def _reset_registry():
     order tests run in could change their outcomes.
     """
     JurisdictionRegistry.clear()
+    set_tenant_jurisdiction_resolver(None)
     yield
     JurisdictionRegistry.clear()
+    set_tenant_jurisdiction_resolver(None)
+
+
+class _FakeProviderInstance:
+    def __init__(self, region=None):
+        self.region = region
+
+
+class _FakeRotationProviderInstance:
+    """Mirrors the wrapper RotationManager passes to the filter."""
+
+    def __init__(self, region=None):
+        self.provider_instance = _FakeProviderInstance(region=region)
+
+
+class _FakeRequester:
+    def __init__(self, id_="u1"):
+        self.id = id_
 
 
 class TestJurisdictionRegistry:
@@ -158,3 +180,114 @@ class TestNoInJurisdictionProviderError:
         assert isinstance(ei.value, NoInJurisdictionProviderError)
         assert ei.value.status_code == 400
         assert ei.value.requester_id == "u2"
+
+
+# ---------------------------------------------------------------------------
+# Item 36 — tenant jurisdiction resolver registration + chain filter
+# ---------------------------------------------------------------------------
+
+
+class TestTenantJurisdictionResolverRegistration:
+    def test_default_unregistered(self):
+        assert get_tenant_jurisdiction_resolver() is None
+
+    def test_set_and_get_round_trip(self):
+        def resolver(req):
+            return "EU"
+
+        set_tenant_jurisdiction_resolver(resolver)
+        assert get_tenant_jurisdiction_resolver() is resolver
+
+    def test_unset_via_none(self):
+        set_tenant_jurisdiction_resolver(lambda r: "EU")
+        set_tenant_jurisdiction_resolver(None)
+        assert get_tenant_jurisdiction_resolver() is None
+
+
+class TestFilterChainByJurisdiction:
+    def test_no_resolver_returns_chain_unchanged(self):
+        chain = [_FakeRotationProviderInstance("eu-west-1"),
+                 _FakeRotationProviderInstance("us-east-1")]
+        out = filter_chain_by_jurisdiction(chain, _FakeRequester(), ability="x")
+        assert out == chain
+
+    def test_resolver_returns_none_returns_chain_unchanged(self):
+        set_tenant_jurisdiction_resolver(lambda r: None)
+        chain = [_FakeRotationProviderInstance("us-east-1")]
+        out = filter_chain_by_jurisdiction(chain, _FakeRequester(), ability="x")
+        assert out == chain
+
+    def test_filters_to_in_jurisdiction_instances(self):
+        JurisdictionRegistry.register("EU", ["eu-west-1", "eu-central-1"])
+        set_tenant_jurisdiction_resolver(lambda r: "EU")
+        eu_west = _FakeRotationProviderInstance("eu-west-1")
+        eu_central = _FakeRotationProviderInstance("eu-central-1")
+        us_east = _FakeRotationProviderInstance("us-east-1")
+        chain = [eu_west, us_east, eu_central]
+        out = filter_chain_by_jurisdiction(chain, _FakeRequester(), ability="x")
+        assert out == [eu_west, eu_central]
+
+    def test_drops_instances_with_unregistered_region(self):
+        JurisdictionRegistry.register("EU", ["eu-west-1"])
+        set_tenant_jurisdiction_resolver(lambda r: "EU")
+        eu_west = _FakeRotationProviderInstance("eu-west-1")
+        chain = [eu_west, _FakeRotationProviderInstance("eu-elsewhere")]
+        out = filter_chain_by_jurisdiction(chain, _FakeRequester(), ability="x")
+        assert out == [eu_west]
+
+    def test_drops_instances_with_no_region(self):
+        """Item 36 acceptance: an instance without an explicit residency
+        region must not silently route under a residency policy. The
+        framework refuses to assume placement."""
+        JurisdictionRegistry.register("EU", ["eu-west-1"])
+        set_tenant_jurisdiction_resolver(lambda r: "EU")
+        eu_west = _FakeRotationProviderInstance("eu-west-1")
+        chain = [eu_west, _FakeRotationProviderInstance(None)]
+        out = filter_chain_by_jurisdiction(chain, _FakeRequester(), ability="x")
+        assert out == [eu_west]
+
+    def test_raises_when_chain_empty_under_jurisdiction(self):
+        JurisdictionRegistry.register("EU", ["eu-west-1"])
+        set_tenant_jurisdiction_resolver(lambda r: "EU")
+        chain = [_FakeRotationProviderInstance("us-east-1")]
+        with pytest.raises(NoInJurisdictionProviderError) as ei:
+            filter_chain_by_jurisdiction(
+                chain, _FakeRequester("u1"), ability="charge.create"
+            )
+        assert ei.value.requester_id == "u1"
+        assert ei.value.ability == "charge.create"
+        assert ei.value.jurisdiction == "EU"
+
+    def test_raises_with_explicit_requester_id(self):
+        JurisdictionRegistry.register("EU", ["eu-west-1"])
+        set_tenant_jurisdiction_resolver(lambda r: "EU")
+        with pytest.raises(NoInJurisdictionProviderError) as ei:
+            filter_chain_by_jurisdiction(
+                [], _FakeRequester("ignored"), ability="x", requester_id="explicit"
+            )
+        assert ei.value.requester_id == "explicit"
+
+    def test_works_with_bare_provider_instance_entries(self):
+        """The filter accepts both rotation wrappers and bare provider
+        instances — the helper looks for ``provider_instance.region``
+        first, then ``region`` directly."""
+        JurisdictionRegistry.register("EU", ["eu-west-1"])
+        set_tenant_jurisdiction_resolver(lambda r: "EU")
+        bare_eu = _FakeProviderInstance("eu-west-1")
+        bare_us = _FakeProviderInstance("us-east-1")
+        out = filter_chain_by_jurisdiction(
+            [bare_eu, bare_us], _FakeRequester(), ability="x"
+        )
+        assert out == [bare_eu]
+
+    def test_resolver_exception_is_safe(self):
+        """A buggy resolver must not crash rotation; the filter degrades
+        to no-op rather than failing the call."""
+
+        def bad_resolver(req):
+            raise RuntimeError("buggy")
+
+        set_tenant_jurisdiction_resolver(bad_resolver)
+        chain = [_FakeRotationProviderInstance("eu-west-1")]
+        out = filter_chain_by_jurisdiction(chain, _FakeRequester(), ability="x")
+        assert out == chain

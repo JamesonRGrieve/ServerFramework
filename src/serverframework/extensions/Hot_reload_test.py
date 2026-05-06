@@ -212,3 +212,54 @@ def test_install_sighup_handler_does_not_raise() -> None:
 
     handler = signal.getsignal(signal.SIGHUP)
     assert callable(handler)
+
+
+def test_sighup_exit_code_is_documented_sentinel() -> None:
+    """Item 20 graceful-restart contract: the exit code is the documented
+    sentinel (75 / EX_TEMPFAIL), not a random value, so supervisors can
+    distinguish "operator asked us to restart" from "we crashed"."""
+    from serverframework.app import SIGHUP_RESTART_EXIT_CODE
+
+    assert SIGHUP_RESTART_EXIT_CODE == 75
+
+
+def test_install_sighup_handler_on_windows_is_no_op(monkeypatch) -> None:
+    """Item 20 portability: platforms without SIGHUP (Windows) do not crash
+    the framework — the installer silently no-ops and operators run a
+    blue-green deployment instead."""
+    import signal
+
+    from fastapi import FastAPI
+
+    from serverframework.app import install_sighup_handler
+
+    # Hide SIGHUP to simulate a Windows build.
+    if hasattr(signal, "SIGHUP"):
+        monkeypatch.delattr(signal, "SIGHUP", raising=False)
+    install_sighup_handler(FastAPI())  # Must not raise.
+
+
+def test_rebuild_registry_added_and_removed_combined(
+    isolated_extensions_root: Path,
+) -> None:
+    """Item 20 acceptance: SIGHUP applies the diff cleanly when both an
+    add and a remove are present. The new registry only carries what is
+    on disk; removed extensions are absent (the caller drops the old
+    registry to release their hooks/routers/services)."""
+    _write_manifest_extension(isolated_extensions_root, "stable", "1.0.0")
+    _write_manifest_extension(isolated_extensions_root, "dropme", "0.1.0")
+    prev = ExtensionRegistry(
+        "", extensions_path=str(isolated_extensions_root)
+    )
+    # Seed the previous snapshot to reflect "before-SIGHUP" state.
+    prev.loaded_extensions["stable"] = "1.0.0"
+    prev.loaded_extensions["dropme"] = "0.1.0"
+
+    # Operator removes "dropme" and adds "newcomer" between SIGHUPs.
+    shutil.rmtree(isolated_extensions_root / "dropme")
+    _write_manifest_extension(isolated_extensions_root, "newcomer", "1.0.0")
+
+    _, diff = rebuild_registry(prev, run_migrations=False)
+    assert "newcomer" in diff.added
+    assert "dropme" in diff.removed
+    assert "stable" in diff.unchanged

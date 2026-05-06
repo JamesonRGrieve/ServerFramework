@@ -166,8 +166,9 @@ def test_redis_streams_event_bus_constructor_accepts_transport():
 def test_no_sdk_factory_methods_on_broker_buses():
     """The framework's core does not import broker SDKs. Each adapter
     accepts a `BrokerTransport` at construction time; the production
-    transport comes from an extension (Valkey for Redis-protocol, Kafka
-    extension when one ships, etc.). Verify there's no `from_url`,
+    transport comes from an extension (DatabaseMemory's PRV_Valkey for
+    the Redis-protocol family, Kafka extension when one ships, etc.).
+    Verify there's no `from_url`,
     `from_bootstrap`, or `from_servers` factory leaking SDK imports
     into the framework's core."""
     assert not hasattr(RedisStreamsEventBus, "from_url")

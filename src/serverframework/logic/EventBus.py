@@ -333,20 +333,26 @@ class RedisStreamsEventBus(_BrokerEventBus):
     """Valkey/Redis-Streams-backed event bus.
 
     The framework's core does not import ``redis-py``; the transport
-    comes from the Valkey extension (``EXT_Valkey``). Wire it via:
+    comes from the DatabaseMemory extension (``EXT_DatabaseMemory``,
+    Item 98) — specifically from its default reference provider
+    ``PRV_Valkey``. Wire it via:
 
-        from serverframework.extensions.valkey.EXT_Valkey import EXT_Valkey
-        provider = EXT_Valkey.get_root_instance()  # PRV_Valkey
+        from serverframework.extensions.database_memory.EXT_DatabaseMemory import (
+            EXT_DatabaseMemory,
+        )
+        provider = EXT_DatabaseMemory.get_root_instance()  # PRV_Valkey
         transport = provider.build_streams_transport(
             instance, consumer_group="serverframework"
         )
         bus = RedisStreamsEventBus(transport=transport, dlq_topic="events.dlq")
 
     The class name retains "RedisStreams" because that's the wire-protocol
-    feature it consumes — Valkey, Redis OSS, and Redis Inc.'s commercial
-    distribution all expose Streams identically. The provider extension
-    is named "valkey" per the FOSS-api-parity naming policy; the bus
-    consumes whatever transport that extension hands it.
+    feature it consumes — Valkey, Redis OSS, Redis Inc.'s commercial
+    distribution, KeyDB, and DragonflyDB all expose Streams identically.
+    The *extension* is named "database_memory" per the framework's
+    "extensions are named for protocol families" policy (Item 98); the
+    bus consumes whatever transport that extension's chosen provider
+    hands it.
     """
 
 

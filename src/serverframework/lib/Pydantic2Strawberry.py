@@ -1769,6 +1769,51 @@ class GraphQLManager(ErrorHandlerMixin):
             )
             return ANY_SCALAR
 
+    def _apply_field_acl(self, manager: Any, result: Any) -> Any:
+        """Item 45 — apply field-level ACL to a GraphQL resolver result.
+
+        Walks the manager → requester chain to resolve ``has_permission``
+        and removes (or masks) restricted fields from the serialized
+        payload before Strawberry hands it back to the client. Returns
+        ``result`` unchanged when no permission resolver is present
+        (framework-internal callers, system-key audit jobs) so the same
+        resolver code paths work end-to-end with and without ABAC.
+
+        The model class for the ACL lookup is derived from
+        ``manager.BaseModel`` / ``manager.Model`` (the same source
+        ``_generate_components_for_model`` consults). The helper lazy-
+        imports the FieldACL primitives to keep the GraphQL stack
+        importable even if the FieldACL module is absent in a stripped
+        deployment build.
+        """
+        if result is None:
+            return result
+        try:
+            from serverframework.lib.FieldACL import apply_field_acl_to_response
+            from serverframework.lib.Pydantic2FastAPI import _resolve_has_permission
+        except Exception:
+            return result
+
+        has_perm = _resolve_has_permission(manager)
+        if has_perm is None:
+            return result
+
+        model_cls: Optional[Type[BaseModel]] = None
+        if hasattr(manager, "BaseModel"):
+            model_cls = manager.BaseModel
+        elif hasattr(manager, "Model"):
+            model_cls = manager.Model
+        if model_cls is None:
+            return result
+
+        import os
+
+        sentinel_mode = os.getenv("FIELD_ACL_SENTINEL")
+        kwargs: Dict[str, Any] = {}
+        if sentinel_mode:
+            kwargs["sentinel_mode"] = sentinel_mode
+        return apply_field_acl_to_response(result, model_cls, has_perm, **kwargs)
+
     def _add_query_resolver(
         self,
         field_name: str,
@@ -1793,7 +1838,7 @@ class GraphQLManager(ErrorHandlerMixin):
 
                     # For users, always query the requester (no ID parameter allowed)
                     result = manager.get(id=requester_id, include=None, fields=None)
-                    return result
+                    return self._apply_field_acl(manager, result)
                 except Exception as e:
                     logger.error(f"Error in {field_name} resolver: {e}")
                     raise
@@ -1817,7 +1862,7 @@ class GraphQLManager(ErrorHandlerMixin):
 
                     # Call manager.get with just the ID
                     result = manager.get(id=id, include=None, fields=None)
-                    return result
+                    return self._apply_field_acl(manager, result)
                 except Exception as e:
                     logger.error(f"Error in {field_name} resolver: {e}")
                     raise
@@ -1870,11 +1915,13 @@ class GraphQLManager(ErrorHandlerMixin):
                             fields=None,
                             **filter_params,
                         )
-                        return result
+                        return self._apply_field_acl(manager, result)
                     else:
                         # No teamId provided - return only the requester
                         user = manager.get(id=requester_id, include=None, fields=None)
-                        return [user] if user else []
+                        if user is None:
+                            return []
+                        return [self._apply_field_acl(manager, user)]
                 except Exception as e:
                     logger.error(f"Error in {field_name} resolver: {e}")
                     return []
@@ -1908,7 +1955,7 @@ class GraphQLManager(ErrorHandlerMixin):
                         include=None,
                         fields=None,
                     )
-                    return result
+                    return self._apply_field_acl(manager, result)
                 except Exception as e:
                     logger.error(f"Error in {field_name} resolver: {e}")
                     return []
@@ -1971,7 +2018,7 @@ class GraphQLManager(ErrorHandlerMixin):
                 except Exception as e:
                     logger.log("SQL", f"Failed to broadcast create event: {e}")
 
-                return result
+                return self._apply_field_acl(manager, result)
             except Exception as e:
                 logger.error(f"Error in {field_name} resolver: {e}")
                 raise
@@ -2034,7 +2081,7 @@ class GraphQLManager(ErrorHandlerMixin):
                     except Exception as e:
                         logger.log("SQL", f"Failed to broadcast update event: {e}")
 
-                    return result
+                    return self._apply_field_acl(manager, result)
                 except Exception as e:
                     logger.error(f"Error in {field_name} resolver: {e}")
                     raise
@@ -2078,7 +2125,7 @@ class GraphQLManager(ErrorHandlerMixin):
                     except Exception as e:
                         logger.log("SQL", f"Failed to broadcast update event: {e}")
 
-                    return result
+                    return self._apply_field_acl(manager, result)
                 except Exception as e:
                     logger.error(f"Error in {field_name} resolver: {e}")
                     raise

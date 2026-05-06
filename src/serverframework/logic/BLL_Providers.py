@@ -1511,6 +1511,28 @@ class RotationManager(AbstractBLLManager, RouterMixin):
                 detail=f"No provider instances found for rotation {self.target_id}",
             )
 
+        # Item 36 — apply data-residency jurisdiction filter when a tenant
+        # resolver is registered. No-op when no resolver is registered, no
+        # jurisdiction applies, or the chain already satisfies the policy.
+        # NoInJurisdictionProviderError surfaces as a typed 400 to callers.
+        try:
+            from serverframework.extensions.Residency import (
+                filter_chain_by_jurisdiction,
+            )
+
+            rotation_provider_instances = filter_chain_by_jurisdiction(
+                rotation_provider_instances,
+                self.requester,
+                ability=str(ability or "unknown"),
+                requester_id=getattr(self.requester, "id", None),
+            )
+        except HTTPException:
+            raise
+        except Exception:  # pragma: no cover - defensive
+            # Residency filter must never crash rotation; missing module or
+            # resolver bugs degrade to "no filtering" rather than failure.
+            pass
+
         # Item 51 — if a stickiness key is present, try the pinned provider
         # first. On success → return. On failure → invalidate the pin and
         # fall through to the default linear rotation. Skip pin if the
