@@ -1,166 +1,171 @@
-from typing import Dict, Optional
+"""User-merge BLL.
+
+Records that a *target* user account was consolidated into an *initiating*
+user account. Movement of side data (team memberships, etc.) is delegated
+to the canonical managers in ``serverframework.logic.BLL_Auth``; this
+extension only owns the audit row.
+
+Pattern reference: ``auth_invitations/BLL_Invitations.py``.
+"""
+
+from datetime import datetime
+from typing import ClassVar, Dict, List, Optional, Type
 
 from fastapi import HTTPException
 from pydantic import BaseModel, Field
 
-from serverframework.extensions.auth_merge.DB_Auth_Merge import UserMerge
+from serverframework.lib.Environment import env
+from serverframework.lib.Pydantic2FastAPI import AuthType, RouterMixin
 from serverframework.logic.AbstractLogicManager import (
     AbstractBLLManager,
-    BaseMixinModel,
+    ApplicationModel,
+    DateSearchModel,
+    ModelMeta,
     StringSearchModel,
     UpdateMixinModel,
 )
 from serverframework.logic.BLL_Auth import (
-    User,
-    UserMetadata,
-    UserMetadataManager,
-    UserTeam,
+    UserManager,
+    UserModel,
     UserTeamManager,
+    UserTeamModel,
 )
 
 
-class UserMergeModel(BaseMixinModel, UpdateMixinModel):
-    initiating_user_id: str = Field(..., description="ID of the initiating user")
-    target_user_id: str = Field(..., description="ID of the target user")
+class UserMergeModel(
+    ApplicationModel,
+    UpdateMixinModel,
+    metaclass=ModelMeta,
+):
+    """Audit record of a user-account merge."""
 
-    class ReferenceID:
-        user_merge_id: str = Field(..., description="The ID of the related user merge")
+    Manager: ClassVar[Type["UserMergeManager"]] = None
+    initiating_user_id: str = Field(
+        ..., description="User who survives the merge (data-owner)"
+    )
+    target_user_id: str = Field(
+        ..., description="User being merged into the initiating user; deactivated."
+    )
+    completed_at: Optional[datetime] = Field(
+        None, description="When the side-data transfer finished"
+    )
 
-        class Optional:
-            user_merge_id: Optional[str] = None
-
-        class Search:
-            user_merge_id: Optional[StringSearchModel] = None
+    table_comment: ClassVar[str] = (
+        "Audit record of user-account consolidation events"
+    )
 
     class Create(BaseModel):
-        initiating_user_id: str = Field(..., description="ID of the initiating user")
-        target_user_id: str = Field(..., description="ID of the target user")
+        initiating_user_id: str
+        target_user_id: str
 
     class Update(BaseModel):
-        # No updatable fields for UserMerge
-        pass
+        completed_at: Optional[datetime] = None
 
-    class Search(BaseMixinModel.Search):
+    class Search(ApplicationModel.Search, UpdateMixinModel.Search):
         initiating_user_id: Optional[StringSearchModel] = None
         target_user_id: Optional[StringSearchModel] = None
+        completed_at: Optional[DateSearchModel] = None
 
 
-class UserMergeReferenceModel(UserMergeModel.ReferenceID):
-    user_merge: Optional[UserMergeModel] = None
+class UserMergeManager(AbstractBLLManager, RouterMixin):
+    _model = UserMergeModel
+    prefix: ClassVar[Optional[str]] = "/v1/auth/user-merge"
+    tags: ClassVar[Optional[List[str]]] = ["User Merge"]
+    auth_type: ClassVar[AuthType] = AuthType.JWT
 
-    class Optional(UserMergeModel.ReferenceID.Optional):
-        user_merge: Optional[UserMergeModel] = None
-
-
-class UserMergeNetworkModel:
-    class POST(BaseModel):
-        user_merge: UserMergeModel.Create
-
-    class SEARCH(BaseModel):
-        user_merge: UserMergeModel.Search
-
-    class ResponseSingle(BaseModel):
-        user_merge: UserMergeModel
-
-
-class UserMergeManager(AbstractBLLManager):
-    Model = UserMergeModel
-    ReferenceModel = UserMergeReferenceModel
-    DBClass = UserMerge
-
-    def createValidation(self, entity):
-        if not User.exists(
-            requester_id=self.requester.id, db=self.db, id=entity.initiating_user_id
-        ):
-            raise HTTPException(status_code=404, detail="Initiating user not found")
-        if not User.exists(
-            requester_id=self.requester.id, db=self.db, id=entity.target_user_id
-        ):
-            raise HTTPException(status_code=404, detail="Target user not found")
-        if entity.initiating_user_id == entity.target_user_id:
+    def _validate(self, initiating_user_id: str, target_user_id: str) -> None:
+        if initiating_user_id == target_user_id:
             raise HTTPException(
                 status_code=400, detail="Cannot merge a user with themselves"
             )
+        UserDB = UserModel.DB(self.model_registry.DB.manager.Base)
+        for user_id, role in (
+            (initiating_user_id, "initiating"),
+            (target_user_id, "target"),
+        ):
+            if (
+                UserDB.get(
+                    requester_id=env("ROOT_ID"),
+                    model_registry=self.model_registry,
+                    id=user_id,
+                    return_type="dto",
+                    override_dto=UserModel,
+                )
+                is None
+            ):
+                raise HTTPException(
+                    status_code=404, detail=f"{role} user not found: {user_id}"
+                )
 
     def merge_users(
         self, initiating_user_id: str, target_user_id: str
     ) -> Dict[str, str]:
-        """Merge two user accounts, transferring data from target to initiating user."""
-        # Validate first
-        self.createValidation(
-            UserMergeModel(
-                initiating_user_id=initiating_user_id, target_user_id=target_user_id
-            )
-        )
+        """Merge ``target_user_id`` into ``initiating_user_id``.
 
-        # Create merge record
+        Side-data transfer is restricted to team memberships. Other extension
+        data (notifications, OAuth links, etc.) registers its own merge
+        hooks against ``UserMergeManager.merge_users`` to participate.
+        """
+        self._validate(initiating_user_id, target_user_id)
+
         merge = self.create(
-            user_merge=UserMergeModel.Create(
-                initiating_user_id=initiating_user_id, target_user_id=target_user_id
+            initiating_user_id=initiating_user_id,
+            target_user_id=target_user_id,
+        )
+
+        UserTeamDB = UserTeamModel.DB(self.model_registry.DB.manager.Base)
+        target_memberships = (
+            UserTeamDB.list(
+                requester_id=env("ROOT_ID"),
+                model_registry=self.model_registry,
+                filters=[UserTeamDB.user_id == target_user_id],
+                return_type="dto",
+                override_dto=UserTeamModel,
             )
+            or []
         )
-
-        user_team_manager = UserTeamManager(requester_id=self.requester.id, db=self.db)
-
-        # Get target user team memberships
-        target_teams = UserTeam.list(
-            requester_id=self.requester.id,
-            db=self.db,
-            user_id=target_user_id,
-            enabled=True,
-        )
-
-        # Get initiating user team memberships
-        initiating_teams = {
-            team.team_id: team
-            for team in UserTeam.list(
-                requester_id=self.requester.id, db=self.db, user_id=initiating_user_id
+        initiating_memberships = {
+            m.team_id: m
+            for m in (
+                UserTeamDB.list(
+                    requester_id=env("ROOT_ID"),
+                    model_registry=self.model_registry,
+                    filters=[UserTeamDB.user_id == initiating_user_id],
+                    return_type="dto",
+                    override_dto=UserTeamModel,
+                )
+                or []
             )
         }
 
-        # Transfer teams the initiating user doesn't have
-        for team in target_teams:
-            if team.team_id not in initiating_teams:
-                user_team_manager.create(
+        ut_manager = UserTeamManager(
+            requester_id=self.requester.id, model_registry=self.model_registry
+        )
+        for membership in target_memberships:
+            if membership.team_id not in initiating_memberships:
+                ut_manager.create(
                     user_id=initiating_user_id,
-                    team_id=team.team_id,  # Added team_id
-                    role_id=team.role_id,
-                    enabled=team.enabled,
-                )
-            elif not initiating_teams[team.team_id].enabled:
-                # Re-enable the team if disabled for initiating user
-                user_team_manager.update(
-                    id=initiating_teams[team.team_id].id, enabled=True
+                    team_id=membership.team_id,
+                    role_id=membership.role_id,
                 )
 
-        # Transfer metadata
-        user_metadata_manager = UserMetadataManager(
-            requester_id=self.requester.id, db=self.db
-        )
-        target_metadata = UserMetadata.list(
-            requester_id=self.requester.id, db=self.db, user_id=target_user_id
-        )
-        initiating_metadata = {
-            meta.key: meta
-            for meta in UserMetadata.list(
-                requester_id=self.requester.id, db=self.db, user_id=initiating_user_id
-            )
-        }
-        for meta in target_metadata:
-            if meta.key not in initiating_metadata:
-                user_metadata_manager.create(
-                    user_id=initiating_user_id, key=meta.key, value=meta.value
-                )
-
-        # Disable the target user
-        User.update(
-            requester_id=self.requester.id,
-            db=self.db,
+        UserDB = UserModel.DB(self.model_registry.DB.manager.Base)
+        UserDB.update(
+            requester_id=env("ROOT_ID"),
+            model_registry=self.model_registry,
             id=target_user_id,
             new_properties={"active": False},
         )
 
+        self.update(
+            id=merge.id, completed_at=datetime.utcnow()
+        )
         return {
-            "message": f"Successfully merged user {target_user_id} into {initiating_user_id}",
+            "message": (
+                f"Successfully merged user {target_user_id} into {initiating_user_id}"
+            ),
             "merge_id": merge.id,
         }
+
+
+UserMergeModel.Manager = UserMergeManager

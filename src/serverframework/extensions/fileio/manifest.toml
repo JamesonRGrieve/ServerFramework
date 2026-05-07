@@ -1,0 +1,5 @@
+name = "fileio"
+version = "0.1.0"
+description = "Local-filesystem provider"
+
+[python_dependencies]

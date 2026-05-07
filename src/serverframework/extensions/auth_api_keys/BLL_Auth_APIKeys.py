@@ -1,251 +1,210 @@
+"""API-key authentication BLL.
+
+Owns ``APIKeyModel`` plus the issue/validate/revoke/rotate flow. Keys are
+generated from ``secrets.token_urlsafe(32)``, returned to the user once at
+issuance, and persisted as a SHA-256 hash for indexed lookup. Constant-time
+comparison guards validation.
+
+Pattern reference: ``auth_session/BLL_Session.py`` (canonical model
+shape) and ``auth_magic_link/BLL_Auth_MagicLink.py`` (token issuance).
+"""
+
 import hashlib
+import hmac
 import secrets
-from typing import Optional
+from datetime import datetime, timezone
+from typing import ClassVar, List, Optional, Type
 
-from fastapi import HTTPException, Security
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from models.ModelBase import BaseMixinModel, UpdateMixinModel
-from models.ModelRole import RoleModel, RoleReferenceModel
-from models.ModelSearch import StringSearchModel
-from models.ModelTeam import TeamModel, TeamReferenceModel
-from models.ModelUser import UserModel, UserReferenceModel
+from fastapi import HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy.orm import Session
-from util.UtilEnv import env
 
-# NORMALIZED-DEAD-IMPORT: from database.DB_Auth import APIKey, Role, Team, User  # Added APIKey  # use UserModel.Reference.Optional / TeamModel.Reference.Optional from serverframework.logic.BLL_Auth
-from serverframework.logic.BLL_Auth import RoleManager, TeamManager, UserManager
-from serverframework.logic.BLL_Base import AbstractBLLManager
+from serverframework.lib.Environment import env
+from serverframework.lib.Pydantic2FastAPI import AuthType, RouterMixin
+from serverframework.logic.AbstractLogicManager import (
+    AbstractBLLManager,
+    ApplicationModel,
+    DateSearchModel,
+    ModelMeta,
+    StringSearchModel,
+    UpdateMixinModel,
+)
+from serverframework.logic.BLL_Auth import (
+    RoleModel,
+    TeamModel,
+    UserModel,
+)
+
+
+def _hash_key(raw: str) -> str:
+    """SHA-256 hex digest of the raw API key. The raw key is high-entropy
+    random so a per-key salt buys nothing material; using a uniform hash
+    keeps the lookup index simple."""
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 class APIKeyModel(
-    BaseMixinModel,
+    ApplicationModel,
     UpdateMixinModel,
-    UserReferenceModel.Optional,
-    TeamReferenceModel.Optional,
-    RoleReferenceModel.Optional,
+    UserModel.Reference.Optional,
+    TeamModel.Reference.Optional,
+    RoleModel.Reference.Optional,
+    metaclass=ModelMeta,
 ):
-    name: str = Field(..., description="Name of the API key")
-    key_hash: str = Field(..., description="Hashed API key")
+    """Persistent API key record. The raw key is returned exactly once at
+    issuance; only its SHA-256 hash is persisted."""
 
-    class ReferenceID:
-        api_key_id: str = Field(..., description="The ID of the API key")
+    Manager: ClassVar[Type["APIKeyManager"]] = None
+    name: str = Field(..., description="Human-readable label for this key")
+    key_hash: str = Field(
+        ..., description="SHA-256 hex digest of the issued key"
+    )
+    last_used_at: Optional[datetime] = Field(
+        None, description="When the key was most recently presented and accepted"
+    )
+    expires_at: Optional[datetime] = Field(
+        None, description="When the key stops being honoured. None = no expiry."
+    )
+    is_revoked: bool = Field(False, description="Soft-revoke flag")
 
-        class Optional:
-            api_key_id: Optional[str] = None
+    table_comment: ClassVar[str] = (
+        "API keys for programmatic access; hashed at rest, scoped to user/team/role"
+    )
 
-        class Search:
-            api_key_id: Optional[StringSearchModel] = None
-
-    class Create(  # Added Create class based on Update and Reference models
+    class Create(
         BaseModel,
-        UserModel.ReferenceID.Optional,
-        TeamModel.ReferenceID.Optional,  # Added Team Reference
-        RoleModel.ReferenceID.Optional,
+        UserModel.Reference.ID.Optional,
+        TeamModel.Reference.ID.Optional,
+        RoleModel.Reference.ID.Optional,
     ):
-        name: str = Field(..., description="Name of the API key")
-        key_hash: Optional[str] = Field(
-            None, description="Hashed API key"
-        )  # Made hash optional on create
+        name: str
+        key_hash: str
+        expires_at: Optional[datetime] = None
+        is_revoked: bool = False
+        last_used_at: Optional[datetime] = None
 
     class Update(BaseModel):
-        name: Optional[str] = Field(None, description="Name of the API key")
-        # key_hash should not be updatable directly, removed
+        name: Optional[str] = None
+        is_revoked: Optional[bool] = None
+        expires_at: Optional[datetime] = None
+        last_used_at: Optional[datetime] = None
 
     class Search(
-        BaseMixinModel.Search,  # Added Base Search Mixin
-        UserModel.ReferenceID.Search,
-        TeamModel.ReferenceID.Search,
-        RoleModel.ReferenceID.Search,
-    ):  # Added closing parenthesis and base classes
-        name: Optional[StringSearchModel] = None
-        key_hash: Optional[StringSearchModel] = None  # Added key_hash search
-
-
-class APIKeyReferenceModel(APIKeyModel.ReferenceID):
-    api_key: Optional[APIKeyModel] = None
-
-    class Optional(APIKeyModel.ReferenceID.Optional):
-        api_key: Optional[APIKeyModel] = None
-
-
-class APIKeyNetworkModel:
-    class POST(BaseModel):
-        api_key: APIKeyModel.Create  # Changed Update to Create
-
-    class PUT(BaseModel):  # Added PUT model
-        api_key: APIKeyModel.Update
-
-    class SEARCH(BaseModel):
-        api_key: APIKeyModel.Search  # Added Search model
-
-    class ResponseSingle(BaseModel):
-        api_key: APIKeyModel
-
-    class ResponsePlural(BaseModel):  # Added Plural response
-        api_keys: list[APIKeyModel]
-
-
-class APIKeyManager(AbstractBLLManager):
-    Model = APIKeyModel
-    ReferenceModel = APIKeyReferenceModel
-    NetworkModel = APIKeyNetworkModel  # Added Network Model
-    DBClass = APIKey
-
-    def __init__(
-        self,  # Added self
-        requester_id: str,
-        target_user_id: Optional[str] = None,
-        target_team_id: Optional[str] = None,  # Added target_team_id
-        db: Optional[Session] = None,
+        ApplicationModel.Search,
+        UpdateMixinModel.Search,
+        UserModel.Reference.ID.Search,
+        TeamModel.Reference.ID.Search,
+        RoleModel.Reference.ID.Search,
     ):
-        super().__init__(  # Corrected super call
-            db=db,
-            requester_id=requester_id,
-            target_user_id=target_user_id,
-            target_team_id=target_team_id,  # Added target_team_id
-        )
-        # Corrected indentation
-        self._users = None
-        self._teams = None
-        self._roles = None
+        name: Optional[StringSearchModel] = None
+        is_revoked: Optional[bool] = None
+        expires_at: Optional[DateSearchModel] = None
 
-    @property
-    def users(self):  # Added function definition
-        """Get the user manager"""
-        # Corrected indentation and logic flow
-        if self._users is None:
-            self._users = UserManager(
-                requester_id=self.requester.id,
-                target_user_id=self.target_user_id,
-                target_team_id=self.target_team_id,
-                db=self.db,
-            )
-        return self._users  # Moved return inside function
 
-    @property
-    def teams(self):
-        """Get the team manager"""
-        if self._teams is None:
-            self._teams = TeamManager(
-                requester_id=self.requester.id,
-                target_user_id=self.target_user_id,  # Ensure consistency if needed elsewhere
-                target_team_id=self.target_team_id,  # Added target_team_id
-                db=self.db,
-            )
-        return self._teams
+class APIKeyIssueResponse(BaseModel):
+    """Returned exactly once at issuance. ``key`` is the raw value to
+    present to the API; the server only stores its hash from this point on."""
 
-    @property
-    def roles(self):
-        """Get the role manager"""
-        if self._roles is None:
-            self._roles = RoleManager(
-                requester_id=self.requester.id,
-                target_user_id=self.target_user_id,
-                target_team_id=self.target_team_id,
-                db=self.db,  # Added db
-            )
-        return self._roles
+    id: str
+    name: str
+    key: str = Field(..., description="Raw API key — store securely; never returned again")
+    expires_at: Optional[datetime] = None
 
-    def createValidation(self, entity: APIKeyModel.Create):  # Added type hint
-        """Validate API key creation"""
-        if entity.user_id and not User.exists(
-            requester_id=self.requester.id, db=self.db, id=entity.user_id
-        ):
-            raise HTTPException(status_code=404, detail="User not found")
-        if entity.team_id and not Team.exists(
-            requester_id=self.requester.id, db=self.db, id=entity.team_id
-        ):
-            raise HTTPException(status_code=404, detail="Team not found")  # Added raise
-        # Corrected indentation for role check
-        if entity.role_id and not Role.exists(
-            requester_id=self.requester.id, db=self.db, id=entity.role_id
-        ):
-            raise HTTPException(status_code=404, detail="Role not found")
-        if entity.user_id and entity.team_id:
-            raise HTTPException(
-                status_code=400, detail="API key cannot belong to both user and team"
-            )
 
-    @staticmethod
-    async def verify_system_api_key(  # Added closing parenthesis
-        credentials: HTTPAuthorizationCredentials = Security(HTTPBearer()),
-    ):  # Moved imports out of signature
-        from database.DB_Auth import User
-        from logic.BLL_Auth import (
-            UserManager,  # Keep local import if specific context needed
-        )
+class APIKeyManager(AbstractBLLManager, RouterMixin):
+    _model = APIKeyModel
+    prefix: ClassVar[Optional[str]] = "/v1/auth/api-keys"
+    tags: ClassVar[Optional[List[str]]] = ["API Keys"]
+    auth_type: ClassVar[AuthType] = AuthType.JWT
 
-        token = credentials.credentials  # Extract the token from "Bearer {token}"
-        if not token:  # Simplified check
-            raise HTTPException(
-                status_code=401,
-                detail="Not authenticated",  # More specific detail
-            )
-
-        # Check system key first
-        system_key = env("AGINFRASTRUCTURE_API_KEY", None)
-        if system_key and token == system_key:
-            # Consider fetching a minimal system user or creating a placeholder
-            # This avoids returning a full User object if not needed
-            # For now, return placeholder as in original code
-            return User(
-                id=env("SYSTEM_ID", "00000000-0000-0000-0000-000000000000"),
-                first_name="System",
-                last_name="User",
-            )
-
-        # Validate against database keys ONLY if UserManager.auth exists and is intended
-        # Assuming UserManager.auth is NOT for API key validation based on context
-        # If API key validation against DB is needed, implement here using APIKeyManager methods
-
-        # If not system key and no other validation method passed:
-        raise HTTPException(
-            status_code=403,
-            detail="You do not have permission to access this endpoint.",
-        )
-
-    def generate_api_key(  # Added self and closing parenthesis
+    def issue_key(
         self,
         name: str,
         user_id: Optional[str] = None,
         team_id: Optional[str] = None,
         role_id: Optional[str] = None,
-    ) -> str:  # Added return type hint
-        """Generate a new API key with a secure random value"""  # Moved docstring
-        raw_key = f"v2_{secrets.token_urlsafe(32)}"
-        key_hash = self._hash_key(raw_key)
-
-        create_data = APIKeyModel.Create(
+        expires_at: Optional[datetime] = None,
+    ) -> APIKeyIssueResponse:
+        if user_id is None and team_id is None:
+            raise HTTPException(
+                status_code=400,
+                detail="API key must be scoped to a user_id or team_id",
+            )
+        raw = secrets.token_urlsafe(32)
+        key_hash = _hash_key(raw)
+        record = self.create(
             name=name,
-            key_hash=key_hash,  # Key hash must be provided on creation
+            key_hash=key_hash,
             user_id=user_id,
             team_id=team_id,
             role_id=role_id,
+            expires_at=expires_at,
+            is_revoked=False,
+        )
+        return APIKeyIssueResponse(
+            id=record.id, name=name, key=raw, expires_at=expires_at
         )
 
-        # Use the manager's create method
-        created_entity = super().create(entity=create_data)  # Use super().create
+    def validate_key(self, raw: str) -> Optional[APIKeyModel]:
+        """Resolve ``raw`` to an active API key record, or return None.
 
-        # Assuming create returns the entity model with the ID
-        # self.create( # Original call was incorrect
-        #     name=name,
-        #     key_hash=key_hash,
-        #     user_id=user_id, # Added user_id
-        #     team_id=team_id,
-        #     role_id=role_id, # Added role_id
-        # )
-        return raw_key
+        Constant-time comparison after a hash-indexed lookup defeats
+        timing attacks even though the hash is the canonical lookup key.
+        """
+        if not raw:
+            return None
+        candidate_hash = _hash_key(raw)
+        KeyDB = APIKeyModel.DB(self.model_registry.DB.manager.Base)
+        rows = (
+            KeyDB.list(
+                requester_id=env("ROOT_ID"),
+                model_registry=self.model_registry,
+                filters=[
+                    KeyDB.key_hash == candidate_hash,
+                    KeyDB.is_revoked == False,  # noqa: E712
+                ],
+                return_type="dto",
+                override_dto=APIKeyModel,
+            )
+            or []
+        )
+        now = datetime.now(timezone.utc)
+        for record in rows:
+            if record.expires_at is not None:
+                expires_at = record.expires_at
+                if expires_at.tzinfo is None:
+                    expires_at = expires_at.replace(tzinfo=timezone.utc)
+                if expires_at < now:
+                    continue
+            if hmac.compare_digest(record.key_hash, candidate_hash):
+                self.update(id=record.id, last_used_at=now)
+                return record
+        return None
 
-    def _hash_key(self, raw_key: str) -> str:
-        """Hash an API key for secure storage"""  # Moved docstring
-        return hashlib.sha256(raw_key.encode()).hexdigest()
+    def revoke_key(self, key_id: str) -> APIKeyModel:
+        return self.update(id=key_id, is_revoked=True)
 
-    def validate_api_key(self, raw_key: str) -> bool:
-        """Validate an API key by comparing hashes"""
-        key_hash = self._hash_key(raw_key)
-        # Use the manager's search method with appropriate filters
-        results = self.search(
-            search_model=APIKeyModel.Search(key_hash=key_hash)
-        )  # Correct search call
-        return len(results) > 0
+    def rotate_key(self, key_id: str) -> APIKeyIssueResponse:
+        """Issue a replacement key, revoke the old one. Atomic-from-the-
+        client's-perspective: caller persists the new ``key`` value before
+        the old one is no longer accepted (revoke runs after create)."""
+        existing = APIKeyModel.DB(self.model_registry.DB.manager.Base).get(
+            requester_id=env("ROOT_ID"),
+            model_registry=self.model_registry,
+            id=key_id,
+            return_type="dto",
+            override_dto=APIKeyModel,
+        )
+        if existing is None:
+            raise HTTPException(status_code=404, detail="API key not found")
+        new = self.issue_key(
+            name=existing.name,
+            user_id=existing.user_id,
+            team_id=existing.team_id,
+            role_id=existing.role_id,
+            expires_at=existing.expires_at,
+        )
+        self.revoke_key(key_id)
+        return new
+
+
+APIKeyModel.Manager = APIKeyManager
