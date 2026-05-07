@@ -2040,7 +2040,8 @@ class TestInvitationManager(AbstractBLLTest):
         """Test validation of unified acceptance methods."""
         self.server = server
         self.model_registry = model_registry
-        from serverframework.extensions.auth_invitations.BLL_Invitations import InvitationModel, UserManager
+        from serverframework.extensions.auth_invitations.BLL_Invitations import InvitationModel
+        from serverframework.logic.BLL_Auth import UserManager
 
         # Test validation scenarios
         test_code = f"TESTCODE_{uuid.uuid4().hex[:8].upper()}"
@@ -2069,7 +2070,8 @@ class TestInvitationManager(AbstractBLLTest):
         """Test various invalid scenarios for invitation acceptance."""
         self.server = server
         self.model_registry = model_registry
-        from serverframework.extensions.auth_invitations.BLL_Invitations import InvitationModel, UserManager
+        from serverframework.extensions.auth_invitations.BLL_Invitations import InvitationModel
+        from serverframework.logic.BLL_Auth import UserManager
 
         # Test 1: Invalid invitation code should raise HTTPException
         test_user_data = {

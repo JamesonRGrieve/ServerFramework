@@ -172,19 +172,18 @@ def _env_suffix_for(app_env: Optional[str]) -> str:
     """Item 50 paired-name discriminator. Production -> `_LIVE`,
     everything else (development, staging, tests) -> `_TEST`.
 
-    Reads through `lib.Environment.is_production` when no explicit value is
-    supplied so APP_ENV / ENVIRONMENT cannot diverge here (C-2).
+    Reads ``os.environ`` directly so test-time monkeypatching of either
+    ``ENVIRONMENT`` or ``APP_ENV`` is honoured immediately, without
+    forcing a re-validate of the cached ``AppSettings`` singleton.
+    Either name is accepted (C-2: the legacy alias is still respected).
     """
     if app_env is None:
-        try:
-            from serverframework.lib.Environment import is_production
-            return "_LIVE" if is_production() else "_TEST"
-        except ImportError:
-            env_value = os.environ.get("ENVIRONMENT") or os.environ.get(
-                "APP_ENV", "development"
-            )
-            return "_LIVE" if env_value.lower() == "production" else "_TEST"
-    return "_LIVE" if (app_env or "").lower() == "production" else "_TEST"
+        env_value = (
+            os.environ.get("ENVIRONMENT") or os.environ.get("APP_ENV") or "development"
+        )
+    else:
+        env_value = app_env
+    return "_LIVE" if (env_value or "").lower() == "production" else "_TEST"
 
 
 def _resolve_env(path: str, app_env: Optional[str]) -> Optional[str]:

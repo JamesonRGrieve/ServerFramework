@@ -123,6 +123,7 @@ class AuthMagicLinkTokenModel(
         requested_email: str
         code_hash: str
         code_salt: str
+        code_fingerprint: Optional[str] = None
         expires_at: datetime
         is_used: bool = False
         used_at: Optional[datetime] = None
@@ -201,6 +202,7 @@ class MagicLinkManager(AbstractBLLManager, RouterMixin):
                 requested_email=email,
                 code_hash=token.code_hash,
                 code_salt=token.code_salt,
+                code_fingerprint=token.code_fingerprint,
                 expires_at=token.expires_at,
                 is_used=False,
                 used_at=None,

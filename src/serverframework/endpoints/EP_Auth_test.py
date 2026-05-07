@@ -820,14 +820,19 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
         # All assertions passed - test successful
         assert user["jwt"] is not None, "JWT should be generated"
 
-    def _generate_jwt_for_user(self, user_data: Dict[str, Any]) -> str:
-        """Generate a JWT token for the given user data for testing purposes."""
+    def _generate_jwt_for_user(
+        self, user_data: Dict[str, Any], server: Any = None
+    ) -> str:
+        """Generate a JWT token for the given user data for testing purposes.
+
+        After M-1, every JWT must carry a `jti` resolvable to an active
+        SessionModel row. ``UserManager.generate_jwt_token`` mints the
+        row when given a ``model_registry``; resolve it from the
+        supplied ``server`` (or fall back to the conftest accessor)."""
         from serverframework.logic.BLL_Auth import UserManager
 
-        # Extract user ID and email from various data structures
         user_id = None
         email = None
-
         if "id" in user_data:
             user_id = user_data["id"]
             email = user_data.get("email")
@@ -838,15 +843,26 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
 
         if not user_id:
             raise ValueError(f"Cannot extract user ID from user data: {user_data}")
-
         if not email:
             email = f"user_{user_id}@example.com"
 
-        # Generate JWT directly using UserManager static method
-        jwt_token = UserManager.generate_jwt_token(
-            user_id=user_id, email=email, timezone_str="UTC"
+        registry = None
+        if server is not None and hasattr(server, "app"):
+            registry = getattr(server.app.state, "model_registry", None)
+        if registry is None:
+            try:
+                from conftest import get_test_model_registry
+
+                registry = get_test_model_registry()
+            except Exception:
+                registry = None
+
+        return UserManager.generate_jwt_token(
+            user_id=user_id,
+            email=email,
+            timezone_str="UTC",
+            model_registry=registry,
         )
-        return jwt_token
 
     def test_POST_200_authorize(self, admin_a: Any) -> str:
         """Test that admin JWT token is valid."""
@@ -2715,14 +2731,19 @@ class TestInvitationEndpoints(AbstractEPTest):
     }
     unique_fields = ["code"]
 
-    def _generate_jwt_for_user(self, user_data: Dict[str, Any]) -> str:
-        """Generate a JWT token for the given user data for testing purposes."""
+    def _generate_jwt_for_user(
+        self, user_data: Dict[str, Any], server: Any = None
+    ) -> str:
+        """Generate a JWT token for the given user data for testing purposes.
+
+        After M-1, every JWT must carry a `jti` resolvable to an active
+        SessionModel row. ``UserManager.generate_jwt_token`` mints the
+        row when given a ``model_registry``; resolve it from the
+        supplied ``server`` (or fall back to the conftest accessor)."""
         from serverframework.logic.BLL_Auth import UserManager
 
-        # Extract user ID and email from various data structures
         user_id = None
         email = None
-
         if "id" in user_data:
             user_id = user_data["id"]
             email = user_data.get("email")
@@ -2733,15 +2754,26 @@ class TestInvitationEndpoints(AbstractEPTest):
 
         if not user_id:
             raise ValueError(f"Cannot extract user ID from user data: {user_data}")
-
         if not email:
             email = f"user_{user_id}@example.com"
 
-        # Generate JWT directly using UserManager static method
-        jwt_token = UserManager.generate_jwt_token(
-            user_id=user_id, email=email, timezone_str="UTC"
+        registry = None
+        if server is not None and hasattr(server, "app"):
+            registry = getattr(server.app.state, "model_registry", None)
+        if registry is None:
+            try:
+                from conftest import get_test_model_registry
+
+                registry = get_test_model_registry()
+            except Exception:
+                registry = None
+
+        return UserManager.generate_jwt_token(
+            user_id=user_id,
+            email=email,
+            timezone_str="UTC",
+            model_registry=registry,
         )
-        return jwt_token
 
     def create_payload(
         self,
@@ -3296,7 +3328,7 @@ class TestInvitationEndpoints(AbstractEPTest):
                 )
 
         # Verify user was added to the team by checking team membership via API
-        user_jwt = self._generate_jwt_for_user(user)
+        user_jwt = self._generate_jwt_for_user(user, server=server)
 
         team_users_response = server.get(
             f"/v1/team/{team_a.id}/user",
@@ -3514,7 +3546,9 @@ class TestInvitationEndpoints(AbstractEPTest):
         response = server.patch(
             endpoint,
             json=payload,
-            headers=self._get_appropriate_headers(self._generate_jwt_for_user(user2)),
+            headers=self._get_appropriate_headers(
+                self._generate_jwt_for_user(user2, server=server)
+            ),
         )
         # Either 403 (email mismatch caught at the application layer) or 404
         # (the strict permission filter hides the invitee from a non-team,

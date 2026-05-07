@@ -116,3 +116,37 @@ class FailedLoginAttemptManager(AbstractBLLManager, RouterMixin):
 
 
 FailedLoginAttemptModel.Manager = FailedLoginAttemptManager
+
+
+# ---------------------------------------------------------------------------
+# Hook registration (Scope #2).
+# ---------------------------------------------------------------------------
+
+
+def _assert_within_threshold(user_id, model_registry):
+    from serverframework.lib.Environment import env
+
+    mgr = FailedLoginAttemptManager(
+        requester_id=env("ROOT_ID"), model_registry=model_registry
+    )
+    mgr.assert_user_within_threshold(user_id, model_registry)
+
+
+def _record_failure(user_id, ip_address, model_registry):
+    from serverframework.lib.Environment import env
+
+    mgr = FailedLoginAttemptManager(
+        requester_id=env("ROOT_ID"), model_registry=model_registry
+    )
+    mgr.record_failure(user_id, ip_address, model_registry)
+
+
+try:
+    from serverframework.logic.BLL_Auth import register_lockout_hooks
+
+    register_lockout_hooks(
+        assert_within_threshold=_assert_within_threshold,
+        record_failure=_record_failure,
+    )
+except ImportError:
+    pass

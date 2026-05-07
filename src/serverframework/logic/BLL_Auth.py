@@ -755,6 +755,13 @@ class UserManager(AbstractBLLManager, RouterMixin):
                 target_id=self.target_user_id,
                 model_registry=self.model_registry,
             )
+            # Factory returns None when MetadataModel isn't bound to *this*
+            # registry (e.g. an extension fixture that loaded auth_mfa only).
+            if self._metadata is None:
+                raise HTTPException(
+                    status_code=503,
+                    detail="metadata extension not bound to this registry",
+                )
         return self._metadata
 
     @property
@@ -866,15 +873,48 @@ class UserManager(AbstractBLLManager, RouterMixin):
         timezone_str: str = "UTC",
         expiration_hours: int = 24,
         session_key: Optional[str] = None,
+        model_registry=None,
     ) -> str:
         """Generate a JWT token for authentication.
 
         Always carries `jti` (M-1) so token verification can enforce
-        session revocation. Callers that historically passed
-        ``session_key=None`` now mint a per-token jti so tokens cannot
-        bypass the SessionModel revocation gate.
+        session revocation. When ``session_key`` is None and a
+        ``model_registry`` is provided, a fresh ``SessionModel`` row is
+        minted so the verify path resolves to a live session — this is
+        the path test helpers and admin tooling use to issue ad-hoc
+        tokens without going through the full login flow. When
+        ``session_key`` is None and no registry is provided, a jti is
+        still embedded but the matching session row does not exist;
+        ``_enforce_session_not_revoked`` will reject the token at first
+        use.
         """
         expiration = datetime.now(timezone.utc) + timedelta(hours=expiration_hours)
+
+        if session_key is None:
+            session_key = secrets.token_hex(16)
+            if model_registry is not None:
+                try:
+                    now = datetime.now(timezone.utc)
+                    SessionModel.DB(model_registry.DB.manager.Base).create(
+                        requester_id=env("ROOT_ID"),
+                        model_registry=model_registry,
+                        user_id=user_id,
+                        session_key=session_key,
+                        jwt_issued_at=now,
+                        device_type="api",
+                        browser="unknown",
+                        is_active=True,
+                        last_activity=now,
+                        expires_at=now + timedelta(hours=expiration_hours),
+                        revoked=False,
+                        trust_score=50,
+                    )
+                except Exception:
+                    # Caller paths that ran with stale registries before
+                    # SessionModel was wired still emit the token; the
+                    # verify path will surface the cause.
+                    pass
+
         # M-1 — `aud` and `iss` so tokens minted by another deployment
         # sharing the same JWT_SECRET (dev↔staging accident) do not
         # cross-validate. Mandatory `jti` so revocation always engages.
@@ -886,7 +926,7 @@ class UserManager(AbstractBLLManager, RouterMixin):
             "iat": datetime.now(timezone.utc),
             "aud": env("JWT_AUDIENCE"),
             "iss": env("JWT_ISSUER"),
-            "jti": session_key or secrets.token_hex(16),
+            "jti": session_key,
         }
         return jwt.encode(payload, env("JWT_SECRET"), algorithm="HS256")
 
@@ -2771,6 +2811,11 @@ class TeamManager(AbstractBLLManager, RouterMixin):
                 model_registry=self.model_registry,
                 parent=self,
             )
+            if self._team_metadata is None:
+                raise HTTPException(
+                    status_code=503,
+                    detail="metadata extension not bound to this registry",
+                )
         return self._team_metadata
 
     @property

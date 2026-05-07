@@ -130,6 +130,7 @@ class DevicePairingRequestModel(
         requesting_user_agent: Optional[str] = None
         code_hash: str
         code_salt: str
+        code_fingerprint: Optional[str] = None
         expires_at: datetime
         is_used: bool = False
         used_at: Optional[datetime] = None
@@ -253,6 +254,7 @@ class DevicePairingManager(AbstractBLLManager, RouterMixin):
             requesting_user_agent=user_agent,
             code_hash=token.code_hash,
             code_salt=token.code_salt,
+            code_fingerprint=token.code_fingerprint,
             expires_at=precise_expiry,
             is_used=False,
             return_type="dto",

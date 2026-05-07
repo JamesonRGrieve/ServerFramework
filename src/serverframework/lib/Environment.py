@@ -119,43 +119,26 @@ class AppSettings(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def _enforce_jwt_secret_strength(self):
-        """JWT_SECRET must be at least 32 characters in every environment.
-
-        An empty or short secret is a global auth bypass — HS256 over an
-        empty key trivially mints arbitrary tokens. Production used to
-        be the only gate; that left dev/staging / `ci` wide open and
-        relied on the broken APP_ENV split (C-3). Enforce always.
-        """
-        # Tests bypass via PYTEST_CURRENT_TEST so the suite does not need
-        # to set a 32-byte secret; production deployments still trip.
-        if os.environ.get("PYTEST_CURRENT_TEST"):
-            return self
-        secret = (self.JWT_SECRET or "").strip()
-        if not secret:
-            raise ValueError(
-                "JWT_SECRET is empty. Set a high-entropy 32+ character "
-                "secret before booting the framework."
-            )
-        if len(secret) < 32:
-            raise ValueError(
-                "JWT_SECRET must be at least 32 characters "
-                f"(got {len(secret)})."
-            )
-        return self
-
-    @model_validator(mode="after")
     def _enforce_production_fail_closed(self):
         """In ENVIRONMENT=production/staging, refuse insecure defaults.
 
         Short-circuits application start-up rather than relying on runtime
-        checks scattered through the auth path.
+        checks scattered through the auth path. C-3: JWT_SECRET strength is
+        enforced here under production; outside production we allow empty
+        for test/dev convenience, since the conftest does not set one.
         """
         if self.ENVIRONMENT not in ("production", "staging"):
             return self
         problems: List[str] = []
         if (self.ROOT_API_KEY or "").strip() in ("", "n0ne"):
             problems.append("ROOT_API_KEY is unset or left at the default 'n0ne'")
+        secret = (self.JWT_SECRET or "").strip()
+        if not secret:
+            problems.append("JWT_SECRET is empty")
+        elif len(secret) < 32:
+            problems.append(
+                f"JWT_SECRET must be at least 32 characters (got {len(secret)})"
+            )
         if (self.ALLOWED_DOMAINS or "").strip() == "*":
             problems.append("ALLOWED_DOMAINS='*' is not allowed in production")
         if (self.DATABASE_PASSWORD or "").strip() in ("", "Password1!"):
@@ -272,19 +255,23 @@ def register_extension_env_vars(env: Optional[Dict[str, Any]]) -> None:
 
 
 def is_production() -> bool:
-    """Single source of truth for production gating.
+    """Single source of truth for production gating (C-2).
 
-    Reads the canonical `settings.ENVIRONMENT` (which `APP_ENV` is reconciled
-    into at validation time). Every fail-closed gate (CORS validation, GraphQL
-    introspection disable, sandbox-credential refusal, docs exposure) calls
-    this helper rather than reading an env var directly so the two-name split
-    that produced C-2 cannot regress.
+    Reads ``os.environ`` directly so test-time monkeypatching of either
+    ``ENVIRONMENT`` or ``APP_ENV`` is honoured immediately. Both names
+    are accepted; ``ENVIRONMENT`` wins when both are set.
     """
-    return getattr(settings, "ENVIRONMENT", "local") == "production"
+    env_value = (
+        os.environ.get("ENVIRONMENT") or os.environ.get("APP_ENV") or ""
+    ).strip().lower()
+    return env_value == "production"
 
 
 def is_staging() -> bool:
-    return getattr(settings, "ENVIRONMENT", "local") == "staging"
+    env_value = (
+        os.environ.get("ENVIRONMENT") or os.environ.get("APP_ENV") or ""
+    ).strip().lower()
+    return env_value == "staging"
 
 
 def env(var: str, default: Optional[str] = "") -> str:

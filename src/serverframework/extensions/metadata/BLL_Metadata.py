@@ -240,6 +240,119 @@ class UserMetadataManager(MetadataManager):
 MetadataModel.Manager = MetadataManager
 
 
+# ---------------------------------------------------------------------------
+# Hook registration (Scope #3). Runs at module-import time, mirroring the
+# `PasswordlessGrantRegistry.register(...)` pattern used by auth_magic_link.
+# When this BLL file is imported (which happens during ModelRegistry's
+# `_auto_bind_models` walk for any APP_EXTENSIONS that includes "metadata"),
+# every consumer of metadata in core BLL_Auth picks up the canonical
+# extension implementation through these typed callables.
+# ---------------------------------------------------------------------------
+
+
+def _registry_has_metadata(model_registry) -> bool:
+    """Hooks are registered globally at module-import, but multiple test
+    registries (one per fixture) may not all have MetadataModel bound. The
+    hooks are safe no-ops against any registry that didn't load the
+    metadata extension."""
+    try:
+        model_registry.apply(MetadataModel)
+        return True
+    except (TypeError, KeyError, AttributeError):
+        return False
+
+
+def _list_preferences(user_id: str, model_registry) -> Dict[str, str]:
+    if not _registry_has_metadata(model_registry):
+        return {}
+    from serverframework.lib.Environment import env
+
+    items = MetadataModel.DB(model_registry.DB.manager.Base).list(
+        requester_id=env("ROOT_ID"),
+        model_registry=model_registry,
+        user_id=user_id,
+    )
+    return {item.key: item.value for item in items or []}
+
+
+def _list_user_metadata(user_id: str, model_registry):
+    if not _registry_has_metadata(model_registry):
+        return []
+    from serverframework.lib.Environment import env
+
+    return (
+        MetadataModel.DB(model_registry.DB.manager.Base).list(
+            requester_id=env("ROOT_ID"),
+            model_registry=model_registry,
+            user_id=user_id,
+        )
+        or []
+    )
+
+
+def _user_manager_factory(requester_id, target_id, model_registry, **kw):
+    if not _registry_has_metadata(model_registry):
+        return None
+    return UserMetadataManager(
+        requester_id=requester_id,
+        target_id=target_id,
+        model_registry=model_registry,
+        **kw,
+    )
+
+
+def _team_manager_factory(requester_id, target_team_id, model_registry, **kw):
+    if not _registry_has_metadata(model_registry):
+        return None
+    return TeamMetadataManager(
+        requester_id=requester_id,
+        target_team_id=target_team_id,
+        model_registry=model_registry,
+        **kw,
+    )
+
+
+def _create_user_metadata(user_id, key, value, model_registry, *, requester_id=None):
+    if not _registry_has_metadata(model_registry):
+        return
+    from serverframework.lib.Environment import env
+
+    with UserMetadataManager(
+        requester_id=requester_id or env("ROOT_ID"),
+        model_registry=model_registry,
+    ) as mgr:
+        mgr.create(user_id=user_id, key=key, value=str(value))
+
+
+def _update_user_metadata(id, value, model_registry, *, requester_id=None):
+    if not _registry_has_metadata(model_registry):
+        return
+    from serverframework.lib.Environment import env
+
+    with UserMetadataManager(
+        requester_id=requester_id or env("ROOT_ID"),
+        model_registry=model_registry,
+    ) as mgr:
+        mgr.update(id=id, value=str(value))
+
+
+try:
+    from serverframework.logic.BLL_Auth import register_metadata_hooks
+
+    register_metadata_hooks(
+        list_preferences=_list_preferences,
+        list_user_metadata=_list_user_metadata,
+        user_manager_factory=_user_manager_factory,
+        team_manager_factory=_team_manager_factory,
+        create_user_metadata=_create_user_metadata,
+        update_user_metadata=_update_user_metadata,
+    )
+except ImportError:
+    # Core not importable (e.g. extension imported in isolation for tests).
+    # The EXT class's `on_load` is a manual fallback for that path.
+    pass
+
+
 __all__ = [
     "MetadataModel",
     "MetadataManager",

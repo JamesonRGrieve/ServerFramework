@@ -79,6 +79,9 @@ class TestAppSettingsReal(TestMixin):
         os.environ["ROOT_API_KEY"] = "test-root-api-key-not-default"
         os.environ["JWT_SECRET"] = "test-jwt-secret-not-default-32chars"
         os.environ["ALLOWED_DOMAINS"] = "test.example.com"
+        # L-3 — production validation now refuses the empty default for
+        # DATABASE_PASSWORD too; supply an explicit non-default value.
+        os.environ["DATABASE_PASSWORD"] = "secure-test-db-password"
 
         settings = AppSettings.model_validate(os.environ)
 

@@ -174,4 +174,61 @@ class PermissionManager(AbstractBLLManager, RouterMixin):
 PermissionModel.Manager = PermissionManager
 
 
+# ---------------------------------------------------------------------------
+# Hook registration (Scope #5).
+# ---------------------------------------------------------------------------
+
+
+def _permission_db_class(declarative_base):
+    return PermissionModel.DB(declarative_base)
+
+
+def _create_permission(
+    *,
+    resource_type,
+    resource_id,
+    user_id=None,
+    team_id=None,
+    role_id=None,
+    can_view=False,
+    can_execute=False,
+    can_copy=False,
+    can_edit=False,
+    can_delete=False,
+    can_share=False,
+    requester_id=None,
+    model_registry=None,
+):
+    from serverframework.lib.Environment import env
+
+    with PermissionManager(
+        requester_id=requester_id or env("ROOT_ID"),
+        model_registry=model_registry,
+    ) as mgr:
+        return mgr.create(
+            resource_type=resource_type,
+            resource_id=resource_id,
+            user_id=user_id,
+            team_id=team_id,
+            role_id=role_id,
+            can_view=can_view,
+            can_execute=can_execute,
+            can_copy=can_copy,
+            can_edit=can_edit,
+            can_delete=can_delete,
+            can_share=can_share,
+        )
+
+
+try:
+    from serverframework.logic.BLL_Auth import register_acl_hooks
+
+    register_acl_hooks(
+        permission_db_class=_permission_db_class,
+        create_permission=_create_permission,
+    )
+except ImportError:
+    pass
+
+
 __all__ = ["PermissionModel", "PermissionManager"]
