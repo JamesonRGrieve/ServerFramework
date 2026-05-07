@@ -119,13 +119,10 @@ class UserOAuthLinkModel(
         scopes: Optional[str] = None
         is_primary: bool = False
 
+    # Tokens are server-rotated through the IdP refresh flow, not via
+    # client UPDATE. The Update schema only exposes safe display state.
     class Update(BaseModel):
-        access_token: Optional[str] = None
-        refresh_token: Optional[str] = None
-        token_expires_at: Optional[datetime] = None
-        scopes: Optional[str] = None
         is_primary: Optional[bool] = None
-        account_email: Optional[str] = None
         display_name: Optional[str] = None
 
     class Search(ApplicationModel.Search, UpdateMixinModel.Search):
