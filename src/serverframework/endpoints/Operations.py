@@ -41,10 +41,14 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict
 
-from serverframework.lib.InboundSecurity import rate_limit
+from serverframework.lib.InboundSecurity import (
+    compare_api_key,
+    rate_limit,
+    resolve_principal_from_api_key,
+)
 from serverframework.lib.Logging import logger
 
 
@@ -363,6 +367,87 @@ def _default_service_reset(name: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Admin auth dependency
+# ---------------------------------------------------------------------------
+#
+# C-1 — every ``/admin/*`` route below MUST be gated by an explicit auth
+# dependency. The previous implementation relied on ``@rate_limit(scope=
+# "user")`` to "require" a user, but the rate-limit middleware skips
+# enforcement when the actor cannot be resolved (so an anonymous request
+# fell through). The dependency below accepts either:
+#   - a ROOT/SYSTEM/TEMPLATE API key in ``Authorization: Bearer <key>``
+#     (matched constant-time against the configured env values), or
+#   - an authenticated request whose JWT-derived RequestContext.user
+#     resolves to ROOT/SYSTEM (regular users are refused 403).
+#
+# The rate-limit decorators stay (so a flooded admin still trips a 429),
+# but they are no longer the auth gate.
+
+
+def _require_admin_principal(
+    request: Request,
+    authorization: Optional[str] = Header(default=None),
+) -> str:
+    """Return the resolved admin principal id, or raise 401/403.
+
+    Resolution order: ``X-API-Key`` → ``Authorization: Bearer <key>`` →
+    JWT-derived RequestContext.user. Only ROOT_ID/SYSTEM_ID are
+    accepted. The dependency is tolerant of test fixtures that bypass
+    the JWT middleware by also accepting an explicit API key header.
+    """
+
+    api_key = request.headers.get("X-API-Key") or None
+    if not api_key and authorization:
+        if authorization.lower().startswith("bearer "):
+            candidate = authorization.split(" ", 1)[1].strip()
+            # A JWT contains two dots; an opaque API key does not. Only
+            # treat the bearer value as an API key when it is plainly
+            # not a JWT — otherwise it falls through to the JWT path
+            # below and gets resolved via RequestContext.
+            if candidate.count(".") < 2:
+                api_key = candidate
+
+    if api_key:
+        principal = resolve_principal_from_api_key(api_key)
+        if principal is not None:
+            return principal
+        # An API-key-shaped credential that does not match is a clear
+        # 401, not a fall-through to the JWT path.
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid admin credentials",
+        )
+
+    # JWT path: RequestContext is populated by the framework's
+    # JWT-extraction middleware in ``app.py``.
+    try:
+        from serverframework.database.StaticPermissions import (
+            is_root_id,
+            is_system_id,
+        )
+        from serverframework.lib.RequestContext import get_request_user
+    except ImportError as exc:  # pragma: no cover — bootstrap-only
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Auth subsystem unavailable: {exc}",
+        )
+
+    user = get_request_user()
+    user_id = user.get("user_id") if isinstance(user, dict) else None
+    if not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required for admin endpoint",
+        )
+    if not (is_root_id(user_id) or is_system_id(user_id)):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access required",
+        )
+    return user_id
+
+
+# ---------------------------------------------------------------------------
 # Router factory
 # ---------------------------------------------------------------------------
 
@@ -472,6 +557,7 @@ def create_operations_router(
         since: Optional[datetime] = Query(None),
         until: Optional[datetime] = Query(None),
         limit: int = Query(100, ge=1, le=1000),
+        _admin: str = Depends(_require_admin_principal),
     ) -> Dict[str, Any]:
         if cfg.dlq_lister is None:
             entries: List[Any] = []
@@ -492,7 +578,10 @@ def create_operations_router(
 
     @router.post("/admin/dlq/{entry_id}/replay")
     @rate_limit("30/min", scope="user")
-    def replay_dlq(entry_id: str) -> Dict[str, Any]:
+    def replay_dlq(
+        entry_id: str,
+        _admin: str = Depends(_require_admin_principal),
+    ) -> Dict[str, Any]:
         if cfg.dlq_replay is None:
             raise HTTPException(
                 status_code=status.HTTP_501_NOT_IMPLEMENTED,
@@ -509,7 +598,10 @@ def create_operations_router(
 
     @router.post("/admin/dlq/{entry_id}/discard")
     @rate_limit("30/min", scope="user")
-    def discard_dlq(entry_id: str) -> Dict[str, Any]:
+    def discard_dlq(
+        entry_id: str,
+        _admin: str = Depends(_require_admin_principal),
+    ) -> Dict[str, Any]:
         if cfg.dlq_discard is None:
             raise HTTPException(
                 status_code=status.HTTP_501_NOT_IMPLEMENTED,
@@ -528,7 +620,9 @@ def create_operations_router(
 
     @router.get("/admin/services")
     @rate_limit("30/min", scope="user")
-    def list_failed_services() -> Dict[str, Any]:
+    def list_failed_services(
+        _admin: str = Depends(_require_admin_principal),
+    ) -> Dict[str, Any]:
         services = cfg.failed_services_lister() if cfg.failed_services_lister else []
         rendered = []
         for svc in services:
@@ -544,7 +638,10 @@ def create_operations_router(
 
     @router.post("/admin/services/{name}/reset")
     @rate_limit("30/min", scope="user")
-    def reset_service(name: str) -> Dict[str, Any]:
+    def reset_service(
+        name: str,
+        _admin: str = Depends(_require_admin_principal),
+    ) -> Dict[str, Any]:
         if cfg.service_reset is None:
             raise HTTPException(
                 status_code=status.HTTP_501_NOT_IMPLEMENTED,

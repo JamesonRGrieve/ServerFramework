@@ -54,97 +54,6 @@ def upgrade() -> None:
         info={"source_module": "serverframework.logic.BLL_Extensions"},
     )
     op.create_table(
-        "sessions",
-        sa.Column(
-            "user_id",
-            sa.String(),
-            nullable=True,
-            comment="Optional foreign key to User (table not found)",
-        ),
-        sa.Column(
-            "session_key",
-            sa.String(),
-            nullable=False,
-            comment="Unique session identifier used in JWT jti claim",
-        ),
-        sa.Column(
-            "jwt_issued_at",
-            sa.DateTime(),
-            nullable=False,
-            comment="When the JWT was issued",
-        ),
-        sa.Column(
-            "refresh_token_hash",
-            sa.String(),
-            nullable=True,
-            comment="Hash of refresh token if refresh mechanism is enabled",
-        ),
-        sa.Column(
-            "device_type",
-            sa.String(),
-            nullable=True,
-            comment="Type of device used for authentication (mobile, desktop, etc.)",
-        ),
-        sa.Column(
-            "device_name",
-            sa.String(),
-            nullable=True,
-            comment="Name of the device if provided",
-        ),
-        sa.Column(
-            "browser",
-            sa.String(),
-            nullable=True,
-            comment="Browser information from user agent",
-        ),
-        sa.Column(
-            "is_active",
-            sa.Boolean(),
-            nullable=False,
-            comment="Whether this session is currently active",
-        ),
-        sa.Column(
-            "last_activity",
-            sa.DateTime(),
-            nullable=False,
-            comment="Timestamp of last activity in this session",
-        ),
-        sa.Column(
-            "expires_at",
-            sa.DateTime(),
-            nullable=False,
-            comment="When this session expires",
-        ),
-        sa.Column(
-            "revoked",
-            sa.Boolean(),
-            nullable=False,
-            comment="Whether this session has been explicitly revoked",
-        ),
-        sa.Column(
-            "trust_score",
-            sa.Integer(),
-            nullable=False,
-            comment="Trust level of this session (0-100)",
-        ),
-        sa.Column(
-            "requires_verification",
-            sa.Boolean(),
-            nullable=False,
-            comment="Whether additional verification is required",
-        ),
-        sa.Column("id", sa.String(), nullable=False),
-        sa.Column("created_at", sa.DateTime(), nullable=True),
-        sa.Column("created_by_user_id", sa.String(), nullable=True),
-        sa.Column("updated_at", sa.DateTime(), nullable=True),
-        sa.Column("updated_by_user_id", sa.String(), nullable=True),
-        sa.Column("deleted_at", sa.DateTime(), nullable=True),
-        sa.Column("deleted_by_user_id", sa.String(), nullable=True),
-        sa.PrimaryKeyConstraint("id"),
-        comment="Session table",
-        info={"source_module": "serverframework.logic.BLL_Auth"},
-    )
-    op.create_table(
         "extensions",
         sa.Column("name", sa.String(), nullable=False, comment="The name"),
         sa.Column(
@@ -169,188 +78,6 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
         comment="Extension table",
         info={"source_module": "serverframework.logic.BLL_Extensions"},
-    )
-    op.create_table(
-        "failed_login_attempts",
-        sa.Column(
-            "user_id",
-            sa.String(),
-            nullable=True,
-            comment="Optional foreign key to User (table not found)",
-        ),
-        sa.Column(
-            "ip_address",
-            sa.String(),
-            nullable=True,
-            comment="IP address of failed login attempt",
-        ),
-        sa.Column("id", sa.String(), nullable=False),
-        sa.Column("created_at", sa.DateTime(), nullable=True),
-        sa.Column("created_by_user_id", sa.String(), nullable=True),
-        sa.PrimaryKeyConstraint("id"),
-        comment="FailedLoginAttempt table",
-        info={"source_module": "serverframework.logic.BLL_Auth"},
-    )
-    op.create_table(
-        "invitees",
-        sa.Column(
-            "invitation_id",
-            sa.String(),
-            nullable=True,
-            comment="Optional foreign key to Invitation (table not found)",
-        ),
-        sa.Column(
-            "user_id",
-            sa.String(),
-            nullable=True,
-            comment="Optional foreign key to User (table not found)",
-        ),
-        sa.Column("email", sa.String(), nullable=False, comment="Email of the invitee"),
-        sa.Column(
-            "declined_at",
-            sa.DateTime(),
-            nullable=True,
-            comment="When the invitation was declined",
-        ),
-        sa.Column(
-            "accepted_at",
-            sa.DateTime(),
-            nullable=True,
-            comment="When the invitation was accepted",
-        ),
-        sa.Column("id", sa.String(), nullable=False),
-        sa.Column("created_at", sa.DateTime(), nullable=True),
-        sa.Column("created_by_user_id", sa.String(), nullable=True),
-        sa.Column("updated_at", sa.DateTime(), nullable=True),
-        sa.Column("updated_by_user_id", sa.String(), nullable=True),
-        sa.Column("deleted_at", sa.DateTime(), nullable=True),
-        sa.Column("deleted_by_user_id", sa.String(), nullable=True),
-        sa.PrimaryKeyConstraint("id"),
-        comment="Invitee table",
-        info={"source_module": "serverframework.logic.BLL_Auth"},
-    )
-    op.create_table(
-        "invitations",
-        sa.Column(
-            "role_id",
-            sa.String(),
-            nullable=True,
-            comment="Optional foreign key to Role (table not found)",
-        ),
-        sa.Column(
-            "team_id",
-            sa.String(),
-            nullable=True,
-            comment="Optional foreign key to Team (table not found)",
-        ),
-        sa.Column(
-            "user_id",
-            sa.String(),
-            nullable=True,
-            comment="Optional foreign key to User (table not found)",
-        ),
-        sa.Column("code", sa.String(), nullable=True, comment="Invitation code"),
-        sa.Column(
-            "max_uses",
-            sa.Integer(),
-            nullable=True,
-            comment="Maximum number of uses allowed",
-        ),
-        sa.Column(
-            "expires_at", sa.DateTime(), nullable=True, comment="Expiration date/time"
-        ),
-        sa.Column("id", sa.String(), nullable=False),
-        sa.Column("created_at", sa.DateTime(), nullable=True),
-        sa.Column("created_by_user_id", sa.String(), nullable=True),
-        sa.Column("updated_at", sa.DateTime(), nullable=True),
-        sa.Column("updated_by_user_id", sa.String(), nullable=True),
-        sa.Column("deleted_at", sa.DateTime(), nullable=True),
-        sa.Column("deleted_by_user_id", sa.String(), nullable=True),
-        sa.PrimaryKeyConstraint("id"),
-        comment="Invitation table",
-        info={"source_module": "serverframework.logic.BLL_Auth"},
-    )
-    op.create_table(
-        "permissions",
-        sa.Column(
-            "role_id",
-            sa.String(),
-            nullable=True,
-            comment="Optional foreign key to Role (table not found)",
-        ),
-        sa.Column(
-            "team_id",
-            sa.String(),
-            nullable=True,
-            comment="Optional foreign key to Team (table not found)",
-        ),
-        sa.Column(
-            "user_id",
-            sa.String(),
-            nullable=True,
-            comment="Optional foreign key to User (table not found)",
-        ),
-        sa.Column(
-            "resource_type", sa.String(), nullable=False, comment="Type of resource"
-        ),
-        sa.Column(
-            "resource_id", sa.String(), nullable=False, comment="ID of the resource"
-        ),
-        sa.Column(
-            "can_view",
-            sa.Boolean(),
-            nullable=False,
-            comment="Whether user/team can view the resource",
-        ),
-        sa.Column(
-            "can_execute",
-            sa.Boolean(),
-            nullable=False,
-            comment="Whether user/team can execute the resource",
-        ),
-        sa.Column(
-            "can_copy",
-            sa.Boolean(),
-            nullable=False,
-            comment="Whether user/team can copy the resource",
-        ),
-        sa.Column(
-            "can_edit",
-            sa.Boolean(),
-            nullable=False,
-            comment="Whether user/team can edit the resource",
-        ),
-        sa.Column(
-            "can_delete",
-            sa.Boolean(),
-            nullable=False,
-            comment="Whether user/team can delete the resource",
-        ),
-        sa.Column(
-            "can_share",
-            sa.Boolean(),
-            nullable=False,
-            comment="Whether user/team can share the resource with others",
-        ),
-        sa.Column(
-            "expires_at", sa.DateTime(), nullable=True, comment="Permission expiration"
-        ),
-        sa.Column(
-            "enabled",
-            sa.Boolean(),
-            nullable=False,
-            comment="Whether the permission is enabled",
-        ),
-        sa.Column("id", sa.String(), nullable=False),
-        sa.Column("created_at", sa.DateTime(), nullable=True),
-        sa.Column("created_by_user_id", sa.String(), nullable=True),
-        sa.Column("updated_at", sa.DateTime(), nullable=True),
-        sa.Column("updated_by_user_id", sa.String(), nullable=True),
-        sa.Column("deleted_at", sa.DateTime(), nullable=True),
-        sa.Column("deleted_by_user_id", sa.String(), nullable=True),
-        sa.PrimaryKeyConstraint("id"),
-        comment="Permission table",
-        info={"source_module": "serverframework.logic.BLL_Auth"},
     )
     op.create_table(
         "provider_extension_abilities",
@@ -648,33 +375,6 @@ def upgrade() -> None:
         info={"source_module": "serverframework.logic.BLL_Providers"},
     )
     op.create_table(
-        "metadata",
-        sa.Column(
-            "user_id",
-            sa.String(),
-            nullable=True,
-            comment="Optional foreign key to User",
-        ),
-        sa.Column(
-            "team_id",
-            sa.String(),
-            nullable=True,
-            comment="Optional foreign key to Team",
-        ),
-        sa.Column("key", sa.String(), nullable=False, comment="Metadata key"),
-        sa.Column("value", sa.String(), nullable=True, comment="Metadata value"),
-        sa.Column("id", sa.String(), nullable=False),
-        sa.Column("created_at", sa.DateTime(), nullable=True),
-        sa.Column("created_by_user_id", sa.String(), nullable=True),
-        sa.Column("updated_at", sa.DateTime(), nullable=True),
-        sa.Column("updated_by_user_id", sa.String(), nullable=True),
-        sa.Column("deleted_at", sa.DateTime(), nullable=True),
-        sa.Column("deleted_by_user_id", sa.String(), nullable=True),
-        sa.PrimaryKeyConstraint("id"),
-        comment="Unified metadata table for users and teams",
-        info={"source_module": "serverframework.logic.BLL_Auth"},
-    )
-    op.create_table(
         "teams",
         sa.Column("name", sa.String(), nullable=True),
         sa.Column(
@@ -781,36 +481,6 @@ def upgrade() -> None:
         info={"source_module": "serverframework.logic.BLL_Auth"},
     )
     op.create_table(
-        "user_recovery_questions",
-        sa.Column(
-            "user_id",
-            sa.String(),
-            nullable=True,
-            comment="Optional foreign key to User",
-        ),
-        sa.Column("question", sa.String(), nullable=False, comment="Recovery question"),
-        sa.Column(
-            "answer",
-            sa.String(),
-            nullable=False,
-            comment="Hashed answer to recovery question",
-        ),
-        sa.Column("id", sa.String(), nullable=False),
-        sa.Column("created_at", sa.DateTime(), nullable=True),
-        sa.Column("created_by_user_id", sa.String(), nullable=True),
-        sa.Column("updated_at", sa.DateTime(), nullable=True),
-        sa.Column("updated_by_user_id", sa.String(), nullable=True),
-        sa.Column("deleted_at", sa.DateTime(), nullable=True),
-        sa.Column("deleted_by_user_id", sa.String(), nullable=True),
-        sa.ForeignKeyConstraint(
-            ["user_id"],
-            ["users.id"],
-        ),
-        sa.PrimaryKeyConstraint("id"),
-        comment="UserRecoveryQuestion table",
-        info={"source_module": "serverframework.logic.BLL_Auth"},
-    )
-    op.create_table(
         "user_teams",
         sa.Column(
             "role_id",
@@ -869,12 +539,13 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """Downgrade schema."""
-    # ### commands auto generated by Alembic - please adjust! ###
+    """Downgrade schema. Tables owned by extensions
+    (``failed_login_attempts``, ``user_recovery_questions``, ``metadata``,
+    ``invitations``, ``invitees``, ``permissions``, ``sessions``) are not
+    listed here — they are dropped by their respective extension's own
+    migration when the extension is uninstalled."""
     op.drop_table("user_teams")
-    op.drop_table("user_recovery_questions")
     op.drop_table("users")
-    op.drop_table("metadata")
     op.drop_table("user_credentials")
     op.drop_table("teams")
     op.drop_table("rotations")
@@ -888,11 +559,5 @@ def downgrade() -> None:
     op.drop_table("provider_instance_extension_abilities")
     op.drop_table("provider_extensions")
     op.drop_table("provider_extension_abilities")
-    op.drop_table("permissions")
-    op.drop_table("invitations")
-    op.drop_table("Invitees")
-    op.drop_table("failed_login_attempts")
     op.drop_table("extensions")
-    op.drop_table("sessions")
     op.drop_table("abilities")
-    # ### end Alembic commands ###

@@ -110,7 +110,182 @@ __all__ = [
     "compare_api_key",
     "resolve_principal_from_api_key",
     "resolve_client_ip",
+    "SecurityHeadersMiddleware",
+    "BodySizeLimitMiddleware",
+    "DEFAULT_MAX_BODY_BYTES",
 ]
+
+
+# H-4 — strict response-header defaults for an HTTP JSON API. Operators
+# override per deployment via the ``SECURITY_HEADERS_*`` env vars; defaults
+# are conservative because the alternative is shipping permissive values
+# baked into core. CSP is intentionally narrow (``default-src 'none'``) —
+# this surface is JSON, not HTML; pages that need CSP relaxation should
+# either declare their own header at the route level or adjust the env.
+_DEFAULT_SECURITY_HEADERS: Dict[str, str] = {
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "strict-origin-when-cross-origin",
+    "Permissions-Policy": "interest-cohort=()",
+    "Content-Security-Policy": (
+        "default-src 'none'; frame-ancestors 'none'; base-uri 'none'"
+    ),
+    # HSTS is only meaningful over TLS; the middleware only emits it when
+    # ``APP_ENV=production`` (see ``SecurityHeadersMiddleware``).
+    "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
+}
+
+
+# M-1 — default cap for request bodies. 10 MiB is large enough for typical
+# JSON payloads and small file-uploads; larger uploads must opt out
+# explicitly per route (e.g. via a streaming-multipart provider in an
+# extension). Configurable via ``MAX_REQUEST_BODY_BYTES``.
+DEFAULT_MAX_BODY_BYTES: int = 10 * 1024 * 1024
+
+
+class SecurityHeadersMiddleware:
+    """ASGI middleware that injects strict response headers (H-4).
+
+    Mounted unconditionally by ``app.py``. Defaults come from
+    ``_DEFAULT_SECURITY_HEADERS``; operators can override individual
+    values via env vars of the form ``SECURITY_HEADER_<UPPER_NAME>``
+    (e.g. ``SECURITY_HEADER_CONTENT_SECURITY_POLICY``). HSTS is only
+    emitted in production because dev/test deployments commonly run
+    over plain HTTP and a Strict-Transport-Security header on an HTTP
+    response is ignored anyway but introduces deployment foot-guns.
+    """
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+        self._headers = self._resolve_headers()
+        self._strip_server = (
+            os.environ.get("SECURITY_STRIP_SERVER_HEADER", "1") != "0"
+        )
+
+    @staticmethod
+    def _resolve_headers() -> Dict[str, str]:
+        headers = dict(_DEFAULT_SECURITY_HEADERS)
+        if os.environ.get("APP_ENV", "").lower() != "production":
+            headers.pop("Strict-Transport-Security", None)
+        for name in list(headers.keys()):
+            override = os.environ.get(
+                "SECURITY_HEADER_" + name.upper().replace("-", "_")
+            )
+            if override is not None:
+                if override == "":
+                    headers.pop(name, None)
+                else:
+                    headers[name] = override
+        return headers
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+
+        headers_to_add = self._headers
+        strip_server = self._strip_server
+
+        async def send_wrapper(message):
+            if message.get("type") == "http.response.start":
+                raw = list(message.get("headers") or [])
+                existing_lower = {k.decode("latin-1").lower() for k, _ in raw}
+                if strip_server:
+                    raw = [(k, v) for k, v in raw if k.decode("latin-1").lower() != "server"]
+                for name, value in headers_to_add.items():
+                    if name.lower() in existing_lower:
+                        continue
+                    raw.append(
+                        (name.encode("latin-1"), value.encode("latin-1"))
+                    )
+                message["headers"] = raw
+            await send(message)
+
+        await self.app(scope, receive, send_wrapper)
+
+
+class BodySizeLimitMiddleware:
+    """ASGI middleware that enforces a max request body size (M-1).
+
+    Two enforcement paths:
+      1. Trust ``Content-Length`` when present; reject the request with
+         ``413 Payload Too Large`` before forwarding to the app.
+      2. For chunked / unknown-length bodies, count bytes as they stream
+         in via ``receive`` and reject if the running total exceeds the
+         cap.
+
+    The cap is configurable via ``MAX_REQUEST_BODY_BYTES``. Set the value
+    to ``0`` (or any non-positive integer) to disable enforcement; this
+    is the escape hatch for routes that intentionally stream very large
+    objects (object-storage providers, federation mirrors). The default
+    is ``DEFAULT_MAX_BODY_BYTES``.
+    """
+
+    def __init__(self, app: Any, max_bytes: Optional[int] = None) -> None:
+        self.app = app
+        if max_bytes is None:
+            raw = os.environ.get("MAX_REQUEST_BODY_BYTES")
+            if raw is None:
+                max_bytes = DEFAULT_MAX_BODY_BYTES
+            else:
+                try:
+                    max_bytes = int(raw)
+                except ValueError:
+                    max_bytes = DEFAULT_MAX_BODY_BYTES
+        self.max_bytes = max_bytes
+
+    async def __call__(self, scope, receive, send):
+        if self.max_bytes is None or self.max_bytes <= 0:
+            await self.app(scope, receive, send)
+            return
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+
+        max_bytes = self.max_bytes
+        for raw_name, raw_value in scope.get("headers") or []:
+            if raw_name.decode("latin-1").lower() == "content-length":
+                try:
+                    declared = int(raw_value.decode("latin-1"))
+                except ValueError:
+                    declared = -1
+                if declared > max_bytes:
+                    await self._send_413(send)
+                    return
+                break
+
+        running = {"total": 0}
+
+        async def receive_wrapper():
+            message = await receive()
+            if message.get("type") == "http.request":
+                body = message.get("body") or b""
+                running["total"] += len(body)
+                if running["total"] > max_bytes:
+                    await self._send_413(send)
+                    return {"type": "http.disconnect"}
+            return message
+
+        await self.app(scope, receive_wrapper, send)
+
+    @staticmethod
+    async def _send_413(send) -> None:
+        from json import dumps as _json_dumps
+
+        body = _json_dumps(
+            {"detail": "Request body exceeds maximum allowed size"}
+        ).encode("utf-8")
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 413,
+                "headers": [
+                    (b"content-type", b"application/json"),
+                    (b"content-length", str(len(body)).encode("ascii")),
+                ],
+            }
+        )
+        await send({"type": "http.response.body", "body": body})
 
 
 import hmac as _hmac

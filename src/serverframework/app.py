@@ -96,6 +96,12 @@ if __name__ == "__main__":
 
 
 import json
+import re as _re_module
+
+# Strict W3C trace-id: exactly 32 lowercase hex chars (the all-zero value is
+# the W3C "invalid" sentinel and is rejected). The ingest path lowercases
+# before matching so case-insensitive clients are still accepted (M-9).
+_STRICT_TRACE_ID_RE = _re_module.compile(r"^[0-9a-f]{32}$")
 
 
 def install_extension_dependencies_with_restart(extensions_str: str):
@@ -496,8 +502,19 @@ def build_app(model_registry: ModelRegistry):
     # The middleware is mounted unconditionally; it is a no-op for routes
     # that have not been stamped with @rate_limit. Route discovery runs
     # below after every router has been mounted onto the app.
-    from serverframework.lib.InboundSecurity import RateLimitMiddleware
+    from serverframework.lib.InboundSecurity import (
+        BodySizeLimitMiddleware,
+        RateLimitMiddleware,
+        SecurityHeadersMiddleware,
+    )
 
+    # H-4 — strict response-header defaults (CSP, nosniff, frame-deny,
+    # referrer-policy, permissions-policy, HSTS in production). M-1 —
+    # request-body size cap so multipart / oversized JSON cannot OOM
+    # the worker. Mount before any router so a 413 short-circuits before
+    # the body is buffered downstream.
+    app.add_middleware(SecurityHeadersMiddleware)
+    app.add_middleware(BodySizeLimitMiddleware)
     app.add_middleware(RateLimitMiddleware)
 
     # JWT extraction middleware. RequestContext.user is the canonical actor
@@ -521,11 +538,20 @@ def build_app(model_registry: ModelRegistry):
                 jwt_secret = env("JWT_SECRET")
                 if not jwt_secret:
                     raise jwt.InvalidTokenError("JWT_SECRET unset")
+                # M-4/M-5 — require ``exp`` and ``nbf``; ``leeway=30``
+                # absorbs cross-host clock skew. ``aud``/``iss`` cannot
+                # be required here without re-introducing per-deployment
+                # config tied to this middleware; that gate runs in the
+                # auth layer's ``verify_token``.
                 payload = jwt.decode(
                     token,
                     key=jwt_secret,
                     algorithms=["HS256"],
-                    options={"verify_signature": True, "require": ["exp"]},
+                    leeway=30,
+                    options={
+                        "verify_signature": True,
+                        "require": ["exp", "nbf"],
+                    },
                 )
 
                 # Set user context with timezone info
@@ -575,17 +601,16 @@ def build_app(model_registry: ModelRegistry):
         # tracing backends (W3C format:
         # ``<version>-<trace-id>-<parent-id>-<flags>``). Otherwise mint
         # a fresh ``uuid4().hex`` so every request still has an id.
+        # M-9 — accept only strict-W3C lowercase hex; uppercase / mixed
+        # case is normalized to lower so downstream parsers stay happy
+        # and the value is still safe to interpolate into log lines.
         correlation_id_value: Optional[str] = None
         if traceparent_header:
             parts = traceparent_header.split("-")
-            if len(parts) >= 2 and len(parts[1]) == 32:
-                # Strict W3C trace-id is 32 lowercase hex chars.
-                trace_id = parts[1]
-                try:
-                    int(trace_id, 16)
+            if len(parts) >= 2:
+                trace_id = parts[1].lower()
+                if _STRICT_TRACE_ID_RE.match(trace_id) and trace_id != "0" * 32:
                     correlation_id_value = trace_id
-                except ValueError:
-                    correlation_id_value = None
         if correlation_id_value is None:
             correlation_id_value = mint_correlation_id()
         set_correlation_id(correlation_id_value)

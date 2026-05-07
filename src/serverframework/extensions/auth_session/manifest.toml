@@ -1,0 +1,12 @@
+name = "auth_session"
+version = "0.1.0"
+description = "Persisted session rows that back JWT revocation and device-pairing state"
+
+# meta_logging owns the audit channel that session lifecycle events stream to.
+# Optional — sessions still persist without it; they just don't appear in the
+# central audit feed.
+[[extension_dependencies]]
+name = "meta_logging"
+optional = true
+
+[python_dependencies]

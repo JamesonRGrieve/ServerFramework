@@ -312,18 +312,20 @@ def _sentry_before_send(event, hint):
     except Exception:
         # Never let scrubbing drop the event silently.
         return event
-    try:
-        from serverframework.extensions.privacy.BLL_PII import PIILogFilter
+    # Delegate richer PII pattern coverage to the ``privacy`` extension
+    # via the ``_pii_hooks["log_filter"]`` registry. Core never imports
+    # from the extension; the extension registers a callable on
+    # ``on_load`` and we consult it. Without the extension, only the
+    # registered-secret redaction above fires.
+    from serverframework.logic.BLL_Auth import _pii_hooks
 
-        flt = PIILogFilter()
-        # Re-run patterns on the already-scrubbed message.
-        msg = event.get("message")
-        if isinstance(msg, str):
-            for pat, repl in PIILogFilter._PATTERNS:
-                msg = pat.sub(repl, msg)
-            event["message"] = msg
-    except ImportError:
-        pass
+    pii_filter = _pii_hooks["log_filter"]
+    if pii_filter is not None:
+        try:
+            pii_filter(event)
+        except Exception:
+            # Never let an extension's pattern bug drop the event.
+            return event
     return event
 
 

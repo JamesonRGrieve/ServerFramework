@@ -958,6 +958,18 @@ def _list_invitees_for_user(user_id, email, model_registry):
     ]
 
 
+def _invitation_db_class(declarative_base):
+    """Return the SA model bound to ``declarative_base`` for the
+    ``invitations`` table. Consumed by ``StaticPermissions`` so the core
+    permission filter can include invitation-driven team access without
+    importing the extension directly."""
+    return InvitationModel.DB(declarative_base)
+
+
+def _invitee_db_class(declarative_base):
+    return InviteeModel.DB(declarative_base)
+
+
 try:
     from serverframework.logic.BLL_Auth import register_invitation_hooks
 
@@ -968,6 +980,8 @@ try:
         invitation_manager_factory=_invitation_manager_factory,
         invitee_manager_factory=_invitee_manager_factory,
         list_invitees_for_user=_list_invitees_for_user,
+        invitation_db_class=_invitation_db_class,
+        invitee_db_class=_invitee_db_class,
     )
 except ImportError:
     pass

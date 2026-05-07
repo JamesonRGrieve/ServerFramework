@@ -1803,16 +1803,25 @@ class ModelRegistry(AbstractRegistry):
         # surface via provider health checks; an unreachable upstream MUST
         # NOT prevent the registry from committing.
         from serverframework.lib.Environment import env as _env
-        if (_env("GQL_FEDERATION", default="true") or "true").lower() == "true":
-            try:
-                from serverframework.extensions.federation.BLL_Federation_Bootstrap import (
-                    install_external_federation_sync,
-                )
 
-                self._federation_report = install_external_federation_sync(
-                    model_registry=self
-                )
-                if self._federation_report.models:
+        federation_enabled = (
+            _env("GQL_FEDERATION", default="true") or "true"
+        ).lower() == "true"
+        # Federation is owned by the ``federation`` extension. Core never
+        # imports from it; the extension registers a callable on
+        # ``_registry_hooks["bootstrap_federation"]`` at on_load time and
+        # we dispatch through that. Without the extension, the registry
+        # commits as a single-app deployment.
+        from serverframework.logic.BLL_Auth import _registry_hooks
+
+        bootstrap = _registry_hooks["bootstrap_federation"]
+        if federation_enabled and bootstrap is not None:
+            try:
+                self._federation_report = bootstrap(model_registry=self)
+                if (
+                    self._federation_report is not None
+                    and getattr(self._federation_report, "models", None)
+                ):
                     logger.info(
                         "Federation lifted %d external types: %s",
                         len(self._federation_report.models),

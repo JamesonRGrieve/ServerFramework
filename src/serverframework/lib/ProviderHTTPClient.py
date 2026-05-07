@@ -25,9 +25,13 @@ SDK-specific limitations in the provider's `PRV.X.md`.
 from __future__ import annotations
 
 import contextvars
+import ipaddress
 import logging
+import os
+import socket
 from dataclasses import dataclass, field
-from typing import Any, Dict, Mapping, Optional, Tuple, Type
+from typing import Any, Dict, List, Mapping, Optional, Tuple, Type
+from urllib.parse import urlparse
 
 import httpx
 from pydantic import BaseModel
@@ -77,6 +81,147 @@ except ImportError:  # pragma: no cover
 
     def _redact_secret(text: str) -> str:
         return text
+
+
+# ----- SSRF guard -----------------------------------------------------------
+#
+# H-2 — outbound HTTP must refuse internal/loopback/link-local destinations
+# unless the operator explicitly allowlists them. The default deny-list
+# covers RFC1918 private space, loopback, link-local (incl. cloud IMDS at
+# 169.254.169.254), CGNAT, multicast, the IPv4 broadcast, and the IPv6
+# equivalents. Operators expand the allowlist via ``EGRESS_ALLOWED_HOSTS``
+# (comma-separated host[:port] entries — exact host match) when a provider
+# legitimately addresses an internal endpoint (mirrored upstream, in-cluster
+# proxy, etc.).
+#
+# The default policy also restricts the URL scheme to ``http``/``https``;
+# ``file://``, ``gopher://``, etc. would otherwise let an attacker who
+# influences a provider URL pivot into local files or smuggle SMTP via
+# gopher.
+
+
+_SSRF_DEFAULT_DISABLED_ENV = "DISABLE_SSRF_GUARD"
+
+# Networks rejected by default for outbound traffic.
+_BLOCKED_V4_NETWORKS: Tuple[ipaddress.IPv4Network, ...] = tuple(
+    ipaddress.IPv4Network(net)
+    for net in (
+        "0.0.0.0/8",        # current network / "this host"
+        "10.0.0.0/8",       # RFC1918
+        "127.0.0.0/8",      # loopback
+        "169.254.0.0/16",   # link-local (IMDS lives here)
+        "172.16.0.0/12",    # RFC1918
+        "192.0.0.0/24",     # IETF protocol assignments
+        "192.0.2.0/24",     # TEST-NET-1
+        "192.168.0.0/16",   # RFC1918
+        "198.18.0.0/15",    # benchmarking
+        "198.51.100.0/24",  # TEST-NET-2
+        "203.0.113.0/24",   # TEST-NET-3
+        "100.64.0.0/10",    # CGNAT
+        "224.0.0.0/4",      # multicast
+        "240.0.0.0/4",      # reserved
+        "255.255.255.255/32",  # broadcast
+    )
+)
+_BLOCKED_V6_NETWORKS: Tuple[ipaddress.IPv6Network, ...] = tuple(
+    ipaddress.IPv6Network(net)
+    for net in (
+        "::1/128",          # loopback
+        "::/128",           # unspecified
+        "::ffff:0:0/96",    # IPv4-mapped (covers v4 blocks via mapping)
+        "fc00::/7",         # ULA
+        "fe80::/10",        # link-local
+        "ff00::/8",         # multicast
+        "100::/64",         # RFC 6666 discard prefix
+    )
+)
+
+
+class SSRFGuardError(ValueError):
+    """Raised when an outbound URL targets a blocked destination (H-2)."""
+
+
+def _allowed_hosts() -> List[str]:
+    raw = (os.environ.get("EGRESS_ALLOWED_HOSTS") or "").strip()
+    if not raw:
+        return []
+    return [p.strip().lower() for p in raw.split(",") if p.strip()]
+
+
+def _ip_is_blocked(addr: str) -> bool:
+    try:
+        ip = ipaddress.ip_address(addr)
+    except ValueError:
+        return False
+    if isinstance(ip, ipaddress.IPv4Address):
+        for net in _BLOCKED_V4_NETWORKS:
+            if ip in net:
+                return True
+        return False
+    for net in _BLOCKED_V6_NETWORKS:
+        if ip in net:
+            return True
+    return False
+
+
+def validate_outbound_url(url: str) -> None:
+    """Refuse outbound requests to internal / disallowed destinations.
+
+    Validates scheme is http/https, parses the host, and (if the host
+    is a literal IP or resolves to one) checks every resolved address
+    against the blocked-network set. ``EGRESS_ALLOWED_HOSTS`` (env)
+    short-circuits the check on exact host match. Setting
+    ``DISABLE_SSRF_GUARD=1`` disables the whole guard; this is the
+    documented escape hatch for tests and deployments where a network
+    egress proxy already enforces the policy upstream.
+
+    Raises :class:`SSRFGuardError` on rejection so the caller's
+    ``except`` branches stay typed (the framework's outbound paths
+    surface this as ``InvalidInputExternalError``).
+    """
+    if os.environ.get(_SSRF_DEFAULT_DISABLED_ENV, "").lower() in ("1", "true", "yes"):
+        return
+    parsed = urlparse(url)
+    scheme = (parsed.scheme or "").lower()
+    if scheme not in ("http", "https"):
+        raise SSRFGuardError(
+            f"Refusing outbound URL {url!r}: scheme {scheme!r} not in {{http, https}}"
+        )
+    host = (parsed.hostname or "").lower()
+    if not host:
+        raise SSRFGuardError(f"Refusing outbound URL {url!r}: missing host")
+    port = parsed.port
+    allow_key_with_port = f"{host}:{port}" if port else host
+    allow = _allowed_hosts()
+    if host in allow or allow_key_with_port in allow:
+        return
+
+    # Literal-IP fast path.
+    try:
+        ipaddress.ip_address(host)
+        if _ip_is_blocked(host):
+            raise SSRFGuardError(
+                f"Refusing outbound URL {url!r}: literal IP {host} in "
+                "blocked network range"
+            )
+        return
+    except ValueError:
+        pass
+
+    # Hostname path — resolve and reject if any resolved address is blocked.
+    # Best-effort: if resolution fails, fall through and let httpx raise.
+    try:
+        infos = socket.getaddrinfo(host, port or 80, type=socket.SOCK_STREAM)
+    except socket.gaierror:
+        return
+    for info in infos:
+        sockaddr = info[4]
+        addr = sockaddr[0]
+        if _ip_is_blocked(addr):
+            raise SSRFGuardError(
+                f"Refusing outbound URL {url!r}: host {host!r} resolves to "
+                f"blocked address {addr}"
+            )
 
 
 # ----- Trace context --------------------------------------------------------
@@ -131,6 +276,12 @@ def _build_async_client(policy: ClientPolicy) -> httpx.AsyncClient:
     kwargs: Dict[str, Any] = {
         "timeout": policy.timeout,
         "verify": policy.tls_verify,
+        # H-2 — disable transparent redirect-following. Each redirect
+        # would need its own SSRF check; httpx's default of 20 hops is a
+        # large attack surface. Providers that need redirects should
+        # opt in per call by setting ``follow_redirects=True`` AND
+        # ensuring the destination passes ``validate_outbound_url``.
+        "follow_redirects": False,
     }
     if policy.egress_proxy:
         kwargs["proxy"] = policy.egress_proxy
@@ -141,6 +292,7 @@ def _build_sync_client(policy: ClientPolicy) -> httpx.Client:
     kwargs: Dict[str, Any] = {
         "timeout": policy.timeout,
         "verify": policy.tls_verify,
+        "follow_redirects": False,
     }
     if policy.egress_proxy:
         kwargs["proxy"] = policy.egress_proxy
@@ -375,6 +527,15 @@ class ProviderHTTPClient:
         headers: Optional[Mapping[str, str]] = None,
         **kwargs: Any,
     ) -> Any:
+        # H-2 — refuse outbound to internal/loopback/link-local before we
+        # spend pool slots, time budget, or auth headers on the request.
+        try:
+            validate_outbound_url(url)
+        except SSRFGuardError as exc:
+            raise InvalidInputExternalError(
+                f"Outbound URL refused by SSRF guard: {exc}",
+                provider=self.provider_name,
+            )
         merged_headers = self._build_headers(headers, idempotency_key, requester_id)
         merged_params = self._build_params(params, requester_id)
         modified_json = self._maybe_modify_body(json, requester_id)
@@ -478,6 +639,14 @@ class ProviderHTTPClientSync:
         headers: Optional[Mapping[str, str]] = None,
         **kwargs: Any,
     ) -> Any:
+        # H-2 — see ProviderHTTPClient.request for rationale.
+        try:
+            validate_outbound_url(url)
+        except SSRFGuardError as exc:
+            raise InvalidInputExternalError(
+                f"Outbound URL refused by SSRF guard: {exc}",
+                provider=self.provider_name,
+            )
         merged_headers = self._build_headers(headers, idempotency_key, requester_id)
         merged_params = self._build_params(params, requester_id)
         modified_json = self._maybe_modify_body(json, requester_id)
@@ -534,4 +703,6 @@ __all__ = [
     "get_traceparent",
     "get_async_client",
     "get_sync_client",
+    "validate_outbound_url",
+    "SSRFGuardError",
 ]

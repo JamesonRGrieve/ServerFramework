@@ -155,15 +155,41 @@ def set_tenant_guc(connection, key: str, value: str) -> None:
 
     `connection` is a SQLAlchemy connection object (the framework's
     session binder calls this on every checked-out connection).
+
+    The key is validated against the tenant-key registry before string-
+    formatting into SQL. An unregistered key is a programming error (or
+    an injection attempt) and is refused outright — the helper is exported
+    as public API and any caller that bypasses ``bind_session_tenant_gucs``
+    must still go through this gate (H-3).
     """
-    connection.execute(f"SET LOCAL app.current_{key} = :value", {"value": value})
+    from sqlalchemy import text
+
+    if not is_registered_tenant_key(key):
+        raise ValueError(
+            f"Unregistered tenant key {key!r}; refusing to emit SET LOCAL"
+        )
+    connection.execute(
+        text(f"SET LOCAL app.current_{key} = :value"), {"value": value}
+    )
 
 
 def clear_tenant_gucs(connection, keys: Tuple[str, ...]) -> None:
     """Clear `app.current_<key>` on the given connection. Used when
-    binding a privileged BYPASSRLS session."""
+    binding a privileged BYPASSRLS session.
+
+    Like ``set_tenant_guc``, every key is validated against the registry
+    before string-formatting; a literal ``RESET`` of an unknown identifier
+    is a no-op in Postgres but the interpolation site is still a latent
+    injection sink we refuse to expose (H-3).
+    """
+    from sqlalchemy import text
+
     for k in keys:
-        connection.execute(f"RESET app.current_{k}")
+        if not is_registered_tenant_key(k):
+            raise ValueError(
+                f"Unregistered tenant key {k!r}; refusing to emit RESET"
+            )
+        connection.execute(text(f"RESET app.current_{k}"))
 
 
 # ---------------------------------------------------------------------------

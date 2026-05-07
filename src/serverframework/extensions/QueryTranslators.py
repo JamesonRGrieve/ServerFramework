@@ -205,9 +205,51 @@ class MongoStyleTranslator(AbstractQueryDSLTranslator):
         return out
 
 
+import re as _re
+
+
+# SOQL identifiers: ASCII letter, then ASCII letter/digit/underscore.
+# Salesforce field names allow ``__c``/``__r`` suffixes plus relationship
+# traversal via ``Account.Name``. We accept dot-separated segments where
+# each segment matches the identifier shape; the regex deliberately
+# refuses spaces, quotes, semicolons, parentheses, and SOQL keywords
+# blended into the field name (C-2). Allowlist is the only safe path —
+# Salesforce does not expose parameterized binds for ad-hoc ``WHERE``
+# clauses, so any unsanitized field interpolation is an injection.
+_SOQL_IDENT_PATTERN = _re.compile(
+    r"^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)*$"
+)
+
+
+def _validate_soql_identifier(field: str) -> str:
+    """Raise ``ValueError`` unless ``field`` is a SOQL identifier.
+
+    Used by ``SOQLTranslator`` so a caller-supplied filter dict cannot
+    smuggle SQL/SOQL fragments through the field-name interpolation site
+    (C-2). Returns the field unchanged on success so call sites read
+    naturally.
+    """
+    if not isinstance(field, str) or not _SOQL_IDENT_PATTERN.match(field):
+        raise ValueError(
+            f"Refusing SOQL field name {field!r}: must match "
+            f"identifier (segments) [A-Za-z][A-Za-z0-9_]*"
+        )
+    return field
+
+
 class SOQLTranslator(AbstractQueryDSLTranslator):
     """Salesforce SOQL `WHERE` clause emitter (the `WHERE` keyword is
-    not included; the caller composes it into a full query)."""
+    not included; the caller composes it into a full query).
+
+    Field names are validated against the SOQL identifier shape so a
+    caller-provided filter dict cannot smuggle SOQL fragments through
+    the field-interpolation site. String values are escaped per
+    Salesforce SOQL rules: backslashes are doubled and single quotes
+    are backslash-escaped (Salesforce's documented dialect — different
+    from generic SQL's `''` doubling). LIKE-clause wildcards (`%`, `_`)
+    in caller-supplied substrings are also escaped so a value containing
+    ``%`` cannot widen the match (C-2).
+    """
 
     supported_operators: ClassVar[Set[str]] = {
         "exact",
@@ -233,6 +275,7 @@ class SOQLTranslator(AbstractQueryDSLTranslator):
 
     @staticmethod
     def _format_clause(field: str, op: str, value: Any) -> str:
+        field = _validate_soql_identifier(field)
         if op == "exact":
             return f"{field} = {SOQLTranslator._render(value)}"
         if op == "neq":
@@ -252,11 +295,17 @@ class SOQLTranslator(AbstractQueryDSLTranslator):
             rendered = ", ".join(SOQLTranslator._render(x) for x in value)
             return f"{field} NOT IN ({rendered})"
         if op == "inc":
-            return f"{field} LIKE '%{SOQLTranslator._escape(value)}%'"
+            return (
+                f"{field} LIKE '%{SOQLTranslator._escape_like(value)}%'"
+            )
         if op == "starts_with":
-            return f"{field} LIKE '{SOQLTranslator._escape(value)}%'"
+            return (
+                f"{field} LIKE '{SOQLTranslator._escape_like(value)}%'"
+            )
         if op == "ends_with":
-            return f"{field} LIKE '%{SOQLTranslator._escape(value)}'"
+            return (
+                f"{field} LIKE '%{SOQLTranslator._escape_like(value)}'"
+            )
         if op == "is_null":
             return f"{field} = NULL" if value else f"{field} != NULL"
         raise AssertionError(f"unhandled SOQL operator {op!r}")  # defensive
@@ -273,7 +322,18 @@ class SOQLTranslator(AbstractQueryDSLTranslator):
 
     @staticmethod
     def _escape(value: str) -> str:
-        return str(value).replace("'", "\\'")
+        # Salesforce SOQL string escapes: backslashes first, then quotes.
+        # Order matters — escape ``\`` before ``'`` or the inserted ``\\``
+        # would itself receive a second pass (C-2).
+        return str(value).replace("\\", "\\\\").replace("'", "\\'")
+
+    @staticmethod
+    def _escape_like(value: str) -> str:
+        # Inside a LIKE pattern, ``%`` and ``_`` are wildcards. A
+        # caller-supplied substring containing them would silently widen
+        # the match; escape both alongside the standard string escapes.
+        s = SOQLTranslator._escape(str(value))
+        return s.replace("%", "\\%").replace("_", "\\_")
 
 
 class GraphQLFilterTranslator(AbstractQueryDSLTranslator):

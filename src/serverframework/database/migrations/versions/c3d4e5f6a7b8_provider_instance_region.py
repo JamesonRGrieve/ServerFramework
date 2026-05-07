@@ -1,7 +1,7 @@
 """provider_instance_region
 
 Revision ID: c3d4e5f6a7b8
-Revises: b2c3d4e5f6a7
+Revises: a1b2c3d4e5f6
 Create Date: 2026-04-30 00:00:01.000000
 
 Item 36: Add ``region`` column to ``provider_instances``.
@@ -23,7 +23,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = "c3d4e5f6a7b8"
-down_revision: Union[str, None] = "b2c3d4e5f6a7"
+down_revision: Union[str, None] = "a1b2c3d4e5f6"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

@@ -33,19 +33,33 @@ class TestCanonicalClassLocation:
         assert BLL_Auth.PermissionModel is PermissionModel
         assert BLL_Auth.PermissionManager is PermissionManager
 
-    def test_static_permissions_imports_from_extension(self):
-        # StaticPermissions used to `from BLL_Auth import PermissionModel`;
-        # post-extraction it must import from the extension path.
+    def test_static_permissions_resolves_through_acl_hook(self):
+        """``StaticPermissions`` must NOT import the extension directly —
+        the canonical first release routes the permission DB class
+        through ``_acl_hooks["permission_db_class"]`` so deleting the
+        ``acl_rbac`` extension folder does not break core. This is the
+        contract: any direct ``from serverframework.extensions.acl_rbac``
+        import in the core permission filter regresses the
+        delete-extensions invariant."""
         with open(
             "src/serverframework/database/StaticPermissions.py", "r"
         ) as fh:
             src = fh.read()
+
+        # No direct extension imports in the core permission engine.
         assert (
             "from serverframework.extensions.acl_rbac.BLL_ACL import PermissionModel"
-            in src
+            not in src
         )
-        # No remaining BLL_Auth->PermissionModel imports.
-        assert "from serverframework.logic.BLL_Auth import PermissionModel" not in src
+        # And no path through the legacy BLL_Auth re-export either.
+        assert (
+            "from serverframework.logic.BLL_Auth import PermissionModel"
+            not in src
+        )
+        # Hook is consulted at the call sites (permission lookup, filter
+        # generator, invitation special-case).
+        assert "_acl_hooks" in src
+        assert 'permission_db_class' in src
 
 
 class TestPermissionCreateValidation:

@@ -372,16 +372,21 @@ class RedactingFilter(logging.Filter):
             if any(s and s in msg for s in registered_secrets()):
                 record.msg = redact(msg)
                 record.args = ()
-            # Delegate to the privacy extension when present for richer
-            # PII pattern coverage.
-            try:
-                from serverframework.extensions.privacy.BLL_PII import (
-                    PIILogFilter as _ExtFilter,
-                )
+            # Delegate richer PII pattern coverage to the ``privacy``
+            # extension via ``_pii_hooks["log_filter"]``. Core never
+            # imports from the extension; the privacy extension's
+            # ``on_load`` registers a record-mutating callable. Without
+            # the extension, only the registered-secret scrubbing above
+            # fires.
+            from serverframework.logic.BLL_Auth import _pii_hooks
 
-                _ExtFilter().filter(record)
-            except ImportError:
-                pass
+            pii_filter = _pii_hooks["log_filter"]
+            if pii_filter is not None:
+                try:
+                    pii_filter(record)
+                except Exception:
+                    # An extension bug must not drop the log record.
+                    pass
         except Exception:
             return True
         return True

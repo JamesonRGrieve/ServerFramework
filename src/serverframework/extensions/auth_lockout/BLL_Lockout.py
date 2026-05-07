@@ -141,12 +141,23 @@ def _record_failure(user_id, ip_address, model_registry):
     mgr.record_failure(user_id, ip_address, model_registry)
 
 
+def _failed_logins_manager_factory(
+    *, requester_id, target_id=None, model_registry=None
+):
+    return FailedLoginAttemptManager(
+        requester_id=requester_id,
+        target_id=target_id,
+        model_registry=model_registry,
+    )
+
+
 try:
     from serverframework.logic.BLL_Auth import register_lockout_hooks
 
     register_lockout_hooks(
         assert_within_threshold=_assert_within_threshold,
         record_failure=_record_failure,
+        manager_factory=_failed_logins_manager_factory,
     )
 except ImportError:
     pass

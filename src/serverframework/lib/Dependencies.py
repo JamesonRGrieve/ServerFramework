@@ -1370,8 +1370,15 @@ class JWT:
                     exc_info=True,
                 )
 
+        # Forward every positional after ``token`` to PyJWT verbatim so a
+        # call like ``jwt.decode(token, secret, algorithms=...)`` reaches
+        # PyJWT with the key intact. The previous implementation dropped
+        # everything after ``args[0]``, which silently produced
+        # signature-verification failures in callers that passed the key
+        # positionally.
         token = kwargs.pop("jwt", args[0] if args else None)
-        return JSONWebToken.decode(token, **kwargs)
+        forwarded_args = tuple(args[1:]) if len(args) > 1 else ()
+        return JSONWebToken.decode(token, *forwarded_args, **kwargs)
 
 
 # Create singleton instance for import
