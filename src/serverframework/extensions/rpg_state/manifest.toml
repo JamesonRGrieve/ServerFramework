@@ -1,0 +1,8 @@
+name = "rpg_state"
+version = "0.1.0"
+description = "Present-state schema for an RPG campaign — characters, factions, items, quests, locations, traits"
+
+# Foundational. No upstream extension dependencies.
+[[extension_dependencies]]
+
+[python_dependencies]
