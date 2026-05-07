@@ -24,8 +24,12 @@ if TYPE_CHECKING:
         RoleManager,
         UserTeamManager,
         RateLimitPolicyManager,
-        SessionManager,
     )
+    # Session symbols are owned by the ``auth_session`` extension and
+    # are resolved through the PEP 562 ``__getattr__`` shim below at
+    # runtime. Forward-references in core annotations use string
+    # literals so this module never imports the extension — even at
+    # type-check time.
 
 import bcrypt
 from fastapi import Header, HTTPException, Request, status
@@ -674,11 +678,16 @@ class UserManager(AbstractBLLManager, RouterMixin):
         "session": {
             "child_resource_name": "session",
             "manager_property": "sessions",
+            # Session manager is provided by the ``auth_session`` extension.
+            # The lambda imports lazily through the PEP 562 ``__getattr__``
+            # shim below so the framework never resolves this attribute at
+            # import time — when the extension is not loaded the shim
+            # raises a typed migration error pointing the operator at the
+            # extension to enable.
             "child_manager_class": lambda: getattr(
                 __import__("serverframework.logic.BLL_Auth", fromlist=["SessionManager"]),
                 "SessionManager",
             ),
-            # child_network_model_cls will be inferred from the manager
             "routes_to_register": ["list", "get"],
             "custom_routes": [
                 {
@@ -766,18 +775,21 @@ class UserManager(AbstractBLLManager, RouterMixin):
 
     @property
     def failed_logins(self):
+        """Return the failed-login manager from the ``auth_lockout``
+        extension. Without it, the property is genuinely unavailable —
+        core only knows that login failures should be tracked, not how
+        to durably record them."""
         if self._failed_logins is None:
-            try:
-                from serverframework.extensions.auth_lockout.BLL_Lockout import (
-                    FailedLoginAttemptManager,
-                )
-            except ImportError:
+            factory = _lockout_hooks["manager_factory"]
+            if factory is None:
                 raise HTTPException(
                     status_code=503,
-                    detail="auth_lockout extension not loaded; "
-                    "failed-login records unavailable",
+                    detail=(
+                        "auth_lockout extension not loaded; "
+                        "failed-login records unavailable"
+                    ),
                 )
-            self._failed_logins = FailedLoginAttemptManager(
+            self._failed_logins = factory(
                 requester_id=self.requester.id,
                 target_id=self.target_user_id,
                 model_registry=self.model_registry,
@@ -796,18 +808,24 @@ class UserManager(AbstractBLLManager, RouterMixin):
 
     @property
     def sessions(self):
-        if self._sessions is None:
-            self._sessions = SessionManager(
-                requester_id=self.requester.id,
-                target_id=self.target_user_id,
-                model_registry=self.model_registry,
-            )
-        return self._sessions
+        """Return the session manager from the ``auth_session`` extension.
 
-    @property
-    def sessions(self):
-        if not hasattr(self, "_sessions") or self._sessions is None:
-            self._sessions = SessionManager(
+        Without ``auth_session`` loaded, ``user.sessions`` is unavailable —
+        a 503 surfaces so callers know to enable the extension. Core JWT
+        issuance/verification still works (stateless) without the
+        extension; only the per-user session surface requires it.
+        """
+        if self._sessions is None:
+            factory = _session_hooks["manager_factory"]
+            if factory is None:
+                raise HTTPException(
+                    status_code=503,
+                    detail=(
+                        "auth_session extension not loaded; "
+                        "per-user session surface unavailable"
+                    ),
+                )
+            self._sessions = factory(
                 requester_id=self.requester.id,
                 target_id=self.target_user_id,
                 model_registry=self.model_registry,
@@ -877,53 +895,49 @@ class UserManager(AbstractBLLManager, RouterMixin):
     ) -> str:
         """Generate a JWT token for authentication.
 
-        Always carries `jti` (M-1) so token verification can enforce
-        session revocation. When ``session_key`` is None and a
-        ``model_registry`` is provided, a fresh ``SessionModel`` row is
-        minted so the verify path resolves to a live session — this is
-        the path test helpers and admin tooling use to issue ad-hoc
-        tokens without going through the full login flow. When
-        ``session_key`` is None and no registry is provided, a jti is
-        still embedded but the matching session row does not exist;
-        ``_enforce_session_not_revoked`` will reject the token at first
-        use.
+        Always carries ``jti`` (M-1) so token verification can enforce
+        session revocation when the ``auth_session`` extension is loaded.
+
+        When ``session_key`` is None and the ``auth_session`` extension is
+        loaded, the registered ``issue_session`` hook persists a fresh
+        ``SessionModel`` row tagged with the generated ``jti`` so the
+        verify path can later check revocation/pending state. Without the
+        extension the call falls back to a freshly-generated key but does
+        not attempt persistence — JWT verification will still succeed on
+        signature/exp/nbf/aud/iss/jti, but the token is not server-side
+        revocable until ``auth_session`` is enabled.
         """
-        expiration = datetime.now(timezone.utc) + timedelta(hours=expiration_hours)
+        now = datetime.now(timezone.utc)
+        expiration = now + timedelta(hours=expiration_hours)
+        # M-4 — emit ``nbf`` so the verify path can require it. Setting the
+        # claim to ``now`` (with a small leeway on verify) prevents tokens
+        # minted with a future ``nbf`` from sliding past the gate.
+        not_before = now
 
         if session_key is None:
-            session_key = secrets.token_hex(16)
-            if model_registry is not None:
-                try:
-                    now = datetime.now(timezone.utc)
-                    SessionModel.DB(model_registry.DB.manager.Base).create(
-                        requester_id=env("ROOT_ID"),
-                        model_registry=model_registry,
-                        user_id=user_id,
-                        session_key=session_key,
-                        jwt_issued_at=now,
-                        device_type="api",
-                        browser="unknown",
-                        is_active=True,
-                        last_activity=now,
-                        expires_at=now + timedelta(hours=expiration_hours),
-                        revoked=False,
-                        trust_score=50,
-                    )
-                except Exception:
-                    # Caller paths that ran with stale registries before
-                    # SessionModel was wired still emit the token; the
-                    # verify path will surface the cause.
-                    pass
+            issue_hook = _session_hooks["issue_session"]
+            if issue_hook is not None:
+                session_key = issue_hook(
+                    user_id=user_id,
+                    model_registry=model_registry,
+                    expiration_hours=expiration_hours,
+                    device_type="api",
+                )
+            else:
+                session_key = secrets.token_hex(16)
 
         # M-1 — `aud` and `iss` so tokens minted by another deployment
         # sharing the same JWT_SECRET (dev↔staging accident) do not
         # cross-validate. Mandatory `jti` so revocation always engages.
+        # M-4/M-5 — emit ``iat`` and ``nbf`` so the verify path can
+        # require both; verify uses a small leeway to absorb skew.
         payload = {
             "sub": user_id,
             "email": email,
             "timezone": timezone_str,
             "exp": expiration,
-            "iat": datetime.now(timezone.utc),
+            "iat": now,
+            "nbf": not_before,
             "aud": env("JWT_AUDIENCE"),
             "iss": env("JWT_ISSUER"),
             "jti": session_key,
@@ -934,12 +948,13 @@ class UserManager(AbstractBLLManager, RouterMixin):
     def _enforce_session_not_revoked(
         payload: Dict[str, Any], model_registry, db=None
     ) -> None:
-        """Every JWT must carry a `jti` (M-1). The bound SessionModel row
-        must exist, be active, and not revoked.
-
-        The legacy "jti-less is accepted" branch was an unrevokable-token
-        loophole: any pre-revocation token kept working until the secret
-        rotated. Tokens without `jti` are now refused outright.
+        """Always require a ``jti`` claim (M-1). When the ``auth_session``
+        extension is loaded, dispatch to its ``enforce_not_revoked`` hook
+        which checks the bound row's ``is_active``, ``revoked``, and
+        ``pending_state``. Without the extension, a present-and-non-empty
+        ``jti`` is sufficient — the framework still requires it so that
+        adding ``auth_session`` later is fully effective for tokens
+        already in the wild.
         """
         session_key = payload.get("jti") if isinstance(payload, dict) else None
         if not session_key:
@@ -947,47 +962,10 @@ class UserManager(AbstractBLLManager, RouterMixin):
                 status_code=401,
                 detail="Token missing required `jti`; reauthenticate.",
             )
-        try:
-            db_manager = (
-                model_registry.DB.manager
-                if model_registry is not None
-                else None
-            )
-            if db_manager is None and db is None:
-                return  # No DB context; cannot verify, fail-open is acceptable here
-            session_dto = SessionModel.DB(db_manager.Base).get(
-                requester_id=env("ROOT_ID"),
-                model_registry=model_registry,
-                db=db,
-                filters=[SessionModel.DB(db_manager.Base).session_key == session_key],
-            )
-        except Exception:
-            session_dto = None
-        if session_dto is None:
-            raise HTTPException(
-                status_code=401, detail="Session has been revoked"
-            )
-        is_active = (
-            session_dto["is_active"]
-            if isinstance(session_dto, dict)
-            else getattr(session_dto, "is_active", False)
-        )
-        revoked = (
-            session_dto["revoked"]
-            if isinstance(session_dto, dict)
-            else getattr(session_dto, "revoked", False)
-        )
-        if not is_active or revoked:
-            raise HTTPException(
-                status_code=401, detail="Session has been revoked"
-            )
-        pending_state = (
-            session_dto["pending_state"]
-            if isinstance(session_dto, dict)
-            else getattr(session_dto, "pending_state", None)
-        )
-        if pending_state == "awaiting_approval":
-            raise PendingSessionError()
+        enforce_hook = _session_hooks["enforce_not_revoked"]
+        if enforce_hook is None:
+            return
+        enforce_hook(payload, model_registry, db)
 
     @staticmethod
     def verify_token(
@@ -999,13 +977,18 @@ class UserManager(AbstractBLLManager, RouterMixin):
             raise ValueError("model_registry is required for verify_token")
 
         try:
+            # M-4/M-5 — require ``exp``, ``nbf``, ``iat``, ``jti``, ``aud``,
+            # ``iss``; ``leeway=30`` absorbs cross-host clock skew.
             payload = jwt.decode(
                 token,
                 env("JWT_SECRET"),
                 algorithms=["HS256"],
                 audience=env("JWT_AUDIENCE"),
                 issuer=env("JWT_ISSUER"),
-                options={"require": ["exp", "jti", "aud", "iss"]},
+                leeway=30,
+                options={
+                    "require": ["exp", "nbf", "iat", "jti", "aud", "iss"]
+                },
             )
 
             UserManager._enforce_session_not_revoked(payload, model_registry)
@@ -1510,37 +1493,32 @@ class UserManager(AbstractBLLManager, RouterMixin):
             # failure into the next legitimate attempt.
             UserManager._lockout_tracker.clear(lockout_key, "password_login")
 
-            # Login successful — generate session key first so the JWT can
-            # bind to it via `jti`. Revoking this session in
-            # SessionManager.delete() then invalidates every issued bearer
-            # token for it (see _enforce_session_not_revoked).
+            # Login successful — issue the session row first (when
+            # ``auth_session`` is loaded) so its key becomes the JWT's
+            # ``jti``. Revoking the session row then invalidates every
+            # bearer token bound to it (see ``_enforce_session_not_revoked``).
             user_timezone = (
                 user.get("timezone", "UTC")
                 if isinstance(user, dict)
                 else getattr(user, "timezone", "UTC")
             )
-            session_key = secrets.token_hex(16)
+            issue_hook = _session_hooks["issue_session"]
+            if issue_hook is not None:
+                session_key = issue_hook(
+                    user_id=user["id"],
+                    model_registry=model_registry,
+                    # Login defaults to a 30-day session; 24h JWT exp is
+                    # carried by ``generate_jwt_token`` independently.
+                    expiration_hours=24 * 30,
+                    device_type="web",
+                )
+            else:
+                session_key = secrets.token_hex(16)
             token = UserManager.generate_jwt_token(
                 user_id=str(user["id"]),
                 email=user["email"],
                 timezone_str=user_timezone,
                 session_key=session_key,
-            )
-
-            # Create session
-            SessionModel.DB(model_registry.DB.manager.Base).create(
-                requester_id=user["id"],
-                model_registry=model_registry,
-                user_id=user["id"],
-                session_key=session_key,
-                jwt_issued_at=datetime.now(timezone.utc),
-                device_type="web",
-                browser="unknown",
-                is_active=True,
-                last_activity=datetime.now(timezone.utc),
-                expires_at=datetime.now(timezone.utc) + timedelta(days=30),
-                revoked=False,
-                trust_score=50,
             )
 
             # Get user preferences via metadata extension hook (Scope #3).
@@ -1612,36 +1590,43 @@ class UserManager(AbstractBLLManager, RouterMixin):
 
     @staticmethod
     def _issue_session(
-        user: "UserModel",
+        user: Any,
         model_registry,
         grant_type: Optional[str] = None,
         pending_state: Optional[str] = None,
-    ) -> "SessionModel":
-        """Persist a fresh ``SessionModel`` for ``user`` and return it.
+    ) -> Any:
+        """Persist a fresh session row (when ``auth_session`` is loaded)
+        and return a ``SessionModel`` describing it.
 
-        Shared by passwordless grant flows (``login_via_grant``); the legacy
-        password ``login`` keeps its inlined session creation for
-        bug-for-bug compatibility with the rest of its response shape.
+        Shared by passwordless grant flows (``login_via_grant``). When
+        the extension is not loaded, a typed ``HTTPException(503)``
+        surfaces — passwordless grant validators are extension-side and
+        cannot meaningfully run without ``auth_session``.
         """
         user_id = user.id if hasattr(user, "id") else user["id"]
-        session_key = secrets.token_hex(16)
-        now = datetime.now(timezone.utc)
-        SessionModel.DB(model_registry.DB.manager.Base).create(
-            requester_id=user_id,
-            model_registry=model_registry,
+        issue_hook = _session_hooks["issue_session"]
+        if issue_hook is None:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "auth_session extension not loaded; passwordless grant "
+                    "flows require persisted sessions"
+                ),
+            )
+        session_key = issue_hook(
             user_id=user_id,
-            session_key=session_key,
-            jwt_issued_at=now,
+            model_registry=model_registry,
+            expiration_hours=24 * 30,
             device_type="web",
-            browser="unknown",
-            is_active=True,
-            last_activity=now,
-            expires_at=now + timedelta(days=30),
-            revoked=False,
-            trust_score=50,
             grant_type=grant_type,
             pending_state=pending_state,
         )
+        # Resolve the SessionModel class lazily through the PEP 562 shim so
+        # this static method does not import the extension at module load.
+        from serverframework.logic import BLL_Auth as _self_mod
+
+        SessionModel = _self_mod.SessionModel
+        now = datetime.now(timezone.utc)
         return SessionModel(
             id=None,
             user_id=user_id,
@@ -1660,7 +1645,7 @@ class UserManager(AbstractBLLManager, RouterMixin):
     @staticmethod
     def login_via_grant(
         grant_type: str, grant_payload: BaseModel, model_registry=None
-    ) -> "SessionModel":
+    ) -> Any:
         """Dispatch a passwordless grant to its registered validator and
         issue a fresh session bound to the resolved user.
 
@@ -2405,6 +2390,8 @@ _EXTRACTED = {
     ),
     "FailedLoginAttemptModel": ("auth_lockout", "BLL_Lockout"),
     "FailedLoginAttemptManager": ("auth_lockout", "BLL_Lockout"),
+    "SessionModel": ("auth_session", "BLL_Session"),
+    "SessionManager": ("auth_session", "BLL_Session"),
     "MetadataModel": ("metadata", "BLL_Metadata"),
     "UserMetadataManager": ("metadata", "BLL_Metadata"),
     "TeamMetadataManager": ("metadata", "BLL_Metadata"),
@@ -2422,6 +2409,7 @@ _EXTRACTED = {
 _lockout_hooks: dict = {
     "assert_within_threshold": None,  # (user_id, model_registry) -> None | raises
     "record_failure": None,            # (user_id, ip, model_registry) -> None
+    "manager_factory": None,           # (*, requester_id, target_id, model_registry) -> manager
 }
 
 
@@ -2429,12 +2417,62 @@ def register_lockout_hooks(
     *,
     assert_within_threshold=None,
     record_failure=None,
+    manager_factory=None,
 ) -> None:
     """Called by `auth_lockout.EXT_Lockout.AuthLockoutExtension.on_load`."""
     if assert_within_threshold is not None:
         _lockout_hooks["assert_within_threshold"] = assert_within_threshold
     if record_failure is not None:
         _lockout_hooks["record_failure"] = record_failure
+    if manager_factory is not None:
+        _lockout_hooks["manager_factory"] = manager_factory
+
+
+# auth_session extension hooks — populated by ``auth_session.on_load``. When
+# the extension is not loaded, ``issue_session`` returns a fresh key without
+# persistence (token is stateless), ``enforce_not_revoked`` is a no-op once
+# ``jti`` is present (see ``_enforce_session_not_revoked``), and
+# ``manager_factory``/``revoke_user_sessions`` raise 503 because the
+# per-user session surface is genuinely unavailable.
+_session_hooks: dict = {
+    "issue_session": None,        # (*, user_id, model_registry, expiration_hours, device_type, grant_type, pending_state) -> session_key
+    "enforce_not_revoked": None,  # (payload, model_registry, db) -> None | raises
+    "manager_factory": None,      # (*, requester_id, target_id, target_team_id, model_registry) -> manager
+    "revoke_user_sessions": None, # (*, user_id, requester_id, model_registry) -> int
+}
+
+
+def register_session_hooks(
+    *,
+    issue_session=None,
+    enforce_not_revoked=None,
+    manager_factory=None,
+    revoke_user_sessions=None,
+) -> None:
+    """Called by ``auth_session.EXT_Session.AuthSessionExtension.on_load``.
+
+    Each argument is optional — operators can swap individual hook
+    implementations (e.g. for testing) without re-registering the others.
+    """
+    for name, fn in (
+        ("issue_session", issue_session),
+        ("enforce_not_revoked", enforce_not_revoked),
+        ("manager_factory", manager_factory),
+        ("revoke_user_sessions", revoke_user_sessions),
+    ):
+        if fn is not None:
+            _session_hooks[name] = fn
+
+
+def reset_session_hooks() -> None:
+    """Test helper — clear every registered ``_session_hooks`` entry.
+
+    Production code should never call this; it exists so test fixtures
+    that load and unload the extension can drop stale state between
+    tests without leaking hooks across module reloads.
+    """
+    for name in list(_session_hooks.keys()):
+        _session_hooks[name] = None
 
 
 # Metadata extension hooks — populated by `metadata.on_load` (Scope #3).
@@ -2483,6 +2521,8 @@ _invitation_hooks: dict = {
     "invitation_manager_factory": None,  # (requester_id, target_team_id, model_registry, **kw) -> manager
     "invitee_manager_factory": None,     # (requester_id, target_id, model_registry, **kw) -> manager
     "list_invitees_for_user": None,      # (user_id, email, model_registry) -> List[dict]
+    "invitation_db_class": None,         # (declarative_base) -> SA model
+    "invitee_db_class": None,            # (declarative_base) -> SA model
 }
 
 
@@ -2494,6 +2534,8 @@ def register_invitation_hooks(
     invitation_manager_factory=None,
     invitee_manager_factory=None,
     list_invitees_for_user=None,
+    invitation_db_class=None,
+    invitee_db_class=None,
 ) -> None:
     for name, fn in (
         ("lookup_by_id", lookup_by_id),
@@ -2502,6 +2544,8 @@ def register_invitation_hooks(
         ("invitation_manager_factory", invitation_manager_factory),
         ("invitee_manager_factory", invitee_manager_factory),
         ("list_invitees_for_user", list_invitees_for_user),
+        ("invitation_db_class", invitation_db_class),
+        ("invitee_db_class", invitee_db_class),
     ):
         if fn is not None:
             _invitation_hooks[name] = fn
@@ -2525,6 +2569,35 @@ def register_acl_hooks(
     ):
         if fn is not None:
             _acl_hooks[name] = fn
+
+
+# privacy extension hooks — populated by `privacy.on_load`. Core's
+# logging redaction (``lib/Logging``, ``lib/Credentials``) consults the
+# registered ``log_filter`` callable on every record. Without the
+# extension, only the registered-secret scrubbing in core fires.
+_pii_hooks: dict = {
+    "log_filter": None,             # (logging.LogRecord) -> bool
+}
+
+
+def register_pii_hooks(*, log_filter=None) -> None:
+    if log_filter is not None:
+        _pii_hooks["log_filter"] = log_filter
+
+
+# federation extension hooks — populated by `federation.on_load`. Core
+# ``ModelRegistry.commit`` calls ``bootstrap`` after Phase 1 model binding
+# so the federation extension can lift external types into the registry.
+# Without it, the framework runs as a single-app server (no upstream
+# federation) and the hook is a no-op.
+_registry_hooks: dict = {
+    "bootstrap_federation": None,   # (model_registry) -> federation_report | None
+}
+
+
+def register_registry_hooks(*, bootstrap_federation=None) -> None:
+    if bootstrap_federation is not None:
+        _registry_hooks["bootstrap_federation"] = bootstrap_federation
 
 
 def __getattr__(name: str):  # PEP 562 — lazy module-level attribute access
@@ -3910,405 +3983,22 @@ class RateLimitPolicyManager(AbstractBLLManager, RouterMixin):
     _model = RateLimitPolicyModel
 
 
-class SessionModel(
-    ApplicationModel.Optional,
-    UpdateMixinModel.Optional,
-    UserModel.Reference.Optional,
-    metaclass=ModelMeta,
-):
-    model_config = {"extra": "ignore", "populate_by_name": True}
-    Manager: ClassVar[Type["SessionManager"]] = None
-    session_key: str = Field(
-        ..., description="Unique session identifier used in JWT jti claim"
-    )
-    jwt_issued_at: datetime = Field(..., description="When the JWT was issued")
-    refresh_token_hash: Optional[str] = Field(
-        None, description="Hash of refresh token if refresh mechanism is enabled"
-    )
-    device_type: Optional[str] = Field(
-        None,
-        description="Type of device used for authentication (mobile, desktop, etc.)",
-    )
-    device_name: Optional[str] = Field(
-        None, description="Name of the device if provided"
-    )
-    browser: Optional[str] = Field(
-        None, description="Browser information from user agent"
-    )
-    is_active: bool = Field(
-        True, description="Whether this session is currently active"
-    )
-    last_activity: datetime = Field(
-        ..., description="Timestamp of last activity in this session"
-    )
-    expires_at: datetime = Field(..., description="When this session expires")
-    revoked: bool = Field(
-        False, description="Whether this session has been explicitly revoked"
-    )
-    trust_score: int = Field(50, description="Trust level of this session (0-100)")
-    # Real DB column kept; relationship: when ``pending_state`` is added, a
-    # session in ``awaiting_approval`` implicitly requires verification.
-    requires_verification: bool = Field(
-        False, description="Whether additional verification is required"
-    )
-    grant_type: Optional[str] = Field(
-        None,
-        description="Identifier of the grant kind that issued this session (observability only)",
-    )
-    pending_state: Optional[Literal["awaiting_approval", "approved", "denied"]] = Field(
-        None,
-        description="Pending approval state for cross-device passwordless flows",
-    )
-
-    # Database metadata for SQLAlchemy generation
-    table_comment: ClassVar[str] = (
-        "Active user authentication sessions and related metadata"
-    )
-
-    @classmethod
-    def user_has_all_access(cls, user_id, id, db, db_manager=None, model_registry=None):
-        """
-        Override delete permission logic to allow users to delete their own sessions.
-        Users can delete sessions where they are the owner (user_id) even if they
-        weren't the creator (created_by_user_id).
-        """
-        # Get Base from either model_registry or db_manager
-        if model_registry:
-            Base = model_registry.DB.manager.Base
-        elif db_manager:
-            Base = db_manager.Base
-        else:
-            raise ValueError("Either model_registry or db_manager is required")
-        from serverframework.lib.Environment import env, is_root_id, is_system_user_id
-
-        # ROOT and SYSTEM users have all access
-        if is_root_id(user_id) or is_system_user_id(user_id):
-            return True
-
-        # Get the session record directly from database without permission checks
-        try:
-            SQLAlchemy_model = cls.DB(Base)
-            session_record = (
-                db.query(SQLAlchemyModel).filter(SQLAlchemyModel.id == id).first()
-            )
-
-            if not session_record:
-                return False
-
-            # Allow users to delete their own sessions (where they are the owner)
-            if hasattr(session_record, "user_id") and session_record.user_id == user_id:
-                return True
-        except Exception:
-            # If there's any error accessing the record, fall back to default
-            pass
-
-        # Fall back to default permission check
-        return super().user_has_all_access(user_id, id, db, db_manager)
-
-    class Create(BaseModel, UserModel.Reference.ID):
-        session_key: str = Field(
-            ..., description="Unique session identifier used in JWT jti claim"
-        )
-        jwt_issued_at: datetime = Field(..., description="When the JWT was issued")
-        refresh_token_hash: Optional[str] = Field(
-            None, description="Hash of refresh token if refresh mechanism is enabled"
-        )
-        device_type: Optional[str] = Field(
-            None,
-            description="Type of device used for authentication (mobile, desktop, etc.)",
-        )
-        device_name: Optional[str] = Field(
-            None, description="Name of the device if provided"
-        )
-        browser: Optional[str] = Field(
-            None, description="Browser information from user agent"
-        )
-        is_active: Optional[bool] = Field(
-            True, description="Whether this session is currently active"
-        )
-        last_activity: datetime = Field(
-            ..., description="Timestamp of last activity in this session"
-        )
-        expires_at: datetime = Field(..., description="When this session expires")
-        revoked: Optional[bool] = Field(
-            False, description="Whether this session has been explicitly revoked"
-        )
-        trust_score: Optional[int] = Field(
-            50, description="Trust level of this session (0-100)"
-        )
-        requires_verification: Optional[bool] = Field(
-            False, description="Whether additional verification is required"
-        )
-        grant_type: Optional[str] = Field(
-            None,
-            description="Identifier of the grant kind that issued this session",
-        )
-        pending_state: Optional[
-            Literal["awaiting_approval", "approved", "denied"]
-        ] = Field(None, description="Pending approval state for passwordless flows")
-
-    class Update(BaseModel):
-        is_active: Optional[bool] = Field(
-            None, description="Whether this session is currently active"
-        )
-        last_activity: Optional[datetime] = Field(
-            None, description="Timestamp of last activity in this session"
-        )
-        expires_at: Optional[datetime] = Field(
-            None, description="When this session expires"
-        )
-        revoked: Optional[bool] = Field(
-            None, description="Whether this session has been explicitly revoked"
-        )
-        trust_score: Optional[int] = Field(
-            None, description="Trust level of this session (0-100)"
-        )
-        requires_verification: Optional[bool] = Field(
-            None, description="Whether additional verification is required"
-        )
-        refresh_token_hash: Optional[str] = Field(
-            None, description="Hash of refresh token if refresh mechanism is enabled"
-        )
-        pending_state: Optional[
-            Literal["awaiting_approval", "approved", "denied"]
-        ] = Field(None, description="Pending approval state for passwordless flows")
-
-    class Search(ApplicationModel.Search, UserModel.Reference.ID.Search):
-        session_key: Optional[StringSearchModel] = None
-        is_active: Optional[bool] = None
-        revoked: Optional[bool] = None
-        expires_at: Optional[DateSearchModel] = None
-        device_type: Optional[StringSearchModel] = None
-        browser: Optional[StringSearchModel] = None
-        requires_verification: Optional[bool] = None
-        trust_score: Optional[NumericalSearchModel] = None
-        grant_type: Optional[StringSearchModel] = None
-        pending_state: Optional[StringSearchModel] = None
-
-
-class SessionManager(AbstractBLLManager, RouterMixin):
-    _model = SessionModel
-
-    # RouterMixin configuration
-    prefix: ClassVar[Optional[str]] = "/v1/session"
-    tags: ClassVar[Optional[List[str]]] = ["User Management"]
-    auth_type: ClassVar[AuthType] = AuthType.JWT
-    routes_to_register: ClassVar[Optional[List[RouteType]]] = [
-        RouteType.LIST,
-        RouteType.GET,
-    ]
-    auth_dependency: ClassVar[Optional[str]] = "get_user_session_manager"
-    custom_routes: ClassVar[List[Dict[str, Any]]] = [
-        {
-            "path": "/{id}",
-            "method": "delete",
-            "function": "revoke_session",
-            "summary": "Revoke session",
-            "description": "Revokes a user session.",
-            "status_code": 204,
-        }
-    ]
-
-    def __init__(
-        self,
-        requester_id: str,
-        target_id: Optional[str] = None,
-        target_team_id: Optional[str] = None,
-        model_registry: Optional[Any] = None,
-    ):
-        super().__init__(
-            requester_id=requester_id,
-            target_id=target_id,
-            target_team_id=target_team_id,
-            model_registry=model_registry,
-        )
-        self._users = None
-
-    @property
-    def users(self):
-        if self._users is None:
-            self._users = UserManager(
-                requester_id=self.requester.id,
-                target_id=self.target_user_id,
-                target_team_id=self.target_team_id,
-                model_registry=self.model_registry,
-            )
-        return self._users
-
-    def create_validation(self, entity):
-        """Validate auth session creation"""
-        # User existence validation is handled by the database layer
-
-        if self.Model.DB(self.model_registry.DB.manager.Base).exists(
-            requester_id=self.requester.id,
-            model_registry=self.model_registry,
-            session_key=entity.session_key,
-        ):
-            raise HTTPException(status_code=400, detail="Session key already exists")
-
-    def revoke_session(self, id: str) -> Dict[str, str]:
-        """Revoke a single session"""
-        session = self.Model.DB(self.model_registry.DB.manager.Base).get(
-            requester_id=self.requester.id,
-            model_registry=self.model_registry,
-            id=id,
-        )
-
-        if not session:
-            raise HTTPException(status_code=404, detail="Session not found")
-
-        self.Model.DB(self.model_registry.DB.manager.Base).update(
-            requester_id=self.requester.id,
-            model_registry=self.model_registry,
-            id=id,
-            new_properties={"revoked": True, "is_active": False},
-        )
-
-        return {"message": "Session revoked successfully"}
-
-    def revoke_all_user_sessions(self, user_id: str) -> Dict[str, Any]:
-        """Revoke all active sessions for a user"""
-        sessions = self.Model.DB(self.model_registry.DB.manager.Base).list(
-            requester_id=self.requester.id,
-            model_registry=self.model_registry,
-            user_id=user_id,
-            is_active=True,
-            revoked=False,
-        )
-
-        revoked_count = 0
-        for session in sessions:
-            session_id = session["id"] if isinstance(session, dict) else session.id
-            self.Model.DB(self.model_registry.DB.manager.Base).update(
-                requester_id=self.requester.id,
-                model_registry=self.model_registry,
-                id=session_id,
-                new_properties={"is_active": False, "revoked": True},
-            )
-            revoked_count += 1
-
-        return {
-            "message": f"Revoked {revoked_count} sessions successfully",
-            "revoked_count": revoked_count,
-        }
-
-    def update_activity(self, session_key: str) -> Dict[str, str]:
-        """Update the last activity timestamp for a session"""
-        sessions = self.Model.DB(self.model_registry.DB.manager.Base).list(
-            requester_id=self.requester.id,
-            model_registry=self.model_registry,
-            session_key=session_key,
-        )
-
-        if not sessions:
-            raise HTTPException(status_code=404, detail="Session not found")
-
-        session = sessions[0]
-        session_id = session["id"] if isinstance(session, dict) else session.id
-
-        self.Model.DB(self.model_registry.DB.manager.Base).update(
-            requester_id=self.requester.id,
-            model_registry=self.model_registry,
-            id=session_id,
-            new_properties={"last_activity": datetime.now(timezone.utc)},
-        )
-
-        return {"message": "Session activity updated successfully"}
-
-    def validate_session(self, session_key: str) -> bool:
-        """Validate if a session is active and not expired"""
-        sessions = self.Model.DB(self.model_registry.DB.manager.Base).list(
-            requester_id=self.requester.id,
-            model_registry=self.model_registry,
-            session_key=session_key,
-            is_active=True,
-            revoked=False,
-        )
-
-        if not sessions:
-            return False
-
-        session = sessions[0]
-        expires_at = (
-            session["expires_at"] if isinstance(session, dict) else session.expires_at
-        )
-
-        # Handle timezone comparison
-        if expires_at.tzinfo is None:
-            expires_at = expires_at.replace(tzinfo=timezone.utc)
-
-        return expires_at > datetime.now(timezone.utc)
-
-    def cleanup_expired_sessions(self) -> Dict[str, Any]:
-        """Clean up expired sessions"""
-        current_time = datetime.now(timezone.utc)
-
-        # Find expired sessions
-        expired_sessions = self.Model.DB(self.model_registry.DB.manager.Base).list(
-            requester_id=self.requester.id,
-            model_registry=self.model_registry,
-            filters=[
-                self.Model.DB(self.model_registry.DB.manager.Base).expires_at
-                < current_time,
-                self.Model.DB(self.model_registry.DB.manager.Base).is_active == True,
-            ],
-        )
-
-        cleaned_count = 0
-        for session in expired_sessions:
-            session_id = session["id"] if isinstance(session, dict) else session.id
-            self.Model.DB(self.model_registry.DB.manager.Base).update(
-                requester_id=self.requester.id,
-                model_registry=self.model_registry,
-                id=session_id,
-                new_properties={"is_active": False},
-            )
-            cleaned_count += 1
-
-        return {
-            "message": f"Cleaned up {cleaned_count} expired sessions",
-            "cleaned_count": cleaned_count,
-        }
-
-    def get_user_sessions(
-        self, user_id: str, active_only: bool = True
-    ) -> List[SessionModel]:
-        """Get all sessions for a user"""
-        filters = {"user_id": user_id}
-        if active_only:
-            filters.update({"is_active": True, "revoked": False})
-
-        return self.Model.DB(self.model_registry.DB.manager.Base).list(
-            requester_id=self.requester.id,
-            model_registry=self.model_registry,
-            return_type="dto",
-            override_dto=SessionModel,
-            **filters,
-        )
-
-    def revoke_sessions(self, user_id: str) -> int:
-        """Revoke all sessions for a user - legacy method returning int count"""
-        result = self.revoke_all_user_sessions(user_id)
-        return result.get("revoked_count", 0)
-
-
 # Set up Model.Manager relationships for classes still defined in core.
 # Extensions wire their own (see auth_recovery_questions, auth_lockout,
-# metadata, auth_invitations).
+# auth_session, metadata, auth_invitations).
 UserModel.Manager = UserManager
 UserCredentialModel.Manager = UserCredentialManager
 TeamModel.Manager = TeamManager
 RoleModel.Manager = RoleManager
 UserTeamModel.Manager = UserTeamManager
 RateLimitPolicyModel.Manager = RateLimitPolicyManager
-SessionModel.Manager = SessionManager
 
 # Symbols still anchored in core. Extracted classes (UserRecoveryQuestion*,
-# FailedLoginAttempt*, Metadata*, Invitation*, Invitee*, Permission*) are
-# resolved lazily through the PEP 562 ``__getattr__`` shim above, which
-# forwards to the relevant extension when loaded and raises a typed migration
-# error otherwise. Listing them in ``__all__`` would force eager imports and
-# break the lazy-loading contract.
+# FailedLoginAttempt*, SessionModel/SessionManager, Metadata*, Invitation*,
+# Invitee*, Permission*) are resolved lazily through the PEP 562 ``__getattr__``
+# shim above, which forwards to the relevant extension when loaded and raises a
+# typed migration error otherwise. Listing them in ``__all__`` would force eager
+# imports and break the lazy-loading contract.
 __all__ = [
     "UserModel",
     "UserManager",
@@ -4322,6 +4012,4 @@ __all__ = [
     "UserTeamManager",
     "RateLimitPolicyModel",
     "RateLimitPolicyManager",
-    "SessionModel",
-    "SessionManager",
 ]

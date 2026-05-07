@@ -220,24 +220,38 @@ class AbstractDBTest(AbstractTest):
         if expires_at is not None:
             permission_data["expires_at"] = expires_at
 
-        try:
-            from serverframework.extensions.acl_rbac.BLL_ACL import PermissionModel
+        # Permission creation is owned by ``acl_rbac``; we dispatch through
+        # ``_acl_hooks["create_permission"]`` so this test scaffolding
+        # never imports from the extension directly. When the extension
+        # is absent the test using this helper is logically meaningless
+        # (no permission row to create) — surface that as a clean
+        # ``RuntimeError`` rather than an opaque ``ImportError``.
+        from serverframework.logic.BLL_Auth import _acl_hooks
 
-            model_registry = self._get_model_registry()
-            permission = PermissionModel.create(
-                self.ROOT_ID, model_registry, return_type="dict", **permission_data
+        create_permission_hook = _acl_hooks["create_permission"]
+        if create_permission_hook is None:
+            raise RuntimeError(
+                "create_permission requires the ``acl_rbac`` extension to "
+                "be loaded; none of the registered _acl_hooks fire without it."
             )
-
-            # Track created permission for cleanup
+        try:
+            model_registry = self._get_model_registry()
+            permission = create_permission_hook(
+                requester_id=self.ROOT_ID,
+                model_registry=model_registry,
+                return_type="dict",
+                **permission_data,
+            )
             if permission:
                 self.tracked_entities.append(
                     {"id": permission["id"], "resource_id": entity_id}
                 )
-
             return permission
-
         except Exception as e:
-            error_msg = f"{self.sqlalchemy_model.__name__}: Failed to create permission: {str(e)}"
+            error_msg = (
+                f"{self.sqlalchemy_model.__name__}: Failed to create "
+                f"permission: {str(e)}"
+            )
             logger.error(error_msg)
             raise Exception(error_msg) from e
 

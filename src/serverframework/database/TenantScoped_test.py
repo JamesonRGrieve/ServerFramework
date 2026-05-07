@@ -104,18 +104,28 @@ def test_set_tenant_guc_records_execute():
     set_tenant_guc(conn, "team_id", "abc-123")
     assert len(conn.calls) == 1
     sql, params = conn.calls[0]
-    assert "SET LOCAL app.current_team_id" in sql
+    # H-3 — the helper now wraps SQL in ``text()`` so the SQLAlchemy
+    # connection treats the literal-formatted key as DDL and the
+    # ``:value`` placeholder as a bound parameter. Compare on the
+    # string rendering of the clause.
+    assert "SET LOCAL app.current_team_id" in str(sql)
+    assert ":value" in str(sql)
     assert params == {"value": "abc-123"}
 
 
 def test_clear_tenant_gucs_resets_each_key():
+    # ``team_id`` is registered by default; we register ``org_id`` here
+    # since H-3 now refuses unregistered keys at this layer too.
+    from serverframework.database.TenantScoped import register_tenant_key
+
+    register_tenant_key("org_id")
     conn = _RecordingConnection()
     clear_tenant_gucs(conn, ("org_id", "team_id"))
     assert len(conn.calls) == 2
     sql0, _ = conn.calls[0]
     sql1, _ = conn.calls[1]
-    assert "RESET app.current_org_id" in sql0
-    assert "RESET app.current_team_id" in sql1
+    assert "RESET app.current_org_id" in str(sql0)
+    assert "RESET app.current_team_id" in str(sql1)
 
 
 def test_clear_tenant_gucs_empty_keys_is_noop():

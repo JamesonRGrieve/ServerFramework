@@ -33,6 +33,7 @@ _CORE_TEST_EXTENSIONS = ",".join(
         "auth_lockout",
         "auth_recovery_questions",
         "auth_invitations",
+        "auth_session",
         "acl_rbac",
     ]
 )

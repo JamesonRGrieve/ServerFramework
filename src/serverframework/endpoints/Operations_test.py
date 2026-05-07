@@ -58,9 +58,19 @@ class _FakeReport:
 
 
 def _build_client(**kwargs: Any) -> TestClient:
+    """Construct an isolated app + client for the Operations router.
+
+    Each ``/admin/*`` route requires the C-1 admin auth dependency. These
+    tests target the handler logic — not the auth gate — so we override
+    the dependency to a fixed sentinel principal. Tests that exercise the
+    auth gate live in ``Operations_admin_auth_test.py``.
+    """
+    from serverframework.endpoints.Operations import _require_admin_principal
+
     app = FastAPI()
     router = create_operations_router(**kwargs)
     app.include_router(router)
+    app.dependency_overrides[_require_admin_principal] = lambda: "test-admin"
     return TestClient(app)
 
 

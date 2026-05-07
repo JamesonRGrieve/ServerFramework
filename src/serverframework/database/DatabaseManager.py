@@ -30,6 +30,34 @@ from serverframework.lib.Logging import logger
 Operation = Enum("Operation", ["CREATE", "READ", "UPDATE", "DELETE"])
 
 
+def _redact_db_uri(uri: Optional[str]) -> str:
+    """Strip credentials from a SQLAlchemy URI before it reaches a log line.
+
+    Postgres/MySQL/MariaDB/MSSQL URIs embed ``user:password@host``. Logging
+    the URI as-is leaks the password to stdout/aggregators. SQLite paths and
+    in-memory URIs are returned verbatim because they carry no secret.
+    """
+    if not uri:
+        return ""
+    try:
+        from urllib.parse import urlparse, urlunparse
+
+        parsed = urlparse(uri)
+        if parsed.password is None and parsed.username is None:
+            return uri
+        host = parsed.hostname or ""
+        if parsed.port:
+            host = f"{host}:{parsed.port}"
+        userinfo = ""
+        if parsed.username:
+            userinfo = f"{parsed.username}:***@"
+        netloc = f"{userinfo}{host}"
+        return urlunparse(parsed._replace(netloc=netloc))
+    except Exception:
+        # Defensive: any parser error must not leak the original URI either.
+        return "<redacted>"
+
+
 def setup_sqlite_for_regex(engine):
     """
     Register the REGEXP function with SQLite.
@@ -355,9 +383,14 @@ class DatabaseManager:
             try:
                 connection = self._setup_engine.connect()
                 connection.close()
-                logger.info(f"Successfully connected to database: {database_uri}")
+                logger.info(
+                    f"Successfully connected to database: {_redact_db_uri(database_uri)}"
+                )
             except Exception as e:
-                logger.error(f"Error connecting to database: {e}")
+                logger.error(
+                    f"Error connecting to database "
+                    f"({_redact_db_uri(database_uri)}): {e}"
+                )
                 raise e
 
     @property

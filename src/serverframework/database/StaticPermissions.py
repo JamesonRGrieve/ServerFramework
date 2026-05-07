@@ -680,7 +680,7 @@ def check_permission(
     Returns:
         tuple: (PermissionResult, error_message) indicating the result and any error message
     """
-    from serverframework.extensions.acl_rbac.BLL_ACL import PermissionModel
+    from serverframework.logic.BLL_Auth import _acl_hooks
 
     try:
         # Validate inputs to prevent null dereference
@@ -813,30 +813,33 @@ def check_permission(
                 )
             return (PermissionResult.GRANTED, None)
 
-        # Now check for direct permissions in the Permission table
-        permission_db_cls = PermissionModel.DB(declarative_base)
-
-        direct_permission = (
-            db.query(permission_db_cls)
-            .filter(
-                and_(
-                    permission_db_cls.resource_type == record_db_cls.__tablename__,
-                    permission_db_cls.resource_id == record_id,
-                    permission_db_cls.user_id == user_id,
-                    # Check for expiration
-                    or_(
-                        permission_db_cls.expires_at == None,
-                        permission_db_cls.expires_at > func.now(),
-                    ),
-                    # Set the permission type based on required_level
-                    getattr(permission_db_cls, required_level.value) == True,
+        # Now check for direct permissions in the Permission table.
+        # The permission row is owned by the ``acl_rbac`` extension; without
+        # it loaded, only the creator-only / team-membership paths above
+        # grant access. Skipping this block is a fail-closed default:
+        # absent the extension, a user without team admin rights never
+        # sees a record they did not create.
+        permission_db_class_hook = _acl_hooks["permission_db_class"]
+        if permission_db_class_hook is not None:
+            permission_db_cls = permission_db_class_hook(declarative_base)
+            direct_permission = (
+                db.query(permission_db_cls)
+                .filter(
+                    and_(
+                        permission_db_cls.resource_type == record_db_cls.__tablename__,
+                        permission_db_cls.resource_id == record_id,
+                        permission_db_cls.user_id == user_id,
+                        or_(
+                            permission_db_cls.expires_at == None,
+                            permission_db_cls.expires_at > func.now(),
+                        ),
+                        getattr(permission_db_cls, required_level.value) == True,
+                    )
                 )
+                .first()
             )
-            .first()
-        )
-
-        if direct_permission is not None:
-            return (PermissionResult.GRANTED, None)
+            if direct_permission is not None:
+                return (PermissionResult.GRANTED, None)
 
         # If no direct permission, generate the permission filter and check
         permission_filter = generate_permission_filter(
@@ -887,15 +890,12 @@ def _get_admin_accessible_team_ids_cte(
     """
     # Local import to break cycle
     from serverframework.database.DatabaseManager import DatabaseManager
-    from serverframework.extensions.auth_invitations.BLL_Invitations import (
-        InvitationModel,
-        InviteeModel,
-    )
     from serverframework.logic.BLL_Auth import (
         RoleModel,
         TeamModel,
         UserModel,
         UserTeamModel,
+        _invitation_hooks,
     )
 
     # Get SQLAlchemy models using the declarative base
@@ -923,50 +923,56 @@ def _get_admin_accessible_team_ids_cte(
         )
     ]
 
-    # Invitations that target the user directly should also expose the team hierarchy
-    invitation_db_cls = InvitationModel.DB(declarative_base)
-    invitee_db_cls = InviteeModel.DB(declarative_base)
+    # Invitations that target the user directly should also expose the team
+    # hierarchy. The invitation entity is owned by the ``auth_invitations``
+    # extension; without it, the only path into a team is via UserTeam
+    # rows, which the ``base_selects`` above already cover.
+    invitation_db_class_hook = _invitation_hooks["invitation_db_class"]
+    invitee_db_class_hook = _invitation_hooks["invitee_db_class"]
+    if invitation_db_class_hook is not None and invitee_db_class_hook is not None:
+        invitation_db_cls = invitation_db_class_hook(declarative_base)
+        invitee_db_cls = invitee_db_class_hook(declarative_base)
 
-    invitation_filters = [invitation_db_cls.team_id.isnot(None)]
-    if hasattr(invitation_db_cls, "deleted_at"):
-        invitation_filters.append(invitation_db_cls.deleted_at.is_(None))
-    if hasattr(invitation_db_cls, "expires_at"):
-        invitation_filters.append(
-            or_(
-                invitation_db_cls.expires_at.is_(None),
-                invitation_db_cls.expires_at > func.now(),
+        invitation_filters = [invitation_db_cls.team_id.isnot(None)]
+        if hasattr(invitation_db_cls, "deleted_at"):
+            invitation_filters.append(invitation_db_cls.deleted_at.is_(None))
+        if hasattr(invitation_db_cls, "expires_at"):
+            invitation_filters.append(
+                or_(
+                    invitation_db_cls.expires_at.is_(None),
+                    invitation_db_cls.expires_at > func.now(),
+                )
             )
-        )
 
-    direct_invitation_query = select(
-        invitation_db_cls.team_id.label("id"),
-        invitation_db_cls.role_id.label("role_id"),
-        func.cast(1, Integer).label("depth"),
-    ).where(invitation_db_cls.user_id == user_id)
-    for condition in invitation_filters:
-        direct_invitation_query = direct_invitation_query.where(condition)
-    base_selects.append(direct_invitation_query)
-
-    invitee_invitation_query = (
-        select(
+        direct_invitation_query = select(
             invitation_db_cls.team_id.label("id"),
             invitation_db_cls.role_id.label("role_id"),
             func.cast(1, Integer).label("depth"),
+        ).where(invitation_db_cls.user_id == user_id)
+        for condition in invitation_filters:
+            direct_invitation_query = direct_invitation_query.where(condition)
+        base_selects.append(direct_invitation_query)
+
+        invitee_invitation_query = (
+            select(
+                invitation_db_cls.team_id.label("id"),
+                invitation_db_cls.role_id.label("role_id"),
+                func.cast(1, Integer).label("depth"),
+            )
+            .select_from(invitation_db_cls)
+            .join(invitee_db_cls, invitee_db_cls.invitation_id == invitation_db_cls.id)
+            .where(invitee_db_cls.user_id == user_id)
         )
-        .select_from(invitation_db_cls)
-        .join(invitee_db_cls, invitee_db_cls.invitation_id == invitation_db_cls.id)
-        .where(invitee_db_cls.user_id == user_id)
-    )
-    for condition in invitation_filters:
-        invitee_invitation_query = invitee_invitation_query.where(condition)
-    if hasattr(invitee_db_cls, "deleted_at"):
+        for condition in invitation_filters:
+            invitee_invitation_query = invitee_invitation_query.where(condition)
+        if hasattr(invitee_db_cls, "deleted_at"):
+            invitee_invitation_query = invitee_invitation_query.where(
+                invitee_db_cls.deleted_at.is_(None)
+            )
         invitee_invitation_query = invitee_invitation_query.where(
-            invitee_db_cls.deleted_at.is_(None)
+            invitee_db_cls.declined_at.is_(None)
         )
-    invitee_invitation_query = invitee_invitation_query.where(
-        invitee_db_cls.declined_at.is_(None)
-    )
-    base_selects.append(invitee_invitation_query)
+        base_selects.append(invitee_invitation_query)
 
     if len(base_selects) == 1:
         combined_base = base_selects[0]
@@ -1100,11 +1106,19 @@ def _build_direct_permission_filter(
     """
     # Local imports to break cycle
     from serverframework.database.DatabaseManager import DatabaseManager
-    from serverframework.extensions.acl_rbac.BLL_ACL import PermissionModel
-    from serverframework.logic.BLL_Auth import UserTeamModel
+    from serverframework.logic.BLL_Auth import UserTeamModel, _acl_hooks
 
-    # Get SQLAlchemy models using the declarative base
-    permission_db_cls = PermissionModel.DB(declarative_base)
+    # The Permission row is owned by the ``acl_rbac`` extension. Without
+    # it loaded, no direct/team/role permission rows exist — every branch
+    # below evaluates to ``False`` against an empty exists()-style
+    # ``SELECT 1 WHERE FALSE``, so the caller's overall permission
+    # filter is fail-closed by construction.
+    permission_db_class_hook = _acl_hooks["permission_db_class"]
+    if permission_db_class_hook is None:
+        from sqlalchemy import literal
+
+        return literal(False)
+    permission_db_cls = permission_db_class_hook(declarative_base)
     user_team_db_cls = UserTeamModel.DB(declarative_base)
 
     # Check if resource_cls is already a SQLAlchemy model class or a Pydantic model class
@@ -1498,29 +1512,37 @@ def generate_permission_filter(
         )
         invitation_conditions.append(public_invitations_created_filter)
 
-        # Users can see invitations if they have an Invitee record for that invitation
-        # This allows users to access invitations they were specifically invited to via email
-        from serverframework.extensions.auth_invitations.BLL_Invitations import InviteeModel
+        # Users can see invitations if they have an Invitee record for that
+        # invitation. The invitee table is owned by ``auth_invitations``;
+        # this branch only runs when the resource table itself is
+        # ``invitations``, which the extension creates — so the hook is
+        # guaranteed to be registered before we reach this code.
+        from serverframework.logic.BLL_Auth import _invitation_hooks
 
-        Invitee_db_cls = InviteeModel.DB(declarative_base)
-
-        user_invited_filter = exists().where(
-            and_(
-                Invitee_db_cls.invitation_id == resource_db_cls.id,
-                Invitee_db_cls.user_id == user_id,
+        invitee_db_class_hook = _invitation_hooks["invitee_db_class"]
+        if invitee_db_class_hook is not None:
+            Invitee_db_cls = invitee_db_class_hook(declarative_base)
+            user_invited_filter = exists().where(
+                and_(
+                    Invitee_db_cls.invitation_id == resource_db_cls.id,
+                    Invitee_db_cls.user_id == user_id,
+                )
             )
-        )
-        invitation_conditions.append(user_invited_filter)
+            invitation_conditions.append(user_invited_filter)
 
         # For invitations, return only these conditions (no default permission logic)
         return or_(*invitation_conditions) if invitation_conditions else false()
 
     # Special Table Logic for Invitees
     if resource_db_cls.__tablename__ == "Invitees":
-        # Local import to avoid circular dependency
-        from serverframework.extensions.auth_invitations.BLL_Invitations import InvitationModel
+        # Invitation row is owned by ``auth_invitations``; resolved
+        # through the hook so core never imports the extension directly.
+        from serverframework.logic.BLL_Auth import _invitation_hooks
 
-        invitation_db_cls = InvitationModel.DB(declarative_base)
+        invitation_db_class_hook = _invitation_hooks["invitation_db_class"]
+        if invitation_db_class_hook is None:
+            return false()
+        invitation_db_cls = invitation_db_class_hook(declarative_base)
 
         # Users can see invitation invitees if they have access to the associated invitation
         # This means: invitations they created OR invitations to teams they're members of
@@ -1541,85 +1563,85 @@ def generate_permission_filter(
         accessible_invitations = user_created_invitations.union(team_invitations)
         conditions.append(resource_db_cls.invitation_id.in_(accessible_invitations))
 
-    # 4. Direct Permissions via Permission Table (acl_rbac extension)
-    from serverframework.extensions.acl_rbac.BLL_ACL import PermissionModel
+    # 4. Direct Permissions via Permission Table (``acl_rbac`` extension).
+    # Without the extension, no direct/team/role permission rows exist,
+    # so the framework restricts access to the creator-only / team-
+    # membership / invitation-driven branches above. This is the
+    # documented fail-closed default.
+    from serverframework.logic.BLL_Auth import _acl_hooks
 
-    permission_db_cls = PermissionModel.DB(declarative_base)
+    permission_db_class_hook = _acl_hooks["permission_db_class"]
+    if permission_db_class_hook is not None:
+        permission_db_cls = permission_db_class_hook(declarative_base)
 
-    # Convert to column name based on required permission
-    if required_permission_level == PermissionType.VIEW:
-        perm_column_name = "can_view"
-    elif required_permission_level == PermissionType.EXECUTE:
-        perm_column_name = "can_execute"
-    elif required_permission_level == PermissionType.COPY:
-        perm_column_name = "can_copy"
-    elif required_permission_level == PermissionType.EDIT:
-        perm_column_name = "can_edit"
-    elif required_permission_level == PermissionType.DELETE:
-        perm_column_name = "can_delete"
-    elif required_permission_level == PermissionType.SHARE:
-        perm_column_name = "can_share"
-    else:
-        perm_column_name = "can_view"  # Default to view
+        # Convert to column name based on required permission
+        if required_permission_level == PermissionType.VIEW:
+            perm_column_name = "can_view"
+        elif required_permission_level == PermissionType.EXECUTE:
+            perm_column_name = "can_execute"
+        elif required_permission_level == PermissionType.COPY:
+            perm_column_name = "can_copy"
+        elif required_permission_level == PermissionType.EDIT:
+            perm_column_name = "can_edit"
+        elif required_permission_level == PermissionType.DELETE:
+            perm_column_name = "can_delete"
+        elif required_permission_level == PermissionType.SHARE:
+            perm_column_name = "can_share"
+        else:
+            perm_column_name = "can_view"
 
-    # Include all direct permission checks in conditions
-    direct_permissions = _build_direct_permission_filter(
-        user_id,
-        resource_cls,
-        accessible_team_ids_cte,
-        db,
-        required_permission_level,
-        declarative_base,
-    )
-    conditions.append(direct_permissions)
-
-    # Direct permission filter for explicit permissions (user, team, role-based)
-    direct_perm_filter = and_(
-        permission_db_cls.resource_type == resource_db_cls.__tablename__,
-        permission_db_cls.resource_id == resource_db_cls.id,
-        # Set expiration check - only non-expired permissions count
-        or_(
-            permission_db_cls.expires_at == None,
-            permission_db_cls.expires_at > func.now(),
-        ),
-        # Set the permission type based on required_permission_level
-        getattr(permission_db_cls, perm_column_name) == True,
-    )
-
-    # User-specific permissions
-    user_perm_exists = exists().where(
-        and_(
-            direct_perm_filter,
-            permission_db_cls.user_id == user_id,
+        direct_permissions = _build_direct_permission_filter(
+            user_id,
+            resource_cls,
+            accessible_team_ids_cte,
+            db,
+            required_permission_level,
+            declarative_base,
         )
-    )
+        conditions.append(direct_permissions)
 
-    # Team-scoped permissions (user is in the team)
-    team_perm_exists = exists().where(
-        and_(
-            direct_perm_filter,
-            permission_db_cls.team_id.in_(select(accessible_team_ids_cte.c.id)),
+        # Direct permission filter for explicit permissions (user/team/role).
+        direct_perm_filter = and_(
+            permission_db_cls.resource_type == resource_db_cls.__tablename__,
+            permission_db_cls.resource_id == resource_db_cls.id,
+            or_(
+                permission_db_cls.expires_at == None,
+                permission_db_cls.expires_at > func.now(),
+            ),
+            getattr(permission_db_cls, perm_column_name) == True,
         )
-    )
 
-    # Role-based permissions
-    # First get user's roles through accessible teams
-    user_roles = select(accessible_team_ids_cte.c.role_id).distinct()
-
-    role_perm_exists_specific = exists().where(
-        and_(
-            direct_perm_filter,
-            permission_db_cls.role_id.in_(user_roles),
+        user_perm_exists = exists().where(
+            and_(
+                direct_perm_filter,
+                permission_db_cls.user_id == user_id,
+            )
         )
-    )
 
-    # Combine all permission checks
-    perm_conditions = or_(
-        user_perm_exists,
-        team_perm_exists,
-        role_perm_exists_specific,
-    )
-    conditions.append(perm_conditions)
+        team_perm_exists = exists().where(
+            and_(
+                direct_perm_filter,
+                permission_db_cls.team_id.in_(
+                    select(accessible_team_ids_cte.c.id)
+                ),
+            )
+        )
+
+        user_roles = select(accessible_team_ids_cte.c.role_id).distinct()
+
+        role_perm_exists_specific = exists().where(
+            and_(
+                direct_perm_filter,
+                permission_db_cls.role_id.in_(user_roles),
+            )
+        )
+
+        perm_conditions = or_(
+            user_perm_exists,
+            team_perm_exists,
+            role_perm_exists_specific,
+        )
+        conditions.append(perm_conditions)
 
     # Combine all conditions with OR
     if not conditions:
