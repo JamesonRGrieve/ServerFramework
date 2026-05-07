@@ -1,20 +1,34 @@
 """rpg_log — event log models and managers for RPG campaigns.
 
 Sibling to ``rpg_state``. Every log row carries:
-- ``campaign_id`` (Reference to rpg_state.CampaignModel)
+
+- ``campaign_id`` (Reference to ``rpg_state.CampaignModel``)
 - ``occurred_at`` — in-game time the event happened, distinct from the
   audit ``created_at`` (when the row was logged).
 - ``session_id`` — optional grouping by play session.
 
-Logs are editable (UpdateMixinModel) so GMs can fix typos and retcon;
-the standard ``updated_at`` / ``updated_by_user_id`` audit fields
-preserve the change trail.
+Logs are editable (``UpdateMixinModel``) so GMs can fix typos and
+retcon; the standard ``updated_at`` / ``updated_by_user_id`` audit
+fields preserve the change trail.
 
-Multiple FKs to the same target table (e.g. attacker / defender both
-referencing characters; from / to both referencing locations) are
-declared as plain ``Optional[str]`` columns rather than via the
-``Reference`` mixin, since the metaclass keys field-name generation off
-the target model name and would collide.
+Person endpoints
+----------------
+Actor / target / participant references all point at
+``genealogy.persons.id`` (via ``rpg_state``'s injection of character
+columns onto ``PersonModel``). The persons table is the character
+table for RPG users. Multiple FKs to the same target table (attacker /
+target both referencing persons; from / to both referencing locations
+or factions) are declared as plain ``Optional[str]`` columns rather
+than via the ``Reference`` mixin, since the metaclass keys field-name
+generation off the target model name and would collide.
+
+Schema integrity
+----------------
+Cross-extension foreign keys are real ``ForeignKeyConstraint``
+declarations. Required references use ``nullable=False``. Manager-layer
+validators handle the rest (encounter participation must reference a
+real encounter, dialogue participants must reference a real dialogue,
+etc.).
 """
 
 from datetime import datetime
@@ -22,9 +36,9 @@ from typing import ClassVar, List, Optional, Type
 
 from pydantic import Field
 
+from serverframework.extensions.genealogy.BLL_Genealogy import PersonModel
 from serverframework.extensions.rpg_state.BLL_RPGState import (
     CampaignModel,
-    CharacterModel,
     ItemInstanceModel,
     LocationModel,
     TraitModel,
@@ -110,26 +124,25 @@ class EncounterParticipantModel(
     ApplicationModel.Optional,
     UpdateMixinModel.Optional,
     EncounterLogModel.Reference.Optional,
-    CharacterModel.Reference.Optional,
+    PersonModel.Reference.Optional,
     metaclass=ModelMeta,
 ):
     Manager: ClassVar[Type["EncounterParticipantManager"]] = None
-    # Free-form side label so multi-side fights work
-    # (attackers / defenders / wildlife / bystanders / ...).
     side: Optional[str] = Field(None, description="Side / faction-of-convenience label")
-    # Faction at encounter time. Manual to avoid a Reference collision —
-    # the participant table doesn't need a back-resolved Faction object.
-    faction_id: Optional[str] = Field(None)
+    faction_id: Optional[str] = Field(
+        None,
+        description="Faction at encounter time (snapshot).",
+    )
     initiative: Optional[float] = Field(None)
     table_comment: ClassVar[str] = (
-        "Roster of an encounter. Faction inferable; explicit faction_id "
-        "captures the snapshot at encounter time."
+        "Roster of an encounter. faction_id captures the snapshot at "
+        "encounter time even if the person defects later."
     )
 
     class Create(
         BaseModel,
         EncounterLogModel.Reference.ID.Optional,
-        CharacterModel.Reference.ID.Optional,
+        PersonModel.Reference.ID.Optional,
     ):
         side: Optional[str] = None
         faction_id: Optional[str] = None
@@ -143,7 +156,7 @@ class EncounterParticipantModel(
     class Search(
         ApplicationModel.Search,
         EncounterLogModel.Reference.ID.Search,
-        CharacterModel.Reference.ID.Search,
+        PersonModel.Reference.ID.Search,
     ):
         side: Optional[StringSearchModel] = None
         faction_id: Optional[StringSearchModel] = None
@@ -171,10 +184,10 @@ class CombatActionLogModel(
     metaclass=ModelMeta,
 ):
     Manager: ClassVar[Type["CombatActionLogManager"]] = None
-    # Two characters per action (actor + target); declared manually since
-    # CharacterModel.Reference would collide.
-    actor_character_id: Optional[str] = Field(None)
-    target_character_id: Optional[str] = Field(None)
+    # Two persons per action (actor + target); declared manually since
+    # PersonModel.Reference would collide.
+    actor_person_id: Optional[str] = Field(None)
+    target_person_id: Optional[str] = Field(None)
     action_type: Optional[str] = Field(
         None, description="attack|cast|defend|item_use|movement|other"
     )
@@ -186,8 +199,8 @@ class CombatActionLogModel(
     occurred_at: Optional[datetime] = Field(None)
     session_id: Optional[str] = Field(None)
     table_comment: ClassVar[str] = (
-        "One row per combat action. trait_id = spell/skill used (unified Trait); "
-        "item_instance_id = weapon/consumable used."
+        "One row per combat action. trait_id = spell/skill used (unified "
+        "Trait); item_instance_id = weapon/consumable used."
     )
 
     class Create(
@@ -197,8 +210,8 @@ class CombatActionLogModel(
         ItemInstanceModel.Reference.ID.Optional,
         TraitModel.Reference.ID.Optional,
     ):
-        actor_character_id: Optional[str] = None
-        target_character_id: Optional[str] = None
+        actor_person_id: Optional[str] = None
+        target_person_id: Optional[str] = None
         action_type: Optional[str] = None
         result: Optional[str] = None
         damage_amount: Optional[float] = None
@@ -217,8 +230,8 @@ class CombatActionLogModel(
         EncounterLogModel.Reference.ID.Search,
         CampaignModel.Reference.ID.Search,
     ):
-        actor_character_id: Optional[StringSearchModel] = None
-        target_character_id: Optional[StringSearchModel] = None
+        actor_person_id: Optional[StringSearchModel] = None
+        target_person_id: Optional[StringSearchModel] = None
         action_type: Optional[StringSearchModel] = None
         damage_amount: Optional[NumericalSearchModel] = None
         round_number: Optional[NumericalSearchModel] = None
@@ -245,8 +258,8 @@ class DialogueLogModel(
     metaclass=ModelMeta,
 ):
     Manager: ClassVar[Type["DialogueLogManager"]] = None
-    actor_character_id: Optional[str] = Field(None, description="Speaker")
-    target_character_id: Optional[str] = Field(
+    actor_person_id: Optional[str] = Field(None, description="Speaker")
+    target_person_id: Optional[str] = Field(
         None, description="Primary addressee (null for group / monologue)"
     )
     text: Optional[str] = Field(None)
@@ -263,8 +276,8 @@ class DialogueLogModel(
         CampaignModel.Reference.ID.Optional,
         LocationModel.Reference.ID.Optional,
     ):
-        actor_character_id: Optional[str] = None
-        target_character_id: Optional[str] = None
+        actor_person_id: Optional[str] = None
+        target_person_id: Optional[str] = None
         text: Optional[str] = None
         tone: Optional[str] = None
         occurred_at: Optional[datetime] = None
@@ -279,8 +292,8 @@ class DialogueLogModel(
         CampaignModel.Reference.ID.Search,
         LocationModel.Reference.ID.Search,
     ):
-        actor_character_id: Optional[StringSearchModel] = None
-        target_character_id: Optional[StringSearchModel] = None
+        actor_person_id: Optional[StringSearchModel] = None
+        target_person_id: Optional[StringSearchModel] = None
         tone: Optional[StringSearchModel] = None
         occurred_at: Optional[DateSearchModel] = None
 
@@ -296,7 +309,7 @@ class DialogueParticipantModel(
     ApplicationModel.Optional,
     UpdateMixinModel.Optional,
     DialogueLogModel.Reference.Optional,
-    CharacterModel.Reference.Optional,
+    PersonModel.Reference.Optional,
     metaclass=ModelMeta,
 ):
     Manager: ClassVar[Type["DialogueParticipantManager"]] = None
@@ -310,7 +323,7 @@ class DialogueParticipantModel(
     class Create(
         BaseModel,
         DialogueLogModel.Reference.ID.Optional,
-        CharacterModel.Reference.ID.Optional,
+        PersonModel.Reference.ID.Optional,
     ):
         role: Optional[str] = None
 
@@ -320,7 +333,7 @@ class DialogueParticipantModel(
     class Search(
         ApplicationModel.Search,
         DialogueLogModel.Reference.ID.Search,
-        CharacterModel.Reference.ID.Search,
+        PersonModel.Reference.ID.Search,
     ):
         role: Optional[StringSearchModel] = None
 
@@ -346,7 +359,7 @@ class InteractionLogModel(
     metaclass=ModelMeta,
 ):
     Manager: ClassVar[Type["InteractionLogManager"]] = None
-    actor_character_id: Optional[str] = Field(None)
+    actor_person_id: Optional[str] = Field(None)
     interaction_type: Optional[str] = Field(
         None,
         description="examine|use|open|pickup|drop|lock|unlock|read|...",
@@ -364,7 +377,7 @@ class InteractionLogModel(
         LocationModel.Reference.ID.Optional,
         ItemInstanceModel.Reference.ID.Optional,
     ):
-        actor_character_id: Optional[str] = None
+        actor_person_id: Optional[str] = None
         interaction_type: Optional[str] = None
         notes: Optional[str] = None
         occurred_at: Optional[datetime] = None
@@ -380,7 +393,7 @@ class InteractionLogModel(
         LocationModel.Reference.ID.Search,
         ItemInstanceModel.Reference.ID.Search,
     ):
-        actor_character_id: Optional[StringSearchModel] = None
+        actor_person_id: Optional[StringSearchModel] = None
         interaction_type: Optional[StringSearchModel] = None
         occurred_at: Optional[DateSearchModel] = None
 
@@ -409,8 +422,8 @@ class TransactionLogModel(
     # From / to. Manual columns since both reference the same target tables.
     from_location_id: Optional[str] = Field(None)
     to_location_id: Optional[str] = Field(None)
-    from_owner_character_id: Optional[str] = Field(None)
-    to_owner_character_id: Optional[str] = Field(None)
+    from_owner_person_id: Optional[str] = Field(None)
+    to_owner_person_id: Optional[str] = Field(None)
     from_owner_faction_id: Optional[str] = Field(None)
     to_owner_faction_id: Optional[str] = Field(None)
     price: Optional[float] = Field(None, description="Sale price (null = non-monetary)")
@@ -420,7 +433,8 @@ class TransactionLogModel(
     occurred_at: Optional[datetime] = Field(None)
     session_id: Optional[str] = Field(None)
     table_comment: ClassVar[str] = (
-        "One row per item movement. captures trade, theft, looting, and gifts."
+        "One row per item movement. Captures trade, theft, looting, and gifts. "
+        "owner_* fields are assignment / responsibility (not equipped)."
     )
 
     class Create(
@@ -431,8 +445,8 @@ class TransactionLogModel(
         quantity: Optional[int] = None
         from_location_id: Optional[str] = None
         to_location_id: Optional[str] = None
-        from_owner_character_id: Optional[str] = None
-        to_owner_character_id: Optional[str] = None
+        from_owner_person_id: Optional[str] = None
+        to_owner_person_id: Optional[str] = None
         from_owner_faction_id: Optional[str] = None
         to_owner_faction_id: Optional[str] = None
         price: Optional[float] = None
@@ -450,8 +464,8 @@ class TransactionLogModel(
         ItemInstanceModel.Reference.ID.Search,
     ):
         kind: Optional[StringSearchModel] = None
-        from_owner_character_id: Optional[StringSearchModel] = None
-        to_owner_character_id: Optional[StringSearchModel] = None
+        from_owner_person_id: Optional[StringSearchModel] = None
+        to_owner_person_id: Optional[StringSearchModel] = None
         from_owner_faction_id: Optional[StringSearchModel] = None
         to_owner_faction_id: Optional[StringSearchModel] = None
         occurred_at: Optional[DateSearchModel] = None

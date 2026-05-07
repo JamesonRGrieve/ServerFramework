@@ -690,6 +690,113 @@ def test_manager_with_isolated_database():
 
 This Pydantic-first architecture with enterprise database management represents a modern approach to database patterns that maximizes developer productivity and operational reliability. The `DatabaseManager.py` implementation provides production-ready database management with thread-safe operations, multi-database support, and comprehensive session handling. The DatabaseMixin approach provides a single source of truth, while the sophisticated permission system and seeding infrastructure ensure security and maintainability at scale.
 
+## Schema Integrity Doctrine
+
+The codebase enforces integrity at the database layer wherever the
+invariant is non-negotiable. "Loose schema" — tables without foreign
+keys, nullable columns where a value is required, application-only
+enforcement of relational constraints — is **not** the codebase
+pattern and must not be claimed as one. Migration authors who skip
+DB-level constraints because "the manager enforces it" are wrong;
+manager-layer enforcement is a complement to DB-level integrity, not a
+substitute.
+
+### Required: foreign keys on every cross-table reference
+
+Every column whose value references the primary key of another table
+declares a `sa.ForeignKeyConstraint` (or the per-column `sa.ForeignKey`
+shorthand) in the migration. This includes:
+
+- Cross-extension references (e.g. an extension table's `user_id`
+  pointing at the core `users.id`).
+- Within-extension references (e.g. `objectives.quest_id` →
+  `quests.id`).
+- Self-references (e.g. `factions.parent_id` → `factions.id`,
+  `objectives.prerequisite_objective_id` → `objectives.id`).
+- Multi-FK columns referencing the same target (e.g.
+  `combat_action_logs.actor_person_id` and `target_person_id` both →
+  `persons.id` — declare each as its own `ForeignKeyConstraint`).
+
+Cyclic references (e.g. `locations.container_item_instance_id` ↔
+`item_instances.location_id`) are resolved by creating both tables
+without the cycle-closing FK, then adding the second FK via
+`op.batch_alter_table(...).create_foreign_key(...)` once both tables
+exist. This preserves DB-level enforcement at steady state.
+
+### Required: NOT NULL on required references
+
+If a row is meaningless without a particular reference, that column is
+`nullable=False`. Optional references are `nullable=True`. The Pydantic
+side mirrors this via `Reference` vs `Reference.Optional` mixins.
+
+### Required: CHECK constraints for non-relational invariants
+
+When an invariant cannot be expressed via FK + NOT NULL — the canonical
+case is **endpoint XOR** on a polymorphic edge table (exactly one of N
+mutually-exclusive endpoint columns is set per row) — the migration
+declares a `sa.CheckConstraint` (or
+`op.batch_alter_table(...).create_check_constraint(...)`). Examples:
+
+- `relationships(person_id, faction_id)` endpoint XOR per side. The
+  CHECK is added by the extension that injects the additional endpoint
+  columns (`rpg_state` widens `genealogy.relationships` and is
+  responsible for the CHECK that spans both extensions' columns).
+- Quantity ≥ 1 on stack rows: `CHECK (quantity >= 1)`.
+- State-machine transitions: `CHECK (status IN (...))` for closed
+  enums where the application would otherwise drift.
+
+Authors prefer portable CHECK syntax that works across SQLite,
+PostgreSQL, and MySQL — booleans-as-integers (e.g.
+`(person_id IS NOT NULL) + (faction_id IS NOT NULL) = 1`) is the
+portable XOR. Database-specific clauses are last-resort.
+
+### Required: migration ownership stamping
+
+Every `op.create_table` declares `info={"source_module": "...",
+"extension": "..."}` so `MigrationOwnership` and downstream tooling
+can route schema mutations correctly. When an extension widens
+another extension's table via `@extension_model` field injection, the
+injecting extension's migration owns the `op.add_column`,
+`op.alter_column`, and `op.create_check_constraint` calls; the
+`info` dict on those calls (or on the surrounding
+`batch_alter_table`) names the injecting extension as the owner of
+the new columns. The original-table-owner is unaffected.
+
+### Cross-extension column injection
+
+Extensions may widen another extension's table via the
+`@extension_model` decorator on the Pydantic side and matching
+`op.add_column` (and, if needed,
+`op.alter_column` to relax nullability, plus
+`op.create_check_constraint` for new invariants spanning the injected
+columns) on the migration side. The canonical example is the `payment`
+extension injecting `external_payment_id` onto `users`; `rpg_state`
+injects character columns onto `persons` and faction endpoints onto
+`relationships`. The injecting extension's migration is the one that
+must drop the columns on `downgrade`.
+
+### When manager-layer enforcement is appropriate
+
+Manager-layer validators are appropriate only for invariants the DB
+genuinely cannot express:
+
+- **Cycle prevention** in self-referential parent chains (a Location
+  whose ancestor chain contains itself; a quest that prerequisites
+  itself). Recursive walks need iteration caps; the manager rejects
+  edits that would close a cycle. (Depth caps are not appropriate —
+  they limit GMs / authors without correctness payoff.)
+- **Equipment-slot coherence** (a Location with `kind='equipment_slot'`
+  must have `associated_person_id` set). Could be a CHECK in
+  PostgreSQL but loses portability.
+- **Cross-row invariants** (no two `kind='leader'` member_of
+  relationships per faction at the same time). PostgreSQL exclusion
+  constraints handle some of these; portable solutions go to the
+  manager.
+
+When in doubt, push the constraint down to DDL. Application code is
+where invariants go to die; DB constraints survive bug fixes,
+refactors, and concurrent writers.
+
 ## Soft-Delete Enforcement
 
 Soft-delete is a `SoftDeleteMixin` on `AbstractDatabaseEntity` that adds the `deleted_at` column and registers a SQLAlchemy `before_compile` query event that auto-injects `deleted_at IS NULL` into every read against tables tagged with the mixin. A bypass parameter (`include_deleted=True`) is offered for admin queries that genuinely need tombstoned records; without it, deleted rows are invisible to the BLL.

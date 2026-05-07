@@ -1,8 +1,8 @@
 """rpg_state extension definition.
 
-Owns the present-state tables for an RPG campaign. No upstream extension
-dependencies; ``rpg_log`` depends on this for character / item / location
-references.
+Hard-depends on ``genealogy`` (widens PersonModel and RelationshipModel
+via @extension_model). ``rpg_log`` depends on rpg_state for trait /
+item / location references.
 """
 
 from typing import ClassVar, List, Type
@@ -15,9 +15,10 @@ from serverframework.extensions.AbstractExtensionProvider import (
 class RPGStateExtension(AbstractStaticExtension):
     name: ClassVar[str] = "rpg_state"
     description: ClassVar[str] = (
-        "Present-state schema for RPG campaigns (system-agnostic)"
+        "Present-state schema for RPG campaigns (system-agnostic). "
+        "Widens genealogy.PersonModel to serve as the character table."
     )
-    extension_dependencies: ClassVar[List[str]] = []
+    extension_dependencies: ClassVar[List[str]] = ["genealogy"]
 
     @classmethod
     def models(cls) -> List[Type]:
