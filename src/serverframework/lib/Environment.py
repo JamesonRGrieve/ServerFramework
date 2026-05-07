@@ -126,6 +126,13 @@ class AppSettings(BaseModel):
         checks scattered through the auth path. C-3: JWT_SECRET strength is
         enforced here under production; outside production we allow empty
         for test/dev convenience, since the conftest does not set one.
+
+        The list of required secrets includes ``FRAMEWORK_FERNET_KEY``
+        whenever an extension that depends on encrypted-at-rest secrets
+        (currently ``auth_mfa`` and ``oauth_consumer``) is loaded; the
+        check is in :meth:`EXT_*.validate_config` for each, but we also
+        enforce here so a misconfigured production deployment cannot
+        boot a partially-initialised framework.
         """
         if self.ENVIRONMENT not in ("production", "staging"):
             return self
@@ -143,6 +150,20 @@ class AppSettings(BaseModel):
             problems.append("ALLOWED_DOMAINS='*' is not allowed in production")
         if (self.DATABASE_PASSWORD or "").strip() in ("", "Password1!"):
             problems.append("DATABASE_PASSWORD is unset")
+        # Encryption-at-rest extensions need FRAMEWORK_FERNET_KEY. Sniff
+        # APP_EXTENSIONS for them; if any are loaded, the key is mandatory.
+        loaded_extensions = {
+            e.strip() for e in (self.APP_EXTENSIONS or "").split(",") if e.strip()
+        }
+        encryption_dependent = {"auth_mfa", "oauth_consumer"}
+        if loaded_extensions & encryption_dependent:
+            fernet_key = (env("FRAMEWORK_FERNET_KEY") or "").strip()
+            if not fernet_key:
+                problems.append(
+                    "FRAMEWORK_FERNET_KEY is unset but the loaded extensions "
+                    f"include {sorted(loaded_extensions & encryption_dependent)} "
+                    "which require encryption-at-rest"
+                )
         if problems:
             raise ValueError(
                 "Insecure production configuration: " + "; ".join(problems)

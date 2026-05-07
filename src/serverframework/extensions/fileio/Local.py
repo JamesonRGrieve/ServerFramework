@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional, Set
 
 import psutil
 
-from extensions.fileio.PRV_FileIO import AbstractFileIOProvider, FileIOPermission
+from serverframework.extensions.fileio.PRV_FileIO import AbstractFileIOProvider, FileIOPermission
 
 
 class LocalFileSystem(AbstractFileIOProvider):

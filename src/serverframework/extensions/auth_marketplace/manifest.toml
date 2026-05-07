@@ -1,0 +1,9 @@
+name = "auth_marketplace"
+version = "0.1.0"
+description = "Per-tenant payment-portal links"
+
+[[extension_dependencies]]
+name = "payment"
+optional = false
+
+[python_dependencies]

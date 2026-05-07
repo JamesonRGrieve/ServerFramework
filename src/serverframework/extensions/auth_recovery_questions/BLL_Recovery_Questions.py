@@ -5,6 +5,7 @@ question-based recovery simply omit ``auth_recovery_questions`` from
 APP_EXTENSIONS.
 """
 
+import unicodedata
 from datetime import datetime
 from typing import ClassVar, List, Optional, Type
 
@@ -23,6 +24,27 @@ from serverframework.logic.AbstractLogicManager import (
     UpdateMixinModel,
 )
 from serverframework.logic.BLL_Auth import _BCRYPT_ROUNDS, UserModel
+
+
+def _normalize_answer(answer: str) -> str:
+    """Normalize a recovery-question answer for hashing/comparison.
+
+    Steps:
+    1. NFKC Unicode normalization (folds compatibility variants and composes).
+    2. Casefold (locale-insensitive lower-case; handles e.g. German ``ß`` → ``ss``).
+    3. Collapse runs of any whitespace (incl. NBSP, ZWJ, etc.) to a single space.
+    4. Strip leading/trailing whitespace.
+
+    NFKC alone does not handle every confusable; this is best-effort to make
+    a user's answer recoverable across keyboards/input methods without
+    weakening security against an attacker who already has the hash.
+    """
+    if answer is None:
+        return ""
+    normalized = unicodedata.normalize("NFKC", answer)
+    normalized = normalized.casefold()
+    normalized = " ".join(normalized.split())
+    return normalized
 
 
 class UserRecoveryQuestionModel(
@@ -64,7 +86,7 @@ class UserRecoveryQuestionManager(AbstractBLLManager, RouterMixin):
     def create(self, **kwargs):
         if "answer" in kwargs:
             answer = kwargs.pop("answer")
-            normalized_answer = answer.lower().strip()
+            normalized_answer = _normalize_answer(answer)
             salt = bcrypt.gensalt(rounds=_BCRYPT_ROUNDS)
             kwargs["answer"] = bcrypt.hashpw(normalized_answer.encode(), salt).decode()
         return super().create(**kwargs)
@@ -72,7 +94,7 @@ class UserRecoveryQuestionManager(AbstractBLLManager, RouterMixin):
     def update(self, id: str, **kwargs):
         if "answer" in kwargs:
             answer = kwargs.pop("answer")
-            normalized_answer = answer.lower().strip()
+            normalized_answer = _normalize_answer(answer)
             salt = bcrypt.gensalt(rounds=_BCRYPT_ROUNDS)
             kwargs["answer"] = bcrypt.hashpw(normalized_answer.encode(), salt).decode()
         return super().update(id, **kwargs)
@@ -87,8 +109,52 @@ class UserRecoveryQuestionManager(AbstractBLLManager, RouterMixin):
         )
         if not question:
             return False
-        normalized_answer = answer.lower().strip()
+        normalized_answer = _normalize_answer(answer)
         return bcrypt.checkpw(normalized_answer.encode(), question.answer.encode())
 
 
 UserRecoveryQuestionModel.Manager = UserRecoveryQuestionManager
+
+
+# ---------------------------------------------------------------------------
+# Merge participation
+# ---------------------------------------------------------------------------
+
+
+def _merge_handler(ctx) -> None:
+    """Delete the target user's recovery questions.
+
+    Recovery answers are personal: migrating them onto the surviving
+    account would mean the initiating user could pass recovery checks for
+    secrets that were originally answered by the target user. The
+    initiating user's own recovery questions stay; this only clears the
+    target's set."""
+    from serverframework.lib.Environment import env as _env
+
+    QDB = UserRecoveryQuestionModel.DB(ctx.model_registry.DB.manager.Base)
+    rows = (
+        QDB.list(
+            requester_id=_env("ROOT_ID"),
+            model_registry=ctx.model_registry,
+            filters=[QDB.user_id == ctx.target_user_id],
+            return_type="dto",
+            override_dto=UserRecoveryQuestionModel,
+        )
+        or []
+    )
+    for row in rows:
+        QDB.delete(
+            requester_id=_env("ROOT_ID"),
+            model_registry=ctx.model_registry,
+            id=row.id,
+        )
+
+
+def register_merge_participation() -> None:
+    try:
+        from serverframework.extensions.auth_merge.BLL_Auth_Merge import (
+            register_merge_handler,
+        )
+    except ImportError:
+        return
+    register_merge_handler("auth_recovery_questions", _merge_handler)

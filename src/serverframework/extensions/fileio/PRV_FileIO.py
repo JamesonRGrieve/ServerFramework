@@ -3,7 +3,9 @@ from enum import Enum, auto
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
-from extensions.AbstractProvider import AbstractProvider
+from serverframework.extensions.AbstractExtensionProvider import (
+    AbstractStaticProvider as AbstractProvider,
+)
 
 
 class FileIOPermission(Enum):
@@ -98,43 +100,37 @@ class AbstractFileIOProvider(AbstractProvider):
     def _check_path_permissions(
         self, path: Union[str, Path], check_exists: bool = True
     ) -> Tuple[Path, bool]:
-        """
-        Check if a path is allowed based on permissions, allowlist, and blocklist.
+        """Resolve ``path`` and decide whether it is reachable.
 
-        Args:
-            path: The path to check
-            check_exists: Whether to check if the path exists
-
-        Returns:
-            Tuple of (resolved_path, is_allowed)
+        Containment is enforced via ``Path.is_relative_to`` (Python 3.9+) on
+        the *resolved* path, so symbolic links pointing outside the base
+        directory are rejected. The previous string-prefix check accepted
+        sibling directories that shared a prefix (e.g. ``/data`` would
+        accept ``/datacopy/...``).
         """
-        # Convert to Path object and resolve
+        import fnmatch
+
         path_obj = Path(path)
-
-        # If path is absolute, check if it's within base directory
         if path_obj.is_absolute():
             resolved_path = path_obj.resolve()
-            if not str(resolved_path).startswith(str(self.base_directory)):
-                return resolved_path, False
         else:
-            # If path is relative, resolve it relative to base directory
             resolved_path = (self.base_directory / path_obj).resolve()
 
-        # Check if path exists if required
+        # Containment: resolved path must live under base_directory after
+        # following every symlink. ``is_relative_to`` was added in 3.9.
+        try:
+            resolved_path.relative_to(self.base_directory)
+        except ValueError:
+            return resolved_path, False
+
         if check_exists and not resolved_path.exists():
             return resolved_path, False
 
-        # Check against allowlist and blocklist
         path_str = str(resolved_path)
-
-        # Check if path matches any blocklist pattern
-        import fnmatch
-
         for pattern in self.blocklist_patterns:
             if fnmatch.fnmatch(path_str, pattern):
                 return resolved_path, False
 
-        # Check if path matches any allowlist pattern
         allowed = False
         for pattern in self.allowlist_patterns:
             if fnmatch.fnmatch(path_str, pattern):

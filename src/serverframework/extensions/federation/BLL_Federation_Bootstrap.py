@@ -22,7 +22,10 @@ Two integration points:
 from __future__ import annotations
 
 import asyncio
+import ipaddress
+import socket
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Type
+from urllib.parse import urlparse
 
 from serverframework.extensions.federation.BLL_Federation_GQL import (
     FederatedSubgraph,
@@ -32,7 +35,98 @@ from serverframework.extensions.federation.BLL_Federation_GQL import (
     project_gql_as_rest,
     reset_global_registry,
 )
+from serverframework.lib.Environment import env
 from serverframework.lib.Logging import logger
+
+
+# ---------------------------------------------------------------------------
+# Upstream URL validation (SSRF guard)
+# ---------------------------------------------------------------------------
+
+
+_DEFAULT_ALLOWED_SCHEMES = ("https",)
+
+
+def _is_private_or_local(host: str) -> bool:
+    """Return True if ``host`` resolves to a non-publicly-routable address."""
+    try:
+        addrinfos = socket.getaddrinfo(host, None)
+    except socket.gaierror:
+        # Unresolvable hostnames are rejected by the caller; treat as unsafe
+        # to keep the SSRF guard conservative.
+        return True
+    for info in addrinfos:
+        sockaddr = info[4]
+        ip_str = sockaddr[0] if isinstance(sockaddr, tuple) else None
+        if ip_str is None:
+            return True
+        try:
+            ip = ipaddress.ip_address(ip_str)
+        except ValueError:
+            return True
+        if (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_multicast
+            or ip.is_reserved
+            or ip.is_unspecified
+        ):
+            return True
+    return False
+
+
+def validate_upstream_url(url: str, *, allow_private: Optional[bool] = None) -> None:
+    """Reject malformed URLs and (by default) URLs that point at private IPs.
+
+    Raises ``ValueError`` describing the rejection reason; callers should
+    catch and surface as a federation-bootstrap error rather than aborting
+    the whole startup.
+
+    Policy:
+    - Production / staging: TLS required (https), public hostnames only.
+      Both can be relaxed via ``FEDERATION_ALLOW_HTTP_UPSTREAMS=true``
+      and ``FEDERATION_ALLOW_PRIVATE_UPSTREAMS=true`` for in-cluster
+      federation that terminates TLS at a sidecar.
+    - Local / CI / development: http and private hosts are allowed by
+      default so test harnesses can exercise the pipeline without
+      configuring extra env vars. Operators can still tighten via the
+      same env vars.
+
+    Args:
+        url: The upstream URL declared by a federation provider.
+        allow_private: Explicit override; when ``None`` policy is derived
+            from environment.
+    """
+    if not url:
+        raise ValueError("upstream_url is empty")
+    parsed = urlparse(url)
+
+    environment = (env("ENVIRONMENT") or "local").lower()
+    is_dev_like = environment in ("local", "ci", "development")
+
+    allow_http = (
+        is_dev_like
+        or (env("FEDERATION_ALLOW_HTTP_UPSTREAMS") or "").lower() == "true"
+    )
+    if parsed.scheme not in _DEFAULT_ALLOWED_SCHEMES and not (
+        allow_http and parsed.scheme == "http"
+    ):
+        raise ValueError(
+            f"upstream_url {url!r}: scheme {parsed.scheme!r} not allowed "
+            f"(set FEDERATION_ALLOW_HTTP_UPSTREAMS=true to permit http)"
+        )
+    if not parsed.hostname:
+        raise ValueError(f"upstream_url {url!r}: missing hostname")
+    if allow_private is None:
+        allow_private = is_dev_like or (
+            (env("FEDERATION_ALLOW_PRIVATE_UPSTREAMS") or "").lower() == "true"
+        )
+    if not allow_private and _is_private_or_local(parsed.hostname):
+        raise ValueError(
+            f"upstream_url {url!r}: hostname resolves to a private/loopback "
+            f"address; set FEDERATION_ALLOW_PRIVATE_UPSTREAMS=true to permit"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -132,9 +226,17 @@ async def install_external_federation(
     for provider_cls in discovered:
         if not issubclass(provider_cls, AbstractGraphQLProvider):
             continue
-        if not getattr(provider_cls, "upstream_url", "") and skip_unconfigured:
+        upstream = getattr(provider_cls, "upstream_url", "")
+        if not upstream and skip_unconfigured:
             logger.debug(
                 "Skipping %s — no upstream_url configured", provider_cls.__name__
+            )
+            continue
+        try:
+            validate_upstream_url(upstream)
+        except ValueError as exc:
+            logger.warning(
+                "Federation rejected for %s: %s", provider_cls.__name__, exc
             )
             continue
         try:
@@ -216,7 +318,16 @@ def install_external_federation_sync(
     for provider_cls in providers or _discover_gql_providers():
         if not issubclass(provider_cls, AbstractGraphQLProvider):
             continue
-        if not getattr(provider_cls, "upstream_url", ""):
+        upstream = getattr(provider_cls, "upstream_url", "")
+        if not upstream:
+            continue
+        try:
+            validate_upstream_url(upstream)
+        except ValueError as exc:
+            logger.warning(
+                "GQL federation rejected for %s: %s", provider_cls.__name__, exc
+            )
+            report.errors[provider_cls.__name__] = str(exc)
             continue
         try:
             ingested = provider_cls.register_with_registry_sync(registry=target)

@@ -1,223 +1,119 @@
-from typing import Optional
+"""Marketplace BLL: links users and teams to payment providers.
 
-from fastapi import HTTPException
-from models.ModelBase import BaseMixinModel, UpdateMixinModel
-from models.ModelSearch import StringSearchModel
-from models.ModelTeam import TeamModel  # Added TeamModel
-from models.ModelUser import UserModel  # Added UserModel
+Owns ``UserPaymentPortalModel`` and ``TeamPaymentPortalModel``, the
+side-tables that record which payment provider holds each tenant's
+payment portal (Stripe customer ID, etc.). The actual payment processing
+lives in the ``payment`` extension; this extension only owns the linkage
+state.
+
+Pattern reference: ``auth_invitations/BLL_Invitations.py``.
+"""
+
+from typing import ClassVar, List, Optional, Type
+
 from pydantic import BaseModel, Field
 
-from database.DB_Auth import Team, User  # Added Team
-from database.DB_Ext import Provider  # Added Provider
-from database.DB_Marketplace import (  # Added DB Models
-    TeamPaymentPortal,
-    UserPaymentPortal,
+from serverframework.lib.Pydantic2FastAPI import AuthType, RouterMixin
+from serverframework.logic.AbstractLogicManager import (
+    AbstractBLLManager,
+    ApplicationModel,
+    ModelMeta,
+    StringSearchModel,
+    UpdateMixinModel,
 )
-from logic.BLL_Base import AbstractBLLManager
+from serverframework.logic.BLL_Auth import (
+    TeamModel,
+    UserModel,
+)
 
 
-# --- User Payment Portal --- #
-class UserPaymentPortalModel(BaseMixinModel, UpdateMixinModel, UserModel.ReferenceID):
-    # Inherits user_id
+class UserPaymentPortalModel(
+    ApplicationModel,
+    UpdateMixinModel,
+    UserModel.Reference,
+    metaclass=ModelMeta,
+):
+    """Per-user link to a payment provider (e.g. Stripe customer)."""
+
+    Manager: ClassVar[Type["UserPaymentPortalManager"]] = None
     payment_portal_id: str = Field(
-        ..., description="ID of the payment portal provider"
-    )  # Clarified description
+        ..., description="Reference to a registered payment provider"
+    )
     customer_id: Optional[str] = Field(
-        None, description="Customer ID in the payment portal"
+        None, description="Customer ID at the payment provider, if assigned"
     )
 
-    class ReferenceID:
-        user_payment_portal_id: str = Field(
-            ..., description="The ID of the related user payment portal"
-        )
+    table_comment: ClassVar[str] = (
+        "Per-user link to a payment provider; one row per (user, provider) pair"
+    )
 
-        class Optional:
-            user_payment_portal_id: Optional[str] = None  # Added field
-
-        class Search:
-            user_payment_portal_id: Optional[StringSearchModel] = None
-
-    class Create(BaseModel, UserModel.ReferenceID):  # Simplified Create model
-        payment_portal_id: str = Field(
-            ..., description="ID of the payment portal provider"
-        )
-        customer_id: Optional[str] = Field(
-            None, description="Customer ID in the payment portal"
-        )
+    class Create(BaseModel, UserModel.Reference.ID):
+        payment_portal_id: str
+        customer_id: Optional[str] = None
 
     class Update(BaseModel):
-        # UserID and PortalID should likely not be updatable
-        customer_id: Optional[str] = Field(
-            None, description="Customer ID in the payment portal"
-        )
+        customer_id: Optional[str] = None
 
     class Search(
-        BaseMixinModel.Search, UserModel.ReferenceID.Search
-    ):  # Added Base Search Mixin
+        ApplicationModel.Search,
+        UpdateMixinModel.Search,
+        UserModel.Reference.ID.Search,
+    ):
         payment_portal_id: Optional[StringSearchModel] = None
         customer_id: Optional[StringSearchModel] = None
 
 
-class UserPaymentPortalReferenceModel(UserPaymentPortalModel.ReferenceID):
-    user_payment_portal: Optional[UserPaymentPortalModel] = None
-
-    class Optional(UserPaymentPortalModel.ReferenceID.Optional):
-        # Corrected indentation
-        user_payment_portal: Optional[UserPaymentPortalModel] = None
-
-
-class UserPaymentPortalNetworkModel:
-    class POST(BaseModel):
-        user_payment_portal: UserPaymentPortalModel.Create  # Use Create model
-
-    class PUT(BaseModel):  # Added PUT model
-        user_payment_portal: UserPaymentPortalModel.Update
-
-    class SEARCH(BaseModel):
-        user_payment_portal: UserPaymentPortalModel.Search  # Use Search model
-
-    class ResponseSingle(BaseModel):
-        user_payment_portal: UserPaymentPortalModel
-
-    class ResponsePlural(BaseModel):  # Added Plural response
-        user_payment_portals: list[UserPaymentPortalModel]
-
-
-class UserPaymentPortalManager(AbstractBLLManager):
-    Model = UserPaymentPortalModel
-    ReferenceModel = UserPaymentPortalReferenceModel
-    NetworkModel = UserPaymentPortalNetworkModel  # Added Network Model
-    DBClass = UserPaymentPortal
-
-    # Add __init__ if needed for related managers
-
-    def createValidation(
-        self, entity: UserPaymentPortalModel.Create
-    ):  # Added type hint
-        # Validate user existence
-        if not User.exists(
-            requester_id=self.requester.id,
-            db=self.db,
-            id=entity.user_id,  # Closed parenthesis
-        ):
-            raise HTTPException(status_code=404, detail="User not found")
-        # Validate payment portal provider existence
-        if not Provider.exists(
-            requester_id=self.requester.id,
-            db=self.db,
-            id=entity.payment_portal_id,  # Added condition
-        ):
-            raise HTTPException(
-                status_code=404, detail="Payment portal provider not found"
-            )
-
-
-# --- Team Payment Portal --- #
-class TeamPaymentPortalModel(  # Started new class definition correctly
-    BaseMixinModel,
+class TeamPaymentPortalModel(
+    ApplicationModel,
     UpdateMixinModel,
-    TeamModel.ReferenceID,
-    UserModel.ReferenceID.Optional,  # Added base classes, user is optional creator
+    TeamModel.Reference,
+    UserModel.Reference.Optional,
+    metaclass=ModelMeta,
 ):
-    # Inherits team_id, optionally user_id (creator/owner)
-    payment_portal_id: str = Field(
-        ..., description="ID of the payment portal provider"
-    )  # Clarified description
-    customer_id: Optional[str] = Field(
-        None, description="Customer ID in the payment portal"
+    """Per-team link to a payment provider (creator user_id is optional)."""
+
+    Manager: ClassVar[Type["TeamPaymentPortalManager"]] = None
+    payment_portal_id: str = Field(...)
+    customer_id: Optional[str] = Field(None)
+
+    table_comment: ClassVar[str] = (
+        "Per-team link to a payment provider; one row per (team, provider) pair"
     )
-
-    class ReferenceID:
-        team_payment_portal_id: str = Field(
-            ..., description="The ID of the related team payment portal"
-        )
-
-        class Optional:
-            team_payment_portal_id: Optional[str] = None
-
-        class Search:
-            team_payment_portal_id: Optional[StringSearchModel] = None  # Added field
 
     class Create(
-        BaseModel, TeamModel.ReferenceID, UserModel.ReferenceID.Optional
-    ):  # User is optional creator
-        payment_portal_id: str = Field(
-            ..., description="ID of the payment portal provider"
-        )
-        customer_id: Optional[str] = Field(
-            None, description="Customer ID in the payment portal"
-        )
+        BaseModel,
+        TeamModel.Reference.ID,
+        UserModel.Reference.ID.Optional,
+    ):
+        payment_portal_id: str
+        customer_id: Optional[str] = None
 
     class Update(BaseModel):
-        # TeamID and PortalID should likely not be updatable
-        customer_id: Optional[str] = Field(
-            None, description="Customer ID in the payment portal"
-        )
+        customer_id: Optional[str] = None
 
     class Search(
-        BaseMixinModel.Search,
-        TeamModel.ReferenceID.Search,
-        UserModel.ReferenceID.Search,  # Allow searching by creator user
-    ):  # Added closing parenthesis
+        ApplicationModel.Search,
+        UpdateMixinModel.Search,
+        TeamModel.Reference.ID.Search,
+        UserModel.Reference.ID.Search,
+    ):
         payment_portal_id: Optional[StringSearchModel] = None
         customer_id: Optional[StringSearchModel] = None
 
 
-class TeamPaymentPortalReferenceModel(TeamPaymentPortalModel.ReferenceID):
-    team_payment_portal: Optional[TeamPaymentPortalModel] = None
-
-    class Optional(TeamPaymentPortalModel.ReferenceID.Optional):
-        # Corrected indentation
-        team_payment_portal: Optional[TeamPaymentPortalModel] = None
-
-
-class TeamPaymentPortalNetworkModel:
-    class POST(BaseModel):
-        team_payment_portal: TeamPaymentPortalModel.Create
-
-    class PUT(BaseModel):
-        team_payment_portal: TeamPaymentPortalModel.Update
-
-    class SEARCH(BaseModel):
-        team_payment_portal: TeamPaymentPortalModel.Search
-
-    class ResponseSingle(BaseModel):
-        team_payment_portal: TeamPaymentPortalModel
-
-    class ResponsePlural(BaseModel):
-        team_payment_portals: list[TeamPaymentPortalModel]  # Corrected field name
+class UserPaymentPortalManager(AbstractBLLManager, RouterMixin):
+    _model = UserPaymentPortalModel
+    prefix: ClassVar[Optional[str]] = "/v1/marketplace/user-portals"
+    tags: ClassVar[Optional[List[str]]] = ["Marketplace"]
+    auth_type: ClassVar[AuthType] = AuthType.JWT
 
 
-class TeamPaymentPortalManager(AbstractBLLManager):
-    Model = TeamPaymentPortalModel
-    ReferenceModel = TeamPaymentPortalReferenceModel
-    NetworkModel = TeamPaymentPortalNetworkModel
-    DBClass = TeamPaymentPortal  # Added DB Class
+class TeamPaymentPortalManager(AbstractBLLManager, RouterMixin):
+    _model = TeamPaymentPortalModel
+    prefix: ClassVar[Optional[str]] = "/v1/marketplace/team-portals"
+    tags: ClassVar[Optional[List[str]]] = ["Marketplace"]
+    auth_type: ClassVar[AuthType] = AuthType.JWT
 
-    # Add __init__ if needed for related managers
 
-    def createValidation(
-        self, entity: TeamPaymentPortalModel.Create
-    ):  # Added type hint
-        """Validate team payment portal creation"""
-        # Validate team existence
-        if not Team.exists(
-            requester_id=self.requester.id, db=self.db, id=entity.team_id
-        ):
-            raise HTTPException(status_code=404, detail="Team not found")
-        # Validate payment portal provider existence
-        if not Provider.exists(
-            requester_id=self.requester.id,
-            db=self.db,
-            id=entity.payment_portal_id,  # Added condition
-        ):
-            raise HTTPException(
-                status_code=404, detail="Payment portal provider not found"
-            )
-        # Validate creator user existence (if provided)
-        if entity.user_id and not User.exists(
-            requester_id=self.requester.id,
-            db=self.db,
-            id=entity.user_id,  # Added condition
-        ):
-            raise HTTPException(status_code=404, detail="Creator user not found")
+UserPaymentPortalModel.Manager = UserPaymentPortalManager
+TeamPaymentPortalModel.Manager = TeamPaymentPortalManager
