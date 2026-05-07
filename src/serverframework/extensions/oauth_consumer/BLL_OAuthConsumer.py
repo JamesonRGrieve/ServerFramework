@@ -7,15 +7,19 @@ that profile is matched to a local user by ``provider_name + provider_user_id``
 ``UserManager.login_via_grant("oauth_consumer", ...)`` so the issued session
 carries ``grant_type="oauth_consumer"`` like every other passwordless grant.
 
-Token storage NOTE: ``access_token`` and ``refresh_token`` are persisted on
-``UserOAuthLinkModel`` so abilities like calendar sync can reuse them. They
-should be encrypted at rest using the same Fernet key that ``auth_mfa`` uses
-for TOTP secrets. Encryption is delegated to a future cross-cutting helper;
-until that lands, deployments without ``FRAMEWORK_FERNET_KEY`` keep tokens in
-the clear and the audit explicitly flags this.
+CSRF: ``begin_authorize`` issues a cryptographic state value and records it
+in the shared :class:`ReplayCache`. ``complete_callback`` insists on a
+matching, single-use state. Forged callbacks (which is the canonical OAuth
+CSRF) cannot reach the session-issuance path.
+
+Token storage: ``access_token`` and ``refresh_token`` flow through
+:func:`encrypt_secret` so they are persisted as Fernet ciphertext. The
+shared helper raises if the deployment did not configure the key (and is
+not in an opt-in plaintext-fallback environment), making it impossible to
+silently store tokens in the clear.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, ClassVar, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -24,6 +28,11 @@ from serverframework.lib.CustomRoute import custom_route
 from serverframework.lib.Environment import env
 from serverframework.lib.InboundSecurity import DEFAULT_AUTH_RATE_LIMIT, rate_limit
 from serverframework.lib.Pydantic2FastAPI import AuthType, RouterMixin
+from serverframework.lib.ReplayCache import get_replay_cache
+from serverframework.lib.SecretEncryption import (
+    decrypt_secret,
+    encrypt_secret,
+)
 from serverframework.logic.AbstractLogicManager import (
     AbstractBLLManager,
     ApplicationModel,
@@ -40,6 +49,13 @@ from serverframework.logic.BLL_Auth import (
 )
 
 from serverframework.extensions.oauth_consumer.IdPRegistry import get_idp
+
+
+# State TTL: window between /authorize and /callback. Long enough for the
+# user to authenticate at the IdP, short enough to bound an attacker's
+# replay window.
+_STATE_TTL_SECONDS = 600
+_STATE_KEY_PREFIX = "oauth-consumer-state:"
 
 
 # ---------------------------------------------------------------------------
@@ -141,8 +157,8 @@ class OAuthAuthorizeResponse(BaseModel):
 class OAuthCallbackRequest(BaseModel):
     provider: str
     code: str = Field(..., description="Authorization code from the IdP callback")
-    state: Optional[str] = Field(
-        None, description="State value originally returned by /authorize"
+    state: str = Field(
+        ..., description="State value originally returned by /authorize"
     )
     redirect_uri: Optional[str] = Field(
         None, description="Must match the URI provided to /authorize"
@@ -217,19 +233,27 @@ class OAuthConsumerManager(AbstractBLLManager, RouterMixin):
     async def begin_authorize(
         self, provider: str, redirect_uri: Optional[str] = None
     ) -> OAuthAuthorizeResponse:
-        """Build the upstream authorization URL the client should redirect to."""
-        idp_class = get_idp(provider)
-        idp = idp_class()
-        # CSRF state is generated and stored client-side (or server-side cache);
-        # the framework verifies it on /callback.
+        """Build the upstream authorization URL the client should redirect to.
+
+        Issues a one-time CSRF state, records it in the replay cache, and
+        embeds it in the IdP's authorize URL. ``complete_callback`` will
+        refuse any callback that does not present this state.
+        """
         import secrets
 
+        idp_class = get_idp(provider)
+        idp = idp_class()
         state = secrets.token_urlsafe(32)
-
         target_redirect = redirect_uri or self._default_redirect_uri()
-        # Each IdP exposes its own authorize URL via class metadata; we lean on
-        # the consumer sending the user to that URL out-of-band. For stability
-        # across IdPs we return the canonical OAuth2 fields.
+
+        # Bind state to (provider, redirect_uri) so an attacker who somehow
+        # observes the state cannot reuse it on a different IdP or to redirect
+        # to a different URI.
+        state_payload = f"{provider}|{target_redirect}|{state}"
+        get_replay_cache().mark_used(
+            _STATE_KEY_PREFIX + state_payload, ttl_seconds=_STATE_TTL_SECONDS
+        )
+
         params = {
             "client_id": idp.client_id,
             "redirect_uri": target_redirect,
@@ -239,25 +263,51 @@ class OAuthConsumerManager(AbstractBLLManager, RouterMixin):
         }
         from urllib.parse import urlencode
 
-        # IdP-specific authorize URLs are configured as class attributes on
-        # subclasses when available. For now, callers can compose the URL
-        # themselves; we surface the parameter set for consistency.
+        # AUTHORIZE_URL may be a class attribute (str) or a property; resolve
+        # via attribute access on the instance to honour both shapes.
         idp_auth_url = getattr(idp, "AUTHORIZE_URL", None)
         if idp_auth_url is None:
-            authorize_url = "?" + urlencode(params)
-        else:
-            authorize_url = idp_auth_url + "?" + urlencode(params)
+            raise InvalidGrantError(
+                detail=f"IdP {provider!r} does not expose an AUTHORIZE_URL"
+            )
+        authorize_url = str(idp_auth_url) + "?" + urlencode(params)
         return OAuthAuthorizeResponse(authorize_url=authorize_url, state=state)
+
+    def _verify_state(
+        self, provider: str, state: Optional[str], redirect_uri: str
+    ) -> None:
+        """Refuse a callback that does not present a valid, single-use state.
+
+        ``ReplayCache`` semantics are mark-then-check; we use the cache as a
+        TTL set: if the state is *not* already marked, the callback is
+        invalid. That decouples the check from "have we seen this code".
+        """
+        if not state:
+            raise InvalidGrantError(detail="Missing CSRF state")
+        cache = get_replay_cache()
+        key = _STATE_KEY_PREFIX + f"{provider}|{redirect_uri}|{state}"
+        if not cache.is_used(key):
+            raise InvalidGrantError(detail="Invalid or expired OAuth state")
+        # Burn the state by re-marking with TTL=0; cache will return True
+        # for the brief follow-up window but a deliberate "consume" key
+        # prevents reuse without modifying the cache contract.
+        cache.mark_used(key + ":consumed", ttl_seconds=_STATE_TTL_SECONDS)
+        if cache.is_used(key + ":consumed-twice"):
+            raise InvalidGrantError(detail="OAuth state already consumed")
+        cache.mark_used(key + ":consumed-twice", ttl_seconds=_STATE_TTL_SECONDS)
 
     async def complete_callback(
         self,
         provider: str,
         code: str,
         redirect_uri: Optional[str] = None,
+        state: Optional[str] = None,
     ) -> OAuthCallbackResponse:
         """Exchange ``code`` for tokens, resolve a local user, and issue a session."""
-        idp_class = get_idp(provider)
         target_redirect = redirect_uri or self._default_redirect_uri()
+        self._verify_state(provider, state, target_redirect)
+
+        idp_class = get_idp(provider)
         idp = await idp_class.sso_handler(code, target_redirect)
         if idp is None or not idp.access_token:
             raise InvalidGrantError(detail="OAuth code exchange failed")
@@ -266,6 +316,12 @@ class OAuthConsumerManager(AbstractBLLManager, RouterMixin):
         provider_user_id = profile.get("provider_user_id") or profile.get("email")
         if not provider_user_id:
             raise InvalidGrantError(detail="IdP did not return a stable user identifier")
+
+        # Encrypt tokens before they touch the DB. The helper raises if the
+        # deployment is not configured for encryption-at-rest, which is
+        # exactly what we want — tokens never go to disk in plaintext.
+        encrypted_access = encrypt_secret(idp.access_token)
+        encrypted_refresh = encrypt_secret(idp.refresh_token) if idp.refresh_token else None
 
         link = self._find_link(provider, provider_user_id)
         now = datetime.now(timezone.utc)
@@ -278,8 +334,8 @@ class OAuthConsumerManager(AbstractBLLManager, RouterMixin):
                 model_registry=self.model_registry,
                 id=link.id,
                 new_properties={
-                    "access_token": idp.access_token,
-                    "refresh_token": idp.refresh_token,
+                    "access_token": encrypted_access,
+                    "refresh_token": encrypted_refresh,
                     "account_email": profile.get("email"),
                     "display_name": profile.get("display_name"),
                     "scopes": idp.scopes,
@@ -308,8 +364,8 @@ class OAuthConsumerManager(AbstractBLLManager, RouterMixin):
                 provider_user_id=str(provider_user_id),
                 account_email=email,
                 display_name=profile.get("display_name"),
-                access_token=idp.access_token,
-                refresh_token=idp.refresh_token,
+                access_token=encrypted_access,
+                refresh_token=encrypted_refresh,
                 scopes=idp.scopes,
                 is_primary=False,
             )
@@ -363,7 +419,10 @@ class OAuthConsumerManager(AbstractBLLManager, RouterMixin):
         self, body: OAuthCallbackRequest
     ) -> OAuthCallbackResponse:
         return await self.complete_callback(
-            provider=body.provider, code=body.code, redirect_uri=body.redirect_uri
+            provider=body.provider,
+            code=body.code,
+            redirect_uri=body.redirect_uri,
+            state=body.state,
         )
 
 

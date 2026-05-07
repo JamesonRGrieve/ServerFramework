@@ -60,6 +60,17 @@ class EXT_OAuthConsumer(AbstractStaticExtension):
 
     @classmethod
     def on_initialize(cls) -> bool:
+        from serverframework.lib.SecretEncryption import (
+            MissingFernetKeyError,
+            assert_encryption_available,
+        )
+
+        try:
+            assert_encryption_available()
+        except MissingFernetKeyError as e:
+            logger.error(f"oauth_consumer refusing to initialize: {e}")
+            return False
+
         # Force-import the IdP modules so they self-register with IdPRegistry.
         from serverframework.extensions.oauth_consumer import (  # noqa: F401
             Amazon,
@@ -87,12 +98,20 @@ class EXT_OAuthConsumer(AbstractStaticExtension):
     @classmethod
     def validate_config(cls) -> List[str]:
         from serverframework.lib.Environment import env as _env
+        from serverframework.lib.SecretEncryption import (
+            MissingFernetKeyError,
+            assert_encryption_available,
+        )
 
         issues: List[str] = []
         if not _env("OAUTH_CONSUMER_REDIRECT_URI"):
             issues.append(
                 "OAUTH_CONSUMER_REDIRECT_URI is unset; callback flow will use empty redirect"
             )
+        try:
+            assert_encryption_available()
+        except MissingFernetKeyError as e:
+            issues.append(str(e))
         return issues
 
     @classmethod

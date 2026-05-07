@@ -19,6 +19,7 @@ GOOGLE_SCOPES = (
 
 class GoogleIdP(AbstractIdPProvider):
     name = "google"
+    AUTHORIZE_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 
     def __init__(
         self,

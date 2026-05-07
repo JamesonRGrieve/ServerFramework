@@ -16,6 +16,7 @@ MICROSOFT_SCOPES = "openid email profile offline_access User.Read"
 
 class MicrosoftIdP(AbstractIdPProvider):
     name = "microsoft"
+    AUTHORIZE_URL = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize"
 
     def __init__(
         self,

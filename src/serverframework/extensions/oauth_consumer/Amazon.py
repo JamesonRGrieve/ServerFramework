@@ -23,6 +23,10 @@ def _cognito_base() -> str:
 class AmazonIdP(AbstractIdPProvider):
     name = "amazon"
 
+    @property
+    def AUTHORIZE_URL(self) -> str:  # noqa: N802 — matches per-IdP convention
+        return f"{_cognito_base()}/oauth2/authorize"
+
     def __init__(
         self,
         access_token: Optional[str] = None,

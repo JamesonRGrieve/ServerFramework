@@ -13,70 +13,14 @@ from serverframework.lib.Pydantic import BaseModel
 from serverframework.lib.Pydantic2FastAPI import AuthType, RouterMixin
 
 
-# Encryption-at-rest for `totp_secret` (H-1). Stored values are prefixed with
-# ``fernet:`` so existing plaintext rows decrypt-or-passthrough during the
-# rollout window without a destructive migration. Once every row is rewritten,
-# operators can drop the passthrough branch.
-_TOTP_FERNET_PREFIX = "fernet:"
-
-
-def _totp_fernet():
-    """Return a `cryptography.Fernet` keyed off `FRAMEWORK_FERNET_KEY`.
-
-    Returns ``None`` when the key is unset or the dependency is missing —
-    callers fall back to plaintext with a warning at startup.
-    """
-    key = env("FRAMEWORK_FERNET_KEY") or env("MFA_FERNET_KEY")
-    if not key:
-        return None
-    try:
-        from cryptography.fernet import Fernet
-    except ImportError:
-        return None
-    try:
-        return Fernet(key.encode("utf-8") if isinstance(key, str) else key)
-    except Exception as exc:
-        logger.warning(f"FRAMEWORK_FERNET_KEY rejected by Fernet: {exc}")
-        return None
-
-
-def encrypt_totp_secret(plaintext: Optional[str]) -> Optional[str]:
-    """Encrypt a TOTP seed for storage. No-op when the key is not configured
-    so a missing key surfaces as cleartext (caller logs a warning) rather
-    than booting a broken MFA path."""
-    if not plaintext:
-        return plaintext
-    if plaintext.startswith(_TOTP_FERNET_PREFIX):
-        return plaintext
-    f = _totp_fernet()
-    if f is None:
-        logger.warning(
-            "FRAMEWORK_FERNET_KEY unset — TOTP secret stored in plaintext. "
-            "Set the key and rotate impacted rows."
-        )
-        return plaintext
-    token = f.encrypt(plaintext.encode("utf-8")).decode("ascii")
-    return f"{_TOTP_FERNET_PREFIX}{token}"
-
-
-def decrypt_totp_secret(stored: Optional[str]) -> Optional[str]:
-    """Reverse of :func:`encrypt_totp_secret`. Plaintext rows pass through
-    unchanged so the rollout window is non-disruptive."""
-    if not stored:
-        return stored
-    if not stored.startswith(_TOTP_FERNET_PREFIX):
-        return stored
-    f = _totp_fernet()
-    if f is None:
-        raise RuntimeError(
-            "Encrypted TOTP secret encountered but FRAMEWORK_FERNET_KEY is "
-            "unset. Cannot decrypt."
-        )
-    token = stored[len(_TOTP_FERNET_PREFIX):].encode("ascii")
-    try:
-        return f.decrypt(token).decode("utf-8")
-    except Exception as exc:
-        raise RuntimeError(f"TOTP secret decrypt failed: {exc}") from exc
+# Encryption-at-rest for ``totp_secret``. Implementation lives in the shared
+# helper so every extension that persists secrets uses the same envelope and
+# fail-fast policy. ``ALLOW_PLAINTEXT_SECRETS=true`` is the only path that
+# permits plaintext storage, and only outside production/staging.
+from serverframework.lib.SecretEncryption import (
+    decrypt_secret as decrypt_totp_secret,
+    encrypt_secret as encrypt_totp_secret,
+)
 from serverframework.logic.AbstractLogicManager import (
     AbstractBLLManager,
     ApplicationModel,
@@ -405,44 +349,37 @@ class MultifactorMethodManager(AbstractBLLManager, RouterMixin):
 
         return base64.b32encode(secret_bytes).decode("utf-8")
 
-    # Process-local replay-protection cache: keyed on (secret_fingerprint, code)
-    # with a 120s TTL — comfortably longer than the 60s drift window we accept
-    # via pyotp's ``valid_window=1``. A multi-instance deployment still needs
-    # a shared store (Redis / DB row); see TODO below. Entries auto-expire so
-    # the set cannot grow unbounded under sustained traffic.
-    # TODO(security): replace with a Redis/DB-backed store for horizontal
-    # deployments — process-local memory is sufficient only for single-worker.
+    # TTL must comfortably exceed the 60s drift window pyotp's
+    # ``valid_window=1`` accepts so a code that has just been used can't be
+    # replayed within the same window.
     _TOTP_REPLAY_TTL_SECONDS: ClassVar[int] = 120
-    _TOTP_REPLAY_MAX_ENTRIES: ClassVar[int] = 10000
 
     @classmethod
-    def _replay_cache(cls):
-        """Lazily create the shared TTL cache used for TOTP replay protection."""
-        cache = getattr(cls, "_USED_TOTP_CACHE", None)
-        if cache is None:
-            try:
-                from cachetools import TTLCache
-
-                cache = TTLCache(
-                    maxsize=cls._TOTP_REPLAY_MAX_ENTRIES,
-                    ttl=cls._TOTP_REPLAY_TTL_SECONDS,
-                )
-            except ImportError:
-                # Fall back to a plain dict if cachetools is unavailable; the
-                # entries will not auto-expire but replay rejection still works.
-                cache = {}
-            cls._USED_TOTP_CACHE = cache
-        return cache
+    def _replay_key(cls, secret_fingerprint: str, code: str) -> str:
+        return f"mfa-totp:{secret_fingerprint}:{code}"
 
     @classmethod
     def _record_used_totp(cls, secret_fingerprint: str, code: str) -> None:
-        """Remember that a (secret, code) pair has been accepted."""
-        cls._replay_cache()[(secret_fingerprint, code)] = True
+        """Remember that a (secret, code) pair has been accepted.
+
+        Goes through the shared :class:`ReplayCache` so multi-worker
+        deployments that install a Valkey/Postgres-backed cache see a
+        consistent view. The default in-memory cache is fine for
+        single-process testing.
+        """
+        from serverframework.lib.ReplayCache import get_replay_cache
+
+        get_replay_cache().mark_used(
+            cls._replay_key(secret_fingerprint, code),
+            ttl_seconds=cls._TOTP_REPLAY_TTL_SECONDS,
+        )
 
     @classmethod
     def _is_totp_replayed(cls, secret_fingerprint: str, code: str) -> bool:
         """Return True if this (secret, code) pair has already been used."""
-        return (secret_fingerprint, code) in cls._replay_cache()
+        from serverframework.lib.ReplayCache import get_replay_cache
+
+        return get_replay_cache().is_used(cls._replay_key(secret_fingerprint, code))
 
     def verify_totp_code(
         self,

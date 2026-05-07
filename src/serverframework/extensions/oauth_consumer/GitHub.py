@@ -16,6 +16,7 @@ GITHUB_SCOPES = "user:email read:user"
 
 class GitHubIdP(AbstractIdPProvider):
     name = "github"
+    AUTHORIZE_URL = "https://github.com/login/oauth/authorize"
 
     def __init__(
         self,
