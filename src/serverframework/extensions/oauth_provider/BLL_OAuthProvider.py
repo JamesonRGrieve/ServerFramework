@@ -268,6 +268,13 @@ class OAuth2AuthorizeRequest(BaseModel):
     ``client_id`` + ``redirect_uri`` + ``scopes``. PKCE is required: the
     client supplies the ``code_challenge`` it will later prove
     ownership of with ``code_verifier`` at the token exchange.
+
+    Consent: ``consent_grant`` must be ``True``. The two-step flow is
+    GET ``/preview`` (renders the consent screen) → POST ``/authorize``
+    (which carries ``consent_grant=True``). Any UI/server that issues
+    the POST without first showing the user what's being granted is in
+    violation of the contract; the explicit boolean makes the consent
+    decision auditable on the wire.
     """
 
     client_id: str
@@ -279,6 +286,33 @@ class OAuth2AuthorizeRequest(BaseModel):
     code_challenge_method: Optional[str] = Field(
         "S256", description="'S256' (preferred) or 'plain'"
     )
+    consent_grant: bool = Field(
+        False,
+        description=(
+            "Explicit user consent flag; must be True or the request is "
+            "rejected with 400. Defaults to False so an accidental empty "
+            "POST cannot mint a code."
+        ),
+    )
+
+
+class OAuth2AuthorizePreviewRequest(BaseModel):
+    client_id: str
+    redirect_uri: str
+    scopes: List[str] = Field(default_factory=list)
+
+
+class OAuth2AuthorizePreviewResponse(BaseModel):
+    """Information a UI needs to render a consent screen."""
+
+    client_id: str
+    client_name: str
+    is_confidential: bool
+    redirect_uri: str
+    scopes: List[str]
+    scopes_unknown: List[str]
+    scopes_exceeds_client_allow_list: List[str]
+    redirect_uri_registered: bool
 
 
 class OAuth2AuthorizeResponse(BaseModel):
@@ -771,29 +805,13 @@ class OAuth2ProviderManager(AbstractBLLManager, RouterMixin):
     auth_type: ClassVar[AuthType] = AuthType.JWT
     routes_to_register: ClassVar[Optional[List[RouteType]]] = []
 
-    @custom_route(
-        method="POST",
-        path="/authorize",
-        input_model=OAuth2AuthorizeRequest,
-        output_model=OAuth2AuthorizeResponse,
-        authentication_type="jwt",
-        openapi_tags=("OAuth2 Provider",),
-        summary="Issue an authorization code for the authenticated user",
-    )
-    @rate_limit(DEFAULT_AUTH_RATE_LIMIT, scope="ip")
-    async def authorize_route(
-        self, body: OAuth2AuthorizeRequest
-    ) -> OAuth2AuthorizeResponse:
-        client_mgr = OAuth2ClientManager(
-            requester_id=self.requester.id, model_registry=self.model_registry
-        )
-        # Resolve the client (without secret — this is the consent step).
+    def _resolve_client(self, client_id: str) -> OAuth2ClientModel:
         ClientDB = OAuth2ClientModel.DB(self.model_registry.DB.manager.Base)
         rows = ClientDB.list(
             requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
             filters=[
-                ClientDB.client_id == body.client_id,
+                ClientDB.client_id == client_id,
                 ClientDB.is_enabled == True,  # noqa: E712
             ],
             return_type="dto",
@@ -801,8 +819,65 @@ class OAuth2ProviderManager(AbstractBLLManager, RouterMixin):
         )
         if not rows:
             raise HTTPException(status_code=400, detail="Unknown client")
-        client = rows[0]
-        del client_mgr
+        return rows[0]
+
+    @custom_route(
+        method="POST",
+        path="/authorize/preview",
+        input_model=OAuth2AuthorizePreviewRequest,
+        output_model=OAuth2AuthorizePreviewResponse,
+        authentication_type="jwt",
+        openapi_tags=("OAuth2 Provider",),
+        summary="Preview what /authorize would grant, for the consent UI",
+    )
+    @rate_limit(DEFAULT_AUTH_RATE_LIMIT, scope="ip")
+    async def authorize_preview_route(
+        self, body: OAuth2AuthorizePreviewRequest
+    ) -> OAuth2AuthorizePreviewResponse:
+        """Returns the data a consent screen needs: which client is
+        asking, what scopes they're asking for, which of those scopes
+        the client is actually permitted to request, and whether the
+        redirect URI is registered. Mints no code and creates no row."""
+        client = self._resolve_client(body.client_id)
+        registry = PermissionRegistry()
+        unknown = [s for s in body.scopes if registry.get(s) is None]
+        client_allowed = set((client.allowed_scopes or "").split())
+        exceeds = [s for s in body.scopes if s not in client_allowed]
+        whitelist = json.loads(client.redirect_uris or "[]")
+        return OAuth2AuthorizePreviewResponse(
+            client_id=client.client_id,
+            client_name=client.name,
+            is_confidential=bool(client.is_confidential),
+            redirect_uri=body.redirect_uri,
+            scopes=list(body.scopes),
+            scopes_unknown=unknown,
+            scopes_exceeds_client_allow_list=exceeds,
+            redirect_uri_registered=body.redirect_uri in whitelist,
+        )
+
+    @custom_route(
+        method="POST",
+        path="/authorize",
+        input_model=OAuth2AuthorizeRequest,
+        output_model=OAuth2AuthorizeResponse,
+        authentication_type="jwt",
+        openapi_tags=("OAuth2 Provider",),
+        summary="Issue an authorization code for the authenticated user (consent required)",
+    )
+    @rate_limit(DEFAULT_AUTH_RATE_LIMIT, scope="ip")
+    async def authorize_route(
+        self, body: OAuth2AuthorizeRequest
+    ) -> OAuth2AuthorizeResponse:
+        if not body.consent_grant:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "consent_grant=true is required. Render the consent "
+                    "screen via POST /v1/oauth2/authorize/preview, then "
+                    "POST /authorize once the user explicitly approves."
+                ),
+            )
+        client = self._resolve_client(body.client_id)
         code_mgr = OAuth2AuthCodeManager(
             requester_id=self.requester.id, model_registry=self.model_registry
         )
