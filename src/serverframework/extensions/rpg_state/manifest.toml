@@ -2,7 +2,12 @@ name = "rpg_state"
 version = "0.1.0"
 description = "Present-state schema for an RPG campaign — characters, factions, items, quests, locations, traits"
 
-# Foundational. No upstream extension dependencies.
+# Optional: when present, ACL drives per-row visibility for GM-secret
+# NPCs, hidden quests/lore, etc. Without it, every campaign member sees
+# every campaign row; that's an acceptable degraded mode for solo /
+# trusted-table use. rpg_state never carries its own visibility column.
 [[extension_dependencies]]
+name = "acl_rbac"
+optional = true
 
 [python_dependencies]

@@ -30,10 +30,18 @@ Model groups (declared in dependency order so ``.Reference`` mixins resolve):
 Ownership semantics on ``ItemInstanceModel``:
 - ``owner_faction_id`` = de jure / "in principle" owner (the Guild owns
   this sword).
-- ``owner_character_id`` = de facto / "in practice" bearer (Bob carries
-  it). Either, both, or neither may be set; theft is the natural state of
-  having ``owner_character_id`` differ from the legal owner without an
-  intermediate ``TransactionLog``.
+- ``owner_character_id`` = de facto / assigned-to / responsible-party.
+  This is **not** "is currently equipped". Owner answers "who would
+  notice this is missing?" — the character to whom the item is assigned,
+  loaned, or attributed by the faction's books. Equipping is a spatial
+  concern handled by ``LocationModel`` (an equipment slot is a Location
+  bound to a character via ``associated_character_id``); the bearer of a
+  sword may differ from its owner the same way an employee may use, but
+  not own, a company laptop.
+- Either, both, or neither owner field may be set. Theft is the natural
+  state of having ``owner_character_id`` differ from the bearer (the
+  current ``location_id`` chain) without an intermediate
+  ``TransactionLog``.
 """
 
 from datetime import datetime
@@ -162,9 +170,27 @@ class TraitModel(
         description="attribute|skill|spell|talent|feat|language|ability|...",
     )
     # campaign_id null = global template; set = campaign-specific override.
+    #
+    # Conventional `kind` values (free-form so systems may extend):
+    #   attribute  — STR, DEX, CHA, ...
+    #   skill      — Stealth, Persuasion, Athletics, ...
+    #   spell      — Fireball, Bull's Strength (a spell IS a Trait so
+    #                CombatActionLog.trait_id reaches it directly).
+    #   talent / feat / ability / language — durable learnings.
+    #   resource   — HP, mana, spell_slot_1, stress, wounds, dice pools;
+    #                CharacterTrait.value carries current value.
+    #   progression — level, experience, spent_experience, milestones,
+    #                 advancement_points. By convention: name='level',
+    #                 'experience', 'spent_experience'. Each system picks
+    #                 the dimensions it cares about. CharacterModel has
+    #                 NO `level` column on purpose.
     table_comment: ClassVar[str] = (
-        "Unified property catalog: stats, skills, spells, talents, feats. "
-        "campaign_id=NULL means a globally-shared template."
+        "Unified property catalog: stats, skills, spells, talents, feats, "
+        "resources, progression dimensions. campaign_id=NULL means a "
+        "globally-shared template; set = campaign-scoped override. "
+        "Conventional kinds: attribute|skill|spell|talent|feat|ability|"
+        "language|resource|progression. By convention progression Traits "
+        "are named 'level', 'experience', 'spent_experience', etc."
     )
 
     class Create(
@@ -303,9 +329,17 @@ class CharacterModel(
     Manager: ClassVar[Type["CharacterManager"]] = None
     # pc|npc|monster|creature|vehicle|construct — free-form for system flex.
     kind: Optional[str] = Field(None, description="pc|npc|monster|creature|...")
-    level: Optional[int] = Field(None, description="System-defined level/tier")
+    # Progression (level, experience, spent_experience, milestones, etc.)
+    # is *not* a column on Character. It lives in the unified Trait
+    # catalog as Traits with kind='resource' or kind='progression', joined
+    # via CharacterTrait. This keeps level-vs-XP-vs-milestone systems
+    # equally first-class. See TraitModel.table_comment for conventions.
     table_comment: ClassVar[str] = (
-        "Any in-game actor. user_id = controlling player (PC); null = NPC."
+        "Any in-game actor (PC, NPC, monster, creature, vehicle, ...). "
+        "user_id = controlling player when one exists; NULL = unattached "
+        "NPC. Progression dimensions (level / XP / spent XP / milestones) "
+        "are Traits joined via CharacterTrait, not columns here, so "
+        "level-based and XP-based and milestone-based systems all work."
     )
 
     class Create(
@@ -316,13 +350,11 @@ class CharacterModel(
         name: str = Field(...)
         description: Optional[str] = None
         kind: Optional[str] = None
-        level: Optional[int] = None
 
     class Update(BaseModel):
         name: Optional[str] = None
         description: Optional[str] = None
         kind: Optional[str] = None
-        level: Optional[int] = None
 
     class Search(
         ApplicationModel.Search,
@@ -434,7 +466,12 @@ class CharacterStatusEffectModel(
         source_item_instance_id: Optional[str] = None
 
     class Update(BaseModel):
+        # Fully editable so GMs can retcon any aspect of an applied
+        # effect — start time, expiry, source caster, source consumable.
+        started_at: Optional[datetime] = None
         expires_at: Optional[datetime] = None
+        source_character_id: Optional[str] = None
+        source_item_instance_id: Optional[str] = None
 
     class Search(
         ApplicationModel.Search,
@@ -665,21 +702,35 @@ class ItemInstanceModel(
     metaclass=ModelMeta,
 ):
     Manager: ClassVar[Type["ItemInstanceManager"]] = None
-    # Two ownership axes, both nullable, no XOR constraint:
-    #   owner_faction_id = de jure / "in principle" (the Guild owns it)
-    #   owner_character_id = de facto / "in practice" (Bob is carrying it)
-    # Theft = the two disagree without an intervening TransactionLog.
+    # Two ownership axes, both nullable, no XOR constraint. Ownership is
+    # *assignment / responsibility*, NOT equipped-state:
+    #   owner_faction_id   = de jure (the Guild owns it on paper).
+    #   owner_character_id = assigned-to / who-would-notice-it-missing.
+    # Equipped-state is spatial (location_id pointing at an equipment-slot
+    # Location bound to a character), not an ownership concern.
+    # Theft = the bearer (location chain) differs from owner_* without an
+    # intervening consensual TransactionLog.
     owner_character_id: Optional[str] = Field(
-        None, description="De facto bearer / in-practice owner"
+        None,
+        description=(
+            "Assigned-to / responsible character — 'who would notice it "
+            "missing'. Not the equipped-by character (that's spatial)."
+        ),
     )
     owner_faction_id: Optional[str] = Field(
-        None, description="De jure / in-principle owner"
+        None,
+        description="De jure / on-the-books owner faction.",
     )
     quantity: Optional[int] = Field(1, description="Stack count (≥1)")
     durability: Optional[float] = Field(None, description="System-defined HP/durability")
     table_comment: ClassVar[str] = (
-        "Per-instance item row. location_id = current physical spot; "
-        "owner_* fields decoupled from location to capture theft / lend."
+        "Per-instance item row. location_id = current physical spot "
+        "(equipment-slot Locations bound to a character represent the "
+        "*equipped* relationship). owner_character_id = assignment / "
+        "responsibility / who-would-notice-missing — distinct from the "
+        "equipping character. owner_faction_id = de jure owner. Theft is "
+        "the location chain disagreeing with owner_* without a "
+        "TransactionLog."
     )
 
     class Create(

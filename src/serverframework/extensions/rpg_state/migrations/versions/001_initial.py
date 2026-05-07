@@ -130,7 +130,9 @@ def upgrade() -> None:
             name VARCHAR(255),
             description TEXT,
             kind VARCHAR(64),
-            level INTEGER,
+            -- progression (level / XP / etc.) lives in the Trait catalog,
+            -- joined via character_traits, so each system can pick its
+            -- own dimensions; see traits.kind conventions.
             campaign_id VARCHAR(36),
             user_id VARCHAR(36),
             created_at TIMESTAMP NOT NULL,
