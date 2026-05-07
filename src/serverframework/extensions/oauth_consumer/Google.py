@@ -2,11 +2,13 @@
 
 from typing import Any, Dict, Optional
 
-import requests
 from fastapi import HTTPException
 
 from serverframework.extensions.oauth_consumer.IdPRegistry import register_idp
-from serverframework.extensions.oauth_consumer.PRV_AbstractIdP import AbstractIdPProvider
+from serverframework.extensions.oauth_consumer.PRV_AbstractIdP import (
+    AbstractIdPProvider,
+    get_http_client,
+)
 from serverframework.lib.Environment import env
 from serverframework.lib.Logging import logger
 
@@ -37,7 +39,8 @@ class GoogleIdP(AbstractIdPProvider):
         )
 
     async def get_new_token(self) -> Dict[str, Any]:
-        response = requests.post(
+        client = get_http_client()
+        response = await client.post(
             "https://oauth2.googleapis.com/token",
             data={
                 "client_id": self.client_id,
@@ -47,40 +50,49 @@ class GoogleIdP(AbstractIdPProvider):
             },
         )
         if response.status_code != 200:
+            logger.warning(
+                "Google token refresh failed (status=%s)", response.status_code
+            )
             raise HTTPException(
-                status_code=response.status_code,
-                detail=f"Google token refresh failed: {response.text}",
+                status_code=502, detail="Google token refresh failed"
             )
         data = response.json()
         self.access_token = data["access_token"]
         return data
 
     async def get_user_info(self, access_token: str) -> Dict[str, Any]:
-        uri = "https://people.googleapis.com/v1/people/me?personFields=names,emailAddresses"
-        response = requests.get(uri, headers={"Authorization": f"Bearer {access_token}"})
+        # Use the OIDC userinfo endpoint so we get the standard
+        # ``email_verified`` claim. The People API does not expose a
+        # uniform verification flag.
+        client = get_http_client()
+        response = await client.get(
+            "https://openidconnect.googleapis.com/v1/userinfo",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
         if response.status_code != 200:
-            raise HTTPException(
-                status_code=response.status_code,
-                detail=f"Google user info failed: {response.text}",
+            logger.warning(
+                "Google userinfo failed (status=%s)", response.status_code
             )
+            raise HTTPException(status_code=502, detail="Google user info failed")
         data = response.json()
-        first_name = data["names"][0]["givenName"] if data.get("names") else ""
-        last_name = data["names"][0]["familyName"] if data.get("names") else ""
-        email = data["emailAddresses"][0]["value"] if data.get("emailAddresses") else ""
+        first_name = data.get("given_name", "") or ""
+        last_name = data.get("family_name", "") or ""
         return {
-            "email": email,
+            "email": data.get("email", ""),
+            "email_verified": bool(data.get("email_verified", False)),
             "first_name": first_name,
             "last_name": last_name,
-            "display_name": f"{first_name} {last_name}".strip(),
-            "provider_user_id": data.get("resourceName", "").split("/")[-1],
+            "display_name": data.get("name") or f"{first_name} {last_name}".strip(),
+            "provider_user_id": str(data.get("sub", "")),
         }
 
     @classmethod
     async def sso_handler(cls, code: str, redirect_uri: str) -> Optional["GoogleIdP"]:
         code = cls.sanitize_code(code)
-        response = requests.post(
-            "https://accounts.google.com/o/oauth2/token",
-            params={
+        client = get_http_client()
+        response = await client.post(
+            "https://oauth2.googleapis.com/token",
+            data={
                 "code": code,
                 "client_id": env("GOOGLE_CLIENT_ID"),
                 "client_secret": env("GOOGLE_CLIENT_SECRET"),
@@ -91,7 +103,9 @@ class GoogleIdP(AbstractIdPProvider):
             },
         )
         if response.status_code != 200:
-            logger.error(f"Google SSO token exchange failed: {response.text}")
+            logger.error(
+                "Google SSO token exchange failed (status=%s)", response.status_code
+            )
             return None
         data = response.json()
         return cls(

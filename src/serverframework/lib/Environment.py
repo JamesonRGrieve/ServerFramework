@@ -164,6 +164,21 @@ class AppSettings(BaseModel):
                     f"include {sorted(loaded_extensions & encryption_dependent)} "
                     "which require encryption-at-rest"
                 )
+        # PostgreSQL ``sslmode=disable`` is unsafe in production: traffic
+        # to the DB cluster is unencrypted and unauthenticated. The
+        # default of "require" enforces TLS without certificate
+        # validation; "verify-full" is the strict posture that also
+        # validates the cert chain. Operators with a private VPC where
+        # TLS terminates at a sidecar can opt out via
+        # ``ALLOW_PLAINTEXT_DATABASE=true``.
+        ssl_mode = (self.DATABASE_SSL or "").strip().lower()
+        if ssl_mode in ("", "disable", "allow", "prefer"):
+            if (env("ALLOW_PLAINTEXT_DATABASE") or "").lower() != "true":
+                problems.append(
+                    f"DATABASE_SSL={ssl_mode!r} is unsafe in production "
+                    "(use 'require' or 'verify-full', or set "
+                    "ALLOW_PLAINTEXT_DATABASE=true to acknowledge)"
+                )
         if problems:
             raise ValueError(
                 "Insecure production configuration: " + "; ".join(problems)

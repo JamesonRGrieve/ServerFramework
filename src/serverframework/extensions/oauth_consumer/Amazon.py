@@ -2,11 +2,13 @@
 
 from typing import Any, Dict, Optional
 
-import requests
 from fastapi import HTTPException
 
 from serverframework.extensions.oauth_consumer.IdPRegistry import register_idp
-from serverframework.extensions.oauth_consumer.PRV_AbstractIdP import AbstractIdPProvider
+from serverframework.extensions.oauth_consumer.PRV_AbstractIdP import (
+    AbstractIdPProvider,
+    get_http_client,
+)
 from serverframework.lib.Environment import env
 from serverframework.lib.Logging import logger
 
@@ -43,7 +45,8 @@ class AmazonIdP(AbstractIdPProvider):
         )
 
     async def get_new_token(self) -> Dict[str, Any]:
-        response = requests.post(
+        client = get_http_client()
+        response = await client.post(
             f"{_cognito_base()}/oauth2/token",
             data={
                 "client_id": self.client_id,
@@ -53,37 +56,47 @@ class AmazonIdP(AbstractIdPProvider):
             },
         )
         if response.status_code != 200:
-            raise HTTPException(
-                status_code=response.status_code,
-                detail=f"Amazon token refresh failed: {response.text}",
+            logger.warning(
+                "Amazon token refresh failed (status=%s)", response.status_code
             )
+            raise HTTPException(status_code=502, detail="Amazon token refresh failed")
         data = response.json()
         self.access_token = data["access_token"]
         return data
 
     async def get_user_info(self, access_token: str) -> Dict[str, Any]:
-        response = requests.get(
+        client = get_http_client()
+        response = await client.get(
             f"{_cognito_base()}/oauth2/userInfo",
             headers={"Authorization": f"Bearer {access_token}"},
         )
         if response.status_code != 200:
-            raise HTTPException(
-                status_code=response.status_code,
-                detail=f"Amazon user info failed: {response.text}",
+            logger.warning(
+                "Amazon userInfo failed (status=%s)", response.status_code
             )
+            raise HTTPException(status_code=502, detail="Amazon user info failed")
         data = response.json()
+        # Cognito's ``email_verified`` is a string ("true"/"false") in
+        # most pools. Normalize.
+        raw_verified = data.get("email_verified")
+        if isinstance(raw_verified, bool):
+            email_verified = raw_verified
+        else:
+            email_verified = str(raw_verified or "").lower() == "true"
         return {
             "email": data.get("email", ""),
-            "first_name": data.get("given_name", ""),
-            "last_name": data.get("family_name", ""),
-            "display_name": data.get("name", ""),
-            "provider_user_id": data.get("sub") or data.get("username", ""),
+            "email_verified": email_verified,
+            "first_name": data.get("given_name", "") or "",
+            "last_name": data.get("family_name", "") or "",
+            "display_name": data.get("name", "") or "",
+            "provider_user_id": str(data.get("sub") or data.get("username", "")),
         }
 
     @classmethod
     async def sso_handler(cls, code: str, redirect_uri: str) -> Optional["AmazonIdP"]:
         code = cls.sanitize_code(code)
-        response = requests.post(
+        client = get_http_client()
+        response = await client.post(
             f"{_cognito_base()}/oauth2/token",
             data={
                 "client_id": env("AWS_CLIENT_ID"),
@@ -94,7 +107,9 @@ class AmazonIdP(AbstractIdPProvider):
             },
         )
         if response.status_code != 200:
-            logger.error(f"Amazon SSO token exchange failed: {response.text}")
+            logger.error(
+                "Amazon SSO token exchange failed (status=%s)", response.status_code
+            )
             return None
         data = response.json()
         return cls(

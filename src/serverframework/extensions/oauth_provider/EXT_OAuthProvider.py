@@ -29,6 +29,9 @@ class EXT_OAuthProvider(AbstractStaticExtension):
         "OAUTH_PROVIDER_ACCESS_TTL_MINUTES": "60",
         "OAUTH_PROVIDER_REFRESH_TTL_DAYS": "30",
         "OAUTH_PROVIDER_CODE_TTL_MINUTES": "10",
+        # PKCE policy. Public clients always require PKCE; confidential
+        # clients require PKCE by default (set 'false' to relax).
+        "OAUTH_PROVIDER_REQUIRE_PKCE_FOR_CONFIDENTIAL": "true",
     }
 
     dependencies: ClassVar[Dependencies] = Dependencies([])
