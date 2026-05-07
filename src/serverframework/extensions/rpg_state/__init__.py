@@ -1,46 +1,63 @@
 """rpg_state extension.
 
-Owns the present-state schema for an RPG campaign: characters, factions,
-items, locations, quests, and the unified Trait / StatusEffect property
-model. Designed to be system-agnostic — DnD, Pathfinder, FFG, WH40K, and
-other tabletop / video-game / roleplay systems plug in via the
-``GameSystem`` reference table.
+Hard-depends on ``genealogy``. RPG **does not** define a separate
+Character table — it widens ``genealogy.PersonModel`` with the
+character-specific fields (``kind``, ``campaign_id``, ``user_id``) via
+``@extension_model``. The ``persons`` table is the character table for
+RPG users. RPG also widens ``genealogy.RelationshipModel`` with Faction
+endpoints (``faction_id``, ``target_faction_id``) so that one
+relationship table holds Person↔Person, Person↔Faction, and
+Faction↔Faction edges; the migration adds an endpoint-XOR CHECK
+constraint.
 
-State here is the "now". Historical events (combat actions, dialogue,
-transactions) live in the sibling ``rpg_log`` extension.
+State here is the "now": GameSystems, Campaigns, Traits, StatusEffects,
+Factions, Locations, Items, Quests, and the per-person and
+per-faction join tables that wire them together. Historical events
+(combat actions, dialogue, transactions) live in the sibling
+``rpg_log`` extension.
+
+Schema integrity
+----------------
+The codebase enforces integrity at the database layer where it is
+non-negotiable. Cross-extension foreign keys are real
+``ForeignKeyConstraint`` declarations; required references use
+``nullable=False``; the endpoint-XOR on ``relationships`` is enforced
+by a SQL CHECK constraint added when ``rpg_state`` injects faction
+endpoints. Manager-layer validators handle invariants that don't fit
+relational constraints (cycle detection in faction/location parent
+chains; equipment-slot coherence on Locations).
 
 Membership & visibility
 -----------------------
-There is intentionally no ``CampaignMember`` table. Membership is
-inferred:
+There is no ``CampaignMember`` table. Membership is inferred:
 
 - The campaign **owner** is ``CampaignModel.user_id`` (the GM).
 - A user is a **player** in a campaign iff they own at least one
-  ``CharacterModel`` with that ``campaign_id`` (i.e. their ``user_id``
-  matches and ``kind`` is typically 'pc').
+  Person (``persons.user_id`` matches and ``persons.campaign_id`` is
+  the campaign).
 
-Anything finer-grained — observers, co-GMs, per-row visibility ("this
-NPC is GM-only"), shared handouts, per-character notes that other
-players shouldn't see — is delegated to the ``acl_rbac`` extension as an
-**optional** dependency. ``rpg_state`` does **not** carry a
-``visibility`` column on its entities; granularity belongs to ACL, not
-to a coarse public/gm enum that would constrain the GM.
+Faction membership is **not** a separate join table either — it lives
+in ``RelationshipModel`` as ``kind='member_of'`` with Person→Faction
+endpoints. Discriminator carries the role label ('leader', 'member',
+'treasurer'). Intensity carries reputation/standing.
+
+Granular visibility (GM-secret NPCs, hidden quests, shared handouts)
+is delegated to the optional ``acl_rbac`` extension. ``rpg_state`` does
+not carry visibility columns; granularity belongs to ACL.
 
 Progression
 -----------
-Progression dimensions (level, experience, spent XP, milestones, dice
-pools, etc.) are **Traits**, not columns on ``CharacterModel``. By
-convention they live as ``TraitModel(kind='progression')`` rows named
-'level' / 'experience' / 'spent_experience' / ..., and each character's
-current value lives on ``CharacterTraitModel.value``. This keeps level-,
-XP-, and milestone-based systems equally first-class.
+Progression dimensions (level, experience, spent_experience,
+milestones, dice pools) live in the unified Trait catalog as
+``TraitModel(kind='progression')`` rows joined via ``PersonTraitModel``.
+The persons table has no ``level`` column.
 
 Item ownership (recap; canonical comment on ItemInstanceModel)
 --------------------------------------------------------------
-``owner_character_id`` is **assignment / responsibility / who-would-
-notice-it-missing** — *not* the equipping character. Equipping is a
-spatial concern modelled by an equipment-slot ``LocationModel`` bound to
-a character. The item's bearer (location chain) and its owner may
-disagree without contradiction; theft is the natural state where they
-disagree without an intervening consensual ``TransactionLog``.
+``owner_person_id`` is **assignment / responsibility / who-would-
+notice-it-missing** — *not* the equipping person. Equipping is a
+spatial concern modelled by an equipment-slot ``LocationModel`` bound
+to a person via ``associated_person_id``. Theft is the natural state
+where the bearer (location chain) and the owner disagree without an
+intervening consensual ``TransactionLog``.
 """
