@@ -1076,10 +1076,17 @@ class ModelMeta(ModelMetaclass):
     @staticmethod
     def _create_reference_class(model_cls, model_name):
         """Creates Reference class with dynamically generated ID class"""
-        # Get the field name for the model (snake_case without 'Model' suffix)
-        field_name = model_name.lower()
-        if field_name.endswith("model"):
-            field_name = field_name[:-5]  # Remove 'model' suffix
+        # Strip the 'Model' suffix while preserving CamelCase boundaries so
+        # `snakecase` can insert the underscores. The previous form
+        # lowercased first, which destroyed the boundaries and produced
+        # field names like `iteminstance_id` for `ItemInstanceModel` while
+        # the table name generator emitted `item_instances` — leaving the
+        # FK column name out of sync with the parent table. Single-word
+        # models are unaffected (`UserModel` → `User` → `user`).
+        if model_name.endswith("Model"):
+            field_name = model_name[:-5]
+        else:
+            field_name = model_name
         field_name = stringcase.snakecase(field_name)
         id_field_name = f"{field_name}_id"
 
