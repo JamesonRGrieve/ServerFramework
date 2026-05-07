@@ -133,3 +133,54 @@ class UserNotificationManager(AbstractBLLManager, RouterMixin):
 
 NotificationModel.Manager = NotificationManager
 UserNotificationModel.Manager = UserNotificationManager
+
+
+# ---------------------------------------------------------------------------
+# Merge participation
+# ---------------------------------------------------------------------------
+
+
+def _merge_handler(ctx) -> None:
+    """Re-home target's per-user delivery rows onto the initiating user.
+
+    Notification broadcasts (``NotificationModel``) are not migrated:
+    they're scoped at issuance time and should not retroactively apply to
+    a different user. Only the per-user receipts move so the surviving
+    account doesn't lose its history.
+    """
+    from serverframework.lib.Environment import env as _env
+
+    UNDB = UserNotificationModel.DB(ctx.model_registry.DB.manager.Base)
+    target_rows = (
+        UNDB.list(
+            requester_id=_env("ROOT_ID"),
+            model_registry=ctx.model_registry,
+            filters=[UNDB.user_id == ctx.target_user_id],
+            return_type="dto",
+            override_dto=UserNotificationModel,
+        )
+        or []
+    )
+    for row in target_rows:
+        UNDB.update(
+            requester_id=_env("ROOT_ID"),
+            model_registry=ctx.model_registry,
+            id=row.id,
+            new_properties={"user_id": ctx.initiating_user_id},
+        )
+
+
+def register_merge_participation() -> None:
+    """Register the auth_notifications merge handler with auth_merge.
+
+    Called from ``EXT_Auth_Notifications.on_initialize`` once auth_merge
+    is loaded. Safe to call repeatedly: the registry overwrites by name.
+    """
+    try:
+        from serverframework.extensions.auth_merge.BLL_Auth_Merge import (
+            register_merge_handler,
+        )
+    except ImportError:
+        # auth_merge is not loaded; nothing to register against.
+        return
+    register_merge_handler("auth_notifications", _merge_handler)

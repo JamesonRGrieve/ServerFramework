@@ -55,11 +55,24 @@ class TestPathContainment:
             FileIOPermission,
         )
 
-        # Build a minimal concrete subclass (the abstract methods aren't
-        # exercised by the containment test).
+        # Minimal concrete subclass — every abstract on the contract is
+        # stubbed because we only exercise ``_check_path_permissions``.
         class _Concrete(AbstractFileIOProvider):
-            async def get_filesystem_info(self):
-                return {}
+            async def get_filesystem_info(self): return {}
+            async def list_directory(self, directory="."): return []
+            async def read_file(self, file_path, offset=0, length=-1): return ""
+            async def write_file(self, *args, **kwargs): return ""
+            async def append_to_file(self, file_path, content): return ""
+            async def delete_file(self, file_path): return ""
+            async def copy_file(self, *args, **kwargs): return ""
+            async def create_directory(self, directory_path, exist_ok=True): return ""
+            async def delete_directory(self, *args, **kwargs): return ""
+            async def get_file_info(self, file_path): return {}
+            async def execute_file(self, file_path, arguments=None): return ""
+            async def is_path_accessible(self, path): return True
+
+            @classmethod
+            def bond_instance(cls, instance): return None
 
         provider = _Concrete.__new__(_Concrete)
         provider.base_directory = self.base.resolve()

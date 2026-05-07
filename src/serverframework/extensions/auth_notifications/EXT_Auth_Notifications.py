@@ -33,7 +33,11 @@ class EXT_Auth_Notifications(AbstractStaticExtension):
         from serverframework.extensions.auth_notifications import (  # noqa: F401
             BLL_Auth_Notifications,
         )
+        from serverframework.extensions.auth_notifications.BLL_Auth_Notifications import (
+            register_merge_participation,
+        )
 
+        register_merge_participation()
         logger.debug("auth_notifications initialized")
         return True
 

@@ -114,3 +114,47 @@ class UserRecoveryQuestionManager(AbstractBLLManager, RouterMixin):
 
 
 UserRecoveryQuestionModel.Manager = UserRecoveryQuestionManager
+
+
+# ---------------------------------------------------------------------------
+# Merge participation
+# ---------------------------------------------------------------------------
+
+
+def _merge_handler(ctx) -> None:
+    """Delete the target user's recovery questions.
+
+    Recovery answers are personal: migrating them onto the surviving
+    account would mean the initiating user could pass recovery checks for
+    secrets that were originally answered by the target user. The
+    initiating user's own recovery questions stay; this only clears the
+    target's set."""
+    from serverframework.lib.Environment import env as _env
+
+    QDB = UserRecoveryQuestionModel.DB(ctx.model_registry.DB.manager.Base)
+    rows = (
+        QDB.list(
+            requester_id=_env("ROOT_ID"),
+            model_registry=ctx.model_registry,
+            filters=[QDB.user_id == ctx.target_user_id],
+            return_type="dto",
+            override_dto=UserRecoveryQuestionModel,
+        )
+        or []
+    )
+    for row in rows:
+        QDB.delete(
+            requester_id=_env("ROOT_ID"),
+            model_registry=ctx.model_registry,
+            id=row.id,
+        )
+
+
+def register_merge_participation() -> None:
+    try:
+        from serverframework.extensions.auth_merge.BLL_Auth_Merge import (
+            register_merge_handler,
+        )
+    except ImportError:
+        return
+    register_merge_handler("auth_recovery_questions", _merge_handler)

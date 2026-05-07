@@ -452,3 +452,68 @@ def oauth_consumer_grant_validator(
 
 
 PasswordlessGrantRegistry.register("oauth_consumer", oauth_consumer_grant_validator)
+
+
+# ---------------------------------------------------------------------------
+# Merge participation
+# ---------------------------------------------------------------------------
+
+
+def _merge_handler(ctx) -> None:
+    """Re-home target's IdP links onto the initiating user.
+
+    Conflict resolution: if the initiating user already has a link for the
+    same provider+provider_user_id pair, the target's row is deleted (the
+    initiating user's existing link wins). Otherwise the row is rebound
+    to the initiating user. Tokens stay encrypted at rest the whole way.
+    """
+    from serverframework.lib.Environment import env as _env
+
+    LinkDB = UserOAuthLinkModel.DB(ctx.model_registry.DB.manager.Base)
+    target_links = (
+        LinkDB.list(
+            requester_id=_env("ROOT_ID"),
+            model_registry=ctx.model_registry,
+            filters=[LinkDB.user_id == ctx.target_user_id],
+            return_type="dto",
+            override_dto=UserOAuthLinkModel,
+        )
+        or []
+    )
+    initiating_keys = {
+        (row.provider_name, row.provider_user_id)
+        for row in (
+            LinkDB.list(
+                requester_id=_env("ROOT_ID"),
+                model_registry=ctx.model_registry,
+                filters=[LinkDB.user_id == ctx.initiating_user_id],
+                return_type="dto",
+                override_dto=UserOAuthLinkModel,
+            )
+            or []
+        )
+    }
+    for row in target_links:
+        if (row.provider_name, row.provider_user_id) in initiating_keys:
+            LinkDB.delete(
+                requester_id=_env("ROOT_ID"),
+                model_registry=ctx.model_registry,
+                id=row.id,
+            )
+        else:
+            LinkDB.update(
+                requester_id=_env("ROOT_ID"),
+                model_registry=ctx.model_registry,
+                id=row.id,
+                new_properties={"user_id": ctx.initiating_user_id},
+            )
+
+
+def register_merge_participation() -> None:
+    try:
+        from serverframework.extensions.auth_merge.BLL_Auth_Merge import (
+            register_merge_handler,
+        )
+    except ImportError:
+        return
+    register_merge_handler("oauth_consumer", _merge_handler)

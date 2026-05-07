@@ -83,29 +83,43 @@ def validate_upstream_url(url: str, *, allow_private: Optional[bool] = None) -> 
     catch and surface as a federation-bootstrap error rather than aborting
     the whole startup.
 
+    Policy:
+    - Production / staging: TLS required (https), public hostnames only.
+      Both can be relaxed via ``FEDERATION_ALLOW_HTTP_UPSTREAMS=true``
+      and ``FEDERATION_ALLOW_PRIVATE_UPSTREAMS=true`` for in-cluster
+      federation that terminates TLS at a sidecar.
+    - Local / CI / development: http and private hosts are allowed by
+      default so test harnesses can exercise the pipeline without
+      configuring extra env vars. Operators can still tighten via the
+      same env vars.
+
     Args:
         url: The upstream URL declared by a federation provider.
-        allow_private: When ``None`` (the default), the policy is taken
-            from ``FEDERATION_ALLOW_PRIVATE_UPSTREAMS``: explicit
-            ``"true"`` permits private/loopback hosts (useful for tests
-            and intra-cluster federation), anything else rejects them.
+        allow_private: Explicit override; when ``None`` policy is derived
+            from environment.
     """
     if not url:
         raise ValueError("upstream_url is empty")
     parsed = urlparse(url)
-    if parsed.scheme not in _DEFAULT_ALLOWED_SCHEMES:
-        # Permit http only when explicitly opted in; production federation
-        # crosses trust boundaries and must be TLS.
-        allow_http = (env("FEDERATION_ALLOW_HTTP_UPSTREAMS") or "").lower() == "true"
-        if not (allow_http and parsed.scheme == "http"):
-            raise ValueError(
-                f"upstream_url {url!r}: scheme {parsed.scheme!r} not allowed "
-                f"(set FEDERATION_ALLOW_HTTP_UPSTREAMS=true to permit http)"
-            )
+
+    environment = (env("ENVIRONMENT") or "local").lower()
+    is_dev_like = environment in ("local", "ci", "development")
+
+    allow_http = (
+        is_dev_like
+        or (env("FEDERATION_ALLOW_HTTP_UPSTREAMS") or "").lower() == "true"
+    )
+    if parsed.scheme not in _DEFAULT_ALLOWED_SCHEMES and not (
+        allow_http and parsed.scheme == "http"
+    ):
+        raise ValueError(
+            f"upstream_url {url!r}: scheme {parsed.scheme!r} not allowed "
+            f"(set FEDERATION_ALLOW_HTTP_UPSTREAMS=true to permit http)"
+        )
     if not parsed.hostname:
         raise ValueError(f"upstream_url {url!r}: missing hostname")
     if allow_private is None:
-        allow_private = (
+        allow_private = is_dev_like or (
             (env("FEDERATION_ALLOW_PRIVATE_UPSTREAMS") or "").lower() == "true"
         )
     if not allow_private and _is_private_or_local(parsed.hostname):

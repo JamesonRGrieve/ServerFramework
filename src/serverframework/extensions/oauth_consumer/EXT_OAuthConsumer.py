@@ -83,7 +83,11 @@ class EXT_OAuthConsumer(AbstractStaticExtension):
         from serverframework.extensions.oauth_consumer import (  # noqa: F401
             BLL_OAuthConsumer,
         )
+        from serverframework.extensions.oauth_consumer.BLL_OAuthConsumer import (
+            register_merge_participation,
+        )
 
+        register_merge_participation()
         logger.debug("oauth_consumer initialized")
         return True
 

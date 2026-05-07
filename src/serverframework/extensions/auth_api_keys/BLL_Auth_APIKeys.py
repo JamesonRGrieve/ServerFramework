@@ -208,3 +208,55 @@ class APIKeyManager(AbstractBLLManager, RouterMixin):
 
 
 APIKeyModel.Manager = APIKeyManager
+
+
+# ---------------------------------------------------------------------------
+# Merge participation
+# ---------------------------------------------------------------------------
+
+
+def _merge_handler(ctx) -> None:
+    """Revoke (don't migrate) the target user's API keys.
+
+    API keys are bearer credentials that may have been distributed to
+    external systems. Migrating them onto the surviving account would
+    silently extend access; revocation forces the operator to mint
+    fresh keys and re-distribute, which is the correct security posture
+    for a merge.
+    """
+    from datetime import datetime, timezone
+
+    from serverframework.lib.Environment import env as _env
+
+    KeyDB = APIKeyModel.DB(ctx.model_registry.DB.manager.Base)
+    target_keys = (
+        KeyDB.list(
+            requester_id=_env("ROOT_ID"),
+            model_registry=ctx.model_registry,
+            filters=[
+                KeyDB.user_id == ctx.target_user_id,
+                KeyDB.is_revoked == False,  # noqa: E712
+            ],
+            return_type="dto",
+            override_dto=APIKeyModel,
+        )
+        or []
+    )
+    now = datetime.now(timezone.utc)
+    for key in target_keys:
+        KeyDB.update(
+            requester_id=_env("ROOT_ID"),
+            model_registry=ctx.model_registry,
+            id=key.id,
+            new_properties={"is_revoked": True, "last_used_at": now},
+        )
+
+
+def register_merge_participation() -> None:
+    try:
+        from serverframework.extensions.auth_merge.BLL_Auth_Merge import (
+            register_merge_handler,
+        )
+    except ImportError:
+        return
+    register_merge_handler("auth_api_keys", _merge_handler)

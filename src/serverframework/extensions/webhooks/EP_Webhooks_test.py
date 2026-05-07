@@ -104,7 +104,11 @@ def test_unrecognized_event_returns_200_without_handler():
 
 
 @pytest.mark.unit
-def test_missing_verify_signature_returns_401():
+def test_missing_verify_signature_returns_503():
+    """A registered provider that doesn't expose verify_signature is a
+    misconfiguration, not a signature mismatch — surface it as 503 so
+    operators can distinguish "provider unsafe" from "request invalid"."""
+
     class _ExtensionWithoutVerify:
         extension_name = "noverify"
 
@@ -120,17 +124,21 @@ def test_missing_verify_signature_returns_401():
         "/webhook/noverify/stripe/customer.updated",
         json={"id": "cus_no_sig"},
     )
-    assert r.status_code == 401
+    assert r.status_code == 503
 
 
 @pytest.mark.unit
-def test_unknown_extension_returns_200_without_signature_check():
+def test_unknown_extension_returns_404():
+    """An unknown (extension, provider) is rejected with 404, not 200.
+    The previous behaviour turned the endpoint into an extension-discovery
+    oracle: an attacker could probe the deployment without crossing a
+    signature check."""
     client = _client()
     r = client.post(
         "/webhook/unknown_extension/some_provider/some_event",
         json={"id": "cus_unknown"},
     )
-    assert r.status_code == 200
+    assert r.status_code == 404
 
 
 @pytest.mark.unit

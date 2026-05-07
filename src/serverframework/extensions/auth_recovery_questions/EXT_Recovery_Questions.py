@@ -21,3 +21,12 @@ class AuthRecoveryQuestionsExtension(AbstractStaticExtension):
         )
 
         return [UserRecoveryQuestionModel]
+
+    @classmethod
+    def on_initialize(cls) -> bool:
+        from serverframework.extensions.auth_recovery_questions.BLL_Recovery_Questions import (
+            register_merge_participation,
+        )
+
+        register_merge_participation()
+        return True

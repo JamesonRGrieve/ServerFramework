@@ -36,7 +36,11 @@ class EXT_Auth_APIKeys(AbstractStaticExtension):
         from serverframework.extensions.auth_api_keys import (  # noqa: F401
             BLL_Auth_APIKeys,
         )
+        from serverframework.extensions.auth_api_keys.BLL_Auth_APIKeys import (
+            register_merge_participation,
+        )
 
+        register_merge_participation()
         logger.debug("auth_api_keys initialized")
         return True
 
