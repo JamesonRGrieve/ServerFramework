@@ -8,7 +8,7 @@ from serverframework.extensions.AbstractEXTTest import ExtensionServerMixin
 from serverframework.extensions.email.EXT_EMail import EXT_EMail
 from serverframework.lib.Environment import env
 
-from serverframework.logic.BLL_Auth import InvitationManager
+from serverframework.extensions.auth_invitations.BLL_Invitations import InvitationManager
 
 
 AbstractBLLTest.test_config = ClassOfTestsConfig(

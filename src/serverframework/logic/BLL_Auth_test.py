@@ -19,17 +19,21 @@ from serverframework.AbstractTest import (
 from serverframework.lib.Environment import env
 from serverframework.lib.Scalability import ScalabilityProfile, ScalingMetric
 from serverframework.logic.AbstractBLLTest import AbstractBLLTest
-from serverframework.logic.BLL_Auth import (
+from serverframework.extensions.acl_rbac.BLL_ACL import PermissionManager
+from serverframework.extensions.auth_invitations.BLL_Invitations import (
     InvitationManager,
     InviteeManager,
+)
+from serverframework.extensions.metadata.BLL_Metadata import (
     MetadataManager,
-    PermissionManager,
+    UserMetadataManager,
+)
+from serverframework.logic.BLL_Auth import (
     RoleManager,
     SessionManager,
     TeamManager,
     UserCredentialManager,
     UserManager,
-    UserMetadataManager,
     UserTeamManager,
 )
 
@@ -1316,7 +1320,7 @@ class TestInvitationManager(AbstractBLLTest):
         invitee_id = invitees[0].id
 
         # Test unified acceptance via invitee_id
-        from serverframework.logic.BLL_Auth import InvitationModel
+        from serverframework.extensions.auth_invitations.BLL_Invitations import InvitationModel
 
         accept_data = InvitationModel.Accept(invitee_id=invitee_id)
         result = manager.accept_invitation_unified(accept_data, existing_user.id)
@@ -1541,7 +1545,7 @@ class TestInvitationManager(AbstractBLLTest):
         public_user = UserManager.register(public_user_data, self.model_registry)
 
         # Test unified acceptance via invitation code
-        from serverframework.logic.BLL_Auth import InvitationModel
+        from serverframework.extensions.auth_invitations.BLL_Invitations import InvitationModel
 
         accept_data = InvitationModel.Accept(invitation_code=invitation_code)
         result = manager.accept_invitation_unified(accept_data, public_user.id)
@@ -1776,7 +1780,7 @@ class TestInvitationManager(AbstractBLLTest):
         user = UserManager.register(user_data, self.model_registry)
 
         # Test unified acceptance via code
-        from serverframework.logic.BLL_Auth import InvitationModel
+        from serverframework.extensions.auth_invitations.BLL_Invitations import InvitationModel
 
         accept_data = InvitationModel.Accept(invitation_code=invitation_code)
         result = manager.accept_invitation_unified(accept_data, user.id)
@@ -1862,7 +1866,7 @@ class TestInvitationManager(AbstractBLLTest):
             target_team_id=test_team_id,
             model_registry=self.model_registry,
         )
-        from serverframework.logic.BLL_Auth import InvitationModel
+        from serverframework.extensions.auth_invitations.BLL_Invitations import InvitationModel
 
         accept_data = InvitationModel.Accept(invitee_id=invitee_id)
         result = fresh_invitation_manager.accept_invitation_unified(
@@ -1927,7 +1931,7 @@ class TestInvitationManager(AbstractBLLTest):
             user = UserManager.register(user_data, self.model_registry)
 
             # Test unified decline via code
-            from serverframework.logic.BLL_Auth import InvitationModel
+            from serverframework.extensions.auth_invitations.BLL_Invitations import InvitationModel
 
             decline_data = InvitationModel.Patch(
                 invitation_code=invitation_code, action="decline"
@@ -2016,7 +2020,7 @@ class TestInvitationManager(AbstractBLLTest):
             target_team_id=test_team_id,
             model_registry=self.model_registry,
         ) as fresh_invitation_manager:
-            from serverframework.logic.BLL_Auth import InvitationModel
+            from serverframework.extensions.auth_invitations.BLL_Invitations import InvitationModel
 
             patch_data = InvitationModel.Patch(invitee_id=invitee_id, action="decline")
             result = fresh_invitation_manager.patch_invitation_unified(
@@ -2036,7 +2040,7 @@ class TestInvitationManager(AbstractBLLTest):
         """Test validation of unified acceptance methods."""
         self.server = server
         self.model_registry = model_registry
-        from serverframework.logic.BLL_Auth import InvitationModel, UserManager
+        from serverframework.extensions.auth_invitations.BLL_Invitations import InvitationModel, UserManager
 
         # Test validation scenarios
         test_code = f"TESTCODE_{uuid.uuid4().hex[:8].upper()}"
@@ -2065,7 +2069,7 @@ class TestInvitationManager(AbstractBLLTest):
         """Test various invalid scenarios for invitation acceptance."""
         self.server = server
         self.model_registry = model_registry
-        from serverframework.logic.BLL_Auth import InvitationModel, UserManager
+        from serverframework.extensions.auth_invitations.BLL_Invitations import InvitationModel, UserManager
 
         # Test 1: Invalid invitation code should raise HTTPException
         test_user_data = {
@@ -2134,7 +2138,8 @@ class TestInviteeManager(AbstractBLLTest):
         elif model_registry is None and hasattr(self, "model_registry"):
             model_registry = self.model_registry
 
-        from serverframework.logic.BLL_Auth import InvitationManager, TeamManager, UserManager
+        from serverframework.extensions.auth_invitations.BLL_Invitations import InvitationManager
+        from serverframework.logic.BLL_Auth import TeamManager, UserManager
 
         # Create a simple invitation manually to avoid complex parent entity dependencies
         test_user_data = {
@@ -2198,7 +2203,7 @@ class TestInviteeManager(AbstractBLLTest):
             requester_id=user_id, model_registry=model_registry
         )
         # Use filters to exclude records with None invitation_id
-        from serverframework.logic.BLL_Auth import InviteeModel
+        from serverframework.extensions.auth_invitations.BLL_Invitations import InviteeModel
 
         filters = [InviteeModel.invitation_id != None]
         self.tracked_entities["list_result"] = manager.list(filters=filters)
@@ -2209,7 +2214,8 @@ class TestInviteeManager(AbstractBLLTest):
         """Test accepting a valid invitation code."""
         self.server = server
         self.model_registry = model_registry
-        from serverframework.logic.BLL_Auth import InvitationManager, TeamManager, UserManager
+        from serverframework.extensions.auth_invitations.BLL_Invitations import InvitationManager
+        from serverframework.logic.BLL_Auth import TeamManager, UserManager
 
         # Create our own test entities
         test_admin_data = {
@@ -2272,7 +2278,8 @@ class TestInviteeManager(AbstractBLLTest):
         self.model_registry = model_registry
         from datetime import datetime, timedelta, timezone
 
-        from serverframework.logic.BLL_Auth import InvitationManager, TeamManager, UserManager
+        from serverframework.extensions.auth_invitations.BLL_Invitations import InvitationManager
+        from serverframework.logic.BLL_Auth import TeamManager, UserManager
 
         # Create our own test entities
         test_admin_data = {
@@ -2333,7 +2340,8 @@ class TestInviteeManager(AbstractBLLTest):
         """Test rejecting invitation when max uses exceeded."""
         self.server = server
         self.model_registry = model_registry
-        from serverframework.logic.BLL_Auth import InvitationManager, TeamManager, UserManager
+        from serverframework.extensions.auth_invitations.BLL_Invitations import InvitationManager
+        from serverframework.logic.BLL_Auth import TeamManager, UserManager
 
         # Create our own test entities
         test_admin_data = {
@@ -2408,7 +2416,8 @@ class TestInviteeManager(AbstractBLLTest):
         """Test user accepting an invitation they were specifically invited to."""
         self.server = server
         self.model_registry = model_registry
-        from serverframework.logic.BLL_Auth import InvitationManager, TeamManager, UserManager
+        from serverframework.extensions.auth_invitations.BLL_Invitations import InvitationManager
+        from serverframework.logic.BLL_Auth import TeamManager, UserManager
 
         # Create our own test entities using context managers to ensure proper session handling
         test_admin_data = {
@@ -2485,7 +2494,8 @@ class TestInviteeManager(AbstractBLLTest):
         """Test user declining a direct invitation (no code involved)."""
         self.server = server
         self.model_registry = model_registry
-        from serverframework.logic.BLL_Auth import InvitationManager, TeamManager, UserManager
+        from serverframework.extensions.auth_invitations.BLL_Invitations import InvitationManager
+        from serverframework.logic.BLL_Auth import TeamManager, UserManager
 
         # Create our own test entities
         test_admin_data = {

@@ -1570,7 +1570,8 @@ class TestResourceTypeValidation:
 def test_invited_user_sees_child_and_parent_team(model_registry, use_invitee):
     """Ensure invitations expose both the child team and its parent in team listings."""
 
-    from serverframework.logic.BLL_Auth import InvitationModel, InviteeModel, TeamModel, UserModel
+    from serverframework.extensions.auth_invitations.BLL_Invitations import InvitationModel, InviteeModel
+    from serverframework.logic.BLL_Auth import TeamModel, UserModel
 
     db_manager = model_registry.database_manager
     Base = db_manager.Base

@@ -13,7 +13,8 @@ from serverframework.lib.Environment import env
 from serverframework.lib.Logging import logger
 from serverframework.lib.Pydantic2Strawberry import convert_field_name
 from serverframework.lib.Scalability import ScalabilityProfile, ScalingMetric
-from serverframework.logic.BLL_Auth import InvitationModel, RoleModel, TeamModel, UserModel
+from serverframework.extensions.auth_invitations.BLL_Invitations import InvitationModel
+from serverframework.logic.BLL_Auth import RoleModel, TeamModel, UserModel
 
 
 @pytest.mark.ep
@@ -863,7 +864,7 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
         from sqlalchemy import delete as sa_delete
 
         from serverframework.database.AbstractDatabaseEntity import include_deleted
-        from serverframework.logic.BLL_Auth import FailedLoginAttemptModel
+        from serverframework.extensions.auth_lockout.BLL_Lockout import FailedLoginAttemptModel
 
         model_registry = server.app.state.model_registry
         db_session = model_registry.DB.session()
@@ -3022,7 +3023,7 @@ class TestInvitationEndpoints(AbstractEPTest):
 
         # Add the invitee using the invitation manager (we need to add endpoint for this in real implementation)
         # For now, simulate by having the invitee email added via BLL
-        from serverframework.logic.BLL_Auth import InvitationManager
+        from serverframework.extensions.auth_invitations.BLL_Invitations import InvitationManager
 
         inv_manager = InvitationManager(
             requester_id=admin_a.id,
@@ -3034,7 +3035,7 @@ class TestInvitationEndpoints(AbstractEPTest):
         invitee_id = None
 
         # Get the invitee ID that was just created
-        from serverframework.logic.BLL_Auth import InviteeManager
+        from serverframework.extensions.auth_invitations.BLL_Invitations import InviteeManager
 
         with InviteeManager(
             requester_id=admin_a.id,
@@ -3135,7 +3136,7 @@ class TestInvitationEndpoints(AbstractEPTest):
 
         # Add the invitee using the invitation manager (we need to add endpoint for this in real implementation)
         # For now, simulate by having the invitee email added via BLL
-        from serverframework.logic.BLL_Auth import InvitationManager
+        from serverframework.extensions.auth_invitations.BLL_Invitations import InvitationManager
 
         inv_manager = InvitationManager(
             requester_id=admin_a.id,
@@ -3147,7 +3148,7 @@ class TestInvitationEndpoints(AbstractEPTest):
         invitee_id = None
 
         # Get the invitee ID that was just created
-        from serverframework.logic.BLL_Auth import InviteeManager
+        from serverframework.extensions.auth_invitations.BLL_Invitations import InviteeManager
 
         with InviteeManager(
             requester_id=admin_a.id,
@@ -3237,7 +3238,7 @@ class TestInvitationEndpoints(AbstractEPTest):
         # Add the email as an invitee to the invitation
         from serverframework.database.DatabaseManager import DatabaseManager
         from serverframework.lib.Environment import env
-        from serverframework.logic.BLL_Auth import InvitationManager
+        from serverframework.extensions.auth_invitations.BLL_Invitations import InvitationManager
 
         inv_manager = InvitationManager(
             requester_id=admin_a.id,
@@ -3489,7 +3490,7 @@ class TestInvitationEndpoints(AbstractEPTest):
         user2_response = server.post("/v1/user", json=user2_payload)
         user2 = user2_response.json()
 
-        from serverframework.logic.BLL_Auth import InvitationManager
+        from serverframework.extensions.auth_invitations.BLL_Invitations import InvitationManager
 
         inv_manager = InvitationManager(
             requester_id=admin_a.id,
@@ -3498,7 +3499,7 @@ class TestInvitationEndpoints(AbstractEPTest):
         )
         invitee_result = inv_manager.add_invitee(invitation["id"], email=user1_email)
 
-        from serverframework.logic.BLL_Auth import InviteeManager
+        from serverframework.extensions.auth_invitations.BLL_Invitations import InviteeManager
 
         with InviteeManager(
             requester_id=admin_a.id, model_registry=server.app.state.model_registry

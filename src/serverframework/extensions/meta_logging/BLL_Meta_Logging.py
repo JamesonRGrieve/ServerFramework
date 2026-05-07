@@ -505,7 +505,7 @@ class MetaLoggingManager(AbstractBLLManager):
     def failed_logins(self):
         """Get the failed login manager from logic.BLL_Auth"""
         if self._failed_logins is None:
-            from serverframework.logic.BLL_Auth import FailedLoginAttemptManager
+            from serverframework.extensions.auth_lockout.BLL_Lockout import FailedLoginAttemptManager
 
             self._failed_logins = FailedLoginAttemptManager(
                 requester_id=self.requester.id,

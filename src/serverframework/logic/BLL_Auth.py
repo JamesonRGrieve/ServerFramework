@@ -20,14 +20,9 @@ if TYPE_CHECKING:
     from serverframework.logic.BLL_Auth import (
         UserManager,
         UserCredentialManager,
-        UserRecoveryQuestionManager,
-        FailedLoginAttemptManager,
         TeamManager,
         RoleManager,
         UserTeamManager,
-        PermissionManager,
-        InvitationManager,
-        InviteeManager,
         RateLimitPolicyManager,
         SessionManager,
     )
@@ -668,7 +663,10 @@ class UserManager(AbstractBLLManager, RouterMixin):
             "child_resource_name": "metadata",
             "manager_property": "metadata",
             "child_manager_class": lambda: getattr(
-                __import__("serverframework.logic.BLL_Auth", fromlist=["UserMetadataManager"]),
+                __import__(
+                    "serverframework.extensions.metadata.BLL_Metadata",
+                    fromlist=["UserMetadataManager"],
+                ),
                 "UserMetadataManager",
             ),
             # child_network_model_cls will be inferred from the manager
@@ -746,7 +744,13 @@ class UserManager(AbstractBLLManager, RouterMixin):
     @property
     def metadata(self):
         if self._metadata is None:
-            self._metadata = UserMetadataManager(
+            factory = _metadata_hooks["user_manager_factory"]
+            if factory is None:
+                raise HTTPException(
+                    status_code=503,
+                    detail="metadata extension not loaded; user metadata unavailable",
+                )
+            self._metadata = factory(
                 requester_id=self.requester.id,
                 target_id=self.target_user_id,
                 model_registry=self.model_registry,
@@ -756,6 +760,16 @@ class UserManager(AbstractBLLManager, RouterMixin):
     @property
     def failed_logins(self):
         if self._failed_logins is None:
+            try:
+                from serverframework.extensions.auth_lockout.BLL_Lockout import (
+                    FailedLoginAttemptManager,
+                )
+            except ImportError:
+                raise HTTPException(
+                    status_code=503,
+                    detail="auth_lockout extension not loaded; "
+                    "failed-login records unavailable",
+                )
             self._failed_logins = FailedLoginAttemptManager(
                 requester_id=self.requester.id,
                 target_id=self.target_user_id,
@@ -1234,12 +1248,11 @@ class UserManager(AbstractBLLManager, RouterMixin):
             return False
 
     def get_metadata(self) -> Dict[str, str]:
-        """Get all metadata for the target user"""
-        metadata_items = MetadataModel.DB(self.model_registry.DB.Base).list(
-            requester_id=self.requester.id,
-            model_registry=self.model_registry,
-            user_id=self.target_user_id,
-        )
+        """Get all metadata for the target user (via metadata extension)."""
+        list_hook = _metadata_hooks["list_user_metadata"]
+        if list_hook is None:
+            return {}
+        metadata_items = list_hook(self.target_user_id, self.model_registry)
         return {item.key: item.value for item in metadata_items}
 
     def revoke_all_user_sessions(self, user_id: str):
@@ -1490,17 +1503,14 @@ class UserManager(AbstractBLLManager, RouterMixin):
                 trust_score=50,
             )
 
-            # Get user preferences
-            preferences = {}
-            try:
-                metadata_items = MetadataModel.DB(model_registry.DB.Base).list(
-                    requester_id=root_id,
-                    model_registry=model_registry,
-                    user_id=user["id"],
-                )
-                preferences = {item.key: item.value for item in metadata_items}
-            except Exception:
-                pass
+            # Get user preferences via metadata extension hook (Scope #3).
+            preferences: Dict[str, str] = {}
+            list_prefs = _metadata_hooks["list_preferences"]
+            if list_prefs is not None:
+                try:
+                    preferences = list_prefs(user["id"], model_registry) or {}
+                except Exception:
+                    pass
 
             # Get user teams with roles
             user_teams = UserTeamModel.DB(model_registry.DB.manager.Base).list(
@@ -1894,95 +1904,51 @@ class UserManager(AbstractBLLManager, RouterMixin):
         ):
             raise HTTPException(status_code=409, detail="Username already in use")
 
-        # Handle invitation acceptance scenarios
+        # Handle invitation acceptance scenarios via the auth_invitations
+        # extension hooks. When the extension is not loaded, both branches
+        # silently fall through with `invitation_details = None`.
         if invitation_id:
-            try:
-                # Direct email invite - validate invitation_id exists
-                invitation = (
-                    model_registry.DB.session()
-                    .query(InvitationModel.DB(model_registry.DB.manager.Base))
-                    .filter(
-                        InvitationModel.DB(model_registry.DB.manager.Base).id
-                        == invitation_id,
-                        InvitationModel.DB(
-                            model_registry.DB.manager.Base
-                        ).deleted_at.is_(None),
-                    )
-                    .first()
-                )
-
-                if invitation:
-                    # Check if invitation has expired
-                    if invitation.expires_at and invitation.expires_at < datetime.now(
-                        timezone.utc
-                    ):
-                        logger.warning(f"Invitation ID {invitation_id} has expired")
-                        invitation_details = None
-                    else:
-                        invitation_details = {
-                            "id": invitation.id,
-                            "code": invitation.code,
-                            "team_id": invitation.team_id,
-                            "role_id": invitation.role_id,
-                            "acceptance_type": "direct_email_invite",
-                        }
-                else:
-                    logger.warning(
-                        f"Invalid invitation ID during user registration: {invitation_id}"
-                    )
-                    invitation_details = None
-            except Exception as e:
-                logger.error(
-                    f"Error validating invitation ID during user registration: {str(e)}"
+            lookup = _invitation_hooks["lookup_by_id"]
+            if lookup is None:
+                logger.debug(
+                    "Invitation ID supplied but auth_invitations extension is not "
+                    "loaded; skipping invitation handling."
                 )
                 invitation_details = None
-        elif invitation_code:
-            try:
-                # Public invitation code - validate invitation code exists
-                invitation = (
-                    model_registry.DB.session()
-                    .query(InvitationModel.DB(model_registry.DB.manager.Base))
-                    .filter(
-                        InvitationModel.DB(model_registry.DB.manager.Base).code
-                        == invitation_code,
-                        InvitationModel.DB(
-                            model_registry.DB.manager.Base
-                        ).deleted_at.is_(None),
-                    )
-                    .first()
-                )
-
-                if invitation:
-                    logger.debug(
-                        f"DEBUG: Found invitation with code {invitation_code}, team_id={invitation.team_id}"
-                    )
-                    # Check if invitation has expired
-                    if invitation.expires_at and invitation.expires_at < datetime.now(
-                        timezone.utc
-                    ):
-                        logger.warning(f"Invitation code {invitation_code} has expired")
-                        invitation_details = None
-                    else:
-                        invitation_details = {
-                            "id": invitation.id,
-                            "code": invitation.code,
-                            "team_id": invitation.team_id,
-                            "role_id": invitation.role_id,
-                            "acceptance_type": "public_code",
-                        }
-                        logger.debug(
-                            f"DEBUG: Created invitation_details with team_id={invitation_details['team_id']}"
+            else:
+                try:
+                    invitation_details = lookup(invitation_id, model_registry)
+                    if invitation_details is None:
+                        logger.warning(
+                            f"Invalid or expired invitation ID during user "
+                            f"registration: {invitation_id}"
                         )
-                else:
-                    logger.warning(
-                        f"Invalid invitation code during user registration: {invitation_code}"
+                except Exception as e:
+                    logger.error(
+                        f"Error validating invitation ID during user registration: {str(e)}"
                     )
                     invitation_details = None
-            except Exception as e:
-                logger.error(
-                    f"Error validating invitation code during user registration: {str(e)}"
+        elif invitation_code:
+            lookup = _invitation_hooks["lookup_by_code"]
+            if lookup is None:
+                logger.debug(
+                    "Invitation code supplied but auth_invitations extension is "
+                    "not loaded; skipping invitation handling."
                 )
                 invitation_details = None
+            else:
+                try:
+                    invitation_details = lookup(invitation_code, model_registry)
+                    if invitation_details is None:
+                        logger.warning(
+                            f"Invalid or expired invitation code during user "
+                            f"registration: {invitation_code}"
+                        )
+                except Exception as e:
+                    logger.error(
+                        f"Error validating invitation code during user registration: {str(e)}"
+                    )
+                    invitation_details = None
 
         # Separate model fields from metadata fields
         metadata_fields = {}
@@ -2026,19 +1992,24 @@ class UserManager(AbstractBLLManager, RouterMixin):
             **model_fields,
         )
 
-        # Create metadata if provided
+        # Create metadata if provided (via metadata extension hook).
         if metadata_fields and user:
-            metadata_manager = UserMetadataManager(
-                requester_id=root_id,
-                target_id=user.id,
-                model_registry=model_registry,
-            )
-            for key, value in metadata_fields.items():
-                metadata_manager.create(
-                    user_id=user.id,
-                    key=key,
-                    value=str(value),
+            create_meta = _metadata_hooks["create_user_metadata"]
+            if create_meta is None:
+                logger.warning(
+                    "Registration metadata fields provided but `metadata` "
+                    "extension is not loaded; skipping persistence of: %s",
+                    list(metadata_fields.keys()),
                 )
+            else:
+                for key, value in metadata_fields.items():
+                    create_meta(
+                        user.id,
+                        key,
+                        value,
+                        model_registry,
+                        requester_id=root_id,
+                    )
 
         # Create credentials for the user. The user owns and self-creates their
         # own credential row so that the strict permission filter (which hides
@@ -2051,127 +2022,77 @@ class UserManager(AbstractBLLManager, RouterMixin):
         )
         credentials_manager.create(user_id=user.id, password=password)
 
-        # Handle invitation acceptance if invitation details were validated
+        # Handle invitation acceptance via the auth_invitations extension
+        # (Scope #4). The `apply_to_user` hook runs the entire invitee +
+        # user-team sync — core no longer reaches into Invitation/Invitee.
         if invitation_details:
-            try:
-                user_email = user.email.lower()
-
-                # Check for existing invitee record
-                invitee_manager = InviteeManager(
-                    requester_id=root_id,
-                    model_registry=model_registry,
+            apply_invitation = _invitation_hooks["apply_to_user"]
+            if apply_invitation is None:
+                logger.debug(
+                    "invitation_details present but auth_invitations extension is "
+                    "not loaded; skipping team-membership reconciliation."
                 )
-
-                existing_invitees = invitee_manager.list(
-                    invitation_id=invitation_details["id"], email=user_email
-                )
-
-                if existing_invitees and len(existing_invitees) > 0:
-                    # Update existing invitee record
-                    invitee = existing_invitees[0]
-                    invitee_manager.update(
-                        id=invitee.id,
-                        accepted_at=datetime.now(timezone.utc),
-                        user_id=user.id,
-                    )
-                else:
-                    # Create a new invitee record for this acceptance
-                    invitee_manager.create(
-                        invitation_id=invitation_details["id"],
-                        email=user_email,
-                        accepted_at=datetime.now(timezone.utc),
-                        user_id=user.id,
+            else:
+                try:
+                    apply_invitation(invitation_details, user.id, model_registry)
+                except Exception as e:
+                    logger.error(
+                        f"auth_invitations.apply_to_user failed for user "
+                        f"{user.id}: {e}",
+                        exc_info=True,
                     )
 
-                # Add user to team if this is a team invitation
-                if invitation_details["team_id"] and invitation_details["role_id"]:
-                    logger.debug(
-                        f"Adding user {user.id} to team {invitation_details['team_id']} with role {invitation_details['role_id']}"
-                    )
-                    user_team_manager = UserTeamManager(
+                # Mirror invitation provenance into user metadata when both
+                # extensions are loaded.
+                create_meta = _metadata_hooks["create_user_metadata"]
+                if create_meta is not None:
+                    create_meta(
+                        user.id,
+                        "invitation_accepted",
+                        "true",
+                        model_registry,
                         requester_id=root_id,
-                        target_id=user.id,
-                        model_registry=model_registry,
                     )
-
-                    # Check for existing team membership
-                    existing_memberships = user_team_manager.list(
-                        user_id=user.id,
-                        team_id=invitation_details["team_id"],
-                    )
-                    logger.debug(
-                        f"Found {len(existing_memberships) if existing_memberships else 0} existing memberships"
-                    )
-
-                    if existing_memberships:
-                        # Update existing team membership
-                        logger.debug(
-                            f"Updating existing membership {existing_memberships[0].id}"
+                    if invitation_details.get("code"):
+                        create_meta(
+                            user.id,
+                            "invitation_code",
+                            invitation_details["code"],
+                            model_registry,
+                            requester_id=root_id,
                         )
-                        user_team_manager.update(
-                            id=existing_memberships[0].id,
-                            role_id=invitation_details["role_id"],
-                            enabled=True,
+                    if invitation_details.get("team_id"):
+                        create_meta(
+                            user.id,
+                            "invitation_team_id",
+                            str(invitation_details["team_id"]),
+                            model_registry,
+                            requester_id=root_id,
                         )
-                    else:
-                        # Create new team membership
-                        logger.debug(f"Creating new team membership")
-                        user_team_manager.create(
-                            user_id=user.id,
-                            team_id=invitation_details["team_id"],
-                            role_id=invitation_details["role_id"],
-                            enabled=True,
-                        )
-
-                # Add invitation acceptance details to user metadata
-                metadata_manager = UserMetadataManager(
-                    requester_id=root_id,
-                    target_id=user.id,
-                    model_registry=model_registry,
-                )
-                metadata_manager.create(
-                    user_id=user.id,
-                    key="invitation_accepted",
-                    value="true",
-                )
-                metadata_manager.create(
-                    user_id=user.id,
-                    key="invitation_code",
-                    value=invitation_details["code"],
-                )
-                if invitation_details["team_id"]:
-                    logger.debug(
-                        f"DEBUG: Storing invitation_team_id={invitation_details['team_id']} for user {user.id}"
-                    )
-                    metadata_manager.create(
-                        user_id=user.id,
-                        key="invitation_team_id",
-                        value=str(invitation_details["team_id"]),
-                    )
 
                 logger.debug(
-                    f"User {user.id} successfully accepted invitation {invitation_details['code']} during registration"
-                )
-
-            except Exception as e:
-                # Log the error but don't fail user creation
-                logger.error(
-                    f"Failed to accept invitation during user creation: {str(e)}"
+                    f"User {user.id} successfully accepted invitation "
+                    f"{invitation_details.get('code')} during registration"
                 )
 
         return user
 
     def list_invitations_for_user(self):
-        """List all invitations for a team (nested custom route method)"""
+        """List all invitations for the requesting user. Routed through the
+        auth_invitations extension hook (Scope #4); returns an empty list
+        when the extension is not loaded."""
+        factory = _invitation_hooks["invitation_manager_factory"]
+        if factory is None:
+            return {"invitations": []}
 
-        invitation_manager = InvitationManager(
+        invitation_manager = factory(
             requester_id=env("ROOT_ID"),
+            target_team_id=None,
             model_registry=self.model_registry,
         )
 
         invitations = invitation_manager.list(include=["invitation"])
         invitations_dict = []
-
         user_id = self.requester.id
         user = self.get(id=user_id)
 
@@ -2192,11 +2113,9 @@ class UserManager(AbstractBLLManager, RouterMixin):
             invitation_dict = obj_to_dict(invitation)
             invitees_dict = []
             if invitation.user_id is None:
-
                 invitees = invitation_manager.Invitee_manager.list(
                     invitation_id=invitation.id
                 )
-
                 for invitee in invitees:
                     if invitee.user_id != user_id:
                         continue
@@ -2478,22 +2397,52 @@ def register_lockout_hooks(
         _lockout_hooks["record_failure"] = record_failure
 
 
-# Metadata extension hook — populated by `metadata.on_load`. Returns
-# `{key: value}` for a user's preferences, or `{}` when the extension
-# isn't loaded.
-_metadata_hooks: dict = {"list_preferences": None}
+# Metadata extension hooks — populated by `metadata.on_load` (Scope #3).
+# Core code that historically called MetadataModel/UserMetadataManager/
+# TeamMetadataManager directly now goes through these hooks; when the
+# extension is not loaded, calls degrade to no-ops or empty results.
+_metadata_hooks: dict = {
+    "list_preferences": None,           # (user_id, model_registry) -> Dict[str,str]
+    "list_user_metadata": None,         # (user_id, model_registry) -> List[Any]
+    "user_manager_factory": None,       # (requester_id, target_id, model_registry, **kw) -> manager
+    "team_manager_factory": None,       # (requester_id, target_team_id, model_registry, **kw) -> manager
+    "create_user_metadata": None,       # (user_id, key, value, model_registry, *, requester_id) -> None
+    "update_user_metadata": None,       # (id, value, model_registry, *, requester_id) -> None
+}
 
 
-def register_metadata_hooks(*, list_preferences=None) -> None:
-    if list_preferences is not None:
-        _metadata_hooks["list_preferences"] = list_preferences
+def register_metadata_hooks(
+    *,
+    list_preferences=None,
+    list_user_metadata=None,
+    user_manager_factory=None,
+    team_manager_factory=None,
+    create_user_metadata=None,
+    update_user_metadata=None,
+) -> None:
+    """Called by `metadata.EXT_Metadata.MetadataExtension.on_load`."""
+    for name, fn in (
+        ("list_preferences", list_preferences),
+        ("list_user_metadata", list_user_metadata),
+        ("user_manager_factory", user_manager_factory),
+        ("team_manager_factory", team_manager_factory),
+        ("create_user_metadata", create_user_metadata),
+        ("update_user_metadata", update_user_metadata),
+    ):
+        if fn is not None:
+            _metadata_hooks[name] = fn
 
 
-# auth_invitations extension hooks — populated by `auth_invitations.on_load`.
+# auth_invitations extension hooks — populated by `auth_invitations.on_load`
+# (Scope #4). Encapsulate every place core BLL_Auth used to reach into
+# InvitationModel / InviteeModel / InvitationManager / InviteeManager.
 _invitation_hooks: dict = {
-    "lookup_by_id": None,
-    "lookup_by_code": None,
-    "apply_to_user": None,  # called from register() once user row is created
+    "lookup_by_id": None,                # (invitation_id, model_registry) -> dict | None
+    "lookup_by_code": None,              # (code, model_registry) -> dict | None
+    "apply_to_user": None,               # (invitation_dict, user_id, model_registry) -> None
+    "invitation_manager_factory": None,  # (requester_id, target_team_id, model_registry, **kw) -> manager
+    "invitee_manager_factory": None,     # (requester_id, target_id, model_registry, **kw) -> manager
+    "list_invitees_for_user": None,      # (user_id, email, model_registry) -> List[dict]
 }
 
 
@@ -2502,13 +2451,40 @@ def register_invitation_hooks(
     lookup_by_id=None,
     lookup_by_code=None,
     apply_to_user=None,
+    invitation_manager_factory=None,
+    invitee_manager_factory=None,
+    list_invitees_for_user=None,
 ) -> None:
-    if lookup_by_id is not None:
-        _invitation_hooks["lookup_by_id"] = lookup_by_id
-    if lookup_by_code is not None:
-        _invitation_hooks["lookup_by_code"] = lookup_by_code
-    if apply_to_user is not None:
-        _invitation_hooks["apply_to_user"] = apply_to_user
+    for name, fn in (
+        ("lookup_by_id", lookup_by_id),
+        ("lookup_by_code", lookup_by_code),
+        ("apply_to_user", apply_to_user),
+        ("invitation_manager_factory", invitation_manager_factory),
+        ("invitee_manager_factory", invitee_manager_factory),
+        ("list_invitees_for_user", list_invitees_for_user),
+    ):
+        if fn is not None:
+            _invitation_hooks[name] = fn
+
+
+# acl_rbac extension hooks — populated by `acl_rbac.on_load` (Scope #5).
+_acl_hooks: dict = {
+    "permission_db_class": None,    # (declarative_base) -> SA model
+    "create_permission": None,      # (resource_type, resource_id, user_id, can_*, model_registry, **kw) -> Any
+}
+
+
+def register_acl_hooks(
+    *,
+    permission_db_class=None,
+    create_permission=None,
+) -> None:
+    for name, fn in (
+        ("permission_db_class", permission_db_class),
+        ("create_permission", create_permission),
+    ):
+        if fn is not None:
+            _acl_hooks[name] = fn
 
 
 def __getattr__(name: str):  # PEP 562 — lazy module-level attribute access
@@ -2702,7 +2678,10 @@ class TeamManager(AbstractBLLManager, RouterMixin):
             "child_resource_name": "invitation",
             "manager_property": "invitations",
             "child_manager_class": lambda: getattr(
-                __import__("serverframework.logic.BLL_Auth", fromlist=["InvitationManager"]),
+                __import__(
+                    "serverframework.extensions.auth_invitations.BLL_Invitations",
+                    fromlist=["InvitationManager"],
+                ),
                 "InvitationManager",
             ),
             # child_network_model_cls will be inferred from the manager
@@ -2730,7 +2709,10 @@ class TeamManager(AbstractBLLManager, RouterMixin):
             "child_resource_name": "metadata",
             "manager_property": "team_metadata",
             "child_manager_class": lambda: getattr(
-                __import__("serverframework.logic.BLL_Auth", fromlist=["TeamMetadataManager"]),
+                __import__(
+                    "serverframework.extensions.metadata.BLL_Metadata",
+                    fromlist=["TeamMetadataManager"],
+                ),
                 "TeamMetadataManager",
             ),
             # child_network_model_cls will be inferred from the manager
@@ -2777,11 +2759,17 @@ class TeamManager(AbstractBLLManager, RouterMixin):
     @property
     def team_metadata(self):
         if self._team_metadata is None:
-            self._team_metadata = TeamMetadataManager(
+            factory = _metadata_hooks["team_manager_factory"]
+            if factory is None:
+                raise HTTPException(
+                    status_code=503,
+                    detail="metadata extension not loaded; team metadata unavailable",
+                )
+            self._team_metadata = factory(
                 requester_id=self.requester.id,
                 target_team_id=self.target_team_id,
-                parent=self,
                 model_registry=self.model_registry,
+                parent=self,
             )
         return self._team_metadata
 
@@ -2811,7 +2799,14 @@ class TeamManager(AbstractBLLManager, RouterMixin):
     @property
     def invitations(self):
         if self._invitations is None:
-            self._invitations = InvitationManager(
+            factory = _invitation_hooks["invitation_manager_factory"]
+            if factory is None:
+                raise HTTPException(
+                    status_code=503,
+                    detail="auth_invitations extension not loaded; "
+                    "team invitations unavailable",
+                )
+            self._invitations = factory(
                 requester_id=self.requester.id,
                 target_team_id=self.target_team_id,
                 model_registry=self.model_registry,
@@ -2922,17 +2917,20 @@ class TeamManager(AbstractBLLManager, RouterMixin):
         return team
 
     def get_metadata(self) -> Dict[str, str]:
-        """Get all metadata for the target team"""
+        """Get all metadata for the target team (via metadata extension)."""
         if not self.target_team_id:
             raise HTTPException(status_code=400, detail="Team ID is required")
-
-        metadata_items = MetadataModel.DB(self.model_registry.DB.Base).list(
+        # Reuse the team manager factory so we get the per-team filtered view.
+        factory = _metadata_hooks["team_manager_factory"]
+        if factory is None:
+            return {}
+        with factory(
             requester_id=self.requester.id,
+            target_team_id=self.target_team_id,
             model_registry=self.model_registry,
-            team_id=self.target_team_id,
-        )
-
-        return {item.key: item.value for item in metadata_items}
+        ) as mgr:
+            results = mgr.search({"team_id": {"value": self.target_team_id}}) or []
+            return {row.key: row.value for row in results}
 
     def get(
         self,
@@ -3035,256 +3033,9 @@ class TeamManager(AbstractBLLManager, RouterMixin):
 
 
 # Unified Metadata Model
-class MetadataModel(
-    ApplicationModel.Optional,
-    UpdateMixinModel.Optional,
-    metaclass=ModelMeta,
-):
-    # Foreign key fields (optional since metadata can be user-only, team-only, or both)
-    user_id: Optional[str] = Field(None, description="Optional foreign key to User")
-    team_id: Optional[str] = Field(None, description="Optional foreign key to Team")
-
-    key: str = Field(..., description="Metadata key")
-    value: Optional[str] = Field(None, description="Metadata value")
-
-    # Relationship fields
-    user: Optional["UserModel"] = None
-    team: Optional["TeamModel"] = None
-
-    # Database metadata for SQLAlchemy generation
-    table_comment: ClassVar[str] = "Unified metadata table for users and teams"
-    seed_data: ClassVar[List[Dict[str, Any]]] = []
-
-    class Create(BaseModel):
-        user_id: Optional[str] = Field(None, description="User ID if user metadata")
-        team_id: Optional[str] = Field(None, description="Team ID if team metadata")
-        key: str = Field(..., description="Metadata key")
-        value: Optional[str] = Field(None, description="Metadata value")
-
-    class Update(BaseModel):
-        value: Optional[str] = Field(None, description="Metadata value")
-
-    class Search(ApplicationModel.Search):
-        user_id: Optional[StringSearchModel] = None
-        team_id: Optional[StringSearchModel] = None
-        key: Optional[StringSearchModel] = None
-        value: Optional[StringSearchModel] = None
-
-
-class MetadataManager(AbstractBLLManager):
-    _model = MetadataModel
-
-    def create_validation(self, entity):
-        """Validate metadata creation"""
-        # Ensure at least one of user_id or team_id is provided
-        if not entity.user_id and not entity.team_id:
-            raise HTTPException(
-                status_code=400, detail="Either user_id or team_id must be provided"
-            )
-
-        # Validate user and team existence are handled by database constraints
-
-    def set_preference(
-        self,
-        key: str,
-        value: str,
-        user_id: Optional[str] = None,
-        team_id: Optional[str] = None,
-    ) -> Dict[str, str]:
-        """Set or update a metadata preference"""
-        if not user_id and not team_id:
-            raise HTTPException(
-                status_code=400, detail="Either user_id or team_id is required"
-            )
-
-        # Find existing metadata for this EXACT combination of key and user_id/team_id
-        search_params = {"key": {"value": key}}
-        if user_id:
-            search_params["user_id"] = {"value": user_id}
-        if team_id:
-            search_params["team_id"] = {"value": team_id}
-
-        logger.debug(f"DEBUG: Search params: {search_params}")
-        existing = self.search(search_params)
-        logger.debug(
-            f"DEBUG: Search returned {len(existing) if existing else 0} records"
-        )
-
-        # Debug: Show what we actually found
-        if existing:
-            for i, record in enumerate(existing):
-                logger.debug(
-                    f"DEBUG: Found record {i}: user_id={record.user_id}, team_id={getattr(record, 'team_id', None)}, key={record.key}, value={record.value}, created_by={getattr(record, 'created_by_user_id', None)}"
-                )
-
-        # Filter to only records that EXACTLY match our criteria above
-        exact_matches = []
-        if existing:
-            for record in existing:
-                matches_user = (user_id is None) or (
-                    getattr(record, "user_id", None) == user_id
-                )
-                matches_team = (team_id is None) or (
-                    getattr(record, "team_id", None) == team_id
-                )
-                matches_key = record.key == key
-
-                if matches_user and matches_team and matches_key:
-                    exact_matches.append(record)
-                    logger.debug(f"DEBUG: Record {record.id} is an exact match")
-                else:
-                    logger.debug(
-                        f"DEBUG: Record {record.id} is NOT an exact match - user:{matches_user}, team:{matches_team}, key:{matches_key}"
-                    )
-
-        # Filter out system-created records when setting user preferences
-        if exact_matches and user_id and not team_id:
-            from serverframework.lib.Environment import env
-
-            user_owned_records = []
-            for record in exact_matches:
-                created_by = getattr(record, "created_by_user_id", None)
-                created_by_system = created_by in [env("ROOT_ID"), env("SYSTEM_ID")]
-                logger.debug(
-                    f"DEBUG: Record: user_id={record.user_id}, key={record.key}, created_by={created_by}, is_system={created_by_system}"
-                )
-
-                # Only include records that were NOT created by system users
-                if not created_by_system:
-                    user_owned_records.append(record)
-            exact_matches = user_owned_records
-            logger.debug(
-                f"DEBUG: After filtering, {len(exact_matches)} user-owned exact matches remain"
-            )
-
-        if exact_matches and len(exact_matches) > 0:
-            # Update existing - for user metadata, ensure proper ownership
-            record = exact_matches[0]
-            logger.debug(f"DEBUG: Updating existing record {record.id}")
-            if user_id and not team_id:
-                # For user metadata, use the user as the requester to ensure they can update their own records
-                with MetadataManager(
-                    requester_id=user_id, model_registry=self.model_registry
-                ) as temp_mgr:
-                    temp_mgr.update(id=record.id, value=value)
-            else:
-                self.update(id=record.id, value=value)
-            return {"key": key, "value": value, "action": "updated"}
-        else:
-            # Create new - for user preferences, create as the user to ensure proper ownership
-            create_args = {"key": key, "value": value}
-            logger.debug(f"DEBUG: Creating new metadata: {create_args}")
-            if user_id:
-                create_args["user_id"] = user_id
-            if team_id:
-                create_args["team_id"] = team_id
-
-            # For user metadata, temporarily create with the user as the requester for proper ownership
-            if user_id and not team_id:
-                # Create a temporary MetadataManager with the target user as requester for proper ownership
-                with MetadataManager(
-                    requester_id=user_id, model_registry=self.model_registry
-                ) as temp_mgr:
-                    temp_mgr.create(**create_args)
-            else:
-                self.create(**create_args)
-                logger.debug("DEBUG: Metadata creation attempted")
-            return {"key": key, "value": value, "action": "created"}
-
-    def get_preference(
-        self, key: str, user_id: Optional[str] = None, team_id: Optional[str] = None
-    ) -> Optional[str]:
-        """Get a metadata preference value"""
-        search_params = {"key": {"value": key}}
-        if user_id:
-            search_params["user_id"] = {"value": user_id}
-        if team_id:
-            search_params["team_id"] = {"value": team_id}
-
-        logger.debug(
-            f"DEBUG get_preference: searching for key='{key}', user_id='{user_id}'"
-        )
-        logger.debug(f"DEBUG get_preference: search_params={search_params}")
-        results = self.search(search_params)
-        logger.debug(
-            f"DEBUG get_preference: found {len(results) if results else 0} results"
-        )
-
-        # Filter to only records that EXACTLY match our criteria
-        exact_matches = []
-        if results:
-            for record in results:
-                # Check if this record exactly matches our search criteria
-                matches_user = (user_id is None) or (
-                    getattr(record, "user_id", None) == user_id
-                )
-                matches_team = (team_id is None) or (
-                    getattr(record, "team_id", None) == team_id
-                )
-                matches_key = record.key == key
-
-                logger.debug(
-                    f"DEBUG get_preference result: key='{record.key}', value='{record.value}', user_id='{getattr(record, 'user_id', None)}', created_by='{getattr(record, 'created_by_user_id', 'unknown')}', exact_match={matches_user and matches_team and matches_key}"
-                )
-
-                if matches_user and matches_team and matches_key:
-                    exact_matches.append(record)
-
-        # Filter out system-created records when getting user preferences
-        if exact_matches and user_id and not team_id:
-            from serverframework.lib.Environment import env
-
-            user_owned_records = []
-            for record in exact_matches:
-                # Only include records that were NOT created by system users
-                created_by_system = getattr(record, "created_by_user_id", None) in [
-                    env("ROOT_ID"),
-                    env("SYSTEM_ID"),
-                ]
-                logger.debug(
-                    f"DEBUG get_preference: record key='{record.key}', created_by_system={created_by_system}"
-                )
-                if not created_by_system:
-                    user_owned_records.append(record)
-            exact_matches = user_owned_records
-            logger.debug(
-                f"DEBUG get_preference: after filtering, {len(exact_matches)} user-owned exact matches remain"
-            )
-
-        if exact_matches and len(exact_matches) > 0:
-            result_value = exact_matches[0].value
-            logger.debug(f"DEBUG get_preference: returning value='{result_value}'")
-            return result_value
-
-        logger.debug("DEBUG get_preference: returning None")
-        return None
-
-
-class TeamMetadataManager(MetadataManager):
-    """Alias for backward compatibility - filters by team_id by default"""
-
-    def create_validation(self, entity):
-        """Validate team metadata creation"""
-        # Ensure team_id is provided for team metadata
-        if not hasattr(entity, "team_id") or not entity.team_id:
-            raise HTTPException(
-                status_code=400, detail="team_id is required for team metadata"
-            )
-
-        # Call parent validation
-        super().create_validation(entity)
-
-    def set_preference(self, key: str, value: str) -> Dict[str, str]:
-        """Set or update a team preference"""
-        if not self.target_team_id:
-            raise HTTPException(status_code=400, detail="Team ID is required")
-        return super().set_preference(key, value, team_id=self.target_team_id)
-
-    def get_preference(self, key: str) -> Optional[str]:
-        """Get a team preference value"""
-        if not self.target_team_id:
-            raise HTTPException(status_code=400, detail="Team ID is required")
-        return super().get_preference(key, team_id=self.target_team_id)
+# MetadataModel/Manager moved to extension `metadata` (Scope #3).
+# Canonical home: serverframework.extensions.metadata.BLL_Metadata
+# Core access goes through `_metadata_hooks` registered via `register_metadata_hooks`.
 
 
 class RoleModel(
@@ -4062,1204 +3813,6 @@ class UserTeamManager(AbstractBLLManager, RouterMixin):
         return {"message": "Role updated successfully"}
 
 
-class UserMetadataManager(MetadataManager):
-    """Alias for backward compatibility - filters by user_id by default"""
-
-    def create_validation(self, entity):
-        """Validate user metadata creation"""
-        # Ensure user_id is provided for user metadata
-        if not hasattr(entity, "user_id") or not entity.user_id:
-            raise HTTPException(
-                status_code=400, detail="user_id is required for user metadata"
-            )
-
-        # Call parent validation
-        super().create_validation(entity)
-
-    def set_preference(self, key: str, value: str) -> Dict[str, str]:
-        """Set or update a user preference"""
-        if not self.target_user_id:
-            raise HTTPException(status_code=400, detail="User ID is required")
-        return super().set_preference(key, value, user_id=self.target_user_id)
-
-    def get_preference(self, key: str) -> Optional[str]:
-        """Get a user preference value"""
-        if not self.target_user_id:
-            raise HTTPException(status_code=400, detail="User ID is required")
-        return super().get_preference(key, user_id=self.target_user_id)
-
-    def get_preferences(self) -> Dict[str, str]:
-        """Get all user preferences"""
-        if not self.target_user_id:
-            raise HTTPException(status_code=400, detail="User ID is required")
-
-        # Search for all metadata for this user
-        results = self.search({"user_id": {"value": self.target_user_id}})
-
-        # Convert to dictionary of key-value pairs
-        preferences = {}
-        for metadata in results:
-            preferences[metadata.key] = metadata.value
-
-        return preferences
-
-
-class PermissionModel(
-    ApplicationModel.Optional,
-    UpdateMixinModel.Optional,
-    UserModel.Reference.Optional,
-    TeamModel.Reference.Optional,
-    RoleModel.Reference.Optional,
-    metaclass=ModelMeta,
-):
-    Manager: ClassVar[Type["PermissionManager"]] = None
-    resource_type: str = Field(..., description="Type of resource")
-    resource_id: str = Field(..., description="ID of the resource")
-    can_view: bool = Field(False, description="Whether user/team can view the resource")
-    can_execute: bool = Field(
-        False, description="Whether user/team can execute the resource"
-    )
-    can_copy: bool = Field(False, description="Whether user/team can copy the resource")
-    can_edit: bool = Field(False, description="Whether user/team can edit the resource")
-    can_delete: bool = Field(
-        False, description="Whether user/team can delete the resource"
-    )
-    can_share: bool = Field(
-        False, description="Whether user/team can share the resource with others"
-    )
-    expires_at: Optional[datetime] = Field(None, description="Permission expiration")
-    enabled: bool = Field(True, description="Whether the permission is enabled")
-    # Database metadata for SQLAlchemy generation
-    table_comment: ClassVar[str] = (
-        "Fine-grained permissions for specific resources and actions"
-    )
-    create_permission_reference: ClassVar[str] = "resource"
-
-    class Create(
-        BaseModel,
-        UserModel.Reference.ID.Optional,
-        TeamModel.Reference.ID.Optional,
-        RoleModel.Reference.ID.Optional,
-    ):
-        resource_type: str = Field(..., description="Type of resource")
-        resource_id: str = Field(..., description="ID of the resource")
-        can_view: Optional[bool] = Field(
-            False, description="Whether user/team can view the resource"
-        )
-        can_execute: Optional[bool] = Field(
-            False, description="Whether user/team can execute the resource"
-        )
-        can_copy: Optional[bool] = Field(
-            False, description="Whether user/team can copy the resource"
-        )
-        can_edit: Optional[bool] = Field(
-            False, description="Whether user/team can edit the resource"
-        )
-        can_delete: Optional[bool] = Field(
-            False, description="Whether user/team can delete the resource"
-        )
-        can_share: Optional[bool] = Field(
-            False, description="Whether user/team can share the resource with others"
-        )
-
-        @model_validator(mode="after")
-        def validate_permission_combination(self) -> "Create":
-            """Validate that the permission has a valid combination of user_id, team_id, and role_id."""
-            # Case 1: User-specific permission (user_id only)
-            if self.user_id and not self.team_id and not self.role_id:
-                return self
-
-            # Case 2: Team-specific permission (team_id only)
-            if self.team_id and not self.user_id and not self.role_id:
-                return self
-
-            # Case 3: Team role-specific permission (team_id and role_id)
-            if self.team_id and not self.user_id and self.role_id:
-                return self
-
-            # Case 4: System role-specific permission (role_id only)
-            if not self.user_id and not self.team_id and self.role_id:
-                # For Case 4, we need to ensure the role is team-specific
-                # Since we can't access the database here, we'll enforce that
-                # system-wide roles (without team_id) are not allowed
-                raise ValueError("Role must be team-specific when used without team_id")
-
-            # Invalid combinations
-            if self.user_id and self.role_id:
-                raise ValueError("Cannot have both user_id and role_id")
-
-            if self.user_id and self.team_id:
-                raise ValueError(
-                    "Invalid permission combination: cannot have both user_id and team_id"
-                )
-
-            # If we get here, no valid combination was found
-            raise ValueError("Invalid permission combination")
-
-    class Update(BaseModel, RoleModel.Reference.ID.Optional):
-        can_view: Optional[bool] = Field(
-            None, description="Whether user/team can view the resource"
-        )
-        can_execute: Optional[bool] = Field(
-            None, description="Whether user/team can execute the resource"
-        )
-        can_copy: Optional[bool] = Field(
-            None, description="Whether user/team can copy the resource"
-        )
-        can_edit: Optional[bool] = Field(
-            None, description="Whether user/team can edit the resource"
-        )
-        can_delete: Optional[bool] = Field(
-            None, description="Whether user/team can delete the resource"
-        )
-        can_share: Optional[bool] = Field(
-            None, description="Whether user/team can share the resource with others"
-        )
-
-    class Search(
-        ApplicationModel.Search,
-        UserModel.Reference.ID.Search,
-        TeamModel.Reference.ID.Search,
-        RoleModel.Reference.ID.Search,
-    ):
-        resource_type: Optional[StringSearchModel] = None
-        resource_id: Optional[StringSearchModel] = None
-        can_view: Optional[bool] = None
-        can_execute: Optional[bool] = None
-        can_copy: Optional[bool] = None
-        can_edit: Optional[bool] = None
-        can_delete: Optional[bool] = None
-        can_share: Optional[bool] = None
-
-
-class PermissionManager(AbstractBLLManager, RouterMixin):
-    _model = PermissionModel
-
-    def create_validation(self, entity):
-        """Validate permission creation with database checks"""
-        # Related entity existence validation is handled by the database layer
-
-        if entity.user_id:
-            user = UserModel.DB(self.model_registry.DB.manager.Base).get(
-                requester_id=self.requester.id,
-                model_registry=self.model_registry,
-                id=entity.user_id,
-            )
-
-            if not user:
-                raise HTTPException(status_code=404, detail="User not found")
-
-        if entity.team_id:
-            team = TeamModel.DB(self.model_registry.DB.manager.Base).get(
-                requester_id=self.requester.id,
-                model_registry=self.model_registry,
-                id=entity.team_id,
-            )
-
-            if not team:
-                raise HTTPException(status_code=404, detail="Team not found")
-
-        role = None
-        if entity.role_id:
-            role = RoleModel.DB(self.model_registry.DB.manager.Base).get(
-                requester_id=self.requester.id,
-                model_registry=self.model_registry,
-                id=entity.role_id,
-            )
-
-            if not role:
-                raise HTTPException(status_code=404, detail="Role not found")
-
-        # If only role_id is provided (no team_id), verify it's a system role
-        if role and not entity.team_id and not entity.user_id:
-            if not role.team_id:
-                raise ValueError("Role must be team-specific when used without team_id")
-
-
-class InvitationModel(
-    ApplicationModel.Optional,
-    UpdateMixinModel.Optional,
-    UserModel.Reference.Optional,
-    TeamModel.Reference.Optional,
-    RoleModel.Reference.Optional,
-    metaclass=ModelMeta,
-):
-    Manager: ClassVar[Type["InvitationManager"]] = None
-    code: Optional[str] = Field(None, description="Invitation code")
-    max_uses: Optional[int] = Field(None, description="Maximum number of uses allowed")
-    expires_at: Optional[datetime] = Field(None, description="Expiration date/time")
-
-    # Database metadata for SQLAlchemy generation
-    table_comment: ClassVar[str] = (
-        "Invitations to join teams, can be direct or via invitation code"
-    )
-
-    class Create(
-        BaseModel,
-        TeamModel.Reference.ID.Optional,
-        RoleModel.Reference.ID.Optional,
-        UserModel.Reference.ID.Optional,
-    ):
-        code: Optional[str] = Field(
-            None, description="Invitation code (auto-generated if not provided)"
-        )
-        # user_id: Optional[str] = Field(None, description="User ID of the inviter")
-        max_uses: Optional[int] = Field(
-            None, description="Maximum number of uses allowed"
-        )
-        expires_at: Optional[datetime] = Field(None, description="Expiration date/time")
-        email: Optional[str] = Field(
-            None, description="Email address of the invitee (if known)"
-        )
-
-        @model_validator(mode="after")
-        def validate_team_role_combination(self):
-            """Validate that if team_id or role_id is provided, both must be provided"""
-            has_team = self.team_id is not None
-            has_role = self.role_id is not None
-
-            # Check if fields were explicitly set to null (not just omitted)
-            # This rejects explicit {"team_id": null, "role_id": null} while allowing
-            # omitted fields for app-level invitations
-            team_explicitly_set = "team_id" in self.model_fields_set
-            role_explicitly_set = "role_id" in self.model_fields_set
-
-            if team_explicitly_set and role_explicitly_set and not has_team and not has_role:
-                from fastapi import HTTPException
-
-                raise HTTPException(
-                    status_code=422,
-                    detail="team_id and role_id cannot both be explicitly set to null",
-                )
-
-            if has_team != has_role:
-                from fastapi import HTTPException
-
-                raise HTTPException(
-                    status_code=422,
-                    detail="team_id and role_id must both be provided together, or both be null for app-level invitations",
-                )
-            return self
-
-    class Patch(BaseModel):
-        invitation_code: Optional[str] = Field(
-            None, description="Invitation code to accept"
-        )
-        invitee_id: Optional[str] = Field(
-            None, description="ID of existing invitee record"
-        )
-        action: Optional[str] = Field(
-            None, description="Action to perform (e.g., 'accept', 'decline')"
-        )
-
-        @model_validator(mode="after")
-        def validate_acceptance_method(self):
-            """Validate that exactly one acceptance method is provided"""
-            methods_provided = sum(
-                [
-                    self.invitation_code is not None,
-                    self.invitee_id is not None,
-                ]
-            )
-
-            if methods_provided != 1:
-                from fastapi import HTTPException
-
-                raise HTTPException(
-                    status_code=400,
-                    detail="Exactly one of invitation_code or invitee_id must be provided",
-                )
-            return self
-
-    class Accept(BaseModel):
-        invitation_code: Optional[str] = Field(
-            None, description="Invitation code to accept"
-        )
-        invitee_id: Optional[str] = Field(
-            None, description="ID of existing invitee record"
-        )
-        action: Optional[str] = Field(
-            None, description="Action to perform (e.g., 'accept', 'decline')"
-        )
-
-        @model_validator(mode="after")
-        def validate_acceptance_method(self):
-            """Validate that exactly one acceptance method is provided"""
-            methods_provided = sum(
-                [
-                    self.invitation_code is not None,
-                    self.invitee_id is not None,
-                ]
-            )
-
-            if methods_provided != 1:
-                from fastapi import HTTPException
-
-                raise HTTPException(
-                    status_code=400,
-                    detail="Exactly one of invitation_code or invitee_id must be provided",
-                )
-            return self
-
-    class Update(BaseModel, RoleModel.Reference.ID.Optional):
-        code: Optional[str] = Field(None, description="Invitation code")
-        max_uses: Optional[int] = Field(
-            None, description="Maximum number of uses allowed"
-        )
-        expires_at: Optional[datetime] = Field(None, description="Expiration date/time")
-
-    class Search(
-        ApplicationModel.Search,
-        TeamModel.Reference.ID.Search,
-        RoleModel.Reference.ID.Search,
-    ):
-        code: Optional[StringSearchModel] = None
-        user_id: Optional[StringSearchModel] = None
-        max_uses: Optional[NumericalSearchModel] = None
-        expires_at: Optional[DateSearchModel] = None
-
-
-class InvitationAcceptanceResponse(BaseModel):
-    """Response model for invitation acceptance."""
-
-    success: bool = Field(
-        ..., description="Whether the invitation was accepted successfully"
-    )
-    message: str = Field(..., description="Success or error message")
-    team_id: Optional[str] = Field(None, description="ID of the team joined")
-    role_id: Optional[str] = Field(None, description="ID of the role assigned")
-    user_team_id: Optional[str] = Field(
-        None, description="ID of the user-team relationship created"
-    )
-
-
-class InvitationManager(AbstractBLLManager, RouterMixin):
-    _model = InvitationModel
-
-    # RouterMixin configuration
-    prefix: ClassVar[Optional[str]] = "/v1/invitation"
-    tags: ClassVar[Optional[List[str]]] = ["Team Management"]
-    auth_type: ClassVar[AuthType] = AuthType.JWT
-    auth_dependency: ClassVar[Optional[str]] = "get_invitation_manager"
-    custom_routes: ClassVar[List[Dict[str, Any]]] = [
-        {
-            "path": "/{id}",
-            "method": "patch",
-            "function": "patch_invitation_endpoint",
-            "summary": "Accept invitation",
-            "description": """
-            Accepts an invitation to a team on behalf of an existing user.
-            
-            Supports two acceptance methods:
-            1. Via invitation_code: For public invitations using a shareable code
-            2. Via invitee_id: For direct email invitations where the user was specifically invited
-            
-            The invitation will create or update the user's team membership if it's a team-specific invitation.
-            App-level invitations (without team/role) are accepted for referral tracking purposes.
-            """,
-            "response_model": "InvitationAcceptanceResponse",
-            "status_code": 200,
-            "responses": {
-                200: {
-                    "description": "Invitation processed (success or failure details in response)",
-                    "content": {
-                        "application/json": {
-                            "examples": {
-                                "success": {
-                                    "summary": "Successful acceptance",
-                                    "value": {
-                                        "success": True,
-                                        "message": "Invitation accepted successfully via code",
-                                        "team_id": "team-uuid-here",
-                                        "role_id": "role-uuid-here",
-                                        "user_team_id": "user-team-uuid-here",
-                                    },
-                                },
-                                "failure": {
-                                    "summary": "Failed acceptance",
-                                    "value": {
-                                        "success": False,
-                                        "message": "Invitation has expired",
-                                        "team_id": None,
-                                        "role_id": None,
-                                        "user_team_id": None,
-                                    },
-                                },
-                            }
-                        }
-                    },
-                },
-                401: {"description": "Invalid or missing authentication"},
-                400: {"description": "Invalid request data"},
-            },
-        }
-    ]
-
-    def __init__(
-        self,
-        requester_id: str,
-        target_id: Optional[str] = None,
-        target_team_id: Optional[str] = None,
-        model_registry: Optional[Any] = None,
-    ):
-        super().__init__(
-            requester_id=requester_id,
-            target_id=target_id,
-            target_team_id=target_team_id,
-            model_registry=model_registry,
-        )
-        self._Invitee_manager = None
-
-    @property
-    def Invitee_manager(self):
-        if self._Invitee_manager is None:
-            self._Invitee_manager = InviteeManager(
-                requester_id=self.requester.id,
-                target_team_id=self.target_team_id,
-                parent=self,
-                model_registry=self.model_registry,
-            )
-        return self._Invitee_manager
-
-    def create_validation(self, entity):
-        """Validate invitation creation"""
-        # Check that team/role combination is valid
-        if entity.team_id and not entity.role_id:
-            raise HTTPException(
-                status_code=400, detail="team_id and role_id must both be provided"
-            )
-        if entity.role_id and not entity.team_id:
-            raise HTTPException(
-                status_code=400, detail="team_id and role_id must both be provided"
-            )
-
-        # Check if team exists (use ROOT_ID to bypass permission checks)
-        # This ensures we return 404 only for genuinely non-existent entities
-        if entity.team_id:
-            team = TeamModel.DB(self.model_registry.DB.manager.Base).get(
-                requester_id=env("ROOT_ID"),
-                model_registry=self.model_registry,
-                id=entity.team_id,
-            )
-            if not team:
-                raise HTTPException(status_code=404, detail="Team not found")
-
-        # Check if role exists (use ROOT_ID to bypass permission checks)
-        if entity.role_id:
-            role = RoleModel.DB(self.model_registry.DB.manager.Base).get(
-                requester_id=env("ROOT_ID"),
-                model_registry=self.model_registry,
-                id=entity.role_id,
-            )
-            if not role:
-                raise HTTPException(status_code=404, detail="Role not found")
-
-    def create(self, **kwargs):
-        """Create an invitation with auto-generated code if needed"""
-        # Determine if this is a public invitation (has team_id/role_id)
-        has_team_role = kwargs.get("team_id") and kwargs.get("role_id")
-
-        # Only generate code for public invitations (team-based)
-        if has_team_role and ("code" not in kwargs or not kwargs["code"]):
-            kwargs["code"] = "".join(
-                secrets.choice(string.ascii_uppercase + string.digits) for _ in range(8)
-            )
-        elif not has_team_role:
-            # App-level invitations should not have codes
-            kwargs.pop("code", None)
-
-        existing_invitations = self.list(
-            team_id=kwargs.get("team_id"),
-            role_id=kwargs.get("role_id"),
-            deleted_at=None,
-        )
-
-        if "email" in kwargs:
-            email = kwargs.pop("email")
-            if not email:
-                raise HTTPException(status_code=400, detail="empty")
-            emails = [email] if isinstance(email, str) else email
-
-            # check if invitation already exists
-            existing_invitees = []
-
-            for invitation in existing_invitations:
-                invitees = self.Invitee_manager.list(
-                    invitation_id=invitation.id, deleted_at=None, declined_at=None
-                )
-                for invitee in invitees:
-                    existing_invitees.append(invitee.email)
-
-            for email in emails:
-                email = email.lower().strip()
-                if email in existing_invitees:
-                    emails.remove(email)  # remove email if already invited
-
-            if not emails:
-                raise HTTPException(status_code=400, detail="already invited")
-
-            # create the invitation
-            invitation = super().create(**kwargs)
-
-            # create invitees for the invitation
-            for email in emails:
-                self.add_invitee(invitation_id=invitation.id, email=email)
-
-            return invitation
-
-        user = None
-        if "user_id" in kwargs:
-            user_id = kwargs.get("user_id")
-            for invitation in existing_invitations:
-                if user_id == invitation.user_id:
-                    raise HTTPException(
-                        status_code=400, detail=f"user {user_id} already invited"
-                    )
-            user_manager = UserManager(
-                requester_id=self.requester.id,
-                target_id=user_id,
-                model_registry=self.model_registry,
-            )
-            user = user_manager.get()
-
-        invitation = super().create(**kwargs)
-
-        if user is not None:
-            invitation.user = user
-
-        return invitation
-
-    @staticmethod
-    def generate_invitation_link(code: str, email: str = None) -> str:
-        """Generate an invitation link from a code"""
-        base_url = env("APP_URI")
-        if not email:
-            return f"{base_url}/join?code={code}"
-        return f"{base_url}/join?code={code}?email={email}"
-
-    def add_invitee(self, invitation_id: str, email: str) -> Dict[str, Any]:
-        """Add an invitee to an invitation"""
-
-        if not invitation_id:
-            raise HTTPException(status_code=404, detail="Invitation not found")
-
-        # Get the invitation to check if it exists
-        invitation = self.get(id=invitation_id)
-
-        # Check if user exists by email - if not, this is an email-only invitation
-        user_manager = UserManager(
-            requester_id=self.requester.id, model_registry=self.model_registry
-        )
-        user_id = None
-        try:
-            user = user_manager.list(email=email.lower().strip())
-            if user:
-                user_id = user[0].id
-        except HTTPException as e:
-            logger.warning(f"User lookup for invitee {email!r} failed: {e.detail}", exc_info=True)
-
-        # Create the invitee record
-        invitee = self.Invitee_manager.create(
-            invitation_id=invitation_id,
-            email=email.lower().strip(),
-            user_id=user_id,  # Will be None for email-only invitations
-        )
-
-        # Only generate invitation link if there's a code (public invitations)
-        invitation_link = None
-        if invitation.code:
-            invitation_link = self.generate_invitation_link(invitation.code)
-
-        if invitation.team_id not in (None, ""):
-            # If this is a team invitation, set the team
-            with TeamManager(
-                requester_id=self.requester.id,
-                target_id=invitation.team_id,
-                model_registry=self.model_registry,
-            ) as team_manager:
-                team = team_manager.get(id=invitation.team_id)
-                invitation.team = team
-
-        if invitee.invitation is None:
-            invitee.invitation = invitation
-
-        # FIXME: This should be done with hooks
-        try:
-
-            from serverframework.extensions.email.BLL_EMail import send_invitation_email_hook
-
-            send_invitation_email_hook(manager=self, entity=invitee)
-
-        except Exception as e:
-            from serverframework.lib.Logging import logger
-
-            logger.error(
-                f"Failed to send invitation email for invitation {invitation.id}: {str(e)}"
-            )
-
-        return {
-            "invitation_id": invitation_id,
-            "invitation_code": invitation.code,
-            "invitation_link": invitation_link,
-            "user_id": user_id,
-            "email": email.lower().strip(),
-        }
-
-    def get(
-        self,
-        include: Optional[List[str]] = None,
-        fields: Optional[List[str]] = [],
-        **kwargs,
-    ) -> Any:
-        """Get an invitation with optional included relationships. Returns 404 if not found."""
-        options = []
-
-        fields = self.validate_fields(fields)
-        include_list = self.validate_includes(include)
-
-        if include_list:
-            options = self.generate_joins(self.DB, include_list)
-
-        invitation = self.DB.get(
-            requester_id=self.requester.id,
-            fields=fields,
-            model_registry=self.model_registry,
-            return_type="dto" if not fields else "dict",
-            override_dto=self.Model if not fields else None,
-            options=options,
-            **kwargs,
-        )
-
-        if invitation is None:
-            invitation_id = kwargs.get("id") or kwargs.get("invitation_id") or "unknown"
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Invitation with ID '{invitation_id}' not found",
-            )
-        return invitation
-
-    def accept_invitation_unified(
-        self, accept_data: InvitationModel.Accept, user_id: str
-    ) -> Dict[str, Any]:
-        """Accept or decline an invitation via invitation code or invitee ID."""
-        patch_data = InvitationModel.Patch(**accept_data.model_dump())
-        return self.patch_invitation_unified(patch_data, user_id)
-
-    def patch_invitation_unified(
-        self, patch_data: InvitationModel.Patch, user_id: str
-    ) -> Dict[str, Any]:
-        """
-        Unified method to accept invitations via either invitation code or invitee ID.
-
-        This method handles both:
-        1. Accepting via invitation_code (creates invitee on the spot)
-        2. Accepting via invitee_id (for direct email invitations)
-
-        Args:
-            accept_data: The acceptance data containing either invitation_code or invitee_id
-            user_id: The ID of the user accepting the invitation
-
-        Returns:
-            Dict containing success status, message, and team/role details
-        """
-        if patch_data.invitation_code:
-            # Handle invitation code acceptance
-            try:
-                if patch_data.action and patch_data.action.lower() == "decline":
-                    # Handle decline action
-                    result = self.Invitee_manager.decline_invitation(
-                        patch_data.invitation_code
-                    )
-                    return {
-                        "success": True,
-                        "message": "Invitation declined successfully via code",
-                        "team_id": result.get("team_id"),
-                        "role_id": result.get("role_id"),
-                    }
-                else:
-                    result = self.Invitee_manager.accept_invitation(
-                        patch_data.invitation_code, user_id
-                    )
-
-                    return {
-                        "success": True,
-                        "message": "Invitation accepted successfully via code",
-                        "team_id": result.get("team_id"),
-                        "role_id": result.get("role_id"),
-                        "user_team_id": result.get("user_team_id"),
-                    }
-            except HTTPException as e:
-                # Re-raise HTTP exceptions as they contain proper error codes
-                raise e
-            except Exception as e:
-                raise HTTPException(
-                    status_code=404, detail=f"Failed to accept invitation: {str(e)}"
-                )
-
-        elif patch_data.invitee_id:
-            # Handle direct invitee acceptance
-            try:
-                # Get the invitee record
-                invitee = self.Invitee_manager.get(id=patch_data.invitee_id)
-
-                # Get the user details
-                user_manager = UserManager(
-                    requester_id=env("ROOT_ID"), model_registry=self.model_registry
-                )
-                user = user_manager.get(id=user_id)
-
-                # Verify the user's email matches the invitee email
-                if user.email.lower() != invitee.email.lower():
-                    raise HTTPException(
-                        status_code=403,
-                        detail="User email does not match invitation email",
-                    )
-
-                # Check if already accepted
-                if invitee.accepted_at:
-                    raise HTTPException(
-                        status_code=409, detail="Invitation already accepted"
-                    )
-
-                # Check if declined
-                if invitee.declined_at:
-                    raise HTTPException(
-                        status_code=409, detail="Invitation was previously declined"
-                    )
-
-                # Get the invitation details
-                invitation = self.get(id=invitee.invitation_id)
-
-                # Check if invitation has expired
-                if invitation.expires_at:
-                    # Handle timezone comparison - if expires_at is naive, treat it as UTC
-                    expires_at = invitation.expires_at
-                    if expires_at.tzinfo is None:
-                        expires_at = expires_at.replace(tzinfo=timezone.utc)
-                    if expires_at < datetime.now(timezone.utc):
-                        raise HTTPException(
-                            status_code=410, detail="Invitation has expired"
-                        )
-
-                if patch_data.action and patch_data.action.lower() == "decline":
-                    self.Invitee_manager.update(
-                        id=invitee.id,
-                        declined_at=datetime.now(timezone.utc),
-                        user_id=user_id,
-                    )
-                    if invitation.team_id and invitation.role_id:
-                        return {
-                            "success": True,
-                            "message": "Invitation declined successfully via invitee ID",
-                            "team_id": invitation.team_id,
-                            "role_id": invitation.role_id,
-                        }
-
-                # Mark invitee as accepted
-                self.Invitee_manager.update(
-                    id=invitee.id,
-                    accepted_at=datetime.now(timezone.utc),
-                    user_id=user_id,
-                )
-
-                # If this is a team invitation, add user to team
-                user_team_id = None
-                if invitation.team_id and invitation.role_id:
-                    user_team_manager = UserTeamManager(
-                        requester_id=env(
-                            "ROOT_ID"
-                        ),  # Use ROOT_ID for invitation acceptance
-                        target_id=user.id,
-                        model_registry=self.model_registry,
-                    )
-
-                    # Check for existing team membership
-                    existing_memberships = user_team_manager.list(
-                        user_id=user_id,
-                        team_id=invitation.team_id,
-                    )
-
-                    if existing_memberships:
-                        # Update existing team membership
-                        user_team = user_team_manager.update(
-                            id=existing_memberships[0].id,
-                            role_id=invitation.role_id,
-                            enabled=True,
-                        )
-                        user_team_id = existing_memberships[0].id
-                    else:
-                        # Create new team membership
-                        user_team = user_team_manager.create(
-                            user_id=user_id,
-                            team_id=invitation.team_id,
-                            role_id=invitation.role_id,
-                            enabled=True,
-                        )
-                        user_team_id = user_team.id
-
-                return {
-                    "success": True,
-                    "message": "Invitation accepted successfully via invitee ID",
-                    "team_id": invitation.team_id,
-                    "role_id": invitation.role_id,
-                    "user_team_id": user_team_id,
-                }
-            except HTTPException as e:
-                # Re-raise HTTP exceptions as they contain proper error codes
-                raise e
-            except Exception as e:
-                raise HTTPException(
-                    status_code=500, detail=f"Failed to accept invitation: {str(e)}"
-                )
-
-        else:
-            raise HTTPException(
-                status_code=400,
-                detail="Exactly one of invitation_code or invitee_id must be provided",
-            )
-
-    def accept_invitation(self, code: str, user_id: str) -> Dict[str, Any]:
-        """Accept an invitation using a code and user ID - delegates to InviteeManager"""
-        return self.Invitee_manager.accept_invitation(code, user_id)
-
-    def patch_invitation_endpoint(
-        self, id: str, body: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """Accept or Decline an invitation endpoint (custom route method)"""
-        patch_data = body.get("invitation")
-        if not patch_data:
-            raise HTTPException(status_code=400, detail="Missing invitation data")
-
-        # Convert dict to InvitationModel.Accept
-        patch_model = InvitationModel.Patch(**patch_data)
-
-        # Use the unified acceptance method with the manager's requester ID
-        result = self.patch_invitation_unified(patch_model, self.requester.id)
-        return result
-
-
-class InviteeModel(
-    ApplicationModel.Optional,
-    UpdateMixinModel.Optional,
-    UserModel.Reference.Optional,
-    InvitationModel.Reference,
-    metaclass=ModelMeta,
-):
-    Manager: ClassVar[Type["InviteeManager"]] = None
-    email: str = Field(..., description="Email of the invitee")
-    declined_at: Optional[datetime] = Field(
-        None, description="When the invitation was declined"
-    )
-    accepted_at: Optional[datetime] = Field(
-        None, description="When the invitation was accepted"
-    )
-
-    # Database metadata for SQLAlchemy generation
-    table_comment: ClassVar[str] = "Tracks specific individuals invited to join a team"
-
-    class Create(
-        BaseModel, InvitationModel.Reference.ID, UserModel.Reference.ID.Optional
-    ):
-        email: str = Field(..., description="Email of the invitee")
-        declined_at: Optional[datetime] = Field(
-            None, description="When the invitation was declined"
-        )
-        accepted_at: Optional[datetime] = Field(
-            None, description="When the invitation was accepted"
-        )
-
-    class Update(BaseModel, UserModel.Reference.ID.Optional):
-        declined_at: Optional[datetime] = Field(
-            None, description="When the invitation was declined"
-        )
-        accepted_at: Optional[datetime] = Field(
-            None, description="When the invitation was accepted"
-        )
-
-    class Search(
-        ApplicationModel.Search,
-        InvitationModel.Reference.ID.Search,
-        UserModel.Reference.ID.Search,
-    ):
-        email: Optional[StringSearchModel] = None
-        declined_at: Optional[DateSearchModel] = Field(None)
-        accepted_at: Optional[DateSearchModel] = Field(None)
-
-
-class InviteeManager(AbstractBLLManager):
-    _model = InviteeModel
-
-    def create_validation(self, entity):
-        """Validate invitee creation"""
-        # Database constraints ensure referenced invitation exists.
-
-        if "@" not in entity.email:
-            raise HTTPException(status_code=400, detail="Invalid email format")
-
-        # Database constraints ensure referenced user exists.
-
-        existing = InviteeModel.DB(self.model_registry.DB.manager.Base).exists(
-            requester_id=env(
-                "ROOT_ID"
-            ),  # Use ROOT_ID for invitation acceptance validation
-            model_registry=self.model_registry,
-            invitation_id=entity.invitation_id,
-            email=entity.email.lower().strip(),
-        )
-        if existing:
-            raise HTTPException(
-                status_code=400, detail="This email has already been invited"
-            )
-
-    def accept_invitation_by_email(self, code: str, email: str) -> Dict[str, Any]:
-        """
-        Accept an invitation by code and email before user registration.
-
-        This method allows accepting invitations during the registration process
-        when the user doesn't exist yet.
-
-        Args:
-            code: Invitation code
-            email: Email address of the user who will be registered
-
-        Returns:
-            Dict containing invitation details for later processing
-        """
-        # Find the invitation by code - use ROOT_ID since invitation acceptance should bypass permission checks
-        invitation = InvitationModel.DB(self.model_registry.DB.manager.Base).get(
-            requester_id=env("ROOT_ID"),
-            model_registry=self.model_registry,
-            code=code,
-            return_type="dto",
-            override_dto=InvitationModel,
-        )
-
-        if not invitation:
-            raise HTTPException(status_code=404, detail="Invalid invitation code")
-
-        # Check if invitation has expired
-        if invitation.expires_at:
-            # Handle timezone comparison - if expires_at is naive, treat it as UTC
-            expires_at = invitation.expires_at
-            if expires_at.tzinfo is None:
-                expires_at = expires_at.replace(tzinfo=timezone.utc)
-            if expires_at < datetime.now(timezone.utc):
-                raise HTTPException(status_code=410, detail="Invitation has expired")
-
-        # Check if invitation has reached max uses
-        if invitation.max_uses is not None:
-            InviteeDB = InviteeModel.DB(self.model_registry.DB.manager.Base)
-            used_count = InviteeDB.count(
-                requester_id=env("ROOT_ID"),
-                model_registry=self.model_registry,
-                invitation_id=invitation.id,
-                filters=[InviteeDB.accepted_at.isnot(None)],
-            )
-            if used_count >= invitation.max_uses:
-                raise HTTPException(
-                    status_code=410, detail="Invitation has reached maximum usage limit"
-                )
-
-        # Check if there's already an invitee record for this email
-        existing_invitees = InviteeModel.DB(self.model_registry.DB.manager.Base).list(
-            requester_id=env("ROOT_ID"),
-            model_registry=self.model_registry,
-            invitation_id=invitation.id,
-            email=email.lower().strip(),
-            override_dto=InviteeModel,
-            return_type="dto",
-        )
-
-        # Create invitee record if it doesn't exist
-        if not existing_invitees:
-            self.create(
-                invitation_id=invitation.id,
-                email=email.lower().strip(),
-                user_id=None,  # Explicitly set to None for email-only invitations
-            )
-
-        return {
-            "invitation_id": invitation.id,
-            "team_id": invitation.team_id,
-            "role_id": invitation.role_id,
-            "code": invitation.code,
-        }
-
-    def decline_invitation(self, code: str) -> Dict[str, Any]:
-        """Decline an invitation using a code and user ID"""
-        # Find the invitation by code - use ROOT_ID since invitation acceptance should bypass permission checks
-        invitation = InvitationModel.DB(self.model_registry.DB.manager.Base).get(
-            requester_id=env("ROOT_ID"),
-            model_registry=self.model_registry,
-            code=code,
-            return_type="dto",
-            override_dto=InvitationModel,
-        )
-
-        if not invitation:
-            raise HTTPException(status_code=404, detail="Invalid invitation code")
-
-        # Check if the user exists
-        user = UserModel.DB(self.model_registry.DB.manager.Base).get(
-            requester_id=env("ROOT_ID"),
-            model_registry=self.model_registry,
-            id=self.requester.id,
-            return_type="dto",
-            override_dto=UserModel,
-        )
-        if not user:
-            raise HTTPException(status_code=404, detail="User not found")
-
-        # Find invitee by email if exists
-        inviteeDB = InviteeModel.DB(self.model_registry.DB.manager.Base)
-        invitees = inviteeDB.list(
-            requester_id=env("ROOT_ID"),
-            model_registry=self.model_registry,
-            invitation_id=invitation.id,
-            email=user.email,
-            override_dto=InviteeModel,
-            return_type="dto",
-            filters=[
-                inviteeDB.accepted_at.is_(None),
-                inviteeDB.declined_at.is_(None),
-            ],
-        )
-
-        # For invitation codes that don't have specific invitees, create an invitee record
-        if invitees:
-            # Use existing invitee record
-            invitee = invitees[0]
-            self.update(
-                id=invitee.id,
-                declined_at=datetime.now(timezone.utc),
-                user_id=self.requester.id,
-            )
-
-        return {
-            "success": True,
-            "team_id": invitation.team_id,
-            "role_id": invitation.role_id,
-            "message": "Invitation declined successfully",
-        }
-
-    # FIXME This should be on behalf of the requester, separate user ID not required.
-    def accept_invitation(self, code: str, user_id: str) -> Dict[str, Any]:
-        """Accept an invitation using a code and user ID"""
-        # Find the invitation by code - use ROOT_ID since invitation acceptance should bypass permission checks
-        invitation = InvitationModel.DB(self.model_registry.DB.manager.Base).get(
-            requester_id=env("ROOT_ID"),
-            model_registry=self.model_registry,
-            code=code,
-            return_type="dto",
-            override_dto=InvitationModel,
-        )
-
-        if not invitation:
-            raise HTTPException(status_code=404, detail="Invalid invitation code")
-
-        # Check if invitation has expired
-        if invitation.expires_at:
-            # Handle timezone comparison - if expires_at is naive, treat it as UTC
-            expires_at = invitation.expires_at
-            if expires_at.tzinfo is None:
-                expires_at = expires_at.replace(tzinfo=timezone.utc)
-            if expires_at < datetime.now(timezone.utc):
-                raise HTTPException(status_code=410, detail="Invitation has expired")
-
-        # Check if invitation has reached max uses
-        if invitation.max_uses is not None:
-            InviteeDB = InviteeModel.DB(self.model_registry.DB.manager.Base)
-            used_count = InviteeDB.count(
-                requester_id=env("ROOT_ID"),
-                model_registry=self.model_registry,
-                invitation_id=invitation.id,
-                filters=[InviteeDB.accepted_at.isnot(None)],
-            )
-            if used_count >= invitation.max_uses:
-                raise HTTPException(
-                    status_code=410, detail="Invitation has reached maximum usage limit"
-                )
-
-        # Verify the user
-        user = UserModel.DB(self.model_registry.DB.manager.Base).get(
-            requester_id=env("ROOT_ID"),
-            model_registry=self.model_registry,
-            id=user_id,
-            return_type="dto",
-            override_dto=UserModel,
-        )
-        if not user:
-            raise HTTPException(status_code=404, detail="User not found")
-
-        # Find invitee by email if exists
-        invitees = InviteeModel.DB(self.model_registry.DB.manager.Base).list(
-            requester_id=env("ROOT_ID"),
-            model_registry=self.model_registry,
-            invitation_id=invitation.id,
-            email=user.email,
-            override_dto=InviteeModel,
-            return_type="dto",
-        )
-
-        # For invitation codes that don't have specific invitees, create an invitee record
-        if not invitees:
-            if not invitation.code:
-                # This is a direct invitation without a code, we should have found a matching invitee
-                raise HTTPException(
-                    status_code=403, detail="Your email is not invited to this team"
-                )
-            else:
-                # For invitation codes, create an invitee record
-                invitee = self.create(
-                    invitation_id=invitation.id,
-                    email=user.email,
-                    accepted_at=datetime.now(timezone.utc),
-                    user_id=user_id,
-                )
-        else:
-            # Use existing invitee record
-            invitee = invitees[0]
-            self.update(
-                id=invitee.id,
-                accepted_at=datetime.now(timezone.utc),
-                user_id=user_id,
-            )
-
-        # Add user to team or update existing membership
-        user_team_manager = UserTeamManager(
-            requester_id=invitation.created_by_user_id,
-            target_id=user_id,
-            model_registry=self.model_registry,
-        )
-
-        existing_team_membership = user_team_manager.list(
-            user_id=user_id,
-            team_id=invitation.team_id,
-        )
-
-        if existing_team_membership:
-            # Update existing team membership
-            user_team = user_team_manager.update(
-                id=existing_team_membership[0].id,
-                role_id=invitation.role_id,
-                enabled=True,
-            )
-        else:
-            # Create new team membership
-            user_team = user_team_manager.create(
-                user_id=user_id,
-                team_id=invitation.team_id,
-                role_id=invitation.role_id,
-                enabled=True,
-            )
-
-        return {
-            "success": True,
-            "team_id": invitation.team_id,
-            "role_id": invitation.role_id,
-            "user_team_id": user_team.id,
-        }
-
 
 class RateLimitPolicyModel(
     ApplicationModel,
@@ -5694,48 +4247,36 @@ class SessionManager(AbstractBLLManager, RouterMixin):
         return result.get("revoked_count", 0)
 
 
-# Set up Model.Manager relationships
+# Set up Model.Manager relationships for classes still defined in core.
+# Extensions wire their own (see auth_recovery_questions, auth_lockout,
+# metadata, auth_invitations).
 UserModel.Manager = UserManager
 UserCredentialModel.Manager = UserCredentialManager
-UserRecoveryQuestionModel.Manager = UserRecoveryQuestionManager
-FailedLoginAttemptModel.Manager = FailedLoginAttemptManager
 TeamModel.Manager = TeamManager
 RoleModel.Manager = RoleManager
 UserTeamModel.Manager = UserTeamManager
-PermissionModel.Manager = PermissionManager
-InvitationModel.Manager = InvitationManager
-InviteeModel.Manager = InviteeManager
 RateLimitPolicyModel.Manager = RateLimitPolicyManager
 SessionModel.Manager = SessionManager
 
-# Backwards compatibility aliases - can be removed in future versions
-# These allow existing imports like 'from logic.BLL_Auth import UserManager' to continue working
+# Symbols still anchored in core. Extracted classes (UserRecoveryQuestion*,
+# FailedLoginAttempt*, Metadata*, Invitation*, Invitee*, Permission*) are
+# resolved lazily through the PEP 562 ``__getattr__`` shim above, which
+# forwards to the relevant extension when loaded and raises a typed migration
+# error otherwise. Listing them in ``__all__`` would force eager imports and
+# break the lazy-loading contract.
 __all__ = [
     "UserModel",
     "UserManager",
     "UserCredentialModel",
     "UserCredentialManager",
-    "UserRecoveryQuestionModel",
-    "UserRecoveryQuestionManager",
-    "FailedLoginAttemptModel",
-    "FailedLoginAttemptManager",
     "TeamModel",
     "TeamManager",
     "RoleModel",
     "RoleManager",
     "UserTeamModel",
     "UserTeamManager",
-    "PermissionModel",
-    "PermissionManager",
-    "InvitationModel",
-    "InvitationManager",
-    "InviteeModel",
-    "InviteeManager",
     "RateLimitPolicyModel",
     "RateLimitPolicyManager",
     "SessionModel",
     "SessionManager",
-    "MetadataManager",
-    "TeamMetadataManager",
-    "UserMetadataManager",
 ]

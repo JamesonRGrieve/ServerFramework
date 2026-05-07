@@ -221,7 +221,7 @@ class AbstractDBTest(AbstractTest):
             permission_data["expires_at"] = expires_at
 
         try:
-            from serverframework.logic.BLL_Auth import PermissionModel
+            from serverframework.extensions.acl_rbac.BLL_ACL import PermissionModel
 
             model_registry = self._get_model_registry()
             permission = PermissionModel.create(

@@ -680,7 +680,7 @@ def check_permission(
     Returns:
         tuple: (PermissionResult, error_message) indicating the result and any error message
     """
-    from serverframework.logic.BLL_Auth import PermissionModel
+    from serverframework.extensions.acl_rbac.BLL_ACL import PermissionModel
 
     try:
         # Validate inputs to prevent null dereference
@@ -887,9 +887,11 @@ def _get_admin_accessible_team_ids_cte(
     """
     # Local import to break cycle
     from serverframework.database.DatabaseManager import DatabaseManager
-    from serverframework.logic.BLL_Auth import (
+    from serverframework.extensions.auth_invitations.BLL_Invitations import (
         InvitationModel,
         InviteeModel,
+    )
+    from serverframework.logic.BLL_Auth import (
         RoleModel,
         TeamModel,
         UserModel,
@@ -1098,7 +1100,8 @@ def _build_direct_permission_filter(
     """
     # Local imports to break cycle
     from serverframework.database.DatabaseManager import DatabaseManager
-    from serverframework.logic.BLL_Auth import PermissionModel, UserTeamModel
+    from serverframework.extensions.acl_rbac.BLL_ACL import PermissionModel
+    from serverframework.logic.BLL_Auth import UserTeamModel
 
     # Get SQLAlchemy models using the declarative base
     permission_db_cls = PermissionModel.DB(declarative_base)
@@ -1497,7 +1500,7 @@ def generate_permission_filter(
 
         # Users can see invitations if they have an Invitee record for that invitation
         # This allows users to access invitations they were specifically invited to via email
-        from serverframework.logic.BLL_Auth import InviteeModel
+        from serverframework.extensions.auth_invitations.BLL_Invitations import InviteeModel
 
         Invitee_db_cls = InviteeModel.DB(declarative_base)
 
@@ -1515,7 +1518,7 @@ def generate_permission_filter(
     # Special Table Logic for Invitees
     if resource_db_cls.__tablename__ == "Invitees":
         # Local import to avoid circular dependency
-        from serverframework.logic.BLL_Auth import InvitationModel
+        from serverframework.extensions.auth_invitations.BLL_Invitations import InvitationModel
 
         invitation_db_cls = InvitationModel.DB(declarative_base)
 
@@ -1538,8 +1541,8 @@ def generate_permission_filter(
         accessible_invitations = user_created_invitations.union(team_invitations)
         conditions.append(resource_db_cls.invitation_id.in_(accessible_invitations))
 
-    # 4. Direct Permissions via Permission Table
-    from serverframework.logic.BLL_Auth import PermissionModel
+    # 4. Direct Permissions via Permission Table (acl_rbac extension)
+    from serverframework.extensions.acl_rbac.BLL_ACL import PermissionModel
 
     permission_db_cls = PermissionModel.DB(declarative_base)
 

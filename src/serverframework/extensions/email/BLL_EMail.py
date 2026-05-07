@@ -5,10 +5,10 @@ Email extension business logic - integrates the configured email providers
 
 import os
 
+from serverframework.extensions.auth_invitations.BLL_Invitations import InviteeManager
 from serverframework.lib.Environment import env
 from serverframework.lib.Logging import logger
 from serverframework.logic.AbstractLogicManager import HookTiming, hook_bll
-from serverframework.logic.BLL_Auth import InviteeManager
 
 
 # Item 90 — provider discovery is now driven by each PRV_ class's typed
