@@ -162,13 +162,14 @@ def upgrade() -> None:
         op.create_index("ix_traits_system", "traits", ["game_system_id"])
 
     # ---------------------------------------------------------------
-    # derivative_traits — edges from one Trait to another
+    # derivative_traits — edges from one Trait or Item to a Trait
     # ---------------------------------------------------------------
     if not _has_table("derivative_traits"):
         op.create_table(
             "derivative_traits",
             sa.Column("id", sa.String(36), nullable=False),
             sa.Column("source_trait_id", sa.String(36), nullable=True),
+            sa.Column("source_item_id", sa.String(36), nullable=True),
             sa.Column("target_trait_id", sa.String(36), nullable=True),
             sa.Column("operation", sa.String(32), nullable=True),
             sa.Column("value", sa.Float(), nullable=True),
@@ -184,17 +185,24 @@ def upgrade() -> None:
             sa.PrimaryKeyConstraint("id"),
             sa.ForeignKeyConstraint(["source_trait_id"], ["traits.id"]),
             sa.ForeignKeyConstraint(["target_trait_id"], ["traits.id"]),
+            # source_item_id FK is deferred until items table exists
+            # (created later in this migration).
             sa.CheckConstraint(
                 "operation IS NULL OR operation IN "
                 "('override', 'additive', 'multiplicative', 'clamp')",
                 name="ck_derivative_traits_operation",
             ),
+            sa.CheckConstraint(
+                "(source_trait_id IS NULL) OR (source_item_id IS NULL)",
+                name="ck_derivative_traits_source_xor",
+            ),
             comment=(
-                "Edges defining how one Trait contributes to another. "
-                "Resolution pipeline: override → additive → "
+                "Edges defining how a Trait or Item contributes to a "
+                "Trait. Resolution pipeline: override → additive → "
                 "multiplicative → clamp; order_index sequences within "
                 "phase; stacking_group de-duplicates by max-abs. "
-                "source_trait_id NULL = constant contribution."
+                "source_trait_id XOR source_item_id at the row level "
+                "(both NULL = constant contribution)."
             ),
             info=_INFO,
         )
@@ -202,6 +210,10 @@ def upgrade() -> None:
     dt_idx = _existing_index_names("derivative_traits")
     if "ix_dt_source" not in dt_idx:
         op.create_index("ix_dt_source", "derivative_traits", ["source_trait_id"])
+    if "ix_dt_source_item" not in dt_idx:
+        op.create_index(
+            "ix_dt_source_item", "derivative_traits", ["source_item_id"]
+        )
     if "ix_dt_target" not in dt_idx:
         op.create_index("ix_dt_target", "derivative_traits", ["target_trait_id"])
     if "ix_dt_phase" not in dt_idx:
@@ -487,9 +499,9 @@ def upgrade() -> None:
             "ix_ii_owner_faction", "item_instances", ["owner_faction_id"]
         )
 
-    # Close the Location ↔ ItemInstance cycle and the
-    # PersonTrait → ItemInstance source FK now that item_instances
-    # exists.
+    # Close the Location ↔ ItemInstance cycle, the PersonTrait →
+    # ItemInstance source FK, and the DerivativeTrait → Item source FK
+    # now that items / item_instances exist.
     with op.batch_alter_table("locations") as batch_op:
         batch_op.create_foreign_key(
             "fk_locations_container_item_instance",
@@ -502,6 +514,13 @@ def upgrade() -> None:
             "fk_person_traits_source_item_instance",
             "item_instances",
             ["source_item_instance_id"],
+            ["id"],
+        )
+    with op.batch_alter_table("derivative_traits") as batch_op:
+        batch_op.create_foreign_key(
+            "fk_derivative_traits_source_item",
+            "items",
+            ["source_item_id"],
             ["id"],
         )
 
@@ -738,6 +757,14 @@ def downgrade() -> None:
             try:
                 batch_op.drop_constraint(
                     "fk_locations_container_item_instance", type_="foreignkey"
+                )
+            except Exception:
+                pass
+    if _has_table("derivative_traits"):
+        with op.batch_alter_table("derivative_traits") as batch_op:
+            try:
+                batch_op.drop_constraint(
+                    "fk_derivative_traits_source_item", type_="foreignkey"
                 )
             except Exception:
                 pass

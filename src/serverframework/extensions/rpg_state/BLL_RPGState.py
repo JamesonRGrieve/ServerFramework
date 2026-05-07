@@ -25,10 +25,14 @@ Slowed are all Traits. Templates and applied instances share one model:
   feats, abilities, languages, resources, progression dimensions, and
   status effects).
 - ``DerivativeTraitModel`` (replaces ``StatusEffectTrait``) is the
-  edge: how one Trait contributes to another. Bull's Strength → STR
-  (op='additive', value=2.0). Initiative ← DEX (op='additive',
-  value=1.0) plus a constant (op='additive', value=5.0,
-  source_trait_id=NULL).
+  edge: how a Trait *or an Item* contributes to a target Trait.
+  Bull's Strength → STR (op='additive', value=2.0). Initiative ← DEX
+  (op='additive', value=1.0) plus a constant (op='additive',
+  value=5.0, source_trait_id=NULL, source_item_id=NULL). Ring of
+  Protection (Item) → AC (op='additive', value=1.0,
+  source_item_id=ring) — applied while the person wears an
+  ItemInstance of the Item. ``source_trait_id`` and ``source_item_id``
+  are mutually exclusive at the row level.
 - ``PersonTraitModel`` is the join: this person carries this trait,
   with the magnitude on ``value`` (and, for transient applications,
   ``started_at`` / ``expires_at`` / ``source_*``). Multiple rows per
@@ -48,7 +52,12 @@ sharing a non-NULL group keep only the max-abs contribution; rows with
 
 Contribution magnitude:
 - ``source_trait_id`` set → ``effective = value × (source PersonTrait.value or 1.0)``.
-- ``source_trait_id`` NULL → ``effective = value`` (a constant).
+- ``source_item_id`` set → ``effective = value`` while the person carries
+  an ItemInstance of this Item in an active configuration (equipped /
+  held / in an equipment-slot Location associated with the person);
+  contribution drops to 0 otherwise. The active-configuration check
+  is runtime-resolved against ItemInstance.location_id.
+- both NULL → ``effective = value`` (a constant).
 
 ``qualifier`` is conditional context ("vs orcs", "while prone"). NULL =
 always applies; non-NULL = the UI surfaces it as a toggle and the
@@ -358,15 +367,27 @@ class DerivativeTraitModel(
     metaclass=ModelMeta,
 ):
     Manager: ClassVar[Type["DerivativeTraitManager"]] = None
-    # Both endpoints reference traits.id; manual columns since
-    # TraitModel.Reference would generate one trait_id and collide on
-    # the second.
+    # Source endpoints. Two flavours, mutually exclusive at the row
+    # level (enforced by ck_derivative_traits_source_xor in DDL): a
+    # row's contribution comes from either a Trait OR an Item, never
+    # both. Both NULL = constant contribution (the row's `value` is
+    # added unconditionally).
     source_trait_id: Optional[str] = Field(
         None,
         description=(
             "FK → traits.id. When set, contribution scales with the "
-            "source's PersonTrait.value (or 1.0 if null). When NULL, "
-            "the row contributes a constant equal to `value`."
+            "source's PersonTrait.value (or 1.0 if null). Mutually "
+            "exclusive with source_item_id."
+        ),
+    )
+    source_item_id: Optional[str] = Field(
+        None,
+        description=(
+            "FK → items.id. When set, contribution applies while the "
+            "person carries an ItemInstance of this Item in an active "
+            "configuration (equipped / held / in an equipment slot "
+            "associated with the person — runtime-resolved, not part "
+            "of this row). Mutually exclusive with source_trait_id."
         ),
     )
     target_trait_id: Optional[str] = Field(
@@ -413,16 +434,21 @@ class DerivativeTraitModel(
     )
     table_comment: ClassVar[str] = (
         "Edges defining how one Trait contributes to another. Replaces "
-        "the prior StatusEffectTrait; subsumes both arithmetic "
-        "derivations (Initiative ← DEX + 5) and applied-effect "
-        "modifiers (Bull's Strength → STR +2). Resolution pipeline: "
-        "override → additive → multiplicative → clamp; order_index "
-        "sequences within phase; stacking_group de-duplicates by "
-        "max-abs. source_trait_id NULL = constant contribution."
+        "the prior StatusEffectTrait; subsumes arithmetic derivations "
+        "(Initiative ← DEX + 5), applied-effect modifiers (Bull's "
+        "Strength → STR +2), and item effects (Ring of Protection → AC "
+        "+1 while worn). Resolution pipeline: override → additive → "
+        "multiplicative → clamp; order_index sequences within phase; "
+        "stacking_group de-duplicates by max-abs. Source mutual "
+        "exclusion: source_trait_id XOR source_item_id (at most one); "
+        "both NULL = constant contribution. Activation for source_item "
+        "rows is runtime-resolved against the person's worn / held "
+        "ItemInstances."
     )
 
     class Create(BaseModel):
         source_trait_id: Optional[str] = None
+        source_item_id: Optional[str] = None
         target_trait_id: Optional[str] = None
         operation: Optional[DerivativeOperation] = None
         value: Optional[float] = None
@@ -439,6 +465,7 @@ class DerivativeTraitModel(
 
     class Search(ApplicationModel.Search):
         source_trait_id: Optional[StringSearchModel] = None
+        source_item_id: Optional[StringSearchModel] = None
         target_trait_id: Optional[StringSearchModel] = None
         operation: Optional[StringSearchModel] = None
         value: Optional[NumericalSearchModel] = None
@@ -1148,32 +1175,11 @@ class RPG_RelationshipModel(BaseModel):
 # Manager-layer integrity for invariants the DB cannot express. These
 # hooks reject mutations that would close a cycle in a self-referential
 # parent chain (Faction, Location) or in the Hook DAG.
-
-
-def _payload_value(context: HookContext, key: str) -> Optional[str]:
-    """Pull ``key`` off the most likely create/update payload arg.
-
-    Hooks see the manager's call args by position or kwarg; the payload
-    is conventionally the first positional or a ``data`` / ``payload``
-    kwarg. We try the common shapes and return None if nothing
-    matches.
-    """
-    for kwarg in ("data", "payload", "create_data", "update_data"):
-        candidate = context.kwarg(kwarg, default=None)
-        if candidate is not None and hasattr(candidate, key):
-            return getattr(candidate, key, None)
-    arg0 = context.arg(0, default=None)
-    if arg0 is not None and hasattr(arg0, key):
-        return getattr(arg0, key, None)
-    return None
-
-
-def _record_id(context: HookContext) -> Optional[str]:
-    """Pull the record id off an update call (kwarg ``id`` or second arg)."""
-    rid = context.kwarg("id", default=None)
-    if rid is not None:
-        return rid
-    return context.arg(1, default=None)
+#
+# AbstractBLLManager.create / update / list pass payload fields as flat
+# kwargs: ``manager.create(parent_id="x", ...)``,
+# ``manager.update(id, parent_id="z")``, ``manager.list(child_hook_id="y")``.
+# We read straight from ``context.kwarg(...)``.
 
 
 def _faction_parent_lookup(manager: AbstractBLLManager):
@@ -1219,13 +1225,14 @@ def _hook_parents_lookup(manager: AbstractBLLManager):
 def _faction_no_cycle(context: HookContext) -> None:
     if context.method_name not in ("update", "create"):
         return
-    candidate = _payload_value(context, "parent_id")
+    candidate = context.kwarg("parent_id", default=None)
     if not candidate:
         return
     if context.method_name == "create":
-        # New row has no descendants; only self-parent could be a cycle.
+        # New row has no descendants yet; only direct self-parent is a
+        # cycle (caught by would_create_tree_cycle when we know our id).
         return
-    rid = _record_id(context)
+    rid = context.kwarg("id", default=None) or context.arg(0, default=None)
     if not rid:
         return
     if would_create_tree_cycle(
@@ -1240,12 +1247,12 @@ def _faction_no_cycle(context: HookContext) -> None:
 def _location_no_cycle(context: HookContext) -> None:
     if context.method_name not in ("update", "create"):
         return
-    candidate = _payload_value(context, "parent_id")
+    candidate = context.kwarg("parent_id", default=None)
     if not candidate:
         return
     if context.method_name == "create":
         return
-    rid = _record_id(context)
+    rid = context.kwarg("id", default=None) or context.arg(0, default=None)
     if not rid:
         return
     if would_create_tree_cycle(
@@ -1260,8 +1267,8 @@ def _location_no_cycle(context: HookContext) -> None:
 def _hook_dependency_no_cycle(context: HookContext) -> None:
     if context.method_name not in ("create", "update"):
         return
-    parent_id = _payload_value(context, "parent_hook_id")
-    child_id = _payload_value(context, "child_hook_id")
+    parent_id = context.kwarg("parent_hook_id", default=None)
+    child_id = context.kwarg("child_hook_id", default=None)
     if not parent_id or not child_id:
         return
     if would_create_dag_cycle(

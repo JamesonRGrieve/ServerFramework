@@ -190,15 +190,50 @@ class TestDerivativeTraitContract:
                 value=1.0,
             )
 
-    def test_constant_contribution_with_null_source(self):
-        # Initiative = DEX + 5 — the +5 is a constant edge.
+    def test_item_can_be_source(self):
+        # Ring of Protection: source_item_id set, source_trait_id null.
+        # Contribution applies while the person wears an ItemInstance
+        # of this Item (runtime-resolved).
+        d = DerivativeTraitModel.Create(
+            source_item_id="ring-of-protection",
+            target_trait_id="ac",
+            operation="additive",
+            value=1.0,
+            stacking_group="deflection_bonus",
+        )
+        assert d.source_item_id == "ring-of-protection"
+        assert d.source_trait_id is None
+        assert d.target_trait_id == "ac"
+        assert d.stacking_group == "deflection_bonus"
+
+    def test_item_consumable_targets_status_effect_trait(self):
+        # Potion of Bull's Strength: source_item_id=potion,
+        # target_trait_id=BullsStrength (a kind='status_effect' Trait).
+        # On consumption, the manager spawns a PersonTrait of
+        # BullsStrength on the drinker; this DerivativeTrait edge
+        # documents the "this potion grants this Trait when consumed"
+        # relationship.
+        d = DerivativeTraitModel.Create(
+            source_item_id="potion-of-bulls-strength",
+            target_trait_id="bulls-strength",
+            operation="override",
+            value=1.0,
+        )
+        assert d.source_item_id == "potion-of-bulls-strength"
+        assert d.target_trait_id == "bulls-strength"
+
+    def test_constant_contribution_with_both_sources_null(self):
+        # Initiative = DEX + 5 — the +5 is a constant edge with both
+        # source columns NULL.
         d = DerivativeTraitModel.Create(
             source_trait_id=None,
+            source_item_id=None,
             target_trait_id="initiative",
             operation="additive",
             value=5.0,
         )
         assert d.source_trait_id is None
+        assert d.source_item_id is None
         assert d.value == 5.0
 
     def test_signed_value_for_damage(self):
