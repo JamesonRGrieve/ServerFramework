@@ -5,7 +5,7 @@ Hard-depends on ``genealogy``. RPG **does not** define a separate
 ``genealogy.PersonModel`` via ``@extension_model`` to add the
 character-specific fields (``kind``, ``campaign_id``, ``user_id``); the
 ``persons`` table is the character table for RPG users. Per-character
-joins (traits, status effects, quest progress) reference
+joins (traits, status-effect applications, hook progress) reference
 ``persons.id`` and live in the ``person_*`` join tables defined here.
 
 ``rpg_state`` also widens ``genealogy.RelationshipModel`` with Faction
@@ -15,38 +15,78 @@ Faction↔Faction edges. The migration adds a CHECK constraint enforcing
 endpoint XOR (exactly one endpoint per side: a Person or a Faction, not
 both, not neither).
 
+Unified Trait model
+-------------------
+There is **no** separate StatusEffect table. A status effect is a Trait
+with ``kind='status_effect'``. Bull's Strength, Wound, Bleed, Marked,
+Slowed are all Traits. Templates and applied instances share one model:
+
+- ``TraitModel`` is the catalog (attributes, skills, spells, talents,
+  feats, abilities, languages, resources, progression dimensions, and
+  status effects).
+- ``DerivativeTraitModel`` (replaces ``StatusEffectTrait``) is the
+  edge: how one Trait contributes to another. Bull's Strength → STR
+  (op='additive', value=2.0). Initiative ← DEX (op='additive',
+  value=1.0) plus a constant (op='additive', value=5.0,
+  source_trait_id=NULL).
+- ``PersonTraitModel`` is the join: this person carries this trait,
+  with the magnitude on ``value`` (and, for transient applications,
+  ``started_at`` / ``expires_at`` / ``source_*``). Multiple rows per
+  ``(person, trait)`` are allowed (e.g. several stacks of Wound).
+
+Resolution pipeline (deterministic, indexable):
+
+1. ``override`` — last write wins by ``order_index``.
+2. ``additive`` — sum the contributions, in ``order_index`` order.
+3. ``multiplicative`` — apply each multiplier, in ``order_index`` order.
+4. ``clamp`` — apply min/max bounds (sign of ``value`` selects min vs
+   max).
+
+Within each phase, ``stacking_group`` controls de-duplication: rows
+sharing a non-NULL group keep only the max-abs contribution; rows with
+``stacking_group=NULL`` always sum.
+
+Contribution magnitude:
+- ``source_trait_id`` set → ``effective = value × (source PersonTrait.value or 1.0)``.
+- ``source_trait_id`` NULL → ``effective = value`` (a constant).
+
+``qualifier`` is conditional context ("vs orcs", "while prone"). NULL =
+always applies; non-NULL = the UI surfaces it as a toggle and the
+calculation only includes the row when the condition is on.
+
+Hook DAG (replaces Quest+Objective)
+-----------------------------------
+There is **no** separate Quest / Objective hierarchy. Both fold into
+``HookModel``: a campaign-scoped narrative element with a free-form
+``kind`` discriminator (major_quest|side_quest|objective|plot_thread|
+mystery|rumor|obligation|foreshadowing|background|...).
+
+Dependencies between Hooks live in ``HookDependencyModel(parent_hook_id,
+child_hook_id, reason)``. The presence of a row IS the dependency; the
+``reason`` string explains why ("requires the dragon to be slain
+first", "alternative path via diplomacy", "blocked while the curse is
+active"). No dependency-kind enum.
+
+Per-actor progress lives in ``PersonHookModel`` and ``FactionHookModel``
+with status / accepted_at / completed_at / progress (numeric for
+incremental hooks; NULL for atomic).
+
 Model groups (declared in dependency order so ``.Reference`` mixins
 resolve):
 
 1. ``GameSystemModel`` — reference catalog ("DnD 5e", "Pathfinder 2e").
 2. ``CampaignModel`` — root of campaign-scoped data; ``user_id`` is the GM.
-3. Trait / StatusEffect templates — system-agnostic property catalog.
-   The unified ``TraitModel`` carries a ``kind`` discriminator so the
-   same calculation surface handles attributes, skills, spells, talents,
-   feats, languages, abilities, resources (HP/mana/spell slots), and
-   progression dimensions (level, experience, spent_experience).
-4. RPG injection onto ``PersonModel`` — the persons table grows
-   ``kind``, ``campaign_id``, ``user_id`` to serve as the RPG character
-   table.
-5. Per-character joins (``PersonTraitModel``,
-   ``PersonStatusEffectModel``). Magnitude lives on the join: STR=16 is
-   ``PersonTraitModel.value``; "+2 STR" granted by Bull's Strength is a
-   ``StatusEffectTraitModel`` row with operation='additive', value=2.
-6. Faction hierarchy. ``FactionModel`` uses ``parent_id`` (from
-   ``ParentMixinModel``) to model squads-within-platoons / parties-as-
-   sub-guilds without a separate Party entity. Faction membership is
-   **not** modelled here — it's a ``RelationshipModel`` row with
-   ``kind='member_of'`` and Person↔Faction endpoints.
-7. Spatial model. ``LocationModel`` is recursive (``parent_id``) and
-   may itself be the inside of a container item via
-   ``container_item_instance_id``. Equipment is modelled as a Location
-   bound to a person via ``associated_person_id``; equipping is a
-   spatial move, no IsEquipped flag.
-8. Quest / Objective templates separated from per-character /
-   per-faction instances. Objectives carry an optional
-   ``prerequisite_objective_id`` for branching / linear chains.
-9. RPG injection onto ``RelationshipModel`` — adds ``faction_id`` and
-   ``target_faction_id``; the migration adds the endpoint-XOR CHECK.
+3. ``TraitModel`` — unified property catalog including status effects.
+4. ``DerivativeTraitModel`` — edges defining how Traits derive from each other.
+5. RPG injection onto ``PersonModel`` (kind, campaign_id, user_id).
+6. ``PersonTraitModel`` — per-person trait values and applied effects.
+7. ``FactionModel`` — hierarchical faction (parent_id self-FK).
+8. ``LocationModel`` / ``ItemModel`` / ``ItemInstanceModel`` —
+   spatial / inventory.
+9. ``HookModel`` / ``HookDependencyModel`` /
+   ``PersonHookModel`` / ``FactionHookModel`` — narrative DAG.
+10. RPG injection onto ``RelationshipModel`` (faction_id,
+    target_faction_id; endpoint-XOR CHECK in the migration).
 
 Ownership semantics on ``ItemInstanceModel``:
 - ``owner_faction_id`` = de jure / "in principle" owner (the Guild owns
@@ -191,7 +231,7 @@ CampaignModel.Manager = CampaignManager
 
 
 # ---------------------------------------------------------------------------
-# 3. Trait, StatusEffect, StatusEffectTrait — property catalog
+# 3. Trait — unified property catalog (incl. status effects)
 # ---------------------------------------------------------------------------
 
 
@@ -215,22 +255,30 @@ class TraitModel(
     #                PersonTrait.value carries current value.
     #   progression — level, experience, spent_experience, milestones,
     #                 advancement_points. By convention named 'level',
-    #                 'experience', 'spent_experience'. The persons table
-    #                 has NO `level` column on purpose.
+    #                 'experience', 'spent_experience'.
+    #   status_effect — Bull's Strength, Wound, Bleed, Marked, Slowed.
+    #                   Applied to a person via PersonTrait with timing
+    #                   (started_at / expires_at) and source attribution.
     kind: Optional[str] = Field(
         None,
         description=(
             "attribute|skill|spell|talent|feat|ability|language|resource|"
-            "progression|... (free-form)"
+            "progression|status_effect|... (free-form)"
+        ),
+    )
+    default_duration_seconds: Optional[int] = Field(
+        None,
+        description=(
+            "Default lifetime when applied. Only meaningful when "
+            "kind='status_effect'; NULL = persists until manually removed."
         ),
     )
     table_comment: ClassVar[str] = (
         "Unified property catalog: stats, skills, spells, talents, feats, "
-        "resources, progression dimensions. campaign_id=NULL means a "
-        "globally-shared template; set = campaign-scoped override. "
-        "Conventional kinds: attribute|skill|spell|talent|feat|ability|"
-        "language|resource|progression. Progression Traits are by "
-        "convention named 'level', 'experience', 'spent_experience', etc."
+        "abilities, languages, resources, progression, and status effects. "
+        "campaign_id=NULL = globally-shared template; set = "
+        "campaign-scoped override. default_duration_seconds is meaningful "
+        "only for kind='status_effect'."
     )
 
     class Create(
@@ -241,11 +289,13 @@ class TraitModel(
         name: str = Field(...)
         description: Optional[str] = None
         kind: Optional[str] = None
+        default_duration_seconds: Optional[int] = None
 
     class Update(BaseModel):
         name: Optional[str] = None
         description: Optional[str] = None
         kind: Optional[str] = None
+        default_duration_seconds: Optional[int] = None
 
     class Search(
         ApplicationModel.Search,
@@ -263,123 +313,113 @@ class TraitManager(AbstractBLLManager, RouterMixin):
 TraitModel.Manager = TraitManager
 
 
-class StatusEffectModel(
+# ---------------------------------------------------------------------------
+# 4. DerivativeTrait — edges defining how Traits derive from each other
+# ---------------------------------------------------------------------------
+
+
+class DerivativeTraitModel(
     ApplicationModel.Optional,
     UpdateMixinModel.Optional,
-    NameMixinModel.Optional,
-    DescriptionMixinModel.Optional,
-    GameSystemModel.Reference.Optional,
     metaclass=ModelMeta,
 ):
-    Manager: ClassVar[Type["StatusEffectManager"]] = None
-    default_duration_seconds: Optional[int] = Field(
+    Manager: ClassVar[Type["DerivativeTraitManager"]] = None
+    # Both endpoints reference traits.id; manual columns since
+    # TraitModel.Reference would generate one trait_id and collide on
+    # the second.
+    source_trait_id: Optional[str] = Field(
         None,
-        description="Default lifetime when applied; null = until removed",
+        description=(
+            "FK → traits.id. When set, contribution scales with the "
+            "source's PersonTrait.value (or 1.0 if null). When NULL, "
+            "the row contributes a constant equal to `value`."
+        ),
     )
-    table_comment: ClassVar[str] = (
-        "Status effect templates (buffs, debuffs, conditions, damage). "
-        "Per-trait modifiers live on StatusEffectTrait. By convention, "
-        "HealthDamage and ManaExpenditure are StatusEffects whose "
-        "StatusEffectTrait edges point at the relevant resource Trait "
-        "with a negative additive value — so 'Bob takes 8 damage' = "
-        "applying a Wound StatusEffect with StatusEffectTrait(value=-8) "
-        "against the HealthMax Trait."
+    target_trait_id: Optional[str] = Field(
+        None,
+        description="FK → traits.id. The trait being modified.",
     )
-
-    class Create(BaseModel, GameSystemModel.Reference.ID.Optional):
-        name: str = Field(...)
-        description: Optional[str] = None
-        default_duration_seconds: Optional[int] = None
-
-    class Update(BaseModel):
-        name: Optional[str] = None
-        description: Optional[str] = None
-        default_duration_seconds: Optional[int] = None
-
-    class Search(ApplicationModel.Search, GameSystemModel.Reference.ID.Search):
-        name: Optional[StringSearchModel] = None
-
-
-class StatusEffectManager(AbstractBLLManager, RouterMixin):
-    _model = StatusEffectModel
-
-
-StatusEffectModel.Manager = StatusEffectManager
-
-
-class StatusEffectTraitModel(
-    ApplicationModel.Optional,
-    UpdateMixinModel.Optional,
-    StatusEffectModel.Reference.Optional,
-    TraitModel.Reference.Optional,
-    metaclass=ModelMeta,
-):
-    Manager: ClassVar[Type["StatusEffectTraitManager"]] = None
     operation: Optional[str] = Field(
         None,
-        description="additive|multiplicative|set",
+        description=(
+            "override|additive|multiplicative|clamp. Also identifies "
+            "the resolution phase: override → additive → multiplicative "
+            "→ clamp. Within each phase, order_index sequences ties."
+        ),
     )
     value: Optional[float] = Field(
         None,
         description=(
-            "Modifier magnitude; signed (e.g. +2 for buff, -8 for damage, "
-            "x1.5 for multiplicative)."
+            "Magnitude. Signed. For additive: the contribution; for "
+            "multiplicative: the multiplier; for override: the new value; "
+            "for clamp: positive = upper bound, negative = lower bound."
+        ),
+    )
+    order_index: Optional[int] = Field(
+        None,
+        description="Tie-breaker within phase (lower runs first; default 0).",
+    )
+    stacking_group: Optional[str] = Field(
+        None,
+        description=(
+            "NULL = always stacks (sum). Non-NULL = within group, only "
+            "the max-abs contribution wins. Used to model 'doesn't stack "
+            "with itself' / typed-bonus stacking rules."
         ),
     )
     qualifier: Optional[str] = Field(
         None,
         description=(
             "Conditional context. NULL = always applies; non-NULL = "
-            "conditional, e.g. 'vs orcs', 'while prone', 'in moonlight'. "
-            "UI surfaces non-NULL qualifiers as toggles."
+            "conditional ('vs orcs', 'while prone', 'in moonlight'). UI "
+            "surfaces non-NULL qualifiers as toggles."
         ),
     )
     table_comment: ClassVar[str] = (
-        "Per-trait modifiers contributed by a StatusEffect template. "
-        "Bull's Strength → (status_effect=BullsStrength, trait=STR, "
-        "operation='additive', value=2.0). Damage uses negative values "
-        "against resource Traits. qualifier carries conditional context."
+        "Edges defining how one Trait contributes to another. Replaces "
+        "the prior StatusEffectTrait; subsumes both arithmetic "
+        "derivations (Initiative ← DEX + 5) and applied-effect "
+        "modifiers (Bull's Strength → STR +2). Resolution pipeline: "
+        "override → additive → multiplicative → clamp; order_index "
+        "sequences within phase; stacking_group de-duplicates by "
+        "max-abs. source_trait_id NULL = constant contribution."
     )
 
-    class Create(
-        BaseModel,
-        StatusEffectModel.Reference.ID.Optional,
-        TraitModel.Reference.ID.Optional,
-    ):
+    class Create(BaseModel):
+        source_trait_id: Optional[str] = None
+        target_trait_id: Optional[str] = None
         operation: Optional[str] = None
         value: Optional[float] = None
+        order_index: Optional[int] = None
+        stacking_group: Optional[str] = None
         qualifier: Optional[str] = None
 
     class Update(BaseModel):
         operation: Optional[str] = None
         value: Optional[float] = None
+        order_index: Optional[int] = None
+        stacking_group: Optional[str] = None
         qualifier: Optional[str] = None
 
-    class Search(
-        ApplicationModel.Search,
-        StatusEffectModel.Reference.ID.Search,
-        TraitModel.Reference.ID.Search,
-    ):
+    class Search(ApplicationModel.Search):
+        source_trait_id: Optional[StringSearchModel] = None
+        target_trait_id: Optional[StringSearchModel] = None
         operation: Optional[StringSearchModel] = None
         value: Optional[NumericalSearchModel] = None
+        stacking_group: Optional[StringSearchModel] = None
         qualifier: Optional[StringSearchModel] = None
 
 
-class StatusEffectTraitManager(AbstractBLLManager, RouterMixin):
-    _model = StatusEffectTraitModel
+class DerivativeTraitManager(AbstractBLLManager, RouterMixin):
+    _model = DerivativeTraitModel
 
 
-StatusEffectTraitModel.Manager = StatusEffectTraitManager
+DerivativeTraitModel.Manager = DerivativeTraitManager
 
 
 # ---------------------------------------------------------------------------
-# 4. Inject character fields onto genealogy.PersonModel
+# 5. Inject character fields onto genealogy.PersonModel
 # ---------------------------------------------------------------------------
-#
-# rpg_state does not own its own Character table. The persons table
-# (owned by genealogy) is the character table for RPG users; this
-# extension class adds the character-specific columns. Migration adds
-# the matching ALTER TABLE on `persons`.
 
 
 @extension_model(PersonModel)
@@ -388,12 +428,9 @@ class RPG_PersonModel(BaseModel):
 
     The persons table becomes the character table for RPG users. Adds:
 
-    - ``kind``: pc|npc|monster|creature|vehicle|construct|... — free-form
-      so each system can extend.
-    - ``campaign_id``: FK to ``campaigns.id``; the campaign this actor
-      belongs to. NULL = unattached / cross-campaign template.
-    - ``user_id``: FK to ``users.id``; the controlling player when one
-      exists. NULL = NPC.
+    - ``kind``: pc|npc|monster|creature|vehicle|construct|... — free-form.
+    - ``campaign_id``: FK to ``campaigns.id``; NULL = unattached / template.
+    - ``user_id``: FK to ``users.id``; NULL = NPC.
     """
 
     kind: Optional[str] = Field(
@@ -424,7 +461,7 @@ class RPG_PersonModel(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# 5. Per-person joins (RPG-domain join tables; references persons.id)
+# 6. PersonTrait — per-person trait values + applied-effect attachments
 # ---------------------------------------------------------------------------
 
 
@@ -439,19 +476,51 @@ class PersonTraitModel(
     value: Optional[float] = Field(
         None,
         description=(
-            "Base magnitude (e.g. STR=16; current HP for resource Traits). "
-            "Active modifiers stack on top via PersonStatusEffect."
+            "Per-instance magnitude. For attribute traits: STR=16. For "
+            "resource traits: current HP. For status-effect applications: "
+            "the magnitude carried by this stack (e.g. -8 for a Wound). "
+            "Effective contribution to derived traits = "
+            "DerivativeTrait.value × (this value or 1.0)."
         ),
     )
     rank: Optional[int] = Field(
         None,
         description="Optional discrete rank (e.g. proficiency tier)",
     )
+    started_at: Optional[datetime] = Field(
+        None,
+        description=(
+            "Application start. NULL = persistent (durable trait). "
+            "Set for transient applications (status effects, buffs, "
+            "wounds)."
+        ),
+    )
+    expires_at: Optional[datetime] = Field(
+        None,
+        description=(
+            "Application end. NULL = persists until manually removed. "
+            "For active filtering, use ``expires_at IS NULL OR "
+            "expires_at > now()``."
+        ),
+    )
+    # Source attribution for applied effects. Manual columns since
+    # PersonModel.Reference is already used for the affected person and
+    # ItemInstance.Reference would create a cycle.
+    source_person_id: Optional[str] = Field(
+        None, description="The caster / applier (FK → persons.id)"
+    )
+    source_item_instance_id: Optional[str] = Field(
+        None,
+        description="Item consumed to apply the effect (FK → item_instances.id)",
+    )
     notes: Optional[str] = Field(None)
     table_comment: ClassVar[str] = (
-        "Per-person base trait values. Effective value = this.value + "
-        "Σ active StatusEffectTrait modifiers via PersonStatusEffect "
-        "(filtered by qualifier conditions when relevant)."
+        "Per-person trait instances. Multiple rows per (person, trait) "
+        "are allowed (e.g. several Wound stacks). Durable traits leave "
+        "started_at/expires_at NULL; transient applications fill them. "
+        "The full effective value of a derived target trait is computed "
+        "by walking DerivativeTrait edges into it from active source "
+        "Traits the person carries."
     )
 
     class Create(
@@ -461,11 +530,20 @@ class PersonTraitModel(
     ):
         value: Optional[float] = None
         rank: Optional[int] = None
+        started_at: Optional[datetime] = None
+        expires_at: Optional[datetime] = None
+        source_person_id: Optional[str] = None
+        source_item_instance_id: Optional[str] = None
         notes: Optional[str] = None
 
     class Update(BaseModel):
+        # Fully editable so GMs can retcon any aspect.
         value: Optional[float] = None
         rank: Optional[int] = None
+        started_at: Optional[datetime] = None
+        expires_at: Optional[datetime] = None
+        source_person_id: Optional[str] = None
+        source_item_instance_id: Optional[str] = None
         notes: Optional[str] = None
 
     class Search(
@@ -475,6 +553,8 @@ class PersonTraitModel(
     ):
         value: Optional[NumericalSearchModel] = None
         rank: Optional[NumericalSearchModel] = None
+        started_at: Optional[DateSearchModel] = None
+        expires_at: Optional[DateSearchModel] = None
 
 
 class PersonTraitManager(AbstractBLLManager, RouterMixin):
@@ -484,74 +564,9 @@ class PersonTraitManager(AbstractBLLManager, RouterMixin):
 PersonTraitModel.Manager = PersonTraitManager
 
 
-class PersonStatusEffectModel(
-    ApplicationModel.Optional,
-    UpdateMixinModel.Optional,
-    PersonModel.Reference.Optional,
-    StatusEffectModel.Reference.Optional,
-    metaclass=ModelMeta,
-):
-    Manager: ClassVar[Type["PersonStatusEffectManager"]] = None
-    started_at: Optional[datetime] = Field(None)
-    expires_at: Optional[datetime] = Field(
-        None,
-        description="Effect end; null = persists until manually removed",
-    )
-    # Source attribution; manual columns to avoid Reference collisions
-    # (PersonModel.Reference is already used for the affected person;
-    # ItemInstance.Reference would create a cycle).
-    source_person_id: Optional[str] = Field(
-        None, description="The caster / applier"
-    )
-    source_item_instance_id: Optional[str] = Field(
-        None, description="Item consumed to apply the effect"
-    )
-    table_comment: ClassVar[str] = (
-        "Active StatusEffect attachments per person. The effect's "
-        "per-trait modifiers come from StatusEffectTrait. Multiple "
-        "stacked effects (e.g. damage ticks) are multiple rows; the "
-        "manager may consolidate expired rows on session close."
-    )
-
-    class Create(
-        BaseModel,
-        PersonModel.Reference.ID.Optional,
-        StatusEffectModel.Reference.ID.Optional,
-    ):
-        started_at: Optional[datetime] = None
-        expires_at: Optional[datetime] = None
-        source_person_id: Optional[str] = None
-        source_item_instance_id: Optional[str] = None
-
-    class Update(BaseModel):
-        # Fully editable — GMs can retcon any aspect of an applied effect.
-        started_at: Optional[datetime] = None
-        expires_at: Optional[datetime] = None
-        source_person_id: Optional[str] = None
-        source_item_instance_id: Optional[str] = None
-
-    class Search(
-        ApplicationModel.Search,
-        PersonModel.Reference.ID.Search,
-        StatusEffectModel.Reference.ID.Search,
-    ):
-        expires_at: Optional[DateSearchModel] = None
-
-
-class PersonStatusEffectManager(AbstractBLLManager, RouterMixin):
-    _model = PersonStatusEffectModel
-
-
-PersonStatusEffectModel.Manager = PersonStatusEffectManager
-
-
 # ---------------------------------------------------------------------------
-# 6. Faction hierarchy
+# 7. Faction hierarchy
 # ---------------------------------------------------------------------------
-#
-# Faction membership is **not** a join table — it's a Relationship row
-# with kind='member_of', subject = person, target = faction (via the
-# faction_id endpoint columns injected onto RelationshipModel below).
 
 
 class FactionModel(
@@ -600,7 +615,7 @@ FactionModel.Manager = FactionManager
 
 
 # ---------------------------------------------------------------------------
-# 7. Spatial: Location / Item / ItemInstance
+# 8. Spatial: Location / Item / ItemInstance
 # ---------------------------------------------------------------------------
 
 
@@ -614,10 +629,6 @@ class LocationModel(
     metaclass=ModelMeta,
 ):
     Manager: ClassVar[Type["LocationManager"]] = None
-    # Cycle-resolved manually: a satchel's interior is a Location whose
-    # container_item_instance_id points to the satchel ItemInstance, and
-    # ItemInstance.location_id points back at containing Locations. The
-    # ALTER TABLE that adds the FK lands after both tables exist.
     container_item_instance_id: Optional[str] = Field(
         None,
         description="Set when this Location represents the inside of a container item",
@@ -726,13 +737,6 @@ class ItemInstanceModel(
     metaclass=ModelMeta,
 ):
     Manager: ClassVar[Type["ItemInstanceManager"]] = None
-    # Two ownership axes, both nullable. Ownership is *assignment /
-    # responsibility*, NOT equipped-state. owner_faction_id = de jure
-    # (the Guild owns it on paper); owner_person_id = assigned-to /
-    # who-would-notice-it-missing. Equipping is spatial (location_id
-    # pointing at an equipment-slot Location bound to a person), not an
-    # ownership concern. Theft = location chain disagrees with owner_*
-    # without an intervening consensual TransactionLog.
     owner_person_id: Optional[str] = Field(
         None,
         description=(
@@ -790,11 +794,11 @@ ItemInstanceModel.Manager = ItemInstanceManager
 
 
 # ---------------------------------------------------------------------------
-# 8. Quests, Objectives, and per-person/per-faction progress
+# 9. Hooks — narrative DAG (replaces Quest+Objective)
 # ---------------------------------------------------------------------------
 
 
-class QuestModel(
+class HookModel(
     ApplicationModel.Optional,
     UpdateMixinModel.Optional,
     NameMixinModel.Optional,
@@ -802,209 +806,218 @@ class QuestModel(
     CampaignModel.Reference.Optional,
     metaclass=ModelMeta,
 ):
-    Manager: ClassVar[Type["QuestManager"]] = None
-    giver_faction_id: Optional[str] = Field(
-        None, description="Faction that issued the quest"
+    Manager: ClassVar[Type["HookManager"]] = None
+    # Free-form discriminator. Conventional values: major_quest |
+    # side_quest | objective | plot_thread | mystery | rumor |
+    # obligation | foreshadowing | background | hint | ...
+    kind: Optional[str] = Field(
+        None,
+        description=(
+            "major_quest|side_quest|objective|plot_thread|mystery|"
+            "rumor|obligation|foreshadowing|... (free-form)"
+        ),
     )
-    table_comment: ClassVar[str] = "Quest template"
+    giver_faction_id: Optional[str] = Field(
+        None,
+        description="Faction that issued the hook (FK → factions.id).",
+    )
+    table_comment: ClassVar[str] = (
+        "Narrative element. Replaces Quest+Objective with a single "
+        "table; hierarchy and prerequisite relationships move to "
+        "HookDependency. Per-actor progress lives in PersonHook / "
+        "FactionHook."
+    )
 
     class Create(BaseModel, CampaignModel.Reference.ID.Optional):
         name: str = Field(...)
         description: Optional[str] = None
+        kind: Optional[str] = None
         giver_faction_id: Optional[str] = None
 
     class Update(BaseModel):
         name: Optional[str] = None
         description: Optional[str] = None
+        kind: Optional[str] = None
         giver_faction_id: Optional[str] = None
 
     class Search(ApplicationModel.Search, CampaignModel.Reference.ID.Search):
         name: Optional[StringSearchModel] = None
+        kind: Optional[StringSearchModel] = None
 
 
-class QuestManager(AbstractBLLManager, RouterMixin):
-    _model = QuestModel
+class HookManager(AbstractBLLManager, RouterMixin):
+    _model = HookModel
 
 
-QuestModel.Manager = QuestManager
+HookModel.Manager = HookManager
 
 
-class ObjectiveModel(
+class HookDependencyModel(
     ApplicationModel.Optional,
     UpdateMixinModel.Optional,
-    NameMixinModel.Optional,
-    DescriptionMixinModel.Optional,
-    QuestModel.Reference.Optional,
     metaclass=ModelMeta,
 ):
-    Manager: ClassVar[Type["ObjectiveManager"]] = None
-    prerequisite_objective_id: Optional[str] = Field(
+    Manager: ClassVar[Type["HookDependencyManager"]] = None
+    # Both endpoints reference hooks.id; manual columns since
+    # HookModel.Reference would generate one hook_id and collide on the
+    # second.
+    parent_hook_id: Optional[str] = Field(
         None,
-        description="Objective that must complete first (self-FK; chains/branches)",
+        description="The prerequisite Hook (FK → hooks.id).",
     )
-    order_index: Optional[int] = Field(
-        None, description="Display/precedence ordering within the quest"
+    child_hook_id: Optional[str] = Field(
+        None,
+        description="The dependent Hook (FK → hooks.id).",
+    )
+    reason: Optional[str] = Field(
+        None,
+        description=(
+            "Free-form explanation of why the dependency exists "
+            "('requires the dragon to be slain first', "
+            "'alternative path via diplomacy', "
+            "'blocked while the curse is active'). The presence of the "
+            "row IS the dependency; reason explains it."
+        ),
     )
     table_comment: ClassVar[str] = (
-        "Objective template; chains via prerequisite_objective_id."
+        "DAG edge between two Hooks. Presence of a row IS the "
+        "dependency; the reason string explains it. No dependency-kind "
+        "enum: complete/fail/unlock/block/alternative-path semantics "
+        "are described in the reason text. Manager-layer cycle guard "
+        "rejects edits that would close a cycle."
     )
 
-    class Create(BaseModel, QuestModel.Reference.ID.Optional):
-        name: str = Field(...)
-        description: Optional[str] = None
-        prerequisite_objective_id: Optional[str] = None
-        order_index: Optional[int] = None
+    class Create(BaseModel):
+        parent_hook_id: Optional[str] = None
+        child_hook_id: Optional[str] = None
+        reason: Optional[str] = None
 
     class Update(BaseModel):
-        name: Optional[str] = None
-        description: Optional[str] = None
-        prerequisite_objective_id: Optional[str] = None
-        order_index: Optional[int] = None
+        reason: Optional[str] = None
 
-    class Search(ApplicationModel.Search, QuestModel.Reference.ID.Search):
-        name: Optional[StringSearchModel] = None
-        prerequisite_objective_id: Optional[StringSearchModel] = None
+    class Search(ApplicationModel.Search):
+        parent_hook_id: Optional[StringSearchModel] = None
+        child_hook_id: Optional[StringSearchModel] = None
+        reason: Optional[StringSearchModel] = None
 
 
-class ObjectiveManager(AbstractBLLManager, RouterMixin):
-    _model = ObjectiveModel
+class HookDependencyManager(AbstractBLLManager, RouterMixin):
+    _model = HookDependencyModel
 
 
-ObjectiveModel.Manager = ObjectiveManager
+HookDependencyModel.Manager = HookDependencyManager
 
 
-class PersonQuestModel(
+class PersonHookModel(
     ApplicationModel.Optional,
     UpdateMixinModel.Optional,
     PersonModel.Reference.Optional,
-    QuestModel.Reference.Optional,
+    HookModel.Reference.Optional,
     metaclass=ModelMeta,
 ):
-    Manager: ClassVar[Type["PersonQuestManager"]] = None
+    Manager: ClassVar[Type["PersonHookManager"]] = None
     status: Optional[str] = Field(
-        None, description="available|active|completed|failed|abandoned"
+        None,
+        description=(
+            "available|active|completed|failed|abandoned|superseded|... "
+            "(free-form; non-quest Hooks may use 'unresolved' / "
+            "'resolved' instead)"
+        ),
     )
     accepted_at: Optional[datetime] = Field(None)
     completed_at: Optional[datetime] = Field(None)
-    table_comment: ClassVar[str] = "Per-person quest progress instance"
+    progress: Optional[float] = Field(
+        None,
+        description=(
+            "Numeric progress for incremental hooks (3 of 5 wolves "
+            "slain). NULL for atomic hooks."
+        ),
+    )
+    table_comment: ClassVar[str] = (
+        "Per-person hook progress. Replaces both PersonQuest and "
+        "PersonObjective."
+    )
 
     class Create(
         BaseModel,
         PersonModel.Reference.ID.Optional,
-        QuestModel.Reference.ID.Optional,
+        HookModel.Reference.ID.Optional,
     ):
         status: Optional[str] = None
         accepted_at: Optional[datetime] = None
         completed_at: Optional[datetime] = None
+        progress: Optional[float] = None
 
     class Update(BaseModel):
         status: Optional[str] = None
         accepted_at: Optional[datetime] = None
         completed_at: Optional[datetime] = None
+        progress: Optional[float] = None
 
     class Search(
         ApplicationModel.Search,
         PersonModel.Reference.ID.Search,
-        QuestModel.Reference.ID.Search,
+        HookModel.Reference.ID.Search,
     ):
         status: Optional[StringSearchModel] = None
+        progress: Optional[NumericalSearchModel] = None
 
 
-class PersonQuestManager(AbstractBLLManager, RouterMixin):
-    _model = PersonQuestModel
+class PersonHookManager(AbstractBLLManager, RouterMixin):
+    _model = PersonHookModel
 
 
-PersonQuestModel.Manager = PersonQuestManager
+PersonHookModel.Manager = PersonHookManager
 
 
-class FactionQuestModel(
+class FactionHookModel(
     ApplicationModel.Optional,
     UpdateMixinModel.Optional,
     FactionModel.Reference.Optional,
-    QuestModel.Reference.Optional,
+    HookModel.Reference.Optional,
     metaclass=ModelMeta,
 ):
-    Manager: ClassVar[Type["FactionQuestManager"]] = None
-    status: Optional[str] = Field(None, description="See PersonQuestModel.status")
+    Manager: ClassVar[Type["FactionHookManager"]] = None
+    status: Optional[str] = Field(None, description="See PersonHookModel.status")
     accepted_at: Optional[datetime] = Field(None)
     completed_at: Optional[datetime] = Field(None)
-    table_comment: ClassVar[str] = "Per-faction quest progress instance"
+    progress: Optional[float] = Field(None)
+    table_comment: ClassVar[str] = "Per-faction hook progress."
 
     class Create(
         BaseModel,
         FactionModel.Reference.ID.Optional,
-        QuestModel.Reference.ID.Optional,
+        HookModel.Reference.ID.Optional,
     ):
         status: Optional[str] = None
         accepted_at: Optional[datetime] = None
         completed_at: Optional[datetime] = None
+        progress: Optional[float] = None
 
     class Update(BaseModel):
         status: Optional[str] = None
         accepted_at: Optional[datetime] = None
         completed_at: Optional[datetime] = None
+        progress: Optional[float] = None
 
     class Search(
         ApplicationModel.Search,
         FactionModel.Reference.ID.Search,
-        QuestModel.Reference.ID.Search,
+        HookModel.Reference.ID.Search,
     ):
         status: Optional[StringSearchModel] = None
+        progress: Optional[NumericalSearchModel] = None
 
 
-class FactionQuestManager(AbstractBLLManager, RouterMixin):
-    _model = FactionQuestModel
+class FactionHookManager(AbstractBLLManager, RouterMixin):
+    _model = FactionHookModel
 
 
-FactionQuestModel.Manager = FactionQuestManager
-
-
-class PersonObjectiveModel(
-    ApplicationModel.Optional,
-    UpdateMixinModel.Optional,
-    PersonModel.Reference.Optional,
-    ObjectiveModel.Reference.Optional,
-    metaclass=ModelMeta,
-):
-    Manager: ClassVar[Type["PersonObjectiveManager"]] = None
-    status: Optional[str] = Field(None)
-    progress: Optional[float] = Field(
-        None, description="Numeric progress (e.g. 3 of 5 wolves slain)"
-    )
-    completed_at: Optional[datetime] = Field(None)
-    table_comment: ClassVar[str] = "Per-person objective progress instance"
-
-    class Create(
-        BaseModel,
-        PersonModel.Reference.ID.Optional,
-        ObjectiveModel.Reference.ID.Optional,
-    ):
-        status: Optional[str] = None
-        progress: Optional[float] = None
-        completed_at: Optional[datetime] = None
-
-    class Update(BaseModel):
-        status: Optional[str] = None
-        progress: Optional[float] = None
-        completed_at: Optional[datetime] = None
-
-    class Search(
-        ApplicationModel.Search,
-        PersonModel.Reference.ID.Search,
-        ObjectiveModel.Reference.ID.Search,
-    ):
-        status: Optional[StringSearchModel] = None
-
-
-class PersonObjectiveManager(AbstractBLLManager, RouterMixin):
-    _model = PersonObjectiveModel
-
-
-PersonObjectiveModel.Manager = PersonObjectiveManager
+FactionHookModel.Manager = FactionHookManager
 
 
 # ---------------------------------------------------------------------------
-# 9. Inject Faction endpoints onto genealogy.RelationshipModel
+# 10. Inject Faction endpoints onto genealogy.RelationshipModel
 # ---------------------------------------------------------------------------
 
 
@@ -1061,19 +1074,16 @@ ALL_MODELS: List[type] = [
     GameSystemModel,
     CampaignModel,
     TraitModel,
-    StatusEffectModel,
-    StatusEffectTraitModel,
+    DerivativeTraitModel,
     PersonTraitModel,
-    PersonStatusEffectModel,
     FactionModel,
     LocationModel,
     ItemModel,
     ItemInstanceModel,
-    QuestModel,
-    ObjectiveModel,
-    PersonQuestModel,
-    FactionQuestModel,
-    PersonObjectiveModel,
+    HookModel,
+    HookDependencyModel,
+    PersonHookModel,
+    FactionHookModel,
 ]
 
 
@@ -1084,15 +1094,11 @@ __all__ = [
     "CampaignManager",
     "TraitModel",
     "TraitManager",
-    "StatusEffectModel",
-    "StatusEffectManager",
-    "StatusEffectTraitModel",
-    "StatusEffectTraitManager",
+    "DerivativeTraitModel",
+    "DerivativeTraitManager",
     "RPG_PersonModel",
     "PersonTraitModel",
     "PersonTraitManager",
-    "PersonStatusEffectModel",
-    "PersonStatusEffectManager",
     "FactionModel",
     "FactionManager",
     "LocationModel",
@@ -1101,16 +1107,14 @@ __all__ = [
     "ItemManager",
     "ItemInstanceModel",
     "ItemInstanceManager",
-    "QuestModel",
-    "QuestManager",
-    "ObjectiveModel",
-    "ObjectiveManager",
-    "PersonQuestModel",
-    "PersonQuestManager",
-    "FactionQuestModel",
-    "FactionQuestManager",
-    "PersonObjectiveModel",
-    "PersonObjectiveManager",
+    "HookModel",
+    "HookManager",
+    "HookDependencyModel",
+    "HookDependencyManager",
+    "PersonHookModel",
+    "PersonHookManager",
+    "FactionHookModel",
+    "FactionHookManager",
     "RPG_RelationshipModel",
     "ALL_MODELS",
 ]

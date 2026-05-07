@@ -7,19 +7,36 @@ Hard-depends on ``genealogy``. This migration:
    ``persons`` table becomes the character table for RPG users.
 2. Injects Faction endpoints (``faction_id``, ``target_faction_id``)
    onto the ``relationships`` table, relaxes nullability on the
-   default Person endpoints, and adds a CHECK constraint enforcing
+   default Person endpoints, and adds two CHECK constraints enforcing
    endpoint XOR (exactly one endpoint per side).
 3. Creates the rpg_state-owned tables: game_systems, campaigns, traits,
-   status_effects, status_effect_traits, person_traits,
-   person_status_effects, factions, locations, items, item_instances,
-   quests, objectives, person_quests, faction_quests, person_objectives.
+   derivative_traits, person_traits, factions, locations, items,
+   item_instances, hooks, hook_dependencies, person_hooks,
+   faction_hooks.
+
+Trait merger
+------------
+There is no separate ``status_effects`` / ``status_effect_traits`` /
+``person_status_effects`` triple. ``traits`` carries an optional
+``default_duration_seconds`` (only meaningful when
+``kind='status_effect'``). ``derivative_traits`` replaces
+``status_effect_traits`` and is the sole edge table defining how Traits
+contribute to one another (including applied buffs/debuffs/damage).
+``person_traits`` carries the timing and source-attribution columns
+that previously lived on ``person_status_effects``.
+
+Hook DAG
+--------
+Quest+Objective fold into a single ``hooks`` table with a free-form
+``kind`` discriminator. Prerequisites and other inter-hook relations
+live in ``hook_dependencies(parent_hook_id, child_hook_id, reason)``;
+the presence of a row IS the dependency, the reason string explains
+why. ``person_hooks`` and ``faction_hooks`` carry per-actor progress.
 
 Foreign keys are enforced at the database layer where the references
-are stable. The cyclic Location ↔ ItemInstance reference (a satchel's
-interior is a Location whose ``container_item_instance_id`` points at
-the satchel ItemInstance) is resolved by adding the
-``container_item_instance_id`` and ``location_id`` FKs after both
-tables exist.
+are stable. The cyclic Location ↔ ItemInstance reference is resolved
+by adding the ``container_item_instance_id`` FK after both tables
+exist.
 """
 
 from typing import Sequence, Union
@@ -106,7 +123,7 @@ def upgrade() -> None:
         op.create_index("ix_campaigns_user", "campaigns", ["user_id"])
 
     # ---------------------------------------------------------------
-    # traits
+    # traits — unified property catalog (incl. status effects)
     # ---------------------------------------------------------------
     if not _has_table("traits"):
         op.create_table(
@@ -115,6 +132,9 @@ def upgrade() -> None:
             sa.Column("name", sa.String(255), nullable=True),
             sa.Column("description", sa.Text(), nullable=True),
             sa.Column("kind", sa.String(64), nullable=True),
+            sa.Column(
+                "default_duration_seconds", sa.Integer(), nullable=True
+            ),
             sa.Column("game_system_id", sa.String(36), nullable=True),
             sa.Column("campaign_id", sa.String(36), nullable=True),
             sa.Column("created_at", sa.DateTime(), nullable=False),
@@ -126,7 +146,12 @@ def upgrade() -> None:
             sa.PrimaryKeyConstraint("id"),
             sa.ForeignKeyConstraint(["game_system_id"], ["game_systems.id"]),
             sa.ForeignKeyConstraint(["campaign_id"], ["campaigns.id"]),
-            comment="Unified property catalog (attributes, skills, spells, talents, feats, resources, progression).",
+            comment=(
+                "Unified property catalog: attributes, skills, spells, "
+                "talents, feats, abilities, languages, resources, "
+                "progression, status effects. default_duration_seconds "
+                "is meaningful only for kind='status_effect'."
+            ),
             info=_INFO,
         )
 
@@ -137,36 +162,18 @@ def upgrade() -> None:
         op.create_index("ix_traits_system", "traits", ["game_system_id"])
 
     # ---------------------------------------------------------------
-    # status_effects + status_effect_traits
+    # derivative_traits — edges from one Trait to another
     # ---------------------------------------------------------------
-    if not _has_table("status_effects"):
+    if not _has_table("derivative_traits"):
         op.create_table(
-            "status_effects",
+            "derivative_traits",
             sa.Column("id", sa.String(36), nullable=False),
-            sa.Column("name", sa.String(255), nullable=True),
-            sa.Column("description", sa.Text(), nullable=True),
-            sa.Column("default_duration_seconds", sa.Integer(), nullable=True),
-            sa.Column("game_system_id", sa.String(36), nullable=True),
-            sa.Column("created_at", sa.DateTime(), nullable=False),
-            sa.Column("created_by_user_id", sa.String(36), nullable=True),
-            sa.Column("updated_at", sa.DateTime(), nullable=True),
-            sa.Column("updated_by_user_id", sa.String(36), nullable=True),
-            sa.Column("deleted_at", sa.DateTime(), nullable=True),
-            sa.Column("deleted_by_user_id", sa.String(36), nullable=True),
-            sa.PrimaryKeyConstraint("id"),
-            sa.ForeignKeyConstraint(["game_system_id"], ["game_systems.id"]),
-            comment="Status effect templates (buffs, debuffs, conditions, damage).",
-            info=_INFO,
-        )
-
-    if not _has_table("status_effect_traits"):
-        op.create_table(
-            "status_effect_traits",
-            sa.Column("id", sa.String(36), nullable=False),
-            sa.Column("status_effect_id", sa.String(36), nullable=True),
-            sa.Column("trait_id", sa.String(36), nullable=True),
+            sa.Column("source_trait_id", sa.String(36), nullable=True),
+            sa.Column("target_trait_id", sa.String(36), nullable=True),
             sa.Column("operation", sa.String(32), nullable=True),
             sa.Column("value", sa.Float(), nullable=True),
+            sa.Column("order_index", sa.Integer(), nullable=True),
+            sa.Column("stacking_group", sa.String(64), nullable=True),
             sa.Column("qualifier", sa.String(255), nullable=True),
             sa.Column("created_at", sa.DateTime(), nullable=False),
             sa.Column("created_by_user_id", sa.String(36), nullable=True),
@@ -175,23 +182,32 @@ def upgrade() -> None:
             sa.Column("deleted_at", sa.DateTime(), nullable=True),
             sa.Column("deleted_by_user_id", sa.String(36), nullable=True),
             sa.PrimaryKeyConstraint("id"),
-            sa.ForeignKeyConstraint(["status_effect_id"], ["status_effects.id"]),
-            sa.ForeignKeyConstraint(["trait_id"], ["traits.id"]),
-            comment="Per-trait modifiers contributed by a StatusEffect template.",
+            sa.ForeignKeyConstraint(["source_trait_id"], ["traits.id"]),
+            sa.ForeignKeyConstraint(["target_trait_id"], ["traits.id"]),
+            comment=(
+                "Edges defining how one Trait contributes to another. "
+                "Resolution pipeline: override → additive → "
+                "multiplicative → clamp; order_index sequences within "
+                "phase; stacking_group de-duplicates by max-abs. "
+                "source_trait_id NULL = constant contribution."
+            ),
             info=_INFO,
         )
 
-    set_idx = _existing_index_names("status_effect_traits")
-    if "ix_set_effect" not in set_idx:
+    dt_idx = _existing_index_names("derivative_traits")
+    if "ix_dt_source" not in dt_idx:
+        op.create_index("ix_dt_source", "derivative_traits", ["source_trait_id"])
+    if "ix_dt_target" not in dt_idx:
+        op.create_index("ix_dt_target", "derivative_traits", ["target_trait_id"])
+    if "ix_dt_phase" not in dt_idx:
         op.create_index(
-            "ix_set_effect", "status_effect_traits", ["status_effect_id"]
+            "ix_dt_phase",
+            "derivative_traits",
+            ["target_trait_id", "operation", "order_index"],
         )
-    if "ix_set_trait" not in set_idx:
-        op.create_index("ix_set_trait", "status_effect_traits", ["trait_id"])
 
     # ---------------------------------------------------------------
     # Inject character columns onto persons table.
-    # genealogy owns the table; rpg_state owns these columns.
     # ---------------------------------------------------------------
     person_cols = _existing_column_names("persons")
     if "kind" not in person_cols:
@@ -234,7 +250,7 @@ def upgrade() -> None:
         op.create_index("ix_persons_user", "persons", ["user_id"])
 
     # ---------------------------------------------------------------
-    # person_traits
+    # person_traits — base values + applied effect attachments
     # ---------------------------------------------------------------
     if not _has_table("person_traits"):
         op.create_table(
@@ -244,6 +260,10 @@ def upgrade() -> None:
             sa.Column("trait_id", sa.String(36), nullable=True),
             sa.Column("value", sa.Float(), nullable=True),
             sa.Column("rank", sa.Integer(), nullable=True),
+            sa.Column("started_at", sa.DateTime(), nullable=True),
+            sa.Column("expires_at", sa.DateTime(), nullable=True),
+            sa.Column("source_person_id", sa.String(36), nullable=True),
+            sa.Column("source_item_instance_id", sa.String(36), nullable=True),
             sa.Column("notes", sa.Text(), nullable=True),
             sa.Column("created_at", sa.DateTime(), nullable=False),
             sa.Column("created_by_user_id", sa.String(36), nullable=True),
@@ -254,7 +274,13 @@ def upgrade() -> None:
             sa.PrimaryKeyConstraint("id"),
             sa.ForeignKeyConstraint(["person_id"], ["persons.id"]),
             sa.ForeignKeyConstraint(["trait_id"], ["traits.id"]),
-            comment="Per-person base trait values.",
+            sa.ForeignKeyConstraint(["source_person_id"], ["persons.id"]),
+            comment=(
+                "Per-person trait instances. Multiple rows per "
+                "(person, trait) allowed (e.g. several Wound stacks). "
+                "Durable traits leave started_at/expires_at NULL; "
+                "transient applications fill them."
+            ),
             info=_INFO,
         )
 
@@ -263,43 +289,13 @@ def upgrade() -> None:
         op.create_index("ix_pt_person", "person_traits", ["person_id"])
     if "ix_pt_trait" not in pt_idx:
         op.create_index("ix_pt_trait", "person_traits", ["trait_id"])
-
-    # ---------------------------------------------------------------
-    # person_status_effects
-    # ---------------------------------------------------------------
-    if not _has_table("person_status_effects"):
-        op.create_table(
-            "person_status_effects",
-            sa.Column("id", sa.String(36), nullable=False),
-            sa.Column("person_id", sa.String(36), nullable=True),
-            sa.Column("status_effect_id", sa.String(36), nullable=True),
-            sa.Column("started_at", sa.DateTime(), nullable=True),
-            sa.Column("expires_at", sa.DateTime(), nullable=True),
-            sa.Column("source_person_id", sa.String(36), nullable=True),
-            sa.Column("source_item_instance_id", sa.String(36), nullable=True),
-            sa.Column("created_at", sa.DateTime(), nullable=False),
-            sa.Column("created_by_user_id", sa.String(36), nullable=True),
-            sa.Column("updated_at", sa.DateTime(), nullable=True),
-            sa.Column("updated_by_user_id", sa.String(36), nullable=True),
-            sa.Column("deleted_at", sa.DateTime(), nullable=True),
-            sa.Column("deleted_by_user_id", sa.String(36), nullable=True),
-            sa.PrimaryKeyConstraint("id"),
-            sa.ForeignKeyConstraint(["person_id"], ["persons.id"]),
-            sa.ForeignKeyConstraint(["status_effect_id"], ["status_effects.id"]),
-            sa.ForeignKeyConstraint(["source_person_id"], ["persons.id"]),
-            comment="Active StatusEffect attachments per person.",
-            info=_INFO,
-        )
-
-    pse_idx = _existing_index_names("person_status_effects")
-    if "ix_pse_person" not in pse_idx:
-        op.create_index("ix_pse_person", "person_status_effects", ["person_id"])
-    if "ix_pse_active" not in pse_idx:
+    if "ix_pt_active" not in pt_idx:
         op.create_index(
-            "ix_pse_active",
-            "person_status_effects",
-            ["person_id", "expires_at"],
+            "ix_pt_active", "person_traits", ["person_id", "expires_at"]
         )
+
+    # source_item_instance_id FK is added after item_instances exists
+    # (deferred below).
 
     # ---------------------------------------------------------------
     # factions
@@ -322,8 +318,8 @@ def upgrade() -> None:
             sa.ForeignKeyConstraint(["parent_id"], ["factions.id"]),
             sa.ForeignKeyConstraint(["campaign_id"], ["campaigns.id"]),
             comment=(
-                "Hierarchical faction (parent_id self-FK fast-path for the "
-                "primary tree). Membership lives in relationships(kind='member_of')."
+                "Hierarchical faction (parent_id self-FK fast-path). "
+                "Membership lives in relationships(kind='member_of')."
             ),
             info=_INFO,
         )
@@ -345,8 +341,6 @@ def upgrade() -> None:
             sa.Column("description", sa.Text(), nullable=True),
             sa.Column("parent_id", sa.String(36), nullable=True),
             sa.Column("campaign_id", sa.String(36), nullable=True),
-            # FK on container_item_instance_id is added post-create,
-            # after item_instances exists, to break the cycle.
             sa.Column("container_item_instance_id", sa.String(36), nullable=True),
             sa.Column("associated_person_id", sa.String(36), nullable=True),
             sa.Column("kind", sa.String(64), nullable=True),
@@ -450,8 +444,9 @@ def upgrade() -> None:
             "ix_ii_owner_faction", "item_instances", ["owner_faction_id"]
         )
 
-    # Close the Location ↔ ItemInstance cycle: add the FK now that both
-    # tables exist. Use batch_alter_table for SQLite compatibility.
+    # Close the Location ↔ ItemInstance cycle and the
+    # PersonTrait → ItemInstance source FK now that item_instances
+    # exists.
     with op.batch_alter_table("locations") as batch_op:
         batch_op.create_foreign_key(
             "fk_locations_container_item_instance",
@@ -459,16 +454,24 @@ def upgrade() -> None:
             ["container_item_instance_id"],
             ["id"],
         )
+    with op.batch_alter_table("person_traits") as batch_op:
+        batch_op.create_foreign_key(
+            "fk_person_traits_source_item_instance",
+            "item_instances",
+            ["source_item_instance_id"],
+            ["id"],
+        )
 
     # ---------------------------------------------------------------
-    # quests + objectives
+    # hooks  (replaces quests + objectives)
     # ---------------------------------------------------------------
-    if not _has_table("quests"):
+    if not _has_table("hooks"):
         op.create_table(
-            "quests",
+            "hooks",
             sa.Column("id", sa.String(36), nullable=False),
             sa.Column("name", sa.String(255), nullable=True),
             sa.Column("description", sa.Text(), nullable=True),
+            sa.Column("kind", sa.String(64), nullable=True),
             sa.Column("campaign_id", sa.String(36), nullable=True),
             sa.Column("giver_faction_id", sa.String(36), nullable=True),
             sa.Column("created_at", sa.DateTime(), nullable=False),
@@ -480,22 +483,29 @@ def upgrade() -> None:
             sa.PrimaryKeyConstraint("id"),
             sa.ForeignKeyConstraint(["campaign_id"], ["campaigns.id"]),
             sa.ForeignKeyConstraint(["giver_faction_id"], ["factions.id"]),
-            comment="Quest template",
+            comment=(
+                "Narrative element. Replaces Quest+Objective. Hierarchy "
+                "and prerequisites move to hook_dependencies."
+            ),
             info=_INFO,
         )
 
-    if "ix_quests_campaign" not in _existing_index_names("quests"):
-        op.create_index("ix_quests_campaign", "quests", ["campaign_id"])
+    hooks_idx = _existing_index_names("hooks")
+    if "ix_hooks_campaign" not in hooks_idx:
+        op.create_index("ix_hooks_campaign", "hooks", ["campaign_id"])
+    if "ix_hooks_kind" not in hooks_idx:
+        op.create_index("ix_hooks_kind", "hooks", ["kind"])
 
-    if not _has_table("objectives"):
+    # ---------------------------------------------------------------
+    # hook_dependencies — DAG edges between Hooks
+    # ---------------------------------------------------------------
+    if not _has_table("hook_dependencies"):
         op.create_table(
-            "objectives",
+            "hook_dependencies",
             sa.Column("id", sa.String(36), nullable=False),
-            sa.Column("name", sa.String(255), nullable=True),
-            sa.Column("description", sa.Text(), nullable=True),
-            sa.Column("quest_id", sa.String(36), nullable=True),
-            sa.Column("prerequisite_objective_id", sa.String(36), nullable=True),
-            sa.Column("order_index", sa.Integer(), nullable=True),
+            sa.Column("parent_hook_id", sa.String(36), nullable=True),
+            sa.Column("child_hook_id", sa.String(36), nullable=True),
+            sa.Column("reason", sa.Text(), nullable=True),
             sa.Column("created_at", sa.DateTime(), nullable=False),
             sa.Column("created_by_user_id", sa.String(36), nullable=True),
             sa.Column("updated_at", sa.DateTime(), nullable=True),
@@ -503,29 +513,35 @@ def upgrade() -> None:
             sa.Column("deleted_at", sa.DateTime(), nullable=True),
             sa.Column("deleted_by_user_id", sa.String(36), nullable=True),
             sa.PrimaryKeyConstraint("id"),
-            sa.ForeignKeyConstraint(["quest_id"], ["quests.id"]),
-            sa.ForeignKeyConstraint(
-                ["prerequisite_objective_id"], ["objectives.id"]
+            sa.ForeignKeyConstraint(["parent_hook_id"], ["hooks.id"]),
+            sa.ForeignKeyConstraint(["child_hook_id"], ["hooks.id"]),
+            comment=(
+                "DAG edge between two Hooks. Presence of a row IS the "
+                "dependency; the reason string explains it. Cycle "
+                "prevention is enforced at the manager layer."
             ),
-            comment="Objective template; chains via prerequisite_objective_id.",
             info=_INFO,
         )
 
-    if "ix_objectives_quest" not in _existing_index_names("objectives"):
-        op.create_index("ix_objectives_quest", "objectives", ["quest_id"])
+    hd_idx = _existing_index_names("hook_dependencies")
+    if "ix_hd_parent" not in hd_idx:
+        op.create_index("ix_hd_parent", "hook_dependencies", ["parent_hook_id"])
+    if "ix_hd_child" not in hd_idx:
+        op.create_index("ix_hd_child", "hook_dependencies", ["child_hook_id"])
 
     # ---------------------------------------------------------------
-    # person_quests + faction_quests + person_objectives
+    # person_hooks + faction_hooks  (replace person_quests, faction_quests, person_objectives)
     # ---------------------------------------------------------------
-    if not _has_table("person_quests"):
+    if not _has_table("person_hooks"):
         op.create_table(
-            "person_quests",
+            "person_hooks",
             sa.Column("id", sa.String(36), nullable=False),
             sa.Column("person_id", sa.String(36), nullable=True),
-            sa.Column("quest_id", sa.String(36), nullable=True),
+            sa.Column("hook_id", sa.String(36), nullable=True),
             sa.Column("status", sa.String(32), nullable=True),
             sa.Column("accepted_at", sa.DateTime(), nullable=True),
             sa.Column("completed_at", sa.DateTime(), nullable=True),
+            sa.Column("progress", sa.Float(), nullable=True),
             sa.Column("created_at", sa.DateTime(), nullable=False),
             sa.Column("created_by_user_id", sa.String(36), nullable=True),
             sa.Column("updated_at", sa.DateTime(), nullable=True),
@@ -534,28 +550,29 @@ def upgrade() -> None:
             sa.Column("deleted_by_user_id", sa.String(36), nullable=True),
             sa.PrimaryKeyConstraint("id"),
             sa.ForeignKeyConstraint(["person_id"], ["persons.id"]),
-            sa.ForeignKeyConstraint(["quest_id"], ["quests.id"]),
-            comment="Per-person quest progress instance",
+            sa.ForeignKeyConstraint(["hook_id"], ["hooks.id"]),
+            comment="Per-person hook progress (replaces PersonQuest+PersonObjective).",
             info=_INFO,
         )
 
-    pq_idx = _existing_index_names("person_quests")
-    if "ix_pq_person" not in pq_idx:
-        op.create_index("ix_pq_person", "person_quests", ["person_id"])
-    if "ix_pq_status" not in pq_idx:
+    ph_idx = _existing_index_names("person_hooks")
+    if "ix_ph_person" not in ph_idx:
+        op.create_index("ix_ph_person", "person_hooks", ["person_id"])
+    if "ix_ph_status" not in ph_idx:
         op.create_index(
-            "ix_pq_status", "person_quests", ["person_id", "status"]
+            "ix_ph_status", "person_hooks", ["person_id", "status"]
         )
 
-    if not _has_table("faction_quests"):
+    if not _has_table("faction_hooks"):
         op.create_table(
-            "faction_quests",
+            "faction_hooks",
             sa.Column("id", sa.String(36), nullable=False),
             sa.Column("faction_id", sa.String(36), nullable=True),
-            sa.Column("quest_id", sa.String(36), nullable=True),
+            sa.Column("hook_id", sa.String(36), nullable=True),
             sa.Column("status", sa.String(32), nullable=True),
             sa.Column("accepted_at", sa.DateTime(), nullable=True),
             sa.Column("completed_at", sa.DateTime(), nullable=True),
+            sa.Column("progress", sa.Float(), nullable=True),
             sa.Column("created_at", sa.DateTime(), nullable=False),
             sa.Column("created_by_user_id", sa.String(36), nullable=True),
             sa.Column("updated_at", sa.DateTime(), nullable=True),
@@ -564,43 +581,18 @@ def upgrade() -> None:
             sa.Column("deleted_by_user_id", sa.String(36), nullable=True),
             sa.PrimaryKeyConstraint("id"),
             sa.ForeignKeyConstraint(["faction_id"], ["factions.id"]),
-            sa.ForeignKeyConstraint(["quest_id"], ["quests.id"]),
-            comment="Per-faction quest progress instance",
+            sa.ForeignKeyConstraint(["hook_id"], ["hooks.id"]),
+            comment="Per-faction hook progress (replaces FactionQuest).",
             info=_INFO,
         )
 
-    if "ix_fq_faction" not in _existing_index_names("faction_quests"):
-        op.create_index("ix_fq_faction", "faction_quests", ["faction_id"])
-
-    if not _has_table("person_objectives"):
-        op.create_table(
-            "person_objectives",
-            sa.Column("id", sa.String(36), nullable=False),
-            sa.Column("person_id", sa.String(36), nullable=True),
-            sa.Column("objective_id", sa.String(36), nullable=True),
-            sa.Column("status", sa.String(32), nullable=True),
-            sa.Column("progress", sa.Float(), nullable=True),
-            sa.Column("completed_at", sa.DateTime(), nullable=True),
-            sa.Column("created_at", sa.DateTime(), nullable=False),
-            sa.Column("created_by_user_id", sa.String(36), nullable=True),
-            sa.Column("updated_at", sa.DateTime(), nullable=True),
-            sa.Column("updated_by_user_id", sa.String(36), nullable=True),
-            sa.Column("deleted_at", sa.DateTime(), nullable=True),
-            sa.Column("deleted_by_user_id", sa.String(36), nullable=True),
-            sa.PrimaryKeyConstraint("id"),
-            sa.ForeignKeyConstraint(["person_id"], ["persons.id"]),
-            sa.ForeignKeyConstraint(["objective_id"], ["objectives.id"]),
-            comment="Per-person objective progress instance",
-            info=_INFO,
-        )
-
-    if "ix_po_person" not in _existing_index_names("person_objectives"):
-        op.create_index("ix_po_person", "person_objectives", ["person_id"])
+    if "ix_fh_faction" not in _existing_index_names("faction_hooks"):
+        op.create_index("ix_fh_faction", "faction_hooks", ["faction_id"])
 
     # ---------------------------------------------------------------
     # Inject Faction endpoints onto the relationships table, relax
     # nullability on the default Person endpoints, and add the
-    # endpoint-XOR CHECK constraint. Owned by rpg_state via _INFO.
+    # endpoint-XOR CHECK constraints.
     # ---------------------------------------------------------------
     rel_cols = _existing_column_names("relationships")
     with op.batch_alter_table("relationships") as batch_op:
@@ -624,14 +616,12 @@ def upgrade() -> None:
                     comment="Object-side Faction endpoint (rpg_state)",
                 )
             )
-        # Both Person endpoints become nullable; existence enforced by the
-        # endpoint-XOR CHECK below rather than per-column NOT NULL.
-        batch_op.alter_column("person_id", existing_type=sa.String(36), nullable=True)
+        batch_op.alter_column(
+            "person_id", existing_type=sa.String(36), nullable=True
+        )
         batch_op.alter_column(
             "target_person_id", existing_type=sa.String(36), nullable=True
         )
-        # Endpoint XOR: exactly one endpoint per side.
-        # Boolean-as-int trick is portable across SQLite, Postgres, MySQL.
         batch_op.create_check_constraint(
             "ck_relationships_subject_xor",
             "((person_id IS NOT NULL) + (faction_id IS NOT NULL)) = 1",
@@ -653,8 +643,6 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    # Drop CHECKs and faction columns from relationships, restore
-    # NOT NULL on Person endpoints.
     rel_idx = _existing_index_names("relationships")
     for name in ("ix_rel_target_faction", "ix_rel_subject_faction"):
         if name in rel_idx:
@@ -662,12 +650,8 @@ def downgrade() -> None:
 
     rel_cols = _existing_column_names("relationships")
     with op.batch_alter_table("relationships") as batch_op:
-        batch_op.drop_constraint(
-            "ck_relationships_target_xor", type_="check"
-        )
-        batch_op.drop_constraint(
-            "ck_relationships_subject_xor", type_="check"
-        )
+        batch_op.drop_constraint("ck_relationships_target_xor", type_="check")
+        batch_op.drop_constraint("ck_relationships_subject_xor", type_="check")
         if "target_faction_id" in rel_cols:
             batch_op.drop_column("target_faction_id")
         if "faction_id" in rel_cols:
@@ -679,18 +663,24 @@ def downgrade() -> None:
             "person_id", existing_type=sa.String(36), nullable=False
         )
 
-    # Drop rpg_state-owned tables in reverse dependency order.
     for tbl in (
-        "person_objectives",
-        "faction_quests",
-        "person_quests",
-        "objectives",
-        "quests",
+        "faction_hooks",
+        "person_hooks",
+        "hook_dependencies",
+        "hooks",
     ):
         if _has_table(tbl):
             op.drop_table(tbl)
 
-    # Break the Location ↔ ItemInstance cycle before dropping.
+    # Break the deferred FKs before dropping referenced tables.
+    if _has_table("person_traits"):
+        with op.batch_alter_table("person_traits") as batch_op:
+            try:
+                batch_op.drop_constraint(
+                    "fk_person_traits_source_item_instance", type_="foreignkey"
+                )
+            except Exception:
+                pass
     if _has_table("locations"):
         with op.batch_alter_table("locations") as batch_op:
             try:
@@ -705,8 +695,8 @@ def downgrade() -> None:
         "items",
         "locations",
         "factions",
-        "person_status_effects",
         "person_traits",
+        "derivative_traits",
     ):
         if _has_table(tbl):
             op.drop_table(tbl)
@@ -718,12 +708,6 @@ def downgrade() -> None:
             if col in person_cols:
                 batch_op.drop_column(col)
 
-    for tbl in (
-        "status_effect_traits",
-        "status_effects",
-        "traits",
-        "campaigns",
-        "game_systems",
-    ):
+    for tbl in ("traits", "campaigns", "game_systems"):
         if _has_table(tbl):
             op.drop_table(tbl)

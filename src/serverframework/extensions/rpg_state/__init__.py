@@ -10,11 +10,13 @@ relationship table holds Person↔Person, Person↔Faction, and
 Faction↔Faction edges; the migration adds an endpoint-XOR CHECK
 constraint.
 
-State here is the "now": GameSystems, Campaigns, Traits, StatusEffects,
-Factions, Locations, Items, Quests, and the per-person and
-per-faction join tables that wire them together. Historical events
-(combat actions, dialogue, transactions) live in the sibling
-``rpg_log`` extension.
+State here is the "now": GameSystems, Campaigns, Traits (with
+``kind='status_effect'`` for buffs/debuffs/conditions),
+DerivativeTraits (edges defining how Traits contribute to one
+another), Factions, Locations, Items, Hooks (narrative DAG; replaces
+Quest+Objective), and the per-person / per-faction join tables that
+wire them together. Historical events (combat actions, dialogue,
+transactions) live in the sibling ``rpg_log`` extension.
 
 Schema integrity
 ----------------

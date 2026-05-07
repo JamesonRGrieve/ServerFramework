@@ -22,4 +22,4 @@ class TestExtensionMetadata:
     def test_models_returns_full_roster(self):
         models = RPGStateExtension.models()
         assert set(models) == set(ALL_MODELS)
-        assert len(models) == 16  # bump when adding owned tables.
+        assert len(models) == 13  # bump when adding owned tables.
