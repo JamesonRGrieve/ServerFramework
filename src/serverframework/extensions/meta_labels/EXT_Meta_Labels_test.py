@@ -2,7 +2,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from extensions.meta_labels.EXT_Meta_Labels import EXT_Meta_Labels
+from serverframework.extensions.meta_labels.EXT_Meta_Labels import EXT_Meta_Labels
 
 
 class TestMetaLabelsExtension:

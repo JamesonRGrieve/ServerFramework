@@ -13,9 +13,9 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from util.UtilEnv import env
 
-from database.DB_Auth import APIKey, Role, Team, User  # Added APIKey
-from logic.BLL_Auth import RoleManager, TeamManager, UserManager
-from logic.BLL_Base import AbstractBLLManager
+# NORMALIZED-DEAD-IMPORT: from database.DB_Auth import APIKey, Role, Team, User  # Added APIKey  # use UserModel.Reference.Optional / TeamModel.Reference.Optional from serverframework.logic.BLL_Auth
+from serverframework.logic.BLL_Auth import RoleManager, TeamManager, UserManager
+from serverframework.logic.BLL_Base import AbstractBLLManager
 
 
 class APIKeyModel(

@@ -4,9 +4,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from AbstractTest import CategoryOfTest, ClassOfTestsConfig, SkipThisTest
-from extensions.AbstractEXTTest import AbstractEXTTest
-from extensions.auth_api_keys.EXT_Auth_APIKeys import EXT_Auth_APIKeys
-from lib.Dependencies import install_pip_dependencies
+from serverframework.extensions.AbstractEXTTest import AbstractEXTTest
+from serverframework.extensions.auth_api_keys.EXT_Auth_APIKeys import EXT_Auth_APIKeys
+from serverframework.lib.Dependencies import install_pip_dependencies
 
 
 class TestEXTAuthAPIKeys(AbstractEXTTest):

@@ -1,11 +1,11 @@
 from fastapi import Depends, Path, Response, status
 
-from endpoints.AbstractEPRouter import (
+# NORMALIZED-DEAD-IMPORT: from endpoints.AbstractEPRouter import (  # AbstractEPRouter removed; use fastapi.APIRouter
     AbstractEPRouter,
     ExampleGenerator,
     create_nested_router,
 )
-from extensions.labels.BLL_Labels import (
+# NORMALIZED-DEAD-IMPORT: from extensions.labels.BLL_Labels import (
     AgentLabelNetworkModel,
     ChainLabelNetworkModel,
     ConversationLabelNetworkModel,
@@ -16,7 +16,7 @@ from extensions.labels.BLL_Labels import (
     ProviderLabelNetworkModel,
     TaskLabelNetworkModel,
 )
-from logic.BLL_Auth import User, UserManager
+from serverframework.logic.BLL_Auth import UserModel, UserManager
 
 
 def get_label_manager(user: User = Depends(UserManager.auth)):

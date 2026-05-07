@@ -1,42 +1,23 @@
-from sqlalchemy.orm import declared_attr, relationship
+"""Legacy SQLAlchemy direct-ORM stubbed out during normalization.
 
-from database.AbstractDatabaseEntity import BaseMixin, UpdateMixin
-from database.Base import Base
-from database.DB_Auth import User
+Original definition tracked ``UserMerge`` rows linking an initiating user to
+a target user (account consolidation). It used ``Base, BaseMixin, UpdateMixin``
+and explicit ``declared_attr`` foreign keys on the long-gone ``database``
+package.
 
+TODO(audit): rewrite ``UserMerge`` (and the planned ``TeamMerge``) in
+``BLL_Auth_Merge.py`` against the current ``ApplicationModel`` +
+``ModelMeta`` pattern, with ``UserModel.Reference`` for FKs.
+"""
 
-class UserMerge(Base, BaseMixin, UpdateMixin):
-    __tablename__ = "user_merges"
-    __table_args__ = {
-        "comment": "Tracks user account merges when a user has multiple accounts that need to be consolidated"
-    }
+from typing import Optional
 
-    @declared_attr
-    def initiating_user_id(cls):
-        return cls.create_foreign_key(
-            User,
-            comment="User who initiated the merge (account to keep)",
-            constraint_name="fk_user_merge_initiating",
-        )
-
-    @declared_attr
-    def target_user_id(cls):
-        return cls.create_foreign_key(
-            User,
-            comment="User to be merged into the initiating user (account to disable)",
-            constraint_name="fk_user_merge_target",
-        )
+from pydantic import BaseModel
 
 
-UserMerge.initiating_user = relationship(
-    User.__name__,
-    foreign_keys=[UserMerge.initiating_user_id],
-    backref="merges_initiated",
-)
+class UserMerge(BaseModel):
+    """Stub for the legacy ``UserMerge`` model. Not persisted."""
 
-UserMerge.target_user = relationship(
-    User.__name__,
-    foreign_keys=[UserMerge.target_user_id],
-    backref="merges_targetted",
-)
-# TODO Add TeamMerge.
+    initiating_user_id: str
+    target_user_id: str
+    completed_at: Optional[str] = None

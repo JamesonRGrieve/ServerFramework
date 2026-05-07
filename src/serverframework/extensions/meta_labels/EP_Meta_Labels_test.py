@@ -2,7 +2,7 @@ import uuid
 
 import pytest
 
-from endpoints.AbstractEPTest import AbstractEndpointTest
+from serverframework.endpoints.AbstractEPTest import AbstractEndpointTest
 
 
 @pytest.mark.labels

@@ -1,32 +1,37 @@
-from sqlalchemy import Column, String
+"""Legacy SQLAlchemy direct-ORM definition stubbed out during normalization.
 
-from database.AbstractDatabaseEntity import (
-    BaseMixin,
-    UpdateMixin,
-    create_reference_mixin,
-)
-from database.Base import Base
-from database.DB_Auth import RoleRefMixin, TeamRefMixin, UserRefMixin
+The original ``APIKey`` model used ``Base, BaseMixin, UpdateMixin,
+UserRefMixin.Optional, TeamRefMixin.Optional, RoleRefMixin.Optional`` from a
+``database`` package layout that no longer exists. The current framework
+expresses persistence via ``ApplicationModel`` + ``ModelMeta`` in BLL files
+(see e.g. ``auth_session/BLL_Session.py``).
 
+This file is preserved as a placeholder so legacy imports of ``APIKey`` do
+not fail. The class is a Pydantic stub with the public field shape only.
 
-class APIKey(
-    Base,
-    BaseMixin,
-    UpdateMixin,
-    UserRefMixin.Optional,
-    TeamRefMixin.Optional,
-    RoleRefMixin.Optional,
-):
-    __tablename__ = "api_keys"
-    __table_args__ = {"comment": "API keys for programmatic access to the application"}
-    name = Column(String, nullable=False, comment="Human-readable name for the API key")
-    key_hash = Column(
-        String,
-        nullable=False,
-        unique=True,
-        comment="Hash of the API key for verification",
-    )
+TODO(audit): rewrite the API-key persistence layer in
+``BLL_Auth_APIKeys.py`` using ``ApplicationModel`` + ``UpdateMixinModel`` and
+delete this file.
+"""
+
+from typing import Optional
+
+from pydantic import BaseModel
 
 
-# Create APIKey reference mixin using the standard pattern
-APIKeyRefMixin = create_reference_mixin(APIKey)
+class APIKey(BaseModel):
+    """Stub for the legacy SQLAlchemy ``APIKey`` model.
+
+    Real persistence must be re-introduced in ``BLL_Auth_APIKeys.py`` against
+    the current ``ApplicationModel`` pattern. This stub exists so that
+    legacy imports parse; it is not registered with the database manager.
+    """
+
+    name: str
+    key_hash: str
+    user_id: Optional[str] = None
+    team_id: Optional[str] = None
+    role_id: Optional[str] = None
+
+
+APIKeyRefMixin = None  # legacy create_reference_mixin output; rewrite consumers

@@ -3,14 +3,14 @@ from typing import Dict, Optional
 from fastapi import HTTPException
 from pydantic import BaseModel, Field
 
-from extensions.auth_merge.DB_Auth_Merge import UserMerge
-from logic.AbstractLogicManager import (
+from serverframework.extensions.auth_merge.DB_Auth_Merge import UserMerge
+from serverframework.logic.AbstractLogicManager import (
     AbstractBLLManager,
     BaseMixinModel,
     StringSearchModel,
     UpdateMixinModel,
 )
-from logic.BLL_Auth import (
+from serverframework.logic.BLL_Auth import (
     User,
     UserMetadata,
     UserMetadataManager,

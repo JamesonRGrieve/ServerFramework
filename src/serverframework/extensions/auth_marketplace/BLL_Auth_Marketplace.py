@@ -7,13 +7,13 @@ from models.ModelTeam import TeamModel  # Added TeamModel
 from models.ModelUser import UserModel  # Added UserModel
 from pydantic import BaseModel, Field
 
-from database.DB_Auth import Team, User  # Added Team
-from database.DB_Ext import Provider  # Added Provider
-from database.DB_Marketplace import (  # Added DB Models
+# NORMALIZED-DEAD-IMPORT: from database.DB_Auth import Team, User  # Added Team  # use UserModel.Reference.Optional / TeamModel.Reference.Optional from serverframework.logic.BLL_Auth
+from serverframework.database.DB_Ext import Provider  # Added Provider
+from serverframework.database.DB_Marketplace import (  # Added DB Models
     TeamPaymentPortal,
     UserPaymentPortal,
 )
-from logic.BLL_Base import AbstractBLLManager
+from serverframework.logic.BLL_Base import AbstractBLLManager
 
 
 # --- User Payment Portal --- #

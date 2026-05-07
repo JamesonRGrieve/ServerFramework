@@ -3,15 +3,15 @@ from typing import List, Optional
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from extensions.chains.BLL_Chains import ChainManager, ChainModel, ChainReferenceModel
-from extensions.conversations.BLL_Conversations import (
+# NORMALIZED-DEAD-IMPORT: from extensions.chains.BLL_Chains import ChainManager, ChainModel, ChainReferenceModel
+# NORMALIZED-DEAD-IMPORT: from extensions.conversations.BLL_Conversations import (
     ConversationManager,
     ConversationModel,
     ConversationReferenceModel,
 )
 
 # Corrected DB Imports
-from extensions.meta_labels.DB_Labels import (
+from serverframework.extensions.meta_labels.DB_Labels import (
     AgentLabel,
     ChainLabel,
     ConversationLabel,
@@ -21,25 +21,25 @@ from extensions.meta_labels.DB_Labels import (
     ProviderLabel,
     TaskLabel,
 )
-from extensions.prompts.BLL_Prompts import (
+# NORMALIZED-DEAD-IMPORT: from extensions.prompts.BLL_Prompts import (
     PromptManager,
     PromptModel,
     PromptReferenceModel,
 )
-from extensions.tasks.BLL_Tasks import TaskManager, TaskModel, TaskReferenceModel
+# NORMALIZED-DEAD-IMPORT: from extensions.tasks.BLL_Tasks import TaskManager, TaskModel, TaskReferenceModel
 
 # Import AbstractLogicManager and Mixins
-from logic.AbstractLogicManager import StringSearchModel  # Added ParentMixinModel
-from logic.AbstractLogicManager import (
+from serverframework.logic.AbstractLogicManager import StringSearchModel  # Added ParentMixinModel
+from serverframework.logic.AbstractLogicManager import (
     AbstractBLLManager,
     BaseMixinModel,
     NameMixinModel,
 )
 
 # Import referenced BLL Models and Managers correctly
-from logic.BLL_Agents import AgentManager, AgentModel, AgentReferenceModel
-from logic.BLL_Projects import ProjectManager, ProjectModel, ProjectReferenceModel
-from logic.BLL_Providers import ProviderManager, ProviderModel, ProviderReferenceModel
+from serverframework.logic.BLL_Agents import AgentManager, AgentModel, AgentReferenceModel
+from serverframework.logic.BLL_Projects import ProjectManager, ProjectModel, ProjectReferenceModel
+from serverframework.logic.BLL_Providers import ProviderManager, ProviderModel, ProviderReferenceModel
 
 
 # --- Label --- #

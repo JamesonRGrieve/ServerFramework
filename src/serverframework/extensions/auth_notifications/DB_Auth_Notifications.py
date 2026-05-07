@@ -1,69 +1,44 @@
-from sqlalchemy import Boolean, Column, DateTime, String, Text
-from sqlalchemy.orm import declared_attr, relationship
+"""Legacy SQLAlchemy direct-ORM stubbed out during normalization.
 
-from database.AbstractDatabaseEntity import BaseMixin, UpdateMixin
-from database.Base import Base
-from database.DB_Auth import TeamRefMixin, UserRefMixin
+Original ``Notification`` / ``NotificationReference`` / ``UserNotification``
+models referenced ``Base, BaseMixin, UpdateMixin, UserRefMixin, TeamRefMixin``
+on the long-gone ``database`` package layout.
 
+TODO(audit): rewrite the notification persistence layer in
+``BLL_Auth_Notifications.py`` against the current ``ApplicationModel`` +
+``ModelMeta`` pattern.
+"""
 
-class Notification(
-    Base, BaseMixin, UpdateMixin, UserRefMixin.Optional, TeamRefMixin.Optional
-):
-    __tablename__ = "notifications"
-    __table_args__ = {
-        "comment": "System and user notifications with various scoping options (user, team, user-team, or global)"
-    }
-    title = Column(Text, nullable=False, comment="Notification title/subject")
-    content = Column(Text, nullable=False, comment="Notification body content")
-    reference_type = Column(String, nullable=True, comment="Type of referenced entity")
-    reference_id = Column(String, nullable=True, comment="ID of referenced entity")
+from typing import Optional
+
+from pydantic import BaseModel
 
 
-class NotificationReference(Base, BaseMixin, UpdateMixin):
-    __tablename__ = "notification_references"
-    __table_args__ = {
-        "comment": "Links notifications to various entities throughout the system"
-    }
-    reference_type = Column(String, nullable=False, comment="Type of referenced entity")
-    reference_id = Column(String, nullable=False, comment="ID of referenced entity")
+class Notification(BaseModel):
+    """Stub for the legacy ``Notification`` model. Not persisted."""
 
-    @declared_attr
-    def notification_id(cls):
-        return cls.create_foreign_key(
-            Notification,
-            ondelete="CASCADE",
-            comment="Reference to the notification this link belongs to",
-        )
-
-    notification = relationship("Notification", backref="notification_references")
+    title: str
+    content: str
+    reference_type: Optional[str] = None
+    reference_id: Optional[str] = None
+    user_id: Optional[str] = None
+    team_id: Optional[str] = None
 
 
-class UserNotification(Base, BaseMixin, UserRefMixin):
-    __tablename__ = "user_notifications"
-    __table_args__ = {
-        "comment": "Tracks which users have read or acknowledged which notifications"
-    }
+class NotificationReference(BaseModel):
+    """Stub for the legacy ``NotificationReference`` model. Not persisted."""
 
-    @declared_attr
-    def notification_id(cls):
-        return cls.create_foreign_key(
-            Notification,
-            comment="Reference to the notification being tracked",
-        )
+    reference_type: str
+    reference_id: str
+    notification_id: str
 
-    notification = relationship("Notification", backref="user_notifications")
 
-    read = Column(
-        Boolean, default=False, comment="Whether the user has read this notification"
-    )
-    read_at = Column(
-        DateTime, nullable=True, comment="When the user read this notification"
-    )
-    acknowledged = Column(
-        Boolean,
-        default=False,
-        comment="Whether the user has acknowledged this notification",
-    )
-    acknowledged_at = Column(
-        DateTime, nullable=True, comment="When the user acknowledged this notification"
-    )
+class UserNotification(BaseModel):
+    """Stub for the legacy ``UserNotification`` model. Not persisted."""
+
+    user_id: str
+    notification_id: str
+    read: bool = False
+    read_at: Optional[str] = None
+    acknowledged: bool = False
+    acknowledged_at: Optional[str] = None

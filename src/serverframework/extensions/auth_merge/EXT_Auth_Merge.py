@@ -3,11 +3,38 @@ import json
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Set
 
-from extensions.AbstractExtension import AbstractExtension
-from extensions.auth_merge.DB_Auth_Merge import UserMerge
-from lib.Dependencies import EXT_Dependency, PIP_Dependency
-from lib.Environment import env
-from lib.Logging import logger
+from serverframework.extensions.AbstractExtensionProvider import AbstractStaticExtension as AbstractExtension
+
+# Legacy compatibility shim: @AbstractExtension.ability and
+# @AbstractExtension.bll_hook were class-attached decorators on the old
+# AbstractExtension. The modern AbstractStaticExtension does not expose them
+# in the same shape. The standalone ``ability`` decorator is bound back onto
+# the alias for transparent re-use; ``bll_hook`` is replaced with a no-op
+# placeholder pending a proper rewrite to ``@hook_bll(target, timing=...)``.
+# TODO(audit): rewrite every call site as ``@ability(...)`` (standalone) and
+# ``@hook_bll(<TargetManager>.method, timing=HookTiming.AFTER)`` then remove
+# this shim.
+from serverframework.extensions.AbstractExtensionProvider import (  # noqa: E402
+    ability as _legacy_ability,
+)
+
+
+def _legacy_bll_hook(*_args, **_kwargs):  # noqa: E501
+    def _decorator(func):
+        return func
+    return _decorator
+
+
+if not hasattr(AbstractExtension, "ability"):
+    AbstractExtension.ability = staticmethod(_legacy_ability)
+if not hasattr(AbstractExtension, "bll_hook"):
+    AbstractExtension.bll_hook = staticmethod(_legacy_bll_hook)
+
+
+from serverframework.extensions.auth_merge.DB_Auth_Merge import UserMerge
+from serverframework.lib.Dependencies import EXT_Dependency, PIP_Dependency
+from serverframework.lib.Environment import env
+from serverframework.lib.Logging import logger
 
 
 class EXT_Auth_Merge(AbstractExtension):

@@ -4,9 +4,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from AbstractTest import CategoryOfTest, ClassOfTestsConfig, SkipThisTest
-from extensions.AbstractEXTTest import AbstractEXTTest
-from extensions.auth_merge.EXT_Auth_Merge import EXT_Auth_Merge
-from lib.Dependencies import install_pip_dependencies
+from serverframework.extensions.AbstractEXTTest import AbstractEXTTest
+from serverframework.extensions.auth_merge.EXT_Auth_Merge import EXT_Auth_Merge
+from serverframework.lib.Dependencies import install_pip_dependencies
 
 
 class TestEXTAuthMerge(AbstractEXTTest):

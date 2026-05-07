@@ -1,38 +1,34 @@
-from sqlalchemy import Column, String
+"""Legacy SQLAlchemy direct-ORM stubbed out during normalization.
 
-from database.AbstractDatabaseEntity import BaseMixin, UpdateMixin
-from database.Base import Base
-from database.DB_Auth import TeamRefMixin, UserRefMixin
-from database.DB_Providers import ProviderRefMixin
+Original ``UserPaymentPortal`` / ``TeamPaymentPortal`` models linked users
+or teams to payment providers via ``Base, BaseMixin, UpdateMixin,
+UserRefMixin, ProviderRefMixin, TeamRefMixin``. None of those classes exist
+in the current tree, and ``serverframework.database.DB_Providers`` does not
+exist either (provider registration moved to ``serverframework.logic.BLL_Providers``).
 
+TODO(audit): rewrite payment-portal persistence in ``BLL_Auth_Marketplace.py``
+using ``ApplicationModel`` + ``ModelMeta``, referencing ``ProviderInstanceModel``
+from ``serverframework.logic.BLL_Providers`` instead of a separate
+``DB_Providers`` module.
+"""
 
-class UserPaymentPortal(Base, BaseMixin, UpdateMixin, UserRefMixin, ProviderRefMixin):
-    __tablename__ = "user_payment_portals"
-    __table_args__ = {
-        "comment": "Links users to payment providers for processing payments and subscriptions"
-    }
-    # payment_portal_id = create_foreign_key(
-    #     Provider, comment="Reference to the payment portal provider"
-    # )
-    customer_id = Column(
-        String,
-        nullable=True,
-        unique=True,
-        comment="Unique customer ID provided by the payment processor",
-    )
+from typing import Optional
+
+from pydantic import BaseModel
 
 
-class TeamPaymentPortal(
-    Base, BaseMixin, UpdateMixin, TeamRefMixin, ProviderRefMixin, UserRefMixin.Optional
-):
-    __tablename__ = "team_payment_portals"
-    __table_args__ = {
-        "comment": "Links teams to payment providers for processing team-level payments and subscriptions"
-    }
-    # Inherits team_id, payment_portal_id, and optional user_id (creator)
-    customer_id = Column(
-        String,
-        nullable=True,
-        unique=True,
-        comment="Unique customer ID provided by the payment processor",
-    )
+class UserPaymentPortal(BaseModel):
+    """Stub for the legacy ``UserPaymentPortal`` model. Not persisted."""
+
+    user_id: str
+    payment_portal_id: str
+    customer_id: Optional[str] = None
+
+
+class TeamPaymentPortal(BaseModel):
+    """Stub for the legacy ``TeamPaymentPortal`` model. Not persisted."""
+
+    team_id: str
+    payment_portal_id: str
+    user_id: Optional[str] = None
+    customer_id: Optional[str] = None

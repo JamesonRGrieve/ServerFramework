@@ -3,7 +3,9 @@ from enum import Enum, auto
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
-from extensions.AbstractProvider import AbstractProvider
+from serverframework.extensions.AbstractExtensionProvider import (
+    AbstractStaticProvider as AbstractProvider,
+)
 
 
 class FileIOPermission(Enum):
