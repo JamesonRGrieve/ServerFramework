@@ -80,7 +80,20 @@ class ExtensionServerMixin:
 
         extension_name = self.extension_class.name.lower()
         test_db_prefix = f"test.{extension_name}"
-        extension_list = extension_name
+        # Always include the carved-out core-companion extensions so an
+        # extension test that exercises invitation/permission/metadata
+        # flows (e.g. EXT_EMail's send_invitation_email_hook) sees the
+        # canonical models bound to the registry. Tests that need a
+        # minimal registry override `server` directly.
+        _COMPANIONS = (
+            "metadata",
+            "auth_lockout",
+            "auth_recovery_questions",
+            "auth_invitations",
+            "acl_rbac",
+        )
+        names = [extension_name] + [c for c in _COMPANIONS if c != extension_name]
+        extension_list = ",".join(names)
         try:
             from serverframework.app import instance
 

@@ -943,13 +943,12 @@ class GraphQLManager(ErrorHandlerMixin):
 
         # In production, disable schema introspection so an unauthenticated
         # client can't enumerate every type/field and a depth-bomb attacker
-        # can't iterate the catalogue cheaply. We read the environment
-        # directly from the OS rather than via the cached `settings` object
-        # so a freshly-built schema picks up the current value.
-        import os as _os
+        # can't iterate the catalogue cheaply. Routed through is_production
+        # so APP_ENV / ENVIRONMENT cannot diverge (C-2).
+        from serverframework.lib.Environment import env as _env, is_production
 
         schema_extensions: List[Any] = []
-        if (_os.getenv("ENVIRONMENT") or "local").lower() == "production":
+        if is_production():
             try:
                 from strawberry.extensions import DisableIntrospection
 
@@ -959,12 +958,11 @@ class GraphQLManager(ErrorHandlerMixin):
 
         # Always enforce a query-depth limit. An attacker who nests 30+ levels
         # of selection sets can otherwise force quadratic-or-worse work in the
-        # resolver layer. GQL_DEPTH defaults to 10, which is well above any
-        # legitimate UI query but cheap to validate against.
+        # resolver layer. GQL_DEPTH default aligns with AppSettings (L-1).
         try:
             from strawberry.extensions import QueryDepthLimiter
 
-            depth_raw = _os.getenv("GQL_DEPTH") or "10"
+            depth_raw = _env("GQL_DEPTH") or "10"
             try:
                 max_depth = max(1, int(depth_raw))
             except (TypeError, ValueError):

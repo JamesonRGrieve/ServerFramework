@@ -22,6 +22,38 @@ src_path = Path(__file__).resolve().parent
 project_root = src_path.parent
 
 
+# Extensions that hold canonical models previously living in core BLL_Auth.
+# They were extracted (Scope #1-#5) but the core test surface still asserts
+# their behaviour, so the default `server` / `mock_server` fixtures load
+# them. Tests that need the core-without-extensions surface use
+# `extensions=""` explicitly.
+_CORE_TEST_EXTENSIONS = ",".join(
+    [
+        "metadata",
+        "auth_lockout",
+        "auth_recovery_questions",
+        "auth_invitations",
+        "acl_rbac",
+    ]
+)
+
+
+# Registry for JWT helpers that mint sessions outside the login flow.
+# Populated by the `server` / `mock_server` fixtures below. M-1 made
+# `jti` mandatory on every JWT and gated on a live SessionModel row, so
+# test helpers that emit ad-hoc tokens need a registry to mint the row.
+_TEST_MODEL_REGISTRY = None
+
+
+def _set_test_model_registry(registry) -> None:
+    global _TEST_MODEL_REGISTRY
+    _TEST_MODEL_REGISTRY = registry
+
+
+def get_test_model_registry():
+    return _TEST_MODEL_REGISTRY
+
+
 # =============================================================================
 # PYTEST-XDIST WORKER COORDINATION
 # =============================================================================
@@ -507,7 +539,7 @@ def mock_server():
     # Use the new instance function with worker-specific prefix and no extensions
     from serverframework.app import instance
 
-    app = instance(db_prefix=db_prefix, extensions="")
+    app = instance(db_prefix=db_prefix, extensions=_CORE_TEST_EXTENSIONS)
 
     logger.debug(f"Worker {worker_id}: Mock server initialization complete")
 
@@ -543,8 +575,9 @@ def server():
     # Use the new instance function with worker-specific prefix and no extensions
     from serverframework.app import instance
 
-    app = instance(db_prefix=db_prefix, extensions="")
+    app = instance(db_prefix=db_prefix, extensions=_CORE_TEST_EXTENSIONS)
     test_client = TestClient(app)
+    _set_test_model_registry(app.state.model_registry)
 
     logger.debug(f"Worker {worker_id}: Server initialization complete")
 
@@ -602,7 +635,7 @@ def isolated_server():
     worker_id = os.environ.get("PYTEST_XDIST_WORKER", "main")
     db_prefix = f"test.isolated.{worker_id}"
 
-    app = instance(db_prefix=db_prefix, extensions="")
+    app = instance(db_prefix=db_prefix, extensions=_CORE_TEST_EXTENSIONS)
     test_client = TestClient(app)
 
     yield test_client

@@ -107,7 +107,77 @@ __all__ = [
     "DEFAULT_AUTH_RATE_LIMIT",
     "DEFAULT_MUTATING_RATE_LIMIT",
     "DEFAULT_READ_RATE_LIMIT",
+    "compare_api_key",
+    "resolve_principal_from_api_key",
+    "resolve_client_ip",
 ]
+
+
+import hmac as _hmac
+
+
+def compare_api_key(submitted: Optional[str], expected: Optional[str]) -> bool:
+    """Constant-time comparison for API keys (H-3).
+
+    Returns ``False`` for empty/None inputs — never let a misconfigured
+    deployment with an unset ``ROOT_API_KEY`` accept any client value.
+    """
+    if not submitted or not expected:
+        return False
+    submitted_b = submitted.encode("utf-8") if isinstance(submitted, str) else submitted
+    expected_b = expected.encode("utf-8") if isinstance(expected, str) else expected
+    return _hmac.compare_digest(submitted_b, expected_b)
+
+
+def resolve_principal_from_api_key(api_key: Optional[str]) -> Optional[str]:
+    """Map a submitted API key to one of (ROOT_ID, SYSTEM_ID, TEMPLATE_ID).
+
+    Returns ``None`` when no key matches. Single source of truth for
+    REST, GraphQL, and the Pydantic2FastAPI factory (H-6) — all three
+    used to disagree on which keys map to which principal.
+    """
+    if not api_key:
+        return None
+    from serverframework.lib.Environment import env
+
+    candidates = (
+        ("ROOT_API_KEY", "ROOT_ID"),
+        ("SYSTEM_API_KEY", "SYSTEM_ID"),
+        ("TEMPLATE_API_KEY", "TEMPLATE_ID"),
+    )
+    for key_var, id_var in candidates:
+        configured = env(key_var)
+        if compare_api_key(api_key, configured):
+            return env(id_var)
+    return None
+
+
+def resolve_client_ip(request_or_headers, peer_host: Optional[str] = None) -> Optional[str]:
+    """Return the client IP, honouring `X-Forwarded-For` only when the
+    immediate peer is a configured trusted proxy (H-7).
+
+    Accepts either a Starlette/FastAPI ``Request``-shaped object (with
+    ``client.host`` and ``headers``) or a plain mapping of headers when
+    the caller already extracted the peer host.
+    """
+    if peer_host is None:
+        client = getattr(request_or_headers, "client", None)
+        peer_host = getattr(client, "host", None) if client else None
+        if peer_host is None and hasattr(request_or_headers, "client") is False:
+            # Plain header mapping path; no peer info available.
+            peer_host = None
+    if hasattr(request_or_headers, "headers"):
+        headers = request_or_headers.headers
+        get_header = headers.get
+    else:
+        get_header = lambda k, default=None: request_or_headers.get(k, default)  # noqa: E731
+
+    if _peer_is_trusted_proxy(peer_host):
+        xff = get_header("X-Forwarded-For", "") or ""
+        forwarded = xff.split(",")[0].strip() if xff else ""
+        if forwarded:
+            return forwarded
+    return peer_host
 
 
 # ---------------------------------------------------------------------------

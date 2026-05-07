@@ -25,8 +25,32 @@ from serverframework.extensions.webhooks.BLL_Webhooks import (
     maybe_await,
     parse_payload,
 )
-from serverframework.lib.InboundSecurity import rate_limit
+from serverframework.lib.InboundSecurity import (
+    _get_counter,
+    parse_rate_spec,
+    rate_limit,
+)
 from serverframework.lib.Logging import logger
+
+
+# M-3 — webhook rate limiting is keyed on `(extension, provider)` rather than
+# the global per-IP scope `@rate_limit` produces. A single misbehaving
+# provider can no longer exhaust every other provider's budget. Per-provider
+# per-IP scope keeps per-provider budgets, while still rejecting an IP that
+# spams a single provider.
+_WEBHOOK_RATE = "300/min"
+_WEBHOOK_COUNT, _WEBHOOK_WINDOW = parse_rate_spec(_WEBHOOK_RATE)
+
+
+def _enforce_webhook_rate(extension: str, provider: str, peer: Optional[str]) -> bool:
+    """Returns True when the request is within budget."""
+    counter = _get_counter()
+    key = f"webhook:{extension}:{provider}:{peer or '?'}"
+    try:
+        return counter.incr(key, _WEBHOOK_WINDOW) <= _WEBHOOK_COUNT
+    except Exception:
+        # Fail open on counter outage; identical contract as RateLimitMiddleware.
+        return True
 
 
 def create_webhook_router() -> APIRouter:
@@ -40,6 +64,19 @@ def create_webhook_router() -> APIRouter:
         event: Optional[str],
         request: Request,
     ) -> Response:
+        # M-3 — per-(extension, provider, peer) budget. The per-IP global
+        # `@rate_limit` is retained as an outer DoS gate but no longer
+        # exhausts a provider's budget when a sibling provider is misbehaving.
+        from serverframework.lib.InboundSecurity import resolve_client_ip
+
+        peer = resolve_client_ip(request)
+        if not _enforce_webhook_rate(extension, provider, peer):
+            raise HTTPException(
+                status_code=429,
+                detail=f"Webhook rate limit exceeded for {extension}/{provider}",
+                headers={"Retry-After": str(_WEBHOOK_WINDOW)},
+            )
+
         body_bytes = await request.body()
         payload = parse_payload(body_bytes)
         headers = {k.lower(): v for k, v in request.headers.items()}

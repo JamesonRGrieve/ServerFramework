@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from serverframework.lib.CustomRoute import custom_route
 from serverframework.lib.Environment import env
+from serverframework.lib.InboundSecurity import DEFAULT_AUTH_RATE_LIMIT, rate_limit
 from serverframework.lib.Pydantic2FastAPI import AuthType, RouterMixin
 from serverframework.logic.AbstractLogicManager import (
     AbstractBLLManager,
@@ -129,6 +130,7 @@ class DevicePairingRequestModel(
         requesting_user_agent: Optional[str] = None
         code_hash: str
         code_salt: str
+        code_fingerprint: Optional[str] = None
         expires_at: datetime
         is_used: bool = False
         used_at: Optional[datetime] = None
@@ -198,12 +200,18 @@ class DevicePairingManager(AbstractBLLManager, RouterMixin):
     def _resolve_token(
         self, raw_token: str
     ) -> Optional[DevicePairingRequestModel]:
+        # H-5 — indexed fingerprint lookup; bcrypt verifies the unique
+        # candidate. Replaces the bcrypt-against-every-unused-token loop.
         DB = DevicePairingRequestModel.DB(self.model_registry.DB.manager.Base)
+        fingerprint = OneTimeTokenMixin.fingerprint(raw_token)
         candidates = (
             DB.list(
                 requester_id=env("ROOT_ID"),
                 model_registry=self.model_registry,
-                filters=[DB.is_used == False],  # noqa: E712
+                filters=[
+                    DB.is_used == False,  # noqa: E712
+                    DB.code_fingerprint == fingerprint,
+                ],
                 return_type="dto",
                 override_dto=DevicePairingRequestModel,
             )
@@ -246,6 +254,7 @@ class DevicePairingManager(AbstractBLLManager, RouterMixin):
             requesting_user_agent=user_agent,
             code_hash=token.code_hash,
             code_salt=token.code_salt,
+            code_fingerprint=token.code_fingerprint,
             expires_at=precise_expiry,
             is_used=False,
             return_type="dto",
@@ -432,6 +441,7 @@ class DevicePairingManager(AbstractBLLManager, RouterMixin):
         openapi_tags=("Device Pairing Authentication",),
         summary="Request a new device pairing token (QR payload)",
     )
+    @rate_limit(DEFAULT_AUTH_RATE_LIMIT, scope="ip")
     def request_route(self, body: PairingRequest) -> PairingResponse:
         return self.request_pairing(
             device_type=body.requesting_device_type,
@@ -447,6 +457,7 @@ class DevicePairingManager(AbstractBLLManager, RouterMixin):
         openapi_tags=("Device Pairing Authentication",),
         summary="Approve a scanned pairing token from an authenticated device",
     )
+    @rate_limit(DEFAULT_AUTH_RATE_LIMIT, scope="ip")
     def approve_route(self, body: PairingApprove) -> PairingApproveResponse:
         approver_id = self.requester.id if self.requester is not None else ""
         return self.approve_pairing(token=body.token, approver_user_id=approver_id)
@@ -460,6 +471,7 @@ class DevicePairingManager(AbstractBLLManager, RouterMixin):
         openapi_tags=("Device Pairing Authentication",),
         summary="Deny a scanned pairing token from an authenticated device",
     )
+    @rate_limit(DEFAULT_AUTH_RATE_LIMIT, scope="ip")
     def deny_route(self, body: PairingDeny) -> PairingActionResponse:
         approver_id = self.requester.id if self.requester is not None else ""
         return self.deny_pairing(token=body.token, approver_user_id=approver_id)

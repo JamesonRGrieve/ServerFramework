@@ -171,9 +171,19 @@ def _resolve_openbao(path: str, version: Optional[str]) -> Optional[str]:
 def _env_suffix_for(app_env: Optional[str]) -> str:
     """Item 50 paired-name discriminator. Production -> `_LIVE`,
     everything else (development, staging, tests) -> `_TEST`.
+
+    Reads ``os.environ`` directly so test-time monkeypatching of either
+    ``ENVIRONMENT`` or ``APP_ENV`` is honoured immediately, without
+    forcing a re-validate of the cached ``AppSettings`` singleton.
+    Either name is accepted (C-2: the legacy alias is still respected).
     """
-    env_value = (app_env or os.environ.get("APP_ENV", "development")).lower()
-    return "_LIVE" if env_value == "production" else "_TEST"
+    if app_env is None:
+        env_value = (
+            os.environ.get("ENVIRONMENT") or os.environ.get("APP_ENV") or "development"
+        )
+    else:
+        env_value = app_env
+    return "_LIVE" if (env_value or "").lower() == "production" else "_TEST"
 
 
 def _resolve_env(path: str, app_env: Optional[str]) -> Optional[str]:
@@ -348,7 +358,13 @@ def redact(text: str) -> str:
 
 class RedactingFilter(logging.Filter):
     """`logging.Filter` that scrubs registered secret values from each
-    record. Attach to handlers (not loggers) so the scrub runs late."""
+    record. Attach to handlers (not loggers) so the scrub runs late.
+
+    Scope #10 — when the `privacy` extension is loaded its richer
+    `PIILogFilter` (email/bearer/cloud-key patterns + secrets registry)
+    runs in addition to this scrubber. Both filters are idempotent so the
+    order they attach in does not matter.
+    """
 
     def filter(self, record: logging.LogRecord) -> bool:
         try:
@@ -356,6 +372,16 @@ class RedactingFilter(logging.Filter):
             if any(s and s in msg for s in registered_secrets()):
                 record.msg = redact(msg)
                 record.args = ()
+            # Delegate to the privacy extension when present for richer
+            # PII pattern coverage.
+            try:
+                from serverframework.extensions.privacy.BLL_PII import (
+                    PIILogFilter as _ExtFilter,
+                )
+
+                _ExtFilter().filter(record)
+            except ImportError:
+                pass
         except Exception:
             return True
         return True

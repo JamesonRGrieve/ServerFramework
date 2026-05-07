@@ -630,7 +630,7 @@ Invariants:
 ### `OneTimeTokenMixin` (class)
 
 - Module: `serverframework.logic.BLL_Auth`
-- Signature: `OneTimeTokenMixin(*, code_hash: str, code_salt: str, expires_at: datetime.datetime, is_used: bool = False, used_at: Optional[datetime.datetime] = None, created_ip: Optional[str] = None) -> None`
+- Signature: `OneTimeTokenMixin(*, code_hash: str, code_salt: str, code_fingerprint: Optional[str] = None, expires_at: datetime.datetime, is_used: bool = False, used_at: Optional[datetime.datetime] = None, created_ip: Optional[str] = None) -> None`
 - Live docstring: Reusable primitive for short-lived, single-use tokens hashed at rest.
 
 Reusable mixin for hashed, salted, expiring single-use codes.
@@ -675,9 +675,8 @@ Canonical user record (extension-injectable via @extension_model).
 
 ### `Quota` (class)
 
-- Module: `serverframework.extensions.quota.BLL_Quota`
-- Signature: `Quota(*, user_id: Optional[str] = None, team_id: Optional[str] = None, ability: str, period: Literal['minute', 'hour', 'day', 'month', 'billing_cycle'], period_key: str, limit: int, consumed: int = 0, unit: Literal['call', 'token', 'byte', 'message', 'row'] = 'call', limit_usd: Optional[decimal.Decimal] = None, consumed_usd: decimal.Decimal = Decimal('0')) -> None`
-- Live docstring: Unified per-user / per-team quota row.
+- Module: `serverframework.logic.Quota`
+- Signature: _import failed; AST-only entry_
 
 Unified per-user / per-team / per-user-within-team quota record.
 

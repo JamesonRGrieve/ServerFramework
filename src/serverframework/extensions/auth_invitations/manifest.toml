@@ -1,0 +1,17 @@
+name = "auth_invitations"
+version = "0.1.0"
+description = "Team invitation workflow with role assignment"
+
+# Depends on metadata for preference handoff during accepted-invitation
+# registration. Optional because invitations work without preferences.
+[[extension_dependencies]]
+name = "metadata"
+optional = true
+
+# Depends on email for delivery — also optional; invitations can be
+# distributed out-of-band via the returned code.
+[[extension_dependencies]]
+name = "email"
+optional = true
+
+[python_dependencies]

@@ -30,6 +30,10 @@ class AppSettings(BaseModel):
     ENVIRONMENT: Literal["local", "staging", "development", "production", "ci"] = (
         "local"
     )
+    # Legacy alias. Deployments that document APP_ENV instead of ENVIRONMENT
+    # set this and we forward it onto ENVIRONMENT in the model_validator below
+    # so every fail-closed gate sees one source of truth.
+    APP_ENV: Optional[str] = None
 
     APP_NAME: str = "Server"
     APP_DESCRIPTION: str = "extensible server framework"
@@ -39,6 +43,8 @@ class AppSettings(BaseModel):
 
     ROOT_API_KEY: str = "n0ne"
     JWT_SECRET: str = ""
+    JWT_AUDIENCE: str = "serverframework"
+    JWT_ISSUER: str = "serverframework"
     SERVER_URI: str = "http://localhost:1996"
     ALLOWED_DOMAINS: str = "*"
     # Comma-separated list of trusted-proxy CIDRs/IPs from which the
@@ -52,15 +58,16 @@ class AppSettings(BaseModel):
     DATABASE_HOST: str = "localhost"
     DATABASE_PORT: str = "5432"
     DATABASE_USER: Optional[str] = None
-    DATABASE_PASSWORD: str = "Password1!"
+    DATABASE_PASSWORD: str = ""
 
     LOCALIZATION: str = "en"
     REST: str = "true"
     GQL: str = "true"
-    GQL_DEPTH: int = 3
+    GQL_DEPTH: int = 10
     MCP: str = "false"
     LOG_FORMAT: str = "%(asctime)s | %(levelname)s | %(message)s"
     LOG_LEVEL: str = "INFO"
+    EXPOSE_DOCS: str = "false"
     REGISTRATION_DISABLED: str = "false"
     REGISTRATION_MODE: Literal["open", "invite", "closed"] = "open"
     SEED_DATA: str = "true"
@@ -92,11 +99,33 @@ class AppSettings(BaseModel):
         return v
 
     @model_validator(mode="after")
+    def _reconcile_environment_alias(self):
+        """Honour APP_ENV as a legacy alias for ENVIRONMENT.
+
+        Two env-var names (`APP_ENV` vs `ENVIRONMENT`) used to feed
+        independent fail-closed gates; a deployment that set only one
+        left the others asleep. Resolve to a single canonical value here
+        before any gate reads it.
+        """
+        alias = (self.APP_ENV or "").strip().lower()
+        if alias and self.ENVIRONMENT == "local":
+            valid = {"local", "staging", "development", "production", "ci"}
+            if alias in valid:
+                object.__setattr__(self, "ENVIRONMENT", alias)
+            elif alias == "prod":
+                object.__setattr__(self, "ENVIRONMENT", "production")
+            elif alias == "dev":
+                object.__setattr__(self, "ENVIRONMENT", "development")
+        return self
+
+    @model_validator(mode="after")
     def _enforce_production_fail_closed(self):
         """In ENVIRONMENT=production/staging, refuse insecure defaults.
 
         Short-circuits application start-up rather than relying on runtime
-        checks scattered through the auth path.
+        checks scattered through the auth path. C-3: JWT_SECRET strength is
+        enforced here under production; outside production we allow empty
+        for test/dev convenience, since the conftest does not set one.
         """
         if self.ENVIRONMENT not in ("production", "staging"):
             return self
@@ -107,13 +136,13 @@ class AppSettings(BaseModel):
         if not secret:
             problems.append("JWT_SECRET is empty")
         elif len(secret) < 32:
-            problems.append("JWT_SECRET must be at least 32 characters")
+            problems.append(
+                f"JWT_SECRET must be at least 32 characters (got {len(secret)})"
+            )
         if (self.ALLOWED_DOMAINS or "").strip() == "*":
             problems.append("ALLOWED_DOMAINS='*' is not allowed in production")
         if (self.DATABASE_PASSWORD or "").strip() in ("", "Password1!"):
-            problems.append(
-                "DATABASE_PASSWORD is unset or left at the development default"
-            )
+            problems.append("DATABASE_PASSWORD is unset")
         if problems:
             raise ValueError(
                 "Insecure production configuration: " + "; ".join(problems)
@@ -223,6 +252,26 @@ def register_extension_env_vars(env: Optional[Dict[str, Any]]) -> None:
 
     except Exception as e:
         logger.error(f"Error updating global settings: {e}")
+
+
+def is_production() -> bool:
+    """Single source of truth for production gating (C-2).
+
+    Reads ``os.environ`` directly so test-time monkeypatching of either
+    ``ENVIRONMENT`` or ``APP_ENV`` is honoured immediately. Both names
+    are accepted; ``ENVIRONMENT`` wins when both are set.
+    """
+    env_value = (
+        os.environ.get("ENVIRONMENT") or os.environ.get("APP_ENV") or ""
+    ).strip().lower()
+    return env_value == "production"
+
+
+def is_staging() -> bool:
+    env_value = (
+        os.environ.get("ENVIRONMENT") or os.environ.get("APP_ENV") or ""
+    ).strip().lower()
+    return env_value == "staging"
 
 
 def env(var: str, default: Optional[str] = "") -> str:

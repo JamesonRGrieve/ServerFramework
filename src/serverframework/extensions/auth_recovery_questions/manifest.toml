@@ -1,0 +1,8 @@
+name = "auth_recovery_questions"
+version = "0.1.0"
+description = "Per-user security questions for account recovery"
+
+# No dependencies. Extracted from BLL_Auth core scope review.
+[[extension_dependencies]]
+
+[python_dependencies]

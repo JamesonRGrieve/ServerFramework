@@ -13,7 +13,8 @@ from serverframework.lib.Environment import env
 from serverframework.lib.Logging import logger
 from serverframework.lib.Pydantic2Strawberry import convert_field_name
 from serverframework.lib.Scalability import ScalabilityProfile, ScalingMetric
-from serverframework.logic.BLL_Auth import InvitationModel, RoleModel, TeamModel, UserModel
+from serverframework.extensions.auth_invitations.BLL_Invitations import InvitationModel
+from serverframework.logic.BLL_Auth import RoleModel, TeamModel, UserModel
 
 
 @pytest.mark.ep
@@ -819,14 +820,19 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
         # All assertions passed - test successful
         assert user["jwt"] is not None, "JWT should be generated"
 
-    def _generate_jwt_for_user(self, user_data: Dict[str, Any]) -> str:
-        """Generate a JWT token for the given user data for testing purposes."""
+    def _generate_jwt_for_user(
+        self, user_data: Dict[str, Any], server: Any = None
+    ) -> str:
+        """Generate a JWT token for the given user data for testing purposes.
+
+        After M-1, every JWT must carry a `jti` resolvable to an active
+        SessionModel row. ``UserManager.generate_jwt_token`` mints the
+        row when given a ``model_registry``; resolve it from the
+        supplied ``server`` (or fall back to the conftest accessor)."""
         from serverframework.logic.BLL_Auth import UserManager
 
-        # Extract user ID and email from various data structures
         user_id = None
         email = None
-
         if "id" in user_data:
             user_id = user_data["id"]
             email = user_data.get("email")
@@ -837,15 +843,26 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
 
         if not user_id:
             raise ValueError(f"Cannot extract user ID from user data: {user_data}")
-
         if not email:
             email = f"user_{user_id}@example.com"
 
-        # Generate JWT directly using UserManager static method
-        jwt_token = UserManager.generate_jwt_token(
-            user_id=user_id, email=email, timezone_str="UTC"
+        registry = None
+        if server is not None and hasattr(server, "app"):
+            registry = getattr(server.app.state, "model_registry", None)
+        if registry is None:
+            try:
+                from conftest import get_test_model_registry
+
+                registry = get_test_model_registry()
+            except Exception:
+                registry = None
+
+        return UserManager.generate_jwt_token(
+            user_id=user_id,
+            email=email,
+            timezone_str="UTC",
+            model_registry=registry,
         )
-        return jwt_token
 
     def test_POST_200_authorize(self, admin_a: Any) -> str:
         """Test that admin JWT token is valid."""
@@ -863,7 +880,7 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
         from sqlalchemy import delete as sa_delete
 
         from serverframework.database.AbstractDatabaseEntity import include_deleted
-        from serverframework.logic.BLL_Auth import FailedLoginAttemptModel
+        from serverframework.extensions.auth_lockout.BLL_Lockout import FailedLoginAttemptModel
 
         model_registry = server.app.state.model_registry
         db_session = model_registry.DB.session()
@@ -2714,14 +2731,19 @@ class TestInvitationEndpoints(AbstractEPTest):
     }
     unique_fields = ["code"]
 
-    def _generate_jwt_for_user(self, user_data: Dict[str, Any]) -> str:
-        """Generate a JWT token for the given user data for testing purposes."""
+    def _generate_jwt_for_user(
+        self, user_data: Dict[str, Any], server: Any = None
+    ) -> str:
+        """Generate a JWT token for the given user data for testing purposes.
+
+        After M-1, every JWT must carry a `jti` resolvable to an active
+        SessionModel row. ``UserManager.generate_jwt_token`` mints the
+        row when given a ``model_registry``; resolve it from the
+        supplied ``server`` (or fall back to the conftest accessor)."""
         from serverframework.logic.BLL_Auth import UserManager
 
-        # Extract user ID and email from various data structures
         user_id = None
         email = None
-
         if "id" in user_data:
             user_id = user_data["id"]
             email = user_data.get("email")
@@ -2732,15 +2754,26 @@ class TestInvitationEndpoints(AbstractEPTest):
 
         if not user_id:
             raise ValueError(f"Cannot extract user ID from user data: {user_data}")
-
         if not email:
             email = f"user_{user_id}@example.com"
 
-        # Generate JWT directly using UserManager static method
-        jwt_token = UserManager.generate_jwt_token(
-            user_id=user_id, email=email, timezone_str="UTC"
+        registry = None
+        if server is not None and hasattr(server, "app"):
+            registry = getattr(server.app.state, "model_registry", None)
+        if registry is None:
+            try:
+                from conftest import get_test_model_registry
+
+                registry = get_test_model_registry()
+            except Exception:
+                registry = None
+
+        return UserManager.generate_jwt_token(
+            user_id=user_id,
+            email=email,
+            timezone_str="UTC",
+            model_registry=registry,
         )
-        return jwt_token
 
     def create_payload(
         self,
@@ -3022,7 +3055,7 @@ class TestInvitationEndpoints(AbstractEPTest):
 
         # Add the invitee using the invitation manager (we need to add endpoint for this in real implementation)
         # For now, simulate by having the invitee email added via BLL
-        from serverframework.logic.BLL_Auth import InvitationManager
+        from serverframework.extensions.auth_invitations.BLL_Invitations import InvitationManager
 
         inv_manager = InvitationManager(
             requester_id=admin_a.id,
@@ -3034,7 +3067,7 @@ class TestInvitationEndpoints(AbstractEPTest):
         invitee_id = None
 
         # Get the invitee ID that was just created
-        from serverframework.logic.BLL_Auth import InviteeManager
+        from serverframework.extensions.auth_invitations.BLL_Invitations import InviteeManager
 
         with InviteeManager(
             requester_id=admin_a.id,
@@ -3135,7 +3168,7 @@ class TestInvitationEndpoints(AbstractEPTest):
 
         # Add the invitee using the invitation manager (we need to add endpoint for this in real implementation)
         # For now, simulate by having the invitee email added via BLL
-        from serverframework.logic.BLL_Auth import InvitationManager
+        from serverframework.extensions.auth_invitations.BLL_Invitations import InvitationManager
 
         inv_manager = InvitationManager(
             requester_id=admin_a.id,
@@ -3147,7 +3180,7 @@ class TestInvitationEndpoints(AbstractEPTest):
         invitee_id = None
 
         # Get the invitee ID that was just created
-        from serverframework.logic.BLL_Auth import InviteeManager
+        from serverframework.extensions.auth_invitations.BLL_Invitations import InviteeManager
 
         with InviteeManager(
             requester_id=admin_a.id,
@@ -3237,7 +3270,7 @@ class TestInvitationEndpoints(AbstractEPTest):
         # Add the email as an invitee to the invitation
         from serverframework.database.DatabaseManager import DatabaseManager
         from serverframework.lib.Environment import env
-        from serverframework.logic.BLL_Auth import InvitationManager
+        from serverframework.extensions.auth_invitations.BLL_Invitations import InvitationManager
 
         inv_manager = InvitationManager(
             requester_id=admin_a.id,
@@ -3295,7 +3328,7 @@ class TestInvitationEndpoints(AbstractEPTest):
                 )
 
         # Verify user was added to the team by checking team membership via API
-        user_jwt = self._generate_jwt_for_user(user)
+        user_jwt = self._generate_jwt_for_user(user, server=server)
 
         team_users_response = server.get(
             f"/v1/team/{team_a.id}/user",
@@ -3489,7 +3522,7 @@ class TestInvitationEndpoints(AbstractEPTest):
         user2_response = server.post("/v1/user", json=user2_payload)
         user2 = user2_response.json()
 
-        from serverframework.logic.BLL_Auth import InvitationManager
+        from serverframework.extensions.auth_invitations.BLL_Invitations import InvitationManager
 
         inv_manager = InvitationManager(
             requester_id=admin_a.id,
@@ -3498,7 +3531,7 @@ class TestInvitationEndpoints(AbstractEPTest):
         )
         invitee_result = inv_manager.add_invitee(invitation["id"], email=user1_email)
 
-        from serverframework.logic.BLL_Auth import InviteeManager
+        from serverframework.extensions.auth_invitations.BLL_Invitations import InviteeManager
 
         with InviteeManager(
             requester_id=admin_a.id, model_registry=server.app.state.model_registry
@@ -3513,7 +3546,9 @@ class TestInvitationEndpoints(AbstractEPTest):
         response = server.patch(
             endpoint,
             json=payload,
-            headers=self._get_appropriate_headers(self._generate_jwt_for_user(user2)),
+            headers=self._get_appropriate_headers(
+                self._generate_jwt_for_user(user2, server=server)
+            ),
         )
         # Either 403 (email mismatch caught at the application layer) or 404
         # (the strict permission filter hides the invitee from a non-team,

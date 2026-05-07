@@ -275,6 +275,17 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         """Get the database manager from the server app state."""
         return server.app.state.model_registry.database_manager
 
+    def _get_model_registry(self):
+        """Resolve the test server's model_registry. Used by JWT helpers
+        that need to mint session rows (M-1: every JWT requires a live
+        SessionModel for its `jti`)."""
+        # Cached server attached as `_active_server` by tests that hit the
+        # JWT helper path.
+        srv = getattr(self, "_active_server", None)
+        if srv is None:
+            return None
+        return srv.app.state.model_registry
+
     def _get_navigation_properties(self) -> List[IncludeTestCase]:
         """Build include query scenarios for the entity under test."""
 

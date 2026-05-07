@@ -7,9 +7,76 @@ import bcrypt
 from fastapi import HTTPException
 from pydantic import BaseModel, Field, model_validator
 
+from serverframework.lib.Environment import env
 from serverframework.lib.Logging import logger
 from serverframework.lib.Pydantic import BaseModel
 from serverframework.lib.Pydantic2FastAPI import AuthType, RouterMixin
+
+
+# Encryption-at-rest for `totp_secret` (H-1). Stored values are prefixed with
+# ``fernet:`` so existing plaintext rows decrypt-or-passthrough during the
+# rollout window without a destructive migration. Once every row is rewritten,
+# operators can drop the passthrough branch.
+_TOTP_FERNET_PREFIX = "fernet:"
+
+
+def _totp_fernet():
+    """Return a `cryptography.Fernet` keyed off `FRAMEWORK_FERNET_KEY`.
+
+    Returns ``None`` when the key is unset or the dependency is missing —
+    callers fall back to plaintext with a warning at startup.
+    """
+    key = env("FRAMEWORK_FERNET_KEY") or env("MFA_FERNET_KEY")
+    if not key:
+        return None
+    try:
+        from cryptography.fernet import Fernet
+    except ImportError:
+        return None
+    try:
+        return Fernet(key.encode("utf-8") if isinstance(key, str) else key)
+    except Exception as exc:
+        logger.warning(f"FRAMEWORK_FERNET_KEY rejected by Fernet: {exc}")
+        return None
+
+
+def encrypt_totp_secret(plaintext: Optional[str]) -> Optional[str]:
+    """Encrypt a TOTP seed for storage. No-op when the key is not configured
+    so a missing key surfaces as cleartext (caller logs a warning) rather
+    than booting a broken MFA path."""
+    if not plaintext:
+        return plaintext
+    if plaintext.startswith(_TOTP_FERNET_PREFIX):
+        return plaintext
+    f = _totp_fernet()
+    if f is None:
+        logger.warning(
+            "FRAMEWORK_FERNET_KEY unset — TOTP secret stored in plaintext. "
+            "Set the key and rotate impacted rows."
+        )
+        return plaintext
+    token = f.encrypt(plaintext.encode("utf-8")).decode("ascii")
+    return f"{_TOTP_FERNET_PREFIX}{token}"
+
+
+def decrypt_totp_secret(stored: Optional[str]) -> Optional[str]:
+    """Reverse of :func:`encrypt_totp_secret`. Plaintext rows pass through
+    unchanged so the rollout window is non-disruptive."""
+    if not stored:
+        return stored
+    if not stored.startswith(_TOTP_FERNET_PREFIX):
+        return stored
+    f = _totp_fernet()
+    if f is None:
+        raise RuntimeError(
+            "Encrypted TOTP secret encountered but FRAMEWORK_FERNET_KEY is "
+            "unset. Cannot decrypt."
+        )
+    token = stored[len(_TOTP_FERNET_PREFIX):].encode("ascii")
+    try:
+        return f.decrypt(token).decode("utf-8")
+    except Exception as exc:
+        raise RuntimeError(f"TOTP secret decrypt failed: {exc}") from exc
 from serverframework.logic.AbstractLogicManager import (
     AbstractBLLManager,
     ApplicationModel,
@@ -296,6 +363,9 @@ class MultifactorMethodManager(AbstractBLLManager, RouterMixin):
             if not entity.totp_secret:
                 # Generate a secret if not provided
                 entity.totp_secret = self.generate_totp_secret()
+            # H-1 — encrypt at rest before the row hits the DB. The seed
+            # round-trips through `decrypt_totp_secret` at verification.
+            entity.totp_secret = encrypt_totp_secret(entity.totp_secret)
 
         # Check if setting as primary - only one primary allowed per user
         if entity.is_primary and entity.user_id:
@@ -315,7 +385,17 @@ class MultifactorMethodManager(AbstractBLLManager, RouterMixin):
 
     def create(self, **kwargs):
         """Create new MFA method"""
+        # Defence-in-depth: callers that bypass `create_validation` (direct
+        # CRUD) still get encryption when they pass a `totp_secret`.
+        if "totp_secret" in kwargs and kwargs["totp_secret"]:
+            kwargs["totp_secret"] = encrypt_totp_secret(kwargs["totp_secret"])
         return super().create(**kwargs)
+
+    def update(self, id: str, **kwargs):
+        """Update MFA method, re-encrypting `totp_secret` if rotated."""
+        if "totp_secret" in kwargs and kwargs["totp_secret"]:
+            kwargs["totp_secret"] = encrypt_totp_secret(kwargs["totp_secret"])
+        return super().update(id, **kwargs)
 
     def generate_totp_secret(self) -> str:
         """Generate a secure TOTP secret"""
@@ -433,8 +513,10 @@ class MultifactorMethodManager(AbstractBLLManager, RouterMixin):
             return False
 
         if method.method_type == MultifactorMethodType.TOTP:
+            # H-1 — secret is Fernet-encrypted at rest; decrypt for the
+            # verification math, never re-store the cleartext.
             return self.verify_totp_code(
-                method.totp_secret,
+                decrypt_totp_secret(method.totp_secret),
                 code,
                 method.totp_algorithm,
                 method.totp_digits,
@@ -543,8 +625,11 @@ class MultifactorRecoveryCodeManager(AbstractBLLManager):
             code = f"{first_part}-{second_part}"
             codes.append(code)
 
-            # Hash and store the code
-            salt = bcrypt.gensalt()
+            # Hash and store the code. L-5 — pin rounds via the framework
+            # constant so cost stays consistent across releases.
+            from serverframework.logic.BLL_Auth import _BCRYPT_ROUNDS as _ROUNDS
+
+            salt = bcrypt.gensalt(rounds=_ROUNDS)
             code_hash = bcrypt.hashpw(code.encode(), salt).decode()
 
             self.create(

@@ -1,0 +1,9 @@
+name = "metadata"
+version = "0.1.0"
+description = "Free-form key/value metadata for users and teams"
+
+# No dependencies — foundational. Other extensions (auth_invitations) depend
+# on this for preference handoff at registration.
+[[extension_dependencies]]
+
+[python_dependencies]

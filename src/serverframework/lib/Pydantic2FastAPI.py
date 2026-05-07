@@ -1708,15 +1708,16 @@ def create_manager_factory(
         if auth_type == AuthType.NONE:
             requester_id = None
         elif request_info:
+            from serverframework.lib.InboundSecurity import (
+                resolve_principal_from_api_key,
+            )
+
             headers = _normalize_headers(request_info.get("headers", {}))
             api_key = headers.get("x-api-key")
 
-            if api_key == env("ROOT_API_KEY"):
-                requester_id = env("ROOT_ID")
-            elif api_key == env("SYSTEM_API_KEY"):
-                requester_id = env("SYSTEM_ID")
-            elif api_key == env("TEMPLATE_API_KEY"):
-                requester_id = env("TEMPLATE_ID")
+            principal = resolve_principal_from_api_key(api_key) if api_key else None
+            if principal:
+                requester_id = principal
             else:
                 auth_header = headers.get("authorization")
                 if auth_header:

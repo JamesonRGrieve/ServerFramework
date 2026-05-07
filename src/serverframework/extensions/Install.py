@@ -169,6 +169,7 @@ def _resolved_source(
     *,
     max_bytes: int,
     timeout: float,
+    expected_sha256: Optional[str] = None,
 ) -> Iterator[Path]:
     """Yield a directory on disk that contains the unpacked extension.
 
@@ -183,9 +184,17 @@ def _resolved_source(
             tmp_archive = _download_to_tempfile(
                 src_str, max_bytes=max_bytes, timeout=timeout
             )
+            # L-9 — verify the archive digest before any extraction. We
+            # explicitly run this BEFORE `_safe_extract_*` so a tampered
+            # archive never touches the filesystem with traversal-resistant
+            # names that could still smuggle code via overrides.
+            _verify_archive_digest(tmp_archive, expected_sha256)
             local: Path = tmp_archive
         else:
             local = Path(src_str).expanduser().resolve()
+            # Local archives also honour the digest check when provided.
+            if local.is_file() and _is_archive(local):
+                _verify_archive_digest(local, expected_sha256)
 
         if local.is_dir():
             yield local
@@ -272,6 +281,26 @@ def _run_extension_migrations(name: str) -> None:
         )
 
 
+def _verify_archive_digest(archive: Path, expected_sha256: Optional[str]) -> None:
+    """L-9 — verify the archive against an expected SHA-256 digest before
+    extraction. PyPI installs ride sigstore via SECURITY.md; for ad-hoc HTTP
+    installs this is the minimum integrity gate."""
+    if not expected_sha256:
+        return
+    import hashlib
+    import hmac as _hmac
+
+    h = hashlib.sha256()
+    with archive.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(64 * 1024), b""):
+            h.update(chunk)
+    actual = h.hexdigest()
+    if not _hmac.compare_digest(actual.encode("ascii"), expected_sha256.lower().encode("ascii")):
+        raise InstallError(
+            f"archive digest mismatch: expected {expected_sha256}, got {actual}"
+        )
+
+
 def install_from_manifest(
     source: Union[str, Path],
     *,
@@ -280,6 +309,7 @@ def install_from_manifest(
     overwrite: bool = False,
     max_download_bytes: int = DEFAULT_MAX_DOWNLOAD_BYTES,
     http_timeout_seconds: float = DEFAULT_HTTP_TIMEOUT_SECONDS,
+    expected_sha256: Optional[str] = None,
 ) -> InstallResult:
     """Install an extension described by a ``manifest.toml``.
 
@@ -293,6 +323,10 @@ def install_from_manifest(
             of the same name. Off by default for safety.
         max_download_bytes: Hard cap on HTTP body size (default 50 MiB).
         http_timeout_seconds: Per-connection HTTP timeout.
+        expected_sha256: Optional SHA-256 digest of the fetched archive
+            (L-9). When supplied, the archive is verified before
+            extraction. Required when source is an HTTP URL pointing
+            outside a trusted package index.
 
     Returns:
         ``InstallResult`` describing the outcome. The orchestrator never
@@ -305,6 +339,7 @@ def install_from_manifest(
             source,
             max_bytes=max_download_bytes,
             timeout=http_timeout_seconds,
+            expected_sha256=expected_sha256,
         ) as src_dir:
             if find_manifest(src_dir) is None:
                 raise InstallError(f"manifest.toml not found in source: {src_dir}")
