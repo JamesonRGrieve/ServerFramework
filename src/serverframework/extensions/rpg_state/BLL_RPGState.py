@@ -122,13 +122,18 @@ There is no ``level`` column on the persons table.
 """
 
 from datetime import datetime
-from typing import ClassVar, List, Optional, Type
+from typing import ClassVar, List, Literal, Optional, Type
 
 from pydantic import Field
 
 from serverframework.extensions.genealogy.BLL_Genealogy import (
     PersonModel,
     RelationshipModel,
+)
+from serverframework.lib.CycleGuard import (
+    CycleGuardError,
+    would_create_dag_cycle,
+    would_create_tree_cycle,
 )
 from serverframework.lib.Pydantic import BaseModel
 from serverframework.lib.Pydantic2FastAPI import RouterMixin
@@ -138,14 +143,43 @@ from serverframework.logic.AbstractLogicManager import (
     ApplicationModel,
     DateSearchModel,
     DescriptionMixinModel,
+    HookContext,
+    HookTiming,
     ModelMeta,
     NameMixinModel,
     NumericalSearchModel,
     ParentMixinModel,
     StringSearchModel,
     UpdateMixinModel,
+    hook_bll,
 )
 from serverframework.logic.BLL_Auth import UserModel
+
+
+# ---------------------------------------------------------------------------
+# Closed enums
+# ---------------------------------------------------------------------------
+
+DerivativeOperation = Literal["override", "additive", "multiplicative", "clamp"]
+"""Closed set of derivation operations for ``DerivativeTraitModel``.
+
+Doubles as the resolution-pipeline phase: override → additive →
+multiplicative → clamp. Within each phase, ``order_index`` orders ties.
+"""
+
+HookKind = Literal[
+    "major_quest",
+    "side_quest",
+    "objective",
+    "plot_thread",
+    "mystery",
+    "rumor",
+    "obligation",
+    "foreshadowing",
+    "hint",
+    "background",
+]
+"""Closed set of Hook narrative kinds for ``HookModel``."""
 
 
 # ---------------------------------------------------------------------------
@@ -339,12 +373,14 @@ class DerivativeTraitModel(
         None,
         description="FK → traits.id. The trait being modified.",
     )
-    operation: Optional[str] = Field(
+    operation: Optional[DerivativeOperation] = Field(
         None,
         description=(
-            "override|additive|multiplicative|clamp. Also identifies "
-            "the resolution phase: override → additive → multiplicative "
-            "→ clamp. Within each phase, order_index sequences ties."
+            "Closed enum: override|additive|multiplicative|clamp. Also "
+            "identifies the resolution phase: override → additive → "
+            "multiplicative → clamp. Within each phase, order_index "
+            "sequences ties. Validated by Pydantic Literal and enforced "
+            "in DDL by a CHECK constraint in the migration."
         ),
     )
     value: Optional[float] = Field(
@@ -388,14 +424,14 @@ class DerivativeTraitModel(
     class Create(BaseModel):
         source_trait_id: Optional[str] = None
         target_trait_id: Optional[str] = None
-        operation: Optional[str] = None
+        operation: Optional[DerivativeOperation] = None
         value: Optional[float] = None
         order_index: Optional[int] = None
         stacking_group: Optional[str] = None
         qualifier: Optional[str] = None
 
     class Update(BaseModel):
-        operation: Optional[str] = None
+        operation: Optional[DerivativeOperation] = None
         value: Optional[float] = None
         order_index: Optional[int] = None
         stacking_group: Optional[str] = None
@@ -431,6 +467,10 @@ class RPG_PersonModel(BaseModel):
     - ``kind``: pc|npc|monster|creature|vehicle|construct|... — free-form.
     - ``campaign_id``: FK to ``campaigns.id``; NULL = unattached / template.
     - ``user_id``: FK to ``users.id``; NULL = NPC.
+    - ``location_id``: FK to ``locations.id``; the person's current
+      scene/region location. Distinct from any *body-part*
+      sub-Locations associated with the person (see ``LocationModel``
+      for the body-parts-as-locations convention).
     """
 
     kind: Optional[str] = Field(
@@ -443,21 +483,32 @@ class RPG_PersonModel(BaseModel):
         None,
         description="FK → users.id; controlling player. NULL = NPC.",
     )
+    location_id: Optional[str] = Field(
+        None,
+        description=(
+            "FK → locations.id. Current scene/region location. "
+            "Distinct from body-part sub-Locations (those are owned via "
+            "Location.associated_person_id, not Person.location_id)."
+        ),
+    )
 
     class Create(BaseModel):
         kind: Optional[str] = None
         campaign_id: Optional[str] = None
         user_id: Optional[str] = None
+        location_id: Optional[str] = None
 
     class Update(BaseModel):
         kind: Optional[str] = None
         campaign_id: Optional[str] = None
         user_id: Optional[str] = None
+        location_id: Optional[str] = None
 
     class Search(BaseModel):
         kind: Optional[StringSearchModel] = None
         campaign_id: Optional[StringSearchModel] = None
         user_id: Optional[StringSearchModel] = None
+        location_id: Optional[StringSearchModel] = None
 
 
 # ---------------------------------------------------------------------------
@@ -513,11 +564,25 @@ class PersonTraitModel(
         None,
         description="Item consumed to apply the effect (FK → item_instances.id)",
     )
+    # Target localisation: where on the person (or, more generally,
+    # which Location) does this trait/effect apply? Wounds use this to
+    # target a body part sub-Location ("Bob's left arm"); buffs that
+    # are full-body leave it NULL.
+    target_location_id: Optional[str] = Field(
+        None,
+        description=(
+            "FK → locations.id. Where this trait/effect is localised. "
+            "For Wounds and similar damage applications: a body-part "
+            "sub-Location. NULL = whole-body / location-agnostic."
+        ),
+    )
     notes: Optional[str] = Field(None)
     table_comment: ClassVar[str] = (
         "Per-person trait instances. Multiple rows per (person, trait) "
-        "are allowed (e.g. several Wound stacks). Durable traits leave "
-        "started_at/expires_at NULL; transient applications fill them. "
+        "are allowed (e.g. several Wound stacks at different body "
+        "parts). Durable traits leave started_at/expires_at NULL; "
+        "transient applications fill them. target_location_id "
+        "localises the application (e.g. damage to a specific limb). "
         "The full effective value of a derived target trait is computed "
         "by walking DerivativeTrait edges into it from active source "
         "Traits the person carries."
@@ -534,6 +599,7 @@ class PersonTraitModel(
         expires_at: Optional[datetime] = None
         source_person_id: Optional[str] = None
         source_item_instance_id: Optional[str] = None
+        target_location_id: Optional[str] = None
         notes: Optional[str] = None
 
     class Update(BaseModel):
@@ -544,6 +610,7 @@ class PersonTraitModel(
         expires_at: Optional[datetime] = None
         source_person_id: Optional[str] = None
         source_item_instance_id: Optional[str] = None
+        target_location_id: Optional[str] = None
         notes: Optional[str] = None
 
     class Search(
@@ -555,6 +622,7 @@ class PersonTraitModel(
         rank: Optional[NumericalSearchModel] = None
         started_at: Optional[DateSearchModel] = None
         expires_at: Optional[DateSearchModel] = None
+        target_location_id: Optional[StringSearchModel] = None
 
 
 class PersonTraitManager(AbstractBLLManager, RouterMixin):
@@ -639,13 +707,22 @@ class LocationModel(
     )
     kind: Optional[str] = Field(
         None,
-        description="region|room|container|equipment_slot|inventory|... (free-form)",
+        description=(
+            "region|room|container|equipment_slot|inventory|body|"
+            "body_part|organ|... (free-form)"
+        ),
     )
     table_comment: ClassVar[str] = (
         "Recursive spatial node. parent_id = parent location; "
         "container_item_instance_id = container that this is the inside "
-        "of; associated_person_id = equipment-slot owner. Equipping is "
-        "a spatial move."
+        "of; associated_person_id = the person this Location is bound "
+        "to. Equipping is a spatial move (item moves into an "
+        "equipment-slot Location whose associated_person_id is the "
+        "wearer). Body parts are also Locations: a person's anatomy "
+        "lives as a tree of Locations (kind='body'/'body_part'/'organ') "
+        "rooted at a body Location with associated_person_id=person. "
+        "PersonTrait.target_location_id points at body-part Locations "
+        "to localise damage / effect application."
     )
 
     class Create(BaseModel, CampaignModel.Reference.ID.Optional):
@@ -807,14 +884,13 @@ class HookModel(
     metaclass=ModelMeta,
 ):
     Manager: ClassVar[Type["HookManager"]] = None
-    # Free-form discriminator. Conventional values: major_quest |
-    # side_quest | objective | plot_thread | mystery | rumor |
-    # obligation | foreshadowing | background | hint | ...
-    kind: Optional[str] = Field(
+    kind: Optional[HookKind] = Field(
         None,
         description=(
-            "major_quest|side_quest|objective|plot_thread|mystery|"
-            "rumor|obligation|foreshadowing|... (free-form)"
+            "Closed enum: major_quest|side_quest|objective|plot_thread|"
+            "mystery|rumor|obligation|foreshadowing|hint|background. "
+            "Validated by Pydantic Literal and enforced in DDL by a "
+            "CHECK constraint in the migration."
         ),
     )
     giver_faction_id: Optional[str] = Field(
@@ -831,13 +907,13 @@ class HookModel(
     class Create(BaseModel, CampaignModel.Reference.ID.Optional):
         name: str = Field(...)
         description: Optional[str] = None
-        kind: Optional[str] = None
+        kind: Optional[HookKind] = None
         giver_faction_id: Optional[str] = None
 
     class Update(BaseModel):
         name: Optional[str] = None
         description: Optional[str] = None
-        kind: Optional[str] = None
+        kind: Optional[HookKind] = None
         giver_faction_id: Optional[str] = None
 
     class Search(ApplicationModel.Search, CampaignModel.Reference.ID.Search):
@@ -1063,6 +1139,137 @@ class RPG_RelationshipModel(BaseModel):
     class Search(BaseModel):
         faction_id: Optional[StringSearchModel] = None
         target_faction_id: Optional[StringSearchModel] = None
+
+
+# ---------------------------------------------------------------------------
+# Cycle guards — Faction.parent_id, Location.parent_id, HookDependency
+# ---------------------------------------------------------------------------
+#
+# Manager-layer integrity for invariants the DB cannot express. These
+# hooks reject mutations that would close a cycle in a self-referential
+# parent chain (Faction, Location) or in the Hook DAG.
+
+
+def _payload_value(context: HookContext, key: str) -> Optional[str]:
+    """Pull ``key`` off the most likely create/update payload arg.
+
+    Hooks see the manager's call args by position or kwarg; the payload
+    is conventionally the first positional or a ``data`` / ``payload``
+    kwarg. We try the common shapes and return None if nothing
+    matches.
+    """
+    for kwarg in ("data", "payload", "create_data", "update_data"):
+        candidate = context.kwarg(kwarg, default=None)
+        if candidate is not None and hasattr(candidate, key):
+            return getattr(candidate, key, None)
+    arg0 = context.arg(0, default=None)
+    if arg0 is not None and hasattr(arg0, key):
+        return getattr(arg0, key, None)
+    return None
+
+
+def _record_id(context: HookContext) -> Optional[str]:
+    """Pull the record id off an update call (kwarg ``id`` or second arg)."""
+    rid = context.kwarg("id", default=None)
+    if rid is not None:
+        return rid
+    return context.arg(1, default=None)
+
+
+def _faction_parent_lookup(manager: AbstractBLLManager):
+    def _get(faction_id: str) -> Optional[str]:
+        try:
+            row = manager.get(id=faction_id)
+        except Exception:
+            return None
+        return getattr(row, "parent_id", None) if row else None
+
+    return _get
+
+
+def _location_parent_lookup(manager: AbstractBLLManager):
+    def _get(location_id: str) -> Optional[str]:
+        try:
+            row = manager.get(id=location_id)
+        except Exception:
+            return None
+        return getattr(row, "parent_id", None) if row else None
+
+    return _get
+
+
+def _hook_parents_lookup(manager: AbstractBLLManager):
+    """Return a function that yields the parent_hook_ids of a given child."""
+
+    def _get(child_hook_id: str):
+        try:
+            edges = manager.list(child_hook_id=child_hook_id) or []
+        except Exception:
+            return ()
+        return [
+            getattr(edge, "parent_hook_id", None)
+            for edge in edges
+            if getattr(edge, "parent_hook_id", None)
+        ]
+
+    return _get
+
+
+@hook_bll(FactionManager, timing=HookTiming.BEFORE, priority=10)
+def _faction_no_cycle(context: HookContext) -> None:
+    if context.method_name not in ("update", "create"):
+        return
+    candidate = _payload_value(context, "parent_id")
+    if not candidate:
+        return
+    if context.method_name == "create":
+        # New row has no descendants; only self-parent could be a cycle.
+        return
+    rid = _record_id(context)
+    if not rid:
+        return
+    if would_create_tree_cycle(
+        rid, candidate, _faction_parent_lookup(context.manager)
+    ):
+        raise CycleGuardError(
+            f"Setting Faction({rid}).parent_id={candidate} would close a cycle."
+        )
+
+
+@hook_bll(LocationManager, timing=HookTiming.BEFORE, priority=10)
+def _location_no_cycle(context: HookContext) -> None:
+    if context.method_name not in ("update", "create"):
+        return
+    candidate = _payload_value(context, "parent_id")
+    if not candidate:
+        return
+    if context.method_name == "create":
+        return
+    rid = _record_id(context)
+    if not rid:
+        return
+    if would_create_tree_cycle(
+        rid, candidate, _location_parent_lookup(context.manager)
+    ):
+        raise CycleGuardError(
+            f"Setting Location({rid}).parent_id={candidate} would close a cycle."
+        )
+
+
+@hook_bll(HookDependencyManager, timing=HookTiming.BEFORE, priority=10)
+def _hook_dependency_no_cycle(context: HookContext) -> None:
+    if context.method_name not in ("create", "update"):
+        return
+    parent_id = _payload_value(context, "parent_hook_id")
+    child_id = _payload_value(context, "child_hook_id")
+    if not parent_id or not child_id:
+        return
+    if would_create_dag_cycle(
+        parent_id, child_id, _hook_parents_lookup(context.manager)
+    ):
+        raise CycleGuardError(
+            f"HookDependency parent={parent_id} → child={child_id} would close a cycle."
+        )
 
 
 # ---------------------------------------------------------------------------

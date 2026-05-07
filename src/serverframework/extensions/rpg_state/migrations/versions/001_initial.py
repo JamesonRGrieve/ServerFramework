@@ -184,6 +184,11 @@ def upgrade() -> None:
             sa.PrimaryKeyConstraint("id"),
             sa.ForeignKeyConstraint(["source_trait_id"], ["traits.id"]),
             sa.ForeignKeyConstraint(["target_trait_id"], ["traits.id"]),
+            sa.CheckConstraint(
+                "operation IS NULL OR operation IN "
+                "('override', 'additive', 'multiplicative', 'clamp')",
+                name="ck_derivative_traits_operation",
+            ),
             comment=(
                 "Edges defining how one Trait contributes to another. "
                 "Resolution pipeline: override → additive → "
@@ -264,6 +269,7 @@ def upgrade() -> None:
             sa.Column("expires_at", sa.DateTime(), nullable=True),
             sa.Column("source_person_id", sa.String(36), nullable=True),
             sa.Column("source_item_instance_id", sa.String(36), nullable=True),
+            sa.Column("target_location_id", sa.String(36), nullable=True),
             sa.Column("notes", sa.Text(), nullable=True),
             sa.Column("created_at", sa.DateTime(), nullable=False),
             sa.Column("created_by_user_id", sa.String(36), nullable=True),
@@ -277,9 +283,11 @@ def upgrade() -> None:
             sa.ForeignKeyConstraint(["source_person_id"], ["persons.id"]),
             comment=(
                 "Per-person trait instances. Multiple rows per "
-                "(person, trait) allowed (e.g. several Wound stacks). "
-                "Durable traits leave started_at/expires_at NULL; "
-                "transient applications fill them."
+                "(person, trait) allowed (e.g. several Wound stacks at "
+                "different body parts). Durable traits leave "
+                "started_at/expires_at NULL; transient applications "
+                "fill them. target_location_id localises the "
+                "application (body-part Location for damage)."
             ),
             info=_INFO,
         )
@@ -293,9 +301,13 @@ def upgrade() -> None:
         op.create_index(
             "ix_pt_active", "person_traits", ["person_id", "expires_at"]
         )
+    if "ix_pt_target_location" not in pt_idx:
+        op.create_index(
+            "ix_pt_target_location", "person_traits", ["target_location_id"]
+        )
 
-    # source_item_instance_id FK is added after item_instances exists
-    # (deferred below).
+    # Deferred FKs (added below): source_item_instance_id → item_instances,
+    # target_location_id → locations.
 
     # ---------------------------------------------------------------
     # factions
@@ -375,6 +387,37 @@ def upgrade() -> None:
     if "ix_locations_person" not in loc_idx:
         op.create_index(
             "ix_locations_person", "locations", ["associated_person_id"]
+        )
+
+    # Inject persons.location_id (current scene/region) now that the
+    # locations table exists. FK is real.
+    person_cols_post_locations = _existing_column_names("persons")
+    if "location_id" not in person_cols_post_locations:
+        op.add_column(
+            "persons",
+            sa.Column(
+                "location_id",
+                sa.String(36),
+                sa.ForeignKey("locations.id"),
+                nullable=True,
+                comment=(
+                    "Current scene/region location (rpg_state). Distinct "
+                    "from body-part sub-Locations associated with the "
+                    "person via Location.associated_person_id."
+                ),
+            ),
+        )
+    if "ix_persons_location" not in _existing_index_names("persons"):
+        op.create_index("ix_persons_location", "persons", ["location_id"])
+
+    # Add the deferred target_location_id FK on person_traits now that
+    # locations exists.
+    with op.batch_alter_table("person_traits") as batch_op:
+        batch_op.create_foreign_key(
+            "fk_person_traits_target_location",
+            "locations",
+            ["target_location_id"],
+            ["id"],
         )
 
     # ---------------------------------------------------------------
@@ -483,6 +526,13 @@ def upgrade() -> None:
             sa.PrimaryKeyConstraint("id"),
             sa.ForeignKeyConstraint(["campaign_id"], ["campaigns.id"]),
             sa.ForeignKeyConstraint(["giver_faction_id"], ["factions.id"]),
+            sa.CheckConstraint(
+                "kind IS NULL OR kind IN ("
+                "'major_quest', 'side_quest', 'objective', "
+                "'plot_thread', 'mystery', 'rumor', 'obligation', "
+                "'foreshadowing', 'hint', 'background')",
+                name="ck_hooks_kind",
+            ),
             comment=(
                 "Narrative element. Replaces Quest+Objective. Hierarchy "
                 "and prerequisites move to hook_dependencies."
@@ -675,12 +725,14 @@ def downgrade() -> None:
     # Break the deferred FKs before dropping referenced tables.
     if _has_table("person_traits"):
         with op.batch_alter_table("person_traits") as batch_op:
-            try:
-                batch_op.drop_constraint(
-                    "fk_person_traits_source_item_instance", type_="foreignkey"
-                )
-            except Exception:
-                pass
+            for fk in (
+                "fk_person_traits_source_item_instance",
+                "fk_person_traits_target_location",
+            ):
+                try:
+                    batch_op.drop_constraint(fk, type_="foreignkey")
+                except Exception:
+                    pass
     if _has_table("locations"):
         with op.batch_alter_table("locations") as batch_op:
             try:
@@ -704,7 +756,7 @@ def downgrade() -> None:
     # Drop injected character columns from persons.
     person_cols = _existing_column_names("persons")
     with op.batch_alter_table("persons") as batch_op:
-        for col in ("user_id", "campaign_id", "kind"):
+        for col in ("location_id", "user_id", "campaign_id", "kind"):
             if col in person_cols:
                 batch_op.drop_column(col)
 

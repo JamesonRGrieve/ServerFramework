@@ -9,6 +9,8 @@ ItemInstance ownership semantics, and the genealogy injection points
 
 import os
 
+import pytest
+
 os.environ.setdefault("JWT_SECRET", "x" * 32)
 os.environ.setdefault("PYTEST_CURRENT_TEST", "rpg_state_test")
 
@@ -86,15 +88,26 @@ class TestCreateUpdateSearchPresent:
 class TestPersonInjectionContract:
     def test_rpg_person_carries_character_fields(self):
         rp = RPG_PersonModel(
-            kind="pc", campaign_id="c1", user_id="user-1"
+            kind="pc",
+            campaign_id="c1",
+            user_id="user-1",
+            location_id="loc-tavern",
         )
         assert rp.kind == "pc"
         assert rp.campaign_id == "c1"
         assert rp.user_id == "user-1"
+        assert rp.location_id == "loc-tavern"
 
     def test_npc_leaves_user_id_null(self):
         rp = RPG_PersonModel(kind="npc", campaign_id="c1")
         assert rp.user_id is None
+
+    def test_person_location_separate_from_body_part_locations(self):
+        # Person.location_id is the scene/region location;
+        # body parts are sub-Locations whose
+        # associated_person_id = person.id (NOT person.location_id).
+        rp = RPG_PersonModel(location_id="loc-clearing")
+        assert rp.location_id == "loc-clearing"
 
     def test_no_character_model_in_rpg_state(self):
         from serverframework.extensions.rpg_state import BLL_RPGState
@@ -150,7 +163,8 @@ class TestUnifiedTraitContract:
 
 class TestDerivativeTraitContract:
     """DerivativeTrait carries operation, value, order_index,
-    stacking_group, qualifier. source_trait_id NULL = constant."""
+    stacking_group, qualifier. source_trait_id NULL = constant.
+    operation is locked to a closed enum at the Pydantic layer."""
 
     def test_static_buff_via_derivative(self):
         # Bull's Strength → STR, +2 always.
@@ -164,6 +178,17 @@ class TestDerivativeTraitContract:
         assert d.target_trait_id == "str"
         assert d.operation == "additive"
         assert d.value == 2.0
+
+    def test_operation_rejects_unknown_value(self):
+        import pydantic
+
+        with pytest.raises(pydantic.ValidationError):
+            DerivativeTraitModel.Create(
+                source_trait_id="x",
+                target_trait_id="y",
+                operation="not-a-real-op",
+                value=1.0,
+            )
 
     def test_constant_contribution_with_null_source(self):
         # Initiative = DEX + 5 — the +5 is a constant edge.
@@ -265,6 +290,26 @@ class TestPersonTraitFoldsStatusEffect:
         assert pt.value == -8.0
         assert pt.source_person_id == "orc"
 
+    def test_target_location_localises_damage_to_body_part(self):
+        # Bob takes 8 damage to his left arm (a body-part Location
+        # under his body-root Location, associated_person_id=Bob).
+        pt = PersonTraitModel.Create(
+            person_id="bob",
+            trait_id="wound",
+            value=-8.0,
+            target_location_id="loc-bob-left-arm",
+            source_person_id="orc",
+        )
+        assert pt.target_location_id == "loc-bob-left-arm"
+
+    def test_target_location_optional_for_full_body_buffs(self):
+        # Bull's Strength is whole-body — target_location_id stays NULL.
+        pt = PersonTraitModel.Create(
+            person_id="bob",
+            trait_id="bulls-strength",
+        )
+        assert pt.target_location_id is None
+
     def test_person_trait_fully_editable(self):
         from datetime import datetime
 
@@ -355,6 +400,13 @@ class TestHookDAG:
         assert major.kind == "major_quest"
         assert thread.kind == "rumor"
 
+    def test_hook_kind_rejects_unknown_value(self):
+        # kind is locked to the closed HookKind Literal.
+        import pydantic
+
+        with pytest.raises(pydantic.ValidationError):
+            HookModel.Create(name="X", kind="invented_kind")
+
     def test_dependency_is_presence_plus_reason(self):
         d = HookDependencyModel.Create(
             parent_hook_id="hook-find-dragon",
@@ -406,3 +458,34 @@ class TestFactionHierarchy:
 
         assert not hasattr(BLL_RPGState, "CharacterFactionModel")
         assert not hasattr(BLL_RPGState, "PersonFactionModel")
+
+
+class TestCycleGuardHooksRegistered:
+    """The cycle-guard hooks for FactionManager, LocationManager, and
+    HookDependencyManager are registered at import time. The full DB
+    integration is exercised under the test-app fixture; here we just
+    confirm the hook functions exist on the module so the registration
+    succeeded."""
+
+    def test_cycle_guard_hook_callables_present(self):
+        from serverframework.extensions.rpg_state import BLL_RPGState
+
+        for name in (
+            "_faction_no_cycle",
+            "_location_no_cycle",
+            "_hook_dependency_no_cycle",
+        ):
+            assert hasattr(
+                BLL_RPGState, name
+            ), f"cycle-guard hook {name} missing"
+
+    def test_cycle_guard_utility_imported(self):
+        from serverframework.lib.CycleGuard import (
+            CycleGuardError,
+            would_create_dag_cycle,
+            would_create_tree_cycle,
+        )
+
+        assert callable(would_create_tree_cycle)
+        assert callable(would_create_dag_cycle)
+        assert issubclass(CycleGuardError, Exception)
