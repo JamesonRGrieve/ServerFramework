@@ -306,7 +306,13 @@ class OAuth2TokenRequest(BaseModel):
 
 
 class OAuth2IntrospectRequest(BaseModel):
+    """RFC 7662 §2.1: introspection MUST be authenticated. We require
+    client credentials (the same client that holds the token) to
+    prevent token-scanning attacks."""
+
     token: str
+    client_id: str
+    client_secret: Optional[str] = None
 
 
 class OAuth2RevokeRequest(BaseModel):
@@ -858,16 +864,30 @@ class OAuth2ProviderManager(AbstractBLLManager, RouterMixin):
         output_model=OAuth2TokenIntrospection,
         authentication_type="none",
         openapi_tags=("OAuth2 Provider",),
-        summary="Introspect a token (RFC 7662)",
+        summary="Introspect a token (RFC 7662, client-authenticated)",
     )
     @rate_limit(DEFAULT_AUTH_RATE_LIMIT, scope="ip")
     async def introspect_route(
         self, body: OAuth2IntrospectRequest
     ) -> OAuth2TokenIntrospection:
+        # RFC 7662 §2.1: the endpoint requires authentication. We use
+        # client credentials and additionally bind the introspection
+        # response to the calling client — a client may only introspect
+        # tokens it issued, so a leaked token at one client cannot be
+        # validated at another.
+        client_mgr = OAuth2ClientManager(
+            requester_id=env("ROOT_ID"), model_registry=self.model_registry
+        )
+        client = client_mgr.authenticate_client(body.client_id, body.client_secret)
         token_mgr = OAuth2TokenManager(
             requester_id=env("ROOT_ID"), model_registry=self.model_registry
         )
-        return token_mgr.introspect(body.token)
+        result = token_mgr.introspect(body.token)
+        # Inactive on cross-client introspection so token validity doesn't
+        # leak across clients.
+        if result.active and result.client_id != client.client_id:
+            return OAuth2TokenIntrospection(active=False)
+        return result
 
     @custom_route(
         method="POST",

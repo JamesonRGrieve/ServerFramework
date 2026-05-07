@@ -182,14 +182,15 @@ class SessionModel(
             Literal["awaiting_approval", "approved", "denied"]
         ] = Field(None, description="Pending approval state for passwordless flows")
 
+    # Defense in depth: the manager's ``routes_to_register`` already
+    # restricts the public HTTP surface to LIST + GET, so this Update
+    # schema is currently unreachable. Keeping it minimal means a future
+    # router config can't accidentally re-expose the refresh-token hash
+    # or the trust score (both of which would be catastrophic if
+    # client-writable).
     class Update(BaseModel):
-        is_active: Optional[bool] = Field(None)
         last_activity: Optional[datetime] = Field(None)
-        expires_at: Optional[datetime] = Field(None)
         revoked: Optional[bool] = Field(None)
-        trust_score: Optional[int] = Field(None)
-        requires_verification: Optional[bool] = Field(None)
-        refresh_token_hash: Optional[str] = Field(None)
         pending_state: Optional[
             Literal["awaiting_approval", "approved", "denied"]
         ] = Field(None)
