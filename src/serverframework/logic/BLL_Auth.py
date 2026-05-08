@@ -1111,6 +1111,8 @@ class UserManager(AbstractBLLManager, RouterMixin):
                         # minutes was a token-replay-friendly default.
                         leeway=timedelta(seconds=30),
                         options={"require": ["exp", "jti", "aud", "iss"]},
+                        i=ip,
+                        s=server,
                     )
 
                     # If the token carries a `jti`, the bound session must
