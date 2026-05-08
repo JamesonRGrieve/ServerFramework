@@ -381,10 +381,10 @@ def upgrade() -> None:
             "description", sa.String(), nullable=True, comment="Team description"
         ),
         sa.Column(
-            "encryption_key",
+            "encryption_salt",
             sa.String(),
             nullable=True,
-            comment="Encryption key for team data",
+            comment="Per-team salt for row-level encryption of team data",
         ),
         sa.Column("token", sa.String(), nullable=True, comment="Team token"),
         sa.Column(

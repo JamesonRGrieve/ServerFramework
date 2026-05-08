@@ -1602,13 +1602,13 @@ def test_invited_user_sees_child_and_parent_team(model_registry, use_invitee):
         parent_team = TeamDB(
             id=parent_id,
             name="Invitation Parent",
-            encryption_key="parent-key",
+            encryption_salt="parent-key",
             created_by_user_id=env("ROOT_ID"),
         )
         child_team = TeamDB(
             id=child_id,
             name="Invitation Child",
-            encryption_key="child-key",
+            encryption_salt="child-key",
             parent_id=parent_id,
             created_by_user_id=env("ROOT_ID"),
         )

@@ -1920,6 +1920,22 @@ class ModelRegistry(AbstractRegistry):
         # Phase 4: Generate routers
         self._generate_routers()
 
+        # All extensions are bound at this point — surface any conflicting
+        # ``(model, field)`` declarations from ``@extension_model``-tagged
+        # classes before the registry locks. Identical declarations across
+        # extensions are accepted; non-equivalent ones raise immediately
+        # so an operator sees the conflict at startup, not at request time.
+        try:
+            from serverframework.extensions.CollisionDetection import (
+                detect_extension_field_collisions,
+            )
+
+            detect_extension_field_collisions()
+        except ImportError:
+            # CollisionDetection ships with the framework, but tolerate a
+            # stripped-down install rather than block boot.
+            pass
+
         # Lock the registry before creating schema (required for schema generation)
         self._locked = True
 

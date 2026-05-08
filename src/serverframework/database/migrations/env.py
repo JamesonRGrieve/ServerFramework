@@ -268,6 +268,22 @@ def include_object(object, name, type_, reflected, compare_to):
     )
 
 
+def _safety_check_directives(context_, revision, directives):
+    """Reject rolling-deploy-unsafe shapes at autogenerate time (Item 80).
+
+    Wired into ``context.configure(process_revision_directives=...)`` so
+    ``alembic revision --autogenerate`` fails before writing a migration
+    that breaks the expand/contract contract. Empty op lists (no schema
+    drift) are a no-op so unrelated ``alembic revision`` calls are
+    untouched.
+    """
+    from serverframework.database.MigrationSafety import (
+        validate_revision_directives,
+    )
+
+    validate_revision_directives(directives)
+
+
 def get_alembic_context_config(connection=None, url=None):
     """Configure context for online/offline mode."""
     config_args = {
@@ -275,6 +291,7 @@ def get_alembic_context_config(connection=None, url=None):
         "include_object": include_object,
         "version_table": version_table,
         "render_as_batch": True,
+        "process_revision_directives": _safety_check_directives,
     }
 
     if connection:

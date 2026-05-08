@@ -395,7 +395,7 @@ class TestTeamManager(AbstractBLLTest):
     create_fields = {
         "name": f"Test Team {faker.word()}",
         "description": faker.sentence(),
-        "encryption_key": faker.uuid4(),
+        "encryption_salt": faker.uuid4(),
     }
     update_fields = {
         "name": f"Updated Team {faker.word()}",
@@ -510,6 +510,90 @@ class TestRoleManager(AbstractBLLTest):
         # List team-specific roles
         self._list(admin_a.id, team_a.id, model_registry=model_registry)
         self._list_assert("list_result")  # Will check team-specific roles
+
+    def _ensure_user_team(self, ut_mgr, user_id, team_id, role_id, model_registry):
+        """Helper: ensure a UserTeam row exists with the given role_id and return its id."""
+        from serverframework.logic.BLL_Auth import UserTeamModel
+
+        ut_db = UserTeamModel.DB(model_registry.DB.manager.Base)
+        existing = ut_db.list(
+            requester_id=env("ROOT_ID"),
+            model_registry=model_registry,
+            user_id=user_id,
+            team_id=team_id,
+            return_type="dto",
+            override_dto=UserTeamModel,
+        )
+        if existing:
+            ut_mgr.update(id=existing[0].id, role_id=role_id)
+            return existing[0].id
+        new_ut = ut_mgr.create(user_id=user_id, team_id=team_id, role_id=role_id)
+        return new_ut.id if hasattr(new_ut, "id") else new_ut["id"]
+
+    def test_delete_reparents_user_team_assignments(
+        self, admin_a, team_a, server, model_registry
+    ):
+        """Deleting a role with active UserTeam rows reparents them to the
+        role's parent_id rather than orphaning the assignments."""
+        from serverframework.logic.BLL_Auth import UserTeamManager
+
+        role_mgr = RoleManager(
+            requester_id=admin_a.id, model_registry=model_registry
+        )
+        child_role = role_mgr.create(
+            name=f"reparent_child_{uuid.uuid4().hex[:8]}",
+            friendly_name="Reparent Child",
+            parent_id=env("USER_ROLE_ID"),
+            team_id=team_a.id,
+        )
+
+        ut_mgr = UserTeamManager(
+            requester_id=env("ROOT_ID"), model_registry=model_registry
+        )
+        ut_id = self._ensure_user_team(
+            ut_mgr, admin_a.id, team_a.id, child_role.id, model_registry
+        )
+
+        role_mgr.delete(id=child_role.id)
+
+        ut_after = ut_mgr.get(id=ut_id)
+        actual_role_id = (
+            ut_after.role_id if hasattr(ut_after, "role_id") else ut_after["role_id"]
+        )
+        assert actual_role_id == env("USER_ROLE_ID"), (
+            "UserTeam.role_id should fall back to the deleted role's "
+            f"parent_id (USER_ROLE_ID); got {actual_role_id}"
+        )
+
+    def test_delete_root_role_with_assignments_refused(
+        self, admin_a, team_a, server, model_registry
+    ):
+        """Refuse to delete a role that (a) has active UserTeam
+        assignments and (b) has no ``parent_id`` to fall back to —
+        silently dropping the role would let already-issued tokens keep
+        working but with no permissions."""
+        from serverframework.logic.BLL_Auth import UserTeamManager
+
+        role_mgr = RoleManager(
+            requester_id=admin_a.id, model_registry=model_registry
+        )
+        rootless = role_mgr.create(
+            name=f"rootless_{uuid.uuid4().hex[:8]}",
+            friendly_name="Rootless",
+            parent_id=None,
+            team_id=team_a.id,
+        )
+
+        ut_mgr = UserTeamManager(
+            requester_id=env("ROOT_ID"), model_registry=model_registry
+        )
+        self._ensure_user_team(
+            ut_mgr, admin_a.id, team_a.id, rootless.id, model_registry
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            role_mgr.delete(id=rootless.id)
+        assert exc_info.value.status_code == 409
 
 
 class TestMetadataManager(AbstractBLLTest):
