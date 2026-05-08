@@ -146,7 +146,6 @@ class AbstractGraphQLTest:
         else:
             assert entity_data["id"] == entity["id"], f"ID mismatch in GraphQL response"
 
-    @pytest.mark.skip()
     def test_GQL_query_single_by_foreign_keys_only(
         self, server: Any, admin_a: Any, team_a: Any
     ):
@@ -250,7 +249,6 @@ class AbstractGraphQLTest:
         assert entity_data is not None, "Entity not found in GraphQL response"
         assert entity_data["id"] == entity["id"], "ID mismatch in GraphQL response"
 
-    @pytest.mark.skip()
     def test_GQL_query_multiple_fields(self, server: Any, admin_a: Any, team_a: Any):
         """Test that multiple non-unique fields can be used to search and retrieve a record in combination."""
         # Skip test if no string field is available for multi-field queries

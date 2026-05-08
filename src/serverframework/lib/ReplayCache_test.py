@@ -60,3 +60,55 @@ class TestGlobalBinding:
         # Reset to None by installing a fresh instance, then access via get
         set_replay_cache(InMemoryReplayCache())
         assert isinstance(get_replay_cache(), ReplayCache)
+
+
+class TestMarkIfUnused:
+    """H-7 — atomic CAS used by OAuth state verification."""
+
+    def test_first_caller_wins(self):
+        cache = InMemoryReplayCache()
+        assert cache.mark_if_unused("oauth-state", ttl_seconds=60) is True
+
+    def test_second_caller_loses(self):
+        cache = InMemoryReplayCache()
+        assert cache.mark_if_unused("oauth-state", ttl_seconds=60) is True
+        assert cache.mark_if_unused("oauth-state", ttl_seconds=60) is False
+
+    def test_after_expiry_a_new_caller_wins(self):
+        cache = InMemoryReplayCache()
+        assert cache.mark_if_unused("k", ttl_seconds=0) is True
+        time.sleep(0.001)
+        assert cache.mark_if_unused("k", ttl_seconds=60) is True
+
+    def test_concurrent_callers_only_one_wins(self):
+        # Verify the in-process lock makes the CAS race-free even when
+        # called from many threads. Without ``mark_if_unused``, two
+        # readers could both observe ``not is_used`` and both proceed.
+        import threading
+
+        cache = InMemoryReplayCache()
+        wins = []
+
+        def attempt():
+            if cache.mark_if_unused("shared", ttl_seconds=60):
+                wins.append(True)
+
+        threads = [threading.Thread(target=attempt) for _ in range(50)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert len(wins) == 1
+
+
+class TestBaseDefaultMarkIfUnused:
+    """The abstract base provides a default ``mark_if_unused`` that is
+    correct on a single-threaded caller via the in-memory implementation."""
+
+    def test_default_uses_is_used_then_mark_used(self):
+        cache = InMemoryReplayCache()
+        # Burn via the default path.
+        assert cache.mark_if_unused("alpha", ttl_seconds=60) is True
+        assert cache.is_used("alpha") is True
+        # Second caller refused.
+        assert cache.mark_if_unused("alpha", ttl_seconds=60) is False

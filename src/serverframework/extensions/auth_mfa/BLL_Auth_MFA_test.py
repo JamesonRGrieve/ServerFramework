@@ -108,6 +108,43 @@ class TestMultifactorMethodManager(AbstractBLLTest, ExtensionServerMixin):
         assert isinstance(secret, str)
         assert len(secret) > 0
 
+    def test_client_supplied_totp_secret_rejected_for_non_root(
+        self, admin_a, model_registry
+    ):
+        """M-4 — a non-ROOT caller cannot inject a totp_secret. Even if a
+        future router-config drift re-allows the field on the Create
+        schema, the manager-level guard refuses it."""
+        from fastapi import HTTPException
+
+        manager = self.class_under_test(
+            requester_id=admin_a.id, model_registry=model_registry
+        )
+        with pytest.raises(HTTPException) as exc_info:
+            manager.create(
+                user_id=admin_a.id,
+                method_type=MultifactorMethodType.TOTP,
+                totp_secret="ATTACKER-SUPPLIED-SEED",
+            )
+        assert exc_info.value.status_code == 400
+
+    def test_client_supplied_totp_secret_via_update_rejected_for_non_root(
+        self, admin_a, model_registry
+    ):
+        """M-4 — totp_secret cannot be rotated via update from a non-ROOT
+        caller; the user must delete + create."""
+        from fastapi import HTTPException
+
+        manager = self.class_under_test(
+            requester_id=admin_a.id, model_registry=model_registry
+        )
+        method = manager.create(
+            user_id=admin_a.id,
+            method_type=MultifactorMethodType.TOTP,
+        )
+        with pytest.raises(HTTPException) as exc_info:
+            manager.update(method.id, totp_secret="ROTATED-ATTACKER-SEED")
+        assert exc_info.value.status_code == 400
+
     def test_verify_totp_code(self, admin_a, model_registry):
         """Test verifying a TOTP code"""
         manager = self.class_under_test(

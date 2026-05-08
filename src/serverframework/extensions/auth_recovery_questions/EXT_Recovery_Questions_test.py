@@ -61,3 +61,44 @@ class TestAnswerHashRoundTrip:
         salt = bcrypt.gensalt(rounds=4)
         hashed = bcrypt.hashpw(b"correct", salt).decode()
         assert not bcrypt.checkpw(b"different", hashed.encode())
+
+
+class TestSensitiveAnswerField:
+    """H-3 — the bcrypt hash on ``answer`` is gated by the
+    ``auth.user.read_secret`` permission so REST/GraphQL responses
+    omit it for any non-ROOT requester."""
+
+    def test_answer_field_carries_required_permission(self):
+        from serverframework.lib.FieldACL import get_required_permissions
+
+        info = UserRecoveryQuestionModel.model_fields["answer"]
+        perms = get_required_permissions(info)
+        assert "auth.user.read_secret" in perms
+
+    def test_routes_to_register_excludes_search_and_list(self):
+        # H-3 — SEARCH/LIST returned the full DTO including the
+        # ``answer`` hash. The manager's allow-list narrows the
+        # surface to the operations a user actually needs.
+        registered = {r.value for r in UserRecoveryQuestionManager.routes_to_register}
+        assert "search" not in registered
+        assert "list" not in registered
+        # Per-record GET, plus create/update/delete remain.
+        assert {"get", "create", "update", "delete"}.issubset(registered)
+
+
+class TestVerifyAnswerLockout:
+    """H-3 — repeat wrong answers trip the per-(user, flow) lockout."""
+
+    def test_lockout_tracker_attached(self):
+        from serverframework.lib.InboundSecurity import LockoutTracker
+
+        assert isinstance(
+            UserRecoveryQuestionManager._verify_lockout_tracker, LockoutTracker
+        )
+
+    def test_lockout_policy_is_strict_enough(self):
+        policy = UserRecoveryQuestionManager._verify_lockout_tracker.policy
+        # 5 fails per 15 minutes is the minimum to make low-entropy
+        # recovery answers unviable for online brute force.
+        assert policy.failures_per_window <= 5
+        assert policy.window_seconds >= 60

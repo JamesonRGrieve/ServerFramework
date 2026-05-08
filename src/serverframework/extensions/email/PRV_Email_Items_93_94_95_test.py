@@ -366,11 +366,20 @@ def _hmac_signature(secret: str, timestamp: str, body: bytes) -> str:
     return base64.b64encode(digest).decode("ascii")
 
 
+def _fresh_timestamp() -> str:
+    """Return a current epoch timestamp; required since the SendGrid
+    ``verify_signature`` enforces a 300-second freshness window (H-1).
+    """
+    import time
+
+    return str(int(time.time()))
+
+
 def test_verify_signature_hmac_fallback_known_good(monkeypatch):
     monkeypatch.setenv("SENDGRID_WEBHOOK_PUBLIC_KEY", "")
     monkeypatch.setenv("SENDGRID_WEBHOOK_SECRET", "shh-shared")
     body = b'{"event":"delivered"}'
-    timestamp = "1700000000"
+    timestamp = _fresh_timestamp()
     sig = _hmac_signature("shh-shared", timestamp, body)
     headers = {
         SendgridProvider.SENDGRID_SIGNATURE_HEADER: sig,
@@ -385,7 +394,7 @@ def test_verify_signature_hmac_fallback_known_bad(monkeypatch):
     body = b'{"event":"delivered"}'
     headers = {
         SendgridProvider.SENDGRID_SIGNATURE_HEADER: base64.b64encode(b"x" * 32).decode(),
-        SendgridProvider.SENDGRID_TIMESTAMP_HEADER: "1700000000",
+        SendgridProvider.SENDGRID_TIMESTAMP_HEADER: _fresh_timestamp(),
     }
     assert SendgridProvider.verify_signature(headers, body) is False
 
@@ -397,12 +406,62 @@ def test_verify_signature_missing_key_and_secret_returns_false(monkeypatch):
         SendgridProvider.verify_signature(
             {
                 SendgridProvider.SENDGRID_SIGNATURE_HEADER: "AAAA",
-                SendgridProvider.SENDGRID_TIMESTAMP_HEADER: "1",
+                SendgridProvider.SENDGRID_TIMESTAMP_HEADER: _fresh_timestamp(),
             },
             b"{}",
         )
         is False
     )
+
+
+def test_verify_signature_stale_timestamp_rejected(monkeypatch):
+    """H-1 — a captured webhook with an old timestamp must not replay."""
+    monkeypatch.setenv("SENDGRID_WEBHOOK_PUBLIC_KEY", "")
+    monkeypatch.setenv("SENDGRID_WEBHOOK_SECRET", "shh-shared")
+    body = b'{"event":"delivered"}'
+    # Outside the 300s window — even a correctly-HMAC'd payload must be
+    # refused on the freshness gate alone.
+    timestamp = "1700000000"
+    sig = _hmac_signature("shh-shared", timestamp, body)
+    headers = {
+        SendgridProvider.SENDGRID_SIGNATURE_HEADER: sig,
+        SendgridProvider.SENDGRID_TIMESTAMP_HEADER: timestamp,
+    }
+    assert SendgridProvider.verify_signature(headers, body) is False
+
+
+def test_verify_signature_non_numeric_timestamp_rejected(monkeypatch):
+    monkeypatch.setenv("SENDGRID_WEBHOOK_PUBLIC_KEY", "")
+    monkeypatch.setenv("SENDGRID_WEBHOOK_SECRET", "shh-shared")
+    headers = {
+        SendgridProvider.SENDGRID_SIGNATURE_HEADER: "AAAA",
+        SendgridProvider.SENDGRID_TIMESTAMP_HEADER: "not-a-number",
+    }
+    assert SendgridProvider.verify_signature(headers, b"{}") is False
+
+
+def test_extract_replay_keys_returns_timestamp_and_nonce():
+    """H-1 — the framework's ``check_replay`` plumbing requires the
+    provider to expose ``extract_replay_keys``."""
+    body = b'{"event":"delivered"}'
+    timestamp = _fresh_timestamp()
+    headers = {
+        SendgridProvider.SENDGRID_SIGNATURE_HEADER: "ignored",
+        SendgridProvider.SENDGRID_TIMESTAMP_HEADER: timestamp,
+    }
+    ts, nonce = SendgridProvider.extract_replay_keys(headers, body)
+    assert ts == int(timestamp)
+    assert nonce is not None and len(nonce) == 64  # sha256 hex
+
+
+def test_extract_replay_keys_missing_timestamp_returns_none():
+    ts, nonce = SendgridProvider.extract_replay_keys({}, b"{}")
+    assert ts is None and nonce is None
+
+
+def test_replay_window_seconds_class_attr_present():
+    assert isinstance(SendgridProvider.replay_window_seconds, int)
+    assert SendgridProvider.replay_window_seconds > 0
 
 
 def test_verify_signature_missing_headers_returns_false(monkeypatch):
@@ -511,7 +570,7 @@ def test_webhook_e2e_signature_failure_returns_401(monkeypatch):
             json=[{"event": "delivered", "email": "a@b.c"}],
             headers={
                 SendgridProvider.SENDGRID_SIGNATURE_HEADER: base64.b64encode(b"x" * 32).decode(),
-                SendgridProvider.SENDGRID_TIMESTAMP_HEADER: "1700000000",
+                SendgridProvider.SENDGRID_TIMESTAMP_HEADER: _fresh_timestamp(),
             },
         )
         assert r.status_code == 401
@@ -539,7 +598,7 @@ def test_webhook_e2e_valid_signature_dispatches_event(monkeypatch):
             {"event": "bounce", "email": "a@b.c", "sg_message_id": "msg-1", "timestamp": 1700000000}
         ]
         body = json.dumps(body_obj).encode("utf-8")
-        timestamp = "1700000000"
+        timestamp = _fresh_timestamp()
         sig = _hmac_signature(secret, timestamp, body)
 
         app = FastAPI()

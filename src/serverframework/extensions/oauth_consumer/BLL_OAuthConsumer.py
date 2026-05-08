@@ -276,9 +276,11 @@ class OAuthConsumerManager(AbstractBLLManager, RouterMixin):
         """Refuse a callback that does not present a valid, single-use state.
 
         ``begin_authorize`` marks ``key`` (the state was issued).
-        ``complete_callback`` checks ``key`` and marks ``key:consumed``.
-        Single-use is enforced by the ``:consumed`` marker: a second call
-        sees it and rejects.
+        Single-use is enforced atomically with ``mark_if_unused`` on
+        ``key:consumed`` — without that, two concurrent callbacks for the
+        same state can both observe ``not is_used`` and both proceed
+        (H-7). Production deployments MUST install a shared replay cache
+        whose ``mark_if_unused`` is a true CAS (e.g. Valkey ``SET NX``).
         """
         if not state:
             raise InvalidGrantError(detail="Missing CSRF state")
@@ -287,9 +289,8 @@ class OAuthConsumerManager(AbstractBLLManager, RouterMixin):
         if not cache.is_used(key):
             raise InvalidGrantError(detail="Invalid or expired OAuth state")
         consumed_key = key + ":consumed"
-        if cache.is_used(consumed_key):
+        if not cache.mark_if_unused(consumed_key, ttl_seconds=_STATE_TTL_SECONDS):
             raise InvalidGrantError(detail="OAuth state already consumed")
-        cache.mark_used(consumed_key, ttl_seconds=_STATE_TTL_SECONDS)
 
     async def complete_callback(
         self,

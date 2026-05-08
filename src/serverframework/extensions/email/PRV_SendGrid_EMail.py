@@ -9,6 +9,7 @@ import hashlib
 import hmac
 import mimetypes
 import os
+import time
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, ClassVar, Dict, List, Mapping, Optional, Set, Tuple, Type
@@ -221,6 +222,15 @@ class SendgridProvider(AbstractEmailProvider):
     SENDGRID_SIGNATURE_HEADER: ClassVar[str] = "x-twilio-email-event-webhook-signature"
     SENDGRID_TIMESTAMP_HEADER: ClassVar[str] = "x-twilio-email-event-webhook-timestamp"
 
+    # H-1 — opt into the framework's replay-protection plumbing
+    # (`BLL_Webhooks.check_replay`). Without these, ``verify_signature``
+    # alone treats the signed timestamp only as salt — captured payloads
+    # replay forever. The window is wider than typical (300s) because
+    # SendGrid batches and retries, but ``verify_signature`` ALSO enforces
+    # this freshness gate so the protection is in force even when the
+    # caller does not invoke ``check_replay``.
+    replay_window_seconds: ClassVar[int] = 300
+
     # Item 92 — declare the default auth strategy this provider uses.
     # SendGrid authenticates via an API key in an ``Authorization: Bearer``
     # header; ``bond_instance`` materialises an ``APIKeyAuth`` from the
@@ -364,6 +374,17 @@ class SendgridProvider(AbstractEmailProvider):
             )
             return False
 
+        # H-1 — freshness gate enforced inside ``verify_signature`` so
+        # callers that bypass ``check_replay`` still get replay protection.
+        try:
+            ts_epoch = int(float(timestamp))
+        except (TypeError, ValueError):
+            logger.debug("SendGrid webhook timestamp is not numeric; rejecting.")
+            return False
+        if abs(time.time() - ts_epoch) > float(cls.replay_window_seconds):
+            logger.debug("SendGrid webhook timestamp outside replay window; rejecting.")
+            return False
+
         public_key_pem = env(cls.SENDGRID_WEBHOOK_PUBLIC_KEY_ENV)
         if public_key_pem:
             return cls._verify_ecdsa(public_key_pem, signature, timestamp, body)
@@ -378,6 +399,29 @@ class SendgridProvider(AbstractEmailProvider):
             f"{cls.SENDGRID_WEBHOOK_SECRET_ENV} set; rejecting."
         )
         return False
+
+    @classmethod
+    def extract_replay_keys(
+        cls, headers: Mapping[str, str], body: bytes
+    ) -> tuple[Optional[int], Optional[str]]:
+        """Return ``(epoch_seconds, nonce)`` for replay-cache de-duping.
+
+        SendGrid does not ship a per-delivery nonce header, so we derive
+        the nonce from a SHA-256 of the signed payload (timestamp || body).
+        Two redeliveries of the same event collapse onto the same key and
+        are rejected by ``BLL_Webhooks.check_replay`` after the first.
+        """
+        normalized = {k.lower(): v for k, v in (headers or {}).items()}
+        timestamp = normalized.get(cls.SENDGRID_TIMESTAMP_HEADER)
+        if not timestamp:
+            return None, None
+        try:
+            ts_epoch = int(float(timestamp))
+        except (TypeError, ValueError):
+            return None, None
+        signed_payload = timestamp.encode("utf-8") + (body or b"")
+        nonce = hashlib.sha256(signed_payload).hexdigest()
+        return ts_epoch, nonce
 
     @staticmethod
     def _verify_ecdsa(

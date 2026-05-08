@@ -13,8 +13,10 @@ import bcrypt
 from fastapi import HTTPException
 from pydantic import Field
 
+from serverframework.lib.FieldACL import Sensitive
+from serverframework.lib.InboundSecurity import LockoutPolicy, LockoutTracker
 from serverframework.lib.Pydantic import BaseModel
-from serverframework.lib.Pydantic2FastAPI import AuthType, RouterMixin
+from serverframework.lib.Pydantic2FastAPI import AuthType, RouterMixin, RouteType
 from serverframework.logic.AbstractLogicManager import (
     AbstractBLLManager,
     ApplicationModel,
@@ -55,7 +57,16 @@ class UserRecoveryQuestionModel(
 ):
     Manager: ClassVar[Type["UserRecoveryQuestionManager"]] = None
     question: str = Field(..., description="Recovery question")
-    answer: str = Field(..., description="Hashed answer to recovery question")
+    # H-3 — the bcrypt hash of the answer must NEVER appear in any
+    # response. Recovery answers have low entropy and crack offline; the
+    # ``Sensitive`` permission gate causes ``FieldACL`` to drop the field
+    # from response payloads unless the requester holds the explicit
+    # ``auth.user.read_secret`` permission (only ROOT in practice).
+    answer: str = Field(
+        ...,
+        description="Hashed answer to recovery question",
+        **Sensitive("auth.user.read_secret"),
+    )
 
     table_comment: ClassVar[str] = (
         "Security questions for account recovery when a user forgets their password"
@@ -82,8 +93,26 @@ class UserRecoveryQuestionManager(AbstractBLLManager, RouterMixin):
     prefix: ClassVar[Optional[str]] = "/v1/user/recovery-questions"
     tags: ClassVar[Optional[List[str]]] = ["Account Recovery"]
     auth_type: ClassVar[AuthType] = AuthType.JWT
+    # H-3 — limit the surface to the operations a user actually needs.
+    # SEARCH/LIST is dropped because returning a list of (id, question)
+    # is enough for the recovery flow and the default LIST returned the
+    # full DTO including the (now-Sensitive) ``answer`` hash.
+    routes_to_register: ClassVar[List[RouteType]] = [
+        RouteType.CREATE,
+        RouteType.UPDATE,
+        RouteType.DELETE,
+        RouteType.GET,
+    ]
     # A user may only set their own recovery questions; ROOT bypasses.
     _CALLER_OWNED_FIELDS: ClassVar[tuple] = ("user_id",)
+
+    # H-3 — verify_answer must be brute-force-gated. Recovery answers
+    # have low entropy (typical answers like "Springfield"). 5 failures
+    # within 15 minutes locks the (user_id, "recovery_answer") tuple for
+    # 30 minutes; on success the counter is cleared.
+    _verify_lockout_tracker: ClassVar[LockoutTracker] = LockoutTracker(
+        LockoutPolicy(failures_per_window=5, window_seconds=900, lockout_seconds=1800)
+    )
 
     def create(self, **kwargs):
         if "answer" in kwargs:
@@ -102,6 +131,13 @@ class UserRecoveryQuestionManager(AbstractBLLManager, RouterMixin):
         return super().update(id, **kwargs)
 
     def verify_answer(self, question_id: str, answer: str) -> bool:
+        actor_key = str(self.requester.id) if self.requester is not None else "anon"
+        flow = "recovery_answer"
+        if self._verify_lockout_tracker.is_locked(actor_key, flow):
+            raise HTTPException(
+                status_code=429,
+                detail="Too many failed recovery attempts; try again later.",
+            )
         question = UserRecoveryQuestionModel.DB(
             self.model_registry.DB.manager.Base
         ).get(
@@ -110,9 +146,15 @@ class UserRecoveryQuestionManager(AbstractBLLManager, RouterMixin):
             id=question_id,
         )
         if not question:
+            self._verify_lockout_tracker.record_failure(actor_key, flow)
             return False
         normalized_answer = _normalize_answer(answer)
-        return bcrypt.checkpw(normalized_answer.encode(), question.answer.encode())
+        ok = bcrypt.checkpw(normalized_answer.encode(), question.answer.encode())
+        if ok:
+            self._verify_lockout_tracker.clear(actor_key, flow)
+        else:
+            self._verify_lockout_tracker.record_failure(actor_key, flow)
+        return ok
 
 
 UserRecoveryQuestionModel.Manager = UserRecoveryQuestionManager

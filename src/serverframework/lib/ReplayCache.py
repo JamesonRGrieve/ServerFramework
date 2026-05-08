@@ -44,6 +44,23 @@ class ReplayCache(ABC):
     @abstractmethod
     def is_used(self, key: str) -> bool: ...
 
+    def mark_if_unused(self, key: str, ttl_seconds: int) -> bool:
+        """Atomic compare-and-set: mark ``key`` only if it is not already
+        marked. Returns True iff this caller is the one that set it.
+
+        H-7 — read-then-write (``if not is_used: mark_used``) is racy
+        across concurrent callbacks for the same OAuth state nonce or
+        single-use token. Subclasses MUST override this with a real
+        atomic primitive on the underlying store (Valkey ``SET NX EX``,
+        SQL ``INSERT … ON CONFLICT DO NOTHING``). The default
+        implementation here is intentionally NOT atomic and is safe only
+        for single-process deployments.
+        """
+        if self.is_used(key):
+            return False
+        self.mark_used(key, ttl_seconds)
+        return True
+
 
 class InMemoryReplayCache(ReplayCache):
     """Process-local replay cache.
@@ -77,6 +94,21 @@ class InMemoryReplayCache(ReplayCache):
             if entry < time.time():
                 self._impl.pop(key, None)
                 return False
+            return True
+
+    def mark_if_unused(self, key: str, ttl_seconds: int) -> bool:
+        """Atomic CAS within a single process via the cache lock."""
+        now = time.time()
+        deadline = now + ttl_seconds
+        with self._lock:
+            existing = self._impl.get(key)
+            if existing is not None and existing >= now:
+                return False
+            self._impl[key] = deadline
+            if len(self._impl) > self._max_entries:
+                expired = [k for k, d in self._impl.items() if d < now]
+                for k in expired:
+                    self._impl.pop(k, None)
             return True
 
 

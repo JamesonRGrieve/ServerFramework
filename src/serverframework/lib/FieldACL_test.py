@@ -11,6 +11,7 @@ from serverframework.lib.FieldACL import (
     Sensitive,
     apply_field_acl_to_response,
     collect_restricted_fields,
+    enforce_query_field_access,
     filter_response_dict,
     get_required_permissions,
     requires,
@@ -81,6 +82,29 @@ def test_collect_restricted_fields_sorted():
 def test_restricted_for_filter_or_order():
     result = restricted_for_filter_or_order(UserModel)
     assert result == frozenset({"ssn", "salary"})
+
+
+def test_enforce_query_field_access_raises_on_disallowed():
+    with pytest.raises(FieldACLViolation) as exc_info:
+        enforce_query_field_access(
+            UserModel,
+            ["id", "ssn"],
+            has_permission=lambda _: False,
+            context="filter",
+        )
+    assert "ssn" in exc_info.value.field_names
+
+
+def test_enforce_query_field_access_passes_when_permitted():
+    enforce_query_field_access(
+        UserModel,
+        ["id", "ssn"],
+        has_permission=lambda _: True,
+    )
+
+
+def test_enforce_query_field_access_no_permission_resolver_is_no_op():
+    enforce_query_field_access(UserModel, ["ssn"], has_permission=None)
 
 
 def test_model_with_no_restricted_fields():

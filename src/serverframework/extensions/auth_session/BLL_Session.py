@@ -115,39 +115,42 @@ class SessionModel(
             Base = db_manager.Base
         else:
             raise ValueError("Either model_registry or db_manager is required")
-        from serverframework.lib.Environment import is_root_id, is_system_user_id
+        from serverframework.database.StaticPermissions import (
+            is_root_id,
+            is_system_user_id,
+        )
 
         if is_root_id(user_id) or is_system_user_id(user_id):
             return True
 
-        try:
-            SQLAlchemy_model = cls.DB(Base)
-            session_record = (
-                db.query(SQLAlchemy_model)
-                .filter(SQLAlchemy_model.id == id)
-                .first()
-            )
-            if not session_record:
-                return False
-            if (
-                hasattr(session_record, "user_id")
-                and session_record.user_id == user_id
-            ):
-                return True
-        except Exception:
-            pass
+        SQLAlchemy_model = cls.DB(Base)
+        session_record = (
+            db.query(SQLAlchemy_model)
+            .filter(SQLAlchemy_model.id == id)
+            .first()
+        )
+        if session_record is None:
+            return False
+        if (
+            hasattr(session_record, "user_id")
+            and session_record.user_id == user_id
+        ):
+            return True
 
         return super().user_has_all_access(user_id, id, db, db_manager)
 
+    # M-5 — the Create schema is the public input contract. Even though
+    # ``routes_to_register`` currently omits POST, schema fields are
+    # reachable from any future router-config that re-enables it (and
+    # from internal callers). Server-controlled state (refresh-token
+    # hash, trust score, pending-state machine) is populated via
+    # ``**kwargs`` from the session-management code paths and MUST NOT
+    # be acceptable client input.
     class Create(BaseModel, UserModel.Reference.ID):
         session_key: str = Field(
             ..., description="Unique session identifier used in JWT jti claim"
         )
         jwt_issued_at: datetime = Field(..., description="When the JWT was issued")
-        refresh_token_hash: Optional[str] = Field(
-            None,
-            description="Hash of refresh token if refresh mechanism is enabled",
-        )
         device_type: Optional[str] = Field(
             None,
             description="Type of device used for authentication (mobile, desktop, etc.)",
@@ -168,9 +171,6 @@ class SessionModel(
         revoked: Optional[bool] = Field(
             False, description="Whether this session has been explicitly revoked"
         )
-        trust_score: Optional[int] = Field(
-            50, description="Trust level of this session (0-100)"
-        )
         requires_verification: Optional[bool] = Field(
             False, description="Whether additional verification is required"
         )
@@ -178,9 +178,6 @@ class SessionModel(
             None,
             description="Identifier of the grant kind that issued this session",
         )
-        pending_state: Optional[
-            Literal["awaiting_approval", "approved", "denied"]
-        ] = Field(None, description="Pending approval state for passwordless flows")
 
     # Defense in depth: even though the manager's ``routes_to_register``
     # restricts the public HTTP surface to LIST + GET, we keep
