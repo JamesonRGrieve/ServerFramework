@@ -82,6 +82,10 @@ class TestAppSettingsReal(TestMixin):
         # L-3 — production validation now refuses the empty default for
         # DATABASE_PASSWORD too; supply an explicit non-default value.
         os.environ["DATABASE_PASSWORD"] = "secure-test-db-password"
+        # Production fail-closed also rejects DATABASE_SSL in
+        # {disable, allow, prefer} unless the operator opts into
+        # plaintext. Set the strict-TLS posture for the round-trip.
+        os.environ["DATABASE_SSL"] = "require"
 
         settings = AppSettings.model_validate(os.environ)
 

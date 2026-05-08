@@ -48,32 +48,22 @@ class ReplayCache(ABC):
 class InMemoryReplayCache(ReplayCache):
     """Process-local replay cache.
 
-    Uses ``cachetools.TTLCache`` when available so entries expire; otherwise
-    falls back to a plain dict and rejects only within a single request's
-    lifetime of repeats. The fallback is logged.
+    Honours the per-call ``ttl_seconds`` argument: each entry stores a
+    deadline and ``is_used`` returns False once the deadline has passed.
+    A best-effort sweep collects expired entries when the dict grows
+    past ``max_entries`` so memory stays bounded under high churn.
     """
 
     def __init__(self, max_entries: int = 100_000):
         self._lock = threading.Lock()
         self._max_entries = max_entries
-        try:
-            from cachetools import TTLCache  # type: ignore
-
-            self._impl = TTLCache(maxsize=max_entries, ttl=86_400)
-            self._fallback = False
-        except ImportError:
-            logger.warning(
-                "cachetools not installed; replay cache will not auto-expire"
-            )
-            self._impl = {}
-            self._fallback = True
+        self._impl: dict = {}
 
     def mark_used(self, key: str, ttl_seconds: int) -> None:
         deadline = time.time() + ttl_seconds
         with self._lock:
             self._impl[key] = deadline
-            if self._fallback and len(self._impl) > self._max_entries:
-                # Best-effort cleanup of expired entries when not using TTLCache.
+            if len(self._impl) > self._max_entries:
                 now = time.time()
                 expired = [k for k, d in self._impl.items() if d < now]
                 for k in expired:
@@ -84,10 +74,9 @@ class InMemoryReplayCache(ReplayCache):
             entry = self._impl.get(key)
             if entry is None:
                 return False
-            if self._fallback:
-                if entry < time.time():
-                    self._impl.pop(key, None)
-                    return False
+            if entry < time.time():
+                self._impl.pop(key, None)
+                return False
             return True
 
 

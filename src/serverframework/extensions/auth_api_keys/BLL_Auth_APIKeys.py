@@ -7,6 +7,12 @@ comparison guards validation.
 
 Pattern reference: ``auth_session/BLL_Session.py`` (canonical model
 shape) and ``auth_magic_link/BLL_Auth_MagicLink.py`` (token issuance).
+
+Endpoint surface: CRUD via ``RouterMixin`` is restricted to read/list/search
+plus DELETE (revocation). Issue and rotate are surfaced through
+``@custom_route`` because the raw key never persists — the issuance flow
+must run server-side and return the secret exactly once. ``key_hash`` is
+not in any client-facing input model: see ``APIKeyModel.Create``.
 """
 
 import hashlib
@@ -18,8 +24,10 @@ from typing import ClassVar, List, Optional, Type
 from fastapi import HTTPException
 from pydantic import BaseModel, Field
 
+from serverframework.lib.CustomRoute import custom_route
 from serverframework.lib.Environment import env
-from serverframework.lib.Pydantic2FastAPI import AuthType, RouterMixin
+from serverframework.lib.InboundSecurity import DEFAULT_AUTH_RATE_LIMIT, rate_limit
+from serverframework.lib.Pydantic2FastAPI import AuthType, RouteType, RouterMixin
 from serverframework.logic.AbstractLogicManager import (
     AbstractBLLManager,
     ApplicationModel,
@@ -76,17 +84,18 @@ class APIKeyModel(
         TeamModel.Reference.ID.Optional,
         RoleModel.Reference.ID.Optional,
     ):
+        # ``key_hash`` is intentionally NOT writable here. Direct CRUD
+        # creation is allowed for administrative imports — but the hash
+        # must come from a server-generated raw key via ``issue_key``,
+        # never from client input. CRUD POST is gated to ROOT_ID by the
+        # manager's ``create_validation``; non-root callers must use the
+        # ``/issue`` custom route.
         name: str
-        key_hash: str
         expires_at: Optional[datetime] = None
-        is_revoked: bool = False
-        last_used_at: Optional[datetime] = None
 
     class Update(BaseModel):
         name: Optional[str] = None
-        is_revoked: Optional[bool] = None
         expires_at: Optional[datetime] = None
-        last_used_at: Optional[datetime] = None
 
     class Search(
         ApplicationModel.Search,
@@ -110,11 +119,103 @@ class APIKeyIssueResponse(BaseModel):
     expires_at: Optional[datetime] = None
 
 
+class APIKeyIssueRequest(BaseModel):
+    name: str
+    user_id: Optional[str] = None
+    team_id: Optional[str] = None
+    role_id: Optional[str] = None
+    expires_at: Optional[datetime] = None
+
+
+class APIKeyValidateRequest(BaseModel):
+    api_key: str = Field(..., description="Raw API key to validate")
+
+
+class APIKeyValidateResponse(BaseModel):
+    valid: bool
+    user_id: Optional[str] = None
+    team_id: Optional[str] = None
+    role_id: Optional[str] = None
+
+
+class APIKeyRotateRequest(BaseModel):
+    key_id: str = Field(..., description="ID of the key to rotate")
+
+
 class APIKeyManager(AbstractBLLManager, RouterMixin):
     _model = APIKeyModel
     prefix: ClassVar[Optional[str]] = "/v1/auth/api-keys"
     tags: ClassVar[Optional[List[str]]] = ["API Keys"]
     auth_type: ClassVar[AuthType] = AuthType.JWT
+    # ``CREATE`` is intentionally absent from the public CRUD surface — see
+    # the custom routes below. Direct creation through the BLL ``create``
+    # path is still possible for administrative scripts but is gated by
+    # ``create_validation`` to ROOT_ID. ``UPDATE`` is dropped so callers
+    # cannot flip ``is_revoked`` or ``last_used_at`` directly; revocation
+    # goes through ``DELETE`` (soft-revoke) and rotation through ``/rotate``.
+    routes_to_register: ClassVar[Optional[List[RouteType]]] = [
+        RouteType.GET,
+        RouteType.LIST,
+        RouteType.SEARCH,
+        RouteType.DELETE,
+    ]
+
+    def create_validation(self, entity) -> None:
+        """Refuse non-root direct CREATE; raw keys must flow through ``issue_key``.
+
+        The CRUD ``Create`` schema deliberately omits ``key_hash``, so a
+        bypass through that channel cannot mint a usable key — but we
+        also reject the call outright so the resulting "shell" rows never
+        exist. ``issue_key`` calls ``self.DB.create`` directly with the
+        server-generated hash, bypassing this guard.
+        """
+        from serverframework.database.StaticPermissions import is_root_id
+
+        if not is_root_id(self.requester.id):
+            raise HTTPException(
+                status_code=403,
+                detail="Direct CREATE on /v1/auth/api-keys is not permitted; "
+                "use POST /v1/auth/api-keys/issue",
+            )
+
+    def _assert_can_act_on(
+        self,
+        user_id: Optional[str],
+        team_id: Optional[str],
+    ) -> None:
+        """Caller must be acting on themselves (user_id == requester) or be
+        ROOT_ID. Team-scoped issuance requires either ROOT_ID or a real
+        membership check; that is delegated to the ``UserTeamManager``
+        once available, and conservatively rejects unauthenticated
+        cross-tenant issuance until then."""
+        from serverframework.database.StaticPermissions import is_root_id
+
+        if is_root_id(self.requester.id):
+            return
+        if user_id is not None and user_id != self.requester.id:
+            raise HTTPException(
+                status_code=403,
+                detail="Cannot issue an API key for another user",
+            )
+        if team_id is not None:
+            try:
+                from serverframework.logic.BLL_Auth import UserTeamModel
+            except ImportError:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Team-scoped API-key issuance requires team membership",
+                )
+            UTDB = UserTeamModel.DB(self.model_registry.DB.manager.Base)
+            if not UTDB.exists(
+                requester_id=env("ROOT_ID"),
+                model_registry=self.model_registry,
+                user_id=self.requester.id,
+                team_id=team_id,
+            ):
+                raise HTTPException(
+                    status_code=403,
+                    detail="Caller is not a member of the target team",
+                )
 
     def issue_key(
         self,
@@ -125,13 +226,15 @@ class APIKeyManager(AbstractBLLManager, RouterMixin):
         expires_at: Optional[datetime] = None,
     ) -> APIKeyIssueResponse:
         if user_id is None and team_id is None:
-            raise HTTPException(
-                status_code=400,
-                detail="API key must be scoped to a user_id or team_id",
-            )
+            user_id = self.requester.id
+        self._assert_can_act_on(user_id, team_id)
         raw = secrets.token_urlsafe(32)
         key_hash = _hash_key(raw)
-        record = self.create(
+        record = self.DB.create(
+            requester_id=self.requester.id,
+            model_registry=self.model_registry,
+            return_type="dto",
+            override_dto=self.model_registry.apply(self.Model),
             name=name,
             key_hash=key_hash,
             user_id=user_id,
@@ -143,6 +246,61 @@ class APIKeyManager(AbstractBLLManager, RouterMixin):
         return APIKeyIssueResponse(
             id=record.id, name=name, key=raw, expires_at=expires_at
         )
+
+    @custom_route(
+        method="POST",
+        path="/issue",
+        input_model=APIKeyIssueRequest,
+        output_model=APIKeyIssueResponse,
+        authentication_type="jwt",
+        openapi_tags=("API Keys",),
+        summary="Issue a new API key (raw value returned exactly once)",
+    )
+    @rate_limit(DEFAULT_AUTH_RATE_LIMIT, scope="ip")
+    async def issue_route(self, body: APIKeyIssueRequest) -> APIKeyIssueResponse:
+        return self.issue_key(
+            name=body.name,
+            user_id=body.user_id,
+            team_id=body.team_id,
+            role_id=body.role_id,
+            expires_at=body.expires_at,
+        )
+
+    @custom_route(
+        method="POST",
+        path="/validate",
+        input_model=APIKeyValidateRequest,
+        output_model=APIKeyValidateResponse,
+        authentication_type="none",
+        openapi_tags=("API Keys",),
+        summary="Validate an API key",
+    )
+    @rate_limit(DEFAULT_AUTH_RATE_LIMIT, scope="ip")
+    async def validate_route(
+        self, body: APIKeyValidateRequest
+    ) -> APIKeyValidateResponse:
+        record = self.validate_key(body.api_key)
+        if record is None:
+            return APIKeyValidateResponse(valid=False)
+        return APIKeyValidateResponse(
+            valid=True,
+            user_id=record.user_id,
+            team_id=record.team_id,
+            role_id=record.role_id,
+        )
+
+    @custom_route(
+        method="POST",
+        path="/rotate",
+        input_model=APIKeyRotateRequest,
+        output_model=APIKeyIssueResponse,
+        authentication_type="jwt",
+        openapi_tags=("API Keys",),
+        summary="Rotate an existing API key (issues a replacement, revokes the old)",
+    )
+    @rate_limit(DEFAULT_AUTH_RATE_LIMIT, scope="ip")
+    async def rotate_route(self, body: APIKeyRotateRequest) -> APIKeyIssueResponse:
+        return self.rotate_key(body.key_id)
 
     def validate_key(self, raw: str) -> Optional[APIKeyModel]:
         """Resolve ``raw`` to an active API key record, or return None.
@@ -176,12 +334,44 @@ class APIKeyManager(AbstractBLLManager, RouterMixin):
                 if expires_at < now:
                     continue
             if hmac.compare_digest(record.key_hash, candidate_hash):
-                self.update(id=record.id, last_used_at=now)
+                KeyDB.update(
+                    requester_id=env("ROOT_ID"),
+                    model_registry=self.model_registry,
+                    id=record.id,
+                    new_properties={"last_used_at": now},
+                )
                 return record
         return None
 
+    def delete(self, id: str):
+        """DELETE on this resource is soft-revoke, not hard-delete: API
+        keys are bearer credentials that downstream services may have
+        already cached, and the audit row must persist for forensic
+        reasons. Authorization rides through ``revoke_key``."""
+        self.revoke_key(id)
+
     def revoke_key(self, key_id: str) -> APIKeyModel:
-        return self.update(id=key_id, is_revoked=True)
+        """Soft-revoke a key. Authorization: the requester must own the
+        key (user_id) or be ROOT_ID. Team-scoped keys check membership."""
+        KeyDB = APIKeyModel.DB(self.model_registry.DB.manager.Base)
+        existing = KeyDB.get(
+            requester_id=env("ROOT_ID"),
+            model_registry=self.model_registry,
+            id=key_id,
+            return_type="dto",
+            override_dto=APIKeyModel,
+        )
+        if existing is None:
+            raise HTTPException(status_code=404, detail="API key not found")
+        self._assert_can_act_on(existing.user_id, existing.team_id)
+        return KeyDB.update(
+            requester_id=self.requester.id,
+            model_registry=self.model_registry,
+            id=key_id,
+            new_properties={"is_revoked": True},
+            return_type="dto",
+            override_dto=APIKeyModel,
+        )
 
     def rotate_key(self, key_id: str) -> APIKeyIssueResponse:
         """Issue a replacement key, revoke the old one. Atomic-from-the-
@@ -196,6 +386,7 @@ class APIKeyManager(AbstractBLLManager, RouterMixin):
         )
         if existing is None:
             raise HTTPException(status_code=404, detail="API key not found")
+        self._assert_can_act_on(existing.user_id, existing.team_id)
         new = self.issue_key(
             name=existing.name,
             user_id=existing.user_id,

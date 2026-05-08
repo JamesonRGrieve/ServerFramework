@@ -106,6 +106,9 @@ class UserPaymentPortalManager(AbstractBLLManager, RouterMixin):
     prefix: ClassVar[Optional[str]] = "/v1/marketplace/user-portals"
     tags: ClassVar[Optional[List[str]]] = ["Marketplace"]
     auth_type: ClassVar[AuthType] = AuthType.JWT
+    # Refuse cross-user payment-portal claims at the BLL layer; a user
+    # can only attach a payment portal to their own account.
+    _CALLER_OWNED_FIELDS: ClassVar[tuple] = ("user_id",)
 
 
 class TeamPaymentPortalManager(AbstractBLLManager, RouterMixin):
@@ -113,6 +116,9 @@ class TeamPaymentPortalManager(AbstractBLLManager, RouterMixin):
     prefix: ClassVar[Optional[str]] = "/v1/marketplace/team-portals"
     tags: ClassVar[Optional[List[str]]] = ["Marketplace"]
     auth_type: ClassVar[AuthType] = AuthType.JWT
+    # ``user_id`` is the creating user; team_id is the resource owner and
+    # must be checked against membership at the route layer (TODO).
+    _CALLER_OWNED_FIELDS: ClassVar[tuple] = ("user_id",)
 
 
 UserPaymentPortalModel.Manager = UserPaymentPortalManager

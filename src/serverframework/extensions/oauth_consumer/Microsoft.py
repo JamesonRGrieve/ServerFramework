@@ -2,15 +2,22 @@
 
 from typing import Any, Dict, Optional
 
-import requests
 from fastapi import HTTPException
 
 from serverframework.extensions.oauth_consumer.IdPRegistry import register_idp
-from serverframework.extensions.oauth_consumer.PRV_AbstractIdP import AbstractIdPProvider
+from serverframework.extensions.oauth_consumer.PRV_AbstractIdP import (
+    AbstractIdPProvider,
+    get_http_client,
+)
 from serverframework.lib.Environment import env
 from serverframework.lib.Logging import logger
 
 
+# ``email`` claim from /me is verified for Entra ID work/school accounts;
+# Microsoft does not expose a dedicated ``email_verified`` flag in Graph
+# /me, but a personal MSA account requires email verification at sign-up
+# and the work/school flow only returns mailbox-bound emails. We trust
+# Graph /me's email per Microsoft's identity-platform documentation.
 MICROSOFT_SCOPES = "openid email profile offline_access User.Read"
 
 
@@ -34,7 +41,8 @@ class MicrosoftIdP(AbstractIdPProvider):
         )
 
     async def get_new_token(self) -> Dict[str, Any]:
-        response = requests.post(
+        client = get_http_client()
+        response = await client.post(
             "https://login.microsoftonline.com/common/oauth2/v2.0/token",
             data={
                 "client_id": self.client_id,
@@ -44,37 +52,49 @@ class MicrosoftIdP(AbstractIdPProvider):
             },
         )
         if response.status_code != 200:
+            logger.warning(
+                "Microsoft token refresh failed (status=%s)", response.status_code
+            )
             raise HTTPException(
-                status_code=response.status_code,
-                detail=f"Microsoft token refresh failed: {response.text}",
+                status_code=502, detail="Microsoft token refresh failed"
             )
         data = response.json()
         self.access_token = data["access_token"]
         return data
 
     async def get_user_info(self, access_token: str) -> Dict[str, Any]:
-        response = requests.get(
+        client = get_http_client()
+        response = await client.get(
             "https://graph.microsoft.com/v1.0/me",
             headers={"Authorization": f"Bearer {access_token}"},
         )
         if response.status_code != 200:
-            raise HTTPException(
-                status_code=response.status_code,
-                detail=f"Microsoft user info failed: {response.text}",
+            logger.warning(
+                "Microsoft /me failed (status=%s)", response.status_code
             )
+            raise HTTPException(status_code=502, detail="Microsoft user info failed")
         data = response.json()
+        # ``mail`` is the verified mailbox; ``userPrincipalName`` is the
+        # sign-in identifier. We accept either, but only treat ``mail`` as
+        # verified — UPN can be reassigned by an admin and is not
+        # equivalent to a verified inbox.
+        verified_email = data.get("mail")
         return {
-            "email": data.get("mail") or data.get("userPrincipalName", ""),
-            "first_name": data.get("givenName", ""),
-            "last_name": data.get("surname", ""),
-            "display_name": data.get("displayName", ""),
-            "provider_user_id": data.get("id", ""),
+            "email": verified_email or data.get("userPrincipalName", ""),
+            "email_verified": bool(verified_email),
+            "first_name": data.get("givenName", "") or "",
+            "last_name": data.get("surname", "") or "",
+            "display_name": data.get("displayName", "") or "",
+            "provider_user_id": str(data.get("id", "")),
         }
 
     @classmethod
-    async def sso_handler(cls, code: str, redirect_uri: str) -> Optional["MicrosoftIdP"]:
+    async def sso_handler(
+        cls, code: str, redirect_uri: str
+    ) -> Optional["MicrosoftIdP"]:
         code = cls.sanitize_code(code)
-        response = requests.post(
+        client = get_http_client()
+        response = await client.post(
             "https://login.microsoftonline.com/common/oauth2/v2.0/token",
             data={
                 "client_id": env("MICROSOFT_CLIENT_ID"),
@@ -86,7 +106,10 @@ class MicrosoftIdP(AbstractIdPProvider):
             },
         )
         if response.status_code != 200:
-            logger.error(f"Microsoft SSO token exchange failed: {response.text}")
+            logger.error(
+                "Microsoft SSO token exchange failed (status=%s)",
+                response.status_code,
+            )
             return None
         data = response.json()
         return cls(

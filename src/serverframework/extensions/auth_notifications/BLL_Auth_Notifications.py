@@ -8,11 +8,14 @@ Two tables:
 Pattern reference: ``auth_invitations/BLL_Invitations.py``.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import ClassVar, List, Optional, Type
 
+from fastapi import HTTPException
 from pydantic import BaseModel, Field
 
+from serverframework.lib.CustomRoute import custom_route
+from serverframework.lib.Environment import env
 from serverframework.lib.Pydantic2FastAPI import AuthType, RouterMixin
 from serverframework.logic.AbstractLogicManager import (
     AbstractBLLManager,
@@ -100,11 +103,11 @@ class UserNotificationModel(
         acknowledged: bool = False
         acknowledged_at: Optional[datetime] = None
 
+    # Update is intentionally narrow: only the boolean toggles are
+    # writable. Timestamps are server-stamped via the convenience routes.
     class Update(BaseModel):
         read: Optional[bool] = None
-        read_at: Optional[datetime] = None
         acknowledged: Optional[bool] = None
-        acknowledged_at: Optional[datetime] = None
 
     class Search(
         ApplicationModel.Search,
@@ -117,11 +120,34 @@ class UserNotificationModel(
         read_at: Optional[DateSearchModel] = None
 
 
+class MarkReadResponse(BaseModel):
+    id: str
+    read: bool
+    read_at: Optional[datetime] = None
+
+
+class AcknowledgeResponse(BaseModel):
+    id: str
+    acknowledged: bool
+    acknowledged_at: Optional[datetime] = None
+
+
+class _MarkReadRequest(BaseModel):
+    """No body required; the route uses ``{id}`` from the path. The
+    framework's typed-input contract requires a model regardless, so we
+    declare an empty one."""
+
+    pass
+
+
 class NotificationManager(AbstractBLLManager, RouterMixin):
     _model = NotificationModel
     prefix: ClassVar[Optional[str]] = "/v1/notifications"
     tags: ClassVar[Optional[List[str]]] = ["Notifications"]
     auth_type: ClassVar[AuthType] = AuthType.JWT
+    # ``user_id`` (the recipient) cannot be impersonated. ROOT/SYSTEM
+    # bypass for system-issued broadcasts.
+    _CALLER_OWNED_FIELDS: ClassVar[tuple] = ("user_id",)
 
 
 class UserNotificationManager(AbstractBLLManager, RouterMixin):
@@ -129,6 +155,94 @@ class UserNotificationManager(AbstractBLLManager, RouterMixin):
     prefix: ClassVar[Optional[str]] = "/v1/user-notifications"
     tags: ClassVar[Optional[List[str]]] = ["Notifications"]
     auth_type: ClassVar[AuthType] = AuthType.JWT
+    _CALLER_OWNED_FIELDS: ClassVar[tuple] = ("user_id",)
+
+    def _assert_owns(self, user_notification_id: str) -> "UserNotificationModel":
+        UNDB = UserNotificationModel.DB(self.model_registry.DB.manager.Base)
+        existing = UNDB.get(
+            requester_id=env("ROOT_ID"),
+            model_registry=self.model_registry,
+            id=user_notification_id,
+            return_type="dto",
+            override_dto=UserNotificationModel,
+        )
+        if existing is None:
+            raise HTTPException(status_code=404, detail="Notification not found")
+        from serverframework.database.StaticPermissions import is_root_id
+
+        if (
+            existing.user_id != self.requester.id
+            and not is_root_id(self.requester.id)
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail="Cannot modify another user's notification state",
+            )
+        return existing
+
+    def mark_as_read(self, notification_id: str) -> UserNotificationModel:
+        existing = self._assert_owns(notification_id)
+        UNDB = UserNotificationModel.DB(self.model_registry.DB.manager.Base)
+        now = datetime.now(timezone.utc)
+        return UNDB.update(
+            requester_id=self.requester.id,
+            model_registry=self.model_registry,
+            id=existing.id,
+            new_properties={"read": True, "read_at": now},
+            return_type="dto",
+            override_dto=UserNotificationModel,
+        )
+
+    def acknowledge(self, notification_id: str) -> UserNotificationModel:
+        existing = self._assert_owns(notification_id)
+        UNDB = UserNotificationModel.DB(self.model_registry.DB.manager.Base)
+        now = datetime.now(timezone.utc)
+        return UNDB.update(
+            requester_id=self.requester.id,
+            model_registry=self.model_registry,
+            id=existing.id,
+            new_properties={"acknowledged": True, "acknowledged_at": now},
+            return_type="dto",
+            override_dto=UserNotificationModel,
+        )
+
+    @custom_route(
+        method="PATCH",
+        path="/{id}/read",
+        input_model=_MarkReadRequest,
+        output_model=MarkReadResponse,
+        authentication_type="jwt",
+        openapi_tags=("Notifications",),
+        summary="Mark a user-notification as read (server stamps the time)",
+    )
+    async def mark_read_route(
+        self, id: str, body: _MarkReadRequest
+    ) -> MarkReadResponse:
+        del body
+        result = self.mark_as_read(id)
+        return MarkReadResponse(
+            id=result.id, read=True, read_at=result.read_at
+        )
+
+    @custom_route(
+        method="PATCH",
+        path="/{id}/acknowledge",
+        input_model=_MarkReadRequest,
+        output_model=AcknowledgeResponse,
+        authentication_type="jwt",
+        openapi_tags=("Notifications",),
+        summary="Acknowledge a user-notification (server stamps the time)",
+    )
+    async def acknowledge_route(
+        self, id: str, body: _MarkReadRequest
+    ) -> AcknowledgeResponse:
+        del body
+        result = self.acknowledge(id)
+        return AcknowledgeResponse(
+            id=result.id,
+            acknowledged=True,
+            acknowledged_at=result.acknowledged_at,
+        )
 
 
 NotificationModel.Manager = NotificationManager

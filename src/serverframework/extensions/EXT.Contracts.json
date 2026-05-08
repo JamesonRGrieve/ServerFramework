@@ -569,7 +569,7 @@
       "entries": [
         {
           "name": "Quota",
-          "module": "serverframework.logic.Quota",
+          "module": "serverframework.extensions.quota.BLL_Quota",
           "kind": "class",
           "summary": "Unified per-user / per-team / per-user-within-team quota record."
         }

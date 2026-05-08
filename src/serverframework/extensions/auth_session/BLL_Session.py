@@ -182,14 +182,20 @@ class SessionModel(
             Literal["awaiting_approval", "approved", "denied"]
         ] = Field(None, description="Pending approval state for passwordless flows")
 
+    # Defense in depth: even though the manager's ``routes_to_register``
+    # restricts the public HTTP surface to LIST + GET, we keep
+    # ``refresh_token_hash`` and ``trust_score`` out of the Update
+    # schema. Both would be catastrophic if a future router config
+    # accidentally re-exposed UPDATE — overwriting the hash with a
+    # known plaintext is account takeover. The fields kept here are
+    # the lifecycle bits the framework legitimately mutates from
+    # session-management code paths.
     class Update(BaseModel):
         is_active: Optional[bool] = Field(None)
         last_activity: Optional[datetime] = Field(None)
         expires_at: Optional[datetime] = Field(None)
         revoked: Optional[bool] = Field(None)
-        trust_score: Optional[int] = Field(None)
         requires_verification: Optional[bool] = Field(None)
-        refresh_token_hash: Optional[str] = Field(None)
         pending_state: Optional[
             Literal["awaiting_approval", "approved", "denied"]
         ] = Field(None)
@@ -263,15 +269,35 @@ class SessionManager(AbstractBLLManager, RouterMixin):
             )
 
     def revoke_session(self, id: str) -> Dict[str, str]:
-        session = self.Model.DB(self.model_registry.DB.manager.Base).get(
-            requester_id=self.requester.id,
+        # Sessions are minted by the framework as ROOT (the user is not
+        # yet known when the row is materialized in the login pipeline),
+        # so the row's ``created_by_user_id`` is ROOT_ID. The DB layer's
+        # "system entity" rule then refuses regular-user mutations.
+        # Resolve the session as ROOT, verify the caller owns it, then
+        # apply the revocation as ROOT — the caller's authority is the
+        # session.user_id match, not the row provenance.
+        from serverframework.database.StaticPermissions import is_root_id
+
+        SessionDB = self.Model.DB(self.model_registry.DB.manager.Base)
+        session = SessionDB.get(
+            requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
             id=id,
+            return_type="dto",
+            override_dto=self.Model,
         )
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
-        self.Model.DB(self.model_registry.DB.manager.Base).update(
-            requester_id=self.requester.id,
+        if (
+            session.user_id != self.requester.id
+            and not is_root_id(self.requester.id)
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail="Cannot revoke another user's session",
+            )
+        SessionDB.update(
+            requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
             id=id,
             new_properties={"revoked": True, "is_active": False},
@@ -279,8 +305,19 @@ class SessionManager(AbstractBLLManager, RouterMixin):
         return {"message": "Session revoked successfully"}
 
     def revoke_all_user_sessions(self, user_id: str) -> Dict[str, Any]:
-        sessions = self.Model.DB(self.model_registry.DB.manager.Base).list(
-            requester_id=self.requester.id,
+        # Same root-write pattern as ``revoke_session``: rows are
+        # ROOT-owned, so we authenticate the caller (must be the user
+        # themselves or ROOT) and then mutate as ROOT.
+        from serverframework.database.StaticPermissions import is_root_id
+
+        if user_id != self.requester.id and not is_root_id(self.requester.id):
+            raise HTTPException(
+                status_code=403,
+                detail="Cannot revoke another user's sessions",
+            )
+        SessionDB = self.Model.DB(self.model_registry.DB.manager.Base)
+        sessions = SessionDB.list(
+            requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
             user_id=user_id,
             is_active=True,
@@ -289,8 +326,8 @@ class SessionManager(AbstractBLLManager, RouterMixin):
         revoked_count = 0
         for session in sessions:
             session_id = session["id"] if isinstance(session, dict) else session.id
-            self.Model.DB(self.model_registry.DB.manager.Base).update(
-                requester_id=self.requester.id,
+            SessionDB.update(
+                requester_id=env("ROOT_ID"),
                 model_registry=self.model_registry,
                 id=session_id,
                 new_properties={"is_active": False, "revoked": True},

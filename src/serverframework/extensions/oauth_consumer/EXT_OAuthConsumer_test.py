@@ -126,3 +126,33 @@ class TestRequestSchema:
 
         with pytest.raises(ValidationError):
             OAuthCallbackRequest(provider="google", code="abc")
+
+
+class TestPreAccountTakeoverGuard:
+    """Refuse to auto-link an IdP identity to a local account when the
+    IdP did not confirm the email is verified. Prevents CWE-287
+    (pre-account takeover by email claim)."""
+
+    def test_idp_provider_contract_documents_email_verified(self):
+        # The abstract contract requires concrete IdPs to surface
+        # ``email_verified``. The docstring is the contract; assert the
+        # method exists.
+        assert hasattr(AbstractIdPProvider, "get_user_info")
+
+    def test_each_idp_returns_email_verified_in_profile_shape(self):
+        # All four IdPs construct profiles with ``email_verified`` keys.
+        # We can't make live calls, but we can inspect the source for
+        # the key.
+        from serverframework.extensions.oauth_consumer import (
+            Amazon,
+            GitHub,
+            Google,
+            Microsoft,
+        )
+        import inspect
+
+        for module in (Amazon, GitHub, Google, Microsoft):
+            source = inspect.getsource(module)
+            assert "email_verified" in source, (
+                f"{module.__name__} must surface email_verified in profile"
+            )

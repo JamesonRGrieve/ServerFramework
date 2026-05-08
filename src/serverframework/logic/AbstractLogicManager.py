@@ -885,6 +885,20 @@ def wrap_method_with_hooks(
     wrapped_method.__name__ = method_name
     wrapped_method.__doc__ = original_method.__doc__
     wrapped_method._original_method = original_method
+    # Forward framework-decorator markers so router/SDK/test discovery
+    # walking ``vars(manager_cls)`` finds the same metadata as on the
+    # raw method. Without this, ``@custom_route`` and ``@rate_limit``
+    # tags vanish through hook wrapping and the route never registers.
+    for marker in (
+        "__custom_route_spec__",
+        "_static_route_config",
+        "_rate_limit_spec",
+        "_rate_limit_count",
+        "_rate_limit_window_seconds",
+        "_rate_limit_scope",
+    ):
+        if hasattr(original_method, marker):
+            setattr(wrapped_method, marker, getattr(original_method, marker))
 
     return wrapped_method
 
@@ -2479,11 +2493,55 @@ class AbstractBLLManager(ABC):
         "deleted_by_user_id",
     )
 
+    # Per-manager opt-in: fields whose value must equal ``self.requester.id``
+    # when supplied by a non-root caller. Subclasses override to lock down
+    # ownership-claiming fields exposed in their ``Create`` schemas (e.g.
+    # ``user_id`` on a notification). ROOT_ID and SYSTEM_ID may set these
+    # fields freely so administrative imports keep working.
+    _CALLER_OWNED_FIELDS: ClassVar[tuple] = ()
+
     @classmethod
     def _strip_server_controlled_fields(cls, kwargs: Dict[str, Any]) -> None:
         """Remove audit/identity fields a client should never be able to set."""
         for banned in cls._SERVER_CONTROLLED_AUDIT_FIELDS:
             kwargs.pop(banned, None)
+
+    def _enforce_caller_owned_fields(self, kwargs: Dict[str, Any]) -> None:
+        """Reject Create/Update calls that try to claim another user's ID.
+
+        For each field in ``_CALLER_OWNED_FIELDS``: if the caller supplied
+        a value that is not the requester's own id, the call is rejected
+        with 403. ROOT_ID and SYSTEM_ID bypass this check so server-side
+        imports and admin tooling can still set arbitrary owners.
+
+        ``None`` values pass through (they fall back to the default
+        target-id resolution path).
+        """
+        if not self._CALLER_OWNED_FIELDS:
+            return
+        try:
+            from serverframework.database.StaticPermissions import (
+                is_root_id,
+                is_system_id,
+            )
+        except ImportError:
+            is_root_id = lambda _id: False  # noqa: E731
+            is_system_id = lambda _id: False  # noqa: E731
+        requester_id = getattr(self.requester, "id", None)
+        if is_root_id(requester_id) or is_system_id(requester_id):
+            return
+        for field in self._CALLER_OWNED_FIELDS:
+            supplied = kwargs.get(field)
+            if supplied is None:
+                continue
+            if supplied != requester_id:
+                raise HTTPException(
+                    status_code=403,
+                    detail=(
+                        f"Cannot set {field}={supplied!r}: callers may only "
+                        f"claim ownership for themselves"
+                    ),
+                )
 
     def _create_single_entity(self, **kwargs) -> Any:
         """Create a single entity."""
@@ -2492,6 +2550,7 @@ class AbstractBLLManager(ABC):
         # so hooks cannot accidentally re-introduce a client-supplied id or
         # spoofed created_by_user_id.
         self._strip_server_controlled_fields(kwargs)
+        self._enforce_caller_owned_fields(kwargs)
         original_kwargs = kwargs.copy()
 
         args = self.model_registry.apply(self.Model).Create(**kwargs)
@@ -2811,6 +2870,7 @@ class AbstractBLLManager(ABC):
         # bookkeeping (updated_at, updated_by_user_id, etc.) must not be
         # client-controllable.
         self._strip_server_controlled_fields(kwargs)
+        self._enforce_caller_owned_fields(kwargs)
         logger.debug(f"Updating entity with ID: {id} and kwargs: {kwargs}")
         logger.debug(
             f"Update model fields: {list(self.model_registry.apply(self.Model).Update.model_fields.keys())}"

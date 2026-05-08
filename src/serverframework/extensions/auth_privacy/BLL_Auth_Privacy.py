@@ -22,7 +22,7 @@ from typing import ClassVar, List, Optional, Type
 from fastapi import HTTPException
 from pydantic import BaseModel, Field, model_validator
 
-from serverframework.lib.Pydantic2FastAPI import AuthType, RouterMixin
+from serverframework.lib.Pydantic2FastAPI import AuthType, RouteType, RouterMixin
 from serverframework.logic.AbstractLogicManager import (
     AbstractBLLManager,
     ApplicationModel,
@@ -119,6 +119,23 @@ class DataRegionManager(AbstractBLLManager, RouterMixin):
     prefix: ClassVar[Optional[str]] = "/v1/privacy/data-regions"
     tags: ClassVar[Optional[List[str]]] = ["Data Residency"]
     auth_type: ClassVar[AuthType] = AuthType.JWT
+    # Region catalog is read-only for normal users; ROOT_ID admin
+    # endpoints (e.g. an internal control-plane CLI) seed and maintain
+    # the catalog. Non-root callers get GET/LIST/SEARCH only.
+    routes_to_register: ClassVar[Optional[List[RouteType]]] = [
+        RouteType.GET,
+        RouteType.LIST,
+        RouteType.SEARCH,
+    ]
+
+    def create_validation(self, entity) -> None:
+        from serverframework.database.StaticPermissions import is_root_id
+
+        if not is_root_id(self.requester.id):
+            raise HTTPException(
+                status_code=403,
+                detail="Region catalog is administered by ROOT only",
+            )
 
 
 class DataResidencyPreferenceManager(AbstractBLLManager, RouterMixin):
@@ -126,6 +143,38 @@ class DataResidencyPreferenceManager(AbstractBLLManager, RouterMixin):
     prefix: ClassVar[Optional[str]] = "/v1/privacy/data-residency"
     tags: ClassVar[Optional[List[str]]] = ["Data Residency"]
     auth_type: ClassVar[AuthType] = AuthType.JWT
+    # A user may only set their own residency preference. Team-scoped
+    # preferences require team membership; the route layer enforces that
+    # in ``create_validation`` once team membership is known.
+    _CALLER_OWNED_FIELDS: ClassVar[tuple] = ("user_id",)
+
+    def create_validation(self, entity) -> None:
+        # Membership check for team-scoped preferences. A user must be a
+        # member of the target team; ROOT bypasses.
+        from serverframework.database.StaticPermissions import is_root_id
+
+        if entity.team_id is None or is_root_id(self.requester.id):
+            return
+        try:
+            from serverframework.logic.BLL_Auth import UserTeamModel
+        except ImportError:
+            raise HTTPException(
+                status_code=403,
+                detail="Team-scoped residency requires team membership",
+            )
+        from serverframework.lib.Environment import env
+
+        UTDB = UserTeamModel.DB(self.model_registry.DB.manager.Base)
+        if not UTDB.exists(
+            requester_id=env("ROOT_ID"),
+            model_registry=self.model_registry,
+            user_id=self.requester.id,
+            team_id=entity.team_id,
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail="Caller is not a member of the target team",
+            )
 
 
 DataRegionModel.Manager = DataRegionManager

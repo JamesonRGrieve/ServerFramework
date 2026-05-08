@@ -82,6 +82,8 @@ class UserRecoveryQuestionManager(AbstractBLLManager, RouterMixin):
     prefix: ClassVar[Optional[str]] = "/v1/user/recovery-questions"
     tags: ClassVar[Optional[List[str]]] = ["Account Recovery"]
     auth_type: ClassVar[AuthType] = AuthType.JWT
+    # A user may only set their own recovery questions; ROOT bypasses.
+    _CALLER_OWNED_FIELDS: ClassVar[tuple] = ("user_id",)
 
     def create(self, **kwargs):
         if "answer" in kwargs:

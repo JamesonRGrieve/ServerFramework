@@ -3566,11 +3566,16 @@ def create_router_from_manager(
             RouteType.BATCH_UPDATE,
             RouteType.BATCH_DELETE,
         ]
-    # If a manager explicitly set an empty list but still implements an update
-    # method (common for user/current-user managers), register at least the
-    # UPDATE route so PUT /v1/<resource>/{id} exists and doesn't 404.
+    # If a manager explicitly set an empty list but explicitly *overrides*
+    # the inherited ``update`` method (common for user/current-user
+    # managers), register at least the UPDATE route so
+    # PUT /v1/<resource>/{id} exists and doesn't 404. Inheriting
+    # ``update`` from ``AbstractBLLManager`` is no longer sufficient —
+    # otherwise managers that legitimately want zero CRUD routes (e.g.
+    # action-only managers behind ``@custom_route``) would silently get
+    # a write surface they never asked for and never gated.
     elif isinstance(routes_to_register, list) and len(routes_to_register) == 0:
-        if hasattr(manager_class, "update"):
+        if "update" in getattr(manager_class, "__dict__", {}):
             routes_to_register = [RouteType.UPDATE]
 
     # Create main router

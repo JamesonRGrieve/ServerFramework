@@ -651,7 +651,7 @@ Registry of (grant_type, validator) pairs for UserManager.login_via_grant.
 
 - Module: `serverframework.logic.BLL_Auth`
 - Signature: `SessionModel(*, user_id: Optional[str] = None, user: Optional[serverframework.logic.BLL_Auth.UserModel] = None, updated_at: Optional[datetime.datetime] = None, updated_by_user_id: Optional[str] = None, id: Optional[str] = None, created_at: Optional[datetime.datetime] = None, created_by_user_id: Optional[str] = None, session_key: str, jwt_issued_at: datetime.datetime, refresh_token_hash: Optional[str] = None, device_type: Optional[str] = None, device_name: Optional[str] = None, browser: Optional[str] = None, is_active: bool = True, last_activity: datetime.datetime, expires_at: datetime.datetime, revoked: bool = False, trust_score: int = 50, requires_verification: bool = False, grant_type: Optional[str] = None, pending_state: Optional[Literal['awaiting_approval', 'approved', 'denied']] = None) -> None`
-- Live docstring: !!! abstract "Usage Documentation"
+- Live docstring: Persisted authentication-session row.
 
 Persisted authenticated session with freshness and scope.
 
@@ -675,8 +675,9 @@ Canonical user record (extension-injectable via @extension_model).
 
 ### `Quota` (class)
 
-- Module: `serverframework.logic.Quota`
-- Signature: _import failed; AST-only entry_
+- Module: `serverframework.extensions.quota.BLL_Quota`
+- Signature: `Quota(*, user_id: Optional[str] = None, team_id: Optional[str] = None, ability: str, period: Literal['minute', 'hour', 'day', 'month', 'billing_cycle'], period_key: str, limit: int, consumed: int = 0, unit: Literal['call', 'token', 'byte', 'message', 'row'] = 'call', limit_usd: Optional[decimal.Decimal] = None, consumed_usd: decimal.Decimal = Decimal('0')) -> None`
+- Live docstring: Unified per-user / per-team quota row.
 
 Unified per-user / per-team / per-user-within-team quota record.
 

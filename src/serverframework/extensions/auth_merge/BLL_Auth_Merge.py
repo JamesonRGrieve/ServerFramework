@@ -21,9 +21,11 @@ from typing import Any, Callable, ClassVar, Dict, List, Optional, Type
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
+from serverframework.lib.CustomRoute import custom_route
 from serverframework.lib.Environment import env
+from serverframework.lib.InboundSecurity import DEFAULT_AUTH_RATE_LIMIT, rate_limit
 from serverframework.lib.Logging import logger
-from serverframework.lib.Pydantic2FastAPI import AuthType, RouterMixin
+from serverframework.lib.Pydantic2FastAPI import AuthType, RouteType, RouterMixin
 from serverframework.logic.AbstractLogicManager import (
     AbstractBLLManager,
     ApplicationModel,
@@ -144,11 +146,76 @@ class UserMergeModel(
         completed_at: Optional[DateSearchModel] = None
 
 
+class UserMergeRequest(BaseModel):
+    initiating_user_id: str = Field(
+        ..., description="The surviving user (data-owner)"
+    )
+    target_user_id: str = Field(
+        ..., description="The user being merged in and deactivated"
+    )
+
+
+class UserMergeResponse(BaseModel):
+    message: str
+    merge_id: str
+    handler_errors: str = ""
+
+
 class UserMergeManager(AbstractBLLManager, RouterMixin):
     _model = UserMergeModel
     prefix: ClassVar[Optional[str]] = "/v1/auth/user-merge"
     tags: ClassVar[Optional[List[str]]] = ["User Merge"]
     auth_type: ClassVar[AuthType] = AuthType.JWT
+    # Audit rows are read-only over CRUD. Merges happen via the explicit
+    # ``/merge`` endpoint, which is authorization-gated.
+    routes_to_register: ClassVar[Optional[List[RouteType]]] = [
+        RouteType.GET,
+        RouteType.LIST,
+        RouteType.SEARCH,
+    ]
+
+    def create_validation(self, entity) -> None:
+        """Refuse direct CREATE — audit rows are minted by ``merge_users``."""
+        from serverframework.database.StaticPermissions import is_root_id
+
+        if not is_root_id(self.requester.id):
+            raise HTTPException(
+                status_code=403,
+                detail="Direct CREATE on /v1/auth/user-merge is not permitted; "
+                "use POST /v1/auth/user-merge/merge",
+            )
+
+    def _assert_can_merge(
+        self, initiating_user_id: str, target_user_id: str
+    ) -> None:
+        """A user may only merge into themselves (initiating == self) or
+        ROOT_ID may merge anyone. Tenant admins are not granted here
+        because cross-tenant merges have system-wide consequences and
+        belong to the operator role."""
+        from serverframework.database.StaticPermissions import is_root_id
+
+        if is_root_id(self.requester.id):
+            return
+        if (
+            self.requester.id != initiating_user_id
+            and self.requester.id != target_user_id
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail="Caller must be one of the merge participants or ROOT",
+            )
+        # Even the participants cannot drive a merge that absorbs another
+        # user's data without that user's consent. We require the caller
+        # to be the *initiating* user (the one whose data wins) so that
+        # an attacker who somehow steals the *target* account cannot
+        # also steal whatever exists at the initiating account.
+        if self.requester.id != initiating_user_id:
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "Only the initiating (surviving) user can drive the merge"
+                ),
+            )
 
     def _validate(self, initiating_user_id: str, target_user_id: str) -> None:
         if initiating_user_id == target_user_id:
@@ -179,6 +246,7 @@ class UserMergeManager(AbstractBLLManager, RouterMixin):
     ) -> Dict[str, str]:
         """Merge ``target_user_id`` into ``initiating_user_id``.
 
+        Authorization: caller must be the initiating user, or ROOT_ID.
         Side-data transfer:
         - Team memberships are re-homed via ``UserTeamManager``.
         - Every registered merge handler (see :func:`register_merge_handler`)
@@ -188,9 +256,15 @@ class UserMergeManager(AbstractBLLManager, RouterMixin):
         """
         import json
 
+        self._assert_can_merge(initiating_user_id, target_user_id)
         self._validate(initiating_user_id, target_user_id)
 
-        merge = self.create(
+        UserMergeDB = UserMergeModel.DB(self.model_registry.DB.manager.Base)
+        merge = UserMergeDB.create(
+            requester_id=self.requester.id,
+            model_registry=self.model_registry,
+            return_type="dto",
+            override_dto=UserMergeModel,
             initiating_user_id=initiating_user_id,
             target_user_id=target_user_id,
         )
@@ -250,10 +324,16 @@ class UserMergeManager(AbstractBLLManager, RouterMixin):
             new_properties={"active": False},
         )
 
-        self.update(
+        UserMergeDB.update(
+            requester_id=self.requester.id,
+            model_registry=self.model_registry,
             id=merge.id,
-            completed_at=datetime.utcnow(),
-            handler_errors=json.dumps(handler_errors) if handler_errors else None,
+            new_properties={
+                "completed_at": datetime.utcnow(),
+                "handler_errors": (
+                    json.dumps(handler_errors) if handler_errors else None
+                ),
+            },
         )
         return {
             "message": (
@@ -262,6 +342,27 @@ class UserMergeManager(AbstractBLLManager, RouterMixin):
             "merge_id": merge.id,
             "handler_errors": json.dumps(handler_errors) if handler_errors else "",
         }
+
+    @custom_route(
+        method="POST",
+        path="/merge",
+        input_model=UserMergeRequest,
+        output_model=UserMergeResponse,
+        authentication_type="jwt",
+        openapi_tags=("User Merge",),
+        summary="Merge target user into initiating user",
+    )
+    @rate_limit(DEFAULT_AUTH_RATE_LIMIT, scope="ip")
+    async def merge_route(self, body: UserMergeRequest) -> UserMergeResponse:
+        result = self.merge_users(
+            initiating_user_id=body.initiating_user_id,
+            target_user_id=body.target_user_id,
+        )
+        return UserMergeResponse(
+            message=result["message"],
+            merge_id=result["merge_id"],
+            handler_errors=result.get("handler_errors", ""),
+        )
 
 
 UserMergeModel.Manager = UserMergeManager

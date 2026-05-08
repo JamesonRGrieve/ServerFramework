@@ -119,13 +119,10 @@ class UserOAuthLinkModel(
         scopes: Optional[str] = None
         is_primary: bool = False
 
+    # Tokens are server-rotated through the IdP refresh flow, not via
+    # client UPDATE. The Update schema only exposes safe display state.
     class Update(BaseModel):
-        access_token: Optional[str] = None
-        refresh_token: Optional[str] = None
-        token_expires_at: Optional[datetime] = None
-        scopes: Optional[str] = None
         is_primary: Optional[bool] = None
-        account_email: Optional[str] = None
         display_name: Optional[str] = None
 
     class Search(ApplicationModel.Search, UpdateMixinModel.Search):
@@ -278,9 +275,10 @@ class OAuthConsumerManager(AbstractBLLManager, RouterMixin):
     ) -> None:
         """Refuse a callback that does not present a valid, single-use state.
 
-        ``ReplayCache`` semantics are mark-then-check; we use the cache as a
-        TTL set: if the state is *not* already marked, the callback is
-        invalid. That decouples the check from "have we seen this code".
+        ``begin_authorize`` marks ``key`` (the state was issued).
+        ``complete_callback`` checks ``key`` and marks ``key:consumed``.
+        Single-use is enforced by the ``:consumed`` marker: a second call
+        sees it and rejects.
         """
         if not state:
             raise InvalidGrantError(detail="Missing CSRF state")
@@ -288,13 +286,10 @@ class OAuthConsumerManager(AbstractBLLManager, RouterMixin):
         key = _STATE_KEY_PREFIX + f"{provider}|{redirect_uri}|{state}"
         if not cache.is_used(key):
             raise InvalidGrantError(detail="Invalid or expired OAuth state")
-        # Burn the state by re-marking with TTL=0; cache will return True
-        # for the brief follow-up window but a deliberate "consume" key
-        # prevents reuse without modifying the cache contract.
-        cache.mark_used(key + ":consumed", ttl_seconds=_STATE_TTL_SECONDS)
-        if cache.is_used(key + ":consumed-twice"):
+        consumed_key = key + ":consumed"
+        if cache.is_used(consumed_key):
             raise InvalidGrantError(detail="OAuth state already consumed")
-        cache.mark_used(key + ":consumed-twice", ttl_seconds=_STATE_TTL_SECONDS)
+        cache.mark_used(consumed_key, ttl_seconds=_STATE_TTL_SECONDS)
 
     async def complete_callback(
         self,
@@ -342,11 +337,26 @@ class OAuthConsumerManager(AbstractBLLManager, RouterMixin):
                 },
             )
         else:
-            # No link yet — match by email if a user exists; otherwise the
-            # framework signup path is expected to create the user via a
-            # separate registration flow. We only auto-link existing accounts.
+            # No link yet. Auto-link to an existing local account ONLY if
+            # the IdP confirms the email is verified. Otherwise the email
+            # claim is attacker-controlled and lets a fresh IdP identity
+            # impersonate any local account by email match (CWE-287
+            # "pre-account takeover").
             email = profile.get("email")
+            email_verified = bool(profile.get("email_verified", False))
             existing = self._resolve_user_by_email(email) if email else None
+
+            if existing is not None and not email_verified:
+                # Refuse the auto-link. The user must sign in to the
+                # local account first and explicitly link the IdP via
+                # an authenticated linking flow.
+                raise InvalidGrantError(
+                    detail=(
+                        "An account exists with this email, but the IdP did "
+                        "not confirm email ownership. Sign in to the existing "
+                        "account first and link this provider explicitly."
+                    )
+                )
             if existing is None:
                 raise InvalidGrantError(
                     detail=(

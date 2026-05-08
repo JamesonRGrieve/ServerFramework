@@ -61,7 +61,7 @@ class TestMultifactorRecoveryCode(AbstractDBTest, ExtensionServerMixin):
     extension_class = EXT_Auth_MFA
 
     create_fields = {
-        "multifactormethod_id": "550e8400-e29b-41d4-a716-446655440000",
+        "multifactor_method_id": "550e8400-e29b-41d4-a716-446655440000",
         "code_hash": "test_hash",
         "code_salt": "test_salt",
         "is_used": False,
@@ -75,7 +75,7 @@ class TestMultifactorRecoveryCode(AbstractDBTest, ExtensionServerMixin):
     parent_entities = [
         ParentEntity(
             name="usermfamethod",
-            foreign_key="multifactormethod_id",
+            foreign_key="multifactor_method_id",
             test_class=TestMultifactorMethod,
         )
     ]

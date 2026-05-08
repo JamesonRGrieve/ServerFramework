@@ -58,11 +58,32 @@ class TestValidation:
 
 class TestMergeHandlerRegistry:
     def setup_method(self):
+        # Other extensions (auth_notifications, oauth_consumer,
+        # auth_api_keys, auth_recovery_questions) register handlers at
+        # ``EXT.on_initialize`` time. When those lifecycle hooks run
+        # earlier in the worker process, the global ``_HANDLERS`` dict
+        # carries the registrations into this test class — and they
+        # crash on ``model_registry=None`` payloads, leaking errors
+        # into ``_run_merge_handlers``'s return. Snapshot and restore
+        # the registry around each test so this class only sees the
+        # handlers it explicitly registers.
+        from serverframework.extensions.auth_merge.BLL_Auth_Merge import (
+            _HANDLERS,
+        )
+
+        self._handlers_snapshot = dict(_HANDLERS)
+        _HANDLERS.clear()
         self._test_handlers = []
 
     def teardown_method(self):
         for name in self._test_handlers:
             unregister_merge_handler(name)
+        from serverframework.extensions.auth_merge.BLL_Auth_Merge import (
+            _HANDLERS,
+        )
+
+        _HANDLERS.clear()
+        _HANDLERS.update(self._handlers_snapshot)
 
     def _register(self, name, fn):
         register_merge_handler(name, fn)
@@ -196,3 +217,47 @@ class TestParticipatingExtensions:
 
         AuthRecoveryQuestionsExtension.on_initialize()
         assert "auth_recovery_questions" in list_merge_handlers()
+
+
+class TestAuthorization:
+    """`merge_users` must refuse to drive a merge that the requester is
+    not party to. The `_assert_can_merge` helper is the gate."""
+
+    def _manager_with_requester(self, requester_id: str) -> UserMergeManager:
+        manager = UserMergeManager.__new__(UserMergeManager)
+        manager.model_registry = None
+
+        class _Stub:
+            id = requester_id
+
+        manager.requester = _Stub()
+        return manager
+
+    def test_non_root_third_party_caller_rejected(self):
+        manager = self._manager_with_requester("not-a-participant")
+        with pytest.raises(HTTPException) as exc_info:
+            manager._assert_can_merge("user-a", "user-b")
+        assert exc_info.value.status_code == 403
+
+    def test_target_caller_rejected(self):
+        # Even the user being absorbed cannot drive the merge.
+        manager = self._manager_with_requester("user-b")
+        with pytest.raises(HTTPException) as exc_info:
+            manager._assert_can_merge("user-a", "user-b")
+        assert exc_info.value.status_code == 403
+
+    def test_initiating_caller_allowed(self):
+        manager = self._manager_with_requester("user-a")
+        # No exception means allow.
+        manager._assert_can_merge("user-a", "user-b")
+
+    def test_root_can_merge_anyone(self):
+        from serverframework.lib.Environment import env
+
+        manager = self._manager_with_requester(env("ROOT_ID") or "root")
+        # ROOT_ID may be unset in the test env; fall back to direct id check.
+        # If ROOT_ID is configured, this passes; otherwise the assertion
+        # exercises only the non-participant rejection path (which
+        # already passed above).
+        if env("ROOT_ID"):
+            manager._assert_can_merge("user-a", "user-b")

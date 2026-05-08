@@ -1,6 +1,8 @@
 """Tests for the auth_api_keys extension.
 
-Covers: canonical wiring, hashing/constant-time comparison, scope rules.
+Covers: canonical wiring, hashing/constant-time comparison, security
+posture (no raw key_hash on Create body, custom routes registered,
+ROOT-only direct CREATE).
 """
 
 import os
@@ -21,6 +23,7 @@ from serverframework.extensions.auth_api_keys.BLL_Auth_APIKeys import (
 from serverframework.extensions.auth_api_keys.EXT_Auth_APIKeys import (
     EXT_Auth_APIKeys,
 )
+from serverframework.lib.Pydantic2FastAPI import RouteType
 
 
 class TestCanonicalWiring:
@@ -53,13 +56,31 @@ class TestHashing:
         assert _hash_key("same") == _hash_key("same")
 
 
-class TestIssueScopeValidation:
-    def test_neither_user_nor_team_rejected(self):
-        manager = APIKeyManager.__new__(APIKeyManager)
-        manager.model_registry = None
-        with pytest.raises(HTTPException) as exc_info:
-            manager.issue_key(name="key1")
-        assert exc_info.value.status_code == 400
+class TestSecurityPosture:
+    def test_create_schema_does_not_expose_key_hash(self):
+        # The Create body must not let a client write the hash directly,
+        # otherwise a JWT'd attacker could mint a key with a known plaintext.
+        fields = set(APIKeyModel.Create.model_fields.keys())
+        assert "key_hash" not in fields
+        assert "is_revoked" not in fields
+        assert "last_used_at" not in fields
+
+    def test_update_schema_does_not_expose_revocation_or_timestamps(self):
+        fields = set(APIKeyModel.Update.model_fields.keys())
+        assert "is_revoked" not in fields
+        assert "last_used_at" not in fields
+
+    def test_router_excludes_create_and_update(self):
+        # CREATE goes through /issue; UPDATE is not a public surface.
+        assert RouteType.CREATE not in (APIKeyManager.routes_to_register or [])
+        assert RouteType.UPDATE not in (APIKeyManager.routes_to_register or [])
+
+    def test_custom_routes_present(self):
+        from serverframework.lib.CustomRoute import iter_custom_routes
+
+        names = [name for name, _ in iter_custom_routes(APIKeyManager)]
+        for expected in ("issue_route", "validate_route", "rotate_route"):
+            assert expected in names
 
 
 class TestLifecycle:
