@@ -45,6 +45,13 @@ def is_system_id(user_id: str) -> bool:
     return user_id == SYSTEM_ID
 
 
+def is_system_user_id(user_id: str) -> bool:
+    """Alias of :func:`is_system_id`. Some callers prefer the
+    `_user_` form; both names resolve to the same SYSTEM_ID check so
+    that authorization helpers do not fork on naming."""
+    return user_id == SYSTEM_ID
+
+
 def is_template_id(user_id: str) -> bool:
     """Check if the user ID is the TEMPLATE_ID."""
     return user_id == TEMPLATE_ID

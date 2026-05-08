@@ -15,9 +15,11 @@ marked with the handler errors and the operator can rerun.
 Pattern reference: ``auth_invitations/BLL_Invitations.py``.
 """
 
-from datetime import datetime
+import secrets
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, ClassVar, Dict, List, Optional, Type
 
+import jwt
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -26,6 +28,7 @@ from serverframework.lib.Environment import env
 from serverframework.lib.InboundSecurity import DEFAULT_AUTH_RATE_LIMIT, rate_limit
 from serverframework.lib.Logging import logger
 from serverframework.lib.Pydantic2FastAPI import AuthType, RouteType, RouterMixin
+from serverframework.lib.ReplayCache import get_replay_cache
 from serverframework.logic.AbstractLogicManager import (
     AbstractBLLManager,
     ApplicationModel,
@@ -40,6 +43,76 @@ from serverframework.logic.BLL_Auth import (
     UserTeamManager,
     UserTeamModel,
 )
+
+
+# C-1 — merge target-consent tokens.
+#
+# A merge absorbs the target user's data and deactivates their account.
+# The initiating user alone cannot prove the target consents — they
+# could have stolen the target's email or guessed an unlinked
+# enumeration. We require a short-lived signed token that the target
+# mints from their *own* authenticated session and hands to the
+# initiating user, who then submits it on the merge call.
+#
+# The token is HS256 with ``JWT_SECRET`` (already required at startup),
+# carries ``sub=target_user_id`` and ``init=initiating_user_id``, and
+# its ``jti`` is burned on first use via the replay cache so a leaked
+# token cannot drive a second merge.
+_MERGE_CONSENT_TTL_SECONDS = 600
+_MERGE_CONSENT_AUD = "auth.user_merge.consent"
+_MERGE_CONSENT_KEY_PREFIX = "auth.user_merge.consent.jti:"
+
+
+def _mint_merge_consent_token(
+    *, target_user_id: str, initiating_user_id: str
+) -> str:
+    """Mint a single-use JWT proving the target consents to be merged
+    into the initiating user. Caller is responsible for verifying the
+    target's own session before calling this helper."""
+    now = datetime.now(timezone.utc)
+    payload = {
+        "sub": target_user_id,
+        "init": initiating_user_id,
+        "iat": int(now.timestamp()),
+        "nbf": int(now.timestamp()),
+        "exp": int((now + timedelta(seconds=_MERGE_CONSENT_TTL_SECONDS)).timestamp()),
+        "aud": _MERGE_CONSENT_AUD,
+        "jti": secrets.token_urlsafe(24),
+    }
+    return jwt.encode(payload, env("JWT_SECRET"), algorithm="HS256")
+
+
+def _verify_merge_consent_token(
+    token: str, *, target_user_id: str, initiating_user_id: str
+) -> None:
+    """Validate ``token`` and burn its ``jti``. Raises HTTPException 403
+    on any failure (forged signature, wrong subject, expired, replayed)."""
+    try:
+        payload = jwt.decode(
+            token,
+            env("JWT_SECRET"),
+            algorithms=["HS256"],
+            audience=_MERGE_CONSENT_AUD,
+            leeway=30,
+            options={"require": ["exp", "nbf", "iat", "jti", "aud", "sub"]},
+        )
+    except jwt.InvalidTokenError as exc:
+        raise HTTPException(status_code=403, detail=f"Invalid consent token: {exc}")
+    if payload.get("sub") != target_user_id:
+        raise HTTPException(
+            status_code=403, detail="Consent token target does not match request"
+        )
+    if payload.get("init") != initiating_user_id:
+        raise HTTPException(
+            status_code=403,
+            detail="Consent token initiating user does not match request",
+        )
+    cache = get_replay_cache()
+    jti_key = _MERGE_CONSENT_KEY_PREFIX + payload["jti"]
+    if not cache.mark_if_unused(jti_key, ttl_seconds=_MERGE_CONSENT_TTL_SECONDS * 2):
+        raise HTTPException(
+            status_code=403, detail="Consent token already redeemed"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -153,12 +226,36 @@ class UserMergeRequest(BaseModel):
     target_user_id: str = Field(
         ..., description="The user being merged in and deactivated"
     )
+    consent_token: Optional[str] = Field(
+        None,
+        description=(
+            "Single-use consent token minted by the target user (see "
+            "POST /v1/auth/user-merge/consent). Required unless the "
+            "caller is ROOT."
+        ),
+    )
 
 
 class UserMergeResponse(BaseModel):
     message: str
     merge_id: str
     handler_errors: str = ""
+
+
+class UserMergeConsentRequest(BaseModel):
+    initiating_user_id: str = Field(
+        ...,
+        description=(
+            "The surviving user the caller agrees to be merged into. "
+            "The caller (target) must be authenticated as themselves; "
+            "this endpoint mints a short-lived single-use token."
+        ),
+    )
+
+
+class UserMergeConsentResponse(BaseModel):
+    consent_token: str
+    expires_in_seconds: int
 
 
 class UserMergeManager(AbstractBLLManager, RouterMixin):
@@ -186,29 +283,23 @@ class UserMergeManager(AbstractBLLManager, RouterMixin):
             )
 
     def _assert_can_merge(
-        self, initiating_user_id: str, target_user_id: str
+        self,
+        initiating_user_id: str,
+        target_user_id: str,
+        consent_token: Optional[str],
     ) -> None:
-        """A user may only merge into themselves (initiating == self) or
-        ROOT_ID may merge anyone. Tenant admins are not granted here
-        because cross-tenant merges have system-wide consequences and
-        belong to the operator role."""
+        """Authorization for a merge call.
+
+        - ROOT_ID may merge anyone (operator path; bypasses target consent).
+        - Otherwise the caller MUST be the initiating user AND present a
+          valid single-use consent token minted by the target. Without
+          the consent token an authenticated user could absorb any other
+          user's data into their own account (C-1).
+        """
         from serverframework.database.StaticPermissions import is_root_id
 
         if is_root_id(self.requester.id):
             return
-        if (
-            self.requester.id != initiating_user_id
-            and self.requester.id != target_user_id
-        ):
-            raise HTTPException(
-                status_code=403,
-                detail="Caller must be one of the merge participants or ROOT",
-            )
-        # Even the participants cannot drive a merge that absorbs another
-        # user's data without that user's consent. We require the caller
-        # to be the *initiating* user (the one whose data wins) so that
-        # an attacker who somehow steals the *target* account cannot
-        # also steal whatever exists at the initiating account.
         if self.requester.id != initiating_user_id:
             raise HTTPException(
                 status_code=403,
@@ -216,6 +307,19 @@ class UserMergeManager(AbstractBLLManager, RouterMixin):
                     "Only the initiating (surviving) user can drive the merge"
                 ),
             )
+        if not consent_token:
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "Target user consent token is required; the target must "
+                    "POST /v1/auth/user-merge/consent first while logged in"
+                ),
+            )
+        _verify_merge_consent_token(
+            consent_token,
+            target_user_id=target_user_id,
+            initiating_user_id=initiating_user_id,
+        )
 
     def _validate(self, initiating_user_id: str, target_user_id: str) -> None:
         if initiating_user_id == target_user_id:
@@ -242,12 +346,16 @@ class UserMergeManager(AbstractBLLManager, RouterMixin):
                 )
 
     def merge_users(
-        self, initiating_user_id: str, target_user_id: str
+        self,
+        initiating_user_id: str,
+        target_user_id: str,
+        consent_token: Optional[str] = None,
     ) -> Dict[str, str]:
         """Merge ``target_user_id`` into ``initiating_user_id``.
 
-        Authorization: caller must be the initiating user, or ROOT_ID.
-        Side-data transfer:
+        Authorization: caller is the initiating user AND presents a
+        valid single-use ``consent_token`` minted by the target, OR the
+        caller is ROOT_ID. Side-data transfer:
         - Team memberships are re-homed via ``UserTeamManager``.
         - Every registered merge handler (see :func:`register_merge_handler`)
           is invoked; handler exceptions are caught, logged, and recorded
@@ -256,7 +364,7 @@ class UserMergeManager(AbstractBLLManager, RouterMixin):
         """
         import json
 
-        self._assert_can_merge(initiating_user_id, target_user_id)
+        self._assert_can_merge(initiating_user_id, target_user_id, consent_token)
         self._validate(initiating_user_id, target_user_id)
 
         UserMergeDB = UserMergeModel.DB(self.model_registry.DB.manager.Base)
@@ -357,11 +465,45 @@ class UserMergeManager(AbstractBLLManager, RouterMixin):
         result = self.merge_users(
             initiating_user_id=body.initiating_user_id,
             target_user_id=body.target_user_id,
+            consent_token=body.consent_token,
         )
         return UserMergeResponse(
             message=result["message"],
             merge_id=result["merge_id"],
             handler_errors=result.get("handler_errors", ""),
+        )
+
+    @custom_route(
+        method="POST",
+        path="/consent",
+        input_model=UserMergeConsentRequest,
+        output_model=UserMergeConsentResponse,
+        authentication_type="jwt",
+        openapi_tags=("User Merge",),
+        summary="Mint a target-user consent token for a pending merge",
+    )
+    @rate_limit(DEFAULT_AUTH_RATE_LIMIT, scope="ip")
+    async def consent_route(
+        self, body: UserMergeConsentRequest
+    ) -> UserMergeConsentResponse:
+        """The *target* user calls this from their own session to authorise
+        being merged into ``initiating_user_id``. The returned token is
+        single-use and short-lived (10 minutes); the initiating user
+        submits it on POST /merge to prove consent (C-1)."""
+        if self.requester is None or self.requester.id is None:
+            raise HTTPException(status_code=401, detail="Authentication required")
+        if self.requester.id == body.initiating_user_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot consent to a merge into yourself",
+            )
+        token = _mint_merge_consent_token(
+            target_user_id=self.requester.id,
+            initiating_user_id=body.initiating_user_id,
+        )
+        return UserMergeConsentResponse(
+            consent_token=token,
+            expires_in_seconds=_MERGE_CONSENT_TTL_SECONDS,
         )
 
 

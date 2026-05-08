@@ -70,10 +70,22 @@ def _hash_secret(raw: str, salt: str) -> str:
 
 
 def _token_fingerprint(raw: str) -> str:
-    """Short HMAC of the raw token for indexed lookup. The HMAC key is the
-    framework's ROOT_ID (process-stable but not user-derivable from outside)."""
-    key = (env("ROOT_ID") or "oauth-provider").encode("utf-8")
-    return hmac.new(key, raw.encode("utf-8"), hashlib.sha256).hexdigest()[:32]
+    """Short HMAC of the raw token for indexed lookup.
+
+    M-1 — the HMAC key derives from ``JWT_SECRET`` (a true secret that
+    every production deployment is required to set, see
+    ``Environment._enforce_production_fail_closed``). The previous
+    implementation used ``ROOT_ID`` which is a UUID that leaks via
+    ``created_by_user_id`` on every system-owned record, making the
+    fingerprint computable offline by anyone who could read those
+    records.
+    """
+    key_material = env("JWT_SECRET") or env("ROOT_ID") or "oauth-provider"
+    namespaced = b"oauth_provider.token_fingerprint.v1:" + key_material.encode(
+        "utf-8"
+    )
+    derived = hashlib.sha256(namespaced).digest()
+    return hmac.new(derived, raw.encode("utf-8"), hashlib.sha256).hexdigest()[:32]
 
 
 # ---------------------------------------------------------------------------

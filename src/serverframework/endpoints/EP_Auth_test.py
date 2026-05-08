@@ -771,10 +771,6 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
         if "user" in response_data:
             self._created_entities.append(("user", response_data["user"]["id"]))
 
-    @pytest.mark.skip()
-    def test_DELETE_404_nonexistent(self, server: Any, admin_a: Any):
-        pass
-
     def test_POST_201_header(
         self,
         server: Any,

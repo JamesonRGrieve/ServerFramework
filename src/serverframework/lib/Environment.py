@@ -186,6 +186,16 @@ class AppSettings(BaseModel):
                     "(use 'require' or 'verify-full', or set "
                     "ALLOW_PLAINTEXT_DATABASE=true to acknowledge)"
                 )
+        # H-5 — DISABLE_SSRF_GUARD turns ProviderHTTPClient into an open
+        # egress oracle. It exists for unit tests; production/staging
+        # must reject it loudly rather than silently boot with the guard
+        # off because of one stray env variable in the deploy.
+        ssrf_disable = (env("DISABLE_SSRF_GUARD") or "").strip().lower()
+        if ssrf_disable in ("1", "true", "yes", "on"):
+            problems.append(
+                "DISABLE_SSRF_GUARD is truthy; outbound SSRF protection "
+                "must remain enabled in production/staging"
+            )
         if problems:
             raise ValueError(
                 "Insecure production configuration: " + "; ".join(problems)

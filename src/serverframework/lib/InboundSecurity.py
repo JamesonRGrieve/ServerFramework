@@ -676,6 +676,32 @@ class LockoutTracker:
         self._failures: Dict[Tuple[str, str], Deque[float]] = defaultdict(deque)
         self._locked_until: Dict[Tuple[str, str], float] = {}
         self._lock = RLock()
+        self._warn_if_multi_worker()
+
+    @staticmethod
+    def _warn_if_multi_worker() -> None:
+        """L-5 — multi-worker deployments without a shared backend get N×
+        the brute-force budget per actor (each worker keeps its own
+        in-memory counter). Mirror the warning that ``ReplayCache``
+        emits so operators see the failure mode at boot rather than
+        after a brute-force incident.
+        """
+        try:
+            from serverframework.lib.Environment import env as _env
+        except Exception:
+            return
+        workers_raw = _env("UVICORN_WORKERS") or ""
+        try:
+            workers = int(workers_raw)
+        except (TypeError, ValueError):
+            workers = 1
+        if workers > 1:
+            logger.warning(
+                "LockoutTracker is in-memory and per-process; UVICORN_WORKERS=%s "
+                "multiplies the effective brute-force budget. Install a shared "
+                "backend before serving production traffic.",
+                workers,
+            )
 
     def record_failure(self, actor_key: str, flow: str) -> None:
         """Record a single failed attempt.

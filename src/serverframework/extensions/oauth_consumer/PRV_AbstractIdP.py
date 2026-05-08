@@ -22,17 +22,37 @@ from typing import Any, Dict, Optional
 
 import httpx
 
+from serverframework.lib.ProviderHTTPClient import validate_outbound_url
+
 
 # Single shared async HTTP client. IdP traffic is low-volume; the timeout
 # keeps a hung upstream from blocking the event loop.
 _HTTP_CLIENT: Optional[httpx.AsyncClient] = None
 
 
+async def _ssrf_request_hook(request: httpx.Request) -> None:
+    """H-6 — every IdP HTTP request flows through the framework's SSRF
+    guard. Calling ``validate_outbound_url`` here means a future code path
+    that turns a user-controlled string into a token-exchange URL or
+    userinfo target inherits the same protection as
+    :class:`ProviderHTTPClient`.
+    """
+    validate_outbound_url(str(request.url))
+
+
 def get_http_client() -> httpx.AsyncClient:
-    """Return a process-shared ``httpx.AsyncClient`` for IdP HTTP calls."""
+    """Return a process-shared ``httpx.AsyncClient`` for IdP HTTP calls.
+
+    Every request is run through :func:`validate_outbound_url` via an
+    event hook so the IdP path cannot be used as a generic egress
+    oracle.
+    """
     global _HTTP_CLIENT
     if _HTTP_CLIENT is None:
-        _HTTP_CLIENT = httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=5.0))
+        _HTTP_CLIENT = httpx.AsyncClient(
+            timeout=httpx.Timeout(10.0, connect=5.0),
+            event_hooks={"request": [_ssrf_request_hook]},
+        )
     return _HTTP_CLIENT
 
 
@@ -77,6 +97,31 @@ class AbstractIdPProvider(ABC):
         Return value MUST include ``email_verified: bool`` reflecting the
         upstream verification status. Callers that auto-link IdP identities
         to local accounts rely on this signal.
+
+        Trust-boundary contract (M-6) — ``email_verified`` MUST be True
+        only when the upstream guarantees the user controls the mailbox
+        named in ``email``. Implementer responsibilities by IdP class:
+
+        - **OIDC providers (Google, Cognito)** — copy the ``email_verified``
+          claim verbatim from the userinfo response, normalising any
+          string-encoded boolean to ``bool``.
+        - **GitHub** — emails endpoint returns a list; treat as verified
+          only when the matched email has ``primary == True`` AND
+          ``verified == True``. Do not fall back to the profile email,
+          which is user-editable.
+        - **Microsoft Graph** — ``mail`` is the admin-provisioned address
+          and is the only attribute that may be considered verified.
+          Never treat ``userPrincipalName`` or ``otherMails`` as verified.
+        - **Custom / non-OIDC providers** — if the upstream does not
+          expose a verification signal, set ``email_verified=False``.
+          Do not infer verification from response shape.
+
+        ``BLL_OAuthConsumer.complete_callback`` refuses to auto-link an
+        IdP identity to an existing local account when
+        ``email_verified`` is False — see CWE-287 (pre-account takeover).
+        Lying here turns the OAuth consumer into an account-takeover
+        primitive against every local user that shares an email with
+        the upstream.
         """
 
     @staticmethod

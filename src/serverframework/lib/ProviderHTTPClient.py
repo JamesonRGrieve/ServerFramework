@@ -272,6 +272,26 @@ def _policy_pool_key(policy: ClientPolicy) -> Tuple:
     )
 
 
+async def _ssrf_request_hook_async(request: httpx.Request) -> None:
+    """M-2 — re-validate the destination at the moment the request leaves
+    the client. The earlier call in :meth:`ProviderHTTPClient.request`
+    catches the typical case; this second call shrinks the
+    DNS-rebinding TOCTOU window between the policy check and the actual
+    socket connect, since both ``getaddrinfo`` calls happen within a
+    few microseconds and against the same in-process resolver cache.
+    Note: a determined DNS-rebinding attacker can still race httpx's
+    own connection-time resolution, but the comprehensive blocked-network
+    list rejects every private-range result, so the rebound IP must
+    target a public address to evade. Operators in regulated
+    deployments should enforce egress through a proxy that pins DNS.
+    """
+    validate_outbound_url(str(request.url))
+
+
+def _ssrf_request_hook_sync(request: httpx.Request) -> None:
+    validate_outbound_url(str(request.url))
+
+
 def _build_async_client(policy: ClientPolicy) -> httpx.AsyncClient:
     kwargs: Dict[str, Any] = {
         "timeout": policy.timeout,
@@ -282,6 +302,7 @@ def _build_async_client(policy: ClientPolicy) -> httpx.AsyncClient:
         # opt in per call by setting ``follow_redirects=True`` AND
         # ensuring the destination passes ``validate_outbound_url``.
         "follow_redirects": False,
+        "event_hooks": {"request": [_ssrf_request_hook_async]},
     }
     if policy.egress_proxy:
         kwargs["proxy"] = policy.egress_proxy
@@ -293,6 +314,7 @@ def _build_sync_client(policy: ClientPolicy) -> httpx.Client:
         "timeout": policy.timeout,
         "verify": policy.tls_verify,
         "follow_redirects": False,
+        "event_hooks": {"request": [_ssrf_request_hook_sync]},
     }
     if policy.egress_proxy:
         kwargs["proxy"] = policy.egress_proxy
@@ -345,8 +367,16 @@ def _classify_response(response: httpx.Response, provider: Optional[str]) -> Non
 
 
 def _safe_response_text(response: httpx.Response) -> str:
+    """Return a bounded slice of the upstream response body.
+
+    L-1 — the slice is small enough that an upstream error message
+    cannot smuggle large internal context (PII, internal IPs, stack
+    traces) through ``BaseExternalError.upstream_payload``. The
+    registered-secret redactor scrubs known credentials but cannot
+    catch every disclosure, so the safer default is a tighter cap.
+    """
     try:
-        return response.text[:2048]
+        return response.text[:512]
     except Exception:
         return "<unreadable response body>"
 

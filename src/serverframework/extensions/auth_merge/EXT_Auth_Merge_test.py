@@ -236,28 +236,118 @@ class TestAuthorization:
     def test_non_root_third_party_caller_rejected(self):
         manager = self._manager_with_requester("not-a-participant")
         with pytest.raises(HTTPException) as exc_info:
-            manager._assert_can_merge("user-a", "user-b")
+            manager._assert_can_merge("user-a", "user-b", consent_token=None)
         assert exc_info.value.status_code == 403
 
     def test_target_caller_rejected(self):
-        # Even the user being absorbed cannot drive the merge.
+        # C-1 — even the user being absorbed cannot drive the merge.
         manager = self._manager_with_requester("user-b")
         with pytest.raises(HTTPException) as exc_info:
-            manager._assert_can_merge("user-a", "user-b")
+            manager._assert_can_merge("user-a", "user-b", consent_token=None)
         assert exc_info.value.status_code == 403
 
-    def test_initiating_caller_allowed(self):
+    def test_initiating_caller_without_consent_rejected(self):
+        # C-1 — the initiating user alone cannot drive the merge; they
+        # must present a consent token minted by the target.
         manager = self._manager_with_requester("user-a")
-        # No exception means allow.
-        manager._assert_can_merge("user-a", "user-b")
+        with pytest.raises(HTTPException) as exc_info:
+            manager._assert_can_merge("user-a", "user-b", consent_token=None)
+        assert exc_info.value.status_code == 403
+        assert "consent" in exc_info.value.detail.lower()
 
-    def test_root_can_merge_anyone(self):
+    def test_initiating_caller_with_valid_consent_allowed(self):
+        from serverframework.extensions.auth_merge.BLL_Auth_Merge import (
+            _mint_merge_consent_token,
+        )
+        from serverframework.lib.ReplayCache import (
+            InMemoryReplayCache,
+            set_replay_cache,
+        )
+
+        # Pristine replay cache so a previously-burned jti from another
+        # test cannot leak in.
+        set_replay_cache(InMemoryReplayCache())
+        manager = self._manager_with_requester("user-a")
+        token = _mint_merge_consent_token(
+            target_user_id="user-b", initiating_user_id="user-a"
+        )
+        manager._assert_can_merge("user-a", "user-b", consent_token=token)
+
+    def test_consent_token_is_single_use(self):
+        from serverframework.extensions.auth_merge.BLL_Auth_Merge import (
+            _mint_merge_consent_token,
+        )
+        from serverframework.lib.ReplayCache import (
+            InMemoryReplayCache,
+            set_replay_cache,
+        )
+
+        set_replay_cache(InMemoryReplayCache())
+        manager = self._manager_with_requester("user-a")
+        token = _mint_merge_consent_token(
+            target_user_id="user-b", initiating_user_id="user-a"
+        )
+        # First use accepted.
+        manager._assert_can_merge("user-a", "user-b", consent_token=token)
+        # Second use refused (jti burned).
+        with pytest.raises(HTTPException) as exc_info:
+            manager._assert_can_merge("user-a", "user-b", consent_token=token)
+        assert exc_info.value.status_code == 403
+        assert "redeemed" in exc_info.value.detail.lower()
+
+    def test_consent_token_target_mismatch_rejected(self):
+        from serverframework.extensions.auth_merge.BLL_Auth_Merge import (
+            _mint_merge_consent_token,
+        )
+        from serverframework.lib.ReplayCache import (
+            InMemoryReplayCache,
+            set_replay_cache,
+        )
+
+        set_replay_cache(InMemoryReplayCache())
+        manager = self._manager_with_requester("user-a")
+        # Token signed for target=user-b, but submission claims user-c.
+        token = _mint_merge_consent_token(
+            target_user_id="user-b", initiating_user_id="user-a"
+        )
+        with pytest.raises(HTTPException) as exc_info:
+            manager._assert_can_merge("user-a", "user-c", consent_token=token)
+        assert exc_info.value.status_code == 403
+
+    def test_consent_token_initiator_mismatch_rejected(self):
+        from serverframework.extensions.auth_merge.BLL_Auth_Merge import (
+            _mint_merge_consent_token,
+        )
+        from serverframework.lib.ReplayCache import (
+            InMemoryReplayCache,
+            set_replay_cache,
+        )
+
+        set_replay_cache(InMemoryReplayCache())
+        # Token consents to merge into user-a, but the caller is user-c.
+        manager = self._manager_with_requester("user-c")
+        token = _mint_merge_consent_token(
+            target_user_id="user-b", initiating_user_id="user-a"
+        )
+        with pytest.raises(HTTPException) as exc_info:
+            manager._assert_can_merge("user-c", "user-b", consent_token=token)
+        assert exc_info.value.status_code == 403
+
+    def test_consent_token_garbage_rejected(self):
+        manager = self._manager_with_requester("user-a")
+        with pytest.raises(HTTPException) as exc_info:
+            manager._assert_can_merge(
+                "user-a", "user-b", consent_token="not.a.jwt"
+            )
+        assert exc_info.value.status_code == 403
+
+    def test_root_bypasses_consent(self):
         from serverframework.lib.Environment import env
 
-        manager = self._manager_with_requester(env("ROOT_ID") or "root")
-        # ROOT_ID may be unset in the test env; fall back to direct id check.
-        # If ROOT_ID is configured, this passes; otherwise the assertion
-        # exercises only the non-participant rejection path (which
-        # already passed above).
-        if env("ROOT_ID"):
-            manager._assert_can_merge("user-a", "user-b")
+        # ROOT_ID may be unset in the test env — only assert when set.
+        root_id = env("ROOT_ID")
+        if not root_id:
+            pytest.skip("ROOT_ID not configured in test environment")
+        manager = self._manager_with_requester(root_id)
+        # No consent token, ROOT still allowed.
+        manager._assert_can_merge("user-a", "user-b", consent_token=None)
