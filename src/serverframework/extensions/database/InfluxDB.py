@@ -388,8 +388,12 @@ class InfluxDBProvider(AbstractDatabaseProvider):
                     for measurement in measurements:
                         measurement_name = measurement["name"]
 
-                        # Get field keys
-                        field_keys_query = f"SHOW FIELD KEYS FROM {measurement_name}"
+                        # Get field keys — measurement_name is InfluxDB
+                        # metadata but quote it in case of special chars.
+                        quoted_measurement = (
+                            '"' + measurement_name.replace('"', '\\"') + '"'
+                        )
+                        field_keys_query = f"SHOW FIELD KEYS FROM {quoted_measurement}"
                         field_keys_result = client.query(field_keys_query)
 
                         field_keys = []
@@ -399,7 +403,7 @@ class InfluxDBProvider(AbstractDatabaseProvider):
                             )
 
                         # Get tag keys
-                        tag_keys_query = f"SHOW TAG KEYS FROM {measurement_name}"
+                        tag_keys_query = f"SHOW TAG KEYS FROM {quoted_measurement}"
                         tag_keys_result = client.query(tag_keys_query)
 
                         tag_keys = []
@@ -413,7 +417,7 @@ class InfluxDBProvider(AbstractDatabaseProvider):
 
                         # Get recent time range
                         try:
-                            time_query = f"SELECT first(*)::field, last(*)::field FROM {measurement_name}"
+                            time_query = f"SELECT first(*)::field, last(*)::field FROM {quoted_measurement}"
                             time_result = client.query(time_query)
 
                             # Add time range info if available

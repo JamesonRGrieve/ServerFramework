@@ -682,7 +682,13 @@ def test_generate_test_scaffold_includes_import_for_manager():
     module path so the test client can build a router against it."""
 
     text = generate_test_scaffold(_ScaffoldManager)
-    assert "from serverframework.lib.CustomRoute_test import _ScaffoldManager" in text
+    # Under pytest's ``--import-mode=importlib`` the same test module can
+    # surface as either the dotted (``serverframework.lib.CustomRoute_test``)
+    # or the short (``CustomRoute_test``) form depending on collection
+    # order across xdist workers; both target the same module file so
+    # accept either as a correct ``from <module> import _ScaffoldManager``.
+    expected_module = _ScaffoldManager.__module__
+    assert f"from {expected_module} import _ScaffoldManager" in text
 
 
 def test_generate_test_scaffold_emits_test_client_fixture():

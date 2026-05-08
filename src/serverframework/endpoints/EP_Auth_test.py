@@ -1712,6 +1712,39 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
             401,
         ], f"Expected 401 for deleted user, got {auth_response.status_code}"
 
+    def test_DELETE_404_nonexistent(self, server: Any, admin_a: Any):
+        """Override: User DELETE has no {id} in path so the inherited test
+        would delete admin_a (the requester) every time and break every
+        subsequent admin_a-bound test in this module. The test as written
+        cannot apply to /v1/user — there is no nonexistent-id path to hit.
+        Use a forged-but-validly-signed JWT bound to a nonexistent user
+        instead so the not-found path is exercised."""
+        import jwt as pyjwt
+        fake_user_id = str(uuid.uuid4())
+        forged = pyjwt.encode(
+            {
+                "sub": fake_user_id,
+                "email": f"nobody_{uuid.uuid4().hex[:8]}@example.com",
+                "exp": 9999999999,
+                "nbf": 0,
+                "iat": 0,
+                "jti": str(uuid.uuid4()),
+                "aud": env("JWT_AUDIENCE"),
+                "iss": env("JWT_ISSUER"),
+            },
+            env("JWT_SECRET"),
+            algorithm="HS256",
+        )
+        response = server.delete(
+            self.get_delete_endpoint(fake_user_id, {}),
+            headers=self._get_appropriate_headers(forged),
+        )
+        # 401/404 are both acceptable rejections of a delete bound to a
+        # nonexistent user; 204 (silent success) is not.
+        assert response.status_code in (401, 404), (
+            f"Expected 401/404 for nonexistent user, got {response.status_code}"
+        )
+
     def test_GQL_mutation_create(self, server: Any, admin_a: Any, team_a: Any):
         """Override GraphQL create mutation test for users to handle required fields properly.
 
