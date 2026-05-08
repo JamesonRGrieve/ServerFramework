@@ -216,7 +216,7 @@ class EXT_Auth_MFA(AbstractStaticExtension):
         # Generate recovery codes for this MFA method
         recovery_manager = manager.recovery_codes
         return recovery_manager.generate_recovery_codes(
-            multifactormethod_id=mfa_method_id, count=count
+            multifactor_method_id=mfa_method_id, count=count
         )
 
     @classmethod
@@ -272,6 +272,6 @@ class EXT_Auth_MFA(AbstractStaticExtension):
 
         recovery_manager = manager.recovery_codes
         is_valid = recovery_manager.verify_recovery_code(
-            multifactormethod_id=mfa_method_id, code=request.code
+            multifactor_method_id=mfa_method_id, code=request.code
         )
         return {"verified": is_valid}

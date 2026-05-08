@@ -1,3 +1,4 @@
+import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -79,7 +80,15 @@ class ExtensionServerMixin:
         from fastapi.testclient import TestClient
 
         extension_name = self.extension_class.name.lower()
-        test_db_prefix = f"test.{extension_name}"
+        # Include the xdist worker id in the DB prefix so two workers
+        # exercising the same extension don't share a SQLite file. The
+        # ``server`` fixture is module-scoped, so a worker running this
+        # module concurrently with another worker running the same module
+        # would otherwise clash on inserts/migrations.
+        worker_id = os.environ.get("PYTEST_XDIST_WORKER", "")
+        test_db_prefix = (
+            f"test.{extension_name}.{worker_id}" if worker_id else f"test.{extension_name}"
+        )
         # Always include the carved-out core-companion extensions so an
         # extension test that exercises invitation/permission/metadata
         # flows (e.g. EXT_EMail's send_invitation_email_hook) sees the
@@ -90,6 +99,7 @@ class ExtensionServerMixin:
             "auth_lockout",
             "auth_recovery_questions",
             "auth_invitations",
+            "auth_session",
             "acl_rbac",
         )
         names = [extension_name] + [c for c in _COMPANIONS if c != extension_name]
@@ -462,7 +472,10 @@ class AbstractEXTTest(AbstractTest, ExtensionServerMixin):
             pytest.skip("extension_class not defined")
 
         extension_name = self.extension_class.name.lower()
-        expected_db_prefix = f"test.{extension_name}"
+        worker_id = os.environ.get("PYTEST_XDIST_WORKER", "")
+        expected_db_prefix = (
+            f"test.{extension_name}.{worker_id}" if worker_id else f"test.{extension_name}"
+        )
 
         db_manager = server.app.state.model_registry.database_manager
 

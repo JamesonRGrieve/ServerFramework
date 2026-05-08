@@ -58,11 +58,32 @@ class TestValidation:
 
 class TestMergeHandlerRegistry:
     def setup_method(self):
+        # Other extensions (auth_notifications, oauth_consumer,
+        # auth_api_keys, auth_recovery_questions) register handlers at
+        # ``EXT.on_initialize`` time. When those lifecycle hooks run
+        # earlier in the worker process, the global ``_HANDLERS`` dict
+        # carries the registrations into this test class — and they
+        # crash on ``model_registry=None`` payloads, leaking errors
+        # into ``_run_merge_handlers``'s return. Snapshot and restore
+        # the registry around each test so this class only sees the
+        # handlers it explicitly registers.
+        from serverframework.extensions.auth_merge.BLL_Auth_Merge import (
+            _HANDLERS,
+        )
+
+        self._handlers_snapshot = dict(_HANDLERS)
+        _HANDLERS.clear()
         self._test_handlers = []
 
     def teardown_method(self):
         for name in self._test_handlers:
             unregister_merge_handler(name)
+        from serverframework.extensions.auth_merge.BLL_Auth_Merge import (
+            _HANDLERS,
+        )
+
+        _HANDLERS.clear()
+        _HANDLERS.update(self._handlers_snapshot)
 
     def _register(self, name, fn):
         register_merge_handler(name, fn)

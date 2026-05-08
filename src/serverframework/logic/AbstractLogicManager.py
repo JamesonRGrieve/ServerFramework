@@ -885,6 +885,20 @@ def wrap_method_with_hooks(
     wrapped_method.__name__ = method_name
     wrapped_method.__doc__ = original_method.__doc__
     wrapped_method._original_method = original_method
+    # Forward framework-decorator markers so router/SDK/test discovery
+    # walking ``vars(manager_cls)`` finds the same metadata as on the
+    # raw method. Without this, ``@custom_route`` and ``@rate_limit``
+    # tags vanish through hook wrapping and the route never registers.
+    for marker in (
+        "__custom_route_spec__",
+        "_static_route_config",
+        "_rate_limit_spec",
+        "_rate_limit_count",
+        "_rate_limit_window_seconds",
+        "_rate_limit_scope",
+    ):
+        if hasattr(original_method, marker):
+            setattr(wrapped_method, marker, getattr(original_method, marker))
 
     return wrapped_method
 
