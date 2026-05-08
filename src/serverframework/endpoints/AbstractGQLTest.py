@@ -541,7 +541,6 @@ class AbstractGraphQLTest:
         results = data["data"][plural_name]
 
         assert isinstance(results, list), f"Expected list, got {type(results)}"
-        # TODO: This fails on EP_Payment_test.py
         assert len(results) >= len(
             entities
         ), f"Expected at least {len(entities)} results, got {len(results)}"

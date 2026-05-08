@@ -1678,7 +1678,6 @@ class UserManager(AbstractBLLManager, RouterMixin):
 
         fields = self.validate_fields(fields)
 
-        # TODO Move generate_joins to AbstractDatabaseEntity.py
         if include:
             include_list = self._parse_includes(include)
             if include_list:
@@ -3675,7 +3674,6 @@ class UserTeamManager(AbstractBLLManager, RouterMixin):
         options = []
 
         fields = self.validate_fields(fields)
-        # TODO Move generate_joins to AbstractDatabaseEntity.py
         if include:
             include_list = self._parse_includes(include)
             if include_list:

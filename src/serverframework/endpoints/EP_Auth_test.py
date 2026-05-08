@@ -1712,37 +1712,59 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
             401,
         ], f"Expected 401 for deleted user, got {auth_response.status_code}"
 
-    def test_DELETE_404_nonexistent(self, server: Any, admin_a: Any):
-        """Override: User DELETE has no {id} in path so the inherited test
-        would delete admin_a (the requester) every time and break every
-        subsequent admin_a-bound test in this module. The test as written
-        cannot apply to /v1/user — there is no nonexistent-id path to hit.
-        Use a forged-but-validly-signed JWT bound to a nonexistent user
-        instead so the not-found path is exercised."""
-        import jwt as pyjwt
-        fake_user_id = str(uuid.uuid4())
-        forged = pyjwt.encode(
-            {
-                "sub": fake_user_id,
-                "email": f"nobody_{uuid.uuid4().hex[:8]}@example.com",
-                "exp": 9999999999,
-                "nbf": 0,
-                "iat": 0,
-                "jti": str(uuid.uuid4()),
-                "aud": env("JWT_AUDIENCE"),
-                "iss": env("JWT_ISSUER"),
-            },
-            env("JWT_SECRET"),
-            algorithm="HS256",
+    def test_DELETE_404_nonexistent(self, server: Any, db: Any):
+        """Override: ``/v1/user`` has no ``{id}`` segment by design — the
+        endpoint always operates on the JWT-bound requester. The
+        inherited generic test mints a ``fake_id``, calls
+        ``self.get_delete_endpoint(fake_id, {})`` (which for User
+        deliberately drops the id and returns plain ``/v1/user``), and
+        ends up issuing ``DELETE /v1/user`` with admin_a's JWT — which
+        legitimately self-deletes admin_a and breaks every later
+        admin_a-bound test in the module.
+
+        The User-shaped analog of "DELETE for a nonexistent resource"
+        is "JWT resolves to a user_id whose row no longer exists." We
+        construct that explicitly: spin up an isolated user (real
+        session row, valid jti, valid signature), soft-delete the
+        users-table row out from under it via SQL so
+        ``_enforce_session_not_revoked`` still passes (it gates on the
+        sessions row, not the users row) but the subsequent
+        ``UserModel.DB.get(id=payload["sub"])`` filters the row out —
+        which raises the 404 this test asserts.
+        """
+        from datetime import datetime, timezone
+
+        from sqlalchemy import update
+
+        from conftest import create_user
+        from serverframework.logic.BLL_Auth import UserModel
+
+        test_user = create_user(
+            server=server,
+            email=f"missing_{uuid.uuid4().hex[:8]}@example.com",
+            password="testpassword",
+            first_name="Missing",
+            last_name="User",
         )
+
+        registry = server.app.state.model_registry
+        User = UserModel.DB(registry.DB.manager.Base)
+        with registry.database_manager._get_db_session() as session:
+            session.execute(
+                update(User)
+                .where(User.id == test_user.id)
+                .values(deleted_at=datetime.now(timezone.utc))
+            )
+            session.commit()
+
         response = server.delete(
-            self.get_delete_endpoint(fake_user_id, {}),
-            headers=self._get_appropriate_headers(forged),
+            self.get_delete_endpoint(test_user.id, {}),
+            headers=self._get_appropriate_headers(test_user.jwt),
         )
-        # 401/404 are both acceptable rejections of a delete bound to a
-        # nonexistent user; 204 (silent success) is not.
-        assert response.status_code in (401, 404), (
-            f"Expected 401/404 for nonexistent user, got {response.status_code}"
+        assert response.status_code == 404, (
+            "DELETE /v1/user with a JWT bound to a soft-deleted user "
+            f"must return 404; got {response.status_code}: "
+            f"{response.text[:200]}"
         )
 
     def test_GQL_mutation_create(self, server: Any, admin_a: Any, team_a: Any):

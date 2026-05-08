@@ -531,7 +531,6 @@ class HooksDescriptor:
         return get_hooks_for_class(objtype)
 
 
-# TODO Add a generator that will create `cls.RefMixin` and `cls.RefMixin.Optional`.
 class BaseMixin:
     system = False
     seed_list = []
