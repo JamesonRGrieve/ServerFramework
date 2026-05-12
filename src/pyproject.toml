@@ -91,7 +91,7 @@ dev = [
     "coverage",
     "faker",
     "filelock",
-    "isort>=5.10.0",
+    "isort>=6.1.0",
     "mypy>=0.910",
     "pylint>=2.12.0",
 ]
