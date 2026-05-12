@@ -41,7 +41,7 @@ class TestTeamEndpoints(AbstractEPTest):
     create_fields = {
         "name": lambda: f"Test Team {pytest.faker.company()}",
         "description": lambda: f"Test team description {pytest.faker.uuid4()}",
-        "encryption_key": "test_key",
+        "encryption_salt": "test_key",
     }
     update_fields = {
         "name": "Updated Team",
@@ -80,7 +80,7 @@ class TestTeamEndpoints(AbstractEPTest):
             return {
                 "name": name,
                 "description": f"Description for {name}",
-                "encryption_key": "test_key",
+                "encryption_salt": "test_key",
             }
 
     def test_GET_404_team_users_bad_team_id(self, server: Any, admin_a):
@@ -156,7 +156,7 @@ class TestTeamEndpoints(AbstractEPTest):
             "team": {
                 "name": f"Permissions Test Team {faker.Faker().uuid4()[:8]}",
                 "description": "A team for testing permissions isolation",
-                "encryption_key": f"test_key_{faker.Faker().uuid4()[:8]}",
+                "encryption_salt": f"test_key_{faker.Faker().uuid4()[:8]}",
             }
         }
 
@@ -1712,6 +1712,61 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
             401,
         ], f"Expected 401 for deleted user, got {auth_response.status_code}"
 
+    def test_DELETE_404_nonexistent(self, server: Any, db: Any):
+        """Override: ``/v1/user`` has no ``{id}`` segment by design — the
+        endpoint always operates on the JWT-bound requester. The
+        inherited generic test mints a ``fake_id``, calls
+        ``self.get_delete_endpoint(fake_id, {})`` (which for User
+        deliberately drops the id and returns plain ``/v1/user``), and
+        ends up issuing ``DELETE /v1/user`` with admin_a's JWT — which
+        legitimately self-deletes admin_a and breaks every later
+        admin_a-bound test in the module.
+
+        The User-shaped analog of "DELETE for a nonexistent resource"
+        is "JWT resolves to a user_id whose row no longer exists." We
+        construct that explicitly: spin up an isolated user (real
+        session row, valid jti, valid signature), soft-delete the
+        users-table row out from under it via SQL so
+        ``_enforce_session_not_revoked`` still passes (it gates on the
+        sessions row, not the users row) but the subsequent
+        ``UserModel.DB.get(id=payload["sub"])`` filters the row out —
+        which raises the 404 this test asserts.
+        """
+        from datetime import datetime, timezone
+
+        from sqlalchemy import update
+
+        from conftest import create_user
+        from serverframework.logic.BLL_Auth import UserModel
+
+        test_user = create_user(
+            server=server,
+            email=f"missing_{uuid.uuid4().hex[:8]}@example.com",
+            password="testpassword",
+            first_name="Missing",
+            last_name="User",
+        )
+
+        registry = server.app.state.model_registry
+        User = UserModel.DB(registry.DB.manager.Base)
+        with registry.database_manager._get_db_session() as session:
+            session.execute(
+                update(User)
+                .where(User.id == test_user.id)
+                .values(deleted_at=datetime.now(timezone.utc))
+            )
+            session.commit()
+
+        response = server.delete(
+            self.get_delete_endpoint(test_user.id, {}),
+            headers=self._get_appropriate_headers(test_user.jwt),
+        )
+        assert response.status_code == 404, (
+            "DELETE /v1/user with a JWT bound to a soft-deleted user "
+            f"must return 404; got {response.status_code}: "
+            f"{response.text[:200]}"
+        )
+
     def test_GQL_mutation_create(self, server: Any, admin_a: Any, team_a: Any):
         """Override GraphQL create mutation test for users to handle required fields properly.
 
@@ -2133,101 +2188,6 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
 
         # Verify the user returned is the requesting user
         assert user.get("id") == admin_a.id, "Should return the requesting user"
-
-    # TODO Future parameterization.
-    # @pytest.mark.parametrize(
-    #     "endpoint,method,status_code,description",
-    #     [
-    #         # Session API parametrized tests for special cases
-    #         ("/v1/session", HttpMethod.GET, StatusCode.OK, "List all sessions"),
-    #         (
-    #             "/v1/session?limit=2&offset=0",
-    #             HttpMethod.GET,
-    #             StatusCode.OK,
-    #             "List sessions with pagination",
-    #         ),
-    #         (
-    #             "/v1/session",
-    #             HttpMethod.GET,
-    #             StatusCode.OK,
-    #             "List current user sessions",
-    #         ),
-    #         (
-    #             "/v1/user/{id}/session",
-    #             HttpMethod.GET,
-    #             StatusCode.OK,
-    #             "List specific user sessions",
-    #         ),
-    #         (
-    #             "/v1/user/{id}/session",
-    #             HttpMethod.DELETE,
-    #             StatusCode.NO_CONTENT,
-    #             "Revoke all sessions for a user",
-    #         ),
-    #     ],
-    # )
-    # def test_session_endpoints(
-    #     self,
-    #     server: Any,
-    #     db: Any,
-    #     admin_a: Any,
-    #     endpoint: str,
-    #     method: HttpMethod,
-    #     status_code: StatusCode,
-    #     description: str,
-    # ):
-    #     """Test various session endpoints with different combinations."""
-    #     # For DELETE operations that modify sessions, use isolated user
-    #     if (
-    #         method == HttpMethod.DELETE
-    #         and description == "Revoke all sessions for a user"
-    #     ):
-    #         # Create isolated user for session deletion test
-    #         from conftest import create_user
-
-    #         test_user = create_user(
-    #             server=server,
-    #             email=f"session_delete_test_{uuid.uuid4().hex[:8]}@example.com",
-    #             password="testpassword",
-    #             first_name="SessionDeleteTest",
-    #             last_name="User",
-    #         )
-
-    #         # Replace placeholder with test user ID
-    #         if "{id}" in endpoint:
-    #             endpoint = endpoint.replace("{id}", test_user.id)
-
-    #         headers = self._get_appropriate_headers(test_user.jwt)
-    #     else:
-    #         # For non-destructive operations, use shared admin_a
-    #         if "{id}" in endpoint:
-    #             # Replace placeholder with actual user ID
-    #             endpoint = endpoint.replace("{id}", admin_a.id)
-
-    #         headers = self._get_appropriate_headers(admin_a.jwt)
-
-    #     # Execute the request based on method
-    #     if method == HttpMethod.GET:
-    #         response = server.get(endpoint, headers=headers)
-    #     elif method == HttpMethod.DELETE:
-    #         response = server.delete(endpoint, headers=headers)
-    #     else:
-    #         pytest.fail(f"Unsupported method {method} in test_session_endpoints")
-
-    #     self._assert_response_status(
-    #         response, status_code, f"{method} {description}", endpoint
-    #     )
-
-    #     # Additional assertions based on endpoint and method
-    #     if method == HttpMethod.GET and status_code == StatusCode.OK:
-    #         data = response.json()
-    #         if "/session" in endpoint and not endpoint.endswith("/{id}"):
-    #             # List endpoint should return a list
-    #             key = (
-    #                 "sessions" if "sessions" in data else "sessions"
-    #             )  # Prefer new naming convention
-    #             assert key in data, f"Response should contain '{key}' key"
-    #             assert isinstance(data[key], list), f"'{key}' should be a list"
 
 
 @pytest.mark.ep
@@ -2981,13 +2941,7 @@ class TestInvitationEndpoints(AbstractEPTest):
                 found_invitation = invitation
                 break
 
-                # The test was expecting invitees to be embedded in the invitation response,
-                # but they might need to be fetched separately or the invitation might have
-                # a different structure. For now, let's just verify the invitation exists.
         assert len(invitations) >= 1, "At least one invitation should exist"
-
-        # TODO: If invitees need to be checked, we might need to make a separate
-        # API call to get invitees for the invitation
 
     def test_PATCH_200_accept_invitation_via_code(
         self, server: Any, admin_a: Any, team_a: Any

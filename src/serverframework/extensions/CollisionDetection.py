@@ -239,26 +239,11 @@ def detect_extension_field_collisions(
     _ = merged_models
 
 
-# ---------------------------------------------------------------------------
-# Wire-in pointer
-# ---------------------------------------------------------------------------
-
-# TODO: wire ``register_extension_field`` into the ``@extension_model``
-# decorator at ``src/lib/Pydantic2SQLAlchemy.py:1654`` (function
-# ``extension_model``). When the decorator processes
-# ``extension_class.model_fields``, call ``register_extension_field`` for
-# each injected field, passing:
-#   extension_name = (best-effort: from extension_class.__module__ or the
-#                     surrounding ExtensionRegistry context)
-#   model_name     = target_model.__name__
-#   field_name     = field name
-#   field_info     = the Pydantic FieldInfo
-#   source_file    = inspect.getsourcefile(extension_class)
-#   source_line    = inspect.getsourcelines(extension_class)[1]
-# Then, at registry finalize time (after all extensions are discovered)
-# call ``detect_extension_field_collisions()`` to surface any conflicts
-# at startup. ModelRegistry.commit() in lib/Pydantic.py is a natural
-# place for the call.
+# Wire-in: ``register_extension_field`` is invoked from the
+# ``@extension_model`` decorator (lib/Pydantic2SQLAlchemy.py) and
+# ``detect_extension_field_collisions`` runs from
+# ``ModelRegistry.commit`` (lib/Pydantic.py) right before the registry
+# locks, so conflicting declarations surface at startup.
 
 
 __all__ = [

@@ -1743,6 +1743,45 @@ def extension_model(
             f"Marked {extension_class.__module__}.{extension_class.__name__} as extension for {target_model.__module__}.{target_model.__name__}"
         )
 
+        # Record each injected field so ``detect_extension_field_collisions``
+        # at registry finalize time can surface conflicts where two
+        # extensions inject the same (model, field) with non-equivalent
+        # declarations. Source location lookup is best-effort — built-in
+        # / dynamically-generated extension classes may have no source.
+        try:
+            import inspect as _inspect
+
+            from serverframework.extensions.CollisionDetection import (
+                register_extension_field,
+            )
+
+            try:
+                source_file = _inspect.getsourcefile(extension_class) or "<unknown>"
+            except (TypeError, OSError):
+                source_file = "<unknown>"
+            try:
+                source_line = _inspect.getsourcelines(extension_class)[1]
+            except (TypeError, OSError):
+                source_line = 0
+            extension_name = getattr(extension_class, "__module__", extension_key)
+            for field_name, field_info in getattr(
+                extension_class, "model_fields", {}
+            ).items():
+                register_extension_field(
+                    extension_name=extension_name,
+                    model_name=target_model.__name__,
+                    field_name=field_name,
+                    field_info=field_info,
+                    source_file=source_file,
+                    source_line=source_line,
+                )
+        except Exception as exc:
+            # Registration is observability — never block decoration.
+            logger.debug(
+                f"register_extension_field failed for "
+                f"{extension_class.__name__}: {exc}"
+            )
+
         return extension_class
 
     return decorator

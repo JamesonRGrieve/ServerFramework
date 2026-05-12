@@ -1,22 +1,37 @@
 """
 Per-provider rate-limit and concurrency primitives (Item 17).
 
-Single-process, in-memory token bucket and concurrency cap. Multi-instance
-deployments must hand off to Item 69's `DistributedCounter` — the
-`DistributedRateLimit` stub here marks the integration point.
+Single-process, in-memory token bucket and concurrency cap.
+``DistributedRateLimit`` delegates cross-instance accounting to Item 69's
+``DistributedCounter`` so multi-instance deployments share state through
+the same primitive that backs ``Quota`` (Item 19) and the per-tenant
+fairness scheduler (Item 57).
 
-`parse_retry_after` understands both `Retry-After: <seconds>` and
-`Retry-After: <HTTP-date>` per RFC 9110.
+The DB-backed variant of ``DistributedCounter`` requires a session
+provider (see ``PostgresDistributedCounter``); wiring that into the
+provider config is a separate operator-facing concern. By default
+``DistributedRateLimit`` uses the in-memory backend, which is correct
+for single-process and degrades to advisory in a multi-instance
+deployment until the DB session provider is supplied.
+
+``parse_retry_after`` understands both ``Retry-After: <seconds>`` and
+``Retry-After: <HTTP-date>`` per RFC 9110.
 """
 
 from __future__ import annotations
 
+import asyncio
 import threading
 import time
 from dataclasses import dataclass
 from email.utils import parsedate_to_datetime
 from datetime import datetime, timezone
 from typing import Optional
+
+from serverframework.lib.DistributedCounter import (
+    DistributedCounter,
+    InMemoryDistributedCounter,
+)
 
 
 # ----- Token bucket ---------------------------------------------------------
@@ -164,23 +179,84 @@ def parse_retry_after(header_value: Optional[str]) -> Optional[int]:
         return None
 
 
-# ----- Distributed stub (Item 69 integration point) -------------------------
+# ----- Distributed (Item 69 — DistributedCounter integration) ---------------
+
+
+def _run_async(coro) -> bool:
+    """Drive a DistributedCounter coroutine from sync code.
+
+    Rate-limit acquisition is invoked from synchronous provider HTTP
+    clients; ``DistributedCounter.try_consume`` returns a coroutine in the
+    per-counter shape. Use ``asyncio.run`` when no loop is active, and
+    ``loop.run_until_complete`` when we are already inside one (only
+    happens during tests that exercise async paths). The fallback returns
+    ``True`` so a misconfigured event-loop state is permissive rather
+    than blocking — the in-memory ``TokenBucket`` check upstream is
+    still the authoritative gate for single-process callers.
+    """
+    try:
+        return bool(asyncio.run(coro))
+    except RuntimeError:
+        try:
+            loop = asyncio.get_event_loop()
+            return bool(loop.run_until_complete(coro))
+        except RuntimeError:
+            return True
 
 
 class DistributedRateLimit(TokenBucket):
-    """Multi-instance rate-limit placeholder.
+    """Cross-instance rate-limit anchored on Item 69's ``DistributedCounter``.
 
-    TODO: integrate Item 69 (DistributedCounter). For now this is a
-    drop-in subclass of `TokenBucket` so callers can wire it into
-    provider config; behavior is identical to single-process until the
-    distributed-counter primitive lands.
+    The local ``TokenBucket`` continues to bound per-process burst /
+    rate-of-flow (where the counter primitive has no notion). The counter
+    coordinates the *fixed limit per period* across instances: every
+    successful local acquire records consumption against a shared
+    ``(counter_key, period_key)`` so peer instances see updated state.
+    A failed counter consume rolls the local tokens back so single-
+    process semantics still hold.
+
+    By default the in-memory backend is used, which is correct for a
+    single-process deployment and acts as advisory bookkeeping in
+    multi-instance setups. Inject a Postgres-backed counter via
+    ``counter`` for true cross-instance authoritativeness.
     """
 
-    def __init__(self, rate: RateLimit, counter_key: str) -> None:
+    def __init__(
+        self,
+        rate: RateLimit,
+        counter_key: str,
+        period_key: Optional[str] = None,
+        counter: Optional[DistributedCounter] = None,
+    ) -> None:
         super().__init__(rate)
         self.counter_key = counter_key
-        # TODO: integrate Item 69's DistributedCounter here. Until then,
-        # behavior is single-process. Document this limitation in PRV.Patterns.md.
+        self._counter = counter or InMemoryDistributedCounter(
+            key=counter_key,
+            limit=rate.burst,
+            period_key=period_key,
+        )
+
+    def try_acquire(self, n: int = 1) -> bool:
+        if not super().try_acquire(n):
+            return False
+        if not _run_async(self._counter.try_consume(amount=n)):
+            # Counter says no headroom — give the local tokens back so the
+            # single-process invariant (tokens spent ⇔ work admitted) holds.
+            with self._lock:
+                self._tokens = min(self._rate.burst, self._tokens + n)
+            return False
+        return True
+
+    # TODO(operator): the in-memory counter is per-process. To get true
+    # cross-instance accounting, construct a ``PostgresDistributedCounter``
+    # with a ``_session_provider`` callable that yields a SQLAlchemy
+    # session against the ``distributed_counter`` table (schema in
+    # ``lib/DistributedCounter.py`` module docstring) and pass it as
+    # the ``counter=`` kwarg. The framework does not pick a session
+    # source on the operator's behalf because rate-limit state may live
+    # on a different DB than application data (e.g., a dedicated
+    # ratelimit Postgres instance to avoid contention with mainline
+    # writes).
 
 
 __all__ = [

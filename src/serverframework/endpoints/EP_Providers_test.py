@@ -87,7 +87,11 @@ class TestProviderExtensionEndpoints(AbstractEPTest):
     # Base endpoint configuration
     base_endpoint = "provider/extension"
     entity_name = "provider_extension"
-    string_field_to_update = "provider_id"
+    # ProviderExtension has only foreign-key columns (provider_id,
+    # extension_id) and no free-form string field — leaving
+    # `string_field_to_update` set to a FK caused the inherited
+    # multi-field GQL test to mint random UUIDs and fail FK lookup.
+    string_field_to_update = None
     required_fields = [
         "provider_id",
         "extension_id",

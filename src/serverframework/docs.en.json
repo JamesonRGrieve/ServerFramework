@@ -461,9 +461,9 @@
                     "column_name": "description",
                     "comment": "Team description"
                 },
-                "encryption_key": {
-                    "column_name": "encryption_key",
-                    "comment": "Encryption key for team data"
+                "encryption_salt": {
+                    "column_name": "encryption_salt",
+                    "comment": "Per-team salt for row-level encryption of team data"
                 },
                 "token": {
                     "column_name": "token",
