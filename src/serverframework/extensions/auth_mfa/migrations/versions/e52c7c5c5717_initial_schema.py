@@ -122,7 +122,7 @@ def upgrade() -> None:
     op.create_table(
         "multifactor_recovery_codes",
         sa.Column(
-            "multifactormethod_id",
+            "multifactor_method_id",
             sa.String(),
             nullable=True,
             comment="Foreign key to multifactor_methods table",
@@ -162,7 +162,7 @@ def upgrade() -> None:
         sa.Column("deleted_at", sa.DateTime(), nullable=True),
         sa.Column("deleted_by_user_id", sa.String(), nullable=True),
         sa.ForeignKeyConstraint(
-            ["multifactormethod_id"],
+            ["multifactor_method_id"],
             ["multifactor_methods.id"],
             name="fk_recovery_codes_mfa_method",
             ondelete="CASCADE",

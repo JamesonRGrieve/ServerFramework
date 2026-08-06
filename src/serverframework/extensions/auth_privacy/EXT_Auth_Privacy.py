@@ -1,11 +1,11 @@
 from typing import Any, Dict, List, Optional, Set
 
-from extensions.AbstractExtension import AbstractExtension
-from lib.Dependencies import EXT_Dependency, PIP_Dependency
-from lib.Logging import logger
+from serverframework.extensions.AbstractExtensionProvider import AbstractStaticExtension
+from serverframework.lib.Dependencies import EXT_Dependency, PIP_Dependency
+from serverframework.lib.Logging import logger
 
 
-class EXT_Auth_Privacy(AbstractExtension):
+class EXT_Auth_Privacy(AbstractStaticExtension):
     """
     Privacy authentication extension for AGInfrastructure.
 

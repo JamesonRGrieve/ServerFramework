@@ -655,6 +655,7 @@ class TestRouterCreation:
                 "child": NestedResourceConfig(
                     child_resource_name="child",
                     manager_property="children",
+                    child_manager_class=TestManager,
                     routes_to_register=[
                         RouteType.GET,
                         RouteType.LIST,
@@ -672,10 +673,14 @@ class TestRouterCreation:
         # Check main router
         assert router.prefix == "/v1/parent"
 
-        # Note: Nested routers are included directly in the main router
-        # so we check for nested paths
-        paths = [route.path for route in router.routes if hasattr(route, "path")]
-        # Should have nested paths like /{parent_id}/child
+        # Nested routers are included via include_router(), so verify
+        # by mounting in an app and checking OpenAPI paths.
+        from fastapi import FastAPI
+
+        app = FastAPI()
+        app.include_router(router)
+        schema = app.openapi()
+        paths = list(schema.get("paths", {}).keys())
         assert any("/{parent_id}/child" in path for path in paths)
 
 

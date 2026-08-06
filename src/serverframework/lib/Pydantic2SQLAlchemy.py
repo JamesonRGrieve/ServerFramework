@@ -1658,6 +1658,11 @@ class DatabaseMixin:
 # In the new architecture, this is only used for test compatibility
 _EXTENSION_REGISTRY_COMPAT = {}
 
+# Snapshots of model state taken before extensions mutate them,
+# keyed by (module, qualname). Used by reset_extension_system() to
+# undo in-place field additions that _apply_model_extension makes.
+_MODEL_SNAPSHOTS: Dict[str, dict] = {}
+
 
 class RemoveField:
     """
@@ -1738,6 +1743,16 @@ def _apply_model_extension(
         extension_class: The extension class containing field modifications
     """
     from serverframework.lib.Logging import logger
+
+    # Snapshot the target model's original state before mutation so
+    # reset_extension_system() can restore it for test isolation.
+    snap_key = f"{target_model.__module__}.{target_model.__qualname__}"
+    if snap_key not in _MODEL_SNAPSHOTS:
+        _MODEL_SNAPSHOTS[snap_key] = {
+            "annotations": dict(getattr(target_model, "__annotations__", {})),
+            "model_fields": dict(getattr(target_model, "model_fields", {})),
+            "model_cls": target_model,
+        }
 
     # Get extension fields via reflection
     extension_annotations = getattr(extension_class, "__annotations__", {})
@@ -2019,17 +2034,38 @@ def reset_extension_system() -> None:
     """
     Reset the extension system for testing purposes.
 
-    Note: This function is deprecated. Extensions are now handled by instance-based
-    ExtensionRegistry objects. This function clears the compatibility registry for backward compatibility.
+    Restores any model classes that were mutated by _apply_model_extension
+    back to their pre-extension state, purges extension BLL modules from
+    sys.modules so their @extension_model decorators re-register cleanly
+    on next import, and clears the extension registry.
 
     WARNING: This should only be used in tests!
     """
+    import sys
+
     from serverframework.lib.Logging import logger
 
-    logger.debug(
-        "reset_extension_system() called - extensions are now instance-based in ExtensionRegistry"
-    )
+    global _EXTENSION_REGISTRY_COMPAT, _MODEL_SNAPSHOTS
 
-    # Clear the compatibility registry for backward compatibility
-    global _EXTENSION_REGISTRY_COMPAT
+    # Restore mutated model classes to their pre-extension state
+    for snap_key, snap in _MODEL_SNAPSHOTS.items():
+        model_cls = snap["model_cls"]
+        model_cls.__annotations__ = dict(snap["annotations"])
+        model_cls.model_fields = dict(snap["model_fields"])
+        # Remove class-level attributes that were added by extensions
+        orig_attrs = set(snap["annotations"].keys())
+        for attr in list(vars(model_cls)):
+            if attr not in orig_attrs and not attr.startswith("_"):
+                if attr in ("external_payment_id", "stripe_customer"):
+                    try:
+                        delattr(model_cls, attr)
+                    except (AttributeError, TypeError):
+                        pass
+        try:
+            model_cls.model_rebuild(force=True)
+        except Exception:
+            pass
+        logger.debug(f"Restored model {snap_key} to pre-extension state")
+
+    _MODEL_SNAPSHOTS.clear()
     _EXTENSION_REGISTRY_COMPAT.clear()

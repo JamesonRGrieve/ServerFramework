@@ -1,15 +1,15 @@
 from sqlalchemy import Column, String
 from sqlalchemy.orm import relationship
 
-from database.AbstractDatabaseEntity import BaseMixin, UpdateMixin, create_foreign_key
-from database.Base import Base
-from database.DB_Projects import Project
-from database.DB_Providers import Provider
-from extensions.ai_agents.DB_AI_Agents import Agent
-from extensions.chains.DB_Chains import Chain
-from extensions.conversations.DB_Conversations import Conversation
-from extensions.prompts.DB_Prompts import Prompt
-from extensions.tasks.DB_Tasks import Task
+from serverframework.database.AbstractDatabaseEntity import BaseMixin, UpdateMixin, create_foreign_key
+from serverframework.database.Base import Base
+from serverframework.database.DB_Projects import Project
+from serverframework.database.DB_Providers import Provider
+from serverframework.extensions.ai_agents.DB_AI_Agents import Agent
+from serverframework.extensions.chains.DB_Chains import Chain
+from serverframework.extensions.conversations.DB_Conversations import Conversation
+from serverframework.extensions.prompts.DB_Prompts import Prompt
+from serverframework.extensions.tasks.DB_Tasks import Task
 
 
 class Label(Base, BaseMixin):

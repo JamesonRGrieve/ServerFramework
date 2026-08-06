@@ -1,10 +1,10 @@
 import pytest
 
-from endpoints.AbstractEPTest import AbstractEndpointTest
+from serverframework.endpoints.AbstractEPTest import AbstractEPTest
 
 
 @pytest.mark.auth
-class TestOAuthEP(AbstractEndpointTest):
+class TestOAuthEP(AbstractEPTest):
     base_endpoint = "oauth"
     entity_name = "oauth_connection"  # This is what we expect in responses
     required_fields = ["provider_name", "account_email", "connected_at"]

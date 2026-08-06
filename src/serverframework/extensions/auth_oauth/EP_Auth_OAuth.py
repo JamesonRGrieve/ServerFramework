@@ -1,7 +1,7 @@
 from fastapi import Body, Depends, HTTPException, Path, Query, status
 
-from endpoints.AbstractEPRouter import AbstractEPRouter, ExampleGenerator, MessageModel
-from extensions.oauth.BLL_OAuth import (
+from serverframework.endpoints.AbstractEPRouter import AbstractEPRouter, ExampleGenerator, MessageModel
+from serverframework.extensions.auth_oauth.BLL_Auth_OAuth import (
     OAuth2AuthCodeManager,
     OAuth2ClientManager,
     OAuth2TokenManager,
@@ -9,7 +9,7 @@ from extensions.oauth.BLL_OAuth import (
     OAuthProviderManager,
     UserOAuthManager,
 )
-from logic.BLL_Auth import User, UserManager
+from serverframework.logic.BLL_Auth import User, UserManager
 
 
 # Manager factories

@@ -1,9 +1,9 @@
 from sqlalchemy import Boolean, Column, DateTime, String, Text
 from sqlalchemy.orm import declared_attr, relationship
 
-from database.AbstractDatabaseEntity import BaseMixin, UpdateMixin
-from database.Base import Base
-from database.DB_Auth import TeamRefMixin, UserRefMixin
+from serverframework.database.AbstractDatabaseEntity import BaseMixin, UpdateMixin
+from serverframework.database.Base import Base
+from serverframework.database.DB_Auth import TeamRefMixin, UserRefMixin
 
 
 class Notification(

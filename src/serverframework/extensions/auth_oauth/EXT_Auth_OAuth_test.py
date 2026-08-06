@@ -4,9 +4,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from AbstractTest import CategoryOfTest, ClassOfTestsConfig, SkipThisTest
-from extensions.AbstractEXTTest import AbstractEXTTest
-from extensions.auth_oauth.EXT_Auth_OAuth import EXT_Auth_OAuth
-from lib.Dependencies import install_pip_dependencies
+from serverframework.extensions.AbstractEXTTest import AbstractEXTTest
+from serverframework.extensions.auth_oauth.EXT_Auth_OAuth import EXT_Auth_OAuth
+from serverframework.lib.Dependencies import install_pip_dependencies
 
 
 class TestEXTAuthOAuth(AbstractEXTTest):

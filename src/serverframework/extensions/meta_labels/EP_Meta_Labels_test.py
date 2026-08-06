@@ -2,11 +2,11 @@ import uuid
 
 import pytest
 
-from endpoints.AbstractEPTest import AbstractEndpointTest
+from serverframework.endpoints.AbstractEPTest import AbstractEPTest
 
 
 @pytest.mark.labels
-class TestLabelEP(AbstractEndpointTest):
+class TestLabelEP(AbstractEPTest):
     base_endpoint = "label"
     entity_name = "label"
     required_fields = ["id", "name", "created_at", "updated_at"]

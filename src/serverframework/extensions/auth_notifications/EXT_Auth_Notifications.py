@@ -3,13 +3,13 @@ import json
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Set
 
-from extensions.AbstractExtension import AbstractExtension
-from lib.Dependencies import EXT_Dependency, PIP_Dependency
-from lib.Environment import env
-from lib.Logging import logger
+from serverframework.extensions.AbstractExtensionProvider import AbstractStaticExtension
+from serverframework.lib.Dependencies import EXT_Dependency, PIP_Dependency
+from serverframework.lib.Environment import env
+from serverframework.lib.Logging import logger
 
 
-class EXT_Auth_Notifications(AbstractExtension):
+class EXT_Auth_Notifications(AbstractStaticExtension):
     """
     Authentication Notifications extension for AGInfrastructure.
 

@@ -576,6 +576,19 @@ class PydanticUtility:
                         )
                         continue
 
+                    # Only process a model in the module where it is
+                    # defined — not in modules that merely re-import it.
+                    # Without this guard, a model re-exported by BLL_Providers
+                    # gets claimed there (where its Manager doesn't exist)
+                    # and is then skipped in its home module (BLL_Auth).
+                    home_module = getattr(cls, "__module__", None)
+                    if (
+                        home_module
+                        and home_module != module_name
+                        and home_module in bll_modules
+                    ):
+                        continue
+
                     model_classes.append((name, cls))
                     processed_models.add(cls)
 

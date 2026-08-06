@@ -33,6 +33,7 @@ dependencies = [
 
     # Data Validation & Serialization
     "pydantic",
+    "email-validator",
     "ordered_set",
 
     # Database & ORM

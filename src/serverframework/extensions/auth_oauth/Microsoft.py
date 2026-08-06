@@ -4,8 +4,8 @@ from typing import Any, Dict, List, Optional
 import requests
 from fastapi import HTTPException
 
-from extensions.oauth.PRV_OAuth import AbstractOAuthProvider
-from lib.Environment import env
+from serverframework.extensions.auth_oauth.PRV_OAuth import AbstractOAuthProvider
+from serverframework.lib.Environment import env
 
 # Microsoft OAuth scopes
 SCOPES = (

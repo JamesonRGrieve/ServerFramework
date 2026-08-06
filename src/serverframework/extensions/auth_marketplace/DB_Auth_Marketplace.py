@@ -1,9 +1,9 @@
 from sqlalchemy import Column, String
 
-from database.AbstractDatabaseEntity import BaseMixin, UpdateMixin
-from database.Base import Base
-from database.DB_Auth import TeamRefMixin, UserRefMixin
-from database.DB_Providers import ProviderRefMixin
+from serverframework.database.AbstractDatabaseEntity import BaseMixin, UpdateMixin
+from serverframework.database.Base import Base
+from serverframework.database.DB_Auth import TeamRefMixin, UserRefMixin
+from serverframework.database.DB_Providers import ProviderRefMixin
 
 
 class UserPaymentPortal(Base, BaseMixin, UpdateMixin, UserRefMixin, ProviderRefMixin):

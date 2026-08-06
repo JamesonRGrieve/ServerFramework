@@ -2,7 +2,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from extensions.fileio.EXT_FileIO import EXT_FileIO
+from serverframework.extensions.fileio.EXT_FileIO import EXT_FileIO
 
 
 class TestFileIOExtension:

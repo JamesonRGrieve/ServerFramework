@@ -211,7 +211,7 @@ class TestMultifactorRecoveryCodeManager(AbstractBLLTest, ExtensionServerMixin):
     extension_class = EXT_Auth_MFA
 
     create_fields = {
-        "multifactormethod_id": None,  # Will be set by parent entity
+        "multifactor_method_id": None,  # Will be set by parent entity
         "created_ip": faker.ipv4(),
         "code_hash": "dummy_hash",
         "code_salt": "dummy_salt",
@@ -224,7 +224,7 @@ class TestMultifactorRecoveryCodeManager(AbstractBLLTest, ExtensionServerMixin):
     parent_entities = [
         ParentEntity(
             name="mfa_method",
-            foreign_key="multifactormethod_id",
+            foreign_key="multifactor_method_id",
             test_class=TestMultifactorMethodManager,
         ),
     ]
@@ -300,7 +300,7 @@ class TestMultifactorRecoveryCodeManager(AbstractBLLTest, ExtensionServerMixin):
         codes = manager.generate_recovery_codes(mfa_method.id, count=2)
 
         # List recovery codes for the method
-        recovery_codes = manager.list(multifactormethod_id=mfa_method.id)
+        recovery_codes = manager.list(multifactor_method_id=mfa_method.id)
 
         assert len(recovery_codes) == 2
         assert all(not rc.is_used for rc in recovery_codes)

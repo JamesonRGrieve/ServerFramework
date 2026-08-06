@@ -69,9 +69,13 @@ class ExtensionServerMixin:
         if not self.extension_class:
             pytest.skip("extension_class not defined, test cannot run")
 
-        from serverframework.lib.Pydantic2SQLAlchemy import clear_registry_cache
+        from serverframework.lib.Pydantic2SQLAlchemy import (
+            clear_registry_cache,
+            reset_extension_system,
+        )
 
         clear_registry_cache()
+        reset_extension_system()
         logger.debug(
             f"Cleared registry caches for extension {self.extension_class.name}"
         )
@@ -90,6 +94,7 @@ class ExtensionServerMixin:
             "auth_lockout",
             "auth_recovery_questions",
             "auth_invitations",
+            "auth_session",
             "acl_rbac",
         )
         names = [extension_name] + [c for c in _COMPANIONS if c != extension_name]

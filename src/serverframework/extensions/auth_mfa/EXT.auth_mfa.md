@@ -74,7 +74,7 @@ Recovery code model for account recovery when primary MFA is unavailable:
 
 ```python
 class MultifactorRecoveryCodeModel:
-    multifactormethod_id: str  # Foreign key to MFA method
+    multifactor_method_id: str  # Foreign key to MFA method
     code_hash: str  # Bcrypt hashed recovery code
     code_salt: str  # Salt used for hashing
     is_used: bool  # Whether code has been consumed

@@ -420,7 +420,7 @@ def issue_session(
     now = datetime.now(timezone.utc)
     try:
         SessionModel.DB(model_registry.DB.manager.Base).create(
-            requester_id=env("ROOT_ID"),
+            requester_id=user_id,
             model_registry=model_registry,
             user_id=user_id,
             session_key=session_key,

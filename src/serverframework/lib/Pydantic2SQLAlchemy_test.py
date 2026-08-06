@@ -2,6 +2,8 @@ import unittest
 from datetime import datetime
 from typing import List, Optional
 
+import pytest
+
 from pydantic import Field
 from sqlalchemy.orm import sessionmaker
 
@@ -570,22 +572,28 @@ import pytest
 class TestSearchInputDeniesInjection:
     """Negative-path tests for filter/sort handling on list endpoints."""
 
-    def test_sort_order_rejects_arbitrary_string(self, server, admin_a, team_a):
+    @pytest.fixture(scope="class")
+    def fresh_user(self, server):
+        from conftest import create_user
+
+        return create_user(server)
+
+    def test_sort_order_rejects_arbitrary_string(self, server, fresh_user):
         """`?sort_order=asc; DROP TABLE users--` must be rejected (422)."""
         response = server.get(
             "/v1/team?sort_by=name&sort_order=asc;DROP TABLE users--",
-            headers={"Authorization": f"Bearer {admin_a.jwt}"},
+            headers={"Authorization": f"Bearer {fresh_user.jwt}"},
         )
         assert response.status_code == 422, (
             f"Bogus sort_order must be rejected (422); got "
             f"{response.status_code}: {response.text[:200]}"
         )
 
-    def test_sort_by_rejects_unknown_column(self, server, admin_a):
+    def test_sort_by_rejects_unknown_column(self, server, fresh_user):
         """`?sort_by=password_hash` must be rejected (422)."""
         response = server.get(
             "/v1/team?sort_by=password_hash&sort_order=asc",
-            headers={"Authorization": f"Bearer {admin_a.jwt}"},
+            headers={"Authorization": f"Bearer {fresh_user.jwt}"},
         )
         # Either rejects (422) or silently ignores (200). Reject is preferred.
         assert response.status_code in (200, 422), (
@@ -594,7 +602,7 @@ class TestSearchInputDeniesInjection:
         )
 
     def test_filter_value_with_quote_does_not_break_query(
-        self, server, admin_a
+        self, server, fresh_user
     ):
         """Filter value containing SQL syntax must be parameterized, not interpolated.
 
@@ -604,7 +612,7 @@ class TestSearchInputDeniesInjection:
         payload = "'; DROP TABLE teams; --"
         response = server.get(
             f"/v1/team?name={payload}",
-            headers={"Authorization": f"Bearer {admin_a.jwt}"},
+            headers={"Authorization": f"Bearer {fresh_user.jwt}"},
         )
         assert response.status_code != 500, (
             f"SQL-syntax filter value crashed the query (500). Filter "

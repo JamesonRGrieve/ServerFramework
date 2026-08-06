@@ -1,11 +1,11 @@
 import logging
 from typing import Any, Dict, Optional, Set
 
-from extensions.AbstractExtension import AbstractExtension
-from extensions.fileio.PRV_FileIO import FileIOPermission
+from serverframework.extensions.AbstractExtensionProvider import AbstractStaticExtension
+from serverframework.extensions.fileio.PRV_FileIO import FileIOPermission
 
 
-class EXT_FileIO(AbstractExtension):
+class EXT_FileIO(AbstractStaticExtension):
     """
     FileIO extension for AGInfrastructure.
 

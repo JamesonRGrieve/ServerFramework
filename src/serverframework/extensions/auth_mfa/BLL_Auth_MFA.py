@@ -605,7 +605,7 @@ class MultifactorRecoveryCodeManager(AbstractBLLManager):
         )
 
     def generate_recovery_codes(
-        self, multifactormethod_id: str, count: int = 10
+        self, multifactor_method_id: str, count: int = 10
     ) -> List[str]:
         """Generate recovery codes for an MFA method.
 
@@ -633,7 +633,7 @@ class MultifactorRecoveryCodeManager(AbstractBLLManager):
             code_hash = bcrypt.hashpw(code.encode(), salt).decode()
 
             self.create(
-                multifactormethod_id=multifactormethod_id,
+                multifactor_method_id=multifactor_method_id,
                 code_hash=code_hash,
                 code_salt=salt.decode(),
                 is_used=False,
@@ -642,11 +642,11 @@ class MultifactorRecoveryCodeManager(AbstractBLLManager):
 
         return codes
 
-    def verify_recovery_code(self, multifactormethod_id: str, code: str) -> bool:
+    def verify_recovery_code(self, multifactor_method_id: str, code: str) -> bool:
         """Verify and mark a recovery code as used"""
         # Get all unused recovery codes for this MFA method
         recovery_codes = self.list(
-            multifactormethod_id=multifactormethod_id,
+            multifactor_method_id=multifactor_method_id,
             is_used=False,
         )
 

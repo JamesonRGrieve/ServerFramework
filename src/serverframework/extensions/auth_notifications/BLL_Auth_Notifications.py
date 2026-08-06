@@ -5,13 +5,13 @@ from fastapi import HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from logic.AbstractLogicManager import (
+from serverframework.logic.AbstractLogicManager import (
     AbstractBLLManager,
     BaseMixinModel,
     StringSearchModel,
     UpdateMixinModel,
 )
-from logic.BLL_Auth import (
+from serverframework.logic.BLL_Auth import (
     Notification,
     NotificationReference,
     TeamManager,

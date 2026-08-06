@@ -3677,7 +3677,7 @@ def create_router_from_manager(
         child_resource_name = nested_config.child_resource_name
         manager_property = nested_config.manager_property
         child_manager_class = nested_config.child_manager_class
-        if callable(child_manager_class):
+        if callable(child_manager_class) and not isinstance(child_manager_class, type):
             child_manager_class = child_manager_class()
 
         if child_manager_class is None and manager_property:

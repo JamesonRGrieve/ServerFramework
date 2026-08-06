@@ -1,8 +1,8 @@
 from sqlalchemy import Boolean, CheckConstraint, Column, String, UniqueConstraint
 
-from database.AbstractDatabaseEntity import BaseMixin, UpdateMixin
-from database.Base import Base
-from database.DB_Auth import TeamRefMixin, UserRefMixin
+from serverframework.database.AbstractDatabaseEntity import BaseMixin, UpdateMixin
+from serverframework.database.Base import Base
+from serverframework.database.DB_Auth import TeamRefMixin, UserRefMixin
 
 
 class DataRegion(Base, BaseMixin, UpdateMixin):

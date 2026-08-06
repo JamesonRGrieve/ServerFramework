@@ -4,9 +4,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from AbstractTest import CategoryOfTest, ClassOfTestsConfig, SkipThisTest
-from extensions.AbstractEXTTest import AbstractEXTTest
-from extensions.auth_notifications.EXT_Auth_Notifications import EXT_Auth_Notifications
-from lib.Dependencies import install_pip_dependencies
+from serverframework.extensions.AbstractEXTTest import AbstractEXTTest
+from serverframework.extensions.auth_notifications.EXT_Auth_Notifications import EXT_Auth_Notifications
+from serverframework.lib.Dependencies import install_pip_dependencies
 
 
 class TestEXTAuthNotifications(AbstractEXTTest):

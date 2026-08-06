@@ -3,7 +3,7 @@
 # from endpoints.AbstractEPTest import AbstractEndpointTest, ParentEntity
 # @pytest.mark.ep
 # @pytest.mark.auth
-# class TestNotificationEndpoints(AbstractEndpointTest):
+# class TestNotificationEndpoints(AbstractEPTest):
 #     """Tests for the Notification Management endpoints."""
 #     base_endpoint = "notification"
 #     entity_name = "notification"

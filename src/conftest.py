@@ -7,6 +7,10 @@ from pathlib import Path
 from types import NoneType
 from typing import Annotated, Any, Dict, List, Tuple, get_args, get_origin, ForwardRef
 
+# JWT_SECRET must be set before any application imports — pyjwt rejects
+# an empty HMAC key at encode time. 32 chars satisfies the env validator.
+os.environ.setdefault("JWT_SECRET", "test-jwt-secret-32-chars-minimum!")
+
 import pytest
 from faker import Faker
 from fastapi.testclient import TestClient
@@ -527,10 +531,16 @@ def mock_server():
         f"Worker {worker_id}: Setting up mock server with db_prefix={db_prefix}"
     )
 
-    # Clear all registry caches to prevent conflicts during test setup
-    from serverframework.lib.Pydantic2SQLAlchemy import clear_registry_cache
+    # Clear all registry caches and extension registrations to prevent
+    # cross-test contamination (e.g. payment's @extension_model(UserModel)
+    # adding columns that other tests' isolated DBs don't have).
+    from serverframework.lib.Pydantic2SQLAlchemy import (
+        clear_registry_cache,
+        reset_extension_system,
+    )
 
     clear_registry_cache()
+    reset_extension_system()
     logger.debug("Cleared all registry caches before server setup")
 
     # Follow the same initialization process as app.py
@@ -563,10 +573,16 @@ def server():
 
     logger.debug(f"Worker {worker_id}: Setting up server with db_prefix={db_prefix}")
 
-    # Clear all registry caches to prevent conflicts during test setup
-    from serverframework.lib.Pydantic2SQLAlchemy import clear_registry_cache
+    # Clear all registry caches and extension registrations to prevent
+    # cross-test contamination (e.g. payment's @extension_model(UserModel)
+    # adding columns that other tests' isolated DBs don't have).
+    from serverframework.lib.Pydantic2SQLAlchemy import (
+        clear_registry_cache,
+        reset_extension_system,
+    )
 
     clear_registry_cache()
+    reset_extension_system()
     logger.debug("Cleared all registry caches before server setup")
 
     # Follow the same initialization process as app.py

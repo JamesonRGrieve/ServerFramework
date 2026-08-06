@@ -3,14 +3,14 @@ import secrets
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Set
 
-from extensions.AbstractExtension import AbstractExtension
-from extensions.auth_api_keys.DB_Auth_APIKeys import APIKey
-from lib.Dependencies import EXT_Dependency, PIP_Dependency
-from lib.Environment import env
-from lib.Logging import logger
+from serverframework.extensions.AbstractExtensionProvider import AbstractStaticExtension
+from serverframework.extensions.auth_api_keys.DB_Auth_APIKeys import APIKey
+from serverframework.lib.Dependencies import EXT_Dependency, PIP_Dependency
+from serverframework.lib.Environment import env
+from serverframework.lib.Logging import logger
 
 
-class EXT_Auth_APIKeys(AbstractExtension):
+class EXT_Auth_APIKeys(AbstractStaticExtension):
     """
     API Keys authentication extension for AGInfrastructure.
 

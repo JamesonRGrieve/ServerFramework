@@ -1,11 +1,11 @@
 from typing import Any, Dict, List, Optional, Set
 
-from extensions.AbstractExtension import AbstractExtension
-from lib.Dependencies import EXT_Dependency, PIP_Dependency
-from lib.Logging import logger
+from serverframework.extensions.AbstractExtensionProvider import AbstractStaticExtension
+from serverframework.lib.Dependencies import EXT_Dependency, PIP_Dependency
+from serverframework.lib.Logging import logger
 
 
-class MetaLabelsExtension(AbstractExtension):
+class MetaLabelsExtension(AbstractStaticExtension):
     """
     Meta Labels extension for AGInfrastructure.
     Provides metadata and labeling functionality for organizing and categorizing

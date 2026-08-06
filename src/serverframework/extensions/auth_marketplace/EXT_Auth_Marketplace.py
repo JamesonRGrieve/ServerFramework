@@ -2,17 +2,17 @@ import hashlib
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Set
 
-from extensions.AbstractExtension import AbstractExtension
-from extensions.auth_marketplace.DB_Auth_Marketplace import (  # MarketplaceListing,; MarketplaceTransaction,; MarketplaceVendor,
+from serverframework.extensions.AbstractExtensionProvider import AbstractStaticExtension
+from serverframework.extensions.auth_marketplace.DB_Auth_Marketplace import (  # MarketplaceListing,; MarketplaceTransaction,; MarketplaceVendor,
     TeamPaymentPortal,
     UserPaymentPortal,
 )
-from lib.Dependencies import EXT_Dependency, PIP_Dependency
-from lib.Environment import env
-from lib.Logging import logger
+from serverframework.lib.Dependencies import EXT_Dependency, PIP_Dependency
+from serverframework.lib.Environment import env
+from serverframework.lib.Logging import logger
 
 
-class EXT_Auth_Marketplace(AbstractExtension):
+class EXT_Auth_Marketplace(AbstractStaticExtension):
     """
     Marketplace authentication extension for AGInfrastructure.
 

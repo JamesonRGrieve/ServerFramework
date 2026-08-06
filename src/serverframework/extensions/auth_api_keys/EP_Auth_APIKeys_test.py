@@ -3,7 +3,7 @@
 # from endpoints.AbstractEPTest import AbstractEndpointTest, ParentEntity
 # @pytest.mark.ep
 # @pytest.mark.auth
-# class TestKeyEndpoints(AbstractEndpointTest):
+# class TestKeyEndpoints(AbstractEPTest):
 #     """Tests for the API Key Management endpoints."""
 #     base_endpoint = "key"
 #     entity_name = "api_key"

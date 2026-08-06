@@ -3,14 +3,14 @@ import json
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Set
 
-from extensions.AbstractExtension import AbstractExtension
-from extensions.auth_merge.DB_Auth_Merge import UserMerge
-from lib.Dependencies import EXT_Dependency, PIP_Dependency
-from lib.Environment import env
-from lib.Logging import logger
+from serverframework.extensions.AbstractExtensionProvider import AbstractStaticExtension
+from serverframework.extensions.auth_merge.DB_Auth_Merge import UserMerge
+from serverframework.lib.Dependencies import EXT_Dependency, PIP_Dependency
+from serverframework.lib.Environment import env
+from serverframework.lib.Logging import logger
 
 
-class EXT_Auth_Merge(AbstractExtension):
+class EXT_Auth_Merge(AbstractStaticExtension):
     """
     Account Merge authentication extension for AGInfrastructure.
 
