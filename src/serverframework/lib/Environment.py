@@ -39,7 +39,7 @@ class AppSettings(BaseModel):
     APP_DESCRIPTION: str = "extensible server framework"
     APP_VERSION: str = "0.0.0"
     APP_REPOSITORY: str = "https://github.com/ZephyrexTechnologies/ServerFramework"
-    APP_EXTENSIONS: str = "email,auth_mfa,database,meta_logging,payment"
+    APP_EXTENSIONS: str = ""
 
     ROOT_API_KEY: str = "n0ne"
     JWT_SECRET: str = ""
@@ -54,11 +54,14 @@ class AppSettings(BaseModel):
 
     DATABASE_TYPE: str = "sqlite"
     DATABASE_NAME: Optional[str] = "database"
+    DATABASE_PATH: str = ""
     DATABASE_SSL: str = "disable"
     DATABASE_HOST: str = "localhost"
     DATABASE_PORT: str = "5432"
     DATABASE_USER: Optional[str] = None
     DATABASE_PASSWORD: str = ""
+
+    EXTENSIONS_PATH: str = ""
 
     LOCALIZATION: str = "en"
     REST: str = "true"

@@ -121,10 +121,15 @@ def run(
         os.environ["APP_EXTENSIONS"] = extensions
 
     if extensions_path is not None:
+        os.environ["EXTENSIONS_PATH"] = str(extensions_path)
         set_extensions_root(extensions_path)
 
-    # Defer heavy imports until after env vars are in place: ``lib.Environment``
-    # snapshots configuration at import time in places.
+    # Refresh the cached settings singleton so env() picks up the values
+    # we just set (APP_EXTENSIONS, EXTENSIONS_PATH, any env_overrides).
+    from serverframework.lib.Environment import refresh_settings
+
+    refresh_settings()
+
     import uvicorn
 
     from serverframework.lib.Environment import env
@@ -145,7 +150,7 @@ def run(
         reload = env("UVICORN_RELOAD").lower() == "true"
 
     uvicorn.run(
-        "app:instance",
+        "serverframework.app:instance",
         host=host,
         port=port,
         workers=workers,

@@ -84,6 +84,13 @@ def load_extension_module(
         sys.modules.setdefault(synth, sys.modules[legacy])
         return sys.modules[legacy]
 
+    # Fall back to the bundled extensions inside the framework package
+    # when the consumer's extensions_path doesn't have this extension.
+    if not file_path.exists():
+        bundled = Path(__file__).resolve().parent / extension_name / f"{file_stem}.py"
+        if bundled.exists():
+            file_path = bundled
+
     if not file_path.exists():
         raise FileNotFoundError(
             f"Extension module not found: {file_path} "

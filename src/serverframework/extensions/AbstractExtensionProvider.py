@@ -214,8 +214,9 @@ class ExtensionRegistry(AbstractRegistry):
         # Register each requested extension - dependencies will be handled automatically
         for extension_name in extension_names:
             try:
-                # Find the extension module
-                scope_dir = os.path.join(extensions_root, extension_name)
+                # Find the extension module — checks consumer path first,
+                # falls back to bundled extensions.
+                scope_dir = self._extension_dir(extension_name)
                 if not os.path.exists(scope_dir):
                     logger.warning(f"Extension directory not found: {scope_dir}")
                     continue
@@ -303,10 +304,21 @@ class ExtensionRegistry(AbstractRegistry):
         return _resolve_extensions_dir(self.extensions_path)
 
     def _extension_dir(self, extension_name: str) -> str:
-        """Path to a specific extension's directory under the active root."""
+        """Path to a specific extension's directory.
+
+        Checks the consumer's extensions_path first; falls back to the
+        bundled ``<src_dir>/extensions`` if the extension isn't found there.
+        This lets consumers mix their own extensions with framework-bundled ones.
+        """
         import os
 
-        return os.path.join(self._extensions_root(), extension_name)
+        primary = os.path.join(self._extensions_root(), extension_name)
+        if os.path.isdir(primary):
+            return primary
+        bundled = os.path.join(_resolve_src_dir(), "extensions", extension_name)
+        if os.path.isdir(bundled):
+            return bundled
+        return primary
 
     @property
     def csv(self) -> str:

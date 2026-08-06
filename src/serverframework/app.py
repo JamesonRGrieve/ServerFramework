@@ -250,7 +250,11 @@ def prepare_overrides(db_prefix: str, extensions: Optional[str]) -> Dict[str, st
     return overrides
 
 
-def instance(db_prefix: str = "", extensions: Optional[str] = None):
+def instance(
+    db_prefix: str = "",
+    extensions: Optional[str] = None,
+    extensions_path: Optional[str] = None,
+):
     """
     Create a FastAPI application instance with database prefix and extension configuration.
 
@@ -265,10 +269,22 @@ def instance(db_prefix: str = "", extensions: Optional[str] = None):
         db_prefix: Prefix to add to the original DATABASE_NAME (e.g., "test" or "test.payment")
         extensions: Extensions to load. ``None`` -> read APP_EXTENSIONS.
             ``""`` -> load none. CSV string -> load those.
+        extensions_path: Filesystem path to discover extensions from.
+            Consumer extensions live here; bundled extensions are still found
+            automatically. ``None`` -> read EXTENSIONS_PATH env var or use bundled.
 
     Returns:
         Configured FastAPI application instance with isolated ModelRegistry
     """
+    if extensions_path is not None:
+        from serverframework.lib.Paths import set_extensions_root
+
+        set_extensions_root(extensions_path)
+    elif os.environ.get("EXTENSIONS_PATH"):
+        from serverframework.lib.Paths import set_extensions_root
+
+        set_extensions_root(os.environ["EXTENSIONS_PATH"])
+
     if extensions is None:
         extensions = env("APP_EXTENSIONS")
 

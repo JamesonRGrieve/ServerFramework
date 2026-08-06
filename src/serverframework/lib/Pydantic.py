@@ -620,6 +620,8 @@ class PydanticUtility:
 
                 if manager_class:
                     relationships.append((model_class, ref_model_class, manager_class))
+                    if not getattr(model_class, "Manager", None):
+                        model_class.Manager = manager_class
 
         return relationships
 
@@ -2243,9 +2245,26 @@ class ModelRegistry(AbstractRegistry):
                             f"⚠ No SQLAlchemy model returned for {model_class.__name__}"
                         )
                 else:
-                    logger.debug(
-                        f"⚠ Model {model_class.__name__} does not have .DB method, skipping"
-                    )
+                    try:
+                        from serverframework.lib.Pydantic2SQLAlchemy import (
+                            create_sqlalchemy_model,
+                        )
+
+                        sa_model = create_sqlalchemy_model(
+                            model_class,
+                            model_registry=self,
+                            base_model=self.declarative_base,
+                        )
+                        if sa_model:
+                            self.db_models[model_class] = sa_model
+                            logger.info(
+                                f"✓ SQLAlchemy model created via fallback for {model_class.__name__}"
+                            )
+                    except Exception as fallback_err:
+                        logger.debug(
+                            f"⚠ Model {model_class.__name__} has no .DB method and "
+                            f"fallback failed: {fallback_err}"
+                        )
 
             except Exception as e:
                 logger.error(
@@ -2395,22 +2414,23 @@ class ModelRegistry(AbstractRegistry):
                         f"Only importing from enabled extensions: {enabled_extensions}"
                     )
 
-                    # Only include enabled extension directories. Resolve
-                    # through Paths so a configured external extensions root
-                    # is honored.
+                    # Include enabled extension directories. Check the
+                    # consumer's extensions_path first, fall back to the
+                    # bundled extensions inside the framework package.
                     extensions_dir = _resolve_extensions_dir()
-                    if os.path.exists(extensions_dir) and os.path.isdir(extensions_dir):
-                        for ext_name in enabled_extensions:
-                            ext_path = os.path.join(extensions_dir, ext_name)
-                            if os.path.isdir(ext_path):
-                                expanded_scopes.append(f"extensions.{ext_name}")
-                                logger.debug(
-                                    f"Added enabled extension to scope: extensions.{ext_name}"
-                                )
-                            else:
-                                logger.warning(
-                                    f"Enabled extension directory not found: {ext_path}"
-                                )
+                    bundled_dir = os.path.join(_resolve_src_dir(), "extensions")
+                    for ext_name in enabled_extensions:
+                        ext_path = os.path.join(extensions_dir, ext_name)
+                        if os.path.isdir(ext_path):
+                            expanded_scopes.append(f"extensions.{ext_name}")
+                        elif extensions_dir != bundled_dir and os.path.isdir(
+                            os.path.join(bundled_dir, ext_name)
+                        ):
+                            expanded_scopes.append(f"extensions.{ext_name}")
+                        else:
+                            logger.warning(
+                                f"Enabled extension directory not found: {ext_path}"
+                            )
                 else:
                     logger.debug(
                         "No APP_EXTENSIONS configured, skipping extension imports"
@@ -2430,8 +2450,18 @@ class ModelRegistry(AbstractRegistry):
 
         # Find all Python files with the specified prefix in all scopes
         for scope in expanded_scopes:
-            # Convert module path to directory path
-            scope_dir = os.path.join(src_dir, *scope.split("."))
+            # Convert module path to directory path. For extension scopes,
+            # check the consumer's extensions_path first, then fall back
+            # to the bundled extensions inside the framework package.
+            scope_parts = scope.split(".")
+            scope_dir = os.path.join(src_dir, *scope_parts)
+            if scope.startswith("extensions.") and not os.path.isdir(scope_dir):
+                ext_name = scope_parts[1] if len(scope_parts) > 1 else ""
+                consumer_dir = os.path.join(
+                    _resolve_extensions_dir(), ext_name
+                )
+                if os.path.isdir(consumer_dir):
+                    scope_dir = consumer_dir
 
             # Create the pattern for files with the specified prefix
             files_pattern = os.path.join(scope_dir, f"{file_type}_*.py")

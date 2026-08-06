@@ -1470,9 +1470,27 @@ class {class_name}(Base):
                                 extension_name, "Initial migration", auto=True
                             )
                             if not created:
-                                logger.warning(
-                                    f"Could not automatically create initial migration for {extension_name}. Skipping upgrade."
+                                logger.info(
+                                    f"Auto-migration unavailable for {extension_name}; "
+                                    f"falling back to create_all for initial tables."
                                 )
+                                try:
+                                    if self._model_registry and hasattr(
+                                        self._model_registry, "DB"
+                                    ):
+                                        engine = self._model_registry.DB.manager._setup_engine
+                                        if engine is not None:
+                                            self._model_registry.DB.manager.Base.metadata.create_all(
+                                                bind=engine
+                                            )
+                                            logger.info(
+                                                f"Created tables for {extension_name} via create_all"
+                                            )
+                                            continue
+                                except Exception as fallback_err:
+                                    logger.warning(
+                                        f"create_all fallback also failed for {extension_name}: {fallback_err}"
+                                    )
                                 failed_extensions.append(extension_name)
                                 continue
                         else:
@@ -1511,9 +1529,27 @@ class {class_name}(Base):
                             extension_name, "Initial migration", auto=True
                         )
                         if not created:
-                            logger.warning(
-                                f"Could not create initial migration for {extension_name}. Skipping upgrade."
+                            logger.info(
+                                f"Auto-migration unavailable for {extension_name}; "
+                                f"falling back to create_all."
                             )
+                            try:
+                                if self._model_registry and hasattr(
+                                    self._model_registry, "DB"
+                                ):
+                                    engine = self._model_registry.DB.manager._setup_engine
+                                    if engine is not None:
+                                        self._model_registry.DB.manager.Base.metadata.create_all(
+                                            bind=engine
+                                        )
+                                        logger.info(
+                                            f"Created tables for {extension_name} via create_all"
+                                        )
+                                        continue
+                            except Exception as fallback_err:
+                                logger.warning(
+                                    f"create_all fallback also failed for {extension_name}: {fallback_err}"
+                                )
                             failed_extensions.append(extension_name)
                             continue
                     else:

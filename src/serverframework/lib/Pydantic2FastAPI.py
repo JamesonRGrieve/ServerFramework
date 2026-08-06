@@ -3517,14 +3517,14 @@ def create_router_from_manager(
     # a non-default ``version`` and no explicit ``prefix``, derive the
     # prefix from the version token rather than the hard-coded "v1".
     version_token = getattr(manager_class, "version", None) or "v1"
-    prefix: str = manager_class.prefix or f"/{version_token}/{resource_name}"
-    tags: List[str] = manager_class.tags or [
+    prefix: str = getattr(manager_class, "prefix", None) or f"/{version_token}/{resource_name}"
+    tags: List[str] = getattr(manager_class, "tags", None) or [
         f"{stringcase.titlecase(resource_name.replace('_', ' '))} Management"
     ]
-    auth_type: AuthType = manager_class.auth_type
-    routes_to_register: Optional[List[RouteType]] = manager_class.routes_to_register
+    auth_type: AuthType = getattr(manager_class, "auth_type", AuthType.JWT)
+    routes_to_register: Optional[List[RouteType]] = getattr(manager_class, "routes_to_register", None)
     route_auth_overrides: Dict[RouteType, AuthType] = (
-        manager_class.route_auth_overrides or {}
+        getattr(manager_class, "route_auth_overrides", None) or {}
     )
 
     # System entity auto-configuration: if BaseModel.is_system_entity=True,
@@ -3548,11 +3548,11 @@ def create_router_from_manager(
             if write_route not in route_auth_overrides:
                 route_auth_overrides[write_route] = AuthType.API_KEY
 
-    custom_routes: List[CustomRouteConfig] = manager_class.custom_routes or []
+    custom_routes: List[CustomRouteConfig] = getattr(manager_class, "custom_routes", None) or []
     nested_resources: Dict[str, NestedResourceConfig] = (
-        manager_class.nested_resources or {}
+        getattr(manager_class, "nested_resources", None) or {}
     )
-    example_overrides: Dict[str, Dict[str, Any]] = manager_class.example_overrides or {}
+    example_overrides: Dict[str, Dict[str, Any]] = getattr(manager_class, "example_overrides", None) or {}
 
     # Default routes if not specified
     if routes_to_register is None:
@@ -3955,9 +3955,15 @@ def generate_routers_from_model_registry(model_registry) -> Dict[str, APIRouter]
                         f"Failed to generate router for {manager_name}: {traceback.format_exc()}"
                     )
             else:
-                logger.debug(
-                    f"Manager {manager_name} for model {model_name} does not have RouterMixin"
-                )
+                try:
+                    router = create_router_from_manager(manager_class, model_registry)
+                    if router and router.routes:
+                        routers[manager_name] = router
+                        logger.info(f"Generated router for {manager_name}")
+                except Exception as e:
+                    logger.debug(
+                        f"Could not auto-generate router for {manager_name}: {e}"
+                    )
         else:
             logger.debug(f"Model {model_name} does not have a Manager attribute")
 

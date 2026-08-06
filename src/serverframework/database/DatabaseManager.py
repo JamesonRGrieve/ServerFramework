@@ -158,7 +158,7 @@ def get_database_info(db_prefix: str = ""):
         db_path = (
             os.getenv("DATABASE_PATH") or env("DATABASE_PATH")
             if os.getenv("DATABASE_PATH") or env("DATABASE_PATH")
-            else os.path.dirname(os.path.abspath(__file__))
+            else os.getcwd()
         )
 
         # Normalize the database path
@@ -917,7 +917,7 @@ def db_name_to_path(
         base_dir = (
             os.getenv("DATABASE_PATH") or env("DATABASE_PATH")
             if os.getenv("DATABASE_PATH") or env("DATABASE_PATH")
-            else os.path.dirname(os.path.abspath(__file__))
+            else os.getcwd()
         )
 
     # Normalize the database path
