@@ -195,3 +195,145 @@ def test_generate_jwt_token_falls_back_when_hook_missing():
     )
     assert payload["jti"]  # non-empty
     assert payload["sub"] == "u1"
+
+
+###############################################################################
+# Unit tests for session lifecycle functions
+###############################################################################
+
+from unittest.mock import MagicMock, patch
+
+
+class TestIssueSession:
+    """Unit tests for the issue_session hook function."""
+
+    def test_returns_key_when_registry_is_none(self):
+        from serverframework.extensions.auth_session.BLL_Session import issue_session
+
+        key = issue_session(user_id="u1", model_registry=None)
+        assert isinstance(key, str)
+        assert len(key) == 32  # secrets.token_hex(16)
+
+    def test_uses_provided_session_key(self):
+        from serverframework.extensions.auth_session.BLL_Session import issue_session
+
+        key = issue_session(
+            user_id="u1", model_registry=None, session_key="custom-key"
+        )
+        assert key == "custom-key"
+
+    def test_persist_failure_still_returns_key(self):
+        from serverframework.extensions.auth_session.BLL_Session import issue_session
+
+        mock_registry = MagicMock()
+        mock_db_cls = MagicMock()
+        mock_db_cls.create.side_effect = RuntimeError("DB down")
+
+        with patch(
+            "serverframework.extensions.auth_session.BLL_Session.SessionModel"
+        ) as mock_model:
+            mock_model.DB.return_value = mock_db_cls
+            key = issue_session(user_id="u1", model_registry=mock_registry)
+
+        assert isinstance(key, str)
+        assert len(key) == 32
+
+
+class TestEnforceNotRevoked:
+    """Parameterized tests for enforce_not_revoked edge cases."""
+
+    @pytest.fixture(autouse=True)
+    def _restore_hooks(self):
+        _reset_hooks()
+        yield
+        _reset_hooks()
+        import serverframework.extensions.auth_session.BLL_Session as session_mod
+
+        session_mod.register_session_hooks(
+            issue_session=session_mod.issue_session,
+            enforce_not_revoked=session_mod.enforce_not_revoked,
+            manager_factory=session_mod.session_manager_factory,
+            revoke_user_sessions=session_mod.revoke_user_sessions,
+        )
+
+    def test_missing_jti_raises(self):
+        from serverframework.extensions.auth_session.BLL_Session import (
+            enforce_not_revoked,
+        )
+
+        with pytest.raises(Exception, match="jti"):
+            enforce_not_revoked({}, MagicMock())
+
+    def test_null_registry_and_db_returns_early(self):
+        from serverframework.extensions.auth_session.BLL_Session import (
+            enforce_not_revoked,
+        )
+
+        enforce_not_revoked({"jti": "abc"}, None, db=None)
+
+    @pytest.mark.parametrize(
+        "revoked, is_active, pending_state, should_raise",
+        [
+            (False, True, None, False),
+            (True, True, None, True),
+            (False, False, None, True),
+            (False, True, "awaiting_approval", True),
+        ],
+        ids=["active-ok", "revoked", "inactive", "pending-approval"],
+    )
+    def test_session_states(self, revoked, is_active, pending_state, should_raise):
+        from serverframework.extensions.auth_session.BLL_Session import (
+            enforce_not_revoked,
+        )
+
+        mock_session = MagicMock()
+        mock_session.revoked = revoked
+        mock_session.is_active = is_active
+        mock_session.pending_state = pending_state
+
+        mock_db_cls = MagicMock()
+        mock_db_cls.get.return_value = mock_session
+
+        mock_registry = MagicMock()
+
+        with patch(
+            "serverframework.extensions.auth_session.BLL_Session.SessionModel"
+        ) as mock_model:
+            mock_model.DB.return_value = mock_db_cls
+            if should_raise:
+                with pytest.raises(Exception):
+                    enforce_not_revoked({"jti": "abc"}, mock_registry)
+            else:
+                enforce_not_revoked({"jti": "abc"}, mock_registry)
+
+
+class TestSessionManagerFactory:
+    def test_returns_manager_instance(self):
+        from serverframework.extensions.auth_session.BLL_Session import (
+            session_manager_factory,
+        )
+
+        mock_registry = MagicMock()
+        mgr = session_manager_factory(
+            requester_id="u1", model_registry=mock_registry
+        )
+        assert mgr is not None
+
+    def test_accepts_none_registry(self):
+        from serverframework.extensions.auth_session.BLL_Session import (
+            session_manager_factory,
+        )
+
+        result = session_manager_factory(requester_id="u1", model_registry=None)
+        assert result is not None
+
+
+class TestRevokeUserSessions:
+    def test_noop_without_registry(self):
+        from serverframework.extensions.auth_session.BLL_Session import (
+            revoke_user_sessions,
+        )
+
+        revoke_user_sessions(
+            user_id="u1", requester_id="admin", model_registry=None
+        )

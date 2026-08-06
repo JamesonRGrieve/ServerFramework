@@ -192,14 +192,15 @@ class TestEnvFunctionReal(TestMixin):
 
     def test_env_function_with_none_value(self, clean_environment):
         """Test env function handles None values correctly."""
-        # Test with a field that can be None
-        os.environ["DATABASE_NAME"] = ""  # Empty string
+        os.environ["DATABASE_NAME"] = ""
 
-        settings = AppSettings.model_validate(os.environ)
-        # DATABASE_NAME can be None, so it might be converted
+        # Refresh the cached settings singleton so env() reads the
+        # updated os.environ, not whatever the worker inherited.
+        from serverframework.lib.Environment import refresh_settings
+
+        refresh_settings()
         result = env("DATABASE_NAME")
-        # Should return empty string for None or empty values
-        self.assertIn(result, ["", "database"])  # Could be default or empty
+        self.assertIn(result, ["", None])
 
 
 class TestRegisterExtensionEnvVarsReal(TestMixin):

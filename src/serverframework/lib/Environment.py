@@ -213,6 +213,15 @@ class AppSettings(BaseModel):
 settings = AppSettings.model_validate(os.environ)
 
 
+def refresh_settings() -> None:
+    """Re-read os.environ into the cached settings singleton.
+
+    Test-only — production code should never need this.
+    """
+    global settings
+    settings = AppSettings.model_validate(os.environ)
+
+
 def register_extension_env_vars(env: Optional[Dict[str, Any]]) -> None:
     """
     Register environment variables from extensions and providers.
