@@ -1164,5 +1164,126 @@ class TestModelConverterSqlalchemyToPydantic:
         assert result.bio is None
 
 
+class TestFixNullTypeColumns:
+    """Tests for _fix_null_type_columns."""
+
+    def test_no_table_is_noop(self):
+        from serverframework.lib.Pydantic2SQLAlchemy import _fix_null_type_columns
+
+        class NoTable:
+            pass
+
+        _fix_null_type_columns(NoTable)
+
+    def test_replaces_nulltype_id_with_string(self):
+        from sqlalchemy import Column, MetaData, Table
+        from sqlalchemy.sql.sqltypes import NullType
+
+        from serverframework.lib.Pydantic2SQLAlchemy import _fix_null_type_columns
+
+        metadata = MetaData()
+        table = Table("test", metadata, Column("user_id", NullType()))
+
+        class FakeModel:
+            __table__ = table
+
+        _fix_null_type_columns(FakeModel)
+        assert isinstance(table.c.user_id.type, String)
+
+    def test_replaces_nulltype_timestamp_with_datetime(self):
+        from sqlalchemy import Column, DateTime, MetaData, Table
+        from sqlalchemy.sql.sqltypes import NullType
+
+        from serverframework.lib.Pydantic2SQLAlchemy import _fix_null_type_columns
+
+        metadata = MetaData()
+        table = Table("test", metadata, Column("created_at", NullType()))
+
+        class FakeModel:
+            __table__ = table
+
+        _fix_null_type_columns(FakeModel)
+        assert isinstance(table.c.created_at.type, DateTime)
+
+    def test_replaces_unknown_nulltype_with_string(self):
+        from sqlalchemy import Column, MetaData, Table
+        from sqlalchemy.sql.sqltypes import NullType
+
+        from serverframework.lib.Pydantic2SQLAlchemy import _fix_null_type_columns
+
+        metadata = MetaData()
+        table = Table("test", metadata, Column("mystery", NullType()))
+
+        class FakeModel:
+            __table__ = table
+
+        _fix_null_type_columns(FakeModel)
+        assert isinstance(table.c.mystery.type, String)
+
+
+class TestFindPydanticModelByName:
+    """Tests for _find_pydantic_model_by_name."""
+
+    def test_none_registry_returns_none(self):
+        from serverframework.lib.Pydantic2SQLAlchemy import (
+            _find_pydantic_model_by_name,
+        )
+
+        assert _find_pydantic_model_by_name(None, ["User"]) is None
+
+    def test_finds_match_in_bound_models(self):
+        from serverframework.lib.Pydantic2SQLAlchemy import (
+            _find_pydantic_model_by_name,
+        )
+
+        class UserModel(PydanticBaseModel):
+            name: str
+
+        registry = MagicMock()
+        registry.bound_models = [UserModel]
+        assert _find_pydantic_model_by_name(registry, ["UserModel"]) is UserModel
+
+    def test_case_insensitive_match(self):
+        from serverframework.lib.Pydantic2SQLAlchemy import (
+            _find_pydantic_model_by_name,
+        )
+
+        class MyModel(PydanticBaseModel):
+            x: int
+
+        registry = MagicMock()
+        registry.bound_models = [MyModel]
+        assert _find_pydantic_model_by_name(registry, ["mymodel"]) is MyModel
+
+    def test_no_match_returns_none(self):
+        from serverframework.lib.Pydantic2SQLAlchemy import (
+            _find_pydantic_model_by_name,
+        )
+
+        registry = MagicMock()
+        registry.bound_models = []
+        assert _find_pydantic_model_by_name(registry, ["Missing"]) is None
+
+
+class TestSanitizeFieldName:
+    @pytest.mark.parametrize(
+        "input_name, should_be_different",
+        [
+            ("name", False),
+            ("metadata", True),
+            ("registry", True),
+            ("query", True),
+        ],
+    )
+    def test_reserved_names_are_sanitized(self, input_name, should_be_different):
+        from serverframework.lib.Pydantic2SQLAlchemy import _sanitize_field_name
+
+        result = _sanitize_field_name(input_name)
+        if should_be_different:
+            assert result != input_name
+        else:
+            assert result == input_name
+
+
 if __name__ == "__main__":
     unittest.main()

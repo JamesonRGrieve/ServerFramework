@@ -214,3 +214,111 @@ def test_collect_extension_permissions_into():
     collect_extension_permissions_into(reg, [FakeExt])
     assert "fake.thing.read" in reg
     assert "fake" in reg.sources("fake.thing.read")
+
+
+###############################################################################
+# Parameterized tests for has_permission, expand_wildcard, implies graph
+###############################################################################
+
+
+class TestHasPermissionWithImplies:
+    """Test the implies-graph expansion in has_permission."""
+
+    @pytest.fixture
+    def registry(self):
+        reg = PermissionRegistry()
+        reg.register([
+            PermissionDef(name="admin", description="admin", implies=["read", "write"]),
+            PermissionDef(name="read", description="read"),
+            PermissionDef(name="write", description="write", implies=["read"]),
+            PermissionDef(name="delete", description="delete"),
+        ], source="core")
+        return reg
+
+    @pytest.mark.parametrize(
+        "perm, grants, expected",
+        [
+            ("read", {"read"}, True),
+            ("read", {"admin"}, True),
+            ("write", {"admin"}, True),
+            ("read", {"write"}, True),
+            ("delete", {"admin"}, False),
+            ("delete", {"delete"}, True),
+            ("read", set(), False),
+        ],
+        ids=["direct", "implied-by-admin", "write-implied-by-admin",
+             "read-implied-by-write", "delete-not-implied", "delete-direct", "empty-grants"],
+    )
+    def test_role_grant_expansion(self, registry, perm, grants, expected):
+        assert has_permission(perm, grants, registry=registry) == expected
+
+    @pytest.mark.parametrize(
+        "perm, grants, scopes, expected",
+        [
+            ("read", {"admin"}, {"read"}, True),
+            ("read", {"admin"}, {"write"}, True),
+            ("read", {"admin"}, {"delete"}, False),
+            ("write", {"admin"}, {"read"}, False),
+        ],
+        ids=["scope-intersect-yes", "scope-implies-read", "scope-no-intersect", "scope-narrows"],
+    )
+    def test_token_scope_intersection(self, registry, perm, grants, scopes, expected):
+        assert has_permission(perm, grants, token_scopes=scopes, registry=registry) == expected
+
+    def test_no_registry_direct_membership(self):
+        assert has_permission("x", {"x", "y"}) is True
+        assert has_permission("z", {"x", "y"}) is False
+
+    def test_no_registry_with_scopes(self):
+        assert has_permission("x", {"x", "y"}, token_scopes={"x"}) is True
+        assert has_permission("x", {"x", "y"}, token_scopes={"y"}) is False
+
+
+class TestExpandWildcard:
+    @pytest.fixture
+    def registry(self):
+        reg = PermissionRegistry()
+        reg.register([
+            PermissionDef(name="pay.sub", description="base"),
+            PermissionDef(name="pay.sub.read", description="read"),
+            PermissionDef(name="pay.sub.write", description="write"),
+            PermissionDef(name="pay.other", description="other"),
+            PermissionDef(name="pay.sub.admin", description="admin", system_only=True),
+            PermissionDef(name="pay.sub.internal", description="not grantable", user_grantable=False),
+        ], source="ext")
+        return reg
+
+    def test_wildcard_expands_prefix(self, registry):
+        result = expand_wildcard("pay.sub.*", registry)
+        assert "pay.sub" in result
+        assert "pay.sub.read" in result
+        assert "pay.sub.write" in result
+
+    def test_wildcard_excludes_system_only(self, registry):
+        result = expand_wildcard("pay.sub.*", registry)
+        assert "pay.sub.admin" not in result
+
+    def test_wildcard_excludes_non_grantable(self, registry):
+        result = expand_wildcard("pay.sub.*", registry)
+        assert "pay.sub.internal" not in result
+
+    def test_wildcard_does_not_match_sibling(self, registry):
+        result = expand_wildcard("pay.sub.*", registry)
+        assert "pay.other" not in result
+
+    def test_non_wildcard_returns_singleton(self, registry):
+        result = expand_wildcard("pay.sub.read", registry)
+        assert result == {"pay.sub.read"}
+
+    def test_non_wildcard_unknown_returns_empty(self, registry):
+        result = expand_wildcard("unknown.perm", registry)
+        assert result == set()
+
+
+class TestValidateUniqueness:
+    def test_no_collision_on_identical_registrations(self):
+        reg = PermissionRegistry()
+        p = PermissionDef(name="x", description="x")
+        reg.register([p], source="a")
+        reg.register([p], source="b")
+        reg.validate_uniqueness()

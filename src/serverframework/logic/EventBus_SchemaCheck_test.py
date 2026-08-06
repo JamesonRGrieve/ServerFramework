@@ -154,3 +154,103 @@ def test_compatibility_finding_to_dict():
 def test_read_snapshot_missing_file_returns_empty(tmp_path):
     schemas = read_snapshot(tmp_path / "no-such-file.json")
     assert schemas == []
+
+
+###############################################################################
+# Additional coverage for pure helpers and discover_event_classes
+###############################################################################
+
+
+class TestTypeNameHelper:
+    @pytest.mark.parametrize(
+        "annotation, expected",
+        [
+            (str, "str"),
+            (int, "int"),
+            (None, "None"),
+        ],
+    )
+    def test_basic_types(self, annotation, expected):
+        from serverframework.logic.EventBus_SchemaCheck import _type_name
+
+        assert _type_name(annotation) == expected
+
+    def test_union_type_repr(self):
+        from typing import Union
+
+        from serverframework.logic.EventBus_SchemaCheck import _type_name
+
+        result = _type_name(Union[str, int])
+        assert "str" in result or "Union" in result
+
+
+class TestIsOptionalHelper:
+    def test_optional_str(self):
+        from typing import Optional
+
+        from serverframework.logic.EventBus_SchemaCheck import _is_optional
+
+        assert _is_optional(Optional[str]) is True
+
+    def test_plain_str(self):
+        from serverframework.logic.EventBus_SchemaCheck import _is_optional
+
+        assert _is_optional(str) is False
+
+
+class TestSafeJsonify:
+    @pytest.mark.parametrize(
+        "value, expected",
+        [
+            ("hello", "hello"),
+            (42, 42),
+            (3.14, 3.14),
+            (True, True),
+            (None, None),
+        ],
+    )
+    def test_primitives_pass_through(self, value, expected):
+        from serverframework.logic.EventBus_SchemaCheck import _safe_jsonify
+
+        assert _safe_jsonify(value) == expected
+
+    def test_complex_returns_repr(self):
+        from serverframework.logic.EventBus_SchemaCheck import _safe_jsonify
+
+        result = _safe_jsonify([1, 2, 3])
+        assert result == "[1, 2, 3]"
+
+
+class TestIsPydanticUndefined:
+    def test_pydantic_undefined(self):
+        from pydantic_core import PydanticUndefined
+
+        from serverframework.logic.EventBus_SchemaCheck import _is_pydantic_undefined
+
+        assert _is_pydantic_undefined(PydanticUndefined) is True
+
+    def test_normal_value(self):
+        from serverframework.logic.EventBus_SchemaCheck import _is_pydantic_undefined
+
+        assert _is_pydantic_undefined("hello") is False
+
+
+class TestDiscoverEventClasses:
+    def test_discovers_from_module_with_events(self):
+        from serverframework.logic.EventBus_SchemaCheck import discover_event_classes
+
+        found = discover_event_classes(["serverframework.logic.EventBus"])
+        # EventBus may or may not export classes matching the suffix pattern;
+        # the contract is: no crash, returns a list.
+        assert isinstance(found, list)
+
+    def test_missing_module_skipped(self):
+        from serverframework.logic.EventBus_SchemaCheck import discover_event_classes
+
+        found = discover_event_classes(["nonexistent.module.that.does.not.exist"])
+        assert found == []
+
+    def test_empty_input(self):
+        from serverframework.logic.EventBus_SchemaCheck import discover_event_classes
+
+        assert discover_event_classes([]) == []

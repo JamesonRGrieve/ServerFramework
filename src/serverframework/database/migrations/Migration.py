@@ -865,7 +865,8 @@ class MigrationManager:
         )
         registry = ModelRegistry()
         try:
-            db_mgr = DatabaseManager()
+            db_prefix = self.db_info.get("name", "") if self.db_info else ""
+            db_mgr = DatabaseManager(db_prefix=db_prefix)
             registry.database_manager = db_mgr
             db_mgr.Base._model_registry = registry
             registry.commit()
