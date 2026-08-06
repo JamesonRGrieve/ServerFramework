@@ -49,9 +49,25 @@ def test_manifest_entries_resolve(entry):
 
 
 def test_markdown_is_in_sync():
-    """`build_contracts_md.main(['--check'])` must succeed against the committed file."""
-    rc = gen.main(["--check"])
-    assert rc == 0, "EXT.Contracts.md is stale; rerun build_contracts_md to regenerate."
+    """`build_contracts_md.main(['--check'])` must succeed against the committed file.
+
+    Runs in a subprocess so model-registry mutations from earlier tests
+    (e.g. @extension_model side effects) cannot contaminate the check.
+    """
+    import subprocess
+    import sys
+
+    result = subprocess.run(
+        [sys.executable, "-m", "serverframework.extensions.build_contracts_md", "--check"],
+        cwd=Path(__file__).resolve().parents[2],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, (
+        "EXT.Contracts.md is stale; rerun build_contracts_md to regenerate.\n"
+        f"stderr: {result.stderr[-500:]}"
+    )
 
 
 def test_banner_present_in_committed_markdown():

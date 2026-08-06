@@ -150,7 +150,7 @@ disallow_incomplete_defs = true
 [tool.pytest.ini_options]
 testpaths = ["."]
 python_files = "*_test.py"
-addopts = "-v -ra -s --order-dependencies --import-mode=importlib"
+addopts = "-ra --order-dependencies --import-mode=importlib -n auto --dist loadscope"
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 # Note: Changed from "session" to "function" for pytest-xdist compatibility.
