@@ -682,7 +682,8 @@ def test_generate_test_scaffold_includes_import_for_manager():
     module path so the test client can build a router against it."""
 
     text = generate_test_scaffold(_ScaffoldManager)
-    assert "from serverframework.lib.CustomRoute_test import _ScaffoldManager" in text
+    expected_module = _ScaffoldManager.__module__
+    assert f"from {expected_module} import _ScaffoldManager" in text
 
 
 def test_generate_test_scaffold_emits_test_client_fixture():

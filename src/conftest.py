@@ -26,20 +26,19 @@ src_path = Path(__file__).resolve().parent
 project_root = src_path.parent
 
 
-# Extensions that hold canonical models previously living in core BLL_Auth.
-# They were extracted (Scope #1-#5) but the core test surface still asserts
-# their behaviour, so the default `server` / `mock_server` fixtures load
-# them. Tests that need the core-without-extensions surface use
-# `extensions=""` explicitly.
-_CORE_TEST_EXTENSIONS = ",".join(
-    [
-        "metadata",
-        "auth_lockout",
-        "auth_recovery_questions",
-        "auth_invitations",
-        "auth_session",
-        "acl_rbac",
-    ]
+# Canonical list of companion extensions required by every test server.
+# Both conftest._CORE_TEST_EXTENSIONS and AbstractEXTTest._COMPANIONS
+# derive from this single tuple — do not duplicate.
+CORE_COMPANION_EXTENSIONS = (
+    "metadata",
+    "auth_lockout",
+    "auth_recovery_questions",
+    "auth_invitations",
+    "auth_session",
+    "acl_rbac",
+)
+
+_CORE_TEST_EXTENSIONS = ",".join(CORE_COMPANION_EXTENSIONS
 )
 
 
@@ -275,11 +274,9 @@ from serverframework.lib.Environment import env
 from serverframework.lib.Logging import logger
 from serverframework.lib.Pydantic import BaseModel as FrameworkBaseModel
 
-# Clear all registry caches to prevent conflicts during test setup
-from serverframework.lib.Pydantic2SQLAlchemy import clear_registry_cache
+from serverframework.lib.Pydantic2SQLAlchemy import prepare_test_registry
 
-clear_registry_cache()
-logger.debug("Cleared all registry caches before test setup")
+prepare_test_registry()
 # Import all required functions from Server directly
 from serverframework.app import setup_python_path
 
@@ -531,17 +528,7 @@ def mock_server():
         f"Worker {worker_id}: Setting up mock server with db_prefix={db_prefix}"
     )
 
-    # Clear all registry caches and extension registrations to prevent
-    # cross-test contamination (e.g. payment's @extension_model(UserModel)
-    # adding columns that other tests' isolated DBs don't have).
-    from serverframework.lib.Pydantic2SQLAlchemy import (
-        clear_registry_cache,
-        reset_extension_system,
-    )
-
-    clear_registry_cache()
-    reset_extension_system()
-    logger.debug("Cleared all registry caches before server setup")
+    prepare_test_registry()
 
     # Follow the same initialization process as app.py
     logger.debug("Setting up Python path...")
@@ -573,17 +560,7 @@ def server():
 
     logger.debug(f"Worker {worker_id}: Setting up server with db_prefix={db_prefix}")
 
-    # Clear all registry caches and extension registrations to prevent
-    # cross-test contamination (e.g. payment's @extension_model(UserModel)
-    # adding columns that other tests' isolated DBs don't have).
-    from serverframework.lib.Pydantic2SQLAlchemy import (
-        clear_registry_cache,
-        reset_extension_system,
-    )
-
-    clear_registry_cache()
-    reset_extension_system()
-    logger.debug("Cleared all registry caches before server setup")
+    prepare_test_registry()
 
     # Follow the same initialization process as app.py
     logger.debug("Setting up Python path...")
@@ -640,11 +617,7 @@ def isolated_server():
 
     Note: Uses test.isolated.{worker_id}.database.db to avoid database conflicts across xdist workers.
     """
-    # Clear all registry caches to prevent conflicts
-    from serverframework.lib.Pydantic2SQLAlchemy import clear_registry_cache
-
-    clear_registry_cache()
-    logger.debug("Cleared registry caches for isolated server")
+    prepare_test_registry()
 
     from serverframework.app import instance
 
@@ -687,13 +660,7 @@ def isolated_extension_server():
     worker_id = os.environ.get("PYTEST_XDIST_WORKER", "main")
 
     def _create_server(extensions: str = ""):
-        # Clear all registry caches to prevent conflicts
-        from serverframework.lib.Pydantic2SQLAlchemy import clear_registry_cache
-
-        clear_registry_cache()
-        logger.debug(
-            f"Cleared registry caches for extension server with extensions: {extensions}"
-        )
+        prepare_test_registry()
 
         from serverframework.app import instance
 

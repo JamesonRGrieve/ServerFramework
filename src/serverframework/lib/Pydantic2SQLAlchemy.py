@@ -2069,3 +2069,14 @@ def reset_extension_system() -> None:
 
     _MODEL_SNAPSHOTS.clear()
     _EXTENSION_REGISTRY_COMPAT.clear()
+
+
+def prepare_test_registry() -> None:
+    """Clear registry caches and extension model mutations before creating a test server.
+
+    Every test server fixture must call this before ``instance()`` to prevent
+    cross-test contamination (e.g. payment's @extension_model(UserModel)
+    adding columns that other tests' isolated DBs don't have).
+    """
+    clear_registry_cache()
+    reset_extension_system()

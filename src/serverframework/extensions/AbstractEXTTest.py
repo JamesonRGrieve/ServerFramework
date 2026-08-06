@@ -69,16 +69,9 @@ class ExtensionServerMixin:
         if not self.extension_class:
             pytest.skip("extension_class not defined, test cannot run")
 
-        from serverframework.lib.Pydantic2SQLAlchemy import (
-            clear_registry_cache,
-            reset_extension_system,
-        )
+        from serverframework.lib.Pydantic2SQLAlchemy import prepare_test_registry
 
-        clear_registry_cache()
-        reset_extension_system()
-        logger.debug(
-            f"Cleared registry caches for extension {self.extension_class.name}"
-        )
+        prepare_test_registry()
 
         from fastapi.testclient import TestClient
 
@@ -89,15 +82,9 @@ class ExtensionServerMixin:
         # flows (e.g. EXT_EMail's send_invitation_email_hook) sees the
         # canonical models bound to the registry. Tests that need a
         # minimal registry override `server` directly.
-        _COMPANIONS = (
-            "metadata",
-            "auth_lockout",
-            "auth_recovery_questions",
-            "auth_invitations",
-            "auth_session",
-            "acl_rbac",
-        )
-        names = [extension_name] + [c for c in _COMPANIONS if c != extension_name]
+        from conftest import CORE_COMPANION_EXTENSIONS
+
+        names = [extension_name] + [c for c in CORE_COMPANION_EXTENSIONS if c != extension_name]
         extension_list = ",".join(names)
         try:
             from serverframework.app import instance
@@ -216,6 +203,19 @@ class AbstractEXTTest(AbstractTest, ExtensionServerMixin):
         if not self.extension_class:
             pytest.skip("extension_class not defined, test cannot run")
         return self.extension_class
+
+    def test_install_pip_dependencies(self):
+        """Install PIP dependencies required by the extension."""
+        from serverframework.lib.Dependencies import (
+            check_pip_dependencies,
+            install_pip_dependencies,
+        )
+
+        pip_deps = self.extension_class.pip_dependencies
+        install_pip_dependencies(pip_deps, only_missing=True)
+        final_status = check_pip_dependencies(pip_deps)
+        for dep_name, satisfied in final_status.items():
+            assert satisfied, f"PIP dependency {dep_name} not satisfied after install"
 
     def _should_run_test(self, test_type: ExtensionTestType) -> bool:
         """Check if a test type should be run based on configuration."""

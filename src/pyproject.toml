@@ -147,49 +147,6 @@ warn_unused_configs = true
 disallow_untyped_defs = true
 disallow_incomplete_defs = true
 
-[tool.pytest.ini_options]
-testpaths = ["."]
-python_files = "*_test.py"
-addopts = "-ra --order-dependencies --import-mode=importlib -n auto --dist loadscope"
-asyncio_mode = "auto"
-asyncio_default_fixture_loop_scope = "function"
-# Note: Changed from "session" to "function" for pytest-xdist compatibility.
-# Each xdist worker runs in a separate process, and session-scoped event loops
-# don't work correctly across workers. Function scope ensures each test gets
-# a fresh event loop, avoiding asyncio conflicts when running with -n N.
-
-markers = [
-    "db: Database tests",
-    "bll: Business logic tests", 
-    "ep: Endpoint tests",
-    "gql: GraphQL tests",
-    "sdk: SDK tests",
-    "user: User management tests",
-    "team: Team management tests",
-    "providers: Provider-related tests",
-    "extensions: Extension management tests",
-    "seed: Data seeding tests",
-    "auth: Authentication tests",
-    "migration: Migration system tests",
-    "basic: Basic migration functionality tests",
-    "core: Core migration tests",
-    "extension: Extension migration tests",
-    "complex: Complex migration scenario tests",
-    "regenerate: Migration regeneration tests",
-    "mfa: Multi-factor authentication tests",
-    "payment: Payment system tests",
-    "synchronize: Synchronization tests",
-    "mock: Mock-based tests",
-    "real: Real database tests",
-    "stripe: Stripe payment provider tests",
-    "timeout: Test timeout configuration"
-]
-
-# Parallel execution settings
-# --dist=loadscope: Distribute tests by scope (class-level)
-# -n auto: Automatically detect number of CPUs and create workers
-# Override with: -n <number> to specify worker count
-# Override with: -n 0 to disable parallel execution
-# Override with: --dist=loadfile to distribute by file instead
-# --maxfail=1: Stop on first failure when debugging
-# --tb=short: Shorter traceback format for parallel runs 
+# Pytest configuration lives in pytest.ini (the authoritative source).
+# Do NOT add [tool.pytest.ini_options] here — it is shadowed by pytest.ini
+# and divergence has already caused bugs.
