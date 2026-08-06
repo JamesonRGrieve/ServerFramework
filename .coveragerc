@@ -1,0 +1,31 @@
+[run]
+source = serverframework
+omit =
+    *_test.py
+    */conftest.py
+    */conftest_test.py
+    */AbstractTest.py
+    */AbstractBLLTest.py
+    */AbstractDBTest.py
+    */AbstractEPTest.py
+    */AbstractGQLTest.py
+    */AbstractEXTTest.py
+    */AbstractPRVTest.py
+    */AbstractFederationMatrixTest.py
+    */migrations/*
+    */extensions/auth_api_keys/*
+    */extensions/auth_marketplace/*
+    */extensions/auth_merge/*
+    */extensions/auth_notifications/*
+    */extensions/auth_oauth/*
+    */extensions/auth_privacy/*
+    */extensions/fileio/*
+    */extensions/meta_labels/*
+
+[report]
+exclude_lines =
+    pragma: no cover
+    if __name__
+show_missing = true
+skip_covered = true
+sort = Uncovered

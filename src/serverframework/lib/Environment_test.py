@@ -362,5 +362,109 @@ class TestProductionDefaultsAreFailClosed(TestMixin):
             AppSettings.model_validate(os.environ)
 
 
+###############################################################################
+# Unit tests for AppSettings validators and env() utility
+###############################################################################
+
+
+class TestAppSettingsValidators:
+    """Tests for AppSettings field and model validators."""
+
+    def test_database_name_defaults_from_app_name(self):
+        env_data = {"APP_NAME": "MyApp", "DATABASE_NAME": None}
+        s = AppSettings.model_validate(env_data)
+        assert s.DATABASE_NAME == "myapp"
+
+    def test_database_user_defaults_from_app_name(self):
+        env_data = {"APP_NAME": "TestSvc", "DATABASE_USER": None}
+        s = AppSettings.model_validate(env_data)
+        assert s.DATABASE_USER == "testsvc"
+
+    @pytest.mark.parametrize(
+        "log_level, expected",
+        [("DEBUG", "5"), ("INFO", "20"), ("WARNING", "20")],
+    )
+    def test_uvicorn_workers_from_log_level(self, log_level, expected):
+        env_data = {"LOG_LEVEL": log_level, "UVICORN_WORKERS": None}
+        s = AppSettings.model_validate(env_data)
+        assert str(s.UVICORN_WORKERS) == expected
+
+    @pytest.mark.parametrize(
+        "app_env, expected_env",
+        [
+            ("dev", "development"),
+            ("ci", "ci"),
+        ],
+    )
+    def test_app_env_alias_reconciliation(self, app_env, expected_env):
+        env_data = {"APP_ENV": app_env}
+        s = AppSettings.model_validate(env_data)
+        assert s.ENVIRONMENT == expected_env
+
+    @pytest.mark.parametrize(
+        "app_env, expected_env",
+        [
+            ("prod", "production"),
+            ("staging", "staging"),
+        ],
+    )
+    def test_app_env_alias_production_modes(self, app_env, expected_env):
+        env_data = {
+            "APP_ENV": app_env,
+            "JWT_SECRET": "a" * 32,
+            "ROOT_API_KEY": "a" * 32,
+            "ALLOWED_DOMAINS": "example.com",
+            "DATABASE_PASSWORD": "securepass",
+        }
+        s = AppSettings.model_validate(env_data)
+        assert s.ENVIRONMENT == expected_env
+
+    def test_production_rejects_short_jwt_secret(self, clean_environment, monkeypatch):
+        monkeypatch.setenv("ENVIRONMENT", "production")
+        monkeypatch.setenv("JWT_SECRET", "tooshort")
+        monkeypatch.setenv("ROOT_API_KEY", "a" * 32)
+        monkeypatch.setenv("ALLOWED_DOMAINS", "example.com")
+        monkeypatch.setenv("DATABASE_PASSWORD", "securepass123")
+        with pytest.raises(ValueError, match="at least 32 characters"):
+            AppSettings.model_validate(os.environ)
+
+    def test_production_rejects_default_db_password(self, clean_environment, monkeypatch):
+        monkeypatch.setenv("ENVIRONMENT", "production")
+        monkeypatch.setenv("JWT_SECRET", "a" * 32)
+        monkeypatch.setenv("ROOT_API_KEY", "a" * 32)
+        monkeypatch.setenv("ALLOWED_DOMAINS", "example.com")
+        monkeypatch.setenv("DATABASE_PASSWORD", "")
+        with pytest.raises(ValueError, match="DATABASE_PASSWORD"):
+            AppSettings.model_validate(os.environ)
+
+    def test_production_accepts_valid_config(self, clean_environment, monkeypatch):
+        monkeypatch.setenv("ENVIRONMENT", "production")
+        monkeypatch.setenv("JWT_SECRET", "a" * 32)
+        monkeypatch.setenv("ROOT_API_KEY", "a" * 32)
+        monkeypatch.setenv("ALLOWED_DOMAINS", "example.com")
+        monkeypatch.setenv("DATABASE_PASSWORD", "securepass123")
+        s = AppSettings.model_validate(os.environ)
+        assert s.ENVIRONMENT == "production"
+
+
+class TestRefreshSettings:
+    def test_picks_up_new_env_var(self, monkeypatch):
+        from serverframework.lib.Environment import env, refresh_settings
+
+        monkeypatch.setenv("APP_NAME", "RefreshedApp")
+        refresh_settings()
+        assert env("APP_NAME") == "RefreshedApp"
+
+
+class TestEnvFunction:
+    @pytest.mark.parametrize(
+        "field",
+        ["APP_NAME", "SEED_DATA", "DATABASE_TYPE"],
+    )
+    def test_returns_string_for_string_fields(self, field):
+        result = env(field)
+        assert isinstance(result, str)
+
+
 if __name__ == "__main__":
     pytest.main([__file__])

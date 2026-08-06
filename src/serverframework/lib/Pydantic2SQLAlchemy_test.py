@@ -943,6 +943,195 @@ class TestModelConverterPydanticToDict:
         assert "bio" not in result
 
 
+class TestAnalyzeModelDependencies:
+    """Tests for _analyze_model_dependencies topological sort."""
+
+    def test_empty_input(self):
+        from serverframework.lib.Pydantic2SQLAlchemy import _analyze_model_dependencies
+
+        assert _analyze_model_dependencies({}) == []
+
+    def test_single_model_no_deps(self):
+        from serverframework.lib.Pydantic2SQLAlchemy import _analyze_model_dependencies
+
+        class SimpleModel(PydanticBaseModel):
+            name: str
+
+        result = _analyze_model_dependencies({"SimpleModel": SimpleModel})
+        assert result == ["SimpleModel"]
+
+    def test_skips_reference_and_network_models(self):
+        from serverframework.lib.Pydantic2SQLAlchemy import _analyze_model_dependencies
+
+        class AModel(PydanticBaseModel):
+            name: str
+
+        class AReferenceModel(PydanticBaseModel):
+            id: str
+
+        class ANetworkModel(PydanticBaseModel):
+            id: str
+
+        result = _analyze_model_dependencies({
+            "AModel": AModel,
+            "AReferenceModel": AReferenceModel,
+            "ANetworkModel": ANetworkModel,
+        })
+        assert "AModel" in result
+        assert "AReferenceModel" not in result
+        assert "ANetworkModel" not in result
+
+    def test_dependency_ordering(self):
+        from serverframework.lib.Pydantic2SQLAlchemy import _analyze_model_dependencies
+
+        class ParentModel(PydanticBaseModel):
+            name: str
+
+        class ChildModel(PydanticBaseModel):
+            name: str
+
+            class Reference:
+                class ID:
+                    parent_id: str
+
+        result = _analyze_model_dependencies({
+            "ChildModel": ChildModel,
+            "ParentModel": ParentModel,
+        })
+        assert result.index("ParentModel") < result.index("ChildModel")
+
+    def test_circular_deps_handled(self):
+        from serverframework.lib.Pydantic2SQLAlchemy import _analyze_model_dependencies
+
+        class AModel(PydanticBaseModel):
+            name: str
+
+            class Reference:
+                class ID:
+                    b_id: str
+
+        class BModel(PydanticBaseModel):
+            name: str
+
+            class Reference:
+                class ID:
+                    a_id: str
+
+        result = _analyze_model_dependencies({
+            "AModel": AModel,
+            "BModel": BModel,
+        })
+        assert len(result) == 2
+
+
+class TestResolveSqlalchemyModel:
+    """Tests for _resolve_sqlalchemy_model."""
+
+    def test_none_registry_returns_none(self):
+        from serverframework.lib.Pydantic2SQLAlchemy import _resolve_sqlalchemy_model
+
+        assert _resolve_sqlalchemy_model(None, ["User"]) is None
+
+    def test_finds_exact_match(self):
+        from serverframework.lib.Pydantic2SQLAlchemy import _resolve_sqlalchemy_model
+
+        mock_model = type("User", (), {})
+        registry = MagicMock()
+        registry.db_models = {"user": mock_model}
+        assert _resolve_sqlalchemy_model(registry, ["User"]) is mock_model
+
+    def test_case_insensitive_match(self):
+        from serverframework.lib.Pydantic2SQLAlchemy import _resolve_sqlalchemy_model
+
+        mock_model = type("UserModel", (), {})
+        registry = MagicMock()
+        registry.db_models = {"user": mock_model}
+        assert _resolve_sqlalchemy_model(registry, ["usermodel"]) is mock_model
+
+    def test_no_match_returns_none(self):
+        from serverframework.lib.Pydantic2SQLAlchemy import _resolve_sqlalchemy_model
+
+        registry = MagicMock()
+        registry.db_models = {}
+        assert _resolve_sqlalchemy_model(registry, ["NonExistent"]) is None
+
+
+class TestQueuePendingRelationship:
+    """Tests for _queue_pending_relationship."""
+
+    def test_none_registry_is_noop(self):
+        from serverframework.lib.Pydantic2SQLAlchemy import _queue_pending_relationship
+
+        _queue_pending_relationship(None, "Source", "rel", ["Target"], {})
+
+    def test_creates_pending_list_and_appends(self):
+        from serverframework.lib.Pydantic2SQLAlchemy import _queue_pending_relationship
+
+        registry = MagicMock(spec=[])
+        _queue_pending_relationship(registry, "Source", "children", ["Child"], {"lazy": "select"})
+        pending = getattr(registry, "_pending_sqlalchemy_relationships")
+        assert len(pending) == 1
+        assert pending[0]["source_name"] == "Source"
+        assert pending[0]["attr_name"] == "children"
+
+
+class TestApplyNestedModelExtensions:
+    """Tests for _apply_nested_model_extensions."""
+
+    def test_adds_field_to_nested_create(self):
+        from serverframework.lib.Pydantic2SQLAlchemy import _apply_nested_model_extensions
+
+        class Target(PydanticBaseModel):
+            name: str
+
+            class Create(PydanticBaseModel):
+                name: str
+
+        class Ext:
+            class Create:
+                __annotations__ = {"bonus": Optional[str]}
+                model_fields = {}
+
+        _apply_nested_model_extensions(Target, Ext)
+        assert "bonus" in Target.Create.__annotations__
+
+    def test_creates_missing_nested_class(self):
+        from serverframework.lib.Pydantic2SQLAlchemy import _apply_nested_model_extensions
+
+        class Target(PydanticBaseModel):
+            name: str
+
+        class Ext:
+            class Update:
+                __annotations__ = {"extra": str}
+                model_fields = {}
+
+        _apply_nested_model_extensions(Target, Ext)
+        assert hasattr(Target, "Update")
+        assert "extra" in Target.Update.__annotations__
+
+    def test_removes_field_from_nested(self):
+        from serverframework.lib.Pydantic2SQLAlchemy import (
+            RemoveField,
+            _apply_nested_model_extensions,
+        )
+
+        class Target(PydanticBaseModel):
+            name: str
+
+            class Search(PydanticBaseModel):
+                name: Optional[str] = None
+                removable: Optional[str] = None
+
+        class Ext:
+            class Search:
+                __annotations__ = {"removable": RemoveField}
+                model_fields = {}
+
+        _apply_nested_model_extensions(Target, Ext)
+        assert "removable" not in Target.Search.__annotations__
+
+
 class TestModelConverterSqlalchemyToPydantic:
     """Tests for ModelConverter.sqlalchemy_to_pydantic."""
 
