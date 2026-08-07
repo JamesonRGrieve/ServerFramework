@@ -166,6 +166,10 @@ class EXT_Auth_OAuth(AbstractStaticExtension):
         enable_pkce: bool = True,
         max_concurrent_flows: int = 100,
         cleanup_interval_minutes: int = 5,
+        enable_jwt_tokens: bool = False,
+        jwt_secret_key: Optional[str] = None,
+        default_token_expiry_minutes: int = 60,
+        authorization_code_expiry_minutes: int = 10,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -178,12 +182,23 @@ class EXT_Auth_OAuth(AbstractStaticExtension):
         self.enable_pkce = enable_pkce
         self.max_concurrent_flows = max_concurrent_flows
         self.cleanup_interval_minutes = cleanup_interval_minutes
+        self.enable_jwt_tokens = enable_jwt_tokens
+        self.jwt_secret_key = jwt_secret_key
+        self.default_token_expiry_minutes = default_token_expiry_minutes
+        self.authorization_code_expiry_minutes = authorization_code_expiry_minutes
+        self.require_state_parameter = enable_state_validation
 
         # Provider instance reference
         self.provider = None
         self.oauth_clients = {}
+        self.registered_clients = {}
+        self.oauth_sessions = {}
         self.active_flows = {}
         self.session_store = {}
+        self.active_tokens = {}
+        self.active_auth_codes = {}
+        self.max_clients_per_user = kwargs.get("max_clients_per_user", 10)
+        self.redis_client = None
 
     def on_initialize(self) -> bool:
         """

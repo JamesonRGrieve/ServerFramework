@@ -6,6 +6,7 @@ Consolidated database configuration and declarative base management.
 
 import multiprocessing
 import os
+import tempfile
 import threading
 from contextlib import asynccontextmanager, contextmanager
 from enum import Enum
@@ -158,7 +159,7 @@ def get_database_info(db_prefix: str = ""):
         db_path = (
             os.getenv("DATABASE_PATH") or env("DATABASE_PATH")
             if os.getenv("DATABASE_PATH") or env("DATABASE_PATH")
-            else os.getcwd()
+            else tempfile.gettempdir()
         )
 
         # Normalize the database path

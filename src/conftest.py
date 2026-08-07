@@ -12,9 +12,9 @@ from typing import Annotated, Any, Dict, List, Tuple, get_args, get_origin, Forw
 # ``InsecureKeyLengthWarning`` on a sub-32-byte HMAC key and the framework's
 # verify path requires ``aud``/``iss``; the defaults below let the test
 # suite mint and verify tokens consistently across xdist workers.
-os.environ.setdefault("JWT_SECRET", "test-jwt-secret-32-bytes-or-more-aaaaaa")
-os.environ.setdefault("JWT_AUDIENCE", "test-aud")
-os.environ.setdefault("JWT_ISSUER", "test-iss")
+os.environ["JWT_SECRET"] = "test-jwt-secret-32-bytes-or-more-aaaaaa"
+os.environ["JWT_AUDIENCE"] = "test-aud"
+os.environ["JWT_ISSUER"] = "test-iss"
 # A Fernet key (real 32-byte URL-safe base64) so encryption-at-rest
 # paths can round-trip in tests without real key management.
 # Generated with ``Fernet.generate_key()`` and committed verbatim — this
@@ -598,6 +598,30 @@ def pytest_generate_tests(metafunc):
 # Database setup is now handled automatically by the app instance
 
 
+@pytest.fixture(autouse=True)
+def _restore_settings_after_test():
+    """Restore critical env vars and the settings singleton after each test.
+
+    Tests that use ``patch.dict(os.environ, ..., clear=True)`` wipe all env
+    vars for the duration of the ``with`` block.  If any code path within
+    that block materialises a new ``AppSettings`` (directly or via
+    ``refresh_settings``), the singleton picks up an auto-generated
+    JWT_SECRET that persists after the env is restored — breaking JWT
+    verification for later tests on the same xdist worker.
+
+    Force-reset the env vars before refreshing settings to ensure the
+    values are correct regardless of monkeypatch/patch.dict restoration
+    order.
+    """
+    yield
+    os.environ["JWT_SECRET"] = "test-jwt-secret-32-bytes-or-more-aaaaaa"
+    os.environ["JWT_AUDIENCE"] = "test-aud"
+    os.environ["JWT_ISSUER"] = "test-iss"
+    from serverframework.lib.Environment import refresh_settings
+
+    refresh_settings()
+
+
 @pytest.fixture(scope="session")
 def mock_server():
     """
@@ -617,6 +641,9 @@ def mock_server():
     )
 
     prepare_test_registry()
+    from serverframework.lib.Environment import refresh_settings
+
+    refresh_settings()
 
     # Follow the same initialization process as app.py
     logger.debug("Setting up Python path...")
@@ -649,6 +676,9 @@ def server():
     logger.debug(f"Worker {worker_id}: Setting up server with db_prefix={db_prefix}")
 
     prepare_test_registry()
+    from serverframework.lib.Environment import refresh_settings
+
+    refresh_settings()
 
     # Follow the same initialization process as app.py
     logger.debug("Setting up Python path...")

@@ -22,7 +22,7 @@ from typing import ClassVar, List, Optional, Type
 from fastapi import HTTPException
 from pydantic import BaseModel, Field
 
-from serverframework.lib.CustomRoute import custom_route
+from serverframework.lib.CustomRoute import ExposeIn, custom_route
 from serverframework.lib.Environment import env
 from serverframework.lib.Pydantic2FastAPI import AuthType, RouterMixin
 from serverframework.logic.AbstractLogicManager import (
@@ -197,6 +197,7 @@ class LabelManager(AbstractBLLManager, RouterMixin):
         authentication_type="jwt",
         openapi_tags=("Labels",),
         summary="Attach a label to an entity (polymorphic)",
+        expose_in=(ExposeIn.REST,),
     )
     async def attach_route(
         self,
@@ -221,6 +222,7 @@ class LabelManager(AbstractBLLManager, RouterMixin):
         authentication_type="jwt",
         openapi_tags=("Labels",),
         summary="Detach a label from an entity (polymorphic)",
+        expose_in=(ExposeIn.REST,),
     )
     async def detach_route(
         self, label_id: str, target_type: str, target_id: str

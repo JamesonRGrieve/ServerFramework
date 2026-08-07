@@ -840,26 +840,26 @@ class TestExtensionModelSystem:
         reset_extension_system()
 
     def test_decorator_sets_metadata(self):
-        class Target(PydanticBaseModel):
+        class MetadataTarget(PydanticBaseModel):
             name: str
 
-        @extension_model(Target)
-        class Ext(PydanticBaseModel):
+        @extension_model(MetadataTarget)
+        class MetadataExt(PydanticBaseModel):
             extra: str = "default"
 
-        assert Ext._is_extension_model is True
-        assert Ext._extension_target is Target
+        assert MetadataExt._is_extension_model is True
+        assert MetadataExt._extension_target is MetadataTarget
 
     def test_decorator_populates_compat_registry(self):
-        class Target(PydanticBaseModel):
+        class RegistryTarget(PydanticBaseModel):
             name: str
 
-        @extension_model(Target)
-        class Ext(PydanticBaseModel):
+        @extension_model(RegistryTarget)
+        class RegistryExt(PydanticBaseModel):
             extra: str = ""
 
         registry = get_applied_extensions()
-        target_key = f"{Target.__module__}.{Target.__name__}"
+        target_key = f"{RegistryTarget.__module__}.{RegistryTarget.__name__}"
         assert target_key in registry
 
     def test_apply_adds_field(self):

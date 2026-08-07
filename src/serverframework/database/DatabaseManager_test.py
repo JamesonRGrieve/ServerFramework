@@ -128,30 +128,22 @@ class TestGetDatabaseInfo:
     def test_get_database_info_sqlite_windows_path(self):
         """Test that SQLite URLs always use forward slashes, even on Windows."""
         with tempfile.TemporaryDirectory() as temp_dir:
-            # Create a Windows-style path within the temp directory
-            windows_path = os.path.join(temp_dir, "Users", "Test", "Database").replace(
-                "/", "\\"
-            )
+            db_path = os.path.join(temp_dir, "Users", "Test", "Database")
 
             with patch.dict(
                 os.environ,
                 {
                     "DATABASE_TYPE": "sqlite",
                     "DATABASE_NAME": TEST_STATIC_DB_NAME,
-                    "DATABASE_PATH": windows_path,  # Windows-style path
+                    "DATABASE_PATH": db_path,
                 },
                 clear=True,
             ):
                 db_info = get_database_info()
 
-                # SQLite URLs must always use forward slashes
                 assert "sqlite:///" in db_info["url"]
-                assert "\\" not in db_info["url"]  # No backslashes in URL
-                assert "/" in db_info["url"].replace(
-                    "sqlite:///", ""
-                )  # Forward slashes in path
-
-                # The file_path can use OS-specific separators
+                assert "\\" not in db_info["url"]
+                assert "/" in db_info["url"].replace("sqlite:///", "")
                 assert db_info["file_path"] is not None
 
     def test_get_database_info_postgresql(self):

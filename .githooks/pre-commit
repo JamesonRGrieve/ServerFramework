@@ -3,8 +3,11 @@
 # Install: git config core.hooksPath .githooks
 set -euo pipefail
 
+VENV_PYTHON="$(dirname "$(git rev-parse --git-dir)")/.venv/bin/python"
+[ -x "$VENV_PYTHON" ] || VENV_PYTHON=python3
+
 echo "[pre-commit] Running test suite..."
-python3 -m pytest src/ \
+"$VENV_PYTHON" -m pytest src/ \
   --ignore=src/serverframework/extensions/auth_api_keys \
   --ignore=src/serverframework/extensions/auth_marketplace \
   --ignore=src/serverframework/extensions/auth_merge \
@@ -20,7 +23,7 @@ if [ ${PIPESTATUS[0]} -ne 0 ]; then
 fi
 
 echo "[pre-commit] Running ratchet checks..."
-python3 scripts/ratchet-check.py
+"$VENV_PYTHON" scripts/ratchet-check.py
 if [ $? -ne 0 ]; then
   echo "[pre-commit] FAIL: ratchet regression detected"
   exit 1

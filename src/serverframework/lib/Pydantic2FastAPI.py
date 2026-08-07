@@ -88,7 +88,57 @@ except TypeError:
 
     ValidationError.from_exception_data = classmethod(_compat_from_exception_data)
 
+from serverframework.lib.ContentNegotiation import (
+    MIME_JSON,
+    MIME_TOON,
+    MIME_TOML,
+    MIME_XML,
+    MIME_YAML,
+)
 from serverframework.lib.Environment import inflection
+
+# ---------------------------------------------------------------------------
+# Multi-format OpenAPI helpers — content negotiation advertisement
+# ---------------------------------------------------------------------------
+
+# All content types supported by the content negotiation middleware.
+# Responses advertise all five; POST/PUT/PATCH request bodies accept all five.
+_NEGOTIABLE_CONTENT_TYPES: Tuple[str, ...] = (
+    MIME_JSON,
+    MIME_TOON,
+    MIME_YAML,
+    MIME_TOML,
+    MIME_XML,
+)
+
+
+def _multiformat_response_content(example: Optional[Any] = None) -> Dict[str, Any]:
+    """Build a ``content`` dict listing all negotiable MIME types.
+
+    When *example* is provided it is attached to the ``application/json``
+    entry; the remaining types are advertised without an inline example
+    (the schema is inherited from the route's ``response_model``).
+    """
+    content: Dict[str, Any] = {}
+    for mime in _NEGOTIABLE_CONTENT_TYPES:
+        if mime == MIME_JSON and example is not None:
+            content[mime] = {"example": example}
+        else:
+            content[mime] = {}
+    return content
+
+
+def _multiformat_request_body_extra() -> Dict[str, Any]:
+    """Return ``openapi_extra`` that adds non-JSON content types to the
+    route's request body, reflecting the middleware's ability to
+    deserialize TOON, YAML, TOML, and XML in addition to JSON.
+    """
+    extra_content: Dict[str, Any] = {}
+    for mime in _NEGOTIABLE_CONTENT_TYPES:
+        if mime == MIME_JSON:
+            continue  # FastAPI generates this from Body(...)
+        extra_content[mime] = {}
+    return {"requestBody": {"content": extra_content}}
 from serverframework.lib.Logging import logger
 
 if TYPE_CHECKING:
@@ -1962,12 +2012,10 @@ def register_route(
             f" for {parent_name}" if parent_name else ""
         )
 
-        # Prepare responses with examples
-        responses = {}
-        if "get" in examples:
-            responses[200] = {
-                "content": {"application/json": {"example": examples["get"]}}
-            }
+        # Prepare responses with examples — advertise all negotiable formats
+        responses: Dict[int, Dict[str, Any]] = {
+            200: {"content": _multiformat_response_content(examples.get("get"))}
+        }
         responses.update(degradation_responses)
 
         get_query_dependency = create_query_model_dependency(network_model.GET)
@@ -2194,12 +2242,10 @@ def register_route(
             f" for {parent_name}" if parent_name else ""
         )
 
-        # Prepare responses with examples
-        responses = {}
-        if "list" in examples:
-            responses[200] = {
-                "content": {"application/json": {"example": examples["list"]}}
-            }
+        # Prepare responses with examples — advertise all negotiable formats
+        responses: Dict[int, Dict[str, Any]] = {
+            200: {"content": _multiformat_response_content(examples.get("list"))}
+        }
         responses.update(degradation_responses)
 
         list_query_dependency = create_query_model_dependency(network_model.LIST)
@@ -2499,12 +2545,10 @@ def register_route(
             f" for {parent_name}" if parent_name else ""
         )
 
-        # Prepare responses with examples
-        responses = {}
-        if "create" in examples:
-            responses[201] = {
-                "content": {"application/json": {"example": examples["create"]}}
-            }
+        # Prepare responses with examples — advertise all negotiable formats
+        responses: Dict[int, Dict[str, Any]] = {
+            201: {"content": _multiformat_response_content(examples.get("create"))}
+        }
         responses.update(degradation_responses)
 
         @router.post(
@@ -2516,6 +2560,7 @@ def register_route(
             status_code=status.HTTP_201_CREATED,
             dependencies=dependencies,
             responses=responses,
+            openapi_extra=_multiformat_request_body_extra(),
         )
         async def create_resource(
             request: Dict = Depends(get_request_info),
@@ -2614,12 +2659,10 @@ def register_route(
             f" for {parent_name}" if parent_name else ""
         )
 
-        # Prepare responses with examples
-        responses = {}
-        if "update" in examples:
-            responses[200] = {
-                "content": {"application/json": {"example": examples["update"]}}
-            }
+        # Prepare responses with examples — advertise all negotiable formats
+        responses: Dict[int, Dict[str, Any]] = {
+            200: {"content": _multiformat_response_content(examples.get("update"))}
+        }
         responses.update(degradation_responses)
 
         @router.put(
@@ -2629,6 +2672,7 @@ def register_route(
             status_code=status.HTTP_200_OK,
             dependencies=dependencies,
             responses=responses,
+            openapi_extra=_multiformat_request_body_extra(),
         )
         async def update_resource(
             request: Dict = Depends(get_request_info),
@@ -3053,12 +3097,10 @@ def register_route(
             f" for {parent_name}" if parent_name else ""
         )
 
-        # Prepare responses with examples
-        responses = {}
-        if "search" in examples:
-            responses[200] = {
-                "content": {"application/json": {"example": examples["search"]}}
-            }
+        # Prepare responses with examples — advertise all negotiable formats
+        responses: Dict[int, Dict[str, Any]] = {
+            200: {"content": _multiformat_response_content(examples.get("search"))}
+        }
 
         @router.post(
             path,
@@ -3067,6 +3109,7 @@ def register_route(
             status_code=status.HTTP_200_OK,
             dependencies=dependencies,
             responses=responses,
+            openapi_extra=_multiformat_request_body_extra(),
         )
         async def search_resources(
             request: Dict = Depends(get_request_info),
@@ -3246,12 +3289,10 @@ def register_route(
             },
         )
 
-        # Prepare responses with examples
-        responses = {}
-        if "batch_update" in examples:
-            responses[200] = {
-                "content": {"application/json": {"example": examples["batch_update"]}}
-            }
+        # Prepare responses with examples — advertise all negotiable formats
+        responses: Dict[int, Dict[str, Any]] = {
+            200: {"content": _multiformat_response_content(examples.get("batch_update"))}
+        }
 
         @router.put(
             path,
@@ -3260,6 +3301,7 @@ def register_route(
             status_code=status.HTTP_200_OK,
             dependencies=dependencies,
             responses=responses,
+            openapi_extra=_multiformat_request_body_extra(),
         )
         async def batch_update_resources(
             body: BatchUpdateModel = Body(...),

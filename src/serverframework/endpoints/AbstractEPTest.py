@@ -27,6 +27,15 @@ from faker import Faker
 
 from serverframework.AbstractTest import AbstractTest, CategoryOfTest, ClassOfTestsConfig, ParentEntity
 from serverframework.endpoints.AbstractGQLTest import AbstractGraphQLTest
+from serverframework.lib.ContentNegotiation import (
+    MIME_JSON,
+    MIME_TOML,
+    MIME_TOON,
+    MIME_XML,
+    MIME_YAML,
+    deserialize,
+    serialize,
+)
 from serverframework.lib.Environment import env, inflection
 from serverframework.lib.Logging import logger
 from serverframework.lib.Pydantic import PydanticUtility
@@ -4498,4 +4507,456 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         engine = server.app.state.model_registry.database_manager.engine
         assert_scaling_within_bounds(
             operation, self.scalability_profile, metric, engine=engine, setup=setup
+        )
+
+
+# ---------------------------------------------------------------------------
+# FormatTestMixin -- multi-format content negotiation coverage
+# ---------------------------------------------------------------------------
+
+
+class FormatTestMixin:
+    """Mixin that adds multi-format content negotiation tests to ``AbstractEPTest``.
+
+    Exercises every CRUD operation across the five serialization formats
+    supported by ``ContentNegotiationMiddleware``:
+
+    1. JSON  (application/json)  -- default
+    2. TOON  (application/toon)  -- compact LLM format
+    3. YAML  (application/yaml)
+    4. TOML  (application/toml)
+    5. XML   (application/xml)
+
+    Tests cover two response-format selection methods:
+
+    * **Accept header** -- standard HTTP content negotiation
+    * **URL suffix** -- ``.json``, ``.toon``, ``.yaml``, ``.toml``, ``.xml``
+
+    And incoming body format testing for write operations (POST / PUT).
+
+    Mix into any ``AbstractEPTest`` subclass to get automatic format
+    coverage::
+
+        class TestWidgetEndpoint(AbstractEPTest, FormatTestMixin):
+            ...
+
+    TOML cannot represent ``None`` values, and entity responses regularly
+    contain nullable fields.  The middleware silently falls back to JSON
+    when TOML serialization fails, so TOML is excluded from *response*
+    format assertions but included in *request* body tests (where the
+    middleware transcodes to JSON before Pydantic validates).
+    """
+
+    # -- Format parametrization constants ----------------------------------
+    #
+    # Null-safe formats for response tests (excludes TOML).
+    _FMT_RESPONSE: list = [
+        pytest.param("json", MIME_JSON, id="json"),
+        pytest.param("toon", MIME_TOON, id="toon"),
+        pytest.param("yaml", MIME_YAML, id="yaml"),
+        pytest.param("xml", MIME_XML, id="xml"),
+    ]
+
+    # All five formats for request body tests.
+    _FMT_REQUEST: list = [
+        pytest.param("json", MIME_JSON, id="json"),
+        pytest.param("toon", MIME_TOON, id="toon"),
+        pytest.param("yaml", MIME_YAML, id="yaml"),
+        pytest.param("toml", MIME_TOML, id="toml"),
+        pytest.param("xml", MIME_XML, id="xml"),
+    ]
+
+    # URL suffix parametrization (null-safe for response tests).
+    _FMT_SUFFIX_RESPONSE: list = [
+        pytest.param(".json", "json", MIME_JSON, id="suffix-json"),
+        pytest.param(".toon", "toon", MIME_TOON, id="suffix-toon"),
+        pytest.param(".yaml", "yaml", MIME_YAML, id="suffix-yaml"),
+        pytest.param(".xml", "xml", MIME_XML, id="suffix-xml"),
+    ]
+
+    # -- Helpers -----------------------------------------------------------
+
+    @staticmethod
+    def _parse_fmt(body: str, fmt: str) -> Any:
+        """Deserialize *body* from the canonical format key."""
+        return deserialize(body, fmt)
+
+    @staticmethod
+    def _serialize_fmt(data: Any, fmt: str) -> str:
+        """Serialize *data* to the canonical format key (body text only)."""
+        body, _ = serialize(data, fmt)
+        return body
+
+    @staticmethod
+    def _strip_none_values(data: Any) -> Any:
+        """Recursively strip ``None`` values for TOML compatibility."""
+        if isinstance(data, dict):
+            return {
+                k: FormatTestMixin._strip_none_values(v)
+                for k, v in data.items()
+                if v is not None
+            }
+        if isinstance(data, list):
+            return [FormatTestMixin._strip_none_values(item) for item in data]
+        return data
+
+    def _extract_fmt_entity(self, data: Any) -> Dict[str, Any]:
+        """Extract the entity dict from a parsed format response.
+
+        Handles the wrapper ``{entity_name: {...}}`` or a flat entity dict.
+        """
+        if isinstance(data, dict):
+            if self.entity_name in data:
+                return data[self.entity_name]
+            if "id" in data:
+                return data
+        return data
+
+    # =====================================================================
+    # Response format tests -- GET single entity
+    # =====================================================================
+
+    @pytest.mark.parametrize("fmt,mime", _FMT_RESPONSE)
+    def test_format_GET_200_id_accept(
+        self, server: Any, admin_a: Any, team_a: Any, fmt: str, mime: str
+    ) -> None:
+        """GET single entity with each Accept header; validate Content-Type and body."""
+        entity = self._create(
+            server, admin_a.jwt, admin_a.id, team_a.id,
+            key=f"fmt_get_accept_{fmt}",
+        )
+        path_parent_ids = self._path_parent_ids_from_entity(entity)
+        endpoint = self.get_detail_endpoint(entity["id"], path_parent_ids)
+
+        headers = {**self._get_appropriate_headers(admin_a.jwt), "Accept": mime}
+        resp = server.get(endpoint, headers=headers)
+
+        assert resp.status_code == 200, (
+            f"GET {endpoint} Accept:{mime} -> {resp.status_code}: {resp.text}"
+        )
+
+        if fmt == "json":
+            data = resp.json()
+        else:
+            ct = resp.headers.get("content-type", "")
+            assert ct == mime, f"Expected Content-Type {mime}, got {ct}"
+            data = self._parse_fmt(resp.text, fmt)
+
+        entity_data = self._extract_fmt_entity(data)
+        assert isinstance(entity_data, dict), f"{fmt}: parsed body is not a dict"
+        assert "id" in entity_data, f"{fmt}: response missing 'id'"
+        assert str(entity_data["id"]) == str(entity["id"]), f"{fmt}: ID mismatch"
+
+    @pytest.mark.parametrize("suffix,fmt,mime", _FMT_SUFFIX_RESPONSE)
+    def test_format_GET_200_id_suffix(
+        self, server: Any, admin_a: Any, team_a: Any,
+        suffix: str, fmt: str, mime: str,
+    ) -> None:
+        """GET single entity with URL suffix; suffix overrides Accept header."""
+        entity = self._create(
+            server, admin_a.jwt, admin_a.id, team_a.id,
+            key=f"fmt_get_suffix_{fmt}",
+        )
+        path_parent_ids = self._path_parent_ids_from_entity(entity)
+        endpoint = self.get_detail_endpoint(entity["id"], path_parent_ids)
+
+        # Explicitly request JSON via Accept to prove suffix wins.
+        headers = {**self._get_appropriate_headers(admin_a.jwt), "Accept": MIME_JSON}
+        resp = server.get(f"{endpoint}{suffix}", headers=headers)
+
+        assert resp.status_code == 200, (
+            f"GET {endpoint}{suffix} -> {resp.status_code}: {resp.text}"
+        )
+
+        if fmt != "json":
+            ct = resp.headers.get("content-type", "")
+            assert ct == mime, f"Suffix {suffix} should override to {mime}, got {ct}"
+            data = self._parse_fmt(resp.text, fmt)
+        else:
+            data = resp.json()
+
+        entity_data = self._extract_fmt_entity(data)
+        assert isinstance(entity_data, dict), f"{fmt}: parsed body is not a dict"
+        assert "id" in entity_data, f"{fmt}: response missing 'id'"
+        assert str(entity_data["id"]) == str(entity["id"]), f"{fmt}: ID mismatch"
+
+    # =====================================================================
+    # Response format tests -- GET list
+    # =====================================================================
+
+    @pytest.mark.parametrize("fmt,mime", _FMT_RESPONSE)
+    def test_format_GET_200_list_accept(
+        self, server: Any, admin_a: Any, team_a: Any, fmt: str, mime: str
+    ) -> None:
+        """GET entity list with each Accept header; validate format and structure."""
+        entity = self._create(
+            server, admin_a.jwt, admin_a.id, team_a.id,
+            key=f"fmt_list_accept_{fmt}",
+        )
+        path_parent_ids = self._path_parent_ids_from_entity(entity)
+        endpoint = self.get_list_endpoint(path_parent_ids)
+
+        headers = {**self._get_appropriate_headers(admin_a.jwt), "Accept": mime}
+        resp = server.get(endpoint, headers=headers)
+
+        assert resp.status_code == 200, (
+            f"GET {endpoint} Accept:{mime} -> {resp.status_code}: {resp.text}"
+        )
+
+        if fmt == "json":
+            data = resp.json()
+        else:
+            ct = resp.headers.get("content-type", "")
+            assert ct == mime, f"Expected Content-Type {mime}, got {ct}"
+            data = self._parse_fmt(resp.text, fmt)
+
+        # List response is either ``{plural_key: [...]}`` or a bare list.
+        if isinstance(data, dict):
+            list_values = [v for v in data.values() if isinstance(v, list)]
+            assert len(list_values) > 0, (
+                f"{fmt}: expected at least one list in response dict, "
+                f"got keys: {list(data.keys())}"
+            )
+        elif isinstance(data, list):
+            pass  # bare list is acceptable
+        else:
+            pytest.fail(f"{fmt}: expected dict or list, got {type(data)}")
+
+    @pytest.mark.parametrize("suffix,fmt,mime", _FMT_SUFFIX_RESPONSE)
+    def test_format_GET_200_list_suffix(
+        self, server: Any, admin_a: Any, team_a: Any,
+        suffix: str, fmt: str, mime: str,
+    ) -> None:
+        """GET entity list with URL suffix; validate format and structure."""
+        entity = self._create(
+            server, admin_a.jwt, admin_a.id, team_a.id,
+            key=f"fmt_list_suffix_{fmt}",
+        )
+        path_parent_ids = self._path_parent_ids_from_entity(entity)
+        endpoint = self.get_list_endpoint(path_parent_ids)
+
+        headers = {**self._get_appropriate_headers(admin_a.jwt), "Accept": MIME_JSON}
+        resp = server.get(f"{endpoint}{suffix}", headers=headers)
+
+        assert resp.status_code == 200, (
+            f"GET {endpoint}{suffix} -> {resp.status_code}: {resp.text}"
+        )
+
+        if fmt != "json":
+            ct = resp.headers.get("content-type", "")
+            assert ct == mime, f"Suffix {suffix} should override to {mime}, got {ct}"
+            data = self._parse_fmt(resp.text, fmt)
+        else:
+            data = resp.json()
+
+        if isinstance(data, dict):
+            list_values = [v for v in data.values() if isinstance(v, list)]
+            assert len(list_values) > 0, (
+                f"{fmt}: expected at least one list in response dict"
+            )
+        elif isinstance(data, list):
+            pass
+        else:
+            pytest.fail(f"{fmt}: expected dict or list, got {type(data)}")
+
+    # =====================================================================
+    # Request format tests -- POST create with each Content-Type
+    # =====================================================================
+
+    @pytest.mark.parametrize("fmt,mime", _FMT_REQUEST)
+    def test_format_POST_201_request_body(
+        self, server: Any, admin_a: Any, team_a: Any, fmt: str, mime: str
+    ) -> None:
+        """POST create entity with each Content-Type; middleware transcodes to JSON."""
+        _parent_entities_dict, parent_ids, path_parent_ids = self._create_parent_entities(
+            server, admin_a.jwt, admin_a.id, team_a.id, None
+        )
+
+        payload = {
+            self.entity_name: self.create_payload(
+                name=f"FmtPost-{fmt}-{self.faker.random_int()}",
+                parent_ids=parent_ids,
+                team_id=team_a.id,
+            )
+        }
+
+        endpoint = self.get_create_endpoint(path_parent_ids)
+
+        # TOML cannot serialize None -- strip them from the payload.
+        serializable_payload = self._strip_none_values(payload) if fmt == "toml" else payload
+
+        if fmt == "json":
+            body = json.dumps(serializable_payload)
+        else:
+            body = self._serialize_fmt(serializable_payload, fmt)
+
+        headers = {**self._get_appropriate_headers(admin_a.jwt), "Content-Type": mime}
+        resp = server.post(endpoint, content=body, headers=headers)
+
+        assert resp.status_code == 201, (
+            f"POST {endpoint} Content-Type:{mime} -> {resp.status_code}: {resp.text}"
+        )
+
+        # Response defaults to JSON (no Accept header).
+        data = resp.json()
+        entity_data = self._extract_fmt_entity(data)
+        assert isinstance(entity_data, dict), f"{fmt}: response is not a dict"
+        assert "id" in entity_data, f"{fmt}: created entity missing 'id'"
+        self.tracked_entities[f"fmt_post_req_{fmt}"] = entity_data
+
+    # =====================================================================
+    # Request format tests -- PUT update with each Content-Type
+    # =====================================================================
+
+    @pytest.mark.parametrize("fmt,mime", _FMT_REQUEST)
+    def test_format_PUT_200_request_body(
+        self, server: Any, admin_a: Any, team_a: Any, fmt: str, mime: str
+    ) -> None:
+        """PUT update entity with each Content-Type; middleware transcodes to JSON."""
+        entity = self._create(
+            server, admin_a.jwt, admin_a.id, team_a.id,
+            key=f"fmt_put_req_{fmt}",
+        )
+        path_parent_ids = self._path_parent_ids_from_entity(entity)
+        endpoint = self.get_update_endpoint(entity["id"], path_parent_ids)
+
+        update_data: Dict[str, Any] = {}
+        if self.string_field_to_update:
+            update_data[self.string_field_to_update] = f"FmtPut-{fmt}-{self.faker.random_int()}"
+
+        payload = {self.entity_name: update_data}
+
+        serializable_payload = self._strip_none_values(payload) if fmt == "toml" else payload
+
+        if fmt == "json":
+            body = json.dumps(serializable_payload)
+        else:
+            body = self._serialize_fmt(serializable_payload, fmt)
+
+        headers = {**self._get_appropriate_headers(admin_a.jwt), "Content-Type": mime}
+        resp = server.put(endpoint, content=body, headers=headers)
+
+        assert resp.status_code == 200, (
+            f"PUT {endpoint} Content-Type:{mime} -> {resp.status_code}: {resp.text}"
+        )
+
+        data = resp.json()
+        entity_data = self._extract_fmt_entity(data)
+        assert isinstance(entity_data, dict), f"{fmt}: response is not a dict"
+        assert "id" in entity_data, f"{fmt}: updated entity missing 'id'"
+
+    # =====================================================================
+    # Response format tests -- POST create with Accept header
+    # =====================================================================
+
+    @pytest.mark.parametrize("fmt,mime", _FMT_RESPONSE)
+    def test_format_POST_201_response_accept(
+        self, server: Any, admin_a: Any, team_a: Any, fmt: str, mime: str
+    ) -> None:
+        """POST create with JSON body and Accept header for response format."""
+        _parent_entities_dict, parent_ids, path_parent_ids = self._create_parent_entities(
+            server, admin_a.jwt, admin_a.id, team_a.id, None
+        )
+
+        payload = {
+            self.entity_name: self.create_payload(
+                name=f"FmtResp-{fmt}-{self.faker.random_int()}",
+                parent_ids=parent_ids,
+                team_id=team_a.id,
+            )
+        }
+
+        endpoint = self.get_create_endpoint(path_parent_ids)
+        headers = {
+            **self._get_appropriate_headers(admin_a.jwt),
+            "Content-Type": MIME_JSON,
+            "Accept": mime,
+        }
+        resp = server.post(endpoint, content=json.dumps(payload), headers=headers)
+
+        assert resp.status_code == 201, (
+            f"POST {endpoint} Accept:{mime} -> {resp.status_code}: {resp.text}"
+        )
+
+        if fmt == "json":
+            data = resp.json()
+        else:
+            ct = resp.headers.get("content-type", "")
+            assert ct == mime, f"Expected Content-Type {mime}, got {ct}"
+            data = self._parse_fmt(resp.text, fmt)
+
+        entity_data = self._extract_fmt_entity(data)
+        assert isinstance(entity_data, dict), f"{fmt}: response is not a dict"
+        assert "id" in entity_data, f"{fmt}: created entity missing 'id'"
+        self.tracked_entities[f"fmt_post_resp_{fmt}"] = entity_data
+
+    # =====================================================================
+    # Response format tests -- POST create with URL suffix
+    # =====================================================================
+
+    @pytest.mark.parametrize("suffix,fmt,mime", _FMT_SUFFIX_RESPONSE)
+    def test_format_POST_201_response_suffix(
+        self, server: Any, admin_a: Any, team_a: Any,
+        suffix: str, fmt: str, mime: str,
+    ) -> None:
+        """POST create with JSON body and URL suffix for response format."""
+        _parent_entities_dict, parent_ids, path_parent_ids = self._create_parent_entities(
+            server, admin_a.jwt, admin_a.id, team_a.id, None
+        )
+
+        payload = {
+            self.entity_name: self.create_payload(
+                name=f"FmtSuffix-{fmt}-{self.faker.random_int()}",
+                parent_ids=parent_ids,
+                team_id=team_a.id,
+            )
+        }
+
+        endpoint = self.get_create_endpoint(path_parent_ids)
+        headers = {
+            **self._get_appropriate_headers(admin_a.jwt),
+            "Content-Type": MIME_JSON,
+            "Accept": MIME_JSON,  # suffix should override
+        }
+        resp = server.post(f"{endpoint}{suffix}", content=json.dumps(payload), headers=headers)
+
+        assert resp.status_code == 201, (
+            f"POST {endpoint}{suffix} -> {resp.status_code}: {resp.text}"
+        )
+
+        if fmt != "json":
+            ct = resp.headers.get("content-type", "")
+            assert ct == mime, f"Suffix {suffix} should produce {mime}, got {ct}"
+            data = self._parse_fmt(resp.text, fmt)
+        else:
+            data = resp.json()
+
+        entity_data = self._extract_fmt_entity(data)
+        assert isinstance(entity_data, dict), f"{fmt}: response is not a dict"
+        assert "id" in entity_data, f"{fmt}: created entity missing 'id'"
+        self.tracked_entities[f"fmt_post_suffix_{fmt}"] = entity_data
+
+    # =====================================================================
+    # Error path -- unsupported Accept returns 406
+    # =====================================================================
+
+    def test_format_GET_406_unsupported_accept(
+        self, server: Any, admin_a: Any, team_a: Any
+    ) -> None:
+        """Unsupported Accept type returns 406 on the entity endpoint."""
+        entity = self._create(
+            server, admin_a.jwt, admin_a.id, team_a.id,
+            key="fmt_406_test",
+        )
+        path_parent_ids = self._path_parent_ids_from_entity(entity)
+        endpoint = self.get_detail_endpoint(entity["id"], path_parent_ids)
+
+        headers = {
+            **self._get_appropriate_headers(admin_a.jwt),
+            "Accept": "application/octet-stream",
+        }
+        resp = server.get(endpoint, headers=headers)
+
+        assert resp.status_code == 406, (
+            f"Expected 406 Not Acceptable, got {resp.status_code}: {resp.text}"
         )

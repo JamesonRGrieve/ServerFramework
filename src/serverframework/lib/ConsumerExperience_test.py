@@ -290,13 +290,15 @@ class TestModelManagerAutoWiring:
 
 
 class TestDatabasePathDefault:
-    def test_sqlite_defaults_to_cwd(self, monkeypatch):
+    def test_sqlite_defaults_to_tempdir(self, monkeypatch):
         monkeypatch.delenv("DATABASE_PATH", raising=False)
+
+        import tempfile
 
         from serverframework.database.DatabaseManager import get_database_info
 
         info = get_database_info()
-        assert os.getcwd() in info.get("file_path", "")
+        assert tempfile.gettempdir() in info.get("file_path", "")
 
 
 # ---------------------------------------------------------------------------
