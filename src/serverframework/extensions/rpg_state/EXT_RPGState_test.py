@@ -14,11 +14,12 @@ class TestExtensionMetadata:
         assert RPGStateExtension.name == "rpg_state"
         assert "RPG" in RPGStateExtension.description
 
-    def test_no_extension_dependencies(self):
-        # rpg_state is foundational; rpg_log is the consumer.
-        assert RPGStateExtension.extension_dependencies == []
+    def test_depends_on_genealogy(self):
+        # Hard dependency: rpg_state widens genealogy.PersonModel and
+        # genealogy.RelationshipModel via @extension_model.
+        assert "genealogy" in RPGStateExtension.extension_dependencies
 
     def test_models_returns_full_roster(self):
         models = RPGStateExtension.models()
         assert set(models) == set(ALL_MODELS)
-        assert len(models) == 18  # tracked count; bump when adding tables.
+        assert len(models) == 13  # bump when adding owned tables.

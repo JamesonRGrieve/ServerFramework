@@ -1678,7 +1678,6 @@ class UserManager(AbstractBLLManager, RouterMixin):
 
         fields = self.validate_fields(fields)
 
-        # TODO Move generate_joins to AbstractDatabaseEntity.py
         if include:
             include_list = self._parse_includes(include)
             if include_list:
@@ -2628,9 +2627,8 @@ class TeamModel(
 ):
     Manager: ClassVar[Type["TeamManager"]] = None
     description: Optional[str] = Field(None, description="Team description")
-    # TODO rename to encryption_salt
-    encryption_key: Optional[str] = Field(
-        ..., description="Encryption key for team data"
+    encryption_salt: Optional[str] = Field(
+        ..., description="Per-team salt for row-level encryption of team data"
     )
     # TODO remove these two fields
     token: Optional[str] = Field(None, description="Team token")
@@ -2643,7 +2641,7 @@ class TeamModel(
             "id": "FFFFFFFF-FFFF-FFFF-0000-FFFFFFFFFFFF",
             "name": "System",
             "parent_id": None,
-            "encryption_key": "",
+            "encryption_salt": "",
         }
     ]
 
@@ -2716,8 +2714,8 @@ class TeamModel(
         BaseModel, NameMixinModel, ParentMixinModel.Optional, ImageMixinModel.Optional
     ):
         description: Optional[str] = Field(None, description="Team description")
-        encryption_key: Optional[str] = Field(
-            None, description="Encryption key for team data"
+        encryption_salt: Optional[str] = Field(
+            None, description="Per-team salt for row-level encryption of team data"
         )
 
         @field_validator("name")
@@ -2951,9 +2949,9 @@ class TeamManager(AbstractBLLManager, RouterMixin):
             else:
                 metadata_fields[key] = value
 
-        # Generate encryption key if not provided
-        if "encryption_key" not in model_fields:
-            model_fields["encryption_key"] = secrets.token_hex(32)
+        # Mint a per-team salt if the caller did not supply one.
+        if "encryption_salt" not in model_fields:
+            model_fields["encryption_salt"] = secrets.token_hex(32)
 
         # Create the team first
         team = super().create(**model_fields)
@@ -3319,7 +3317,64 @@ class RoleManager(AbstractBLLManager, RouterMixin):
     # routes_to_register defaults to None, which includes all routes
     auth_dependency: ClassVar[Optional[str]] = "get_role_manager"
 
-    # TODO if a role is deleted, all users with that role should fall back to the role from which it inherits.
+    def delete(self, id: str = None, **kwargs: Any):
+        """Delete a role and reparent its UserTeam assignments.
+
+        Without this override, deleting a role would orphan every
+        ``UserTeam`` row referencing it. Behavior:
+          - Roles with no active ``UserTeam`` references are deleted as
+            usual — there is nothing to orphan.
+          - Roles with active references are reparented: each affected
+            ``UserTeam`` is updated to the role's ``parent_id`` so
+            members fall back to the inherited role.
+          - If the role both has active references *and* has no parent
+            (a system root role), the delete is refused with 409 —
+            silently dropping the assignments would let previously-
+            authorized users keep their tokens but lose all permissions.
+        """
+        target_id = id
+        if not target_id:
+            return super().delete(id=target_id, **kwargs)
+
+        role = self.DB.get(
+            requester_id=self.requester.id,
+            model_registry=self.model_registry,
+            id=target_id,
+            return_type="dto",
+            override_dto=RoleModel,
+        )
+        if role is None:
+            return super().delete(id=target_id, **kwargs)
+
+        ut_db = UserTeamModel.DB(self.model_registry.DB.manager.Base)
+        affected = ut_db.list(
+            requester_id=env("ROOT_ID"),
+            model_registry=self.model_registry,
+            role_id=target_id,
+            return_type="dto",
+            override_dto=UserTeamModel,
+        )
+        if affected:
+            if role.parent_id is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "Refusing to delete a root role that still has "
+                        f"{len(affected)} UserTeam assignment(s): every "
+                        "such row would be orphaned. Move members off "
+                        "this role first, or delete a child role with a "
+                        "defined parent."
+                    ),
+                )
+            ut_manager = UserTeamManager(
+                requester_id=env("ROOT_ID"),
+                model_registry=self.model_registry,
+            )
+            for ut in affected:
+                ut_manager.update(id=ut.id, role_id=role.parent_id)
+
+        return super().delete(id=target_id, **kwargs)
+
     def _register_search_transformers(self):
         self.register_search_transformer("is_system", self._transform_is_system_search)
 
@@ -3675,7 +3730,6 @@ class UserTeamManager(AbstractBLLManager, RouterMixin):
         options = []
 
         fields = self.validate_fields(fields)
-        # TODO Move generate_joins to AbstractDatabaseEntity.py
         if include:
             include_list = self._parse_includes(include)
             if include_list:

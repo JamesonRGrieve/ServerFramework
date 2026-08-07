@@ -1,406 +1,300 @@
-from datetime import datetime
-from typing import List, Optional
+"""User notifications BLL.
+
+Two tables:
+* ``NotificationModel`` — the broadcast (title, content, optional reference
+  to another entity, optional team/user scope).
+* ``UserNotificationModel`` — per-user delivery state (read, acknowledged).
+
+Pattern reference: ``auth_invitations/BLL_Invitations.py``.
+"""
+
+from datetime import datetime, timezone
+from typing import ClassVar, List, Optional, Type
 
 from fastapi import HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy.orm import Session
 
+from serverframework.lib.CustomRoute import custom_route
+from serverframework.lib.Environment import env
+from serverframework.lib.Pydantic2FastAPI import AuthType, RouterMixin
 from serverframework.logic.AbstractLogicManager import (
     AbstractBLLManager,
-    BaseMixinModel,
+    ApplicationModel,
+    DateSearchModel,
+    ModelMeta,
     StringSearchModel,
     UpdateMixinModel,
 )
 from serverframework.logic.BLL_Auth import (
-    Notification,
-    NotificationReference,
-    TeamManager,
     TeamModel,
-    TeamReferenceModel,
-    User,
-    UserManager,
     UserModel,
-    UserNotification,
-    UserReferenceModel,
-    UserTeam,
 )
 
 
 class NotificationModel(
-    BaseMixinModel, UpdateMixinModel, UserReferenceModel, TeamReferenceModel
+    ApplicationModel,
+    UpdateMixinModel,
+    UserModel.Reference.Optional,
+    TeamModel.Reference.Optional,
+    metaclass=ModelMeta,
 ):
+    """A notification broadcast. ``user_id``/``team_id`` scope it to an
+    audience; both null = global."""
+
+    Manager: ClassVar[Type["NotificationManager"]] = None
     title: str = Field(..., description="Notification title")
-    content: str = Field(..., description="Notification content")
-    reference_type: Optional[str] = Field(None, description="Type of referenced object")
-    reference_id: Optional[str] = Field(None, description="ID of referenced object")
+    content: str = Field(..., description="Notification body")
+    reference_type: Optional[str] = Field(
+        None, description="Type of referenced entity, e.g. 'invitation'"
+    )
+    reference_id: Optional[str] = Field(
+        None, description="ID of referenced entity"
+    )
 
-    class ReferenceID:
-        notification_id: str = Field(
-            ..., description="The ID of the related notification"
-        )
-
-        class Optional:
-            notification_id: Optional[str] = None
-
-        class Search:
-            notification_id: Optional[StringSearchModel] = None
+    table_comment: ClassVar[str] = (
+        "System and user notifications with team/user scoping"
+    )
 
     class Create(
-        BaseModel, UserModel.ReferenceID.Optional, TeamModel.ReferenceID.Optional
+        BaseModel,
+        UserModel.Reference.ID.Optional,
+        TeamModel.Reference.ID.Optional,
     ):
-        title: str = Field(..., description="Notification title")
-        content: str = Field(..., description="Notification content")
-        reference_type: Optional[str] = Field(
-            None, description="Type of referenced object"
-        )
-        reference_id: Optional[str] = Field(None, description="ID of referenced object")
+        title: str
+        content: str
+        reference_type: Optional[str] = None
+        reference_id: Optional[str] = None
 
     class Update(BaseModel):
-        title: Optional[str] = Field(None, description="Notification title")
-        content: Optional[str] = Field(None, description="Notification content")
-        reference_type: Optional[str] = Field(
-            None, description="Type of referenced object"
-        )
-        reference_id: Optional[str] = Field(None, description="ID of referenced object")
+        title: Optional[str] = None
+        content: Optional[str] = None
 
     class Search(
-        BaseMixinModel.Search,
-        UserModel.ReferenceID.Search,
-        TeamModel.ReferenceID.Search,
+        ApplicationModel.Search,
+        UpdateMixinModel.Search,
+        UserModel.Reference.ID.Search,
+        TeamModel.Reference.ID.Search,
     ):
         title: Optional[StringSearchModel] = None
-        content: Optional[StringSearchModel] = None
         reference_type: Optional[StringSearchModel] = None
-        reference_id: Optional[StringSearchModel] = None
-
-
-class NotificationReferenceModel(NotificationModel.ReferenceID):
-    notification: Optional[NotificationModel] = None
-
-    class Optional(NotificationModel.ReferenceID.Optional):
-        notification: Optional[NotificationModel] = None
-
-
-class NotificationNetworkModel:
-    class POST(BaseModel):
-        notification: NotificationModel.Create
-
-    class SEARCH(BaseModel):
-        notification: NotificationModel.Search
-
-    class ResponseSingle(BaseModel):
-        notification: NotificationModel
-
-    class ResponsePlural(BaseModel):
-        notifications: List[NotificationModel]
-
-
-class NotificationManager(AbstractBLLManager):
-    Model = NotificationModel
-    ReferenceModel = NotificationReferenceModel
-    DBClass = Notification
-    NetworkModel = NotificationNetworkModel
-
-    def __init__(
-        self,
-        requester_id: str,
-        target_user_id: Optional[str] = None,
-        target_team_id: Optional[str] = None,
-        db: Optional[Session] = None,
-    ):
-        super().__init__(
-            requester_id=requester_id,
-            target_user_id=target_user_id,
-            target_team_id=target_team_id,
-            db=db,
-        )
-        self._users = None
-        self._teams = None
-        self._notification_references = None
-        self._user_notifications = None
-
-    @property
-    def users(self):
-        """Get the user manager"""
-        if self._users is None:
-            self._users = UserManager(
-                requester_id=self.requester.id,
-                target_user_id=self.target_user_id,
-                target_team_id=self.target_team_id,
-                db=self.db,
-            )
-        return self._users
-
-    @property
-    def teams(self):
-        """Get the team manager"""
-        if self._teams is None:
-            self._teams = TeamManager(
-                requester_id=self.requester.id,
-                target_user_id=self.target_user_id,
-                target_team_id=self.target_team_id,
-                db=self.db,
-            )
-        return self._teams
-
-    @property
-    def notification_references(self):
-        """Get the notification reference manager"""
-        if self._notification_references is None:
-            self._notification_references = NotificationReferenceManager(
-                requester_id=self.requester.id,
-                db=self.db,
-            )
-        return self._notification_references
-
-    @property
-    def user_notifications(self):
-        """Get the user notification manager"""
-        if self._user_notifications is None:
-            self._user_notifications = UserNotificationManager(
-                requester_id=self.requester.id,
-                target_user_id=self.target_user_id,
-                db=self.db,
-            )
-        return self._user_notifications
-
-    def create(self, **kwargs):
-        notification = super().create(**kwargs)
-        # Create user notifications automatically
-        if notification.team_id:
-            # Create for all users in the team
-            team_users = UserTeam.list(
-                requester_id=self.requester.id,
-                db=self.db,
-                team_id=notification.team_id,
-                enabled=True,
-            )
-            for team_user in team_users:
-                self.user_notifications.create(
-                    user_id=team_user.user_id, notification_id=notification.id
-                )
-        elif notification.user_id:
-            # Create for specific user
-            self.user_notifications.create(
-                user_id=notification.user_id, notification_id=notification.id
-            )
-        else:
-            # Create for all active users (global notification)
-            users = User.list(requester_id=self.requester.id, db=self.db, active=True)
-            for user in users:
-                self.user_notifications.create(
-                    user_id=user.id, notification_id=notification.id
-                )
-        return notification
-
-
-class NotificationReferenceDataModel(
-    BaseMixinModel, UpdateMixinModel, NotificationReferenceModel
-):
-    reference_type: str = Field(..., description="Type of reference")
-    reference_id: str = Field(..., description="ID of reference")
-
-    class ReferenceID:
-        notification_reference_id: str = Field(
-            ..., description="ID of the notification reference"
-        )
-
-        class Optional:
-            notification_reference_id: Optional[str] = None
-
-        class Search:
-            notification_reference_id: Optional[StringSearchModel] = None
-
-    class Create(BaseModel, NotificationModel.ReferenceID):
-        reference_type: str = Field(..., description="Type of reference")
-        reference_id: str = Field(..., description="ID of reference")
-
-    class Update(BaseModel):
-        reference_type: Optional[str] = Field(None, description="Type of reference")
-        reference_id: Optional[str] = Field(None, description="ID of reference")
-
-    class Search(BaseMixinModel.Search, NotificationModel.ReferenceID.Search):
-        reference_type: Optional[StringSearchModel] = None
-        reference_id: Optional[StringSearchModel] = None
-
-
-class NotificationReferenceDataReferenceModel(
-    NotificationReferenceDataModel.ReferenceID
-):
-    notification_reference: Optional[NotificationReferenceDataModel] = None
-
-    class Optional(NotificationReferenceDataModel.ReferenceID.Optional):
-        notification_reference: Optional[NotificationReferenceDataModel] = None
-
-
-class NotificationReferenceNetworkModel:
-    class POST(BaseModel):
-        notification_reference: NotificationReferenceDataModel.Create
-
-    class PUT(BaseModel):
-        notification_reference: NotificationReferenceDataModel.Update
-
-    class SEARCH(BaseModel):
-        notification_reference: NotificationReferenceDataModel.Search
-
-    class ResponseSingle(BaseModel):
-        notification_reference: NotificationReferenceDataModel
-
-    class ResponsePlural(BaseModel):
-        notification_references: List[NotificationReferenceDataModel]
-
-
-class NotificationReferenceManager(AbstractBLLManager):
-    Model = NotificationReferenceDataModel
-    ReferenceModel = NotificationReferenceDataReferenceModel
-    DBClass = NotificationReference
-    NetworkModel = NotificationReferenceNetworkModel
-
-    def createValidation(self, entity):
-        if not Notification.exists(
-            requester_id=self.requester.id, db=self.db, id=entity.notification_id
-        ):
-            raise HTTPException(status_code=404, detail="Notification not found")
 
 
 class UserNotificationModel(
-    BaseMixinModel, UpdateMixinModel, UserReferenceModel, NotificationReferenceModel
+    ApplicationModel,
+    UpdateMixinModel,
+    UserModel.Reference,
+    metaclass=ModelMeta,
 ):
-    read_at: Optional[datetime] = Field(
-        None, description="Timestamp when notification was read"
-    )
-    acknowledged: Optional[bool] = Field(
-        False, description="Whether the notification has been acknowledged"
-    )
-    acknowledged_at: Optional[datetime] = Field(
-        None, description="Timestamp when notification was acknowledged"
-    )
+    """Per-user delivery state for a notification."""
 
-    class ReferenceID:
-        user_notification_id: str = Field(
-            ..., description="The ID of the user notification"
-        )
+    Manager: ClassVar[Type["UserNotificationManager"]] = None
+    notification_id: str = Field(..., description="Reference to NotificationModel")
+    read: bool = Field(False, description="Whether the user has read it")
+    read_at: Optional[datetime] = Field(None, description="When read")
+    acknowledged: bool = Field(False, description="Whether the user dismissed it")
+    acknowledged_at: Optional[datetime] = Field(None, description="When acknowledged")
 
-        class Optional:
-            user_notification_id: Optional[str] = None
+    table_comment: ClassVar[str] = "Per-user notification delivery state"
 
-        class Search:
-            user_notification_id: Optional[StringSearchModel] = None
+    class Create(BaseModel, UserModel.Reference.ID):
+        notification_id: str
+        read: bool = False
+        read_at: Optional[datetime] = None
+        acknowledged: bool = False
+        acknowledged_at: Optional[datetime] = None
 
-    class Create(BaseModel, UserModel.ReferenceID, NotificationModel.ReferenceID):
-        read: Optional[bool] = Field(
-            False, description="Whether the notification has been read"
-        )
-        read_at: Optional[datetime] = Field(
-            None, description="Timestamp when notification was read"
-        )
-        acknowledged: Optional[bool] = Field(
-            False, description="Whether the notification has been acknowledged"
-        )
-        acknowledged_at: Optional[datetime] = Field(
-            None, description="Timestamp when notification was acknowledged"
-        )
-
+    # Update is intentionally narrow: only the boolean toggles are
+    # writable. Timestamps are server-stamped via the convenience routes.
     class Update(BaseModel):
-        read: Optional[bool] = Field(
-            None, description="Whether the notification has been read"
-        )
-        read_at: Optional[datetime] = Field(
-            None, description="Timestamp when notification was read"
-        )
-        acknowledged: Optional[bool] = Field(
-            None, description="Whether the notification has been acknowledged"
-        )
-        acknowledged_at: Optional[datetime] = Field(
-            None, description="Timestamp when notification was acknowledged"
-        )
-
-    class Search(
-        BaseMixinModel.Search,
-        UserModel.ReferenceID.Search,
-        NotificationModel.ReferenceID.Search,
-    ):
         read: Optional[bool] = None
         acknowledged: Optional[bool] = None
 
-
-class UserNotificationReferenceModel(UserNotificationModel.ReferenceID):
-    user_notification: Optional[UserNotificationModel] = None
-
-    class Optional(UserNotificationModel.ReferenceID.Optional):
-        user_notification: Optional[UserNotificationModel] = None
-
-
-class UserNotificationNetworkModel:
-    class POST(BaseModel):
-        user_notification: UserNotificationModel.Create
-
-    class PUT(BaseModel):
-        user_notification: UserNotificationModel.Update
-
-    class SEARCH(BaseModel):
-        user_notification: UserNotificationModel.Search
-
-    class ResponseSingle(BaseModel):
-        user_notification: UserNotificationModel
-
-    class ResponsePlural(BaseModel):
-        user_notifications: List[UserNotificationModel]
-
-
-class UserNotificationManager(AbstractBLLManager):
-    Model = UserNotificationModel
-    ReferenceModel = UserNotificationReferenceModel
-    NetworkModel = UserNotificationNetworkModel
-    DBClass = UserNotification
-
-    def __init__(
-        self,
-        requester_id: str,
-        target_user_id: Optional[str] = None,
-        target_team_id: Optional[str] = None,
-        db: Optional[Session] = None,
+    class Search(
+        ApplicationModel.Search,
+        UpdateMixinModel.Search,
+        UserModel.Reference.ID.Search,
     ):
-        super().__init__(
-            requester_id=requester_id,
-            target_user_id=target_user_id,
-            target_team_id=target_team_id,
-            db=db,
+        notification_id: Optional[StringSearchModel] = None
+        read: Optional[bool] = None
+        acknowledged: Optional[bool] = None
+        read_at: Optional[DateSearchModel] = None
+
+
+class MarkReadResponse(BaseModel):
+    id: str
+    read: bool
+    read_at: Optional[datetime] = None
+
+
+class AcknowledgeResponse(BaseModel):
+    id: str
+    acknowledged: bool
+    acknowledged_at: Optional[datetime] = None
+
+
+class _MarkReadRequest(BaseModel):
+    """No body required; the route uses ``{id}`` from the path. The
+    framework's typed-input contract requires a model regardless, so we
+    declare an empty one."""
+
+    pass
+
+
+class NotificationManager(AbstractBLLManager, RouterMixin):
+    _model = NotificationModel
+    prefix: ClassVar[Optional[str]] = "/v1/notifications"
+    tags: ClassVar[Optional[List[str]]] = ["Notifications"]
+    auth_type: ClassVar[AuthType] = AuthType.JWT
+    # ``user_id`` (the recipient) cannot be impersonated. ROOT/SYSTEM
+    # bypass for system-issued broadcasts.
+    _CALLER_OWNED_FIELDS: ClassVar[tuple] = ("user_id",)
+
+
+class UserNotificationManager(AbstractBLLManager, RouterMixin):
+    _model = UserNotificationModel
+    prefix: ClassVar[Optional[str]] = "/v1/user-notifications"
+    tags: ClassVar[Optional[List[str]]] = ["Notifications"]
+    auth_type: ClassVar[AuthType] = AuthType.JWT
+    _CALLER_OWNED_FIELDS: ClassVar[tuple] = ("user_id",)
+
+    def _assert_owns(self, user_notification_id: str) -> "UserNotificationModel":
+        UNDB = UserNotificationModel.DB(self.model_registry.DB.manager.Base)
+        existing = UNDB.get(
+            requester_id=env("ROOT_ID"),
+            model_registry=self.model_registry,
+            id=user_notification_id,
+            return_type="dto",
+            override_dto=UserNotificationModel,
         )
-        self._notifications = None
-        self._users = None
-
-    @property
-    def users(self):
-        """Get the user manager"""
-        if self._users is None:
-            self._users = UserManager(
-                requester_id=self.requester.id,
-                target_user_id=self.target_user_id,
-                target_team_id=self.target_team_id,
-                db=self.db,
-            )
-        return self._users
-
-    @property
-    def notifications(self):
-        """Get the notification manager"""
-        if self._notifications is None:
-            self._notifications = NotificationManager(
-                requester_id=self.requester.id,
-                target_user_id=self.target_user_id,
-                target_team_id=self.target_team_id,
-                db=self.db,
-            )
-        return self._notifications
-
-    def createValidation(self, entity):
-        """Validate user notification creation"""
-        if not User.exists(
-            requester_id=self.requester.id, db=self.db, id=entity.user_id
-        ):
-            raise HTTPException(status_code=404, detail="User not found")
-        if not Notification.exists(
-            requester_id=self.requester.id, db=self.db, id=entity.notification_id
-        ):
+        if existing is None:
             raise HTTPException(status_code=404, detail="Notification not found")
+        from serverframework.database.StaticPermissions import is_root_id
+
+        if (
+            existing.user_id != self.requester.id
+            and not is_root_id(self.requester.id)
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail="Cannot modify another user's notification state",
+            )
+        return existing
+
+    def mark_as_read(self, notification_id: str) -> UserNotificationModel:
+        existing = self._assert_owns(notification_id)
+        UNDB = UserNotificationModel.DB(self.model_registry.DB.manager.Base)
+        now = datetime.now(timezone.utc)
+        return UNDB.update(
+            requester_id=self.requester.id,
+            model_registry=self.model_registry,
+            id=existing.id,
+            new_properties={"read": True, "read_at": now},
+            return_type="dto",
+            override_dto=UserNotificationModel,
+        )
+
+    def acknowledge(self, notification_id: str) -> UserNotificationModel:
+        existing = self._assert_owns(notification_id)
+        UNDB = UserNotificationModel.DB(self.model_registry.DB.manager.Base)
+        now = datetime.now(timezone.utc)
+        return UNDB.update(
+            requester_id=self.requester.id,
+            model_registry=self.model_registry,
+            id=existing.id,
+            new_properties={"acknowledged": True, "acknowledged_at": now},
+            return_type="dto",
+            override_dto=UserNotificationModel,
+        )
+
+    @custom_route(
+        method="PATCH",
+        path="/{id}/read",
+        input_model=_MarkReadRequest,
+        output_model=MarkReadResponse,
+        authentication_type="jwt",
+        openapi_tags=("Notifications",),
+        summary="Mark a user-notification as read (server stamps the time)",
+    )
+    async def mark_read_route(
+        self, id: str, body: _MarkReadRequest
+    ) -> MarkReadResponse:
+        del body
+        result = self.mark_as_read(id)
+        return MarkReadResponse(
+            id=result.id, read=True, read_at=result.read_at
+        )
+
+    @custom_route(
+        method="PATCH",
+        path="/{id}/acknowledge",
+        input_model=_MarkReadRequest,
+        output_model=AcknowledgeResponse,
+        authentication_type="jwt",
+        openapi_tags=("Notifications",),
+        summary="Acknowledge a user-notification (server stamps the time)",
+    )
+    async def acknowledge_route(
+        self, id: str, body: _MarkReadRequest
+    ) -> AcknowledgeResponse:
+        del body
+        result = self.acknowledge(id)
+        return AcknowledgeResponse(
+            id=result.id,
+            acknowledged=True,
+            acknowledged_at=result.acknowledged_at,
+        )
+
+
+NotificationModel.Manager = NotificationManager
+UserNotificationModel.Manager = UserNotificationManager
+
+
+# ---------------------------------------------------------------------------
+# Merge participation
+# ---------------------------------------------------------------------------
+
+
+def _merge_handler(ctx) -> None:
+    """Re-home target's per-user delivery rows onto the initiating user.
+
+    Notification broadcasts (``NotificationModel``) are not migrated:
+    they're scoped at issuance time and should not retroactively apply to
+    a different user. Only the per-user receipts move so the surviving
+    account doesn't lose its history.
+    """
+    from serverframework.lib.Environment import env as _env
+
+    UNDB = UserNotificationModel.DB(ctx.model_registry.DB.manager.Base)
+    target_rows = (
+        UNDB.list(
+            requester_id=_env("ROOT_ID"),
+            model_registry=ctx.model_registry,
+            filters=[UNDB.user_id == ctx.target_user_id],
+            return_type="dto",
+            override_dto=UserNotificationModel,
+        )
+        or []
+    )
+    for row in target_rows:
+        UNDB.update(
+            requester_id=_env("ROOT_ID"),
+            model_registry=ctx.model_registry,
+            id=row.id,
+            new_properties={"user_id": ctx.initiating_user_id},
+        )
+
+
+def register_merge_participation() -> None:
+    """Register the auth_notifications merge handler with auth_merge.
+
+    Called from ``EXT_Auth_Notifications.on_initialize`` once auth_merge
+    is loaded. Safe to call repeatedly: the registry overwrites by name.
+    """
+    try:
+        from serverframework.extensions.auth_merge.BLL_Auth_Merge import (
+            register_merge_handler,
+        )
+    except ImportError:
+        # auth_merge is not loaded; nothing to register against.
+        return
+    register_merge_handler("auth_notifications", _merge_handler)

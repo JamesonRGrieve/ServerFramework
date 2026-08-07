@@ -303,6 +303,10 @@ def validate_query_field_access(
     GraphQL error for resolvers). When ``has_permission`` is ``None`` no
     fields are restricted (system-internal callers).
 
+    For new call sites prefer :func:`enforce_query_field_access`, which
+    raises directly. The check-only form remains for resolvers that need
+    to format their own transport-specific error.
+
     ``context`` is folded into the error message — set it to ``"order_by"``
     or ``"filter"`` so operators can distinguish inference-attack vectors
     in audit logs.
@@ -322,3 +326,24 @@ def validate_query_field_access(
         if not all(has_permission(p) for p in required):
             disallowed.append(field)
     return disallowed
+
+
+def enforce_query_field_access(
+    model_cls: Type[BaseModel],
+    requested_fields: Iterable[str],
+    has_permission: Optional[Callable[[str], bool]],
+    *,
+    context: str = "query",
+) -> None:
+    """Enforcement-form of :func:`validate_query_field_access`.
+
+    Raises :class:`FieldACLViolation` when any restricted field is in
+    ``requested_fields`` without the necessary permission. L-2 — the
+    check-only API silently no-ops if the caller forgets to act on the
+    return value; this entry point removes that footgun.
+    """
+    disallowed = validate_query_field_access(
+        model_cls, requested_fields, has_permission, context=context
+    )
+    if disallowed:
+        raise FieldACLViolation(disallowed, context=context)

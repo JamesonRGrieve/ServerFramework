@@ -2274,11 +2274,13 @@ class GraphQLManager(ErrorHandlerMixin):
 
                         # Check for API key first (for system entities)
                         if api_key:
-                            from serverframework.lib.Environment import env
+                            from serverframework.lib.InboundSecurity import (
+                                resolve_principal_from_api_key,
+                            )
 
-                            if api_key == env("ROOT_API_KEY"):
-                                # For system operations with API key, use system ID
-                                requester_id = env("SYSTEM_ID")
+                            resolved = resolve_principal_from_api_key(api_key)
+                            if resolved is not None:
+                                requester_id = resolved
                         # Fall back to JWT authentication
                         elif auth_header:
                             try:

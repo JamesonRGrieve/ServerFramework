@@ -88,35 +88,37 @@ class EXT_Auth_MFA(AbstractStaticExtension):
 
     @classmethod
     def on_initialize(cls) -> bool:
-        """Initialize the MFA extension."""
+        """Initialize the MFA extension.
+
+        Refuses to come up if encryption-at-rest is not configured. The TOTP
+        seed is the keystone of the second factor; persisting it in the
+        clear would silently invalidate every MFA guarantee. Operators in
+        local/CI/dev who need to skip this step can set
+        ``ALLOW_PLAINTEXT_SECRETS=true``; production/staging cannot.
+        """
         logger.debug("Initializing MFA Extension...")
 
+        from serverframework.lib.SecretEncryption import (
+            MissingFernetKeyError,
+            assert_encryption_available,
+        )
+
         try:
-            # Validate dependencies are available
-            try:
-                import pyotp
-
-                logger.debug("PyOTP library available")
-            except ImportError:
-                logger.warning(
-                    "PyOTP library not available - TOTP functionality disabled"
-                )
-
-            try:
-                import qrcode
-
-                logger.debug("QRCode library available")
-            except ImportError:
-                logger.debug(
-                    "QRCode library not available - QR code generation disabled"
-                )
-
-            logger.debug("MFA extension initialized successfully")
-            return True
-
-        except Exception as e:
-            logger.error(f"Failed to initialize MFA extension: {str(e)}")
+            assert_encryption_available()
+        except MissingFernetKeyError as e:
+            logger.error(f"MFA refusing to initialize: {e}")
             return False
+
+        try:
+            import pyotp  # noqa: F401
+        except ImportError:
+            logger.error(
+                "PyOTP library is required for MFA but is not installed"
+            )
+            return False
+
+        logger.debug("MFA extension initialized successfully")
+        return True
 
     @classmethod
     def on_start(cls) -> bool:
@@ -143,17 +145,26 @@ class EXT_Auth_MFA(AbstractStaticExtension):
     @classmethod
     def validate_config(cls) -> List[str]:
         """Validate the extension configuration."""
-        issues = []
+        issues: List[str] = []
 
-        # Check for required Python packages
         try:
-            import pyotp
+            import pyotp  # noqa: F401
         except ImportError:
             issues.append(
-                "PyOTP library not installed - TOTP functionality will not work. Run: pip install pyotp"
+                "PyOTP library not installed - TOTP functionality will not work. "
+                "Run: pip install pyotp"
             )
 
-        # Check environment variables
+        from serverframework.lib.SecretEncryption import (
+            MissingFernetKeyError,
+            assert_encryption_available,
+        )
+
+        try:
+            assert_encryption_available()
+        except MissingFernetKeyError as e:
+            issues.append(str(e))
+
         import os
 
         if not os.getenv("MFA_ISSUER_NAME"):

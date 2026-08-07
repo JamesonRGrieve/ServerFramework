@@ -89,48 +89,64 @@ def create_webhook_router() -> APIRouter:
             else None
         )
 
-        # Only enforce signature verification when a handler is actually
-        # registered for this (extension, provider). Otherwise an upstream
-        # probe to a non-existent extension/provider would 401 instead of
-        # the more informative "unrecognized event -> 200 + warn" path.
-        if handler is not None or has_any_handler(extension, provider):
-            if verify_signature is None:
-                logger.warning(
-                    f"Webhook for {extension}/{provider} rejected: no "
-                    f"verify_signature registered on provider class."
-                )
-                raise HTTPException(
-                    status_code=401,
-                    detail="Signature verification not configured for this provider",
-                )
-            try:
-                ok = await maybe_await(verify_signature(headers, body_bytes))
-            except Exception as e:
-                logger.warning(
-                    f"Signature verification raised for {extension}/{provider}: {e}"
-                )
-                raise HTTPException(
-                    status_code=401, detail="Signature verification failed"
-                )
-            if not ok:
-                raise HTTPException(
-                    status_code=401, detail="Signature verification failed"
-                )
-            replay_reason = check_replay(
-                extension, provider, provider_class, headers, body_bytes
+        # Unknown extension/provider must 404 — not 200. Returning 200 to
+        # unauthenticated callers turns this endpoint into an extension
+        # discovery oracle and lets attackers map the deployment without
+        # ever crossing a signature check.
+        if provider_class is None:
+            logger.warning(
+                f"Webhook rejected: unknown extension/provider "
+                f"{extension}/{provider}"
             )
-            if replay_reason is not None:
-                logger.warning(
-                    f"Webhook replay rejected for {extension}/{provider}: "
-                    f"{replay_reason}"
-                )
-                raise HTTPException(
-                    status_code=401, detail=f"Replay rejected: {replay_reason}"
-                )
+            raise HTTPException(
+                status_code=404, detail="Unknown webhook extension/provider"
+            )
+
+        # Signature verification is REQUIRED on every accepted route. A
+        # provider that does not register ``verify_signature`` is a
+        # configuration error: 503 (not 401) so operators see "the
+        # provider is not safe to receive webhooks" rather than "the
+        # signature failed".
+        if verify_signature is None:
+            logger.warning(
+                f"Webhook for {extension}/{provider} rejected: provider "
+                f"class does not register verify_signature."
+            )
+            raise HTTPException(
+                status_code=503,
+                detail="Signature verification not configured for this provider",
+            )
+        try:
+            ok = await maybe_await(verify_signature(headers, body_bytes))
+        except Exception as e:
+            logger.warning(
+                f"Signature verification raised for {extension}/{provider}: {e}"
+            )
+            raise HTTPException(
+                status_code=401, detail="Signature verification failed"
+            )
+        if not ok:
+            raise HTTPException(
+                status_code=401, detail="Signature verification failed"
+            )
+        replay_reason = check_replay(
+            extension, provider, provider_class, headers, body_bytes
+        )
+        if replay_reason is not None:
+            logger.warning(
+                f"Webhook replay rejected for {extension}/{provider}: "
+                f"{replay_reason}"
+            )
+            raise HTTPException(
+                status_code=401, detail=f"Replay rejected: {replay_reason}"
+            )
         if handler is None:
+            # Signature passed; the handler list just doesn't include this
+            # event name. Acknowledge so the upstream stops retrying, but
+            # log so operators can see drift.
             logger.warning(
                 f"Unrecognized webhook event for {extension}/{provider}/{event};"
-                f" returning 200 without dispatch."
+                f" signature OK, returning 200 without dispatch."
             )
             return Response(status_code=200)
 

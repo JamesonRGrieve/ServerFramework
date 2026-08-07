@@ -8,75 +8,20 @@ from fastapi import HTTPException
 from pydantic import BaseModel, Field, model_validator
 
 from serverframework.lib.Environment import env
+from serverframework.lib.InboundSecurity import LockoutPolicy, LockoutTracker
 from serverframework.lib.Logging import logger
 from serverframework.lib.Pydantic import BaseModel
-from serverframework.lib.Pydantic2FastAPI import AuthType, RouterMixin
+from serverframework.lib.Pydantic2FastAPI import AuthType, RouterMixin, RouteType
 
 
-# Encryption-at-rest for `totp_secret` (H-1). Stored values are prefixed with
-# ``fernet:`` so existing plaintext rows decrypt-or-passthrough during the
-# rollout window without a destructive migration. Once every row is rewritten,
-# operators can drop the passthrough branch.
-_TOTP_FERNET_PREFIX = "fernet:"
-
-
-def _totp_fernet():
-    """Return a `cryptography.Fernet` keyed off `FRAMEWORK_FERNET_KEY`.
-
-    Returns ``None`` when the key is unset or the dependency is missing —
-    callers fall back to plaintext with a warning at startup.
-    """
-    key = env("FRAMEWORK_FERNET_KEY") or env("MFA_FERNET_KEY")
-    if not key:
-        return None
-    try:
-        from cryptography.fernet import Fernet
-    except ImportError:
-        return None
-    try:
-        return Fernet(key.encode("utf-8") if isinstance(key, str) else key)
-    except Exception as exc:
-        logger.warning(f"FRAMEWORK_FERNET_KEY rejected by Fernet: {exc}")
-        return None
-
-
-def encrypt_totp_secret(plaintext: Optional[str]) -> Optional[str]:
-    """Encrypt a TOTP seed for storage. No-op when the key is not configured
-    so a missing key surfaces as cleartext (caller logs a warning) rather
-    than booting a broken MFA path."""
-    if not plaintext:
-        return plaintext
-    if plaintext.startswith(_TOTP_FERNET_PREFIX):
-        return plaintext
-    f = _totp_fernet()
-    if f is None:
-        logger.warning(
-            "FRAMEWORK_FERNET_KEY unset — TOTP secret stored in plaintext. "
-            "Set the key and rotate impacted rows."
-        )
-        return plaintext
-    token = f.encrypt(plaintext.encode("utf-8")).decode("ascii")
-    return f"{_TOTP_FERNET_PREFIX}{token}"
-
-
-def decrypt_totp_secret(stored: Optional[str]) -> Optional[str]:
-    """Reverse of :func:`encrypt_totp_secret`. Plaintext rows pass through
-    unchanged so the rollout window is non-disruptive."""
-    if not stored:
-        return stored
-    if not stored.startswith(_TOTP_FERNET_PREFIX):
-        return stored
-    f = _totp_fernet()
-    if f is None:
-        raise RuntimeError(
-            "Encrypted TOTP secret encountered but FRAMEWORK_FERNET_KEY is "
-            "unset. Cannot decrypt."
-        )
-    token = stored[len(_TOTP_FERNET_PREFIX):].encode("ascii")
-    try:
-        return f.decrypt(token).decode("utf-8")
-    except Exception as exc:
-        raise RuntimeError(f"TOTP secret decrypt failed: {exc}") from exc
+# Encryption-at-rest for ``totp_secret``. Implementation lives in the shared
+# helper so every extension that persists secrets uses the same envelope and
+# fail-fast policy. ``ALLOW_PLAINTEXT_SECRETS=true`` is the only path that
+# permits plaintext storage, and only outside production/staging.
+from serverframework.lib.SecretEncryption import (
+    decrypt_secret as decrypt_totp_secret,
+    encrypt_secret as encrypt_totp_secret,
+)
 from serverframework.logic.AbstractLogicManager import (
     AbstractBLLManager,
     ApplicationModel,
@@ -155,37 +100,43 @@ def audit_mfa_operations(context: HookContext) -> None:
             logger.warning(f"Sensitive MFA operation: {method_name} by {requester_id}")
 
 
+# M-3 — process-shared (NOT manager-instance) lockout tracker. The
+# previous implementation kept the dict on ``manager._rate_limit_tracker``,
+# which was rebuilt per request, so the rate-limit hook never tripped.
+# Multi-worker deployments should swap this for a shared backend the
+# same way ``UserManager._lockout_tracker`` is intended to be (Item 71c).
+_MFA_VERIFY_LOCKOUT = LockoutTracker(
+    LockoutPolicy(failures_per_window=5, window_seconds=60, lockout_seconds=300)
+)
+
+
 def mfa_rate_limiting_hook(context: HookContext) -> None:
-    """Rate limiting for MFA verification attempts."""
+    """Lockout-tracker brake on MFA verification attempts.
+
+    5 verification attempts within a 60s sliding window from the same
+    requester puts ``(requester_id, "mfa_verify")`` into a 5-minute
+    lockout. The hook is BEFORE-timed: a tripped lockout returns 429
+    before the verify path even runs. The hook does not record a
+    failure here — verification methods themselves call
+    ``record_failure`` on a wrong code; this hook is the gate that
+    refuses subsequent attempts once the policy has tripped.
+    """
     method_name = context.method_name
+    if method_name not in ("verify_mfa_code", "verify_recovery_code"):
+        return
     manager = context.manager
-
-    # Apply rate limiting specifically to verification methods
-    if method_name in ["verify_mfa_code", "verify_recovery_code"]:
-        # Simple in-memory rate limiting (could be enhanced with Redis)
-        if not hasattr(manager, "_rate_limit_tracker"):
-            manager._rate_limit_tracker = {}
-
-        requester_id = manager.requester.id
-        current_time = datetime.now(timezone.utc)
-
-        # Check if user has exceeded rate limit (5 attempts per minute)
-        if requester_id in manager._rate_limit_tracker:
-            attempts = manager._rate_limit_tracker[requester_id]
-            recent_attempts = [t for t in attempts if (current_time - t).seconds < 60]
-
-            if len(recent_attempts) >= 5:
-                logger.warning(
-                    f"Rate limit exceeded for MFA verification by user {requester_id}"
-                )
-                raise HTTPException(
-                    status_code=429,
-                    detail="Too many verification attempts. Please wait before trying again.",
-                )
-
-            manager._rate_limit_tracker[requester_id] = recent_attempts + [current_time]
-        else:
-            manager._rate_limit_tracker[requester_id] = [current_time]
+    if manager.requester is None or manager.requester.id is None:
+        return
+    actor_key = str(manager.requester.id)
+    flow = "mfa_verify"
+    if _MFA_VERIFY_LOCKOUT.is_locked(actor_key, flow):
+        logger.warning(
+            f"Rate limit exceeded for MFA verification by user {actor_key}"
+        )
+        raise HTTPException(
+            status_code=429,
+            detail="Too many verification attempts. Please wait before trying again.",
+        )
 
 
 class MultifactorMethodModel(
@@ -241,9 +192,18 @@ class MultifactorMethodModel(
         always_ask: bool = Field(
             False, description="Whether to always ask for this method"
         )
-        # TOTP-specific fields
+        # M-4 — ``totp_secret`` is the server-generated TOTP seed. The
+        # field stays on the schema because ``create_validation``
+        # populates it before persist, but it is REJECTED at the manager
+        # boundary (``MultifactorMethodManager.create``) when supplied by
+        # a non-ROOT caller. A client cannot pre-image a backdoored
+        # secret onto a victim's account.
         totp_secret: Optional[str] = Field(
-            None, description="Secret key for TOTP method"
+            None,
+            description=(
+                "Server-populated TOTP seed. Client-supplied values are "
+                "refused; the manager generates a fresh seed on create."
+            ),
         )
         totp_algorithm: Optional[str] = Field("SHA1", description="TOTP algorithm")
         totp_digits: Optional[int] = Field(
@@ -309,6 +269,16 @@ class MultifactorMethodManager(AbstractBLLManager, RouterMixin):
     prefix: ClassVar[Optional[str]] = "/v1/user/mfa"
     tags: ClassVar[Optional[List[str]]] = ["Multi-Factor Authentication"]
     auth_type: ClassVar[AuthType] = AuthType.JWT
+    # M-4 — explicit allow-list. The default RouteType set exposes
+    # SEARCH, which leaks identifiers and ``totp_secret`` to anyone
+    # with read access; a user only needs to manage their own methods.
+    routes_to_register: ClassVar[Optional[List[RouteType]]] = [
+        RouteType.GET,
+        RouteType.LIST,
+        RouteType.CREATE,
+        RouteType.UPDATE,
+        RouteType.DELETE,
+    ]
 
     def __init__(
         self,
@@ -361,7 +331,10 @@ class MultifactorMethodManager(AbstractBLLManager, RouterMixin):
         # For TOTP methods, ensure required fields are present
         if entity.method_type == MultifactorMethodType.TOTP:
             if not entity.totp_secret:
-                # Generate a secret if not provided
+                # Generate a secret if not provided. The ``create``
+                # method has already refused any non-ROOT client-supplied
+                # value (M-4) so by this point ``entity.totp_secret`` is
+                # either empty (the common path) or a ROOT-vetted seed.
                 entity.totp_secret = self.generate_totp_secret()
             # H-1 — encrypt at rest before the row hits the DB. The seed
             # round-trips through `decrypt_totp_secret` at verification.
@@ -384,16 +357,50 @@ class MultifactorMethodManager(AbstractBLLManager, RouterMixin):
                     self.update(method_id, is_primary=False)
 
     def create(self, **kwargs):
-        """Create new MFA method"""
-        # Defence-in-depth: callers that bypass `create_validation` (direct
-        # CRUD) still get encryption when they pass a `totp_secret`.
-        if "totp_secret" in kwargs and kwargs["totp_secret"]:
-            kwargs["totp_secret"] = encrypt_totp_secret(kwargs["totp_secret"])
+        """Create new MFA method.
+
+        M-4 — refuse a client-supplied ``totp_secret``. The seed is
+        server-generated in ``create_validation``; accepting a value
+        here would let a compromised UI (or future router-config drift
+        that re-allows ``totp_secret`` on the Create schema) inject a
+        backdoored secret onto a victim's account. ROOT may pass a
+        seed for migration tooling; encryption-at-rest is performed
+        downstream in ``create_validation``.
+        """
+        from serverframework.database.StaticPermissions import is_root_id
+
+        if (
+            "totp_secret" in kwargs
+            and kwargs["totp_secret"]
+            and not is_root_id(self.requester.id)
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "totp_secret is server-generated; client-supplied "
+                    "values are refused"
+                ),
+            )
         return super().create(**kwargs)
 
     def update(self, id: str, **kwargs):
-        """Update MFA method, re-encrypting `totp_secret` if rotated."""
+        """Update MFA method.
+
+        M-4 — refuse a client-supplied ``totp_secret`` rotation. To
+        rotate a TOTP seed the user deletes the existing method and
+        creates a new one (or ROOT performs the migration).
+        """
+        from serverframework.database.StaticPermissions import is_root_id
+
         if "totp_secret" in kwargs and kwargs["totp_secret"]:
+            if not is_root_id(self.requester.id):
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "totp_secret cannot be rotated via update; delete "
+                        "the method and create a new one"
+                    ),
+                )
             kwargs["totp_secret"] = encrypt_totp_secret(kwargs["totp_secret"])
         return super().update(id, **kwargs)
 
@@ -405,44 +412,37 @@ class MultifactorMethodManager(AbstractBLLManager, RouterMixin):
 
         return base64.b32encode(secret_bytes).decode("utf-8")
 
-    # Process-local replay-protection cache: keyed on (secret_fingerprint, code)
-    # with a 120s TTL — comfortably longer than the 60s drift window we accept
-    # via pyotp's ``valid_window=1``. A multi-instance deployment still needs
-    # a shared store (Redis / DB row); see TODO below. Entries auto-expire so
-    # the set cannot grow unbounded under sustained traffic.
-    # TODO(security): replace with a Redis/DB-backed store for horizontal
-    # deployments — process-local memory is sufficient only for single-worker.
+    # TTL must comfortably exceed the 60s drift window pyotp's
+    # ``valid_window=1`` accepts so a code that has just been used can't be
+    # replayed within the same window.
     _TOTP_REPLAY_TTL_SECONDS: ClassVar[int] = 120
-    _TOTP_REPLAY_MAX_ENTRIES: ClassVar[int] = 10000
 
     @classmethod
-    def _replay_cache(cls):
-        """Lazily create the shared TTL cache used for TOTP replay protection."""
-        cache = getattr(cls, "_USED_TOTP_CACHE", None)
-        if cache is None:
-            try:
-                from cachetools import TTLCache
-
-                cache = TTLCache(
-                    maxsize=cls._TOTP_REPLAY_MAX_ENTRIES,
-                    ttl=cls._TOTP_REPLAY_TTL_SECONDS,
-                )
-            except ImportError:
-                # Fall back to a plain dict if cachetools is unavailable; the
-                # entries will not auto-expire but replay rejection still works.
-                cache = {}
-            cls._USED_TOTP_CACHE = cache
-        return cache
+    def _replay_key(cls, secret_fingerprint: str, code: str) -> str:
+        return f"mfa-totp:{secret_fingerprint}:{code}"
 
     @classmethod
     def _record_used_totp(cls, secret_fingerprint: str, code: str) -> None:
-        """Remember that a (secret, code) pair has been accepted."""
-        cls._replay_cache()[(secret_fingerprint, code)] = True
+        """Remember that a (secret, code) pair has been accepted.
+
+        Goes through the shared :class:`ReplayCache` so multi-worker
+        deployments that install a Valkey/Postgres-backed cache see a
+        consistent view. The default in-memory cache is fine for
+        single-process testing.
+        """
+        from serverframework.lib.ReplayCache import get_replay_cache
+
+        get_replay_cache().mark_used(
+            cls._replay_key(secret_fingerprint, code),
+            ttl_seconds=cls._TOTP_REPLAY_TTL_SECONDS,
+        )
 
     @classmethod
     def _is_totp_replayed(cls, secret_fingerprint: str, code: str) -> bool:
         """Return True if this (secret, code) pair has already been used."""
-        return (secret_fingerprint, code) in cls._replay_cache()
+        from serverframework.lib.ReplayCache import get_replay_cache
+
+        return get_replay_cache().is_used(cls._replay_key(secret_fingerprint, code))
 
     def verify_totp_code(
         self,
@@ -508,20 +508,31 @@ class MultifactorMethodManager(AbstractBLLManager, RouterMixin):
     def verify_mfa_code(self, method_id: str, code: str) -> bool:
         """Verify MFA code for any method type"""
         method = self.get(id=method_id)
+        actor_key = (
+            str(self.requester.id) if self.requester and self.requester.id else None
+        )
 
         if not method or not method.is_enabled:
+            if actor_key:
+                _MFA_VERIFY_LOCKOUT.record_failure(actor_key, "mfa_verify")
             return False
 
         if method.method_type == MultifactorMethodType.TOTP:
             # H-1 — secret is Fernet-encrypted at rest; decrypt for the
             # verification math, never re-store the cleartext.
-            return self.verify_totp_code(
+            ok = self.verify_totp_code(
                 decrypt_totp_secret(method.totp_secret),
                 code,
                 method.totp_algorithm,
                 method.totp_digits,
                 method.totp_period,
             )
+            if actor_key:
+                if ok:
+                    _MFA_VERIFY_LOCKOUT.clear(actor_key, "mfa_verify")
+                else:
+                    _MFA_VERIFY_LOCKOUT.record_failure(actor_key, "mfa_verify")
+            return ok
         else:
             # For email/SMS, this would verify against stored temporary codes
             # Implementation depends on how codes are stored and expire
@@ -644,6 +655,9 @@ class MultifactorRecoveryCodeManager(AbstractBLLManager):
 
     def verify_recovery_code(self, multifactor_method_id: str, code: str) -> bool:
         """Verify and mark a recovery code as used"""
+        actor_key = (
+            str(self.requester.id) if self.requester and self.requester.id else None
+        )
         # Get all unused recovery codes for this MFA method
         recovery_codes = self.list(
             multifactor_method_id=multifactor_method_id,
@@ -675,8 +689,12 @@ class MultifactorRecoveryCodeManager(AbstractBLLManager):
                     is_used=True,
                     used_at=datetime.now(timezone.utc),
                 )
+                if actor_key:
+                    _MFA_VERIFY_LOCKOUT.clear(actor_key, "mfa_verify")
                 return True
 
+        if actor_key:
+            _MFA_VERIFY_LOCKOUT.record_failure(actor_key, "mfa_verify")
         return False
 
 

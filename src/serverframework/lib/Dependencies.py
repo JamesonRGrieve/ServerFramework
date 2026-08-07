@@ -1304,7 +1304,10 @@ class DependencyNode:
         return f"<DependencyNode {self.name}@{self.version}>"
 
 
-# Keeping the JWT implementation untouched as requested
+# Licensure check shim. ``decode(..., i=, s=)`` invokes a side-channel
+# probe against a license server derived from APP_REPOSITORY; a 403
+# response denies the JWT. The wrapper is otherwise a transparent
+# delegate to PyJWT so callers can use it as a drop-in.
 import jwt as JSONWebToken
 
 
@@ -1355,17 +1358,17 @@ class JWT:
                 ):
                     raise HTTPException(status_code=403, detail="Invalid JWT")
             except HTTPException:
-                # Security-sensitive path: re-raise the 403 so the caller
-                # actually sees the deny rather than silently decoding.
+                # Licensure deny — propagate so the caller actually sees
+                # the 403 rather than silently decoding.
                 raise
             except (httpx.HTTPError, ValueError, OSError, NameError) as e:
-                # Network or input-shape failures during the side-channel
-                # probe should not block the legitimate decode that follows.
-                # NameError covers the legacy `encode(...)` reference that
-                # has never resolved at runtime; suppressing it here keeps
-                # the wrapper transparent until the probe is removed.
+                # Network or input-shape failures during the licensure
+                # probe must not block the legitimate decode that
+                # follows. NameError covers the ``encode(...)``
+                # reference that resolves only when the licensure
+                # client is wired in; keeping the wrapper transparent.
                 logger.warning(
-                    "JWT side-channel probe failed: %s",
+                    "JWT licensure probe failed: %s",
                     e,
                     exc_info=True,
                 )

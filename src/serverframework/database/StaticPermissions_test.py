@@ -19,6 +19,7 @@ from serverframework.database.StaticPermissions import (
     is_any_internal_id,
     is_root_id,
     is_system_id,
+    is_system_user_id,
     is_template_id,
 )
 from serverframework.lib.Environment import env
@@ -265,6 +266,10 @@ class TestSystemIDs:
         assert is_system_id(ROOT_ID) is False
         assert is_system_id(TEMPLATE_ID) is False
         assert is_system_id(create_uuid()) is False
+
+    def test_is_system_user_id_is_alias_of_is_system_id(self):
+        for candidate in (SYSTEM_ID, ROOT_ID, TEMPLATE_ID, create_uuid()):
+            assert is_system_user_id(candidate) is is_system_id(candidate)
 
     def test_is_template_id(self):
         assert is_template_id(TEMPLATE_ID) is True
@@ -1597,13 +1602,13 @@ def test_invited_user_sees_child_and_parent_team(model_registry, use_invitee):
         parent_team = TeamDB(
             id=parent_id,
             name="Invitation Parent",
-            encryption_key="parent-key",
+            encryption_salt="parent-key",
             created_by_user_id=env("ROOT_ID"),
         )
         child_team = TeamDB(
             id=child_id,
             name="Invitation Child",
-            encryption_key="child-key",
+            encryption_salt="child-key",
             parent_id=parent_id,
             created_by_user_id=env("ROOT_ID"),
         )

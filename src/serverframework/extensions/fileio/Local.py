@@ -13,6 +13,41 @@ import psutil
 from serverframework.extensions.fileio.PRV_FileIO import AbstractFileIOProvider, FileIOPermission
 
 
+def _safe_open(path: str, mode: str, encoding: Optional[str] = None, errors: Optional[str] = None):
+    """Open ``path`` refusing to follow a symlink at the leaf component.
+
+    Closes a TOCTOU window between ``Path.resolve()`` (which follows
+    symlinks at validation time) and ``open()`` (which follows symlinks
+    again). If an attacker swaps the resolved leaf for a symlink between
+    those two operations, ``O_NOFOLLOW`` causes the open to fail with
+    ``ELOOP`` rather than dereferencing the new target.
+
+    Falls back to a plain ``open`` on platforms without ``O_NOFOLLOW``
+    (Windows). The fileio provider's primary deployment is Linux/macOS
+    where O_NOFOLLOW is supported, and Windows lacks the symlink-by-
+    default semantics that motivate the guard.
+    """
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    if nofollow == 0 or os.name == "nt":
+        return open(path, mode, encoding=encoding, errors=errors)
+    flag_map = {
+        "r": os.O_RDONLY,
+        "rb": os.O_RDONLY,
+        "w": os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+        "wb": os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+        "a": os.O_WRONLY | os.O_CREAT | os.O_APPEND,
+        "ab": os.O_WRONLY | os.O_CREAT | os.O_APPEND,
+        "r+": os.O_RDWR,
+        "rb+": os.O_RDWR,
+    }
+    base_mode = mode.replace("t", "")
+    flags = flag_map.get(base_mode)
+    if flags is None:
+        return open(path, mode, encoding=encoding, errors=errors)
+    fd = os.open(path, flags | nofollow, 0o600)
+    return os.fdopen(fd, mode, encoding=encoding, errors=errors)
+
+
 class LocalFileSystem(AbstractFileIOProvider):
     """
     LocalFileSystem provider for interacting with the local file system.
@@ -396,7 +431,7 @@ class LocalFileSystem(AbstractFileIOProvider):
                 return f"Not a file: {file_path}"
 
             # Read file content
-            with open(resolved_path, "r", encoding="utf-8", errors="replace") as f:
+            with _safe_open(str(resolved_path), "r", encoding="utf-8", errors="replace") as f:
                 if offset > 0:
                     f.seek(offset)
 
@@ -450,7 +485,7 @@ class LocalFileSystem(AbstractFileIOProvider):
                     return f"Parent directory for {file_path} does not exist and CREATE permission is required."
 
             # Write content to file
-            with open(resolved_path, "w", encoding="utf-8") as f:
+            with _safe_open(str(resolved_path), "w", encoding="utf-8") as f:
                 f.write(content)
 
             return f"Successfully wrote {len(content)} characters to {file_path}"
@@ -491,7 +526,7 @@ class LocalFileSystem(AbstractFileIOProvider):
                     parent_dir.mkdir(parents=True, exist_ok=True)
 
             # Append content to file
-            with open(resolved_path, "a", encoding="utf-8") as f:
+            with _safe_open(str(resolved_path), "a", encoding="utf-8") as f:
                 f.write(content)
 
             return f"Successfully appended {len(content)} characters to {file_path}"
@@ -577,8 +612,12 @@ class LocalFileSystem(AbstractFileIOProvider):
                 else:
                     return f"Parent directory for {destination_path} does not exist and CREATE permission is required."
 
-            # Copy the file
-            shutil.copy2(source_resolved, dest_resolved)
+            # Copy the file. ``follow_symlinks=False`` means a symlink
+            # planted at either resolved path between check and copy is
+            # treated as a symlink (not dereferenced); the resolved path
+            # was containment-checked, so we know it points inside the
+            # base directory.
+            shutil.copy2(source_resolved, dest_resolved, follow_symlinks=False)
 
             return f"Successfully copied {source_path} to {destination_path}"
         except Exception as e:

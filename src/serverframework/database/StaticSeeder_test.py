@@ -449,7 +449,6 @@ class TestStaticSeederFunctionality:
             logger.debug(f"Core seed: {item.get('test_id', 'unknown')}")
 
     @pytest.mark.seed
-    @pytest.mark.skip()
     def test_seed_discovery_handles_extension_items_gracefully(self):
         """Test that extension seed discovery handles missing dependencies gracefully"""
         # This should not raise exceptions even if dependencies are missing
@@ -483,7 +482,6 @@ class TestStaticSeederMockFunctionality:
     """Test StaticSeeder functionality using mock_server fixture"""
 
     @pytest.mark.seed
-    @pytest.mark.skip()
     def test_seed_discovery_with_mock_server(self, mock_server):
         """Test that seed discovery works with mock server context"""
         core_items = get_core_seed_items()

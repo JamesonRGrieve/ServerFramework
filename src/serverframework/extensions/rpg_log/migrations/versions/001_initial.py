@@ -1,225 +1,330 @@
 """Initial migration for rpg_log — owns the event-log tables.
 
-Schema is loose (no SQL FK constraints) to match existing extension
-migrations. Referential integrity is enforced at the ORM/manager layer.
+Cross-extension foreign keys are real ``ForeignKeyConstraint``
+declarations. Manager-layer validators handle invariants that don't
+fit cleanly in DDL.
+
+Person endpoints reference ``persons.id`` (owned by ``genealogy``).
+Multi-FK columns (actor / target both → persons; from_owner / to_owner
+both → persons or factions) are declared as plain string columns with
+named ``ForeignKeyConstraint`` rows.
 """
 
+from typing import Sequence, Union
+
+import sqlalchemy as sa
 from alembic import op
 
 
-revision = "001_rpg_log_initial"
-down_revision = None
-branch_labels = ("rpg_log",)
-depends_on = None
+revision: str = "001_rpg_log_initial"
+down_revision: Union[str, None] = None
+branch_labels: Union[str, Sequence[str], None] = ("rpg_log",)
+depends_on: Union[str, Sequence[str], None] = None
+
+_INFO = {
+    "source_module": "serverframework.extensions.rpg_log.BLL_RPGLog",
+    "extension": "rpg_log",
+}
+
+
+def _has_table(name: str) -> bool:
+    return sa.inspect(op.get_bind()).has_table(name)
+
+
+def _existing_index_names(table: str) -> set:
+    inspector = sa.inspect(op.get_bind())
+    if not inspector.has_table(table):
+        return set()
+    return {idx["name"] for idx in inspector.get_indexes(table)}
 
 
 def upgrade() -> None:
-    op.execute(
-        """
-        CREATE TABLE IF NOT EXISTS encounter_logs (
-            id VARCHAR(36) PRIMARY KEY,
-            name VARCHAR(255),
-            description TEXT,
-            campaign_id VARCHAR(36),
-            location_id VARCHAR(36),
-            occurred_at TIMESTAMP,
-            session_id VARCHAR(36),
-            started_at TIMESTAMP,
-            ended_at TIMESTAMP,
-            outcome VARCHAR(255),
-            created_at TIMESTAMP NOT NULL,
-            updated_at TIMESTAMP,
-            deleted_at TIMESTAMP,
-            created_by_user_id VARCHAR(36),
-            updated_by_user_id VARCHAR(36),
-            deleted_by_user_id VARCHAR(36)
+    if not _has_table("encounter_logs"):
+        op.create_table(
+            "encounter_logs",
+            sa.Column("id", sa.String(36), nullable=False),
+            sa.Column("name", sa.String(255), nullable=True),
+            sa.Column("description", sa.Text(), nullable=True),
+            sa.Column("campaign_id", sa.String(36), nullable=True),
+            sa.Column("location_id", sa.String(36), nullable=True),
+            sa.Column("occurred_at", sa.DateTime(), nullable=True),
+            sa.Column("session_id", sa.String(36), nullable=True),
+            sa.Column("started_at", sa.DateTime(), nullable=True),
+            sa.Column("ended_at", sa.DateTime(), nullable=True),
+            sa.Column("outcome", sa.String(255), nullable=True),
+            sa.Column("created_at", sa.DateTime(), nullable=False),
+            sa.Column("created_by_user_id", sa.String(36), nullable=True),
+            sa.Column("updated_at", sa.DateTime(), nullable=True),
+            sa.Column("updated_by_user_id", sa.String(36), nullable=True),
+            sa.Column("deleted_at", sa.DateTime(), nullable=True),
+            sa.Column("deleted_by_user_id", sa.String(36), nullable=True),
+            sa.PrimaryKeyConstraint("id"),
+            sa.ForeignKeyConstraint(["campaign_id"], ["campaigns.id"]),
+            sa.ForeignKeyConstraint(["location_id"], ["locations.id"]),
+            comment="Top-level encounter log (combat or otherwise)",
+            info=_INFO,
         )
-        """
-    )
-    op.execute(
-        "CREATE INDEX IF NOT EXISTS ix_enc_campaign ON encounter_logs(campaign_id)"
-    )
-    op.execute(
-        "CREATE INDEX IF NOT EXISTS ix_enc_session ON encounter_logs(session_id)"
-    )
 
-    op.execute(
-        """
-        CREATE TABLE IF NOT EXISTS encounter_participants (
-            id VARCHAR(36) PRIMARY KEY,
-            encounter_log_id VARCHAR(36),
-            character_id VARCHAR(36),
-            faction_id VARCHAR(36),
-            side VARCHAR(64),
-            initiative REAL,
-            created_at TIMESTAMP NOT NULL,
-            updated_at TIMESTAMP,
-            deleted_at TIMESTAMP,
-            created_by_user_id VARCHAR(36),
-            updated_by_user_id VARCHAR(36),
-            deleted_by_user_id VARCHAR(36)
-        )
-        """
-    )
-    op.execute(
-        "CREATE INDEX IF NOT EXISTS ix_ep_encounter "
-        "ON encounter_participants(encounter_log_id)"
-    )
-    op.execute(
-        "CREATE INDEX IF NOT EXISTS ix_ep_character "
-        "ON encounter_participants(character_id)"
-    )
+    enc_idx = _existing_index_names("encounter_logs")
+    if "ix_enc_campaign" not in enc_idx:
+        op.create_index("ix_enc_campaign", "encounter_logs", ["campaign_id"])
+    if "ix_enc_session" not in enc_idx:
+        op.create_index("ix_enc_session", "encounter_logs", ["session_id"])
 
-    op.execute(
-        """
-        CREATE TABLE IF NOT EXISTS combat_action_logs (
-            id VARCHAR(36) PRIMARY KEY,
-            encounter_log_id VARCHAR(36),
-            campaign_id VARCHAR(36),
-            actor_character_id VARCHAR(36),
-            target_character_id VARCHAR(36),
-            item_instance_id VARCHAR(36),
-            trait_id VARCHAR(36),
-            action_type VARCHAR(64),
-            result VARCHAR(64),
-            damage_amount REAL,
-            round_number INTEGER,
-            occurred_at TIMESTAMP,
-            session_id VARCHAR(36),
-            created_at TIMESTAMP NOT NULL,
-            updated_at TIMESTAMP,
-            deleted_at TIMESTAMP,
-            created_by_user_id VARCHAR(36),
-            updated_by_user_id VARCHAR(36),
-            deleted_by_user_id VARCHAR(36)
+    if not _has_table("encounter_participants"):
+        op.create_table(
+            "encounter_participants",
+            sa.Column("id", sa.String(36), nullable=False),
+            sa.Column("encounter_log_id", sa.String(36), nullable=True),
+            sa.Column("person_id", sa.String(36), nullable=True),
+            sa.Column("faction_id", sa.String(36), nullable=True),
+            sa.Column("side", sa.String(64), nullable=True),
+            sa.Column("initiative", sa.Float(), nullable=True),
+            sa.Column("created_at", sa.DateTime(), nullable=False),
+            sa.Column("created_by_user_id", sa.String(36), nullable=True),
+            sa.Column("updated_at", sa.DateTime(), nullable=True),
+            sa.Column("updated_by_user_id", sa.String(36), nullable=True),
+            sa.Column("deleted_at", sa.DateTime(), nullable=True),
+            sa.Column("deleted_by_user_id", sa.String(36), nullable=True),
+            sa.PrimaryKeyConstraint("id"),
+            sa.ForeignKeyConstraint(
+                ["encounter_log_id"], ["encounter_logs.id"]
+            ),
+            sa.ForeignKeyConstraint(["person_id"], ["persons.id"]),
+            sa.ForeignKeyConstraint(["faction_id"], ["factions.id"]),
+            comment=(
+                "Roster of an encounter. faction_id is the snapshot at "
+                "encounter time even if the person defects later."
+            ),
+            info=_INFO,
         )
-        """
-    )
-    op.execute(
-        "CREATE INDEX IF NOT EXISTS ix_cal_encounter "
-        "ON combat_action_logs(encounter_log_id)"
-    )
-    op.execute(
-        "CREATE INDEX IF NOT EXISTS ix_cal_actor "
-        "ON combat_action_logs(actor_character_id)"
-    )
-    op.execute(
-        "CREATE INDEX IF NOT EXISTS ix_cal_target "
-        "ON combat_action_logs(target_character_id)"
-    )
 
-    op.execute(
-        """
-        CREATE TABLE IF NOT EXISTS dialogue_logs (
-            id VARCHAR(36) PRIMARY KEY,
-            campaign_id VARCHAR(36),
-            location_id VARCHAR(36),
-            actor_character_id VARCHAR(36),
-            target_character_id VARCHAR(36),
-            text TEXT,
-            tone VARCHAR(64),
-            occurred_at TIMESTAMP,
-            session_id VARCHAR(36),
-            created_at TIMESTAMP NOT NULL,
-            updated_at TIMESTAMP,
-            deleted_at TIMESTAMP,
-            created_by_user_id VARCHAR(36),
-            updated_by_user_id VARCHAR(36),
-            deleted_by_user_id VARCHAR(36)
+    ep_idx = _existing_index_names("encounter_participants")
+    if "ix_ep_encounter" not in ep_idx:
+        op.create_index(
+            "ix_ep_encounter", "encounter_participants", ["encounter_log_id"]
         )
-        """
-    )
-    op.execute(
-        "CREATE INDEX IF NOT EXISTS ix_dl_actor "
-        "ON dialogue_logs(actor_character_id)"
-    )
+    if "ix_ep_person" not in ep_idx:
+        op.create_index(
+            "ix_ep_person", "encounter_participants", ["person_id"]
+        )
 
-    op.execute(
-        """
-        CREATE TABLE IF NOT EXISTS dialogue_participants (
-            id VARCHAR(36) PRIMARY KEY,
-            dialogue_log_id VARCHAR(36),
-            character_id VARCHAR(36),
-            role VARCHAR(64),
-            created_at TIMESTAMP NOT NULL,
-            updated_at TIMESTAMP,
-            deleted_at TIMESTAMP,
-            created_by_user_id VARCHAR(36),
-            updated_by_user_id VARCHAR(36),
-            deleted_by_user_id VARCHAR(36)
+    if not _has_table("combat_action_logs"):
+        op.create_table(
+            "combat_action_logs",
+            sa.Column("id", sa.String(36), nullable=False),
+            sa.Column("encounter_log_id", sa.String(36), nullable=True),
+            sa.Column("campaign_id", sa.String(36), nullable=True),
+            sa.Column("actor_person_id", sa.String(36), nullable=True),
+            sa.Column("target_person_id", sa.String(36), nullable=True),
+            sa.Column("item_instance_id", sa.String(36), nullable=True),
+            sa.Column("trait_id", sa.String(36), nullable=True),
+            sa.Column("action_type", sa.String(64), nullable=True),
+            sa.Column("result", sa.String(64), nullable=True),
+            sa.Column("damage_amount", sa.Float(), nullable=True),
+            sa.Column("round_number", sa.Integer(), nullable=True),
+            sa.Column("occurred_at", sa.DateTime(), nullable=True),
+            sa.Column("session_id", sa.String(36), nullable=True),
+            sa.Column("created_at", sa.DateTime(), nullable=False),
+            sa.Column("created_by_user_id", sa.String(36), nullable=True),
+            sa.Column("updated_at", sa.DateTime(), nullable=True),
+            sa.Column("updated_by_user_id", sa.String(36), nullable=True),
+            sa.Column("deleted_at", sa.DateTime(), nullable=True),
+            sa.Column("deleted_by_user_id", sa.String(36), nullable=True),
+            sa.PrimaryKeyConstraint("id"),
+            sa.ForeignKeyConstraint(
+                ["encounter_log_id"], ["encounter_logs.id"]
+            ),
+            sa.ForeignKeyConstraint(["campaign_id"], ["campaigns.id"]),
+            sa.ForeignKeyConstraint(["actor_person_id"], ["persons.id"]),
+            sa.ForeignKeyConstraint(["target_person_id"], ["persons.id"]),
+            sa.ForeignKeyConstraint(
+                ["item_instance_id"], ["item_instances.id"]
+            ),
+            sa.ForeignKeyConstraint(["trait_id"], ["traits.id"]),
+            comment=(
+                "One row per combat action. trait_id = spell/skill used; "
+                "item_instance_id = weapon/consumable used."
+            ),
+            info=_INFO,
         )
-        """
-    )
-    op.execute(
-        "CREATE INDEX IF NOT EXISTS ix_dp_dialogue "
-        "ON dialogue_participants(dialogue_log_id)"
-    )
 
-    op.execute(
-        """
-        CREATE TABLE IF NOT EXISTS interaction_logs (
-            id VARCHAR(36) PRIMARY KEY,
-            campaign_id VARCHAR(36),
-            location_id VARCHAR(36),
-            item_instance_id VARCHAR(36),
-            actor_character_id VARCHAR(36),
-            interaction_type VARCHAR(64),
-            notes TEXT,
-            occurred_at TIMESTAMP,
-            session_id VARCHAR(36),
-            created_at TIMESTAMP NOT NULL,
-            updated_at TIMESTAMP,
-            deleted_at TIMESTAMP,
-            created_by_user_id VARCHAR(36),
-            updated_by_user_id VARCHAR(36),
-            deleted_by_user_id VARCHAR(36)
+    cal_idx = _existing_index_names("combat_action_logs")
+    if "ix_cal_encounter" not in cal_idx:
+        op.create_index(
+            "ix_cal_encounter", "combat_action_logs", ["encounter_log_id"]
         )
-        """
-    )
-    op.execute(
-        "CREATE INDEX IF NOT EXISTS ix_il_actor "
-        "ON interaction_logs(actor_character_id)"
-    )
+    if "ix_cal_actor" not in cal_idx:
+        op.create_index(
+            "ix_cal_actor", "combat_action_logs", ["actor_person_id"]
+        )
+    if "ix_cal_target" not in cal_idx:
+        op.create_index(
+            "ix_cal_target", "combat_action_logs", ["target_person_id"]
+        )
 
-    op.execute(
-        """
-        CREATE TABLE IF NOT EXISTS transaction_logs (
-            id VARCHAR(36) PRIMARY KEY,
-            campaign_id VARCHAR(36),
-            item_instance_id VARCHAR(36),
-            quantity INTEGER DEFAULT 1,
-            from_location_id VARCHAR(36),
-            to_location_id VARCHAR(36),
-            from_owner_character_id VARCHAR(36),
-            to_owner_character_id VARCHAR(36),
-            from_owner_faction_id VARCHAR(36),
-            to_owner_faction_id VARCHAR(36),
-            price REAL,
-            kind VARCHAR(64),
-            occurred_at TIMESTAMP,
-            session_id VARCHAR(36),
-            created_at TIMESTAMP NOT NULL,
-            updated_at TIMESTAMP,
-            deleted_at TIMESTAMP,
-            created_by_user_id VARCHAR(36),
-            updated_by_user_id VARCHAR(36),
-            deleted_by_user_id VARCHAR(36)
+    if not _has_table("dialogue_logs"):
+        op.create_table(
+            "dialogue_logs",
+            sa.Column("id", sa.String(36), nullable=False),
+            sa.Column("campaign_id", sa.String(36), nullable=True),
+            sa.Column("location_id", sa.String(36), nullable=True),
+            sa.Column("actor_person_id", sa.String(36), nullable=True),
+            sa.Column("target_person_id", sa.String(36), nullable=True),
+            sa.Column("text", sa.Text(), nullable=True),
+            sa.Column("tone", sa.String(64), nullable=True),
+            sa.Column("occurred_at", sa.DateTime(), nullable=True),
+            sa.Column("session_id", sa.String(36), nullable=True),
+            sa.Column("created_at", sa.DateTime(), nullable=False),
+            sa.Column("created_by_user_id", sa.String(36), nullable=True),
+            sa.Column("updated_at", sa.DateTime(), nullable=True),
+            sa.Column("updated_by_user_id", sa.String(36), nullable=True),
+            sa.Column("deleted_at", sa.DateTime(), nullable=True),
+            sa.Column("deleted_by_user_id", sa.String(36), nullable=True),
+            sa.PrimaryKeyConstraint("id"),
+            sa.ForeignKeyConstraint(["campaign_id"], ["campaigns.id"]),
+            sa.ForeignKeyConstraint(["location_id"], ["locations.id"]),
+            sa.ForeignKeyConstraint(["actor_person_id"], ["persons.id"]),
+            sa.ForeignKeyConstraint(["target_person_id"], ["persons.id"]),
+            comment="One uttered line.",
+            info=_INFO,
         )
-        """
-    )
-    op.execute(
-        "CREATE INDEX IF NOT EXISTS ix_tl_item ON transaction_logs(item_instance_id)"
-    )
-    op.execute(
-        "CREATE INDEX IF NOT EXISTS ix_tl_kind ON transaction_logs(kind)"
-    )
+
+    if "ix_dl_actor" not in _existing_index_names("dialogue_logs"):
+        op.create_index(
+            "ix_dl_actor", "dialogue_logs", ["actor_person_id"]
+        )
+
+    if not _has_table("dialogue_participants"):
+        op.create_table(
+            "dialogue_participants",
+            sa.Column("id", sa.String(36), nullable=False),
+            sa.Column("dialogue_log_id", sa.String(36), nullable=True),
+            sa.Column("person_id", sa.String(36), nullable=True),
+            sa.Column("role", sa.String(64), nullable=True),
+            sa.Column("created_at", sa.DateTime(), nullable=False),
+            sa.Column("created_by_user_id", sa.String(36), nullable=True),
+            sa.Column("updated_at", sa.DateTime(), nullable=True),
+            sa.Column("updated_by_user_id", sa.String(36), nullable=True),
+            sa.Column("deleted_at", sa.DateTime(), nullable=True),
+            sa.Column("deleted_by_user_id", sa.String(36), nullable=True),
+            sa.PrimaryKeyConstraint("id"),
+            sa.ForeignKeyConstraint(
+                ["dialogue_log_id"], ["dialogue_logs.id"]
+            ),
+            sa.ForeignKeyConstraint(["person_id"], ["persons.id"]),
+            comment="Audience join for DialogueLog.",
+            info=_INFO,
+        )
+
+    if "ix_dp_dialogue" not in _existing_index_names("dialogue_participants"):
+        op.create_index(
+            "ix_dp_dialogue", "dialogue_participants", ["dialogue_log_id"]
+        )
+
+    if not _has_table("interaction_logs"):
+        op.create_table(
+            "interaction_logs",
+            sa.Column("id", sa.String(36), nullable=False),
+            sa.Column("campaign_id", sa.String(36), nullable=True),
+            sa.Column("location_id", sa.String(36), nullable=True),
+            sa.Column("item_instance_id", sa.String(36), nullable=True),
+            sa.Column("actor_person_id", sa.String(36), nullable=True),
+            sa.Column("interaction_type", sa.String(64), nullable=True),
+            sa.Column("notes", sa.Text(), nullable=True),
+            sa.Column("occurred_at", sa.DateTime(), nullable=True),
+            sa.Column("session_id", sa.String(36), nullable=True),
+            sa.Column("created_at", sa.DateTime(), nullable=False),
+            sa.Column("created_by_user_id", sa.String(36), nullable=True),
+            sa.Column("updated_at", sa.DateTime(), nullable=True),
+            sa.Column("updated_by_user_id", sa.String(36), nullable=True),
+            sa.Column("deleted_at", sa.DateTime(), nullable=True),
+            sa.Column("deleted_by_user_id", sa.String(36), nullable=True),
+            sa.PrimaryKeyConstraint("id"),
+            sa.ForeignKeyConstraint(["campaign_id"], ["campaigns.id"]),
+            sa.ForeignKeyConstraint(["location_id"], ["locations.id"]),
+            sa.ForeignKeyConstraint(
+                ["item_instance_id"], ["item_instances.id"]
+            ),
+            sa.ForeignKeyConstraint(["actor_person_id"], ["persons.id"]),
+            comment="Non-combat / non-dialogue interactions.",
+            info=_INFO,
+        )
+
+    if "ix_il_actor" not in _existing_index_names("interaction_logs"):
+        op.create_index(
+            "ix_il_actor", "interaction_logs", ["actor_person_id"]
+        )
+
+    if not _has_table("transaction_logs"):
+        op.create_table(
+            "transaction_logs",
+            sa.Column("id", sa.String(36), nullable=False),
+            sa.Column("campaign_id", sa.String(36), nullable=True),
+            sa.Column("item_instance_id", sa.String(36), nullable=True),
+            sa.Column(
+                "quantity", sa.Integer(), nullable=True, server_default="1"
+            ),
+            sa.Column("from_location_id", sa.String(36), nullable=True),
+            sa.Column("to_location_id", sa.String(36), nullable=True),
+            sa.Column("from_owner_person_id", sa.String(36), nullable=True),
+            sa.Column("to_owner_person_id", sa.String(36), nullable=True),
+            sa.Column("from_owner_faction_id", sa.String(36), nullable=True),
+            sa.Column("to_owner_faction_id", sa.String(36), nullable=True),
+            sa.Column("price", sa.Float(), nullable=True),
+            sa.Column("kind", sa.String(64), nullable=True),
+            sa.Column("occurred_at", sa.DateTime(), nullable=True),
+            sa.Column("session_id", sa.String(36), nullable=True),
+            sa.Column("created_at", sa.DateTime(), nullable=False),
+            sa.Column("created_by_user_id", sa.String(36), nullable=True),
+            sa.Column("updated_at", sa.DateTime(), nullable=True),
+            sa.Column("updated_by_user_id", sa.String(36), nullable=True),
+            sa.Column("deleted_at", sa.DateTime(), nullable=True),
+            sa.Column("deleted_by_user_id", sa.String(36), nullable=True),
+            sa.PrimaryKeyConstraint("id"),
+            sa.ForeignKeyConstraint(["campaign_id"], ["campaigns.id"]),
+            sa.ForeignKeyConstraint(
+                ["item_instance_id"], ["item_instances.id"]
+            ),
+            sa.ForeignKeyConstraint(["from_location_id"], ["locations.id"]),
+            sa.ForeignKeyConstraint(["to_location_id"], ["locations.id"]),
+            sa.ForeignKeyConstraint(
+                ["from_owner_person_id"], ["persons.id"]
+            ),
+            sa.ForeignKeyConstraint(
+                ["to_owner_person_id"], ["persons.id"]
+            ),
+            sa.ForeignKeyConstraint(
+                ["from_owner_faction_id"], ["factions.id"]
+            ),
+            sa.ForeignKeyConstraint(
+                ["to_owner_faction_id"], ["factions.id"]
+            ),
+            comment=(
+                "One row per item movement (trade, theft, looting, gifts). "
+                "owner_* columns = assignment / responsibility (not equipped)."
+            ),
+            info=_INFO,
+        )
+
+    tl_idx = _existing_index_names("transaction_logs")
+    if "ix_tl_item" not in tl_idx:
+        op.create_index(
+            "ix_tl_item", "transaction_logs", ["item_instance_id"]
+        )
+    if "ix_tl_kind" not in tl_idx:
+        op.create_index("ix_tl_kind", "transaction_logs", ["kind"])
 
 
 def downgrade() -> None:
-    op.execute("DROP TABLE IF EXISTS transaction_logs")
-    op.execute("DROP TABLE IF EXISTS interaction_logs")
-    op.execute("DROP TABLE IF EXISTS dialogue_participants")
-    op.execute("DROP TABLE IF EXISTS dialogue_logs")
-    op.execute("DROP TABLE IF EXISTS combat_action_logs")
-    op.execute("DROP TABLE IF EXISTS encounter_participants")
-    op.execute("DROP TABLE IF EXISTS encounter_logs")
+    for tbl in (
+        "transaction_logs",
+        "interaction_logs",
+        "dialogue_participants",
+        "dialogue_logs",
+        "combat_action_logs",
+        "encounter_participants",
+        "encounter_logs",
+    ):
+        if _has_table(tbl):
+            op.drop_table(tbl)

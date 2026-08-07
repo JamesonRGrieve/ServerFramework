@@ -58,14 +58,13 @@ class TestEncounterParticipation:
     EncounterLog."""
 
     def test_encounter_log_has_no_faction_field(self):
-        # The model deliberately omits a faction_id on EncounterLog itself.
         ep = EncounterLogModel.Create(name="Tavern brawl")
         assert not hasattr(ep, "faction_id")
 
     def test_participant_carries_side_and_faction(self):
         p = EncounterParticipantModel.Create(
             encounter_log_id="enc-1",
-            character_id="bob",
+            person_id="bob",
             faction_id="party",
             side="defenders",
             initiative=14.0,
@@ -75,21 +74,21 @@ class TestEncounterParticipation:
 
 
 class TestCombatActionShape:
-    """A combat action has actor + (optional) target characters and may
+    """A combat action has actor + (optional) target persons and may
     reference a weapon (item_instance) and/or a spell/skill (trait)."""
 
     def test_attack_with_weapon(self):
         a = CombatActionLogModel.Create(
             encounter_log_id="enc-1",
-            actor_character_id="bob",
-            target_character_id="orc-1",
+            actor_person_id="bob",
+            target_person_id="orc-1",
             item_instance_id="ii-sword",
             action_type="attack",
             result="hit",
             damage_amount=8.0,
             round_number=2,
         )
-        assert a.actor_character_id == "bob"
+        assert a.actor_person_id == "bob"
         assert a.item_instance_id == "ii-sword"
         assert a.damage_amount == 8.0
 
@@ -97,8 +96,8 @@ class TestCombatActionShape:
         # A spell IS a Trait (kind='spell') in the unified model.
         a = CombatActionLogModel.Create(
             encounter_log_id="enc-1",
-            actor_character_id="wizard",
-            target_character_id="orc-2",
+            actor_person_id="wizard",
+            target_person_id="orc-2",
             trait_id="spell-fireball",
             action_type="cast",
             result="hit",
@@ -110,19 +109,19 @@ class TestCombatActionShape:
 class TestDialogueGroupSupport:
     def test_dialogue_log_basic(self):
         d = DialogueLogModel.Create(
-            actor_character_id="bob",
-            target_character_id="innkeep",
+            actor_person_id="bob",
+            target_person_id="innkeep",
             text="One ale, please.",
             tone="friendly",
         )
-        assert d.actor_character_id == "bob"
+        assert d.actor_person_id == "bob"
         assert d.text == "One ale, please."
 
     def test_dialogue_participant_for_eavesdroppers(self):
         # A bard secretly listening from the next table.
         p = DialogueParticipantModel.Create(
             dialogue_log_id="dl-1",
-            character_id="bard",
+            person_id="bard",
             role="overhearer",
         )
         assert p.role == "overhearer"
@@ -135,15 +134,15 @@ class TestTransactionShape:
         t = TransactionLogModel.Create(
             item_instance_id="ii-sword",
             quantity=1,
-            from_owner_character_id="merchant",
-            to_owner_character_id="bob",
+            from_owner_person_id="merchant",
+            to_owner_person_id="bob",
             from_location_id="loc-shop",
             to_location_id="loc-bob-pack",
             price=50.0,
             kind="trade",
         )
-        assert t.from_owner_character_id == "merchant"
-        assert t.to_owner_character_id == "bob"
+        assert t.from_owner_person_id == "merchant"
+        assert t.to_owner_person_id == "bob"
         assert t.price == 50.0
         assert t.kind == "trade"
 
@@ -156,14 +155,13 @@ class TestTransactionShape:
             to_location_id="loc-thief-pack",
             kind="theft",
         )
-        assert t.from_owner_character_id is None
-        assert t.to_owner_character_id is None
+        assert t.from_owner_person_id is None
+        assert t.to_owner_person_id is None
         assert t.kind == "theft"
 
 
 class TestLogsAreEditable:
-    """Logs use UpdateMixinModel — the user opted for editable logs over
-    append-only. The Update class on each log model exposes mutable fields."""
+    """Logs use UpdateMixinModel — editable over append-only."""
 
     def test_combat_action_update_present(self):
         u = CombatActionLogModel.Update(damage_amount=10.0, result="crit")

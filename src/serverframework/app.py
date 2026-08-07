@@ -554,23 +554,35 @@ def build_app(model_registry: ModelRegistry):
                 jwt_secret = env("JWT_SECRET")
                 if not jwt_secret:
                     raise jwt.InvalidTokenError("JWT_SECRET unset")
-                # M-4/M-5 — require ``exp`` and ``nbf``; ``leeway=30``
-                # absorbs cross-host clock skew. ``aud``/``iss`` cannot
-                # be required here without re-introducing per-deployment
-                # config tied to this middleware; that gate runs in the
-                # auth layer's ``verify_token``.
+                # Match ``UserManager.verify_token`` exactly: require the
+                # full claim set (``exp``, ``nbf``, ``iat``, ``jti``,
+                # ``aud``, ``iss``) and validate aud/iss values. Anything
+                # weaker here lets a forged or cross-tenant token populate
+                # ``RequestContext.user`` for routes that consume it but
+                # do not also call ``verify_token`` themselves.
                 payload = jwt.decode(
                     token,
                     key=jwt_secret,
                     algorithms=["HS256"],
+                    audience=env("JWT_AUDIENCE"),
+                    issuer=env("JWT_ISSUER"),
                     leeway=30,
                     options={
                         "verify_signature": True,
-                        "require": ["exp", "nbf"],
+                        "require": ["exp", "nbf", "iat", "jti", "aud", "iss"],
                     },
                 )
 
-                # Set user context with timezone info
+                model_registry = getattr(
+                    request.app.state, "model_registry", None
+                )
+                if model_registry is not None:
+                    from serverframework.logic.BLL_Auth import UserManager
+
+                    UserManager._enforce_session_not_revoked(
+                        payload, model_registry
+                    )
+
                 user_info = {
                     "user_id": payload.get("sub"),
                     "email": payload.get("email"),

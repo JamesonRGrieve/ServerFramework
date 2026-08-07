@@ -207,9 +207,12 @@ class PRV_SQLite(AbstractDatabaseProvider):
                 for table_info in tables:
                     table_name = table_info[0]
                     try:
-                        # Get the CREATE TABLE statement
+                        # Get the CREATE TABLE statement (parameterized — defense
+                        # in depth even though ``table_name`` comes from
+                        # ``sqlite_master`` itself).
                         cursor.execute(
-                            f"SELECT sql FROM sqlite_master WHERE type='table' AND name='{table_name}';"
+                            "SELECT sql FROM sqlite_master WHERE type='table' AND name=?;",
+                            (table_name,),
                         )
                         create_table_result = cursor.fetchone()
                         if create_table_result and create_table_result[0]:

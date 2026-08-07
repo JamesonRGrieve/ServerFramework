@@ -191,10 +191,36 @@ def clear_registry_cache() -> None:
 
     Note: With the new architecture, caching is done per declarative base via _pydantic_models.
     This function clears those caches without needing to iterate through all system modules.
+
+    Also reverses every extension that has been applied to a Pydantic
+    target model (e.g. payment's ``external_payment_id`` on
+    ``UserModel``). The extension system mutates target ``model_fields``
+    in place, so without this reset a test that loads payment leaves
+    the column on ``UserModel`` for the next test running in the same
+    worker process.
     """
     # Clear DatabaseMixin cache (legacy, mostly for compatibility)
     if hasattr(DatabaseMixin, "_db_cache"):
         DatabaseMixin._db_cache.clear()
+
+    # Walk the compat registry and undo every applied extension on its
+    # target model. The compat registry tracks extension classes by
+    # qualified name; we resolve the target on the extension class
+    # itself (``_extension_target``) since the decorator stores it.
+    import importlib
+
+    targets_to_reset = set()
+    for target_key in list(_EXTENSION_REGISTRY_COMPAT.keys()):
+        try:
+            module_name, class_name = target_key.rsplit(".", 1)
+            module = importlib.import_module(module_name)
+            target_model = getattr(module, class_name, None)
+            if target_model is not None:
+                targets_to_reset.add(target_model)
+        except (ImportError, ValueError, AttributeError):
+            continue
+    for target_model in targets_to_reset:
+        _undo_model_extension(target_model)
 
     # Clear cached models from all known declarative bases
     # This approach avoids iterating through all system modules and accessing deprecated typing modules
@@ -1722,9 +1748,72 @@ def extension_model(
             f"Marked {extension_class.__module__}.{extension_class.__name__} as extension for {target_model.__module__}.{target_model.__name__}"
         )
 
+        # Record each injected field so ``detect_extension_field_collisions``
+        # at registry finalize time can surface conflicts where two
+        # extensions inject the same (model, field) with non-equivalent
+        # declarations. Source location lookup is best-effort — built-in
+        # / dynamically-generated extension classes may have no source.
+        try:
+            import inspect as _inspect
+
+            from serverframework.extensions.CollisionDetection import (
+                register_extension_field,
+            )
+
+            try:
+                source_file = _inspect.getsourcefile(extension_class) or "<unknown>"
+            except (TypeError, OSError):
+                source_file = "<unknown>"
+            try:
+                source_line = _inspect.getsourcelines(extension_class)[1]
+            except (TypeError, OSError):
+                source_line = 0
+            extension_name = getattr(extension_class, "__module__", extension_key)
+            for field_name, field_info in getattr(
+                extension_class, "model_fields", {}
+            ).items():
+                register_extension_field(
+                    extension_name=extension_name,
+                    model_name=target_model.__name__,
+                    field_name=field_name,
+                    field_info=field_info,
+                    source_file=source_file,
+                    source_line=source_line,
+                )
+        except Exception as exc:
+            # Registration is observability — never block decoration.
+            logger.debug(
+                f"register_extension_field failed for "
+                f"{extension_class.__name__}: {exc}"
+            )
+
         return extension_class
 
     return decorator
+
+
+def _undo_model_extension(target_model: Type[BaseModel]) -> None:
+    """Reverse every extension applied to ``target_model`` in place.
+
+    The extension system mutates ``target_model.model_fields`` and
+    ``target_model.__annotations__`` whenever a ``@extension_model``-decorated
+    class is processed. That is global state — once payment loads in a
+    test process, ``UserModel`` carries ``external_payment_id`` even
+    though the next test's model registry doesn't include payment, and
+    SQLAlchemy then SELECTs a column the test database doesn't have.
+
+    The fix tracks applied fields on the target itself (``_applied_extension_fields``)
+    so we can pop them back out before the next test's registry rebuilds
+    its SQLAlchemy classes.
+    """
+    applied = getattr(target_model, "_applied_extension_fields", None)
+    if not applied:
+        return
+    for field_name in list(applied):
+        target_model.__annotations__.pop(field_name, None)
+        if hasattr(target_model, "model_fields"):
+            target_model.model_fields.pop(field_name, None)
+    target_model._applied_extension_fields = set()
 
 
 def _apply_model_extension(
@@ -1763,6 +1852,8 @@ def _apply_model_extension(
         target_model.__annotations__ = {}
     if not hasattr(target_model, "model_fields"):
         target_model.model_fields = {}
+    if not hasattr(target_model, "_applied_extension_fields"):
+        target_model._applied_extension_fields = set()
 
     # Track changes for logging
     added_fields: List[str] = []
@@ -1800,6 +1891,7 @@ def _apply_model_extension(
             # Add field to target model
             target_model.__annotations__[field_name] = field_type
             added_fields.append(field_name)
+            target_model._applied_extension_fields.add(field_name)
 
             # Copy field info if available from model_fields
             if field_name in extension_fields:

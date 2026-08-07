@@ -7,9 +7,26 @@ from pathlib import Path
 from types import NoneType
 from typing import Annotated, Any, Dict, List, Tuple, get_args, get_origin, ForwardRef
 
-# JWT_SECRET must be set before any application imports — pyjwt rejects
-# an empty HMAC key at encode time. 32 chars satisfies the env validator.
-os.environ.setdefault("JWT_SECRET", "test-jwt-secret-32-chars-minimum!")
+# Test-only crypto material. Set BEFORE any application imports so the
+# ``AppSettings`` model picks them up. PyJWT 2.10+ raises
+# ``InsecureKeyLengthWarning`` on a sub-32-byte HMAC key and the framework's
+# verify path requires ``aud``/``iss``; the defaults below let the test
+# suite mint and verify tokens consistently across xdist workers.
+os.environ.setdefault("JWT_SECRET", "test-jwt-secret-32-bytes-or-more-aaaaaa")
+os.environ.setdefault("JWT_AUDIENCE", "test-aud")
+os.environ.setdefault("JWT_ISSUER", "test-iss")
+# A Fernet key (real 32-byte URL-safe base64) so encryption-at-rest
+# paths can round-trip in tests without real key management.
+# Generated with ``Fernet.generate_key()`` and committed verbatim — this
+# is a TEST key only and never goes near production.
+os.environ.setdefault(
+    "FRAMEWORK_FERNET_KEY", "dPbIi4wddZvgNsXb56oKvAyHPxbKBT8sSpOKGTPrI_A="
+)
+os.environ.setdefault("ALLOW_PLAINTEXT_SECRETS", "true")
+# A non-default ROOT_API_KEY so `_enforce_production_fail_closed` sees
+# something other than the "n0ne" sentinel if any test happens to flip
+# ENVIRONMENT to production.
+os.environ.setdefault("ROOT_API_KEY", "test-root-api-key")
 
 import pytest
 from faker import Faker
@@ -798,7 +815,7 @@ def create_team(server, user_id, name="Test Team", parent_id=None):
         override_dto=TeamModel,
         name=name,
         description=faker.catch_phrase(),
-        encryption_key=faker.uuid4(),
+        encryption_salt=faker.uuid4(),
         created_by_user_id=user_id,
         parent_id=parent_id,
     )

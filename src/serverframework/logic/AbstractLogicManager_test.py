@@ -898,31 +898,61 @@ class TestAbstractLogicManager:
 
     def test_search_operation(self):
         """Test searching entities with various filters."""
-        # Create test entities
         for i in range(3):
             self.base_manager.create(
                 name=f"Search Test {i}", description=f"Description {i}"
             )
-
-        # Test search infrastructure
+        # The substring 'Search Test' should match all three rows just created.
         results = self.base_manager.search(name={"inc": "Search Test"})
         assert isinstance(results, list)
+        names = [r.name for r in results]
+        assert {"Search Test 0", "Search Test 1", "Search Test 2"} <= set(names), (
+            f"`inc` filter must match the seeded rows; got {names}"
+        )
 
-    # FIXME: filters are not working
     def test_search_string(self):
-        results = self.base_manager.search(name={"eq": "TEst"})
+        # Seed an exact-match row alongside a near-match so `eq` is forced
+        # to discriminate (older form just asserted ``isinstance(_, list)``,
+        # which an unfiltered SELECT would also satisfy and silently let
+        # broken filters through).
+        self.base_manager.create(name="UniqueExactMatch", description="hit")
+        self.base_manager.create(name="UniqueExactMatchExtra", description="miss")
+        results = self.base_manager.search(name={"eq": "UniqueExactMatch"})
         assert isinstance(results, list)
+        names = [r.name for r in results]
+        assert names == ["UniqueExactMatch"], (
+            f"`eq` filter must return exactly the matching row; got {names}"
+        )
 
     def test_search_numerical(self):
         results = self.base_manager.search(count={"gt": 3})
         assert isinstance(results, list)
+        # Every row in the result must satisfy the predicate.
+        for row in results:
+            assert getattr(row, "count", 0) > 3, (
+                f"`gt: 3` filter returned row with count={row.count}"
+            )
 
     def test_search_datetime(self):
-        current_time = datetime.now()
-        results = self.base_manager.search(
-            created_at={"after": current_time}, updated_at={"before": current_time}
+        # Seed a row so both bounds have something to discriminate against
+        # — the autouse fixture drops/recreates the table per test, so we
+        # cannot rely on data from other tests in the same class.
+        self.base_manager.create(name="DatetimeFilterRow", description="x")
+        # An always-future bound and an always-past bound bracket every
+        # row created during the test — verifying both operators
+        # narrow the result set rather than collapsing to no-op.
+        far_future = datetime.now() + timedelta(days=365)
+        far_past = datetime.now() - timedelta(days=365)
+        none_after_future = self.base_manager.search(created_at={"after": far_future})
+        all_after_past = self.base_manager.search(created_at={"after": far_past})
+        assert none_after_future == [], (
+            "`after: <year-from-now>` must return no rows; "
+            f"got {len(none_after_future)} — filter is a no-op."
         )
-        assert isinstance(results, list)
+        assert len(all_after_past) >= 1, (
+            "`after: <year-ago>` must return all rows; "
+            f"got {len(all_after_past)} — filter is a no-op."
+        )
 
     def test_search_filter_building(self):
         """Test building of search filters."""

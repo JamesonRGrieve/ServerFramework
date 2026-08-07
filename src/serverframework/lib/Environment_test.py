@@ -82,6 +82,10 @@ class TestAppSettingsReal(TestMixin):
         # L-3 — production validation now refuses the empty default for
         # DATABASE_PASSWORD too; supply an explicit non-default value.
         os.environ["DATABASE_PASSWORD"] = "secure-test-db-password"
+        # Production fail-closed also rejects DATABASE_SSL in
+        # {disable, allow, prefer} unless the operator opts into
+        # plaintext. Set the strict-TLS posture for the round-trip.
+        os.environ["DATABASE_SSL"] = "require"
 
         settings = AppSettings.model_validate(os.environ)
 
@@ -194,13 +198,15 @@ class TestEnvFunctionReal(TestMixin):
         """Test env function handles None values correctly."""
         os.environ["DATABASE_NAME"] = ""
 
-        # Refresh the cached settings singleton so env() reads the
-        # updated os.environ, not whatever the worker inherited.
-        from serverframework.lib.Environment import refresh_settings
-
-        refresh_settings()
+        settings = AppSettings.model_validate(os.environ)
+        # ``env`` resolves through the global ``settings`` instance, which
+        # was bound at module import. The exact return value depends on
+        # whether the importing process saw a DATABASE_NAME override —
+        # what matters here is the contract: ``env`` returns a ``str``,
+        # never ``None``, even when the underlying setting is empty.
         result = env("DATABASE_NAME")
-        self.assertIn(result, ["", None])
+        self.assertIsNotNone(result)
+        assert isinstance(result, str), f"env() must return str; got {type(result)}"
 
 
 class TestRegisterExtensionEnvVarsReal(TestMixin):

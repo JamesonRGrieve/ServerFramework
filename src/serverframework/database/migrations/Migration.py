@@ -564,12 +564,11 @@ class MigrationManager:
                 return
 
             # Get file stats
-            import datetime
             import stat
+            from datetime import datetime as _datetime
 
             stats = path.stat()
 
-            # Convert mode to human readable
             mode = stats.st_mode
             perms = ""
             perms += "r" if mode & stat.S_IRUSR else "-"
@@ -582,9 +581,8 @@ class MigrationManager:
             perms += "w" if mode & stat.S_IWOTH else "-"
             perms += "x" if mode & stat.S_IXOTH else "-"
 
-            # Format dates
-            mtime = datetime.datetime.fromtimestamp(stats.st_mtime)
-            atime = datetime.datetime.fromtimestamp(stats.st_atime)
+            mtime = _datetime.fromtimestamp(stats.st_mtime)
+            atime = _datetime.fromtimestamp(stats.st_atime)
 
             logger.debug(f"File: {path}")
             logger.debug(f"Size: {stats.st_size} bytes")

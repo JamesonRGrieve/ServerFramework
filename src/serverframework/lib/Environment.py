@@ -129,6 +129,13 @@ class AppSettings(BaseModel):
         checks scattered through the auth path. C-3: JWT_SECRET strength is
         enforced here under production; outside production we allow empty
         for test/dev convenience, since the conftest does not set one.
+
+        The list of required secrets includes ``FRAMEWORK_FERNET_KEY``
+        whenever an extension that depends on encrypted-at-rest secrets
+        (currently ``auth_mfa`` and ``oauth_consumer``) is loaded; the
+        check is in :meth:`EXT_*.validate_config` for each, but we also
+        enforce here so a misconfigured production deployment cannot
+        boot a partially-initialised framework.
         """
         if self.ENVIRONMENT not in ("production", "staging"):
             return self
@@ -146,6 +153,52 @@ class AppSettings(BaseModel):
             problems.append("ALLOWED_DOMAINS='*' is not allowed in production")
         if (self.DATABASE_PASSWORD or "").strip() in ("", "Password1!"):
             problems.append("DATABASE_PASSWORD is unset")
+        # Encryption-at-rest extensions need FRAMEWORK_FERNET_KEY. Sniff
+        # APP_EXTENSIONS for them; if any are loaded, the key is mandatory.
+        loaded_extensions = {
+            e.strip() for e in (self.APP_EXTENSIONS or "").split(",") if e.strip()
+        }
+        # Auto-detect which loaded extensions depend on encryption-at-rest by
+        # statically scanning their package source for ``SecretEncryption``
+        # imports. Maintaining a hardcoded list here is a footgun: a new
+        # extension that adopts ``encrypt_secret`` would silently boot in
+        # production without a Fernet key. The static scan is conservative —
+        # any ``import`` reference to ``SecretEncryption`` flags the
+        # extension as dependent.
+        encryption_dependent = _discover_encryption_dependent(loaded_extensions)
+        if encryption_dependent:
+            fernet_key = (env("FRAMEWORK_FERNET_KEY") or "").strip()
+            if not fernet_key:
+                problems.append(
+                    "FRAMEWORK_FERNET_KEY is unset but the loaded extensions "
+                    f"include {sorted(encryption_dependent)} "
+                    "which require encryption-at-rest"
+                )
+        # PostgreSQL ``sslmode=disable`` is unsafe in production: traffic
+        # to the DB cluster is unencrypted and unauthenticated. The
+        # default of "require" enforces TLS without certificate
+        # validation; "verify-full" is the strict posture that also
+        # validates the cert chain. Operators with a private VPC where
+        # TLS terminates at a sidecar can opt out via
+        # ``ALLOW_PLAINTEXT_DATABASE=true``.
+        ssl_mode = (self.DATABASE_SSL or "").strip().lower()
+        if ssl_mode in ("", "disable", "allow", "prefer"):
+            if (env("ALLOW_PLAINTEXT_DATABASE") or "").lower() != "true":
+                problems.append(
+                    f"DATABASE_SSL={ssl_mode!r} is unsafe in production "
+                    "(use 'require' or 'verify-full', or set "
+                    "ALLOW_PLAINTEXT_DATABASE=true to acknowledge)"
+                )
+        # H-5 — DISABLE_SSRF_GUARD turns ProviderHTTPClient into an open
+        # egress oracle. It exists for unit tests; production/staging
+        # must reject it loudly rather than silently boot with the guard
+        # off because of one stray env variable in the deploy.
+        ssrf_disable = (env("DISABLE_SSRF_GUARD") or "").strip().lower()
+        if ssrf_disable in ("1", "true", "yes", "on"):
+            problems.append(
+                "DISABLE_SSRF_GUARD is truthy; outbound SSRF protection "
+                "must remain enabled in production/staging"
+            )
         if problems:
             raise ValueError(
                 "Insecure production configuration: " + "; ".join(problems)
@@ -211,6 +264,48 @@ class AppSettings(BaseModel):
 
         except Exception as e:
             logger.error(f"Error registering environment variables: {e}")
+
+
+def _discover_encryption_dependent(extension_names: set) -> set:
+    """Return the subset of ``extension_names`` whose package source
+    references the ``SecretEncryption`` helper.
+
+    Static scan of ``src/serverframework/extensions/<name>/*.py`` for
+    ``SecretEncryption`` imports. Conservative: any reference flags the
+    extension as dependent. Falls back to an empty set on I/O errors so
+    a discovery failure cannot crash the startup path; the caller treats
+    a missing entry as "no encryption needed" which is the safe default
+    when the source tree is unreadable.
+    """
+    import pathlib
+
+    if not extension_names:
+        return set()
+    try:
+        ext_dir = pathlib.Path(__file__).parent.parent / "extensions"
+    except Exception:
+        return set()
+    if not ext_dir.is_dir():
+        return set()
+    dependent: set = set()
+    for name in extension_names:
+        pkg = ext_dir / name
+        if not pkg.is_dir():
+            continue
+        try:
+            for src in pkg.rglob("*.py"):
+                if src.name.endswith("_test.py"):
+                    continue
+                try:
+                    text = src.read_text(encoding="utf-8", errors="ignore")
+                except OSError:
+                    continue
+                if "SecretEncryption" in text:
+                    dependent.add(name)
+                    break
+        except OSError:
+            continue
+    return dependent
 
 
 settings = AppSettings.model_validate(os.environ)
