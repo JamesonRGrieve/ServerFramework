@@ -533,6 +533,17 @@ def build_app(model_registry: ModelRegistry):
     app.add_middleware(BodySizeLimitMiddleware)
     app.add_middleware(RateLimitMiddleware)
 
+    # Multi-format content negotiation (JSON, TOON, YAML, TOML, XML).
+    # Transcodes non-JSON request bodies to JSON for Pydantic/FastAPI and
+    # re-serializes JSON responses to the format requested via Accept header
+    # or URL suffix. Mounted after security middleware so format transcoding
+    # only runs on requests that passed rate-limit and body-size checks.
+    from serverframework.lib.ContentNegotiation import (  # noqa: E402
+        ContentNegotiationMiddleware,
+    )
+
+    app.add_middleware(ContentNegotiationMiddleware)
+
     # JWT extraction middleware. RequestContext.user is the canonical actor
     # identity for rate limiting (InboundSecurity), tenancy filters, and
     # downstream BLL authorization. It MUST only be populated from a
