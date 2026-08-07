@@ -1,0 +1,10 @@
+name = "ldap_provider"
+version = "1.0.0"
+description = "Run this server as an LDAP directory server for third-party consumers"
+
+[[extension_dependencies]]
+name = "auth_session"
+optional = false
+
+[python_dependencies]
+ldap3 = ">=2.9.0"

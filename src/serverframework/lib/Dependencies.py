@@ -1998,13 +1998,6 @@ class Dependencies(List[Dependency]):
             os.path.join(os.path.dirname(os.getcwd()), "requirements.txt"),
         ]
 
-        # Add the specific path from the user's system
-        user_requirements_path = (
-            r"c:\Users\Jameson\Source\AGI\aginfrastructure\requirements.txt"
-        )
-        if os.path.exists(user_requirements_path):
-            possible_paths.insert(0, user_requirements_path)
-
         requirements_file = None
         for path in possible_paths:
             if os.path.exists(path):

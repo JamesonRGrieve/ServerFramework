@@ -56,7 +56,7 @@ class TestLabelEP(AbstractEPTest):
 
     def _create_prompt(self, server, jwt_a):
         prompt_name = f"Test Prompt {uuid.uuid4()}"
-        from extensions.prompts.test_ep_prompts import TestPromptEP
+        from serverframework.extensions.prompts.test_ep_prompts import TestPromptEP
 
         prompt_ep_test = TestPromptEP()
         prompt_payload = prompt_ep_test.create_payload(name=prompt_name)
@@ -142,7 +142,7 @@ class TestLabelEP(AbstractEPTest):
         )
         return {"label": label, "prompt": prompt}
 
-    def test_GET_200_includes(self, server, jwt_a, team_a):
+    def test_GET_200_includes(self, server, jwt_a, team_a, navigation_property):
         """Test GET label with included entities (e.g., prompts)."""
         # First associate a label with a prompt
         result = self.test_POST_204_associate_with_prompt(server, jwt_a, team_a)

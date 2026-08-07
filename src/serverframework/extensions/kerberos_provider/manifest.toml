@@ -1,0 +1,10 @@
+name = "kerberos_provider"
+version = "1.0.0"
+description = "Run this server as a Kerberos KDC / SPNEGO application service"
+
+[[extension_dependencies]]
+name = "auth_session"
+optional = false
+
+[python_dependencies]
+gssapi = ">=1.8.0"

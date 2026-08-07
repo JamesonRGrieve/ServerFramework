@@ -1,4 +1,6 @@
+import logging
 import os
+import secrets
 from abc import ABC
 from typing import Any, Dict, List, Literal, Optional
 from urllib.parse import urlparse
@@ -7,6 +9,8 @@ import tldextract
 from dotenv import load_dotenv
 from inflect import engine
 from pydantic import BaseModel, create_model, field_validator, model_validator
+
+_env_logger = logging.getLogger("serverframework.environment")
 
 load_dotenv()
 
@@ -47,19 +51,25 @@ class AppSettings(BaseModel):
 
     ROOT_API_KEY: str = "n0ne"
     JWT_SECRET: str = ""
+    JWT_ALGORITHM: str = "HS256"
     JWT_AUDIENCE: str = "serverframework"
     JWT_ISSUER: str = "serverframework"
     SERVER_URI: str = "http://localhost:1996"
-    ALLOWED_DOMAINS: str = "*"
+    ALLOWED_DOMAINS: str = ""
     # Comma-separated list of trusted-proxy CIDRs/IPs from which the
     # framework will honour X-Forwarded-For. Empty = do not trust the
     # header. Set to a real proxy CIDR (e.g. "10.0.0.0/8") in production.
     TRUSTED_PROXIES: str = ""
+    BCRYPT_ROUNDS: int = 12
+    # Whether registration endpoints accept arbitrary metadata fields.
+    # When false (default), unknown fields in the registration body are
+    # rejected with a 422 instead of being silently stored as metadata.
+    ACCEPT_REGISTRATION_METADATA: str = "false"
 
     DATABASE_TYPE: str = "sqlite"
     DATABASE_NAME: Optional[str] = "database"
     DATABASE_PATH: str = ""
-    DATABASE_SSL: str = "disable"
+    DATABASE_SSL: str = "require"
     DATABASE_HOST: str = "localhost"
     DATABASE_PORT: str = "5432"
     DATABASE_USER: Optional[str] = None
@@ -104,6 +114,36 @@ class AppSettings(BaseModel):
             log_level = info.data.get("LOG_LEVEL", "DEBUG")
             return "5" if str(log_level).lower() == "debug" else "20"
         return v
+
+    @model_validator(mode="after")
+    def _generate_dev_secrets(self):
+        """Auto-generate random secrets for non-production environments.
+
+        In local/development/ci, an empty JWT_SECRET or the ROOT_API_KEY
+        default of "n0ne" would leave the framework running with trivially
+        guessable credentials. Generate random values and log a warning so
+        the operator notices but doesn't have to configure secrets just to
+        develop.
+        """
+        if self.ENVIRONMENT in ("production", "staging"):
+            return self
+        if not (self.JWT_SECRET or "").strip():
+            generated = secrets.token_urlsafe(32)
+            object.__setattr__(self, "JWT_SECRET", generated)
+            _env_logger.warning(
+                "JWT_SECRET was empty — generated a random key for %s. "
+                "Set JWT_SECRET explicitly to suppress this warning.",
+                self.ENVIRONMENT,
+            )
+        if (self.ROOT_API_KEY or "").strip() in ("", "n0ne"):
+            generated = secrets.token_urlsafe(32)
+            object.__setattr__(self, "ROOT_API_KEY", generated)
+            _env_logger.warning(
+                "ROOT_API_KEY was unset or default 'n0ne' — generated: %s. "
+                "Set ROOT_API_KEY explicitly to suppress this warning.",
+                generated,
+            )
+        return self
 
     @model_validator(mode="after")
     def _reconcile_environment_alias(self):
@@ -153,8 +193,12 @@ class AppSettings(BaseModel):
             problems.append(
                 f"JWT_SECRET must be at least 32 characters (got {len(secret)})"
             )
-        if (self.ALLOWED_DOMAINS or "").strip() == "*":
-            problems.append("ALLOWED_DOMAINS='*' is not allowed in production")
+        allowed = (self.ALLOWED_DOMAINS or "").strip()
+        if allowed in ("", "*"):
+            problems.append(
+                "ALLOWED_DOMAINS must be set to explicit origins in production "
+                "(got %r)" % allowed
+            )
         if (self.DATABASE_PASSWORD or "").strip() in ("", "Password1!"):
             problems.append("DATABASE_PASSWORD is unset")
         # Encryption-at-rest extensions need FRAMEWORK_FERNET_KEY. Sniff

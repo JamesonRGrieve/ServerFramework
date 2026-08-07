@@ -1,0 +1,10 @@
+name = "saml_provider"
+version = "1.0.0"
+description = "Run this server as a SAML 2.0 Identity Provider"
+
+[[extension_dependencies]]
+name = "auth_session"
+optional = false
+
+[python_dependencies]
+pysaml2 = ">=7.0.0"

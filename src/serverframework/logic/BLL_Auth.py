@@ -34,10 +34,6 @@ if TYPE_CHECKING:
 import bcrypt
 from fastapi import Header, HTTPException, Request, status
 
-# Pin bcrypt cost. Using gensalt() without a rounds argument leaves the cost
-# at whatever the installed bcrypt's default is, which has shifted across
-# library versions and is invisible to operators.
-_BCRYPT_ROUNDS = 12
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 from sqlalchemy import or_
 
@@ -71,6 +67,12 @@ from serverframework.logic.AbstractLogicManager import (
     StringSearchModel,
     UpdateMixinModel,
 )
+
+# Resolve _BCRYPT_ROUNDS from env now that the import is available.
+# Using gensalt() without a rounds argument leaves the cost at whatever the
+# installed bcrypt's default is, which has shifted across library versions
+# and is invisible to operators. Configurable via BCRYPT_ROUNDS (default 12).
+_BCRYPT_ROUNDS = int(env("BCRYPT_ROUNDS"))
 
 
 class InvalidGrantError(HTTPException):
@@ -137,7 +139,13 @@ class OneTimeTokenMixin(BaseModel):
 
         key_material = (
             env("FRAMEWORK_FERNET_KEY") or env("JWT_SECRET") or ""
-        ).encode("utf-8")
+        )
+        if not key_material:
+            raise ValueError(
+                "Cannot compute HMAC fingerprint: neither "
+                "FRAMEWORK_FERNET_KEY nor JWT_SECRET is set"
+            )
+        key_material = key_material.encode("utf-8")
         return hmac.new(
             key_material, raw_code.encode("utf-8"), hashlib.sha256
         ).hexdigest()
@@ -488,8 +496,13 @@ class UserModel(
 
         @model_validator(mode="after")
         def validate_email(self):
-            if "@" not in self.email:
-                raise ValueError("Invalid email format")
+            try:
+                from email_validator import EmailNotValidError
+                from email_validator import validate_email as _validate_email
+
+                _validate_email(self.email, check_deliverability=False)
+            except EmailNotValidError as exc:
+                raise ValueError(f"Invalid email format: {exc}") from exc
             return self
 
         invitation_id: Optional[str] = Field(
@@ -942,7 +955,7 @@ class UserManager(AbstractBLLManager, RouterMixin):
             "iss": env("JWT_ISSUER"),
             "jti": session_key,
         }
-        return jwt.encode(payload, env("JWT_SECRET"), algorithm="HS256")
+        return jwt.encode(payload, env("JWT_SECRET"), algorithm=env("JWT_ALGORITHM"))
 
     @staticmethod
     def _enforce_session_not_revoked(
@@ -982,7 +995,7 @@ class UserManager(AbstractBLLManager, RouterMixin):
             payload = jwt.decode(
                 token,
                 env("JWT_SECRET"),
-                algorithms=["HS256"],
+                algorithms=[env("JWT_ALGORITHM")],
                 audience=env("JWT_AUDIENCE"),
                 issuer=env("JWT_ISSUER"),
                 leeway=30,
@@ -1012,8 +1025,9 @@ class UserManager(AbstractBLLManager, RouterMixin):
         except HTTPException:
             raise
         except Exception as e:
+            logger.error("Token verification failed: %s", e, exc_info=True)
             raise HTTPException(
-                status_code=401, detail=f"Token verification failed: {str(e)}"
+                status_code=401, detail="Token verification failed"
             )
 
     @staticmethod
@@ -1104,7 +1118,7 @@ class UserManager(AbstractBLLManager, RouterMixin):
                     payload = jwt.decode(
                         jwt=token,
                         key=jwt_secret,
-                        algorithms=["HS256"],
+                        algorithms=[env("JWT_ALGORITHM")],
                         audience=env("JWT_AUDIENCE"),
                         issuer=env("JWT_ISSUER"),
                         # Tight skew tolerance, not session extension. Five
@@ -1222,17 +1236,16 @@ class UserManager(AbstractBLLManager, RouterMixin):
                             password.encode(),
                             old_credentials.password_hash.encode(),
                         ):
-                            change_date = old_credentials.password_changed_at.strftime(
-                                "%Y-%m"
+                            logger.info(
+                                "Login attempt used a previously valid password "
+                                "(changed %s)",
+                                old_credentials.password_changed_at.strftime(
+                                    "%Y-%m"
+                                ),
                             )
-                            raise HTTPException(
-                                status_code=401,
-                                detail=f"Your password was changed during {change_date}.",
-                            )
-                        else:
-                            raise HTTPException(
-                                status_code=401, detail="Invalid credentials"
-                            )
+                        raise HTTPException(
+                            status_code=401, detail="Invalid credentials"
+                        )
 
                     return user
                 except Exception as e:
@@ -1463,12 +1476,16 @@ class UserManager(AbstractBLLManager, RouterMixin):
                         login_model.password.encode(),
                         old_credentials.password_hash.encode(),
                     ):
-                        change_date = old_credentials.password_changed_at.strftime(
-                            "%Y-%m"
+                        logger.info(
+                            "Login attempt used a previously valid password "
+                            "(changed %s)",
+                            old_credentials.password_changed_at.strftime(
+                                "%Y-%m"
+                            ),
                         )
                         raise HTTPException(
                             status_code=401,
-                            detail=f"Your password was changed during {change_date}.",
+                            detail="Invalid credentials",
                         )
                     else:
                         if _lockout_hooks["record_failure"] is not None:
@@ -1994,6 +2011,19 @@ class UserManager(AbstractBLLManager, RouterMixin):
                 model_fields[key] = value
             else:
                 metadata_fields[key] = value
+
+        # M-4: Reject unknown fields unless the deployment explicitly opts in
+        # to storing arbitrary registration metadata via
+        # ACCEPT_REGISTRATION_METADATA=true. Fields starting with '_' are
+        # internal markers (e.g. _test_password) and are silently dropped.
+        metadata_fields = {
+            k: v for k, v in metadata_fields.items() if not k.startswith("_")
+        }
+        if metadata_fields and env("ACCEPT_REGISTRATION_METADATA").lower() != "true":
+            raise HTTPException(
+                status_code=422,
+                detail=f"Unknown fields: {list(metadata_fields.keys())}",
+            )
 
         # Remove processed fields from model_fields
         model_fields.pop("password", None)

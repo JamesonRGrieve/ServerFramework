@@ -1,0 +1,10 @@
+name = "x509_provider"
+version = "1.0.0"
+description = "Run this server as a Certificate Authority for client certificates (mutual TLS)"
+
+[[extension_dependencies]]
+name = "auth_session"
+optional = false
+
+[python_dependencies]
+cryptography = ">=41.0.0"

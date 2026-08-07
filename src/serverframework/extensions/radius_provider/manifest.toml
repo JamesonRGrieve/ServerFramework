@@ -1,0 +1,10 @@
+name = "radius_provider"
+version = "1.0.0"
+description = "Run this server as a RADIUS authenticator and accounting server"
+
+[[extension_dependencies]]
+name = "auth_session"
+optional = false
+
+[python_dependencies]
+pyrad = ">=2.4"

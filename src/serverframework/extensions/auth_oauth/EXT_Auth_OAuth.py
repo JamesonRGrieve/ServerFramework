@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Set
 from urllib.parse import urlencode, urlparse
 
-from serverframework.extensions.AbstractExtensionProvider import AbstractStaticExtension
+from serverframework.extensions.AbstractExtensionProvider import AbstractStaticExtension, ability
 
 # from extensions.auth_oauth.DB_Auth_OAuth import (
 #     OAuth2AuthCode,
@@ -307,7 +307,7 @@ class EXT_Auth_OAuth(AbstractStaticExtension):
         """Return the capabilities this extension provides."""
         return set(self.capabilities)
 
-    @AbstractExtension.ability("register_oauth_client")
+    @ability("register_oauth_client")
     async def register_oauth_client(
         self,
         client_name: str,
@@ -374,7 +374,7 @@ class EXT_Auth_OAuth(AbstractStaticExtension):
             logger.error(f"Error registering OAuth client: {e}")
             return {"success": False, "message": f"Failed to register client: {str(e)}"}
 
-    @AbstractExtension.ability("create_authorization_url")
+    @ability("create_authorization_url")
     async def create_authorization_url(
         self,
         client_id: str,
@@ -474,7 +474,7 @@ class EXT_Auth_OAuth(AbstractStaticExtension):
                 "message": f"Failed to create authorization URL: {str(e)}",
             }
 
-    @AbstractExtension.ability("exchange_authorization_code")
+    @ability("exchange_authorization_code")
     async def exchange_authorization_code(
         self,
         client_id: str,
@@ -559,7 +559,7 @@ class EXT_Auth_OAuth(AbstractStaticExtension):
             logger.error(f"Error exchanging authorization code: {e}")
             return {"success": False, "message": f"Token exchange failed: {str(e)}"}
 
-    @AbstractExtension.ability("validate_access_token")
+    @ability("validate_access_token")
     async def validate_access_token(
         self,
         access_token: str,
@@ -611,7 +611,7 @@ class EXT_Auth_OAuth(AbstractStaticExtension):
             logger.error(f"Error validating access token: {e}")
             return {"success": False, "message": f"Token validation failed: {str(e)}"}
 
-    @AbstractExtension.ability("refresh_access_token")
+    @ability("refresh_access_token")
     async def refresh_access_token(
         self,
         refresh_token: str,
@@ -676,7 +676,7 @@ class EXT_Auth_OAuth(AbstractStaticExtension):
             logger.error(f"Error refreshing access token: {e}")
             return {"success": False, "message": f"Token refresh failed: {str(e)}"}
 
-    @AbstractExtension.ability("revoke_token")
+    @ability("revoke_token")
     async def revoke_token(
         self,
         token: str,
@@ -715,7 +715,7 @@ class EXT_Auth_OAuth(AbstractStaticExtension):
             logger.error(f"Error revoking token: {e}")
             return {"success": False, "message": f"Token revocation failed: {str(e)}"}
 
-    @AbstractExtension.ability("oauth_provider_login")
+    @ability("oauth_provider_login")
     async def oauth_provider_login(
         self,
         provider: str,

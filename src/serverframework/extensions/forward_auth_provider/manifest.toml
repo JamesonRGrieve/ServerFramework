@@ -1,0 +1,9 @@
+name = "forward_auth_provider"
+version = "1.0.0"
+description = "Serve as a forward auth endpoint for Traefik/nginx/Caddy"
+
+[[extension_dependencies]]
+name = "auth_session"
+optional = false
+
+[python_dependencies]

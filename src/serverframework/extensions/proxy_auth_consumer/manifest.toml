@@ -1,0 +1,9 @@
+name = "proxy_auth_consumer"
+version = "1.0.0"
+description = "Authenticate users via trusted proxy headers (X-Forwarded-User)"
+
+[[extension_dependencies]]
+name = "auth_session"
+optional = false
+
+[python_dependencies]

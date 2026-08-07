@@ -1,0 +1,9 @@
+name = "proxy_auth_provider"
+version = "1.0.0"
+description = "Set trusted proxy auth headers (X-Forwarded-User) for downstream services"
+
+[[extension_dependencies]]
+name = "auth_session"
+optional = false
+
+[python_dependencies]

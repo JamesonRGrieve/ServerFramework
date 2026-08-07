@@ -398,3 +398,30 @@ class TestPipExtras:
         all_deps = " ".join(extras["all"]).lower()
         for name in ("email", "mfa", "payment", "cache"):
             assert name in all_deps
+
+
+# ---------------------------------------------------------------------------
+# Extension loader: bundled fallback with consumer path set
+# ---------------------------------------------------------------------------
+
+
+class TestExtensionLoaderBundledFallback:
+    """When consumer extensions_path is set, bundled extensions still load."""
+
+    def test_bundled_extension_loads_from_package(self, tmp_path):
+        """auth_session (bundled) loads even when extensions_path points elsewhere."""
+        from serverframework.extensions.ExtensionLoader import load_extension_module
+
+        consumer_path = tmp_path / "my_exts"
+        consumer_path.mkdir()
+        mod = load_extension_module(str(consumer_path), "auth_session", "BLL_Session")
+        assert hasattr(mod, "SessionModel")
+
+    def test_bundled_fallback_does_not_shadow_consumer(self, tmp_path):
+        """A consumer extension is NOT shadowed by a same-named bundled one."""
+        from serverframework.extensions.ExtensionLoader import load_extension_module
+
+        ext_path = _make_consumer_extension(tmp_path)
+        mod = load_extension_module(str(ext_path), "widget", "BLL_Widget")
+        assert hasattr(mod, "WidgetModel")
+        assert not hasattr(mod, "SessionModel")

@@ -3,7 +3,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from AbstractTest import CategoryOfTest, ClassOfTestsConfig, SkipThisTest
+from serverframework.AbstractTest import CategoryOfTest, SkipThisTest
+from serverframework.extensions.AbstractEXTTest import ExtensionTestConfig
 from serverframework.extensions.AbstractEXTTest import AbstractEXTTest
 from serverframework.extensions.auth_oauth.EXT_Auth_OAuth import EXT_Auth_OAuth
 from serverframework.lib.Dependencies import install_pip_dependencies
@@ -29,10 +30,7 @@ class TestEXTAuthOAuth(AbstractEXTTest):
 
     # Configure the test class
     extension_class = EXT_Auth_OAuth
-    test_config = ClassOfTestsConfig(
-        categories=[CategoryOfTest.EXTENSION, CategoryOfTest.INTEGRATION],
-        cleanup=True,
-    )
+    test_config = ExtensionTestConfig()
 
     # Expected extension properties
     expected_abilities = [
@@ -71,7 +69,7 @@ class TestEXTAuthOAuth(AbstractEXTTest):
         result = install_pip_dependencies(pip_deps, only_missing=True)
 
         # Check final satisfaction status after installation attempt
-        from lib.Dependencies import check_pip_dependencies
+        from serverframework.lib.Dependencies import check_pip_dependencies
 
         final_status = check_pip_dependencies(pip_deps)
 
@@ -100,7 +98,7 @@ class TestEXTAuthOAuth(AbstractEXTTest):
     @pytest.fixture
     def mock_env_configured(self):
         """Mock environment with OAuth configured"""
-        with patch("extensions.auth_oauth.EXT_Auth_OAuth.env") as mock_env:
+        with patch("serverframework.extensions.auth_oauth.EXT_Auth_OAuth.env") as mock_env:
             mock_env.side_effect = lambda key, default=None: {
                 "REDIS_URL": "redis://localhost:6379/4",
                 "JWT_SECRET_KEY": "test_jwt_secret_key",
@@ -112,7 +110,7 @@ class TestEXTAuthOAuth(AbstractEXTTest):
     @pytest.fixture
     def mock_env_no_redis(self):
         """Mock environment without Redis configured"""
-        with patch("extensions.auth_oauth.EXT_Auth_OAuth.env") as mock_env:
+        with patch("serverframework.extensions.auth_oauth.EXT_Auth_OAuth.env") as mock_env:
             mock_env.side_effect = lambda key, default=None: {
                 "REDIS_URL": "",
                 "JWT_SECRET_KEY": "test_jwt_secret_key",
@@ -240,7 +238,7 @@ class TestEXTAuthOAuth(AbstractEXTTest):
     @pytest.mark.dependency(depends=["auth_oauth_dependencies"])
     def test_initialization_with_custom_settings(self):
         """Test extension initialization with custom settings"""
-        with patch("lib.Logging.logger"):
+        with patch("serverframework.lib.Logging.logger"):
             extension = EXT_Auth_OAuth(
                 default_token_expiry_minutes=120,
                 refresh_token_expiry_days=60,
@@ -260,7 +258,7 @@ class TestEXTAuthOAuth(AbstractEXTTest):
     @pytest.mark.dependency(depends=["auth_oauth_dependencies"])
     def test_on_initialize_success_with_redis(self, mock_redis_available):
         """Test successful extension initialization with Redis"""
-        with patch("lib.Logging.logger"):
+        with patch("serverframework.lib.Logging.logger"):
             with patch.object(EXT_Auth_OAuth, "_register_oauth_hooks") as mock_hooks:
                 extension = EXT_Auth_OAuth()
                 result = extension.on_initialize()
@@ -271,7 +269,7 @@ class TestEXTAuthOAuth(AbstractEXTTest):
     @pytest.mark.dependency(depends=["auth_oauth_dependencies"])
     def test_on_initialize_success_without_redis(self):
         """Test successful extension initialization without Redis"""
-        with patch("lib.Logging.logger"):
+        with patch("serverframework.lib.Logging.logger"):
             with patch.object(EXT_Auth_OAuth, "_register_oauth_hooks") as mock_hooks:
                 extension = EXT_Auth_OAuth()
                 result = extension.on_initialize()
@@ -282,7 +280,7 @@ class TestEXTAuthOAuth(AbstractEXTTest):
     @pytest.mark.dependency(depends=["auth_oauth_dependencies"])
     def test_on_initialize_failure(self):
         """Test extension initialization failure handling"""
-        with patch("lib.Logging.logger"):
+        with patch("serverframework.lib.Logging.logger"):
             with patch.object(
                 EXT_Auth_OAuth,
                 "_initialize_redis",
@@ -296,7 +294,7 @@ class TestEXTAuthOAuth(AbstractEXTTest):
     @pytest.mark.dependency(depends=["auth_oauth_dependencies"])
     def test_initialize_redis_success(self, mock_redis_available, mock_env_configured):
         """Test successful Redis initialization"""
-        with patch("lib.Logging.logger"):
+        with patch("serverframework.lib.Logging.logger"):
             extension = EXT_Auth_OAuth()
             extension._initialize_redis()
 
@@ -305,7 +303,7 @@ class TestEXTAuthOAuth(AbstractEXTTest):
     @pytest.mark.dependency(depends=["auth_oauth_dependencies"])
     def test_initialize_redis_no_redis_lib(self):
         """Test Redis initialization without Redis library"""
-        with patch("lib.Logging.logger"):
+        with patch("serverframework.lib.Logging.logger"):
             with patch.dict("sys.modules", {"redis": None}):
                 extension = EXT_Auth_OAuth()
                 extension._initialize_redis()
@@ -754,7 +752,7 @@ class TestEXTAuthOAuth(AbstractEXTTest):
     @pytest.mark.dependency(depends=["auth_oauth_dependencies"])
     def test_validate_config_all_libraries_available(self):
         """Test configuration validation when all libraries are available"""
-        with patch("lib.Logging.logger"):
+        with patch("serverframework.lib.Logging.logger"):
             mock_libs = {
                 "requests": MagicMock(),
                 "cryptography": MagicMock(),
@@ -771,7 +769,7 @@ class TestEXTAuthOAuth(AbstractEXTTest):
     @pytest.mark.dependency(depends=["auth_oauth_dependencies"])
     def test_validate_config_missing_cryptography(self):
         """Test configuration validation with missing cryptography"""
-        with patch("lib.Logging.logger"):
+        with patch("serverframework.lib.Logging.logger"):
             with patch.dict("sys.modules", {"cryptography": None}):
                 extension = EXT_Auth_OAuth()
                 issues = extension.validate_config()
@@ -783,7 +781,7 @@ class TestEXTAuthOAuth(AbstractEXTTest):
     @pytest.mark.dependency(depends=["auth_oauth_dependencies"])
     def test_validate_config_jwt_without_secret(self):
         """Test configuration validation for JWT without secret key"""
-        with patch("lib.Logging.logger"):
+        with patch("serverframework.lib.Logging.logger"):
             extension = EXT_Auth_OAuth(enable_jwt_tokens=True, jwt_secret_key=None)
             issues = extension.validate_config()
 
@@ -805,7 +803,7 @@ class TestEXTAuthOAuth(AbstractEXTTest):
     @pytest.mark.dependency(depends=["auth_oauth_dependencies"])
     def test_on_start_success(self):
         """Test successful extension start"""
-        with patch("lib.Logging.logger"):
+        with patch("serverframework.lib.Logging.logger"):
             extension = EXT_Auth_OAuth()
             result = extension.on_start()
 
@@ -883,9 +881,9 @@ class TestEXTAuthOAuth(AbstractEXTTest):
     @pytest.mark.dependency(depends=["auth_oauth_dependencies"])
     def test_oauth_hooks_registration(self):
         """Test that OAuth hooks are properly registered"""
-        with patch("lib.Logging.logger"):
+        with patch("serverframework.lib.Logging.logger"):
             with patch(
-                "extensions.auth_oauth.EXT_Auth_OAuth.AbstractExtension.bll_hook"
+                "serverframework.extensions.auth_oauth.EXT_Auth_OAuth.AbstractExtension.bll_hook"
             ) as mock_hook:
                 extension = EXT_Auth_OAuth()
                 extension._register_oauth_hooks()

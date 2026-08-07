@@ -1,0 +1,15 @@
+name = "oidc_provider"
+version = "1.0.0"
+description = "Run this server as an OpenID Connect identity provider (ID tokens, discovery, JWKS)"
+
+[[extension_dependencies]]
+name = "auth_session"
+optional = false
+
+[[extension_dependencies]]
+name = "oauth_provider"
+optional = false
+
+[python_dependencies]
+PyJWT = ">=2.8.0"
+cryptography = ">=41.0.0"

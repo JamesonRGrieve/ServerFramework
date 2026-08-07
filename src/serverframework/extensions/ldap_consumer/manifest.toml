@@ -1,0 +1,10 @@
+name = "ldap_consumer"
+version = "1.0.0"
+description = "Authenticate users against an external LDAP/Active Directory server"
+
+[[extension_dependencies]]
+name = "auth_session"
+optional = false
+
+[python_dependencies]
+ldap3 = ">=2.9.0"

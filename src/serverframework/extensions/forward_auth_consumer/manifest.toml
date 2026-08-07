@@ -1,0 +1,10 @@
+name = "forward_auth_consumer"
+version = "1.0.0"
+description = "Authenticate via forward auth subrequest (Traefik/nginx auth_request)"
+
+[[extension_dependencies]]
+name = "auth_session"
+optional = false
+
+[python_dependencies]
+requests = ">=2.31.0"
