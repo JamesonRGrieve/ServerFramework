@@ -81,6 +81,13 @@ Issues = "https://github.com/JamesonRGrieve/ServerFramework/issues"
 server-framework = "serverframework.cli:main"
 
 [project.optional-dependencies]
+email = ["sendgrid"]
+mfa = ["pyotp", "qrcode"]
+payment = ["stripe"]
+cache = ["redis"]
+all = [
+    "server[email,mfa,payment,cache]",
+]
 dev = [
     "pytest",
     "pytest-asyncio",
