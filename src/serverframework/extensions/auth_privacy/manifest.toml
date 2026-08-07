@@ -1,0 +1,5 @@
+name = "auth_privacy"
+version = "0.1.0"
+description = "Data-residency state for tenants"
+
+[python_dependencies]
