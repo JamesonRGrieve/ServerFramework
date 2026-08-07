@@ -1,5 +1,0 @@
-name = "auth_notifications"
-version = "0.1.0"
-description = "User-facing notifications with per-user delivery state"
-
-[python_dependencies]

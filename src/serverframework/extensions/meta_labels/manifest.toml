@@ -1,5 +1,0 @@
-name = "meta_labels"
-version = "0.1.0"
-description = "Polymorphic label catalog"
-
-[python_dependencies]

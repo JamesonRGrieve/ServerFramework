@@ -1,8 +1,0 @@
-name = "genealogy"
-version = "0.1.0"
-description = "Person and labelled-relationship graph; family-tree algorithms; GEDCOM-importable"
-
-# Foundational. No upstream extension dependencies.
-[[extension_dependencies]]
-
-[python_dependencies]

@@ -1,9 +1,0 @@
-name = "auth_merge"
-version = "0.1.0"
-description = "Audit + side-data consolidation for user account merges"
-
-[[extension_dependencies]]
-name = "auth_session"
-optional = false
-
-[python_dependencies]

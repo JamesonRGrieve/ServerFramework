@@ -1,5 +1,0 @@
-name = "auth_api_keys"
-version = "0.1.0"
-description = "API-key authentication"
-
-[python_dependencies]
