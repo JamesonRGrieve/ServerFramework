@@ -31,29 +31,6 @@ os.environ.setdefault("SEED_DATA", "true")
 os.environ.setdefault("ALLOWED_DOMAINS", "*")
 os.environ.setdefault("DATABASE_SSL", "disable")
 
-# Nuke stale test DBs from prior runs — walk the entire tree from CWD
-# and delete any .db file whose name starts with "test." or "mock.".
-# This runs once at conftest import time, before any fixture or worker.
-import glob as _glob
-for _stale in _glob.glob("**/test.*.db", recursive=True) + \
-              _glob.glob("**/mock.*.db", recursive=True) + \
-              _glob.glob("**/database.db", recursive=True):
-    if ".venv" not in _stale:
-        try:
-            os.remove(_stale)
-        except OSError:
-            pass
-
-# Route test SQLite files to a deterministic temp dir so all xdist
-# workers in the same session share one location. The dir is keyed
-# on the repo path so parallel pytest sessions on different repos
-# don't collide.
-import hashlib as _hl, tempfile as _tf
-_repo_hash = _hl.md5(str(Path(__file__).resolve().parent).encode()).hexdigest()[:8]
-_test_db_dir = os.path.join(_tf.gettempdir(), f"sf-test-{_repo_hash}")
-os.makedirs(_test_db_dir, exist_ok=True)
-# Clean stale DBs from the shared test dir too
-os.environ.setdefault("DATABASE_PATH", _test_db_dir)
 # Set APP_EXTENSIONS so the global settings singleton includes the
 # extensions the test suite exercises. Without this, the empty default
 # means tests that boot servers without explicit extensions= get no

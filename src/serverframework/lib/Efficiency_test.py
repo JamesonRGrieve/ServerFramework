@@ -188,16 +188,13 @@ class TestRequestLatency:
     def test_list_endpoint_latency(self, client, n):
         import base64
 
-        creds = base64.b64encode(b"root@:").decode()
-        auth_resp = client.post(
-            "/v1/user/authorize",
-            headers={"Authorization": f"Basic {creds}"},
-        )
-        if auth_resp.status_code != 200:
-            pytest.skip("Auth not available without password")
+        from conftest import create_user
 
-        token = auth_resp.json()["token"]
-        headers = {"Authorization": f"Bearer {token}"}
+        try:
+            user = create_user(client)
+            headers = {"Authorization": f"Bearer {user.jwt}"}
+        except Exception:
+            pytest.skip("Auth not available")
 
         times = []
         for _ in range(n):
