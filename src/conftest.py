@@ -59,6 +59,62 @@ _CORE_TEST_EXTENSIONS = ",".join(CORE_COMPANION_EXTENSIONS
 )
 
 
+# =============================================================================
+# CENTRALIZED TEST DATA GENERATORS (from PR #104)
+# =============================================================================
+
+faker = Faker()
+
+
+class FieldGenerators:
+    """Reusable field generators for test data — eliminates per-test Faker boilerplate.
+
+    Usage::
+
+        class TestMyEntity(AbstractBLLTest):
+            create_fields = {
+                "email": FieldGenerators.email(),
+                "name": FieldGenerators.unique_name("Entity"),
+            }
+    """
+
+    @staticmethod
+    def email(prefix: str = "test"):
+        return lambda: f"{prefix}_{faker.word()}_{faker.random_int()}@example.com"
+
+    @staticmethod
+    def unique_name(entity_type: str = "Test"):
+        return lambda: f"{entity_type} {faker.word()} {faker.random_int()}"
+
+    @staticmethod
+    def username(prefix: str = "user"):
+        return lambda: f"{prefix}_{faker.word()}_{faker.random_int()}"
+
+    @staticmethod
+    def uuid_string():
+        return lambda: str(uuid.uuid4())
+
+    @staticmethod
+    def sentence():
+        return lambda: faker.sentence()
+
+    @staticmethod
+    def word():
+        return lambda: faker.word()
+
+    @staticmethod
+    def company():
+        return lambda: faker.company()
+
+    @staticmethod
+    def first_name():
+        return lambda: faker.first_name()
+
+    @staticmethod
+    def last_name():
+        return lambda: faker.last_name()
+
+
 # Registry for JWT helpers that mint sessions outside the login flow.
 # Populated by the `server` / `mock_server` fixtures below. M-1 made
 # `jti` mandatory on every JWT and gated on a live SessionModel row, so

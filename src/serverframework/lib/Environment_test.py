@@ -421,6 +421,8 @@ class TestAppSettingsValidators:
             "ROOT_API_KEY": "a" * 32,
             "ALLOWED_DOMAINS": "example.com",
             "DATABASE_PASSWORD": "securepass",
+            "DATABASE_SSL": "require",
+            "APP_EXTENSIONS": "",
         }
         s = AppSettings.model_validate(env_data)
         assert s.ENVIRONMENT == expected_env
@@ -443,13 +445,17 @@ class TestAppSettingsValidators:
         with pytest.raises(ValueError, match="DATABASE_PASSWORD"):
             AppSettings.model_validate(os.environ)
 
-    def test_production_accepts_valid_config(self, clean_environment, monkeypatch):
-        monkeypatch.setenv("ENVIRONMENT", "production")
-        monkeypatch.setenv("JWT_SECRET", "a" * 32)
-        monkeypatch.setenv("ROOT_API_KEY", "a" * 32)
-        monkeypatch.setenv("ALLOWED_DOMAINS", "example.com")
-        monkeypatch.setenv("DATABASE_PASSWORD", "securepass123")
-        s = AppSettings.model_validate(os.environ)
+    def test_production_accepts_valid_config(self):
+        env_data = {
+            "ENVIRONMENT": "production",
+            "JWT_SECRET": "a" * 32,
+            "ROOT_API_KEY": "a" * 32,
+            "ALLOWED_DOMAINS": "example.com",
+            "DATABASE_PASSWORD": "securepass123",
+            "DATABASE_SSL": "require",
+            "APP_EXTENSIONS": "",
+        }
+        s = AppSettings.model_validate(env_data)
         assert s.ENVIRONMENT == "production"
 
 
