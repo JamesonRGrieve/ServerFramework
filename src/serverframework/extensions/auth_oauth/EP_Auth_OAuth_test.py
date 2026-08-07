@@ -1,3 +1,6 @@
+import uuid
+from typing import Any, Dict, Optional
+
 import pytest
 
 from serverframework.endpoints.AbstractEPTest import AbstractEPTest
@@ -14,9 +17,45 @@ class TestOAuthEP(AbstractEPTest):
     # Not a system entity
     system_entity = False
 
-    def setup_method(self):
+    create_fields = {
+        "provider_name": lambda: "google",
+        "account_email": lambda: f"test-{uuid.uuid4()}@example.com",
+    }
+    update_fields = {
+        "access_token": "updated_access_token",
+    }
+    unique_fields = []
+
+    def create_payload(
+        self,
+        name: Optional[str] = None,
+        parent_ids: Optional[Dict[str, str]] = None,
+        team_id: Optional[str] = None,
+        minimal: bool = False,
+        invalid_data: bool = False,
+    ) -> Dict[str, Any]:
+        """Create a payload for OAuth connection creation."""
+        provider_name = name if name else "google"
+        if invalid_data:
+            return {
+                "provider_name": 12345,
+                "account_email": True,
+            }
+        if minimal:
+            return {"provider_name": provider_name}
+        payload = {
+            "provider_name": provider_name,
+            "account_email": f"test-{uuid.uuid4()}@example.com",
+        }
+        if team_id:
+            payload["team_id"] = team_id
+        return payload
+
+    def setup_method(self, method=None):
+        # Skip GQL tests — OAuth models are not registered in the GraphQL schema
+        if method and getattr(method, "__name__", "").startswith("test_GQL_"):
+            pytest.skip("OAuth models are not registered in the GraphQL schema.")
         # Skip direct use of AbstractEPTest CRUD tests since OAuth has custom flows
-        pass
 
     def test_POST_400_connect_invalid_code(self, server, jwt_a, team_a):
         """Test connecting an OAuth provider with an invalid code."""

@@ -17,28 +17,43 @@ class TestLabelEP(AbstractEPTest):
     # Not a system entity
     system_entity = False
 
-    def create_payload(self, name=None, parent_ids=None, team_id=None):
+    create_fields = {
+        "name": lambda: f"Test Label {uuid.uuid4()}",
+        "description": lambda: f"Description for test label {uuid.uuid4()}",
+    }
+    update_fields = {
+        "name": "Updated Label",
+        "description": "Updated label description",
+    }
+    unique_fields = ["name"]
+
+    def create_payload(self, name=None, parent_ids=None, team_id=None, minimal=False, invalid_data=False):
         if not name:
-            name = self.generate_name()
+            name = f"Test Label {uuid.uuid4()}"
+        if invalid_data:
+            return {
+                "name": 12345,
+                "description": True,
+            }
+        if minimal:
+            return {"name": name}
         payload = {
             "name": name,
             "description": f"Description for {name}",
         }
         if team_id:
             payload["team_id"] = team_id
-        return self.nest_payload_in_entity(entity=payload)
+        return payload
 
     def test_POST_201_create_with_color(self, server, jwt_a, team_a):
         """Test creating a label with a specific color."""
         label_name = f"Colored Label {uuid.uuid4()}"
         color = "#3399FF"  # Blue color
-        payload = self.nest_payload_in_entity(
-            entity={
-                "name": label_name,
-                "description": f"A label with a specific color",
-                "color": color,
-            }
-        )
+        payload = {
+            "name": label_name,
+            "description": "A label with a specific color",
+            "color": color,
+        }
         response = server.post(
             f"/v1/{self.base_endpoint}", json=payload, headers=self._auth_header(jwt_a)
         )

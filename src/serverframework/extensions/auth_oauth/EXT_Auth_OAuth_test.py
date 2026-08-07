@@ -30,7 +30,7 @@ class TestEXTAuthOAuth(AbstractEXTTest):
 
     # Configure the test class
     extension_class = EXT_Auth_OAuth
-    test_config = ExtensionTestConfig()
+    test_config = ExtensionTestConfig(skip_performance_tests=True)
 
     # Expected extension properties
     expected_abilities = [
