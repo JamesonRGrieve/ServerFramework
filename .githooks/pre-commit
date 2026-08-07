@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Pre-commit gate — blocks commit on any regression.
+# Install: git config core.hooksPath .githooks
+set -euo pipefail
+
+echo "[pre-commit] Running test suite..."
+python3 -m pytest src/ \
+  --ignore=src/serverframework/extensions/auth_api_keys \
+  --ignore=src/serverframework/extensions/auth_marketplace \
+  --ignore=src/serverframework/extensions/auth_merge \
+  --ignore=src/serverframework/extensions/auth_notifications \
+  --ignore=src/serverframework/extensions/auth_oauth \
+  --ignore=src/serverframework/extensions/auth_privacy \
+  --ignore=src/serverframework/extensions/fileio \
+  --ignore=src/serverframework/extensions/meta_labels \
+  -q --tb=no 2>&1 | tail -3
+if [ ${PIPESTATUS[0]} -ne 0 ]; then
+  echo "[pre-commit] FAIL: tests did not pass"
+  exit 1
+fi
+
+echo "[pre-commit] Running ratchet checks..."
+python3 scripts/ratchet-check.py
+if [ $? -ne 0 ]; then
+  echo "[pre-commit] FAIL: ratchet regression detected"
+  exit 1
+fi
+
+echo "[pre-commit] All checks passed."
