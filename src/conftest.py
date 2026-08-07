@@ -27,6 +27,17 @@ os.environ.setdefault("ALLOW_PLAINTEXT_SECRETS", "true")
 # something other than the "n0ne" sentinel if any test happens to flip
 # ENVIRONMENT to production.
 os.environ.setdefault("ROOT_API_KEY", "test-root-api-key")
+# Set APP_EXTENSIONS so the global settings singleton includes the
+# extensions the test suite exercises. Without this, the empty default
+# means tests that boot servers without explicit extensions= get no
+# extensions, and the payment extension's @extension_model side effect
+# contaminates UserModel with columns the core DB doesn't have.
+os.environ.setdefault(
+    "APP_EXTENSIONS",
+    "metadata,auth_lockout,auth_recovery_questions,auth_invitations,"
+    "auth_session,acl_rbac,payment,auth_mfa,email,auth_device_pairing,"
+    "auth_magic_link,database_memory,meta_logging,quota",
+)
 
 import pytest
 from faker import Faker

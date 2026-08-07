@@ -40,6 +40,10 @@ class AppSettings(BaseModel):
     APP_VERSION: str = "0.0.0"
     APP_REPOSITORY: str = "https://github.com/ZephyrexTechnologies/ServerFramework"
     APP_EXTENSIONS: str = ""
+    # Empty default: consumers choose extensions explicitly via run() or
+    # instance(). The test conftest sets _CORE_TEST_EXTENSIONS for the
+    # test suite. The old default "email,auth_mfa,database,meta_logging,
+    # payment" is NOT restored here — consumers must opt in.
 
     ROOT_API_KEY: str = "n0ne"
     JWT_SECRET: str = ""
