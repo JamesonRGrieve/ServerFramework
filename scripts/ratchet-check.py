@@ -19,14 +19,14 @@ from pathlib import Path
 
 BASELINE_FILE = Path(__file__).resolve().parent.parent / ".ratchet-baseline.json"
 IGNORES = [
-    "--ignore=src/serverframework/extensions/auth_api_keys",
-    "--ignore=src/serverframework/extensions/auth_marketplace",
-    "--ignore=src/serverframework/extensions/auth_merge",
-    "--ignore=src/serverframework/extensions/auth_notifications",
-    "--ignore=src/serverframework/extensions/auth_oauth",
-    "--ignore=src/serverframework/extensions/auth_privacy",
-    "--ignore=src/serverframework/extensions/fileio",
-    "--ignore=src/serverframework/extensions/meta_labels",
+    "--ignore=src/zephyrex/extensions/auth_api_keys",
+    "--ignore=src/zephyrex/extensions/auth_marketplace",
+    "--ignore=src/zephyrex/extensions/auth_merge",
+    "--ignore=src/zephyrex/extensions/auth_notifications",
+    "--ignore=src/zephyrex/extensions/auth_oauth",
+    "--ignore=src/zephyrex/extensions/auth_privacy",
+    "--ignore=src/zephyrex/extensions/fileio",
+    "--ignore=src/zephyrex/extensions/meta_labels",
 ]
 
 
@@ -60,7 +60,7 @@ def _count_mypy_errors() -> int:
     result = subprocess.run(
         [
             sys.executable, "-m", "mypy",
-            "src/serverframework/",
+            "src/zephyrex/",
             "--ignore-missing-imports",
             "--no-error-summary",
         ],
@@ -73,7 +73,7 @@ def _count_mypy_errors() -> int:
 
 def _count_black_violations() -> int:
     result = subprocess.run(
-        [sys.executable, "-m", "black", "--check", "--quiet", "src/serverframework/"],
+        [sys.executable, "-m", "black", "--check", "--quiet", "src/zephyrex/"],
         capture_output=True,
         text=True,
         timeout=60,

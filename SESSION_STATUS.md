@@ -31,11 +31,11 @@
 
 ## Key files modified this session
 - src/conftest.py — JWT_SECRET, DATABASE_SSL, DATABASE_PATH, CORE_COMPANION_EXTENSIONS, FieldGenerators, prepare_test_registry
-- src/serverframework/lib/Environment.py — _generate_dev_secrets, ALLOWED_DOMAINS="", DATABASE_SSL="require", BCRYPT_ROUNDS, JWT_ALGORITHM
-- src/serverframework/logic/BLL_Auth.py — generic error messages, email_validator, configurable bcrypt/JWT, metadata guard
-- src/serverframework/lib/ContentNegotiation.py — 5-format middleware
-- src/serverframework/app.py — ContentNegotiationMiddleware, instance() extensions_path
-- src/serverframework/lib/Pydantic.py — SA model fallback, auto-wiring, home-module discovery fix
-- src/serverframework/lib/Pydantic2FastAPI.py — auto-routing, getattr defaults, nested router fix
-- src/serverframework/extensions/ — 20 new auth protocol extensions, ported 10 existing
+- src/zephyrex/lib/Environment.py — _generate_dev_secrets, ALLOWED_DOMAINS="", DATABASE_SSL="require", BCRYPT_ROUNDS, JWT_ALGORITHM
+- src/zephyrex/logic/BLL_Auth.py — generic error messages, email_validator, configurable bcrypt/JWT, metadata guard
+- src/zephyrex/lib/ContentNegotiation.py — 5-format middleware
+- src/zephyrex/app.py — ContentNegotiationMiddleware, instance() extensions_path
+- src/zephyrex/lib/Pydantic.py — SA model fallback, auto-wiring, home-module discovery fix
+- src/zephyrex/lib/Pydantic2FastAPI.py — auto-routing, getattr defaults, nested router fix
+- src/zephyrex/extensions/ — 20 new auth protocol extensions, ported 10 existing
 - pytest.ini — xdist parallel, loadfile dist

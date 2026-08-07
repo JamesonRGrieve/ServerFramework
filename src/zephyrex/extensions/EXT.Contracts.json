@@ -1,0 +1,762 @@
+{
+  "$comment": "Public-primitive manifest. Source of truth for EXT.Contracts.md. Edit here, then run python -m zephyrex.extensions.build_contracts_md.",
+  "groups": [
+    {
+      "title": "External Errors",
+      "entries": [
+        {
+          "name": "BaseExternalError",
+          "module": "zephyrex.extensions.ExternalErrors",
+          "kind": "class",
+          "summary": "Base class for every error a *_via_provider call may raise.",
+          "invariants": [
+            "Carries provider, ability, and original cause.",
+            "Subclasses are caught by RotationManager to drive failover."
+          ]
+        },
+        {
+          "name": "TransientExternalError",
+          "module": "zephyrex.extensions.ExternalErrors",
+          "kind": "class",
+          "summary": "Retryable network or 5xx failure; the rotation policy applies exponential backoff.",
+          "invariants": [
+            "Retry budget is bounded by RotationPolicy.transient_max_retries."
+          ]
+        },
+        {
+          "name": "RateLimitExternalError",
+          "module": "zephyrex.extensions.ExternalErrors",
+          "kind": "class",
+          "summary": "Provider returned 429 or a documented rate-limit signal.",
+          "invariants": [
+            "Carries retry_after_seconds when the provider supplies it.",
+            "RotationManager honours retry_after_seconds before next attempt."
+          ]
+        },
+        {
+          "name": "AuthExternalError",
+          "module": "zephyrex.extensions.ExternalErrors",
+          "kind": "class",
+          "summary": "Credentials rejected; the provider instance is cooled down.",
+          "invariants": [
+            "Triggers RotationPolicy.auth_cooldown_seconds on the offending instance."
+          ]
+        },
+        {
+          "name": "InvalidInputExternalError",
+          "module": "zephyrex.extensions.ExternalErrors",
+          "kind": "class",
+          "summary": "4xx caused by caller input; never retried.",
+          "invariants": [
+            "RotationManager surfaces the error to the caller without failover."
+          ]
+        },
+        {
+          "name": "PermanentExternalError",
+          "module": "zephyrex.extensions.ExternalErrors",
+          "kind": "class",
+          "summary": "Non-retryable provider failure (e.g., feature disabled).",
+          "invariants": [
+            "Counts as a hard failure for the rotation chain."
+          ]
+        },
+        {
+          "name": "RotationPolicy",
+          "module": "zephyrex.extensions.ExternalErrors",
+          "kind": "class",
+          "summary": "Per-provider retry, backoff, and cooldown configuration.",
+          "invariants": [
+            "All retry budgets are non-negative.",
+            "header_parser is a callable returning Optional[int] seconds."
+          ]
+        },
+        {
+          "name": "DegradationPolicy",
+          "module": "zephyrex.extensions.ExternalErrors",
+          "kind": "class",
+          "summary": "Behaviour when the rotation chain is exhausted.",
+          "invariants": [
+            "outbox_retention_days and outbox_max_attempts are non-negative."
+          ]
+        },
+        {
+          "name": "DegradationMode",
+          "module": "zephyrex.extensions.ExternalErrors",
+          "kind": "class",
+          "summary": "Enum of FAIL_FAST, QUEUE_AND_RETRY, SILENT_DROP."
+        }
+      ]
+    },
+    {
+      "title": "Retention",
+      "entries": [
+        {
+          "name": "RetentionPolicy",
+          "module": "zephyrex.extensions.audit_retention.BLL_RetentionPolicy",
+          "kind": "class",
+          "summary": "Window-and-archive policy attached to retention-eligible models.",
+          "invariants": [
+            "window suffix is one of s/m/h/d/w/mo/y or literal 'forever'.",
+            "legal_hold suspends purges for matching rows."
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Cost Model",
+      "entries": [
+        {
+          "name": "CostModel",
+          "module": "zephyrex.extensions.billing.BLL_CostModel",
+          "kind": "protocol",
+          "summary": "Protocol mapping (request, response) to a Decimal cost.",
+          "invariants": [
+            "Implementations are pure: no I/O, no state mutation."
+          ]
+        },
+        {
+          "name": "ConstantCostModel",
+          "module": "zephyrex.extensions.billing.BLL_CostModel",
+          "kind": "class",
+          "summary": "Fixed cost per call regardless of payload."
+        },
+        {
+          "name": "TokenBasedCostModel",
+          "module": "zephyrex.extensions.billing.BLL_CostModel",
+          "kind": "class",
+          "summary": "Cost computed from input/output token counts."
+        },
+        {
+          "name": "PercentOfAmountCostModel",
+          "module": "zephyrex.extensions.billing.BLL_CostModel",
+          "kind": "class",
+          "summary": "Cost as a percentage of a monetary amount on the request."
+        },
+        {
+          "name": "FreeCostModel",
+          "module": "zephyrex.extensions.billing.BLL_CostModel",
+          "kind": "class",
+          "summary": "Always-zero cost; the canonical no-op model."
+        },
+        {
+          "name": "TenantCostCap",
+          "module": "zephyrex.extensions.billing.BLL_CostModel",
+          "kind": "class",
+          "summary": "Per-tenant maximum cost over a window; rejects calls past the cap."
+        }
+      ]
+    },
+    {
+      "title": "Auth Strategies",
+      "entries": [
+        {
+          "name": "AuthStrategy",
+          "module": "zephyrex.extensions.AuthStrategy",
+          "kind": "class",
+          "summary": "ABC for outbound credential strategies attached to provider instances.",
+          "invariants": [
+            "headers_for, params_for, body_modifier never raise on well-formed requesters.",
+            "refresh_if_needed is idempotent."
+          ]
+        },
+        {
+          "name": "APIKeyAuth",
+          "module": "zephyrex.extensions.AuthStrategy",
+          "kind": "class",
+          "summary": "Header- or query-based API-key strategy."
+        },
+        {
+          "name": "OAuth2Auth",
+          "module": "zephyrex.extensions.AuthStrategy",
+          "kind": "class",
+          "summary": "OAuth2 access-token strategy with refresh."
+        },
+        {
+          "name": "JWTBearerAuth",
+          "module": "zephyrex.extensions.AuthStrategy",
+          "kind": "class",
+          "summary": "Static or signed JWT bearer-token strategy."
+        },
+        {
+          "name": "BasicAuth",
+          "module": "zephyrex.extensions.AuthStrategy",
+          "kind": "class",
+          "summary": "HTTP Basic auth from username/password credentials."
+        },
+        {
+          "name": "MTLSAuth",
+          "module": "zephyrex.extensions.AuthStrategy",
+          "kind": "class",
+          "summary": "Mutual-TLS strategy that injects the client cert/key."
+        },
+        {
+          "name": "AWSSigV4Auth",
+          "module": "zephyrex.extensions.AuthStrategy",
+          "kind": "class",
+          "summary": "AWS Signature V4 request signer."
+        },
+        {
+          "name": "AuthStrategyRegistry",
+          "module": "zephyrex.extensions.AuthStrategy",
+          "kind": "class",
+          "summary": "Registry mapping strategy names to AuthStrategy classes."
+        }
+      ]
+    },
+    {
+      "title": "Field Mappings",
+      "entries": [
+        {
+          "name": "FieldMapping",
+          "module": "zephyrex.extensions.FieldMappings",
+          "kind": "class",
+          "summary": "ABC for declarative external-field translations."
+        },
+        {
+          "name": "Rename",
+          "module": "zephyrex.extensions.FieldMappings",
+          "kind": "class",
+          "summary": "1:1 rename between local and external fields."
+        },
+        {
+          "name": "Compose",
+          "module": "zephyrex.extensions.FieldMappings",
+          "kind": "class",
+          "summary": "Combine multiple local fields into one external field."
+        },
+        {
+          "name": "Decompose",
+          "module": "zephyrex.extensions.FieldMappings",
+          "kind": "class",
+          "summary": "Split one external field across multiple local fields."
+        },
+        {
+          "name": "DotPath",
+          "module": "zephyrex.extensions.FieldMappings",
+          "kind": "class",
+          "summary": "Dotted-path projection into nested external payloads."
+        },
+        {
+          "name": "UnitConvert",
+          "module": "zephyrex.extensions.FieldMappings",
+          "kind": "class",
+          "summary": "Numerical unit conversion (e.g., cents/dollars)."
+        },
+        {
+          "name": "EnumRemap",
+          "module": "zephyrex.extensions.FieldMappings",
+          "kind": "class",
+          "summary": "Bidirectional remap between local and external enum values."
+        },
+        {
+          "name": "TimestampConvert",
+          "module": "zephyrex.extensions.FieldMappings",
+          "kind": "class",
+          "summary": "Convert between epoch/ISO/datetime representations."
+        },
+        {
+          "name": "Custom",
+          "module": "zephyrex.extensions.FieldMappings",
+          "kind": "class",
+          "summary": "Escape hatch for arbitrary callable mappings."
+        }
+      ]
+    },
+    {
+      "title": "Paginators",
+      "entries": [
+        {
+          "name": "AbstractPaginator",
+          "module": "zephyrex.extensions.Paginators",
+          "kind": "class",
+          "summary": "ABC for external-list pagination strategies."
+        },
+        {
+          "name": "OffsetPaginator",
+          "module": "zephyrex.extensions.Paginators",
+          "kind": "class",
+          "summary": "Offset/limit pagination."
+        },
+        {
+          "name": "CursorPaginator",
+          "module": "zephyrex.extensions.Paginators",
+          "kind": "class",
+          "summary": "Opaque-cursor pagination."
+        },
+        {
+          "name": "PageTokenPaginator",
+          "module": "zephyrex.extensions.Paginators",
+          "kind": "class",
+          "summary": "next_page_token pagination."
+        },
+        {
+          "name": "LinkHeaderPaginator",
+          "module": "zephyrex.extensions.Paginators",
+          "kind": "class",
+          "summary": "RFC 5988 Link-header pagination."
+        }
+      ]
+    },
+    {
+      "title": "Query DSL Translators",
+      "entries": [
+        {
+          "name": "AbstractQueryDSLTranslator",
+          "module": "zephyrex.extensions.QueryTranslators",
+          "kind": "class",
+          "summary": "ABC translating local search models to provider DSLs."
+        },
+        {
+          "name": "StripeSearchTranslator",
+          "module": "zephyrex.extensions.QueryTranslators",
+          "kind": "class",
+          "summary": "Translator for Stripe's search-query syntax."
+        },
+        {
+          "name": "SOQLTranslator",
+          "module": "zephyrex.extensions.QueryTranslators",
+          "kind": "class",
+          "summary": "Translator for Salesforce SOQL."
+        },
+        {
+          "name": "GraphQLFilterTranslator",
+          "module": "zephyrex.extensions.QueryTranslators",
+          "kind": "class",
+          "summary": "Translator for GraphQL `where`-style filters."
+        },
+        {
+          "name": "MongoStyleTranslator",
+          "module": "zephyrex.extensions.QueryTranslators",
+          "kind": "class",
+          "summary": "Translator for Mongo-style operator filters."
+        },
+        {
+          "name": "KeyValueTranslator",
+          "module": "zephyrex.extensions.QueryTranslators",
+          "kind": "class",
+          "summary": "Translator for flat key=value query strings."
+        }
+      ]
+    },
+    {
+      "title": "Provider System",
+      "entries": [
+        {
+          "name": "AbstractStaticProvider",
+          "module": "zephyrex.extensions.AbstractExtensionProvider",
+          "kind": "class",
+          "summary": "Base class for every provider declared by an extension.",
+          "invariants": [
+            "Subclasses define abilities via @ability methods.",
+            "_instance is the bonded AbstractProviderInstance, or None."
+          ]
+        },
+        {
+          "name": "AbstractStaticExtension",
+          "module": "zephyrex.extensions.AbstractExtensionProvider",
+          "kind": "class",
+          "summary": "Base class for an extension's static surface (providers, models, hooks)."
+        },
+        {
+          "name": "AbstractProviderInstance",
+          "module": "zephyrex.extensions.AbstractExtensionProvider",
+          "kind": "class",
+          "summary": "Bonded credential-bearing runtime instance for a provider.",
+          "invariants": [
+            "validate_credentials returns True only when the instance can serve calls.",
+            "close releases all held resources."
+          ]
+        },
+        {
+          "name": "ability",
+          "module": "zephyrex.extensions.AbstractExtensionProvider",
+          "kind": "decorator",
+          "summary": "Marks a provider method as a callable ability.",
+          "invariants": [
+            "Decorated methods receive the bonded instance as self."
+          ]
+        },
+        {
+          "name": "extension_model",
+          "module": "zephyrex.lib.Pydantic2SQLAlchemy",
+          "kind": "decorator",
+          "summary": "Injects extension-declared fields into a core ApplicationModel.",
+          "invariants": [
+            "Field-name collisions are detected at install time."
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Webhooks",
+      "entries": [
+        {
+          "name": "webhook_handler",
+          "module": "zephyrex.extensions.webhooks",
+          "kind": "decorator",
+          "summary": "Registers a static method as a webhook handler at /webhook/{ext}/{provider}/{event}."
+        },
+        {
+          "name": "WebhookContext",
+          "module": "zephyrex.extensions.webhooks",
+          "kind": "class",
+          "summary": "Verified-payload context delivered to webhook handlers."
+        }
+      ]
+    },
+    {
+      "title": "Custom Routes",
+      "entries": [
+        {
+          "name": "custom_route",
+          "module": "zephyrex.lib.CustomRoute",
+          "kind": "decorator",
+          "summary": "Declares a non-CRUD REST/GraphQL/SDK route on a RouterMixin manager."
+        },
+        {
+          "name": "CustomRouteSpec",
+          "module": "zephyrex.lib.CustomRoute",
+          "kind": "class",
+          "summary": "Frozen specification produced by @custom_route."
+        },
+        {
+          "name": "ExposeIn",
+          "module": "zephyrex.lib.CustomRoute",
+          "kind": "class",
+          "summary": "Enum of REST/GRAPHQL/SDK exposure targets."
+        },
+        {
+          "name": "RouterMixin",
+          "module": "zephyrex.lib.Pydantic2FastAPI",
+          "kind": "class",
+          "summary": "Mixin that turns a BLL manager into a FastAPI router source."
+        }
+      ]
+    },
+    {
+      "title": "Logic Managers and Hooks",
+      "entries": [
+        {
+          "name": "AbstractBLLManager",
+          "module": "zephyrex.logic.AbstractLogicManager",
+          "kind": "class",
+          "summary": "Base class for every BLL manager.",
+          "invariants": [
+            "Constructor signature is (model_registry, requester_id, ...).",
+            "All mutating methods participate in the hook system."
+          ]
+        },
+        {
+          "name": "ApplicationModel",
+          "module": "zephyrex.logic.AbstractLogicManager",
+          "kind": "class",
+          "summary": "Canonical Pydantic+SQLAlchemy base for persisted entities."
+        },
+        {
+          "name": "hook_bll",
+          "module": "zephyrex.logic.AbstractLogicManager",
+          "kind": "decorator",
+          "summary": "Registers a function as a BEFORE/AFTER hook on a BLL method.",
+          "invariants": [
+            "BEFORE hooks default to blocking=True; AFTER to blocking=False."
+          ]
+        },
+        {
+          "name": "HookContext",
+          "module": "zephyrex.logic.AbstractLogicManager",
+          "kind": "class",
+          "summary": "Generic over (P, R) — the target's ParamSpec and return type."
+        }
+      ]
+    },
+    {
+      "title": "Service Flavors",
+      "entries": [
+        {
+          "name": "AbstractService",
+          "module": "zephyrex.logic.AbstractService",
+          "kind": "class",
+          "summary": "Base lifecycle for long-lived services (start/stop/pause/resume/health)."
+        },
+        {
+          "name": "PerpetualService",
+          "module": "zephyrex.logic.AbstractService",
+          "kind": "class",
+          "summary": "Service that runs continuously until stopped."
+        },
+        {
+          "name": "ScheduledService",
+          "module": "zephyrex.logic.AbstractService",
+          "kind": "class",
+          "summary": "Service driven by a cron-like schedule."
+        },
+        {
+          "name": "QueueConsumerService",
+          "module": "zephyrex.logic.AbstractService",
+          "kind": "class",
+          "summary": "Service that drains a job queue."
+        },
+        {
+          "name": "StreamingService",
+          "module": "zephyrex.logic.AbstractService",
+          "kind": "class",
+          "summary": "Service consuming or producing a continuous stream."
+        }
+      ]
+    },
+    {
+      "title": "Provider BLL",
+      "entries": [
+        {
+          "name": "RotationManager",
+          "module": "zephyrex.logic.BLL_Providers",
+          "kind": "class",
+          "summary": "Failover-only rotation across a linear chain of provider instances.",
+          "invariants": [
+            "Constructor is (model_registry, requester_id, ...).",
+            "rotate consumes the calling provider's RotationPolicy."
+          ]
+        },
+        {
+          "name": "ProviderInstanceModel",
+          "module": "zephyrex.logic.BLL_Providers",
+          "kind": "class",
+          "summary": "Persisted credential-and-configuration record for a bonded provider."
+        }
+      ]
+    },
+    {
+      "title": "Authentication",
+      "entries": [
+        {
+          "name": "OneTimeTokenMixin",
+          "module": "zephyrex.logic.BLL_Auth",
+          "kind": "class",
+          "summary": "Reusable mixin for hashed, salted, expiring single-use codes.",
+          "invariants": [
+            "verify rejects expired or already-used codes.",
+            "mark_used is idempotent."
+          ]
+        },
+        {
+          "name": "PasswordlessGrantRegistry",
+          "module": "zephyrex.logic.BLL_Auth",
+          "kind": "class",
+          "summary": "Registry of (grant_type, validator) pairs for UserManager.login_via_grant."
+        },
+        {
+          "name": "SessionModel",
+          "module": "zephyrex.logic.BLL_Auth",
+          "kind": "class",
+          "summary": "Persisted authenticated session with freshness and scope."
+        },
+        {
+          "name": "UserModel",
+          "module": "zephyrex.logic.BLL_Auth",
+          "kind": "class",
+          "summary": "Canonical user record (extension-injectable via @extension_model)."
+        },
+        {
+          "name": "UserManager",
+          "module": "zephyrex.logic.BLL_Auth",
+          "kind": "class",
+          "summary": "BLL manager for user creation, login, grants, and erasure."
+        }
+      ]
+    },
+    {
+      "title": "Quota",
+      "entries": [
+        {
+          "name": "Quota",
+          "module": "zephyrex.extensions.quota.BLL_Quota",
+          "kind": "class",
+          "summary": "Unified per-user / per-team / per-user-within-team quota record."
+        }
+      ]
+    },
+    {
+      "title": "Retention Service",
+      "entries": [
+        {
+          "name": "RetentionService",
+          "module": "zephyrex.extensions.audit_retention.BLL_RetentionService",
+          "kind": "class",
+          "summary": "Sweeps RetentionPolicy-bearing models and archives or purges expired rows."
+        }
+      ]
+    },
+    {
+      "title": "Collision Detection",
+      "entries": [
+        {
+          "name": "FieldCollisionError",
+          "module": "zephyrex.extensions.CollisionDetection",
+          "kind": "class",
+          "summary": "Raised when two extensions inject incompatible fields onto the same model."
+        },
+        {
+          "name": "register_extension_field",
+          "module": "zephyrex.extensions.CollisionDetection",
+          "kind": "function",
+          "summary": "Records an extension-declared field for collision auditing."
+        },
+        {
+          "name": "detect_extension_field_collisions",
+          "module": "zephyrex.extensions.CollisionDetection",
+          "kind": "function",
+          "summary": "Returns the set of conflicting (model, field) pairs across registered extensions."
+        }
+      ]
+    },
+    {
+      "title": "Mirror Lifecycle",
+      "entries": [
+        {
+          "name": "MirrorPolicy",
+          "module": "zephyrex.extensions.MirrorLifecycle",
+          "kind": "class",
+          "summary": "Enum selecting create/update/delete propagation behaviour."
+        },
+        {
+          "name": "MirrorEvent",
+          "module": "zephyrex.extensions.MirrorLifecycle",
+          "kind": "class",
+          "summary": "Enum of mirrored lifecycle events."
+        },
+        {
+          "name": "MirrorSpec",
+          "module": "zephyrex.extensions.MirrorLifecycle",
+          "kind": "class",
+          "summary": "Frozen spec produced by @mirror_on_* decorators."
+        }
+      ]
+    },
+    {
+      "title": "Migration Ownership",
+      "entries": [
+        {
+          "name": "env_is_table_owned_by_extension",
+          "module": "zephyrex.extensions.MigrationOwnership",
+          "kind": "function",
+          "summary": "Reports the owning extension for a SQLAlchemy table, or None for core."
+        },
+        {
+          "name": "list_table_ownership",
+          "module": "zephyrex.extensions.MigrationOwnership",
+          "kind": "function",
+          "summary": "Maps every table in metadata to its owning extension (or None)."
+        }
+      ]
+    },
+    {
+      "title": "Residency",
+      "entries": [
+        {
+          "name": "ResidencyJurisdiction",
+          "module": "zephyrex.extensions.Residency",
+          "kind": "class",
+          "summary": "Typed jurisdiction marker (e.g., EU, US, IN)."
+        },
+        {
+          "name": "ResidencyRegion",
+          "module": "zephyrex.extensions.Residency",
+          "kind": "class",
+          "summary": "Typed deployment-region marker resolved from a jurisdiction."
+        },
+        {
+          "name": "JurisdictionRegistry",
+          "module": "zephyrex.extensions.Residency",
+          "kind": "class",
+          "summary": "Registry mapping jurisdictions to permitted regions."
+        }
+      ]
+    },
+    {
+      "title": "Rate Limit",
+      "entries": [
+        {
+          "name": "RateLimit",
+          "module": "zephyrex.extensions.RateLimit",
+          "kind": "class",
+          "summary": "Configuration record: rps and burst."
+        },
+        {
+          "name": "TokenBucket",
+          "module": "zephyrex.extensions.RateLimit",
+          "kind": "class",
+          "summary": "Token-bucket primitive used by RateLimit enforcement."
+        },
+        {
+          "name": "ConcurrencyLimit",
+          "module": "zephyrex.extensions.RateLimit",
+          "kind": "class",
+          "summary": "Bounded-concurrency primitive complementing RateLimit."
+        }
+      ]
+    },
+    {
+      "title": "Outbox",
+      "entries": [
+        {
+          "name": "OutboxEntry",
+          "module": "zephyrex.logic.Outbox",
+          "kind": "class",
+          "summary": "Persisted unit of deferred outbound work."
+        },
+        {
+          "name": "OutboxStore",
+          "module": "zephyrex.logic.Outbox",
+          "kind": "class",
+          "summary": "ABC for OutboxEntry persistence backends."
+        },
+        {
+          "name": "OutboxDrainService",
+          "module": "zephyrex.logic.Outbox",
+          "kind": "class",
+          "summary": "Service that drains the outbox, retrying with backoff and DLQ."
+        }
+      ]
+    },
+    {
+      "title": "Event Bus",
+      "entries": [
+        {
+          "name": "AbstractEventBus",
+          "module": "zephyrex.logic.EventBus",
+          "kind": "class",
+          "summary": "ABC for cross-process event-bus adapters."
+        },
+        {
+          "name": "on_event",
+          "module": "zephyrex.logic.EventBus",
+          "kind": "decorator",
+          "summary": "Registers a function as a typed cross-process event handler."
+        }
+      ]
+    },
+    {
+      "title": "Permissions",
+      "entries": [
+        {
+          "name": "PermissionDef",
+          "module": "zephyrex.logic.Permissions",
+          "kind": "class",
+          "summary": "Declarative permission definition: name, description, implies, sensitive."
+        },
+        {
+          "name": "PermissionRegistry",
+          "module": "zephyrex.logic.Permissions",
+          "kind": "class",
+          "summary": "Registry of PermissionDef objects with collision detection."
+        },
+        {
+          "name": "has_permission",
+          "module": "zephyrex.logic.Permissions",
+          "kind": "function",
+          "summary": "Resolves whether a session/user/role holds a permission, walking implies."
+        }
+      ]
+    }
+  ]
+}

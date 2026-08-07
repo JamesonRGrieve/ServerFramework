@@ -1,7 +1,7 @@
 # Security Policy
 
-This policy applies to ServerFramework and the tooling shipped under the
-`serverframework` package on PyPI.
+This policy applies to ZephyrexFrameworkServer and the tooling shipped under the
+`zephyrex` package on PyPI.
 
 ## Supported Versions
 
@@ -19,13 +19,13 @@ file to drift out of sync.
 
 ## Reporting a Vulnerability
 
-Email the details to **security@serverframework.example** (the alias is
+Email the details to **security@zephyrex.example** (the alias is
 monitored by the maintainers and forwarded to a private security tracker).
 Please include:
 
 - A description of the vulnerability and its impact.
 - Steps to reproduce, ideally with a minimal proof-of-concept.
-- The affected version (output of `pip show serverframework`).
+- The affected version (output of `pip show zephyrex`).
 - Any suggested mitigations or patches.
 
 If you are reporting a vulnerability in a third-party dependency, please
@@ -60,10 +60,10 @@ python -m pip install sigstore
 # Verify the attestation. The expected identity is the GitHub Actions
 # OIDC token issued for the tagged release; the issuer is GitHub.
 sigstore verify identity \
-    --bundle serverframework-<version>.whl.sigstore \
+    --bundle zephyrex-<version>.whl.sigstore \
     --cert-identity "https://github.com/JamesonRGrieve/ServerFramework/.github/workflows/release.yml@refs/tags/v<version>" \
     --cert-oidc-issuer "https://token.actions.githubusercontent.com" \
-    serverframework-<version>.whl
+    zephyrex-<version>.whl
 ```
 
 If the verification command exits non-zero, do not install the wheel —
@@ -86,7 +86,7 @@ CI runs `pip-audit` against `requirements.lock` on every PR and on a
 nightly cron against the latest release. The severity gate is **HIGH** —
 findings at or above this tier fail the build and open an issue. The
 configurable knobs live in `pyproject.toml` under
-`[tool.serverframework.supply_chain]`.
+`[tool.zephyrex.supply_chain]`.
 
 ## Best Practices for Contributors
 

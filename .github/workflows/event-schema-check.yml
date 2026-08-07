@@ -11,8 +11,8 @@ name: Item 42 — Event-schema compatibility
 on:
   pull_request:
     paths:
-      - "src/serverframework/logic/**"
-      - "src/serverframework/extensions/**"
+      - "src/zephyrex/logic/**"
+      - "src/zephyrex/extensions/**"
   push:
     branches: [main]
   workflow_dispatch: {}
@@ -45,7 +45,7 @@ jobs:
           import sys
           from pathlib import Path
 
-          from serverframework.logic.EventBus_SchemaCheck import (
+          from zephyrex.logic.EventBus_SchemaCheck import (
               check_compatibility,
               discover_event_classes,
               read_snapshot,
@@ -57,9 +57,9 @@ jobs:
           # Modules to walk for event classes. Operators add to this list
           # whenever a new module declares typed events.
           modules = [
-              "serverframework.logic.BLL_Auth",
-              "serverframework.logic.BLL_Providers",
-              "serverframework.logic.BLL_Extensions",
+              "zephyrex.logic.BLL_Auth",
+              "zephyrex.logic.BLL_Providers",
+              "zephyrex.logic.BLL_Extensions",
               # extension event modules go here as they ship.
           ]
 

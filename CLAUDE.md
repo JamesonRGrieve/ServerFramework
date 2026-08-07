@@ -1,4 +1,4 @@
-# Claude Code Instructions — server-framework
+# Claude Code Instructions — zephyrex-server
 
 Extensible Python (FastAPI) server framework with pluggable extensions, providers, database (SQLAlchemy + Alembic), GraphQL (Strawberry), and an SDK generator. This file documents rules **specific** to this repo; workspace-level standards live in `../CLAUDE.md` and apply here.
 
@@ -14,11 +14,11 @@ These are the canonical home of their rules. This file does not restate them —
 
 ## Architecture
 
-- **Core** (`serverframework/`): app bootstrap, CLI, endpoints, business logic, database layer, Pydantic v2 models.
-- **Extensions** (`serverframework/extensions/`): pluggable feature modules (auth variants, billing, federation, webhooks, RPG state, etc.) — each self-contained with its own migrations, tests, and contracts.
-- **Providers** (`serverframework/extensions/PRV_Abstract_*.py`): abstract provider interfaces (AI, cache, notification, object storage, queue, search) that extensions implement.
+- **Core** (`zephyrex/`): app bootstrap, CLI, endpoints, business logic, database layer, Pydantic v2 models.
+- **Extensions** (`zephyrex/extensions/`): pluggable feature modules (auth variants, billing, federation, webhooks, RPG state, etc.) — each self-contained with its own migrations, tests, and contracts.
+- **Providers** (`zephyrex/extensions/PRV_Abstract_*.py`): abstract provider interfaces (AI, cache, notification, object storage, queue, search) that extensions implement.
 - **SDK** (`sdk/`): auto-generated client SDK.
-- **Database** (`serverframework/database/`): SQLAlchemy ORM entities, migration ordering, tenant scoping, static seeding, read replicas.
+- **Database** (`zephyrex/database/`): SQLAlchemy ORM entities, migration ordering, tenant scoping, static seeding, read replicas.
 
 Extensions and providers are loaded dynamically. New extensions must not require modifying the core — use the documented extension/provider contracts (`EXT.Contracts.md`, `PRV.Patterns.md`).
 
@@ -33,7 +33,7 @@ pip install -e ".[dev]"
 # Tests
 pytest                        # Full suite
 pytest -k "db"                # By marker
-pytest src/serverframework/extensions/auth_mfa/  # By path
+pytest src/zephyrex/extensions/auth_mfa/  # By path
 
 # Formatting & linting
 black --check src/ tests/
@@ -41,7 +41,7 @@ ruff check src/ tests/
 mypy --strict src/
 
 # Run
-python -m serverframework     # CLI entry
+python -m zephyrex     # CLI entry
 ```
 
 ---

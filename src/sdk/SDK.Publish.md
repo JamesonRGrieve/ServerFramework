@@ -153,12 +153,12 @@ After a successful release:
 2. Update any relevant integration guides
 3. Notify users of significant changes, especially breaking changes
 
-## Separate Package: `serverframework-sdk`
+## Separate Package: `zephyrex-sdk`
 
 The SDK ships as a separate pip package, decoupled from the server's release cadence. The repository carries two `pyproject.toml` files (server and SDK) with independent version numbers; the SDK source still lives in this monorepo for now.
 
-The SDK package depends on the server's introspection-friendly subset (the `RouterMixin` registry, the Pydantic model export, the OpenAPI schema generation) but not on FastAPI's runtime or SQLAlchemy. A small shared-types module under `serverframework.types` re-exports the Pydantic models that consumers need to type-hint against (`UserModel.Create`, `SessionModel`, etc.) so the type-imports do not pull from internal modules. `pip install serverframework-sdk` succeeds without installing fastapi or sqlalchemy.
+The SDK package depends on the server's introspection-friendly subset (the `RouterMixin` registry, the Pydantic model export, the OpenAPI schema generation) but not on FastAPI's runtime or SQLAlchemy. A small shared-types module under `zephyrex.types` re-exports the Pydantic models that consumers need to type-hint against (`UserModel.Create`, `SessionModel`, etc.) so the type-imports do not pull from internal modules. `pip install zephyrex-sdk` succeeds without installing fastapi or sqlalchemy.
 
-Extension discovery uses the same introspection generator that drives `SDK.Patterns.md`'s handler generation. At build time, the SDK package walks the consumer's installed-extension registry and emits per-resource handler files into the package — the same registry pass that drives OpenAPI and the REST router. Entry points are not used for discovery. The build step runs in the consumer's environment after `pip install serverframework[ext_payment]` so generated handlers reflect the actually-installed extensions.
+Extension discovery uses the same introspection generator that drives `SDK.Patterns.md`'s handler generation. At build time, the SDK package walks the consumer's installed-extension registry and emits per-resource handler files into the package — the same registry pass that drives OpenAPI and the REST router. Entry points are not used for discovery. The build step runs in the consumer's environment after `pip install zephyrex[ext_payment]` so generated handlers reflect the actually-installed extensions.
 
 The server's package metadata excludes `sdk*` from `[tool.setuptools.packages.find]`. SDK release cadence is decoupled from server release cadence. 

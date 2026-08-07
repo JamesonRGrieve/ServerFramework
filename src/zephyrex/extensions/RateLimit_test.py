@@ -1,0 +1,178 @@
+"""Unit tests for rate-limit primitives (Item 17)."""
+
+from __future__ import annotations
+
+import threading
+import time
+from datetime import datetime, timedelta, timezone
+from email.utils import format_datetime
+
+import pytest
+
+from zephyrex.extensions.RateLimit import (
+    ConcurrencyLimit,
+    DistributedRateLimit,
+    RateLimit,
+    TokenBucket,
+    parse_retry_after,
+)
+
+
+@pytest.mark.unit
+def test_token_bucket_initial_burst_acquirable():
+    b = TokenBucket(RateLimit(rps=10, burst=5))
+    for _ in range(5):
+        assert b.try_acquire() is True
+    assert b.try_acquire() is False
+
+
+@pytest.mark.unit
+def test_token_bucket_refills_over_time():
+    b = TokenBucket(RateLimit(rps=100, burst=2))
+    assert b.try_acquire()
+    assert b.try_acquire()
+    assert not b.try_acquire()
+    time.sleep(0.05)  # 50ms -> ~5 tokens (capped at burst=2)
+    assert b.try_acquire()
+
+
+@pytest.mark.unit
+def test_token_bucket_acquire_blocking_succeeds_within_timeout():
+    b = TokenBucket(RateLimit(rps=50, burst=1))
+    assert b.acquire_blocking(timeout=0.5)
+    t0 = time.monotonic()
+    assert b.acquire_blocking(timeout=0.5)
+    assert time.monotonic() - t0 >= 0.015
+
+
+@pytest.mark.unit
+def test_token_bucket_acquire_blocking_returns_false_on_timeout():
+    b = TokenBucket(RateLimit(rps=1, burst=1))
+    assert b.acquire_blocking(timeout=0.1)
+    assert not b.acquire_blocking(timeout=0.05)
+
+
+@pytest.mark.unit
+def test_token_bucket_invalid_args():
+    with pytest.raises(ValueError):
+        TokenBucket(RateLimit(rps=0, burst=1))
+    with pytest.raises(ValueError):
+        TokenBucket(RateLimit(rps=1, burst=0))
+
+
+@pytest.mark.unit
+def test_concurrency_limit_blocks_when_full():
+    c = ConcurrencyLimit(2)
+    assert c.acquire(timeout=0.1)
+    assert c.acquire(timeout=0.1)
+    assert not c.acquire(timeout=0.05)
+    c.release()
+    assert c.acquire(timeout=0.1)
+    c.release(); c.release()
+
+
+@pytest.mark.unit
+def test_concurrency_limit_context_manager():
+    c = ConcurrencyLimit(1)
+    with c:
+        assert not c.acquire(timeout=0.05)
+    assert c.acquire(timeout=0.05)
+    c.release()
+
+
+@pytest.mark.unit
+def test_concurrency_limit_invalid():
+    with pytest.raises(ValueError):
+        ConcurrencyLimit(0)
+
+
+@pytest.mark.unit
+def test_parse_retry_after_seconds():
+    assert parse_retry_after("0") == 0
+    assert parse_retry_after("30") == 30
+    assert parse_retry_after("  60  ") == 60
+
+
+@pytest.mark.unit
+def test_parse_retry_after_http_date_future():
+    future = datetime.now(timezone.utc) + timedelta(seconds=120)
+    s = format_datetime(future, usegmt=True)
+    delay = parse_retry_after(s)
+    assert delay is not None and 100 <= delay <= 130
+
+
+@pytest.mark.unit
+def test_parse_retry_after_http_date_past_returns_zero():
+    past = datetime.now(timezone.utc) - timedelta(seconds=120)
+    s = format_datetime(past, usegmt=True)
+    assert parse_retry_after(s) == 0
+
+
+@pytest.mark.unit
+def test_parse_retry_after_invalid_returns_none():
+    assert parse_retry_after("") is None
+    assert parse_retry_after(None) is None
+    assert parse_retry_after("not-a-date-or-int") is None
+
+
+@pytest.mark.unit
+def test_distributed_rate_limit_carries_counter_key():
+    d = DistributedRateLimit(RateLimit(rps=5, burst=1), counter_key="provider:stripe")
+    assert d.counter_key == "provider:stripe"
+    assert d.try_acquire()
+
+
+@pytest.mark.unit
+def test_distributed_rate_limit_consults_shared_counter():
+    """Two instances sharing a counter must add up to one combined limit.
+
+    Regression for Item 69 wiring: without DistributedCounter delegation
+    each instance would burn its own ``burst`` independently, breaking
+    the cross-instance contract.
+    """
+    import uuid
+
+    from zephyrex.lib.DistributedCounter import InMemoryDistributedCounter
+
+    key = f"provider:test:{uuid.uuid4().hex}"
+    shared_counter_a = InMemoryDistributedCounter(key=key, limit=2)
+    shared_counter_b = InMemoryDistributedCounter(key=key, limit=2)
+    a = DistributedRateLimit(
+        RateLimit(rps=100, burst=10), counter_key=key, counter=shared_counter_a
+    )
+    b = DistributedRateLimit(
+        RateLimit(rps=100, burst=10), counter_key=key, counter=shared_counter_b
+    )
+
+    # Two acquires across the pair fit under the shared limit of 2.
+    assert a.try_acquire() is True
+    assert b.try_acquire() is True
+    # The third acquire — from either side — must be denied because the
+    # shared counter has no headroom left.
+    assert a.try_acquire() is False
+    assert b.try_acquire() is False
+
+
+@pytest.mark.unit
+def test_distributed_rate_limit_returns_local_tokens_on_counter_deny():
+    """When the shared counter denies an acquire, the local TokenBucket
+    must not be debited — otherwise a multi-instance deployment would
+    exhaust local burst capacity faster than the configured rate."""
+    import uuid
+
+    from zephyrex.lib.DistributedCounter import InMemoryDistributedCounter
+
+    key = f"provider:test:{uuid.uuid4().hex}"
+    # Counter limit 1, local burst 5.
+    counter = InMemoryDistributedCounter(key=key, limit=1)
+    rl = DistributedRateLimit(
+        RateLimit(rps=100, burst=5), counter_key=key, counter=counter
+    )
+    assert rl.try_acquire() is True
+    # Counter is now exhausted; the next acquire must be denied AND
+    # leave local headroom untouched.
+    assert rl.try_acquire() is False
+    # We should still observe near-full local tokens (one was consumed
+    # by the first successful acquire; the second's debit was rolled
+    # back). Allow ±1 for accrual since rps is high.
+    assert rl.tokens >= 3, f"local tokens debited on counter-deny: {rl.tokens}"

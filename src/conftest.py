@@ -358,18 +358,18 @@ if str(src_path) not in sys.path:
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
-from serverframework.lib.Environment import env
-from serverframework.lib.Logging import logger
-from serverframework.lib.Pydantic import BaseModel as FrameworkBaseModel
+from zephyrex.lib.Environment import env
+from zephyrex.lib.Logging import logger
+from zephyrex.lib.Pydantic import BaseModel as FrameworkBaseModel
 
-from serverframework.lib.Pydantic2SQLAlchemy import prepare_test_registry
+from zephyrex.lib.Pydantic2SQLAlchemy import prepare_test_registry
 
 prepare_test_registry()
 # Import all required functions from Server directly
-from serverframework.app import setup_python_path
+from zephyrex.app import setup_python_path
 
 # Don't import global session directly - use self.db_manager.get_session() pattern
-from serverframework.logic.BLL_Auth import (
+from zephyrex.logic.BLL_Auth import (
     RoleModel,
     TeamModel,
     UserCredentialManager,
@@ -465,8 +465,8 @@ def pytest_generate_tests(metafunc):
 
                     # Try to import from common BLL modules
                     for module_name in [
-                        "serverframework.logic.BLL_Auth",
-                        f"serverframework.logic.BLL_{stringcase.pascalcase(test_class.entity_name)}",
+                        "zephyrex.logic.BLL_Auth",
+                        f"zephyrex.logic.BLL_{stringcase.pascalcase(test_class.entity_name)}",
                     ]:
                         try:
                             module = __import__(module_name, fromlist=[model_name])
@@ -528,7 +528,7 @@ def pytest_generate_tests(metafunc):
         # Check if it's an EP test that needs search parameterization
         elif test_class and "test_POST_200_search" in metafunc.function.__name__:
             # Import here to avoid circular imports
-            from serverframework.logic.AbstractBLLTest import AbstractBLLTest
+            from zephyrex.logic.AbstractBLLTest import AbstractBLLTest
 
             # EP tests should have class_under_test set to the model
             if (
@@ -617,7 +617,7 @@ def _restore_settings_after_test():
     os.environ["JWT_SECRET"] = "test-jwt-secret-32-bytes-or-more-aaaaaa"
     os.environ["JWT_AUDIENCE"] = "test-aud"
     os.environ["JWT_ISSUER"] = "test-iss"
-    from serverframework.lib.Environment import refresh_settings
+    from zephyrex.lib.Environment import refresh_settings
 
     refresh_settings()
 
@@ -641,7 +641,7 @@ def mock_server():
     )
 
     prepare_test_registry()
-    from serverframework.lib.Environment import refresh_settings
+    from zephyrex.lib.Environment import refresh_settings
 
     refresh_settings()
 
@@ -650,7 +650,7 @@ def mock_server():
     setup_python_path()
 
     # Use the new instance function with worker-specific prefix and no extensions
-    from serverframework.app import instance
+    from zephyrex.app import instance
 
     app = instance(db_prefix=db_prefix, extensions=_CORE_TEST_EXTENSIONS)
 
@@ -676,7 +676,7 @@ def server():
     logger.debug(f"Worker {worker_id}: Setting up server with db_prefix={db_prefix}")
 
     prepare_test_registry()
-    from serverframework.lib.Environment import refresh_settings
+    from zephyrex.lib.Environment import refresh_settings
 
     refresh_settings()
 
@@ -685,7 +685,7 @@ def server():
     setup_python_path()
 
     # Use the new instance function with worker-specific prefix and no extensions
-    from serverframework.app import instance
+    from zephyrex.app import instance
 
     app = instance(db_prefix=db_prefix, extensions=_CORE_TEST_EXTENSIONS)
     test_client = TestClient(app)
@@ -737,7 +737,7 @@ def isolated_server():
     """
     prepare_test_registry()
 
-    from serverframework.app import instance
+    from zephyrex.app import instance
 
     # Use worker-specific prefix for isolated tests to avoid conflicts across xdist workers
     worker_id = os.environ.get("PYTEST_XDIST_WORKER", "main")
@@ -780,7 +780,7 @@ def isolated_extension_server():
     def _create_server(extensions: str = ""):
         prepare_test_registry()
 
-        from serverframework.app import instance
+        from zephyrex.app import instance
 
         # Use extension name and worker ID for database prefix
         # This creates test.{extension_name}.{worker_id}.database.db instead of random files
@@ -976,7 +976,7 @@ def add_user_to_team(server, user_id, team_id, role_id, requester_id=env("SYSTEM
 
     if existing_membership:
         # Update existing membership instead of creating a duplicate
-        from serverframework.logic.BLL_Auth import UserTeamManager
+        from zephyrex.logic.BLL_Auth import UserTeamManager
 
         user_team_manager = UserTeamManager(
             requester_id=requester_id,
@@ -1012,7 +1012,7 @@ def create_test_extension_server(extension_names):
 
     Note: Uses test.{extension_name}.database.db naming convention.
     """
-    from serverframework.app import instance
+    from zephyrex.app import instance
 
     extensions = (
         ",".join(extension_names)

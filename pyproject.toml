@@ -1,0 +1,119 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "zephyrex"
+version = "1.0.0a1"
+description = "Extensible Python server framework with pluggable extensions, providers, and auto-generated SDK"
+readme = "docs/README.md"
+authors = [
+    {name = "ZephyrexTechnologies", email = "pypi@zephyrex.dev"},
+]
+license = {text = "AGPL-3.0-or-later"}
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Framework :: FastAPI",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Internet :: WWW/HTTP :: HTTP Servers",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+    "Typing :: Typed",
+]
+keywords = ["api", "server", "framework", "fastapi", "extensions", "graphql"]
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.100",
+    "uvicorn",
+    "pydantic[email]>=2.0",
+    "ordered_set",
+    "alembic",
+    "aiosqlite",
+    "SQLAlchemy>=2.0",
+    "broadcaster",
+    "greenlet",
+    "strawberry-graphql[fastapi]",
+    "bcrypt",
+    "cryptography",
+    "pyjwt",
+    "httpx",
+    "colorama",
+    "distro",
+    "inflect",
+    "loguru",
+    "networkx",
+    "numpy",
+    "python-dotenv",
+    "resolvelib",
+    "semver",
+    "stringcase",
+    "tldextract",
+]
+
+[project.urls]
+Homepage = "https://github.com/ZephyrexTechnologies/ServerFramework"
+Repository = "https://github.com/ZephyrexTechnologies/ServerFramework.git"
+Issues = "https://github.com/ZephyrexTechnologies/ServerFramework/issues"
+
+[project.scripts]
+zephyrex = "zephyrex.cli:main"
+
+[project.optional-dependencies]
+email = ["sendgrid"]
+mfa = ["pyotp", "qrcode"]
+payment = ["stripe"]
+cache = ["redis"]
+all = [
+    "zephyrex[email,mfa,payment,cache]",
+]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "pytest-xdist",
+    "pytest-cov",
+    "pytest-dependency",
+    "pytest-order",
+    "black",
+    "coverage",
+    "faker",
+    "filelock",
+    "mypy>=1.0",
+    "ruff",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = [
+    "zephyrex*",
+    "sdk*",
+]
+exclude = [
+    "*__pycache__*",
+    "*_test.py",
+    "*.tests",
+    "*.tests.*",
+    "tests.*",
+    "tests",
+]
+namespaces = true
+
+[tool.setuptools.package-data]
+"*" = ["*.json", "*.md"]
+
+[tool.black]
+line-length = 88
+target-version = ["py311"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
+
+[tool.isort]
+profile = "black"
+line_length = 88

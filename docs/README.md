@@ -1,4 +1,4 @@
-# JamesonRGrieve's Server Framework
+# JamesonRGrieve's Zephyrex Framework Server
 
 ![Generation Paths](./Generation.png)
 
@@ -67,7 +67,7 @@ Documentation can also be viewed directly in your text editor or GitHub, though 
 ### Installation
 ```sh
 git clone git@github.com:JamesonRGrieve/ServerFramework.git
-cd ServerFramework
+cd ZephyrexFrameworkServer
 ```
 
 ### Requirements
