@@ -52,6 +52,9 @@ dependencies = [
     "semver",
     "stringcase",
     "tldextract",
+    "tomli_w",
+    "toon-format",
+    "pyyaml",
 ]
 
 [project.urls]
