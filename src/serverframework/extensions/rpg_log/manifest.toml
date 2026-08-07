@@ -1,9 +1,0 @@
-name = "rpg_log"
-version = "0.1.0"
-description = "Event-log schema for RPG campaigns — encounters, combat, dialogue, interactions, transactions"
-
-[[extension_dependencies]]
-name = "rpg_state"
-optional = false
-
-[python_dependencies]
