@@ -28,14 +28,14 @@ from __future__ import annotations
 import json
 import tomllib
 from typing import Any
-from xml.etree.ElementTree import Element, SubElement, indent, tostring
+from xml.etree.ElementTree import Element, indent, tostring
 from xml.etree.ElementTree import fromstring as xml_fromstring
 
 import tomli_w
 import yaml
-from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from toon_format import decode as toon_decode
 from toon_format import encode as toon_encode
@@ -224,8 +224,6 @@ def resolve_request_format(content_type: str | None) -> str:
     """Return the canonical format key for the given ``Content-Type`` header.
 
     Returns ``"json"`` when the header is absent or unrecognized.
-    Returns ``None`` for explicitly unsupported media types so the caller
-    can decide whether to 415.
     """
     if not content_type:
         return DEFAULT_FORMAT
@@ -301,8 +299,8 @@ def strip_format_suffix(path: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-class ContentNegotiationMiddleware(BaseHTTPMiddleware):
-    """Intercept requests and responses to support multi-format negotiation.
+class ContentNegotiationMiddleware:
+    """Pure ASGI middleware for multi-format content negotiation.
 
     * **Request path**: when ``Content-Type`` indicates a non-JSON format,
       the body is deserialized to a Python object and re-encoded as JSON
@@ -311,112 +309,179 @@ class ContentNegotiationMiddleware(BaseHTTPMiddleware):
     * **Response path**: when the ``Accept`` header or a URL suffix
       requests a non-JSON format, the JSON response body is re-serialized
       to the requested format.
+
+    Implemented as a raw ASGI middleware (not ``BaseHTTPMiddleware``) so
+    the request ``receive`` callable can be swapped before Starlette's
+    body cache reads it.
     """
 
-    async def dispatch(self, request: Request, call_next: Any) -> Response:
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        headers_raw: list[tuple[bytes, bytes]] = scope.get("headers", [])
+        headers = {k.lower(): v for k, v in headers_raw}
+
+        original_path: str = scope.get("path", "")
+
         # --- suffix rewrite ------------------------------------------------
-        original_path = request.scope.get("path", "")
         suffix_fmt: str | None = None
         for suffix, key in _SUFFIX_MAP.items():
             if original_path.endswith(suffix):
                 suffix_fmt = key
-                # Rewrite the path so the router matches the base route.
-                request.scope["path"] = original_path[: -len(suffix)]
+                scope["path"] = original_path[: -len(suffix)]
                 break
 
-        # --- request body transcoding --------------------------------------
-        content_type = request.headers.get("content-type")
-        req_fmt = resolve_request_format(content_type)
+        # --- determine response format early -------------------------------
+        accept_value = headers.get(b"accept", b"").decode("latin-1")
+        resp_fmt = suffix_fmt or resolve_response_format(accept_value or None)
+        if resp_fmt is None:
+            # 406 Not Acceptable -- short-circuit.
+            response = Response(
+                content=json.dumps({"detail": "Not Acceptable"}),
+                status_code=406,
+                media_type=MIME_JSON,
+            )
+            await response(scope, receive, send)
+            return
 
-        if req_fmt != "json" and request.method in ("POST", "PUT", "PATCH"):
-            raw_body = await request.body()
+        # --- request body transcoding --------------------------------------
+        content_type_value = headers.get(b"content-type", b"").decode("latin-1")
+        req_fmt = resolve_request_format(content_type_value or None)
+        method = scope.get("method", "GET")
+
+        if req_fmt != "json" and method in ("POST", "PUT", "PATCH"):
+            # Consume the full body from the original ``receive``.
+            body_parts: list[bytes] = []
+            while True:
+                msg = await receive()
+                body_parts.append(msg.get("body", b""))
+                if not msg.get("more_body", False):
+                    break
+            raw_body = b"".join(body_parts)
+
             if raw_body:
                 try:
                     parsed = deserialize(raw_body, req_fmt)
                 except Exception:
-                    return Response(
+                    response = Response(
                         content=json.dumps(
                             {"detail": f"Malformed {req_fmt.upper()} request body"}
                         ),
                         status_code=422,
                         media_type=MIME_JSON,
                     )
-                # Re-inject as JSON for downstream Pydantic parsing.
-                json_body = json.dumps(parsed).encode("utf-8")
-                # Build a new receive callable that returns the JSON body.
-                async def receive() -> dict[str, Any]:
-                    return {
-                        "type": "http.request",
-                        "body": json_body,
-                        "more_body": False,
-                    }
+                    await response(scope, receive, send)
+                    return
 
-                request._receive = receive  # type: ignore[attr-defined]
-                # Patch content-type header so FastAPI parses JSON.
-                headers = dict(request.scope["headers"])
+                json_body = json.dumps(parsed).encode("utf-8")
+
+                # Replace the receive callable so downstream reads JSON.
+                _body_sent = False
+
+                async def _json_receive() -> Message:
+                    nonlocal _body_sent
+                    if not _body_sent:
+                        _body_sent = True
+                        return {
+                            "type": "http.request",
+                            "body": json_body,
+                            "more_body": False,
+                        }
+                    # Subsequent reads return empty.
+                    return {"type": "http.request", "body": b"", "more_body": False}
+
+                receive = _json_receive
+
+                # Patch Content-Type header to application/json.
                 new_headers: list[tuple[bytes, bytes]] = []
-                for k, v in request.scope["headers"]:
-                    if k == b"content-type":
-                        new_headers.append((k, MIME_JSON.encode()))
+                for k, v in headers_raw:
+                    if k.lower() == b"content-type":
+                        new_headers.append((k, MIME_JSON.encode("latin-1")))
                     else:
                         new_headers.append((k, v))
-                request.scope["headers"] = new_headers
-
-        # --- determine response format -------------------------------------
-        accept_header = request.headers.get("accept")
-        resp_fmt = suffix_fmt or resolve_response_format(accept_header)
-        if resp_fmt is None:
-            return Response(
-                content=json.dumps({"detail": "Not Acceptable"}),
-                status_code=406,
-                media_type=MIME_JSON,
-            )
-
-        # --- call downstream -----------------------------------------------
-        response = await call_next(request)
+                scope["headers"] = new_headers
 
         # --- response body transcoding -------------------------------------
-        if resp_fmt != "json" and response.status_code < 400:
-            # Read the original response body.
-            body_parts: list[bytes] = []
-            async for chunk in response.body_iterator:
-                if isinstance(chunk, str):
-                    body_parts.append(chunk.encode("utf-8"))
-                else:
-                    body_parts.append(chunk)
-            body = b"".join(body_parts)
+        if resp_fmt == "json":
+            # No transcoding needed -- pass through.
+            await self.app(scope, receive, send)
+            return
 
-            if body:
-                try:
-                    data = json.loads(body)
-                except (json.JSONDecodeError, UnicodeDecodeError):
-                    # Not JSON -- pass through untouched.
-                    return Response(
-                        content=body,
-                        status_code=response.status_code,
-                        headers=dict(response.headers),
-                        media_type=response.media_type,
-                    )
+        # Capture the response so we can re-serialize the body.
+        response_started = False
+        initial_message: dict[str, Any] = {}
+        response_body_parts: list[bytes] = []
 
-                try:
-                    serialized, mime = serialize(data, resp_fmt)
-                except Exception:
-                    # Serialization failure -- fall back to JSON.
-                    return Response(
-                        content=body,
-                        status_code=response.status_code,
-                        headers=dict(response.headers),
-                        media_type=MIME_JSON,
-                    )
+        async def _capture_send(message: Message) -> None:
+            nonlocal response_started, initial_message
+            if message["type"] == "http.response.start":
+                response_started = True
+                initial_message = message
+            elif message["type"] == "http.response.body":
+                response_body_parts.append(message.get("body", b""))
+                if not message.get("more_body", False):
+                    # All body chunks collected -- transcode and send.
+                    await _flush_response(send)
 
-                # Preserve original response headers but update Content-Type.
-                resp_headers = dict(response.headers)
-                resp_headers["content-type"] = mime
-                return Response(
-                    content=serialized,
-                    status_code=response.status_code,
-                    headers=resp_headers,
-                    media_type=mime,
+        async def _flush_response(real_send: Send) -> None:
+            body = b"".join(response_body_parts)
+            status = initial_message.get("status", 200)
+
+            # Only transcode successful JSON responses.
+            if status >= 400 or not body:
+                await real_send(initial_message)
+                await real_send(
+                    {"type": "http.response.body", "body": body, "more_body": False}
                 )
+                return
 
-        return response
+            try:
+                data = json.loads(body)
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                # Not JSON -- pass through untouched.
+                await real_send(initial_message)
+                await real_send(
+                    {"type": "http.response.body", "body": body, "more_body": False}
+                )
+                return
+
+            try:
+                serialized, mime = serialize(data, resp_fmt)
+            except Exception:
+                # Serialization failure -- fall back to original JSON.
+                await real_send(initial_message)
+                await real_send(
+                    {"type": "http.response.body", "body": body, "more_body": False}
+                )
+                return
+
+            # Rewrite headers with new Content-Type and Content-Length.
+            orig_headers = initial_message.get("headers", [])
+            new_resp_headers: list[tuple[bytes, bytes]] = []
+            encoded_body = serialized.encode("utf-8")
+            for k, v in orig_headers:
+                key_lower = k.lower() if isinstance(k, bytes) else k.encode().lower()
+                if key_lower in (b"content-type", b"content-length"):
+                    continue
+                new_resp_headers.append((k, v))
+            new_resp_headers.append((b"content-type", mime.encode("latin-1")))
+            new_resp_headers.append(
+                (b"content-length", str(len(encoded_body)).encode("latin-1"))
+            )
+
+            initial_message["headers"] = new_resp_headers
+            await real_send(initial_message)
+            await real_send(
+                {
+                    "type": "http.response.body",
+                    "body": encoded_body,
+                    "more_body": False,
+                }
+            )
+
+        await self.app(scope, receive, _capture_send)

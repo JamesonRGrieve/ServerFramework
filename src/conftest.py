@@ -53,11 +53,6 @@ _repo_hash = _hl.md5(str(Path(__file__).resolve().parent).encode()).hexdigest()[
 _test_db_dir = os.path.join(_tf.gettempdir(), f"sf-test-{_repo_hash}")
 os.makedirs(_test_db_dir, exist_ok=True)
 # Clean stale DBs from the shared test dir too
-for _stale_db in _glob.glob(os.path.join(_test_db_dir, "*.db")):
-    try:
-        os.remove(_stale_db)
-    except OSError:
-        pass
 os.environ.setdefault("DATABASE_PATH", _test_db_dir)
 # Set APP_EXTENSIONS so the global settings singleton includes the
 # extensions the test suite exercises. Without this, the empty default
