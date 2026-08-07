@@ -28,10 +28,10 @@ class AbstractFileIOProvider(AbstractProvider):
     def __init__(
         self,
         base_directory: str,
-        allowed_permissions: Set[FileIOPermission] = None,
-        allowlist_patterns: List[str] = None,
-        blocklist_patterns: List[str] = None,
-        extension_id: Optional[str] = None,
+        allowed_permissions: Set[FileIOPermission] | None = None,
+        allowlist_patterns: List[str] | None = None,
+        blocklist_patterns: List[str] | None = None,
+        extension_id: Optional[str] | None = None,
         **kwargs,
     ):
         """
@@ -291,7 +291,7 @@ class AbstractFileIOProvider(AbstractProvider):
         pass
 
     @abstractmethod
-    async def execute_file(self, file_path: str, arguments: List[str] = None) -> str:
+    async def execute_file(self, file_path: str, arguments: List[str] | None = None) -> str:
         """
         Execute a file with given arguments.
 

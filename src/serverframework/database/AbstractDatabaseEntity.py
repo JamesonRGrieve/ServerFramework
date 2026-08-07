@@ -33,7 +33,7 @@ from serverframework.lib.Pydantic import obj_to_dict
 
 
 def get_db_manager(
-    request: Request = None, db: Session = None
+    request: Request | None = None, db: Session | None = None
 ) -> Optional[DatabaseManager]:
     """Get the database manager from app state, database session, or return None."""
     if request and hasattr(request.app.state, "DB"):
@@ -210,7 +210,7 @@ def build_query(
 def db_to_return_type(
     entity: Union[T, List[T]],
     return_type: Literal["db", "dict", "dto", "model"] = "dict",
-    dto_type: Optional[Type[DtoT]] = None,
+    dto_type: Optional[Type[DtoT]] | None = None,
     fields: List[str] = [],
 ) -> Union[T, DtoT, ModelT, List[Union[T, DtoT, ModelT]]]:
     """
@@ -783,7 +783,7 @@ class BaseMixin:
         model_registry,
         return_type: Literal["db", "dict", "dto", "model"] = "dict",
         fields=[],
-        override_dto: Optional[Type[DtoT]] = None,
+        override_dto: Optional[Type[DtoT]] | None = None,
         **kwargs,
     ) -> T:
         """Create a new database entity."""
@@ -1075,7 +1075,7 @@ class BaseMixin:
         filters=[],
         fields=[],
         allow_nonexistent=False,
-        override_dto: Optional[Type[DtoT]] = None,
+        override_dto: Optional[Type[DtoT]] | None = None,
         **kwargs,
     ) -> T:
         # Extract db and db_manager from kwargs (injected by decorator)
@@ -1178,7 +1178,7 @@ class BaseMixin:
         limit=None,
         offset=None,
         fields=[],
-        override_dto: Optional[Type[DtoT]] = None,
+        override_dto: Optional[Type[DtoT]] | None = None,
         check_permissions=True,
         minimum_role=None,
         **kwargs,
@@ -1445,7 +1445,7 @@ class UpdateMixin(SoftDeleteMixin):
         return_type: Literal["db", "dict", "dto", "model"] = "dict",
         filters=[],
         fields=[],
-        override_dto: Optional[Type[DtoT]] = None,
+        override_dto: Optional[Type[DtoT]] | None = None,
         check_permissions=True,
         allow_nonexistent: bool = False,
         **kwargs,

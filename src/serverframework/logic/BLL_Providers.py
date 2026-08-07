@@ -65,7 +65,7 @@ class RoutingHint:
     intentionally NOT a field here — per Item 3 it remains L7's job.
     """
 
-    stickiness_key: Optional[str] = None
+    stickiness_key: Optional[str] | None = None
 
 
 # Item 51 — in-memory sticky-session cache. Keyed by
@@ -160,8 +160,8 @@ class ProviderModel(
     metaclass=ModelMeta,
 ):
     name: str = Field(..., description="The name")
-    friendly_name: Optional[str] = None
-    agent_settings_json: Optional[str] = None
+    friendly_name: Optional[str] | None = None
+    agent_settings_json: Optional[str] | None = None
 
     # Database metadata for SQLAlchemy generation
     table_comment: ClassVar[str] = (
@@ -234,8 +234,8 @@ class ProviderModel(
 
     class Create(BaseModel):
         name: str
-        friendly_name: Optional[str] = None
-        agent_settings_json: Optional[str] = None
+        friendly_name: Optional[str] | None = None
+        agent_settings_json: Optional[str] | None = None
         system: bool = False
 
         @model_validator(mode="after")
@@ -245,17 +245,17 @@ class ProviderModel(
             return self
 
     class Update(BaseModel):
-        name: Optional[str] = None
-        friendly_name: Optional[str] = None
-        agent_settings_json: Optional[str] = None
-        system: Optional[bool] = None
+        name: Optional[str] | None = None
+        friendly_name: Optional[str] | None = None
+        agent_settings_json: Optional[str] | None = None
+        system: Optional[bool] | None = None
 
     class Search(
         ApplicationModel.Search, NameMixinModel.Search, UpdateMixinModel.Search
     ):
-        friendly_name: Optional[StringSearchModel] = None
-        agent_settings_json: Optional[StringSearchModel] = None
-        system: Optional[bool] = None
+        friendly_name: Optional[StringSearchModel] | None = None
+        agent_settings_json: Optional[StringSearchModel] | None = None
+        system: Optional[bool] | None = None
 
 
 class ProviderManager(AbstractBLLManager, RouterMixin):
@@ -271,9 +271,9 @@ class ProviderManager(AbstractBLLManager, RouterMixin):
     def __init__(
         self,
         requester_id: str,
-        target_id: Optional[str] = None,
-        target_team_id: Optional[str] = None,
-        model_registry: Optional[Any] = None,
+        target_id: Optional[str] | None = None,
+        target_team_id: Optional[str] | None = None,
+        model_registry: Optional[Any] | None = None,
     ) -> None:
         """
         Initialize ProviderManager.
@@ -441,15 +441,15 @@ class ProviderExtensionModel(ApplicationModel, UpdateMixinModel, metaclass=Model
         extension_id: str
 
     class Update(BaseModel):
-        provider_id: Optional[str] = None
-        extension_id: Optional[str] = None
+        provider_id: Optional[str] | None = None
+        extension_id: Optional[str] | None = None
 
     class Search(
         ApplicationModel.Search,
         UpdateMixinModel.Search,
     ):
-        provider_id: Optional[StringSearchModel] = None
-        extension_id: Optional[StringSearchModel] = None
+        provider_id: Optional[StringSearchModel] | None = None
+        extension_id: Optional[StringSearchModel] | None = None
 
 
 class ProviderExtensionManager(AbstractBLLManager, RouterMixin):
@@ -465,9 +465,9 @@ class ProviderExtensionManager(AbstractBLLManager, RouterMixin):
     def __init__(
         self,
         requester_id: str,
-        target_id: Optional[str] = None,
-        target_team_id: Optional[str] = None,
-        model_registry: Optional[Any] = None,
+        target_id: Optional[str] | None = None,
+        target_team_id: Optional[str] | None = None,
+        model_registry: Optional[Any] | None = None,
     ) -> None:
         """
         Initialize ProviderExtensionManager.
@@ -541,12 +541,12 @@ class ProviderExtensionAbilityModel(
         ability_id: str
 
     class Update(BaseModel):
-        provider_extension_id: Optional[str] = None
-        ability_id: Optional[str] = None
+        provider_extension_id: Optional[str] | None = None
+        ability_id: Optional[str] | None = None
 
     class Search(ApplicationModel.Search, UpdateMixinModel.Search):
-        provider_extension_id: Optional[StringSearchModel] = None
-        ability_id: Optional[StringSearchModel] = None
+        provider_extension_id: Optional[StringSearchModel] | None = None
+        ability_id: Optional[StringSearchModel] | None = None
 
 
 class ProviderExtensionAbilityManager(AbstractBLLManager, RouterMixin):
@@ -594,8 +594,8 @@ class ProviderInstanceModel(
     ProviderModel.Reference,
     metaclass=ModelMeta,
 ):
-    model_name: Optional[str] = None
-    api_key: Optional[str] = None
+    model_name: Optional[str] | None = None
+    api_key: Optional[str] | None = None
     enabled: Optional[bool] = Field(True, description="Whether it is enabled")
     # Item 19: provider scope. Resolution semantics differ by scope:
     #   * root   -> framework-internal only; never reachable via user-context resolution.
@@ -720,15 +720,15 @@ class ProviderInstanceModel(
     class Create(BaseModel):
         name: str
         provider_id: str
-        model_name: Optional[str] = None
-        api_key: Optional[str] = None
-        user_id: Optional[str] = None
-        team_id: Optional[str] = None
+        model_name: Optional[str] | None = None
+        api_key: Optional[str] | None = None
+        user_id: Optional[str] | None = None
+        team_id: Optional[str] | None = None
         scope: Literal["root", "system", "team", "user"] = "user"
         # Item 36: residency region (optional; consumed by residency extension).
-        region: Optional[str] = None
+        region: Optional[str] | None = None
         # Item 10: per-instance AuthStrategy override (optional).
-        auth_strategy_name: Optional[str] = None
+        auth_strategy_name: Optional[str] | None = None
 
         @model_validator(mode="after")
         def validate_name_length(self):
@@ -739,17 +739,17 @@ class ProviderInstanceModel(
             return self
 
     class Update(BaseModel):
-        name: Optional[str] = None
-        provider_id: Optional[str] = None
-        model_name: Optional[str] = None
-        api_key: Optional[str] = None
-        user_id: Optional[str] = None
-        team_id: Optional[str] = None
-        scope: Optional[Literal["root", "system", "team", "user"]] = None
+        name: Optional[str] | None = None
+        provider_id: Optional[str] | None = None
+        model_name: Optional[str] | None = None
+        api_key: Optional[str] | None = None
+        user_id: Optional[str] | None = None
+        team_id: Optional[str] | None = None
+        scope: Optional[Literal["root", "system", "team", "user"]] | None = None
         # Item 36: residency region (optional; consumed by residency extension).
-        region: Optional[str] = None
+        region: Optional[str] | None = None
         # Item 10: per-instance AuthStrategy override (optional).
-        auth_strategy_name: Optional[str] = None
+        auth_strategy_name: Optional[str] | None = None
 
     class Search(
         ApplicationModel.Search,
@@ -759,13 +759,13 @@ class ProviderInstanceModel(
         TeamModel.Reference.ID.Search,
         ProviderModel.Reference.ID.Search,
     ):
-        model_name: Optional[StringSearchModel] = None
-        api_key: Optional[StringSearchModel] = None
-        scope: Optional[StringSearchModel] = None
+        model_name: Optional[StringSearchModel] | None = None
+        api_key: Optional[StringSearchModel] | None = None
+        scope: Optional[StringSearchModel] | None = None
         # Item 36: residency region (consumed by residency extension).
-        region: Optional[StringSearchModel] = None
+        region: Optional[StringSearchModel] | None = None
         # Item 10: per-instance AuthStrategy override (search-by-name).
-        auth_strategy_name: Optional[StringSearchModel] = None
+        auth_strategy_name: Optional[StringSearchModel] | None = None
 
 
 class ProviderInstanceManager(AbstractBLLManager, RouterMixin):
@@ -781,9 +781,9 @@ class ProviderInstanceManager(AbstractBLLManager, RouterMixin):
     def __init__(
         self,
         requester_id: str,
-        target_id: Optional[str] = None,
-        target_team_id: Optional[str] = None,
-        model_registry: Optional[Any] = None,
+        target_id: Optional[str] | None = None,
+        target_team_id: Optional[str] | None = None,
+        model_registry: Optional[Any] | None = None,
     ) -> None:
         """
         Initialize ProviderInstanceManager.
@@ -882,17 +882,17 @@ class ProviderInstanceUsageModel(
 
     class Create(BaseModel):
         provider_instance_id: str
-        key: Optional[str] = None
-        value: Optional[int] = None
-        user_id: Optional[str] = None
-        team_id: Optional[str] = None
+        key: Optional[str] | None = None
+        value: Optional[int] | None = None
+        user_id: Optional[str] | None = None
+        team_id: Optional[str] | None = None
 
     class Update(BaseModel):
-        provider_instance_id: Optional[str] = None
-        key: Optional[str] = None
-        value: Optional[int] = None
-        user_id: Optional[str] = None
-        team_id: Optional[str] = None
+        provider_instance_id: Optional[str] | None = None
+        key: Optional[str] | None = None
+        value: Optional[int] | None = None
+        user_id: Optional[str] | None = None
+        team_id: Optional[str] | None = None
 
     class Search(
         ApplicationModel.Search,
@@ -900,9 +900,9 @@ class ProviderInstanceUsageModel(
         UserModel.Reference.ID.Search,
         TeamModel.Reference.ID.Search,
     ):
-        provider_instance_id: Optional[StringSearchModel] = None
-        key: Optional[StringSearchModel] = None
-        value: Optional[NumericalSearchModel] = None
+        provider_instance_id: Optional[StringSearchModel] | None = None
+        key: Optional[StringSearchModel] | None = None
+        value: Optional[NumericalSearchModel] | None = None
 
 
 class ProviderInstanceUsageManager(AbstractBLLManager, RouterMixin):
@@ -921,7 +921,7 @@ class ProviderInstanceSettingModel(
 ):
     provider_instance_id: str
     key: str
-    value: Optional[str] = None
+    value: Optional[str] | None = None
 
     # Database metadata for SQLAlchemy generation
     table_comment: ClassVar[str] = (
@@ -932,20 +932,20 @@ class ProviderInstanceSettingModel(
     class Create(BaseModel):
         provider_instance_id: str
         key: str
-        value: Optional[str] = None
+        value: Optional[str] | None = None
 
     class Update(BaseModel):
-        provider_instance_id: Optional[str] = None
-        key: Optional[str] = None
-        value: Optional[str] = None
+        provider_instance_id: Optional[str] | None = None
+        key: Optional[str] | None = None
+        value: Optional[str] | None = None
 
     class Search(
         ApplicationModel.Search,
         UpdateMixinModel.Search,
     ):
-        provider_instance_id: Optional[StringSearchModel] = None
-        key: Optional[StringSearchModel] = None
-        value: Optional[StringSearchModel] = None
+        provider_instance_id: Optional[StringSearchModel] | None = None
+        key: Optional[StringSearchModel] | None = None
+        value: Optional[StringSearchModel] | None = None
 
 
 class ProviderInstanceSettingManager(AbstractBLLManager, RouterMixin):
@@ -1000,19 +1000,19 @@ class ProviderInstanceExtensionAbilityModel(
         forced: bool = False
 
     class Update(BaseModel):
-        provider_instance_id: Optional[str] = None
-        provider_extension_ability_id: Optional[str] = None
-        state: Optional[bool] = None
-        forced: Optional[bool] = None
+        provider_instance_id: Optional[str] | None = None
+        provider_extension_ability_id: Optional[str] | None = None
+        state: Optional[bool] | None = None
+        forced: Optional[bool] | None = None
 
     class Search(
         ApplicationModel.Search,
         UpdateMixinModel.Search,
     ):
-        provider_instance_id: Optional[StringSearchModel] = None
-        provider_extension_ability_id: Optional[StringSearchModel] = None
-        state: Optional[bool] = None
-        forced: Optional[bool] = None
+        provider_instance_id: Optional[StringSearchModel] | None = None
+        provider_extension_ability_id: Optional[StringSearchModel] | None = None
+        state: Optional[bool] | None = None
+        forced: Optional[bool] | None = None
 
 
 class ProviderInstanceExtensionAbilityManager(AbstractBLLManager, RouterMixin):
@@ -1035,7 +1035,7 @@ class RotationModel(
     ExtensionModel.Reference.Optional,
     metaclass=ModelMeta,
 ):
-    description: Optional[str] = None
+    description: Optional[str] | None = None
 
     # Database metadata for SQLAlchemy generation
     table_comment: ClassVar[str] = (
@@ -1128,9 +1128,9 @@ class RotationModel(
 
     class Create(BaseModel):
         name: str
-        description: Optional[str] = None
-        user_id: Optional[str] = None
-        team_id: Optional[str] = None
+        description: Optional[str] | None = None
+        user_id: Optional[str] | None = None
+        team_id: Optional[str] | None = None
 
         @model_validator(mode="after")
         def validate_name_length(self):
@@ -1139,10 +1139,10 @@ class RotationModel(
             return self
 
     class Update(BaseModel):
-        name: Optional[str] = None
-        description: Optional[str] = None
-        user_id: Optional[str] = None
-        team_id: Optional[str] = None
+        name: Optional[str] | None = None
+        description: Optional[str] | None = None
+        user_id: Optional[str] | None = None
+        team_id: Optional[str] | None = None
 
     class Search(
         ApplicationModel.Search,
@@ -1151,7 +1151,7 @@ class RotationModel(
         UserModel.Reference.ID.Search,
         TeamModel.Reference.ID.Search,
     ):
-        description: Optional[StringSearchModel] = None
+        description: Optional[StringSearchModel] | None = None
 
 
 # Item 34 — telemetry helper. Wraps individual `counter`/`histogram`/
@@ -1238,11 +1238,11 @@ class RotationManager(AbstractBLLManager, RouterMixin):
 
     def __init__(
         self,
-        model_registry: Optional[Any] = None,
-        requester_id: Optional[str] = None,
-        target_id: Optional[str] = None,
-        target_team_id: Optional[str] = None,
-        parent: Optional[Any] = None,
+        model_registry: Optional[Any] | None = None,
+        requester_id: Optional[str] | None = None,
+        target_id: Optional[str] | None = None,
+        target_team_id: Optional[str] | None = None,
+        parent: Optional[Any] | None = None,
     ) -> None:
         """Item 70 — `model_registry` first per the documented contract.
 
@@ -2278,20 +2278,20 @@ class RotationProviderInstanceModel(
     class Create(BaseModel):
         rotation_id: str
         provider_instance_id: str
-        parent_id: Optional[str] = None
+        parent_id: Optional[str] | None = None
 
     class Update(BaseModel):
-        rotation_id: Optional[str] = None
-        provider_instance_id: Optional[str] = None
-        parent_id: Optional[str] = None
+        rotation_id: Optional[str] | None = None
+        provider_instance_id: Optional[str] | None = None
+        parent_id: Optional[str] | None = None
 
     class Search(
         ApplicationModel.Search,
         UpdateMixinModel.Search,
         ParentMixinModel.Search,
     ):
-        rotation_id: Optional[StringSearchModel] = None
-        provider_instance_id: Optional[StringSearchModel] = None
+        rotation_id: Optional[StringSearchModel] | None = None
+        provider_instance_id: Optional[StringSearchModel] | None = None
 
 
 class RotationProviderInstanceManager(AbstractBLLManager, RouterMixin):
@@ -2307,9 +2307,9 @@ class RotationProviderInstanceManager(AbstractBLLManager, RouterMixin):
     def __init__(
         self,
         requester_id: str,
-        target_id: Optional[str] = None,
-        target_team_id: Optional[str] = None,
-        model_registry: Optional[Any] = None,
+        target_id: Optional[str] | None = None,
+        target_team_id: Optional[str] | None = None,
+        model_registry: Optional[Any] | None = None,
     ) -> None:
         """
         Initialize RotationProviderInstanceManager.

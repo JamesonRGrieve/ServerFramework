@@ -62,7 +62,7 @@ class ExtensionTestConfig:
 class ExtensionServerMixin:
     """Simplified mixin for extension server fixtures."""
 
-    extension_class: Type[T] = None
+    extension_class: Type[T] | None = None
 
     @pytest.fixture(scope="module")
     def server(self):
@@ -190,7 +190,7 @@ class AbstractEXTTest(AbstractTest, ExtensionServerMixin):
     hard-coded test methods.
     """
 
-    extension_class: Type[T] = None
+    extension_class: Type[T] | None = None
     test_config: ExtensionTestConfig = ExtensionTestConfig()
 
     @classmethod
@@ -574,8 +574,8 @@ class AbstractEXTTest(AbstractTest, ExtensionServerMixin):
     @classmethod
     def create_config(
         cls,
-        test_types: Set[ExtensionTestType] = None,
-        expected_abilities: Set[str] = None,
+        test_types: Set[ExtensionTestType] | None = None,
+        expected_abilities: Set[str] | None = None,
         skip_rotation: bool = False,
         skip_performance: bool = False,
         **kwargs,
@@ -604,7 +604,7 @@ class AbstractEXTTest(AbstractTest, ExtensionServerMixin):
         )
 
     @classmethod
-    def full_config(cls, expected_abilities: Set[str] = None) -> ExtensionTestConfig:
+    def full_config(cls, expected_abilities: Set[str] | None = None) -> ExtensionTestConfig:
         """Full test configuration for comprehensive testing."""
         return cls.create_config(
             test_types=set(ExtensionTestType),

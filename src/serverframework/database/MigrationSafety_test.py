@@ -25,7 +25,7 @@ from serverframework.database.MigrationSafety import (
 
 
 def _module_with_upgrade_source(
-    source: str, *, revision: str = "rev1", down_revision: str = None
+    source: str, *, revision: str = "rev1", down_revision: str | None = None
 ) -> types.ModuleType:
     """Build a real module whose ``upgrade`` source is ``source``.
 

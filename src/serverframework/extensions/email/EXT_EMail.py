@@ -329,7 +329,7 @@ class AbstractEmailProvider(AbstractStaticProvider):
         """
 
         from_email: EmailStr
-        default_provider_name: Optional[str] = None
+        default_provider_name: Optional[str] | None = None
 
         _env_field_map: ClassVar[Dict[str, str]] = {}
 
@@ -427,7 +427,7 @@ class AbstractEmailProvider(AbstractStaticProvider):
         recipient: str,
         subject: str,
         body: str,
-        attachments: Optional[List[str]] = None,
+        attachments: Optional[List[str]] | None = None,
     ) -> Optional[str]:
         """
         Reject inputs that could be used to mount header-injection, SSRF,
@@ -619,7 +619,7 @@ class AbstractEmailProvider(AbstractStaticProvider):
         recipient: str,
         subject: str,
         body: str,
-        attachments: Optional[List[str]] = None,
+        attachments: Optional[List[str]] | None = None,
         importance: str = "normal",
     ) -> str:
         """Send an email."""
@@ -632,7 +632,7 @@ class AbstractEmailProvider(AbstractStaticProvider):
         recipient: str,
         subject: str,
         body: str,
-        attachments: Optional[List[str]] = None,
+        attachments: Optional[List[str]] | None = None,
         importance: str = "normal",
     ) -> str:
         """Create a draft email."""
@@ -645,7 +645,7 @@ class AbstractEmailProvider(AbstractStaticProvider):
         query: str,
         folder_name: str = "Inbox",
         max_emails: int = 10,
-        date_range: Optional[tuple] = None,
+        date_range: Optional[tuple] | None = None,
     ) -> List[Dict[str, Any]]:
         """Search for emails in a specified folder."""
 
@@ -656,7 +656,7 @@ class AbstractEmailProvider(AbstractStaticProvider):
         provider_instance: ProviderInstanceModel,
         message_id: str,
         body: str,
-        attachments: Optional[List[str]] = None,
+        attachments: Optional[List[str]] | None = None,
     ) -> str:
         """Reply to a specific email."""
 
@@ -798,7 +798,7 @@ class AbstractEmailProvider(AbstractStaticProvider):
         body = message.body_html or message.body_text or ""
         # Convert ``Attachment`` objects to filesystem paths via temp-file
         # if any are byte-only; legacy ``send_email`` only accepts paths.
-        legacy_attachments: Optional[List[str]] = None
+        legacy_attachments: Optional[List[str]] | None = None
         if message.attachments:
             import tempfile
 
@@ -825,9 +825,9 @@ class AbstractEmailProvider(AbstractStaticProvider):
         provider_instance: ProviderInstanceModel,
         message_id: str,
         *,
-        read: Optional[bool] = None,
-        flagged: Optional[bool] = None,
-        folder: Optional[str] = None,
+        read: Optional[bool] | None = None,
+        flagged: Optional[bool] | None = None,
+        folder: Optional[str] | None = None,
         deleted: bool = False,
     ) -> str:
         """Apply state changes to an existing message in one call.
@@ -866,10 +866,10 @@ class AbstractEmailProvider(AbstractStaticProvider):
         cls,
         provider_instance: ProviderInstanceModel,
         *,
-        folder: Optional[str] = None,
-        query: Optional[str] = None,
+        folder: Optional[str] | None = None,
+        query: Optional[str] | None = None,
         limit: int = 10,
-        cursor: Optional[str] = None,
+        cursor: Optional[str] | None = None,
     ) -> List[Dict[str, Any]]:
         """List emails with an optional search query and folder.
 
@@ -895,7 +895,7 @@ class AbstractEmailProvider(AbstractStaticProvider):
 
 
 def iter_configured_email_providers(
-    env_map: Optional[Mapping[str, str]] = None,
+    env_map: Optional[Mapping[str, str]] | None = None,
 ) -> List[Type["AbstractEmailProvider"]]:
     """Item 90 — return the loaded email-provider classes whose
     ``Settings.is_configured(env_map)`` is True.
@@ -923,7 +923,7 @@ def iter_configured_email_providers(
 
 
 def validate_email_provider_settings_at_startup(
-    env_map: Optional[Mapping[str, str]] = None,
+    env_map: Optional[Mapping[str, str]] | None = None,
 ) -> Dict[str, bool]:
     """Item 90 — startup validator.
 
@@ -1200,7 +1200,7 @@ class EXT_EMail(AbstractStaticExtension):
         cls.register_ability("process_attachments")
 
     @classmethod
-    async def execute_ability(cls, ability_name: str, params: dict = None) -> str:
+    async def execute_ability(cls, ability_name: str, params: dict | None = None) -> str:
         """Execute an ability by name."""
         if ability_name not in cls.get_abilities():
             return f"Ability '{ability_name}' not found"

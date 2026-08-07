@@ -89,11 +89,11 @@ class MockComprehensiveModel(
             invitation_id: str = Field(..., description="Invitation reference")
 
             class Optional:
-                parent_user_id: Optional[str] = None
-                extension_id: Optional[str] = None
-                ability_id: Optional[str] = None
-                role_id: Optional[str] = None
-                invitation_id: Optional[str] = None
+                parent_user_id: Optional[str] | None = None
+                extension_id: Optional[str] | None = None
+                ability_id: Optional[str] | None = None
+                role_id: Optional[str] | None = None
+                invitation_id: Optional[str] | None = None
 
     # Add a second Reference for testing relationship functionality
     class ComprehensiveReference:
@@ -103,7 +103,7 @@ class MockComprehensiveModel(
             )
 
             class Optional:
-                comprehensive_id: Optional[str] = None
+                comprehensive_id: Optional[str] | None = None
 
     # Nested model for complex validation
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -187,7 +187,7 @@ class MockSimpleModel(ApplicationModel):
             )
 
             class Optional:
-                simple_id: Optional[str] = None
+                simple_id: Optional[str] | None = None
 
 
 class MockRelationshipModel(
@@ -207,7 +207,7 @@ class MockRelationshipModel(
             )
 
             class Optional:
-                relationship_id: Optional[str] = None
+                relationship_id: Optional[str] | None = None
 
 
 # Add Create, Update, and Search classes to mock models BEFORE NetworkModel classes
@@ -324,7 +324,7 @@ class MockComprehensiveNetworkModel(BaseModel):
     class LIST(BaseNetworkModel):
         offset: int = Field(0, ge=0)
         limit: int = Field(1000, ge=1, le=1000)
-        sort_by: Optional[str] = None
+        sort_by: Optional[str] | None = None
         sort_order: Optional[str] = Field("asc", pattern="^(asc|desc)$")
 
     class POST(BaseModel):
@@ -362,7 +362,7 @@ class MockSimpleNetworkModel(BaseModel):
     class LIST(BaseNetworkModel):
         offset: int = Field(0, ge=0)
         limit: int = Field(1000, ge=1, le=1000)
-        sort_by: Optional[str] = None
+        sort_by: Optional[str] | None = None
         sort_order: Optional[str] = Field("asc", pattern="^(asc|desc)$")
 
     class POST(BaseModel):
@@ -396,7 +396,7 @@ class MockRelationshipNetworkModel(BaseModel):
     class LIST(BaseNetworkModel):
         offset: int = Field(0, ge=0)
         limit: int = Field(1000, ge=1, le=1000)
-        sort_by: Optional[str] = None
+        sort_by: Optional[str] | None = None
         sort_order: Optional[str] = Field("asc", pattern="^(asc|desc)$")
 
     class POST(BaseModel):
@@ -432,7 +432,7 @@ class MockComprehensiveManager:
     Model = MockComprehensiveModel
     NetworkModel = MockComprehensiveNetworkModel
 
-    def __init__(self, requester_id: str = None, **kwargs):
+    def __init__(self, requester_id: str | None = None, **kwargs):
         self.requester_id = requester_id
         self.requester = type("MockUser", (), {"id": requester_id})()
 
@@ -481,7 +481,7 @@ class MockSimpleManager:
     Model = MockSimpleModel
     NetworkModel = MockSimpleNetworkModel
 
-    def __init__(self, requester_id: str = None, **kwargs):
+    def __init__(self, requester_id: str | None = None, **kwargs):
         self.requester_id = requester_id
         self.requester = type("MockUser", (), {"id": requester_id})()
 
@@ -524,7 +524,7 @@ class MockRelationshipManager:
     Model = MockRelationshipModel
     NetworkModel = MockRelationshipNetworkModel
 
-    def __init__(self, requester_id: str = None, **kwargs):
+    def __init__(self, requester_id: str | None = None, **kwargs):
         self.requester_id = requester_id
         self.requester = type("MockUser", (), {"id": requester_id})()
 
@@ -964,8 +964,8 @@ def create_matrix_test_class(
     class_name: str = "GeneratedMatrixTest",
     include_mocks: bool = True,
     base_classes: tuple = (),
-    setup_method: Optional[Callable] = None,
-    teardown_method: Optional[Callable] = None,
+    setup_method: Optional[Callable] | None = None,
+    teardown_method: Optional[Callable] | None = None,
 ) -> Type:
     """
     Create a matrix test class that runs a test function for each discovered model.
@@ -1038,7 +1038,7 @@ class AbstractPydanticTestMixin:
             self.TestBase.metadata.drop_all(self.engine)
 
     def assert_model_has_tablename(
-        self, model_class, expected_pattern: Optional[str] = None
+        self, model_class, expected_pattern: Optional[str] | None = None
     ):
         """Assert that a SQLAlchemy model has a proper tablename."""
         assert hasattr(

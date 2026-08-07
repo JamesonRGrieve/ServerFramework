@@ -206,7 +206,7 @@ class PydanticUtility:
         return fields
 
     def register_model(
-        self, model: Type[BaseModel], name: Optional[str] = None
+        self, model: Type[BaseModel], name: Optional[str] | None = None
     ) -> None:
         """
         Register a model for name-based lookups.
@@ -252,7 +252,7 @@ class PydanticUtility:
         return self.reference_resolver.find_model_by_name(name)
 
     def generate_unique_type_name(
-        self, model_class: Type, unique_suffix: Optional[str] = None
+        self, model_class: Type, unique_suffix: Optional[str] | None = None
     ) -> str:
         """
         Generates a unique and simplified GraphQL-friendly type name for a Pydantic model.
@@ -431,7 +431,7 @@ class PydanticUtility:
         input_string: str,
         model: Type[BaseModel],
         max_failures: int = 3,
-        response_type: str = None,
+        response_type: str | None = None,
         inference_function=None,
         **kwargs,
     ) -> Union[dict, BaseModel, str]:
@@ -712,7 +712,7 @@ class PydanticUtility:
         self,
         field_name: str,
         field_type: Any,
-        model_class: Optional[Type[BaseModel]] = None,
+        model_class: Optional[Type[BaseModel]] | None = None,
     ) -> Optional[Type[BaseModel]]:
         """
         Get the model class for a field based on its name and type.

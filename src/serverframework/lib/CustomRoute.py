@@ -56,23 +56,23 @@ class CustomRouteSpec:
     authentication_type: str = "session"
     openapi_tags: Tuple[str, ...] = ()
     expose_in: FrozenSet[ExposeIn] = frozenset({ExposeIn.ALL})
-    graphql_kind: Optional[str] = None
-    summary: Optional[str] = None
-    description: Optional[str] = None
+    graphql_kind: Optional[str] | None = None
+    summary: Optional[str] | None = None
+    description: Optional[str] | None = None
 
 
 def custom_route(
     *,
     method: str,
     path: str,
-    input_model: Optional[Type[BaseModel]] = None,
-    output_model: Optional[Type[BaseModel]] = None,
+    input_model: Optional[Type[BaseModel]] | None = None,
+    output_model: Optional[Type[BaseModel]] | None = None,
     authentication_type: str = "session",
     openapi_tags: Iterable[str] = (),
     expose_in: Iterable[ExposeIn] = (ExposeIn.ALL,),
-    graphql_kind: Optional[str] = None,
-    summary: Optional[str] = None,
-    description: Optional[str] = None,
+    graphql_kind: Optional[str] | None = None,
+    summary: Optional[str] | None = None,
+    description: Optional[str] | None = None,
 ) -> Callable:
     """Decorator: tag a method with its route/SDK/GraphQL contract."""
 
@@ -133,11 +133,11 @@ class AbstractActionEndpoint:
     class and walks it for tagged methods.
     """
 
-    prefix: Optional[str] = None
-    tags: Optional[List[str]] = None
+    prefix: Optional[str] | None = None
+    tags: Optional[List[str]] | None = None
 
 
-def register_custom_routes(router, manager_cls, manager_factory: Optional[Callable] = None) -> int:
+def register_custom_routes(router, manager_cls, manager_factory: Optional[Callable] | None = None) -> int:
     """Walk ``manager_cls`` for ``@custom_route`` methods and add them to ``router``.
 
     Additive: each tagged method becomes a typed FastAPI route on the supplied
@@ -261,7 +261,7 @@ def _build_graphql_resolver(
     manager_cls: type,
     method_name: str,
     spec: CustomRouteSpec,
-    manager_factory: Optional[Callable[..., Any]] = None,
+    manager_factory: Optional[Callable[..., Any]] | None = None,
 ) -> Callable[..., Any]:
     """Wrap a tagged method as a Strawberry-compatible resolver.
 
@@ -340,9 +340,9 @@ def _coerce_output(result: Any, output_model: Optional[Type[BaseModel]]) -> Any:
 
 def register_custom_routes_to_graphql(
     manager_cls: type,
-    manager_factory: Optional[Callable[..., Any]] = None,
+    manager_factory: Optional[Callable[..., Any]] | None = None,
     *,
-    contribution_registry: Optional[Any] = None,
+    contribution_registry: Optional[Any] | None = None,
     extension_name: str = "core",
 ) -> int:
     """Walk ``manager_cls`` for ``@custom_route`` methods and register them
@@ -474,7 +474,7 @@ def _python_repr(value: Any) -> str:
 def generate_test_scaffold(
     manager_cls: type,
     *,
-    module_path: Optional[str] = None,
+    module_path: Optional[str] | None = None,
     include_header: bool = True,
 ) -> str:
     """Emit baseline test source code for every ``@custom_route`` on ``manager_cls``.

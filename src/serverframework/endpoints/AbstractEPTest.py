@@ -7,6 +7,7 @@ from enum import Enum
 from itertools import combinations
 from types import UnionType
 from typing import (
+    TYPE_CHECKING,
     Annotated,
     Any,
     Dict,
@@ -16,6 +17,7 @@ from typing import (
     Tuple,
     Type,
     Union,
+    cast,
     get_args,
     get_origin,
     get_type_hints,
@@ -133,14 +135,17 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
     - parent_entities: List of parent entities required for testing
     """
 
-    # Required overrides that child classes must provide
-    base_endpoint: str = None
-    entity_name: str = None
+    # Required overrides that child classes must provide. Typed as the
+    # required type and defaulted to `None` only as a sentinel enforced by
+    # the `setup_method` assertions below -- every concrete subclass must
+    # override these before tests run.
+    base_endpoint: str = None  # type: ignore[assignment]
+    entity_name: str = None  # type: ignore[assignment]
     string_field_to_update: str = "name"
-    required_fields: List[str] = None
-    create_fields: Dict[str, Any] = None
-    update_fields: Dict[str, Any] = None
-    class_under_test: Type = None  # The Pydantic model class for this entity
+    required_fields: List[str] = None  # type: ignore[assignment]
+    create_fields: Dict[str, Any] = None  # type: ignore[assignment]
+    update_fields: Dict[str, Any] = None  # type: ignore[assignment]
+    class_under_test: Type = None  # type: ignore[assignment]  # The Pydantic model class for this entity
 
     # Default test configuration
     test_config: ClassOfTestsConfig = ClassOfTestsConfig(
@@ -153,7 +158,7 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
     # Search configuration
     supports_search: bool = True
     searchable_fields: List[str] = ["name"]
-    search_example_value: str = None
+    search_example_value: str = None  # type: ignore[assignment]  # sentinel; overridden by concrete subclasses
 
     # Default filters to include in search requests (for entities with required search fields)
     # Override in subclass to add entity-specific required fields
@@ -422,10 +427,12 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
                 if origin is dict:
                     return None
                 if origin in {Union, UnionType}:
-                    args = [
+                    union_args = [
                         arg for arg in get_args(annotation) if arg is not type(None)
                     ]
-                    return _resolve_related_model(args[0]) if args else None
+                    return (
+                        _resolve_related_model(union_args[0]) if union_args else None
+                    )
 
             if isinstance(annotation, str):
                 if utility is None:
@@ -496,12 +503,12 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
                 f"{model_name.replace('Model', '')}DB",
             ]
 
-            db_class = None
+            db_class: Optional[type] = None
             if model_module:
                 for db_class_name in possible_db_names:
-                    candidate = getattr(model_module, db_class_name, None)
-                    if candidate:
-                        db_class = candidate
+                    db_candidate = getattr(model_module, db_class_name, None)
+                    if db_candidate:
+                        db_class = db_candidate
                         logger.debug(
                             "Found DB class for fallback discovery: %s", db_class_name
                         )
@@ -511,7 +518,7 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
                 logger.warning("Could not find DB class for %s", model_name)
                 return []
 
-            mapper = sa_inspect(db_class)
+            mapper: Any = sa_inspect(db_class)
             for rel_prop in mapper.relationships:
                 _add_relationship(rel_prop.key)
                 logger.debug("Found SQLAlchemy relationship: %s", rel_prop.key)
@@ -565,7 +572,7 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
     @staticmethod
     def _serialize_query_values(
         values: Optional[Union[str, List[str], Tuple[str, ...], Set[str]]],
-    ) -> str:
+    ) -> Optional[str]:
         """Return a comma-separated string for query parameters."""
         if values is None:
             return None
@@ -629,6 +636,7 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         frame = inspect.currentframe()
         try:
             # Get the calling frame (the test method)
+            assert frame is not None and frame.f_back is not None
             caller_frame = frame.f_back
             caller_locals = caller_frame.f_locals
 
@@ -766,6 +774,7 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         frame = inspect.currentframe()
         try:
             # Get the calling frame (the test method)
+            assert frame is not None and frame.f_back is not None
             caller_frame = frame.f_back
             caller_locals = caller_frame.f_locals
 
@@ -1002,19 +1011,23 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
             )
 
         # Create parent IDs with nulls for non-nullable parents
-        parent_ids = {}
-        path_parent_ids = {}
+        parent_ids: Dict[str, Optional[str]] = {}
+        path_parent_ids: Dict[str, str] = {}
         for parent in self.parent_entities:
             if not parent.nullable:
                 parent_ids[parent.foreign_key] = None
                 # None string is used later during endpoint creation
                 path_parent_ids[f"{parent.name}_id"] = "None"
 
-        # Create the payload
+        # Create the payload. `parent_ids` intentionally carries `None` for
+        # each non-nullable parent under test here, so it is passed through
+        # a cast: `create_payload` is typed for the common (non-null) case,
+        # but at runtime it simply forwards these values into the request
+        # payload for the server to reject.
         payload = {
             self.entity_name: self.create_payload(
                 name=f"Test {self.faker.word()}",
-                parent_ids=parent_ids,
+                parent_ids=cast(Dict[str, str], parent_ids),
                 team_id=team_a.id,
             )
         }
@@ -3422,18 +3435,20 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
             pytest.skip("No non-nullable parent entities for this entity")
 
         # Create parent IDs with nulls for non-nullable parents
-        parent_ids = {}
-        path_parent_ids = {}
+        parent_ids: Dict[str, Optional[str]] = {}
+        path_parent_ids: Dict[str, str] = {}
         for parent in self.parent_entities:
             if not parent.nullable:
                 parent_ids[parent.foreign_key] = None
 
-        # Create batch entities
+        # Create batch entities. `parent_ids` intentionally carries `None`
+        # for each non-nullable parent under test here (see cast note in
+        # `test_POST_422_null_parents`).
         batch_entities = []
         for i in range(3):
             entity = self.create_payload(
                 name=f"Batch {i} {self.faker.word()}",
-                parent_ids=parent_ids,
+                parent_ids=cast(Dict[str, str], parent_ids),
                 team_id=team_a.id,
             )
             batch_entities.append(entity)
@@ -4214,6 +4229,7 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
                 existing_team_id = None
                 try:
                     # Get the calling frame (the test method)
+                    assert frame is not None
                     caller_frame = frame.f_back.f_back if frame.f_back else None
                     if caller_frame:
                         caller_locals = caller_frame.f_locals
@@ -4546,6 +4562,76 @@ class FormatTestMixin:
     format assertions but included in *request* body tests (where the
     middleware transcodes to JSON before Pydantic validates).
     """
+
+    if TYPE_CHECKING:
+        # Contract fulfilled by the concrete class this mixin is combined
+        # with (an `AbstractEPTest` subclass, per the docstring above).
+        # Declared here only so mypy can check this file in isolation;
+        # these declarations have no runtime effect.
+        entity_name: str
+        string_field_to_update: str
+        faker: Faker
+        tracked_entities: Dict[str, Any]
+
+        def _create(
+            self,
+            server: Any,
+            jwt_token: str,
+            user_id: str = ...,
+            team_id: Optional[str] = None,
+            api_key: Optional[str] = None,
+            key: str = "create",
+            search_term: Optional[str] = None,
+            minimal: bool = False,
+            use_nullable_parents: bool = False,
+            invalid_data: bool = False,
+            parent_ids_override: Optional[Dict[str, str]] = None,
+        ) -> Any: ...
+
+        def _get_appropriate_headers(
+            self,
+            jwt_token: Optional[str] = None,
+            api_key: Optional[str] = None,
+            skip_auto_api_key: bool = False,
+        ) -> Dict[str, str]: ...
+
+        def _create_parent_entities(
+            self,
+            server: Any,
+            jwt_token: str,
+            user_id: str,
+            team_id: Optional[str] = None,
+            provided_parent_ids: Optional[Dict[str, str]] = None,
+        ) -> Tuple[Dict[str, Any], Dict[str, str], Dict[str, str]]: ...
+
+        def create_payload(
+            self,
+            name: Optional[str] = None,
+            parent_ids: Optional[Dict[str, str]] = None,
+            team_id: Optional[str] = None,
+            minimal: bool = False,
+            invalid_data: bool = False,
+        ) -> Dict[str, Any]: ...
+
+        def _path_parent_ids_from_entity(
+            self, entity: Dict[str, Any]
+        ) -> Dict[str, str]: ...
+
+        def get_create_endpoint(
+            self, parent_ids: Optional[Dict[str, str]] = None
+        ) -> str: ...
+
+        def get_list_endpoint(
+            self, parent_ids: Optional[Dict[str, str]] = None
+        ) -> str: ...
+
+        def get_detail_endpoint(
+            self, resource_id: str, parent_ids: Optional[Dict[str, str]] = None
+        ) -> str: ...
+
+        def get_update_endpoint(
+            self, resource_id: str, parent_ids: Optional[Dict[str, str]] = None
+        ) -> str: ...
 
     # -- Format parametrization constants ----------------------------------
     #

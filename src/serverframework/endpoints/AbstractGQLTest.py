@@ -1,5 +1,5 @@
 import json
-from typing import Any, Dict, List
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 import pytest
 import stringcase
@@ -8,8 +8,87 @@ from serverframework.lib.Environment import env, inflection
 from serverframework.lib.Logging import logger
 from serverframework.lib.Pydantic2Strawberry import convert_field_name
 
+if TYPE_CHECKING:
+    from faker import Faker
+
+    from serverframework.AbstractTest import ParentEntity
+
 
 class AbstractGraphQLTest:
+    """Mixin providing GraphQL test coverage for endpoint test classes.
+
+    This class is never instantiated on its own — it is always combined
+    with `AbstractEPTest` (which mixes `AbstractTest` + this class), and
+    relies on that concrete class to supply the entity configuration
+    (`entity_name`, `parent_entities`, etc.) and request helpers
+    (`_create`, `_get_appropriate_headers`, etc.) referenced below.
+    """
+
+    if TYPE_CHECKING:
+        # Contract fulfilled by the concrete class this mixin is combined
+        # with (see AbstractEPTest). Declared here only so mypy can check
+        # this file in isolation; these declarations have no runtime
+        # effect (TYPE_CHECKING is False at import time).
+        entity_name: str
+        string_field_to_update: str
+        parent_entities: List["ParentEntity"]
+        system_entity: bool
+        faker: "Faker"
+        tracked_entities: Dict[str, Any]
+
+        @property
+        def resource_name_plural(self) -> str: ...
+
+        def _create(
+            self,
+            server: Any,
+            jwt_token: str,
+            user_id: str = ...,
+            team_id: Optional[str] = None,
+            api_key: Optional[str] = None,
+            key: str = "create",
+            search_term: Optional[str] = None,
+            minimal: bool = False,
+            use_nullable_parents: bool = False,
+            invalid_data: bool = False,
+            parent_ids_override: Optional[Dict[str, str]] = None,
+        ) -> Any: ...
+
+        def _get_appropriate_headers(
+            self,
+            jwt_token: Optional[str] = None,
+            api_key: Optional[str] = None,
+            skip_auto_api_key: bool = False,
+        ) -> Dict[str, str]: ...
+
+        def _create_parent_entities(
+            self,
+            server: Any,
+            jwt_token: str,
+            user_id: str,
+            team_id: Optional[str] = None,
+            provided_parent_ids: Optional[Dict[str, str]] = None,
+        ) -> Tuple[Dict[str, Any], Dict[str, str], Dict[str, str]]: ...
+
+        def create_payload(
+            self,
+            name: Optional[str] = None,
+            parent_ids: Optional[Dict[str, str]] = None,
+            team_id: Optional[str] = None,
+            minimal: bool = False,
+            invalid_data: bool = False,
+        ) -> Dict[str, Any]: ...
+
+        def get_create_endpoint(
+            self, parent_ids: Optional[Dict[str, str]] = None
+        ) -> str: ...
+
+        def _assert_entity_in_response(
+            self,
+            response: Any,
+            entity_field: Optional[str] = None,
+            expected_value: Optional[Any] = None,
+        ) -> Dict[str, Any]: ...
 
     def test_GQL_query_single(self, server: Any, admin_a: Any, team_a: Any):
         """Test GraphQL single entity query."""
@@ -267,9 +346,9 @@ class AbstractGraphQLTest:
 
             # Create entity with specific string field value using REST API
             # Create parent entities if needed
-            parent_entities_dict = {}
-            parent_ids = {}
-            path_parent_ids = {}
+            parent_entities_dict: Dict[str, Any] = {}
+            parent_ids: Dict[str, str] = {}
+            path_parent_ids: Dict[str, str] = {}
 
             if self.parent_entities:
                 parent_entities_dict, parent_ids, path_parent_ids = (
@@ -1075,7 +1154,7 @@ class AbstractGraphQLTest:
 
     def _get_navigation_property_names(self) -> Dict[str, str]:
         """Get navigation property names for parent-child relationships."""
-        nav_props = {}
+        nav_props: Dict[str, str] = {}
 
         if not self.parent_entities:
             return nav_props
@@ -1579,7 +1658,7 @@ class AbstractGraphQLTest:
             )
 
             # Build nested creation input
-            input_data = {}
+            input_data: Dict[str, Any] = {}
             if self.string_field_to_update:
                 camel_case_field = convert_field_name(
                     self.string_field_to_update, use_camelcase=True

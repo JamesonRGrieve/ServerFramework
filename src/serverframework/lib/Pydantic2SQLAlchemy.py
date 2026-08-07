@@ -432,7 +432,7 @@ def _get_existing_columns(
 
 
 def _create_column_from_field(
-    name: str, field_type: Type[Any], field_info: Optional[Any] = None
+    name: str, field_type: Type[Any], field_info: Optional[Any] | None = None
 ) -> Optional[Column]:
     """
     Create a SQLAlchemy Column from a Pydantic field.
@@ -505,7 +505,7 @@ def _create_column_from_field(
 
     if field_info:
         # Extract description/comment from various possible locations
-        comment: Optional[str] = None
+        comment: Optional[str] | None = None
 
         # Try different ways Pydantic might store the description
         if hasattr(field_info, "description") and field_info.description:
@@ -534,7 +534,7 @@ def _create_column_from_field(
             params["comment"] = comment
 
         # Get default value (compatible with both Pydantic v1 and v2)
-        default_value: Optional[Any] = None
+        default_value: Optional[Any] | None = None
 
         # Look for default in various places
         if hasattr(field_info, "default") and field_info.default is not ...:
@@ -916,9 +916,9 @@ def _process_reference_fields(
 def create_sqlalchemy_model(
     pydantic_model: Type[BaseModel],
     model_registry: ModelRegistry,
-    tablename: Optional[str] = None,
-    table_comment: Optional[str] = None,
-    base_model: Optional[Type[Any]] = None,
+    tablename: Optional[str] | None = None,
+    table_comment: Optional[str] | None = None,
+    base_model: Optional[Type[Any]] | None = None,
 ) -> Type[Any]:
     """
     Create a SQLAlchemy model class from a Pydantic model.
@@ -958,7 +958,7 @@ def create_sqlalchemy_model(
     model_name: str = pydantic_model.__name__
 
     # Track models currently being generated to avoid recursive loops
-    in_progress_set: Optional[Set[Type[BaseModel]]] = None
+    in_progress_set: Optional[Set[Type[BaseModel]]] | None = None
     if model_registry is not None:
         # Use ModelRegistry for isolated tracking
         existing_model = model_registry.get_sqlalchemy_model(
@@ -1210,11 +1210,11 @@ def list_scaffolded_models() -> List[str]:
 
 # Search model for string fields
 class StringSearchModel(BaseModel):
-    contains: Optional[str] = None
-    equals: Optional[str] = None
-    starts_with: Optional[str] = None
-    ends_with: Optional[str] = None
-    in_list: Optional[List[str]] = None
+    contains: Optional[str] | None = None
+    equals: Optional[str] | None = None
+    starts_with: Optional[str] | None = None
+    ends_with: Optional[str] | None = None
+    in_list: Optional[List[str]] | None = None
 
 
 # Common Pydantic model mixins that match the SQLAlchemy mixins
@@ -1226,14 +1226,14 @@ class ApplicationModel(BaseModel):
     )
 
     class Optional(BaseModel):
-        id: Optional[str] = None
-        created_at: Optional[datetime] = None
-        created_by_user_id: Optional[str] = None
+        id: Optional[str] | None = None
+        created_at: Optional[datetime] | None = None
+        created_by_user_id: Optional[str] | None = None
 
     class Search(BaseModel):
-        id: Optional[StringSearchModel] = None
-        created_at: Optional[datetime] = None
-        created_by_user_id: Optional[StringSearchModel] = None
+        id: Optional[StringSearchModel] | None = None
+        created_at: Optional[datetime] | None = None
+        created_by_user_id: Optional[StringSearchModel] | None = None
 
 
 class UpdateMixinModel(BaseModel):
@@ -1243,12 +1243,12 @@ class UpdateMixinModel(BaseModel):
     )
 
     class Optional(BaseModel):
-        updated_at: Optional[datetime] = None
-        updated_by_user_id: Optional[str] = None
+        updated_at: Optional[datetime] | None = None
+        updated_by_user_id: Optional[str] | None = None
 
     class Search(BaseModel):
-        updated_at: Optional[datetime] = None
-        updated_by_user_id: Optional[StringSearchModel] = None
+        updated_at: Optional[datetime] | None = None
+        updated_by_user_id: Optional[StringSearchModel] | None = None
 
 
 class ImageMixinModel(BaseModel):
@@ -1260,17 +1260,17 @@ class ImageMixinModel(BaseModel):
         image_url: Optional[str] = Field(None, description="Optional image URL")
 
     class Search(BaseModel):
-        image_url: Optional[StringSearchModel] = None
+        image_url: Optional[StringSearchModel] | None = None
 
 
 class ParentMixinModel(BaseModel):
     parent_id: Optional[str] = Field(None, description="ID of the parent record")
 
     class Optional(BaseModel):
-        parent_id: Optional[str] = None
+        parent_id: Optional[str] | None = None
 
     class Search(BaseModel):
-        parent_id: Optional[StringSearchModel] = None
+        parent_id: Optional[StringSearchModel] | None = None
 
 
 # Fix circular imports and handle parent relationship properly
@@ -1697,8 +1697,8 @@ class RemoveField:
     Usage:
         @extension_model(UserModel)
         class MinimalAuth_UserModel:
-            mfa_count: RemoveField = None
-            timezone: RemoveField = None
+            mfa_count: RemoveField | None = None
+            timezone: RemoveField | None = None
     """
 
     pass

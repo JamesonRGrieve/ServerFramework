@@ -20,7 +20,7 @@ class ParentEntity(BaseModel):
 
     name: str
     foreign_key: str
-    path_level: Optional[int] = None  # 1 for first level nesting, 2 for second level
+    path_level: Optional[int] | None = None  # 1 for first level nesting, 2 for second level
     is_path: bool = False  # Whether this parent is used in URL paths
     test_class: Any
     nullable: bool = False
@@ -127,7 +127,7 @@ class AbstractTest:
     - create_test_entity: Helper for creating test entities
     """
 
-    class_under_test: Type = None
+    class_under_test: Type | None = None
     debug: bool = False
     # Tests to skip - List of SkippedTest objects, should be overridden by subclasses
     _skip_tests: List[SkipThisTest] = []
@@ -138,8 +138,8 @@ class AbstractTest:
 
     # Create a faker instance for generating test data
     faker = Faker()
-    create_fields: Dict[str, Any] = None
-    update_fields: Dict[str, Any] = None
+    create_fields: Dict[str, Any] | None = None
+    update_fields: Dict[str, Any] | None = None
     unique_fields: List[str] = []
     parent_entities: List[ParentEntity] = []  # List of ParentEntity objects
     # A dict of entities to clean up
@@ -298,7 +298,7 @@ class AbstractTest:
         user_id: str = "",
         team_id: str = "",
         count=1,
-        unique_fields: List[str] = None,
+        unique_fields: List[str] | None = None,
     ):
         entities = []
         unique_fields = unique_fields or []
@@ -610,7 +610,7 @@ class AbstractTest:
 
     # Common assertion methods
     def assert_objects_equal(
-        self, actual: Any, expected: Any, fields_to_check: List[str] = None
+        self, actual: Any, expected: Any, fields_to_check: List[str] | None = None
     ):
         """
         Assert that two objects have equal values for specified fields.
@@ -717,7 +717,7 @@ class AbstractTest:
     #     manager,
     #     count: int,
     #     data_generator,
-    #     field_overrides: Optional[Dict[str, Any]] = None,
+    #     field_overrides: Optional[Dict[str, Any]] | None = None,
     # ) -> List[Any]:
     #     entities = []
     #     for i in range(count):
@@ -765,7 +765,7 @@ class AbstractTest:
     def validate_entity_matches(
         entity: Dict[str, Any],
         expected_data: Dict[str, Any],
-        fields_to_check: Optional[List[str]] = None,
+        fields_to_check: Optional[List[str]] | None = None,
     ) -> List[str]:
         """
         Validate that entity fields match expected values.
@@ -795,8 +795,8 @@ class AbstractTest:
     @staticmethod
     def validate_audit_fields(
         entity: Dict[str, Any],
-        created_by: Optional[str] = None,
-        updated_by: Optional[str] = None,
+        created_by: Optional[str] | None = None,
+        updated_by: Optional[str] | None = None,
     ) -> List[str]:
         """
         Validate audit fields in an entity.

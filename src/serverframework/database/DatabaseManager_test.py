@@ -37,7 +37,7 @@ TEST_STATIC_PREFIX_1 = "test.static.1"
 TEST_STATIC_PREFIX_2 = "test.static.2"
 
 
-def cleanup_test_database_files(db_name: str, search_directories: list = None):
+def cleanup_test_database_files(db_name: str, search_directories: list | None = None):
     """Clean up test database files from common locations.
 
     Args:

@@ -221,7 +221,7 @@ class BodySizeLimitMiddleware:
     is ``DEFAULT_MAX_BODY_BYTES``.
     """
 
-    def __init__(self, app: Any, max_bytes: Optional[int] = None) -> None:
+    def __init__(self, app: Any, max_bytes: Optional[int] | None = None) -> None:
         self.app = app
         if max_bytes is None:
             raw = os.environ.get("MAX_REQUEST_BODY_BYTES")
@@ -327,7 +327,7 @@ def resolve_principal_from_api_key(api_key: Optional[str]) -> Optional[str]:
     return None
 
 
-def resolve_client_ip(request_or_headers, peer_host: Optional[str] = None) -> Optional[str]:
+def resolve_client_ip(request_or_headers, peer_host: Optional[str] | None = None) -> Optional[str]:
     """Return the client IP, honouring `X-Forwarded-For` only when the
     immediate peer is a configured trusted proxy (H-7).
 
@@ -392,9 +392,9 @@ class RateLimitExceeded(Exception):
         self,
         message: str = "Rate limit exceeded",
         *,
-        retry_after_seconds: Optional[float] = None,
-        scope: Optional[str] = None,
-        actor_key: Optional[str] = None,
+        retry_after_seconds: Optional[float] | None = None,
+        scope: Optional[str] | None = None,
+        actor_key: Optional[str] | None = None,
     ) -> None:
         super().__init__(message)
         self.message = message
@@ -595,7 +595,7 @@ class _InMemoryCounter:
             bucket.append(now)
             return len(bucket)
 
-    def reset(self, key: Optional[str] = None) -> None:
+    def reset(self, key: Optional[str] | None = None) -> None:
         with self._lock:
             if key is None:
                 self._buckets.clear()
@@ -622,7 +622,7 @@ def _get_counter() -> Any:
     return _rate_limit_counter or _inmemory_counter
 
 
-_rate_limit_counter: Optional[Any] = None
+_rate_limit_counter: Optional[Any] | None = None
 
 
 def set_rate_limit_counter(counter: Any) -> None:
@@ -671,7 +671,7 @@ class LockoutTracker:
     is intentionally minimal so the swap is mechanical.
     """
 
-    def __init__(self, policy: Optional[LockoutPolicy] = None) -> None:
+    def __init__(self, policy: Optional[LockoutPolicy] | None = None) -> None:
         self.policy = policy or LockoutPolicy()
         self._failures: Dict[Tuple[str, str], Deque[float]] = defaultdict(deque)
         self._locked_until: Dict[Tuple[str, str], float] = {}

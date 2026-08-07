@@ -76,9 +76,9 @@ class GraphQLTestConfig:
     test_types: Set[GraphQLTestType] = field(
         default_factory=lambda: set(GraphQLTestType)
     )
-    external_model_class: Type = None
-    external_manager_class: Type = None
-    external_entity_name: str = None
+    external_model_class: Type | None = None
+    external_manager_class: Type | None = None
+    external_entity_name: str | None = None
     external_string_field: str = "name"
     external_graphql_fields: List[str] = field(
         default_factory=lambda: ["id", "createdAt", "updatedAt"]
@@ -284,7 +284,7 @@ class GraphQLTestMixin:
         mutation_name: str,
         input_data: Dict,
         fields: List[str],
-        entity_id: str = None,
+        entity_id: str | None = None,
     ) -> str:
         """Build a GraphQL mutation."""
         input_fields = []
@@ -311,7 +311,7 @@ class GraphQLTestMixin:
         extension_server,
         query: str,
         operation_type: str,
-        expected_status: List[int] = None,
+        expected_status: List[int] | None = None,
     ):
         """Execute a GraphQL test and validate response."""
         expected_status = expected_status or [200]
@@ -346,7 +346,7 @@ class AbstractPRVTest(AbstractTest):
     expectations, and behavior.
     """
 
-    provider_class: Type[T] = None
+    provider_class: Type[T] | None = None
     test_config: ProviderTestConfig = ProviderTestConfig()
 
     def _should_run_test(self, test_type: ProviderTestType) -> bool:
@@ -658,9 +658,9 @@ class AbstractPRVTest(AbstractTest):
     @classmethod
     def create_config(
         cls,
-        test_types: Set[ProviderTestType] = None,
-        expected_abilities: Set[str] = None,
-        expected_services: Set[str] = None,
+        test_types: Set[ProviderTestType] | None = None,
+        expected_abilities: Set[str] | None = None,
+        expected_services: Set[str] | None = None,
         skip_rotation: bool = False,
         skip_performance: bool = False,
         skip_error_handling: bool = False,
@@ -693,7 +693,7 @@ class AbstractPRVTest(AbstractTest):
 
     @classmethod
     def full_config(
-        cls, expected_abilities: Set[str] = None, expected_services: Set[str] = None
+        cls, expected_abilities: Set[str] | None = None, expected_services: Set[str] | None = None
     ) -> ProviderTestConfig:
         """Full test configuration for comprehensive testing."""
         return cls.create_config(
@@ -717,8 +717,8 @@ class AbstractPRVTest(AbstractTest):
     def create_graphql_config(
         cls,
         entity_name: str,
-        model_class: Type = None,
-        test_types: Set[GraphQLTestType] = None,
+        model_class: Type | None = None,
+        test_types: Set[GraphQLTestType] | None = None,
         **kwargs,
     ) -> GraphQLTestConfig:
         """Factory method for creating GraphQL test configurations."""

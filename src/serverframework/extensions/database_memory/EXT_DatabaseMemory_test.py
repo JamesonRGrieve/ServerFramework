@@ -48,7 +48,7 @@ class _UserSignedUp(BaseModel):
 class _FakeInstance:
     """Stand-in for `ProviderInstanceModel` for unit tests; no DB."""
 
-    def __init__(self, api_key: str = None) -> None:
+    def __init__(self, api_key: str | None = None) -> None:
         self.api_key = api_key
 
 

@@ -123,15 +123,15 @@ class AbstractDBTest(AbstractTest):
         user_id: str,
         entity_id: str,
         permission_type: PermissionType = PermissionType.VIEW,
-        team_id: str = None,
-        role_id: str = None,
+        team_id: str | None = None,
+        role_id: str | None = None,
         expires_at: datetime = None,
-        can_view: bool = None,
-        can_execute: bool = None,
-        can_copy: bool = None,
-        can_edit: bool = None,
-        can_delete: bool = None,
-        can_share: bool = None,
+        can_view: bool | None = None,
+        can_execute: bool | None = None,
+        can_copy: bool | None = None,
+        can_edit: bool | None = None,
+        can_delete: bool | None = None,
+        can_share: bool | None = None,
     ) -> Dict[str, Any]:
         """
         Grant a specific permission to a user, team, or role on an entity.
@@ -363,7 +363,7 @@ class AbstractDBTest(AbstractTest):
         entity_id: str,
         permission_type: PermissionType = PermissionType.VIEW,
         expected_result: PermissionResult = PermissionResult.GRANTED,
-        message: str = None,
+        message: str | None = None,
     ):
         """
         Assert that a permission check returns the expected result.
@@ -521,7 +521,7 @@ class AbstractDBTest(AbstractTest):
         self,
         return_type: str = "dict",
         user_id: str = env("ROOT_ID"),
-        team_id: Optional[str] = None,
+        team_id: Optional[str] | None = None,
         key="CRUD_create_dict",
     ):
         key = key.replace("dict", return_type)
@@ -608,7 +608,7 @@ class AbstractDBTest(AbstractTest):
         self._create_assert("CRUD_create_" + return_type)
 
     def _ORM_create(
-        self, user_id: str = env("ROOT_ID"), team_id: str = None, key="ORM_create"
+        self, user_id: str = env("ROOT_ID"), team_id: str | None = None, key="ORM_create"
     ):
         # Try to get server from test context if available
         server = getattr(self, "_server", None)
@@ -652,10 +652,10 @@ class AbstractDBTest(AbstractTest):
         self,
         return_type: str = "dict",
         user_id: str = env("ROOT_ID"),
-        team_id: Optional[str] = None,
+        team_id: Optional[str] | None = None,
         save_key="CRUD_get_dict",
         get_key="CRUD_get",
-        data: Optional[dict] = None,
+        data: Optional[dict] | None = None,
     ):
         save_key = save_key.replace("dict", return_type)
         model_registry = self._get_model_registry()
@@ -692,7 +692,7 @@ class AbstractDBTest(AbstractTest):
     def _ORM_get(
         self,
         user_id: str = env("ROOT_ID"),
-        team_id: str = None,
+        team_id: str | None = None,
         key="ORM_get",
         requested_key="ORM_create",
     ):
@@ -720,7 +720,7 @@ class AbstractDBTest(AbstractTest):
         self._ORM_get(admin_a.id, team_a.id, "ORM_get", "ORM_create_for_get")
         self._get_assert("ORM_get")
 
-    def _list_assert(self, tracked_index: str, search_keys: Optional[List[str]] = None):
+    def _list_assert(self, tracked_index: str, search_keys: Optional[List[str]] | None = None):
         """
         Assert that a list operation returned the expected entities.
 
@@ -767,7 +767,7 @@ class AbstractDBTest(AbstractTest):
         self,
         return_type: str = "dict",
         user_id: str = env("ROOT_ID"),
-        team_id: Optional[str] = None,
+        team_id: Optional[str] | None = None,
     ):
         server = getattr(self, "_server", None)
         model_registry = self._get_model_registry()
@@ -813,7 +813,7 @@ class AbstractDBTest(AbstractTest):
         self._CRUD_list(return_type, admin_a.id, team_a.id)
         self._list_assert("CRUD_list_" + return_type)
 
-    def _ORM_list(self, user_id: str = env("ROOT_ID"), team_id: str = None):
+    def _ORM_list(self, user_id: str = env("ROOT_ID"), team_id: str | None = None):
         self.tracked_entities["ORM_list"] = self.db.query(self.sqlalchemy_model).all()
         self.db.commit()
 
@@ -845,7 +845,7 @@ class AbstractDBTest(AbstractTest):
     def _CRUD_count(
         self,
         user_id: str = env("ROOT_ID"),
-        team_id: Optional[str] = None,
+        team_id: Optional[str] | None = None,
     ):
         server = getattr(self, "_server", None)
         model_registry = self._get_model_registry()
@@ -878,7 +878,7 @@ class AbstractDBTest(AbstractTest):
         self._CRUD_count(admin_a.id, team_a.id)
         self._count_assert("CRUD_count")
 
-    def _ORM_count(self, user_id: str = env("ROOT_ID"), team_id: str = None):
+    def _ORM_count(self, user_id: str = env("ROOT_ID"), team_id: str | None = None):
         """Count entities with proper permission filtering, to only return values user should see."""
         # For now, use basic count without permission filtering since we need server context
         # In the future, this should be updated to use server parameter for permission filtering
@@ -913,7 +913,7 @@ class AbstractDBTest(AbstractTest):
     def _CRUD_exists(
         self,
         user_id: str = env("ROOT_ID"),
-        team_id: Optional[str] = None,
+        team_id: Optional[str] | None = None,
     ):
         server = getattr(self, "_server", None)
         model_registry = self._get_model_registry()
@@ -945,7 +945,7 @@ class AbstractDBTest(AbstractTest):
     def _ORM_exists(
         self,
         user_id: str = env("ROOT_ID"),
-        team_id: str = None,
+        team_id: str | None = None,
         key="ORM_exists",
         requested_key="ORM_exists",
     ):
@@ -1020,8 +1020,8 @@ class AbstractDBTest(AbstractTest):
         self,
         return_type: str = "dict",
         user_id: str = env("ROOT_ID"),
-        team_id: Optional[str] = None,
-        update_data: Optional[dict] = None,
+        team_id: Optional[str] | None = None,
+        update_data: Optional[dict] | None = None,
     ):
         # Use provided update_data or fall back to default update data
         if update_data is None:
@@ -1073,7 +1073,7 @@ class AbstractDBTest(AbstractTest):
         updated_fields = self._CRUD_update(return_type, admin_a.id, team_a.id)
         self._update_assert("CRUD_update_" + return_type, updated_fields)
 
-    def _ORM_update(self, user_id: str = env("ROOT_ID"), team_id: str = None):
+    def _ORM_update(self, user_id: str = env("ROOT_ID"), team_id: str | None = None):
         entity = self.tracked_entities["ORM_update"]
         entity.name = "Updated ORM Name"
         entity.description = "Updated ORM Description"
@@ -1119,7 +1119,7 @@ class AbstractDBTest(AbstractTest):
     def _CRUD_delete(
         self,
         user_id: str = env("ROOT_ID"),
-        team_id: Optional[str] = None,
+        team_id: Optional[str] | None = None,
     ):
         server = getattr(self, "_server", None)
         model_registry = self._get_model_registry()
@@ -1194,7 +1194,7 @@ class AbstractDBTest(AbstractTest):
             "soft-delete"
         )
 
-    def _ORM_delete(self, user_id: str = env("ROOT_ID"), team_id: str = None):
+    def _ORM_delete(self, user_id: str = env("ROOT_ID"), team_id: str | None = None):
         entity = self.tracked_entities["ORM_delete"]
         self.tracked_entities["ORM_delete_original"] = {"id": entity.id}
         self.db.delete(entity)
@@ -1225,7 +1225,7 @@ class AbstractDBTest(AbstractTest):
     # the chosen metric. Time/query/memory exponents are evaluated
     # independently so the failure points to the regressing axis.
 
-    scalability_profile: Optional[ScalabilityProfile] = None
+    scalability_profile: Optional[ScalabilityProfile] | None = None
 
     @pytest.mark.parametrize(
         "metric",

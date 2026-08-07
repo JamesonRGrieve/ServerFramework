@@ -13,7 +13,7 @@ import psutil
 from serverframework.extensions.fileio.PRV_FileIO import AbstractFileIOProvider, FileIOPermission
 
 
-def _safe_open(path: str, mode: str, encoding: Optional[str] = None, errors: Optional[str] = None):
+def _safe_open(path: str, mode: str, encoding: Optional[str] | None = None, errors: Optional[str] | None = None):
     """Open ``path`` refusing to follow a symlink at the leaf component.
 
     Closes a TOCTOU window between ``Path.resolve()`` (which follows
@@ -57,10 +57,10 @@ class LocalFileSystem(AbstractFileIOProvider):
     def __init__(
         self,
         base_directory: str,
-        allowed_permissions: Set[FileIOPermission] = None,
-        allowlist_patterns: List[str] = None,
-        blocklist_patterns: List[str] = None,
-        extension_id: Optional[str] = None,
+        allowed_permissions: Set[FileIOPermission] | None = None,
+        allowlist_patterns: List[str] | None = None,
+        blocklist_patterns: List[str] | None = None,
+        extension_id: Optional[str] | None = None,
         **kwargs,
     ):
         """
@@ -774,7 +774,7 @@ class LocalFileSystem(AbstractFileIOProvider):
             logging.error(f"Error getting file info: {str(e)}")
             return {"error": f"Failed to get file info: {str(e)}"}
 
-    async def execute_file(self, file_path: str, arguments: List[str] = None) -> str:
+    async def execute_file(self, file_path: str, arguments: List[str] | None = None) -> str:
         """
         Execute a file with given arguments.
 

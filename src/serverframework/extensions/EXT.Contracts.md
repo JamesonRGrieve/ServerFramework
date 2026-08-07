@@ -491,7 +491,7 @@ Registers a static method as a webhook handler at /webhook/{ext}/{provider}/{eve
 ### `CustomRouteSpec` (class)
 
 - Module: `serverframework.lib.CustomRoute`
-- Signature: `CustomRouteSpec(method: 'str', path: 'str', input_model: 'Optional[Type[BaseModel]]', output_model: 'Optional[Type[BaseModel]]', authentication_type: 'str' = 'session', openapi_tags: 'Tuple[str, ...]' = (), expose_in: 'FrozenSet[ExposeIn]' = frozenset({<ExposeIn.ALL: 'all'>}), graphql_kind: 'Optional[str]' = None, summary: 'Optional[str]' = None, description: 'Optional[str]' = None) -> None`
+- Signature: `CustomRouteSpec(method: 'str', path: 'str', input_model: 'Optional[Type[BaseModel]]', output_model: 'Optional[Type[BaseModel]]', authentication_type: 'str' = 'session', openapi_tags: 'Tuple[str, ...]' = (), expose_in: 'FrozenSet[ExposeIn]' = frozenset({<ExposeIn.ALL: 'all'>}), graphql_kind: 'Optional[str] | None' = None, summary: 'Optional[str] | None' = None, description: 'Optional[str] | None' = None) -> None`
 - Live docstring: Frozen contract captured by the @custom_route decorator.
 
 Frozen specification produced by @custom_route.
@@ -515,7 +515,7 @@ Mixin that turns a BLL manager into a FastAPI router source.
 ### `custom_route` (decorator)
 
 - Module: `serverframework.lib.CustomRoute`
-- Signature: `custom_route(*, method: 'str', path: 'str', input_model: 'Optional[Type[BaseModel]]' = None, output_model: 'Optional[Type[BaseModel]]' = None, authentication_type: 'str' = 'session', openapi_tags: 'Iterable[str]' = (), expose_in: 'Iterable[ExposeIn]' = (<ExposeIn.ALL: 'all'>,), graphql_kind: 'Optional[str]' = None, summary: 'Optional[str]' = None, description: 'Optional[str]' = None) -> 'Callable'`
+- Signature: `custom_route(*, method: 'str', path: 'str', input_model: 'Optional[Type[BaseModel]] | None' = None, output_model: 'Optional[Type[BaseModel]] | None' = None, authentication_type: 'str' = 'session', openapi_tags: 'Iterable[str]' = (), expose_in: 'Iterable[ExposeIn]' = (<ExposeIn.ALL: 'all'>,), graphql_kind: 'Optional[str] | None' = None, summary: 'Optional[str] | None' = None, description: 'Optional[str] | None' = None) -> 'Callable'`
 - Live docstring: Decorator: tag a method with its route/SDK/GraphQL contract.
 
 Declares a non-CRUD REST/GraphQL/SDK route on a RouterMixin manager.
@@ -545,7 +545,7 @@ Canonical Pydantic+SQLAlchemy base for persisted entities.
 ### `HookContext` (class)
 
 - Module: `serverframework.logic.AbstractLogicManager`
-- Signature: `HookContext(manager: 'AbstractBLLManager', method_name: str, args: tuple, kwargs: dict, result: Any = None, timing: serverframework.logic.AbstractLogicManager.HookTiming = <HookTiming.BEFORE: 'before'>)`
+- Signature: `HookContext(manager: 'AbstractBLLManager', method_name: str, args: tuple, kwargs: dict, result: typing.Any | None = None, timing: serverframework.logic.AbstractLogicManager.HookTiming = <HookTiming.BEFORE: 'before'>)`
 - Live docstring: Type-safe context object passed to hooks (Item 41).
 
 Generic over (P, R) — the target's ParamSpec and return type.
@@ -616,7 +616,7 @@ Persisted credential-and-configuration record for a bonded provider.
 ### `RotationManager` (class)
 
 - Module: `serverframework.logic.BLL_Providers`
-- Signature: `RotationManager(model_registry: 'Optional[Any]' = None, requester_id: 'Optional[str]' = None, target_id: 'Optional[str]' = None, target_team_id: 'Optional[str]' = None, parent: 'Optional[Any]' = None) -> 'None'`
+- Signature: `RotationManager(model_registry: 'Optional[Any] | None' = None, requester_id: 'Optional[str] | None' = None, target_id: 'Optional[str] | None' = None, target_team_id: 'Optional[str] | None' = None, parent: 'Optional[Any] | None' = None) -> 'None'`
 - Live docstring: Helper class that provides a standard way to create an ABC using
 
 Failover-only rotation across a linear chain of provider instances.

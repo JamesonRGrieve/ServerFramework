@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from typing import Any, Dict, List, Set
 
 from serverframework.extensions.AbstractExtensionProvider import AbstractStaticExtension, ability
@@ -53,7 +55,7 @@ class EXT_Meta_Logging(AbstractStaticExtension):
         ),
     ]
 
-    sys_dependencies = []
+    sys_dependencies: list[EXT_Dependency] = []
 
     # Define what abilities this extension provides
     abilities: Set[str] = {
@@ -218,17 +220,17 @@ class EXT_Meta_Logging(AbstractStaticExtension):
     @ability("log_audit_event")
     async def log_audit_event(
         self,
-        user_id: str = None,
+        user_id: str | None = None,
         action: str = "",
         resource_type: str = "",
-        resource_id: str = None,
-        ip_address: str = None,
-        user_agent: str = None,
+        resource_id: str | None = None,
+        ip_address: str | None = None,
+        user_agent: str | None = None,
         success: bool = True,
-        error_message: str = None,
-        additional_data: Dict[str, Any] = None,
+        error_message: str | None = None,
+        additional_data: Dict[str, Any] | None = None,
         privacy_impact: bool = False,
-        data_categories: List[str] = None,
+        data_categories: List[str] | None = None,
     ) -> Dict[str, Any]:
         """
         Log an audit event to InfluxDB.
@@ -271,11 +273,11 @@ class EXT_Meta_Logging(AbstractStaticExtension):
         self,
         username: str = "",
         ip_address: str = "",
-        user_agent: str = None,
+        user_agent: str | None = None,
         failure_reason: str = "",
         attempt_count: int = 1,
         is_blocked: bool = False,
-        country: str = None,
+        country: str | None = None,
         risk_score: float = 0.0,
     ) -> Dict[str, Any]:
         """
@@ -320,9 +322,9 @@ class EXT_Meta_Logging(AbstractStaticExtension):
         level: str = "INFO",
         component: str = "",
         message: str = "",
-        user_id: str = None,
-        request_id: str = None,
-        additional_data: Dict[str, Any] = None,
+        user_id: str | None = None,
+        request_id: str | None = None,
+        additional_data: Dict[str, Any] | None = None,
     ) -> Dict[str, Any]:
         """
         Log a system event to InfluxDB.
@@ -361,14 +363,14 @@ class EXT_Meta_Logging(AbstractStaticExtension):
     @ability("query_audit_logs")
     async def query_audit_logs(
         self,
-        start_time: str = None,
-        end_time: str = None,
-        user_id: str = None,
-        action: str = None,
-        resource_type: str = None,
-        resource_id: str = None,
-        success: bool = None,
-        privacy_impact: bool = None,
+        start_time: str | None = None,
+        end_time: str | None = None,
+        user_id: str | None = None,
+        action: str | None = None,
+        resource_type: str | None = None,
+        resource_id: str | None = None,
+        success: bool | None = None,
+        privacy_impact: bool | None = None,
     ) -> List[Dict[str, Any]]:
         """
         Query audit logs from InfluxDB.
@@ -416,13 +418,13 @@ class EXT_Meta_Logging(AbstractStaticExtension):
     @ability("query_failed_logins")
     async def query_failed_logins(
         self,
-        start_time: str = None,
-        end_time: str = None,
-        username: str = None,
-        ip_address: str = None,
-        failure_reason: str = None,
-        is_blocked: bool = None,
-        min_risk_score: float = None,
+        start_time: str | None = None,
+        end_time: str | None = None,
+        username: str | None = None,
+        ip_address: str | None = None,
+        failure_reason: str | None = None,
+        is_blocked: bool | None = None,
+        min_risk_score: float | None = None,
     ) -> List[Dict[str, Any]]:
         """
         Query failed login attempts from InfluxDB.
@@ -640,12 +642,12 @@ class EXT_Meta_Logging(AbstractStaticExtension):
             "INFLUXDB_BUCKET": "",
         }
 
-    @classproperty
+    @classproperty  # type: ignore[no-redef]
     def pip_dependencies(cls):
         """Get PIP dependencies for backward compatibility."""
         return cls.dependencies.pip
 
-    @classproperty
+    @classproperty  # type: ignore[no-redef]
     def ext_dependencies(cls):
         """Get extension dependencies for backward compatibility."""
         return cls.dependencies.ext

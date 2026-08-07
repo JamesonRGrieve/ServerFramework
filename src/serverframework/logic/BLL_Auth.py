@@ -530,14 +530,14 @@ class UserModel(
             return self
 
     class Search(ApplicationModel.Search, ImageMixinModel.Search):
-        email: Optional[StringSearchModel] = None
-        username: Optional[StringSearchModel] = None
-        display_name: Optional[StringSearchModel] = None
-        first_name: Optional[StringSearchModel] = None
-        last_name: Optional[StringSearchModel] = None
-        active: Optional[bool] = None
-        timezone: Optional[str] = None
-        language: Optional[str] = None
+        email: Optional[StringSearchModel] | None = None
+        username: Optional[StringSearchModel] | None = None
+        display_name: Optional[StringSearchModel] | None = None
+        first_name: Optional[StringSearchModel] | None = None
+        last_name: Optional[StringSearchModel] | None = None
+        active: Optional[bool] | None = None
+        timezone: Optional[str] | None = None
+        language: Optional[str] | None = None
 
 
 class UserManager(AbstractBLLManager, RouterMixin):
@@ -718,8 +718,8 @@ class UserManager(AbstractBLLManager, RouterMixin):
     def __init__(
         self,
         requester_id: str,
-        target_id: Optional[str] = None,
-        target_team_id: Optional[str] = None,
+        target_id: Optional[str] | None = None,
+        target_team_id: Optional[str] | None = None,
         model_registry=None,
     ):
         super().__init__(
@@ -903,7 +903,7 @@ class UserManager(AbstractBLLManager, RouterMixin):
         email: str,
         timezone_str: str = "UTC",
         expiration_hours: int = 24,
-        session_key: Optional[str] = None,
+        session_key: Optional[str] | None = None,
         model_registry=None,
     ) -> str:
         """Generate a JWT token for authentication.
@@ -1034,7 +1034,7 @@ class UserManager(AbstractBLLManager, RouterMixin):
     def auth(
         model_registry,
         authorization: str = Header(None),
-        request: Dict = None,
+        request: Dict | None = None,
     ) -> UserModel:
         """Authenticate a user from Authorization header"""
         if isinstance(request, dict):
@@ -1060,7 +1060,7 @@ class UserManager(AbstractBLLManager, RouterMixin):
             # so spoofing one transport doesn't bypass another.
             from serverframework.lib.InboundSecurity import resolve_client_ip
 
-            peer_host: Optional[str] = None
+            peer_host: Optional[str] | None = None
             client_obj = getattr(request, "client", None)
             if client_obj is not None:
                 if hasattr(client_obj, "host"):
@@ -1313,10 +1313,10 @@ class UserManager(AbstractBLLManager, RouterMixin):
     @staticmethod
     @rate_limit(DEFAULT_AUTH_RATE_LIMIT, scope="ip")
     def login(
-        login_data: Dict[str, Any] = None,
-        ip_address: str = None,
-        req_uri: Optional[str] = None,
-        authorization: Optional[str] = None,
+        login_data: Dict[str, Any] | None = None,
+        ip_address: str | None = None,
+        req_uri: Optional[str] | None = None,
+        authorization: Optional[str] | None = None,
         model_registry=None,
     ) -> Dict[str, Any]:
         """Process user login from various input methods.
@@ -1609,8 +1609,8 @@ class UserManager(AbstractBLLManager, RouterMixin):
     def _issue_session(
         user: Any,
         model_registry,
-        grant_type: Optional[str] = None,
-        pending_state: Optional[str] = None,
+        grant_type: Optional[str] | None = None,
+        pending_state: Optional[str] | None = None,
     ) -> Any:
         """Persist a fresh session row (when ``auth_session`` is loaded)
         and return a ``SessionModel`` describing it.
@@ -1686,7 +1686,7 @@ class UserManager(AbstractBLLManager, RouterMixin):
 
     def get(
         self,
-        include: Optional[List[str]] = None,
+        include: Optional[List[str]] | None = None,
         fields: Optional[List[str]] = [],
         **kwargs,
     ) -> Any:
@@ -1725,7 +1725,7 @@ class UserManager(AbstractBLLManager, RouterMixin):
 
         return result
 
-    def get_current_user(self, fields: Optional[List[str]] = None):
+    def get_current_user(self, fields: Optional[List[str]] | None = None):
         """Get the current user's profile."""
         user = self.get(id=self.requester.id, fields=fields)
         if hasattr(user, "model_dump"):
@@ -1740,7 +1740,7 @@ class UserManager(AbstractBLLManager, RouterMixin):
             return updated_user.model_dump()
         return updated_user
 
-    def delete(self, id: str = None):
+    def delete(self, id: str | None = None):
         """Override delete to handle special self-deletion logic."""
         target_id = id or self.requester.id
 
@@ -1777,8 +1777,8 @@ class UserManager(AbstractBLLManager, RouterMixin):
     def register(
         registration_data: dict,
         model_registry,
-        request: Request = None,
-        authorization: Optional[str] = None,
+        request: Request | None = None,
+        authorization: Optional[str] | None = None,
     ) -> dict:
         """
         Register a new user with the provided data.
@@ -2219,10 +2219,10 @@ class UserCredentialModel(
     class Update(BaseModel):
         # This model and entity should not be manually updatable, only via the User password change function.
         # However, we need to allow updating the password_changed_at field for tests
-        password_changed_at: Optional[datetime] = None
+        password_changed_at: Optional[datetime] | None = None
 
     class Search(ApplicationModel.Search, UserModel.Reference.ID.Search):
-        password_changed_at: Optional[DateSearchModel] = None
+        password_changed_at: Optional[DateSearchModel] | None = None
 
 
 class UserCredentialManager(AbstractBLLManager, RouterMixin):
@@ -2782,7 +2782,7 @@ class TeamModel(
         ParentMixinModel.Search,
         ImageMixinModel.Search,
     ):
-        description: Optional[StringSearchModel] = None
+        description: Optional[StringSearchModel] | None = None
 
 
 class TeamManager(AbstractBLLManager, RouterMixin):
@@ -2882,9 +2882,9 @@ class TeamManager(AbstractBLLManager, RouterMixin):
     def __init__(
         self,
         requester_id: str,
-        target_id: Optional[str] = None,
-        target_team_id: Optional[str] = None,
-        model_registry: Optional[Any] = None,
+        target_id: Optional[str] | None = None,
+        target_team_id: Optional[str] | None = None,
+        model_registry: Optional[Any] | None = None,
     ):
         super().__init__(
             requester_id=requester_id,
@@ -3080,7 +3080,7 @@ class TeamManager(AbstractBLLManager, RouterMixin):
 
     def get(
         self,
-        include: Optional[List[str]] = None,
+        include: Optional[List[str]] | None = None,
         fields: Optional[List[str]] = [],
         **kwargs,
     ) -> Any:
@@ -3262,8 +3262,8 @@ class RoleModel(
         ParentMixinModel.Search,
         TeamModel.Reference.ID.Search,
     ):
-        friendly_name: Optional[StringSearchModel] = None
-        mfa_count: Optional[NumericalSearchModel] = None
+        friendly_name: Optional[StringSearchModel] | None = None
+        mfa_count: Optional[NumericalSearchModel] | None = None
 
     create_permission_reference: ClassVar[str] = "resource"
 
@@ -3347,7 +3347,7 @@ class RoleManager(AbstractBLLManager, RouterMixin):
     # routes_to_register defaults to None, which includes all routes
     auth_dependency: ClassVar[Optional[str]] = "get_role_manager"
 
-    def delete(self, id: str = None, **kwargs: Any):
+    def delete(self, id: str | None = None, **kwargs: Any):
         """Delete a role and reparent its UserTeam assignments.
 
         Without this override, deleting a role would orphan every
@@ -3416,7 +3416,7 @@ class RoleManager(AbstractBLLManager, RouterMixin):
 
     def get(
         self,
-        include: Optional[List[str]] = None,
+        include: Optional[List[str]] | None = None,
         fields: Optional[List[str]] = [],
         **kwargs,
     ) -> Any:
@@ -3585,7 +3585,7 @@ class UserTeamModel(
         TeamModel.Reference.ID.Search,
         RoleModel.Reference.ID.Search,
     ):
-        enabled: Optional[bool] = None
+        enabled: Optional[bool] | None = None
 
     @classmethod
     def user_has_read_access(
@@ -3752,7 +3752,7 @@ class UserTeamManager(AbstractBLLManager, RouterMixin):
 
     def get(
         self,
-        include: Optional[List[str]] = None,
+        include: Optional[List[str]] | None = None,
         fields: Optional[List[str]] = [],
         **kwargs,
     ) -> Any:
@@ -3794,15 +3794,15 @@ class UserTeamManager(AbstractBLLManager, RouterMixin):
 
     def search(
         self,
-        include: Optional[List[str]] = None,
-        fields: Optional[List[str]] = None,
-        sort_by: Optional[str] = None,
+        include: Optional[List[str]] | None = None,
+        fields: Optional[List[str]] | None = None,
+        sort_by: Optional[str] | None = None,
         sort_order: Optional[str] = "asc",
-        filters: Optional[List[Any]] = None,
-        limit: Optional[int] = None,
-        offset: Optional[int] = None,
-        page: Optional[int] = None,
-        pageSize: Optional[int] = None,
+        filters: Optional[List[Any]] | None = None,
+        limit: Optional[int] | None = None,
+        offset: Optional[int] | None = None,
+        page: Optional[int] | None = None,
+        pageSize: Optional[int] | None = None,
         **search_params,
     ) -> List[Any]:
         records = super().search(
@@ -3873,7 +3873,7 @@ class UserTeamManager(AbstractBLLManager, RouterMixin):
 
         return records
 
-    def update(self, id: str, team_id: str = None, db=None, db_manager=None, **kwargs):
+    def update(self, id: str, team_id: str | None = None, db=None, db_manager=None, **kwargs):
         """Update user team record with improved error handling"""
         db = db or self.db
 
@@ -4057,10 +4057,10 @@ class RateLimitPolicyModel(
         )
 
     class Search(ApplicationModel.Search, NameMixinModel.Search):
-        resource_pattern: Optional[StringSearchModel] = None
-        window_seconds: Optional[NumericalSearchModel] = None
-        max_requests: Optional[NumericalSearchModel] = None
-        scope: Optional[StringSearchModel] = None
+        resource_pattern: Optional[StringSearchModel] | None = None
+        window_seconds: Optional[NumericalSearchModel] | None = None
+        max_requests: Optional[NumericalSearchModel] | None = None
+        scope: Optional[StringSearchModel] | None = None
 
 
 class RateLimitPolicyManager(AbstractBLLManager, RouterMixin):

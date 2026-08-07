@@ -46,7 +46,7 @@ class NameProcessor:
 
     @staticmethod
     @lru_cache(maxsize=1024)
-    def sanitize_name(name: str, reserved_names: Optional[frozenset] = None) -> str:
+    def sanitize_name(name: str, reserved_names: Optional[frozenset] | None = None) -> str:
         if not name:
             return "UnnamedType"
 
@@ -67,7 +67,7 @@ class NameProcessor:
     @staticmethod
     @lru_cache(maxsize=1024)
     def extract_base_name(
-        class_name: str, remove_suffixes: Optional[tuple] = None
+        class_name: str, remove_suffixes: Optional[tuple] | None = None
     ) -> str:
         if not remove_suffixes:
             remove_suffixes = ("Manager", "Model")
@@ -87,7 +87,7 @@ class NameProcessor:
     def generate_unique_name(
         base_name: str,
         existing_names: Set[str],
-        context: Optional[str] = None,
+        context: Optional[str] | None = None,
         use_hash: bool = True,
     ) -> str:
         if base_name not in existing_names:
@@ -159,7 +159,7 @@ class TypeIntrospector:
 
     SCALAR_TYPES = frozenset({str, int, float, bool, dict, list})
 
-    def __init__(self, cache_manager: Optional[CacheManager] = None):
+    def __init__(self, cache_manager: Optional[CacheManager] | None = None):
         self.cache_manager = cache_manager or CacheManager()
         self._cache = self.cache_manager.get_cache("type_introspection")
 
@@ -248,7 +248,7 @@ class FieldProcessor:
         }
     )
 
-    def __init__(self, cache_manager: Optional[CacheManager] = None):
+    def __init__(self, cache_manager: Optional[CacheManager] | None = None):
         self.cache_manager = cache_manager or CacheManager()
         self.type_introspector = TypeIntrospector(cache_manager)
         self._cache = self.cache_manager.get_cache("model_fields")
@@ -287,7 +287,7 @@ class FieldProcessor:
         return fields
 
     def extract_field_info(
-        self, field_name: str, field_type: Any, field_info: Any = None
+        self, field_name: str, field_type: Any, field_info: Any | None = None
     ) -> Dict[str, Any]:
         info = {
             "name": field_name,
@@ -340,7 +340,7 @@ class FieldProcessor:
         return info
 
     def should_skip_field(
-        self, field_name: str, field_type: Any = None, context: str = None
+        self, field_name: str, field_type: Any | None = None, context: str | None = None
     ) -> bool:
         return (
             field_name.startswith("_")
@@ -436,13 +436,13 @@ class FieldProcessor:
 class ReferenceResolver:
     """Handles forward reference resolution and model lookups."""
 
-    def __init__(self, cache_manager: Optional[CacheManager] = None):
+    def __init__(self, cache_manager: Optional[CacheManager] | None = None):
         self.cache_manager = cache_manager or CacheManager()
         self._model_registry: Dict[str, Type[BaseModel]] = {}
         self._cache = self.cache_manager.get_cache("string_refs")
 
     def register_model(
-        self, model: Type[BaseModel], name: Optional[str] = None
+        self, model: Type[BaseModel], name: Optional[str] | None = None
     ) -> None:
         if name:
             model_name = name.lower()
@@ -620,7 +620,7 @@ class ErrorHandlerMixin:
         self,
         operation: Callable,
         item_name: str,
-        fallback: Any = None,
+        fallback: Any | None = None,
         strict: bool = False,
         log_success: bool = False,
     ) -> Any:
@@ -786,7 +786,7 @@ class RelationshipAnalyzer:
         return []
 
     def extract_relationship_info(
-        self, field_name: str, field_type: Any, model: Type[BaseModel] = None
+        self, field_name: str, field_type: Any, model: Type[BaseModel] | None = None
     ) -> Dict[str, Any]:
         """Extract comprehensive relationship information from a field."""
         info = {
@@ -850,15 +850,15 @@ class RelationshipAnalyzer:
 class TemplateGenerator:
     """Generates code templates for different target systems."""
 
-    def __init__(self, name_processor: NameProcessor = None):
+    def __init__(self, name_processor: NameProcessor | None = None):
         self.name_processor = name_processor or default_name_processor
 
     def generate_class_template(
         self,
         model: Type[BaseModel],
         template_type: str,
-        base_classes: List[str] = None,
-        additional_imports: List[str] = None,
+        base_classes: List[str] | None = None,
+        additional_imports: List[str] | None = None,
     ) -> str:
         """
         Generate a class template for a model.
@@ -939,9 +939,9 @@ class TemplateGenerator:
             return '''    def __init__(
         self,
         requester_id: str,
-        target_id: Optional[str] = None,
-        target_team_id: Optional[str] = None,
-        model_registry: Optional[Any] = None,
+        target_id: Optional[str] | None = None,
+        target_team_id: Optional[str] | None = None,
+        model_registry: Optional[Any] | None = None,
     ):
         """Initialize the manager."""
         super().__init__(

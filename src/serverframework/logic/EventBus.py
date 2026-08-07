@@ -225,8 +225,8 @@ class _BrokerEventBus(AbstractEventBus):
 
     def __init__(
         self,
-        transport: Optional[BrokerTransport] = None,
-        dlq_topic: Optional[str] = None,
+        transport: Optional[BrokerTransport] | None = None,
+        dlq_topic: Optional[str] | None = None,
     ) -> None:
         self._transport = transport or InMemoryBrokerTransport()
         self._dlq_topic = dlq_topic

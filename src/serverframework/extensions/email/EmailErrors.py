@@ -186,7 +186,7 @@ def map_upstream_status(
     message: str = "",
     *,
     provider: str = "",
-    retry_after_seconds: float = None,
+    retry_after_seconds: float | None = None,
 ) -> BaseExternalError:
     """Map an upstream HTTP-style status code to the typed external-error
     hierarchy.

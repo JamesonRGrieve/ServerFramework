@@ -112,7 +112,7 @@ class TenantScopedMixin(_TenantScopedBase):
         return new_cls
 
 
-def rls_policy_sql(table: str, keys: Tuple[str, ...], policy_name: str = None) -> str:
+def rls_policy_sql(table: str, keys: Tuple[str, ...], policy_name: str | None = None) -> str:
     """Generate the CREATE POLICY DDL for an RLS-enforced tenant
     isolation policy.
 
@@ -141,7 +141,7 @@ def rls_policy_sql(table: str, keys: Tuple[str, ...], policy_name: str = None) -
     )
 
 
-def rls_policy_drop_sql(table: str, policy_name: str = None) -> str:
+def rls_policy_drop_sql(table: str, policy_name: str | None = None) -> str:
     pname = policy_name or f"{table}_tenant_isolation"
     return (
         f"DROP POLICY IF EXISTS {pname} ON {table};\n"

@@ -58,7 +58,7 @@ def is_template_id(user_id: str) -> bool:
 
 
 def can_access_system_record(
-    user_id: str, record_user_id: str, minimum_role: Optional[str] = None
+    user_id: str, record_user_id: str, minimum_role: Optional[str] | None = None
 ) -> bool:
     """
     Determine if a user can access a system-owned record based on the system ID type.
@@ -1223,8 +1223,8 @@ def generate_permission_filter(
     db: Session,
     declarative_base,
     required_permission_level: "PermissionType" = None,
-    _visited_classes: Optional[set] = None,
-    minimum_role: Optional[str] = None,
+    _visited_classes: Optional[set] | None = None,
+    minimum_role: Optional[str] | None = None,
     db_manager=None,
 ):
     """

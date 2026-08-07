@@ -159,7 +159,7 @@ class EXT_Auth_OAuth(AbstractStaticExtension):
 
     def __init__(
         self,
-        default_providers: List[str] = None,
+        default_providers: List[str] | None = None,
         oauth_callback_url: str = "",
         enable_state_validation: bool = True,
         session_timeout_minutes: int = 30,
@@ -167,7 +167,7 @@ class EXT_Auth_OAuth(AbstractStaticExtension):
         max_concurrent_flows: int = 100,
         cleanup_interval_minutes: int = 5,
         enable_jwt_tokens: bool = False,
-        jwt_secret_key: Optional[str] = None,
+        jwt_secret_key: Optional[str] | None = None,
         default_token_expiry_minutes: int = 60,
         authorization_code_expiry_minutes: int = 10,
         **kwargs,
@@ -328,9 +328,9 @@ class EXT_Auth_OAuth(AbstractStaticExtension):
         client_name: str,
         redirect_uris: List[str],
         scopes: List[str],
-        user_id: Optional[str] = None,
-        team_id: Optional[str] = None,
-        grant_types: Optional[List[str]] = None,
+        user_id: Optional[str] | None = None,
+        team_id: Optional[str] | None = None,
+        grant_types: Optional[List[str]] | None = None,
     ) -> Dict[str, Any]:
         """
         Register a new OAuth 2.0 client.
@@ -395,9 +395,9 @@ class EXT_Auth_OAuth(AbstractStaticExtension):
         client_id: str,
         redirect_uri: str,
         scopes: List[str],
-        state: Optional[str] = None,
-        code_challenge: Optional[str] = None,
-        code_challenge_method: Optional[str] = None,
+        state: Optional[str] | None = None,
+        code_challenge: Optional[str] | None = None,
+        code_challenge_method: Optional[str] | None = None,
     ) -> Dict[str, Any]:
         """
         Create an OAuth 2.0 authorization URL.
@@ -496,7 +496,7 @@ class EXT_Auth_OAuth(AbstractStaticExtension):
         client_secret: str,
         authorization_code: str,
         redirect_uri: str,
-        code_verifier: Optional[str] = None,
+        code_verifier: Optional[str] | None = None,
     ) -> Dict[str, Any]:
         """
         Exchange authorization code for access token.
@@ -578,7 +578,7 @@ class EXT_Auth_OAuth(AbstractStaticExtension):
     async def validate_access_token(
         self,
         access_token: str,
-        required_scopes: Optional[List[str]] = None,
+        required_scopes: Optional[List[str]] | None = None,
     ) -> Dict[str, Any]:
         """
         Validate an OAuth access token.
@@ -696,7 +696,7 @@ class EXT_Auth_OAuth(AbstractStaticExtension):
         self,
         token: str,
         token_type_hint: str = "access_token",
-        client_id: Optional[str] = None,
+        client_id: Optional[str] | None = None,
     ) -> Dict[str, Any]:
         """
         Revoke an OAuth token.
@@ -735,8 +735,8 @@ class EXT_Auth_OAuth(AbstractStaticExtension):
         self,
         provider: str,
         redirect_uri: str,
-        scopes: Optional[List[str]] = None,
-        state: Optional[str] = None,
+        scopes: Optional[List[str]] | None = None,
+        state: Optional[str] | None = None,
     ) -> Dict[str, Any]:
         """
         Initiate OAuth login with third-party provider.

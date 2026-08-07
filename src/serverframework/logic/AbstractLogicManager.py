@@ -102,7 +102,7 @@ class HookContext(_typing.Generic[_P, _R]):
         method_name: str,
         args: tuple,
         kwargs: dict,
-        result: Any = None,
+        result: Any | None = None,
         timing: HookTiming = HookTiming.BEFORE,
     ):
         """
@@ -141,7 +141,7 @@ class HookContext(_typing.Generic[_P, _R]):
 
     # -- typed accessors (Item 41) -----------------------------------------
 
-    def kwarg(self, name: str, default: Any = None) -> Any:
+    def kwarg(self, name: str, default: Any | None = None) -> Any:
         """Typed-accessor sugar: return ``kwargs[name]`` or ``default``.
 
         Authors using ``HookContext[..., R]`` get a typed return shape via
@@ -149,7 +149,7 @@ class HookContext(_typing.Generic[_P, _R]):
         """
         return self.kwargs.get(name, default)
 
-    def arg(self, index: int, default: Any = None) -> Any:
+    def arg(self, index: int, default: Any | None = None) -> Any:
         """Typed-accessor sugar: return ``args[index]`` or ``default``."""
         try:
             return self.args[index]
@@ -166,7 +166,7 @@ class HookRegistry:
     adding their own.
     """
 
-    def __init__(self, parent_registry: Optional["HookRegistry"] = None):
+    def __init__(self, parent_registry: Optional["HookRegistry"] | None = None):
         """
         Initialize hook registry.
 
@@ -218,10 +218,10 @@ class HookRegistry:
         timing: str,
         hook_func: Callable,
         priority: int = 50,
-        condition: Optional[Callable] = None,
-        before: Optional[List[str]] = None,
-        after: Optional[List[str]] = None,
-        blocking: Optional[bool] = None,
+        condition: Optional[Callable] | None = None,
+        before: Optional[List[str]] | None = None,
+        after: Optional[List[str]] | None = None,
+        blocking: Optional[bool] | None = None,
     ) -> None:
         """
         Register a hook for a specific method.
@@ -397,10 +397,10 @@ def hook_bll(
     target: Union[Type["AbstractBLLManager"], Callable],
     timing: Union[HookTiming, str] = HookTiming.BEFORE,
     priority: int = 50,
-    condition: Optional[Callable[[HookContext], bool]] = None,
-    before: Optional[List[str]] = None,
-    after: Optional[List[str]] = None,
-    blocking: Optional[bool] = None,
+    condition: Optional[Callable[[HookContext], bool]] | None = None,
+    before: Optional[List[str]] | None = None,
+    after: Optional[List[str]] | None = None,
+    blocking: Optional[bool] | None = None,
 ) -> Callable:
     """
     Enhanced hook decorator for BLL methods.
@@ -626,9 +626,9 @@ def non_critical_hook(
     target: Union[Type["AbstractBLLManager"], Callable],
     timing: Union[HookTiming, str] = HookTiming.AFTER,
     priority: int = 50,
-    condition: Optional[Callable[[HookContext], bool]] = None,
-    before: Optional[List[str]] = None,
-    after: Optional[List[str]] = None,
+    condition: Optional[Callable[[HookContext], bool]] | None = None,
+    before: Optional[List[str]] | None = None,
+    after: Optional[List[str]] | None = None,
 ) -> Callable:
     """Item 22 ergonomic alias for ``hook_bll(..., blocking=False)``.
 
@@ -653,9 +653,9 @@ def _register_hook_on_class(
     hook_func: Callable,
     priority: int,
     condition: Optional[Callable],
-    before: Optional[List[str]] = None,
-    after: Optional[List[str]] = None,
-    blocking: Optional[bool] = None,
+    before: Optional[List[str]] | None = None,
+    after: Optional[List[str]] | None = None,
+    blocking: Optional[bool] | None = None,
 ) -> None:
     """
     Register hook on the target class registry.
@@ -904,30 +904,30 @@ def wrap_method_with_hooks(
 
 
 class NumericalSearchModel(BaseModel):
-    lt: Optional[Any] = None
-    gt: Optional[Any] = None
-    lteq: Optional[Any] = None
-    gteq: Optional[Any] = None
-    neq: Optional[Any] = None
-    eq: Optional[Any] = None
+    lt: Optional[Any] | None = None
+    gt: Optional[Any] | None = None
+    lteq: Optional[Any] | None = None
+    gteq: Optional[Any] | None = None
+    neq: Optional[Any] | None = None
+    eq: Optional[Any] | None = None
 
 
 class StringSearchModel(BaseModel):
-    inc: Optional[str] = None
-    sw: Optional[str] = None
-    ew: Optional[str] = None
-    eq: Optional[str] = None
+    inc: Optional[str] | None = None
+    sw: Optional[str] | None = None
+    ew: Optional[str] | None = None
+    eq: Optional[str] | None = None
 
 
 class DateSearchModel(BaseModel):
-    before: Optional[datetime] = None
-    after: Optional[datetime] = None
-    on: Optional[date] = None
-    eq: Optional[datetime] = None
+    before: Optional[datetime] | None = None
+    after: Optional[datetime] | None = None
+    on: Optional[date] | None = None
+    eq: Optional[datetime] | None = None
 
 
 class BooleanSearchModel(BaseModel):
-    eq: Optional[bool] = None
+    eq: Optional[bool] | None = None
 
 
 from pydantic._internal._model_construction import ModelMetaclass
@@ -1265,14 +1265,14 @@ class ApplicationModel(BaseModel, DatabaseMixin, metaclass=ModelMeta):
     )
 
     class Optional(BaseModel, DatabaseMixin, metaclass=ModelMeta):
-        id: Optional[str] = None
-        created_at: Optional[datetime] = None
-        created_by_user_id: Optional[str] = None
+        id: Optional[str] | None = None
+        created_at: Optional[datetime] | None = None
+        created_by_user_id: Optional[str] | None = None
 
     class Search(BaseModel):
-        id: Optional[StringSearchModel] = None
-        created_at: Optional[DateSearchModel] = None
-        created_by_user_id: Optional[StringSearchModel] = None
+        id: Optional[StringSearchModel] | None = None
+        created_at: Optional[DateSearchModel] | None = None
+        created_by_user_id: Optional[StringSearchModel] | None = None
 
     # ReferenceID classes to enable automatic Reference and Network generation
     class ReferenceID(BaseModel):
@@ -1281,7 +1281,7 @@ class ApplicationModel(BaseModel, DatabaseMixin, metaclass=ModelMeta):
         id: str = Field(..., description="The unique identifier")
 
         class Optional(BaseModel):
-            id: Optional[str] = None
+            id: Optional[str] | None = None
 
 
 class UpdateMixinModel:
@@ -1298,8 +1298,8 @@ class UpdateMixinModel:
         updated_by_user_id: Annotated[Optional[str], Field(default=None)]
 
     class Search:
-        updated_at: Optional[DateSearchModel] = None
-        updated_by_user_id: Optional[StringSearchModel] = None
+        updated_at: Optional[DateSearchModel] | None = None
+        updated_by_user_id: Optional[StringSearchModel] | None = None
 
 
 class ParentMixinModel:
@@ -1316,7 +1316,7 @@ class ParentMixinModel:
         ]
 
     class Search:
-        parent_id: Optional[StringSearchModel] = None
+        parent_id: Optional[StringSearchModel] | None = None
 
 
 class NameMixinModel:
@@ -1326,7 +1326,7 @@ class NameMixinModel:
         name: Annotated[Optional[str], Field(default=None)]
 
     class Search:
-        name: Optional[StringSearchModel] = None
+        name: Optional[StringSearchModel] | None = None
 
 
 class DescriptionMixinModel:
@@ -1336,7 +1336,7 @@ class DescriptionMixinModel:
         description: Annotated[Optional[str], Field(default=None)]
 
     class Search:
-        description: Optional[StringSearchModel] = None
+        description: Optional[StringSearchModel] | None = None
 
 
 class ImageMixinModel:
@@ -1346,7 +1346,7 @@ class ImageMixinModel:
         image_url: Annotated[Optional[str], Field(default=None)]
 
     class Search:
-        image_url: Optional[StringSearchModel] = None
+        image_url: Optional[StringSearchModel] | None = None
 
 
 class TemplateModel(ApplicationModel, NameMixinModel):
@@ -1361,8 +1361,8 @@ class TemplateModel(ApplicationModel, NameMixinModel):
 
 
 class TemplateReferenceModel(ApplicationModel):
-    template_id: Optional[str] = None
-    template: Optional[TemplateModel] = None
+    template_id: Optional[str] | None = None
+    template: Optional[TemplateModel] | None = None
 
 
 class TemplateNetworkModel(BaseModel):
@@ -1372,7 +1372,7 @@ class TemplateNetworkModel(BaseModel):
     class LIST(BaseNetworkModel):
         offset: int = Field(0, ge=0)
         limit: int = Field(1000, ge=1, le=1000)
-        sort_by: Optional[str] = None
+        sort_by: Optional[str] | None = None
         sort_order: Optional[str] = Field("asc", pattern="^(asc|desc)$")
 
     class POST(ApplicationModel):
@@ -1498,10 +1498,10 @@ class AbstractBLLManager(ABC):
     def __init__(
         self,
         model_registry=None,
-        requester_id: Optional[str] = None,
-        target_id: Optional[str] = None,
-        target_team_id: Optional[str] = None,
-        parent: Optional[Any] = None,
+        requester_id: Optional[str] | None = None,
+        target_id: Optional[str] | None = None,
+        target_team_id: Optional[str] | None = None,
+        parent: Optional[Any] | None = None,
     ):
         """
         Initialize the BLL manager.
@@ -2594,8 +2594,8 @@ class AbstractBLLManager(ABC):
 
     def get(
         self,
-        include: Optional[Union[List[str], str]] = None,
-        fields: Optional[Union[List[str], str]] = None,
+        include: Optional[Union[List[str], str]] | None = None,
+        fields: Optional[Union[List[str], str]] | None = None,
         **kwargs,
     ) -> Any:
         """Get an entity with optional included relationships.
@@ -2639,15 +2639,15 @@ class AbstractBLLManager(ABC):
 
     def list(
         self,
-        include: Optional[Union[List[str], str]] = None,
-        fields: Optional[Union[List[str], str]] = None,
-        sort_by: Optional[str] = None,
+        include: Optional[Union[List[str], str]] | None = None,
+        fields: Optional[Union[List[str], str]] | None = None,
+        sort_by: Optional[str] | None = None,
         sort_order: Optional[str] = "asc",
-        filters: Optional[List[Any]] = None,
-        limit: Optional[int] = None,
-        offset: Optional[int] = None,
-        page: Optional[int] = None,
-        pageSize: Optional[int] = None,
+        filters: Optional[List[Any]] | None = None,
+        limit: Optional[int] | None = None,
+        offset: Optional[int] | None = None,
+        page: Optional[int] | None = None,
+        pageSize: Optional[int] | None = None,
         return_type: str = "dto",
         **kwargs,
     ) -> List[Any]:
@@ -2727,15 +2727,15 @@ class AbstractBLLManager(ABC):
 
     def search(
         self,
-        include: Optional[Union[List[str], str]] = None,
-        fields: Optional[Union[List[str], str]] = None,
-        sort_by: Optional[str] = None,
+        include: Optional[Union[List[str], str]] | None = None,
+        fields: Optional[Union[List[str], str]] | None = None,
+        sort_by: Optional[str] | None = None,
         sort_order: Optional[str] = "asc",
-        filters: Optional[List[Any]] = None,
-        limit: Optional[int] = None,
-        offset: Optional[int] = None,
-        page: Optional[int] = None,
-        pageSize: Optional[int] = None,
+        filters: Optional[List[Any]] | None = None,
+        limit: Optional[int] | None = None,
+        offset: Optional[int] | None = None,
+        page: Optional[int] | None = None,
+        pageSize: Optional[int] | None = None,
         **search_params,
     ) -> List[Any]:
         """Search entities with optional included relationships."""

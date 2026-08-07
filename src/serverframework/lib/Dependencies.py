@@ -683,7 +683,7 @@ class DependencyFactory:
     @staticmethod
     def create_system_dependency(
         name: str,
-        friendly_name: Optional[str] = None,
+        friendly_name: Optional[str] | None = None,
         optional: bool = False,
         reason: str = "None specified.",
         **package_mappings,
@@ -721,10 +721,10 @@ class DependencyFactory:
     @staticmethod
     def create_pip_dependency(
         name: str,
-        friendly_name: Optional[str] = None,
+        friendly_name: Optional[str] | None = None,
         optional: bool = False,
         reason: str = "None specified.",
-        semver: Optional[str] = None,
+        semver: Optional[str] | None = None,
     ) -> PIP_Dependency:
         """
         Create a PIP dependency.
@@ -786,11 +786,11 @@ def for_snap(name: str, package: str, **kwargs) -> "SYS_Dependency":
 @staticmethod
 def for_all_platforms(
     name: str,
-    apt_pkg: Optional[str] = None,
-    brew_pkg: Optional[str] = None,
-    winget_pkg: Optional[str] = None,
-    chocolatey_pkg: Optional[str] = None,
-    snap_pkg: Optional[str] = None,
+    apt_pkg: Optional[str] | None = None,
+    brew_pkg: Optional[str] | None = None,
+    winget_pkg: Optional[str] | None = None,
+    chocolatey_pkg: Optional[str] | None = None,
+    snap_pkg: Optional[str] | None = None,
     **kwargs,
 ) -> "SYS_Dependency":
     """Create a dependency with mappings for all supported platforms."""
@@ -1296,7 +1296,7 @@ class DependencyNode:
         self.version = version
         self.dependencies: Dict[str, str] = {}  # name -> version_constraint
 
-    def add_dependency(self, name: str, version_constraint: Optional[str] = None):
+    def add_dependency(self, name: str, version_constraint: Optional[str] | None = None):
         """Add a dependency to this node."""
         self.dependencies[name] = version_constraint
 
@@ -1493,7 +1493,7 @@ class DependencyProvider(AbstractExtensionProvider):
 class DependencyRequirement:
     """Represents a requirement for resolvelib."""
 
-    def __init__(self, name: str, version_constraint: Optional[str] = None):
+    def __init__(self, name: str, version_constraint: Optional[str] | None = None):
         self.name = name
         self.version_constraint = version_constraint
 
@@ -1809,7 +1809,7 @@ class ExtDependencies(List[EXT_Dependency]):
         return {dep.name: False for dep in self}
 
     def check(
-        self, loaded_extensions: Optional[Dict[str, str]] = None
+        self, loaded_extensions: Optional[Dict[str, str]] | None = None
     ) -> Dict[str, bool]:
         """Check if extension dependencies are satisfied."""
         if loaded_extensions is None:
@@ -2227,7 +2227,7 @@ class Dependencies(List[Dependency]):
         return results
 
     def check(
-        self, loaded_extensions: Optional[Dict[str, str]] = None
+        self, loaded_extensions: Optional[Dict[str, str]] | None = None
     ) -> Dict[str, bool]:
         """
         Check if all dependencies are satisfied.
@@ -2258,7 +2258,7 @@ class Dependencies(List[Dependency]):
         return results
 
     def get_missing(
-        self, loaded_extensions: Optional[Dict[str, str]] = None
+        self, loaded_extensions: Optional[Dict[str, str]] | None = None
     ) -> "Dependencies":
         """
         Get a new Dependencies object containing only unsatisfied dependencies.
