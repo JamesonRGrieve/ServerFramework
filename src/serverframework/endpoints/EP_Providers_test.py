@@ -64,9 +64,9 @@ class TestProviderEndpoints(AbstractEPTest):
         else:
             # Include all fields
             payload = {
-                "name": name,
-                "friendly_name": "Test Provider",
-                "agent_settings_json": '{"api_base": "https://api.example.com"}',
+                "name": name,  # type: ignore[dict-item]
+                "friendly_name": "Test Provider",  # type: ignore[dict-item]
+                "agent_settings_json": '{"api_base": "https://api.example.com"}',  # type: ignore[dict-item]
             }
 
         return payload
@@ -134,7 +134,7 @@ class TestProviderExtensionEndpoints(AbstractEPTest):
     update_fields = {
         "extension_id": lambda: str(uuid.uuid4()),  # Different extension ID
     }
-    unique_fields = []
+    unique_fields: list[str] = []  # type: ignore[var-annotated]
 
     # Tests to skip (if any)
     _skip_tests = [
@@ -201,7 +201,7 @@ class TestProviderExtensionEndpoints(AbstractEPTest):
         provider_payload = {
             "provider": {
                 "name": provider_name,
-                "team_id": team_a.id if team_a else None,
+                "team_id": team_a.id if team_a else None,  # type: ignore[attr-defined]
             }
         }
 
@@ -252,7 +252,7 @@ class TestProviderExtensionEndpoints(AbstractEPTest):
 
         if invalid_data:
             # Create invalid data for testing validation
-            payload = {"provider_id": 12345, "extension_id": None}  # Invalid types
+            payload = {"provider_id": 12345, "extension_id": None}  # type: ignore[dict-item]
         elif minimal:
             # Only include required fields
             payload = {
@@ -264,7 +264,7 @@ class TestProviderExtensionEndpoints(AbstractEPTest):
 
         return payload
 
-    def test_GET_200_available_extensions(
+    def test_GET_200_available_extensions(  # type: ignore[return]
         self, server: Any, admin_a, team_a: Dict[str, Any]
     ) -> List[Dict[str, Any]]:
         """
@@ -705,14 +705,14 @@ class TestProviderInstanceEndpoints(AbstractEPTest):
         self._list(server, admin_a.jwt, admin_a.id, team_a.id)
         self._list_assert("list_result")
 
-    def test_GET_200_list_by_team(
+    def test_GET_200_list_by_team(  # type: ignore[return]
         self, server: Any, admin_a, team_a: Dict[str, Any]
     ) -> List[Dict[str, Any]]:
         """Test retrieving provider instances filtered by team."""
 
         instance = self.test_POST_201(server, admin_a, team_a)
 
-        endpoint = f"{self.get_list_endpoint()}?team_id={team_a.id}"
+        endpoint = f"{self.get_list_endpoint()}?team_id={team_a.id}"  # type: ignore[attr-defined]
         response = server.get(
             endpoint, headers=self._get_appropriate_headers(admin_a.jwt)
         )
@@ -777,14 +777,14 @@ class TestRotationEndpoints(AbstractEPTest):
                 "description": f"A test rotation for {name or faker.uuid4()}",
             }
 
-    def test_GET_200_list_by_team(
+    def test_GET_200_list_by_team(  # type: ignore[return]
         self, server: Any, admin_a, team_a: Dict[str, Any]
     ) -> List[Dict[str, Any]]:
         """Test retrieving rotations filtered by team."""
 
         rotation = self.test_POST_201(server, admin_a, team_a)
 
-        endpoint = f"{self.get_list_endpoint()}?team_id={team_a.id}"
+        endpoint = f"{self.get_list_endpoint()}?team_id={team_a.id}"  # type: ignore[attr-defined]
         response = server.get(
             endpoint, headers=self._get_appropriate_headers(admin_a.jwt)
         )
@@ -835,8 +835,8 @@ class TestRotationProviderInstanceEndpoints(AbstractEPTest):
         "rotation_id": None,  # Will be populated in setup
         "provider_instance_id": None,  # Will be populated in setup
     }
-    update_fields = {}  # No updateable fields besides system
-    unique_fields = []
+    update_fields: dict[str, str] = {}  # No updateable fields besides system  # type: ignore[var-annotated]
+    unique_fields: list[str] = []  # type: ignore[var-annotated]
 
     _skip_tests = [
         SkipThisTest(
@@ -864,15 +864,15 @@ class TestRotationProviderInstanceEndpoints(AbstractEPTest):
         elif minimal:
             # Only include required fields
             payload = {
-                "rotation_id": parent_ids.get("rotation_id") if parent_ids else None,
-                "provider_instance_id": (
+                "rotation_id": parent_ids.get("rotation_id") if parent_ids else None,  # type: ignore[dict-item]
+                "provider_instance_id": (  # type: ignore[dict-item]
                     parent_ids.get("provider_instance_id") if parent_ids else None
                 ),
             }
         else:
             payload = {
-                "rotation_id": parent_ids.get("rotation_id") if parent_ids else None,
-                "provider_instance_id": (
+                "rotation_id": parent_ids.get("rotation_id") if parent_ids else None,  # type: ignore[dict-item]
+                "provider_instance_id": (  # type: ignore[dict-item]
                     parent_ids.get("provider_instance_id") if parent_ids else None
                 ),
             }
@@ -957,8 +957,8 @@ class TestProviderExtensionAbilityEndpoints(AbstractEPTest):
         "provider_extension_id": None,  # Will be populated in setup
         "ability_id": lambda: str(uuid.uuid4()),
     }
-    update_fields = {}  # No updateable fields besides system fields
-    unique_fields = []
+    update_fields: dict[str, str] = {}  # No updateable fields besides system fields  # type: ignore[var-annotated]
+    unique_fields: list[str] = []  # type: ignore[var-annotated]
 
     # ProviderExtensionAbility is a high-volume system-seeded join table.
     # Generic timestamp-based searches (created_at eq/on, updated_at eq/on)
@@ -990,8 +990,8 @@ class TestProviderExtensionAbilityEndpoints(AbstractEPTest):
 
         if invalid_data:
             payload = {
-                "provider_extension_id": 12345,
-                "ability_id": 6789,
+                "provider_extension_id": 12345,  # type: ignore[dict-item]
+                "ability_id": 6789,  # type: ignore[dict-item]
             }
         elif minimal:
             payload = {
@@ -1033,7 +1033,7 @@ class TestProviderInstanceSettingsEndpoints(AbstractEPTest):
     update_fields = {
         "value": "updated-setting-value",
     }
-    unique_fields = []  # No unique fields for settings
+    unique_fields: list[str] = []  # No unique fields for settings  # type: ignore[var-annotated]
 
     parent_entities = [
         ParentEntity(

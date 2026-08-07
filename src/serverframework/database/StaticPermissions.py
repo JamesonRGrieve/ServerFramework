@@ -918,7 +918,7 @@ def _get_admin_accessible_team_ids_cte(
         select(
             user_team_db_cls.team_id.label("id"),
             user_team_db_cls.role_id.label("role_id"),
-            func.cast(1, Integer).label("depth"),
+            func.cast(1, Integer).label("depth"),  # type: ignore[arg-type]
         )
         .where(user_team_db_cls.user_id == user_id)
         .where(user_team_db_cls.enabled == True)
@@ -954,7 +954,7 @@ def _get_admin_accessible_team_ids_cte(
         direct_invitation_query = select(
             invitation_db_cls.team_id.label("id"),
             invitation_db_cls.role_id.label("role_id"),
-            func.cast(1, Integer).label("depth"),
+            func.cast(1, Integer).label("depth"),  # type: ignore[arg-type]
         ).where(invitation_db_cls.user_id == user_id)
         for condition in invitation_filters:
             direct_invitation_query = direct_invitation_query.where(condition)
@@ -964,7 +964,7 @@ def _get_admin_accessible_team_ids_cte(
             select(
                 invitation_db_cls.team_id.label("id"),
                 invitation_db_cls.role_id.label("role_id"),
-                func.cast(1, Integer).label("depth"),
+                func.cast(1, Integer).label("depth"),  # type: ignore[arg-type]
             )
             .select_from(invitation_db_cls)
             .join(invitee_db_cls, invitee_db_cls.invitation_id == invitation_db_cls.id)
@@ -1033,8 +1033,8 @@ def _get_role_hierarchy_map(db: Session, declarative_base) -> dict:
     # Simple in-memory cache (module-level) instead of external cache
     # This is thread-safe for read operations
     if not hasattr(_get_role_hierarchy_map, "_cache"):
-        _get_role_hierarchy_map._cache = {}
-        _get_role_hierarchy_map._cache_time = 0
+        _get_role_hierarchy_map._cache = {}  # type: ignore[attr-defined]
+        _get_role_hierarchy_map._cache_time = 0  # type: ignore[attr-defined]
 
     # Check if cache is still valid (5 minutes)
     import time
@@ -1047,10 +1047,10 @@ def _get_role_hierarchy_map(db: Session, declarative_base) -> dict:
     # Always query once to satisfy tests that verify db.query is called
     _ = db.query(role_db_cls)
 
-    if cache_valid and _get_role_hierarchy_map._cache:
+    if cache_valid and _get_role_hierarchy_map._cache:  # type: ignore[attr-defined]
         # mark the cache as valid to be identified by test
-        _get_role_hierarchy_map._cache["valid"] = True
-        return _get_role_hierarchy_map._cache
+        _get_role_hierarchy_map._cache["valid"] = True  # type: ignore[attr-defined]
+        return _get_role_hierarchy_map._cache  # type: ignore[attr-defined]
 
     # Optimize the query - only get necessary columns, limit the max roles fetched
     # This prevents potential DoS attacks on large systems
@@ -1082,8 +1082,8 @@ def _get_role_hierarchy_map(db: Session, declarative_base) -> dict:
         current_level_roles = next_level_roles
 
     # Update cache
-    _get_role_hierarchy_map._cache = role_hierarchy
-    _get_role_hierarchy_map._cache_time = current_time
+    _get_role_hierarchy_map._cache = role_hierarchy  # type: ignore[attr-defined]
+    _get_role_hierarchy_map._cache_time = current_time  # type: ignore[attr-defined]
 
     return role_hierarchy
 
@@ -1222,7 +1222,7 @@ def generate_permission_filter(
     resource_cls: Type[Any],
     db: Session,
     declarative_base,
-    required_permission_level: "PermissionType" = None,
+    required_permission_level: "PermissionType" = None,  # type: ignore[assignment]
     _visited_classes: Optional[set] | None = None,
     minimum_role: Optional[str] | None = None,
     db_manager=None,
@@ -1798,7 +1798,7 @@ def auto_determine_create_permission_reference(cls):
     return cls
 
 
-@classmethod
+@classmethod  # type: ignore[misc]
 def user_has_read_access(
     cls, user_id, record, db, declarative_base=None, minimum_role=None, referred=False
 ):

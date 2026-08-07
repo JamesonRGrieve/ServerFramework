@@ -40,7 +40,7 @@ class MicrosoftOAuthProvider(AbstractOAuthProvider):
     def services():
         return ["auth", "user_info", "mail", "calendar", "microsoft_graph"]
 
-    def get_new_token(self) -> str:
+    def get_new_token(self) -> str:  # type: ignore[return]
         try:
             response = requests.post(
                 "https://login.microsoftonline.com/common/oauth2/v2.0/token",
@@ -63,7 +63,7 @@ class MicrosoftOAuthProvider(AbstractOAuthProvider):
         except Exception as e:
             self.handle_auth_error(e, "token refresh")
 
-    def get_user_info(self) -> Dict[str, Any]:
+    def get_user_info(self) -> Dict[str, Any]:  # type: ignore[return]
         if not self.access_token:
             return {}
 
@@ -141,7 +141,7 @@ class MicrosoftOAuthProvider(AbstractOAuthProvider):
                     "Authorization": f"Bearer {self.access_token}",
                     "Content-Type": "application/json",
                 },
-                json=email_data,
+                json=email_data,  # type: ignore[arg-type]
             )
 
             if response.status_code == 401 and self.refresh_token:
@@ -152,7 +152,7 @@ class MicrosoftOAuthProvider(AbstractOAuthProvider):
                         "Authorization": f"Bearer {self.access_token}",
                         "Content-Type": "application/json",
                     },
-                    json=email_data,
+                    json=email_data,  # type: ignore[arg-type]
                 )
 
             if response.status_code != 202:

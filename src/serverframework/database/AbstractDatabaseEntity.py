@@ -39,10 +39,10 @@ def get_db_manager(
     if request and hasattr(request.app.state, "DB"):
         return request.app.state.model_registry.database_manager
     if db and hasattr(db, "bind") and hasattr(db.bind, "_db_manager"):
-        return db.bind._db_manager
+        return db.bind._db_manager  # type: ignore[union-attr]
     # Try to get from session's bind if it has a db_manager attribute
-    if db and hasattr(db, "bind") and hasattr(db.bind.engine, "_db_manager"):
-        return db.bind.engine._db_manager
+    if db and hasattr(db, "bind") and hasattr(db.bind.engine, "_db_manager"):  # type: ignore[union-attr]
+        return db.bind.engine._db_manager  # type: ignore[union-attr]
     return None
 
 
@@ -227,10 +227,10 @@ def db_to_return_type(
         The converted entity in the requested format
     """
     if entity is None:
-        return None
+        return None  # type: ignore[return-value]
 
     if return_type == "db":
-        return entity
+        return entity  # type: ignore[return-value]
 
     elif return_type == "dict":
         # Convert to dictionary
@@ -324,7 +324,7 @@ def db_to_return_type(
                 dto_instance = dto_type(**item_dict)
                 dto_instances.append(dto_instance)
 
-            return dto_instances
+            return dto_instances  # type: ignore[return-value]
         else:
             # Convert entity to dict
             entity_dict = obj_to_dict(entity)
@@ -336,7 +336,7 @@ def db_to_return_type(
             return dto_instance
 
     # Default return the original entity
-    return entity
+    return entity  # type: ignore[return-value]
 
 
 def _process_nested_objects(data_dict, parent_dto_type):
@@ -498,7 +498,7 @@ class HookDict(dict):
 
 
 # Global hooks registry to properly handle inheritance
-_hooks_registry = {}
+_hooks_registry = {}  # type: ignore[var-annotated]
 hook_types = ["create", "update", "delete", "get", "list"]
 
 
@@ -533,7 +533,7 @@ class HooksDescriptor:
 
 class BaseMixin:
     system = False
-    seed_list = []
+    seed_list = []  # type: ignore[var-annotated]
 
     @classmethod
     def DB(cls, declarative_base=None):
@@ -815,7 +815,7 @@ class BaseMixin:
         if "user_id" in create_kwargs:
             create_kwargs.pop("user_id")
 
-        if not cls.user_can_create(requester_id, db, **create_kwargs):
+        if not cls.user_can_create(requester_id, db, **create_kwargs):  # type: ignore[attr-defined]
             raise HTTPException(
                 status_code=403, detail=f"Not authorized to create {cls.__name__}"
             )
@@ -830,7 +830,7 @@ class BaseMixin:
             data["created_by_user_id"] = requester_id
 
         # Get hooks for before_create
-        hooks = cls.hooks
+        hooks = cls.hooks  # type: ignore[attr-defined]
         if "create" in hooks and "before" in hooks["create"]:
             before_hooks = hooks["create"]["before"]
             if before_hooks:
@@ -844,8 +844,8 @@ class BaseMixin:
         entity = cls(**data)
         db.add(entity)
         db.flush()
-        if cls.__tablename__ == "users":
-            entity.created_by_user_id = entity.id
+        if cls.__tablename__ == "users":  # type: ignore[attr-defined]
+            entity.created_by_user_id = entity.id  # type: ignore[attr-defined]
         db.commit()
         db.refresh(entity)
 
@@ -857,7 +857,7 @@ class BaseMixin:
                     hook(entity, db)
 
         # Convert to requested return type
-        return db_to_return_type(entity, return_type, override_dto, fields)
+        return db_to_return_type(entity, return_type, override_dto, fields)  # type: ignore[arg-type, return-value]
 
     @classmethod
     @with_session
@@ -926,7 +926,7 @@ class BaseMixin:
 
             # Only add deleted_at filter for non-ROOT users
             if hasattr(db_cls, "deleted_at") and not is_root_id(requester_id):
-                filters.append(db_cls.deleted_at == None)
+                filters.append(db_cls.deleted_at == None)  # type: ignore[attr-defined]
 
         # Build query with all filters
         query = build_query(db, db_cls, joins, options, filters, **kwargs)
@@ -975,12 +975,12 @@ class BaseMixin:
             record_id = kwargs["id"]
 
             # Get the record to check if it exists
-            record = db.query(db_cls).filter(db_cls.id == record_id).first()
+            record = db.query(db_cls).filter(db_cls.id == record_id).first()  # type: ignore[attr-defined]
             if record is None:
                 return False
 
             # For User model, handle special cases
-            if cls.__tablename__ == "users":
+            if cls.__tablename__ == "users":  # type: ignore[attr-defined]
                 # Check if the user is looking up their own record
                 if (
                     hasattr(record, "deleted_at")
@@ -1001,9 +1001,9 @@ class BaseMixin:
                     return False
 
             # Otherwise, use permission system with a special direct check for User model
-            if cls.__tablename__ == "users":
+            if cls.__tablename__ == "users":  # type: ignore[attr-defined]
                 # Use the model's user_has_read_access method if available
-                return cls.user_has_read_access(
+                return cls.user_has_read_access(  # type: ignore[attr-defined]
                     requester_id, record_id, db, db_manager=db_manager
                 )
             else:
@@ -1023,7 +1023,7 @@ class BaseMixin:
 
                 # Add deleted_at filter for non-ROOT users
                 if hasattr(db_cls, "deleted_at") and not is_root_id(requester_id):
-                    filters.append(db_cls.deleted_at == None)
+                    filters.append(db_cls.deleted_at == None)  # type: ignore[attr-defined]
 
                 # Build a query with the filters
                 query = build_query(
@@ -1049,7 +1049,7 @@ class BaseMixin:
 
             # Add deleted_at filter for non-ROOT users
             if hasattr(db_cls, "deleted_at") and not is_root_id(requester_id):
-                filters.append(db_cls.deleted_at == None)
+                filters.append(db_cls.deleted_at == None)  # type: ignore[attr-defined]
 
             # Build a query with the filters
             query = build_query(
@@ -1098,7 +1098,7 @@ class BaseMixin:
         from serverframework.database.StaticPermissions import is_root_id
 
         if hasattr(db_cls, "deleted_at") and not is_root_id(requester_id):
-            filters = filters + [db_cls.deleted_at == None]
+            filters = filters + [db_cls.deleted_at == None]  # type: ignore[attr-defined]
 
         # Apply permission filter
         perm_filter = generate_permission_filter(
@@ -1145,18 +1145,18 @@ class BaseMixin:
                 logger.debug(
                     f"Returning from {cls.__name__} get: {to_return} ({return_type})"
                 )
-            return to_return
+            return to_return  # type: ignore[return-value]
         except NoResultFound:
             # Special case for entity_id="self" and providing self_entity
             if kwargs.get("entity_id") == "self" and "self_entity" in kwargs:
-                return db_to_return_type(
+                return db_to_return_type(  # type: ignore[return-value]
                     kwargs["self_entity"],
                     return_type,
                     get_dto_class(cls, override_dto),
                     fields=fields,
                 )
             if allow_nonexistent:
-                return None
+                return None  # type: ignore[return-value]
             raise HTTPException(status_code=404, detail=gen_not_found_msg(cls.__name__))
         except MultipleResultsFound:
             raise HTTPException(
@@ -1233,9 +1233,9 @@ class BaseMixin:
 
         if hasattr(db_cls, "deleted_at") and not is_root_id(requester_id):
             if filters:
-                filters.append(db_cls.deleted_at == None)
+                filters.append(db_cls.deleted_at == None)  # type: ignore[attr-defined]
             else:
-                filters = [db_cls.deleted_at == None]
+                filters = [db_cls.deleted_at == None]  # type: ignore[attr-defined]
 
         # Apply permission filter
         perm_filter = generate_permission_filter(
@@ -1274,7 +1274,7 @@ class BaseMixin:
                 f"Returning from {cls.__name__} list: {to_return} ({return_type})"
             )
 
-        return db_to_return_type(
+        return db_to_return_type(  # type: ignore[return-value]
             to_return,
             return_type,
             get_dto_class(cls, override_dto),
@@ -1347,7 +1347,7 @@ def _query_has_deleted_at_filter(query: Query) -> bool:
         whereclause = getattr(query, "whereclause", None)
         if whereclause is None:
             return False
-        for elem in whereclause._traverse_internals if False else []:
+        for elem in whereclause._traverse_internals if False else []:  # type: ignore[var-annotated]
             pass
         # Walk the SQL expression tree looking for a Column named 'deleted_at'.
         from sqlalchemy.sql import visitors
@@ -1401,7 +1401,7 @@ def _soft_delete_before_compile(query: Query) -> Query:
             continue
         if not hasattr(entity, "deleted_at"):
             continue
-        query = query.enable_assertions(False).filter(entity.deleted_at.is_(None))
+        query = query.enable_assertions(False).filter(entity.deleted_at.is_(None))  # type: ignore[union-attr]
     return query
 
 
@@ -1501,7 +1501,7 @@ class UpdateMixin(SoftDeleteMixin):
         except NoResultFound:
             if allow_nonexistent:
                 logger.debug(f"{cls.__name__} not found for update. Skipping.")
-                return None
+                return None  # type: ignore[return-value]
             raise HTTPException(status_code=404, detail=f"{cls.__name__} not found")
         except MultipleResultsFound:
             raise HTTPException(
@@ -1551,7 +1551,7 @@ class UpdateMixin(SoftDeleteMixin):
             updated["updated_at"] = func.now()
 
         # Get hooks for before_update
-        hooks = cls.hooks
+        hooks = cls.hooks  # type: ignore[attr-defined]
         if "update" in hooks and "before" in hooks["update"]:
             before_hooks = hooks["update"]["before"]
             if before_hooks:
@@ -1570,13 +1570,13 @@ class UpdateMixin(SoftDeleteMixin):
         db.refresh(entity)
 
         # Get hooks for after_update
-        hooks = cls.hooks["update"]["after"]
+        hooks = cls.hooks["update"]["after"]  # type: ignore[attr-defined]
         if hooks:
             for hook in hooks:
                 hook(entity, updated, db)
 
         # Convert to requested return type
-        return db_to_return_type(entity, return_type, override_dto, fields)
+        return db_to_return_type(entity, return_type, override_dto, fields)  # type: ignore[arg-type, return-value]
 
     # `deleted_at` is provided by SoftDeleteMixin (parent of UpdateMixin)
     # so the DB-layer auto-filter applies uniformly.
@@ -1691,7 +1691,7 @@ class UpdateMixin(SoftDeleteMixin):
                     detail=f"Only the creator can delete this record",
                 )
         # Get hooks for before_delete
-        hooks = cls.hooks
+        hooks = cls.hooks  # type: ignore[attr-defined]
         if "delete" in hooks and "before" in hooks["delete"]:
             before_hooks = hooks["delete"]["before"]
             if before_hooks:
@@ -1710,7 +1710,7 @@ class UpdateMixin(SoftDeleteMixin):
         db.commit()
 
         # Get hooks for after_delete
-        hooks = cls.hooks["delete"]["after"]
+        hooks = cls.hooks["delete"]["after"]  # type: ignore[attr-defined]
         if hooks:
             for hook in hooks:
                 hook(entity, db)

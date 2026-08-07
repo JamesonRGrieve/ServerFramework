@@ -124,7 +124,7 @@ class HookContext(_typing.Generic[_P, _R]):
         self.result = result
         self.skip_execution = False
         self.modified_result = None
-        self.condition_data = {}
+        self.condition_data = {}  # type: ignore[var-annotated]
 
     def set_result(self, result: _R) -> None:
         """
@@ -133,7 +133,7 @@ class HookContext(_typing.Generic[_P, _R]):
         Args:
             result: The custom result to return
         """
-        self.modified_result = result
+        self.modified_result = result  # type: ignore[assignment]
 
     def skip_method(self) -> None:
         """Skip execution of the original method."""
@@ -193,7 +193,7 @@ class HookRegistry:
             in Item 21: explicit ``before/after`` constraints, then priority,
             then extension name, then function name.
         """
-        hooks = {"before": [], "after": []}
+        hooks = {"before": [], "after": []}  # type: ignore[var-annotated]
 
         # Get parent hooks first (for inheritance)
         if self.parent_registry:
@@ -463,7 +463,7 @@ def hook_bll(
             try:
                 # Try to get the calling module's globals first
                 caller_frame = (
-                    frame.f_back.f_back
+                    frame.f_back.f_back  # type: ignore[union-attr]
                 )  # Go up two frames to get the test method frame
                 if caller_frame:
                     caller_globals = caller_frame.f_globals
@@ -503,7 +503,7 @@ def hook_bll(
                                         # Avoids ValueError: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
                                         val_check_attr = list(attr)
                                     else:
-                                        val_check_attr = attr
+                                        val_check_attr = attr  # type: ignore[assignment]
                                     if (
                                         val_check_attr
                                         and inspect.isclass(attr)
@@ -530,11 +530,11 @@ def hook_bll(
 
         elif hasattr(target, "__self__") and inspect.isclass(target.__self__):
             # This is a bound method to a class (e.g., ManagerForTest.create)
-            target_class = target.__self__
+            target_class = target.__self__  # type: ignore[assignment]
             method_name = target.__name__
 
-            if not issubclass(target_class, AbstractBLLManager):
-                raise ValueError(f"Class {target_class.__name__} is not a BLL manager")
+            if not issubclass(target_class, AbstractBLLManager):  # type: ignore[arg-type]
+                raise ValueError(f"Class {target_class.__name__} is not a BLL manager")  # type: ignore[union-attr]
 
             method_names = [method_name]
 
@@ -588,12 +588,12 @@ def hook_bll(
             # Verify method exists on class
             if not hasattr(target_class, method_name):
                 raise ValueError(
-                    f"Method {method_name} not found on class {target_class.__name__}"
+                    f"Method {method_name} not found on class {target_class.__name__}"  # type: ignore[union-attr]
                 )
 
             # Store hook metadata (for the first method if multiple)
             if not hasattr(hook_func, "_hook_metadata"):
-                hook_func._hook_metadata = {
+                hook_func._hook_metadata = {  # type: ignore[attr-defined]
                     "target_class": target_class,
                     "method_names": method_names,
                     "timing": timing_enum.value,
@@ -606,7 +606,7 @@ def hook_bll(
 
             # Register the hook
             _register_hook_on_class(
-                target_class,
+                target_class,  # type: ignore[arg-type]
                 method_name,
                 timing_enum.value,
                 hook_func,
@@ -677,9 +677,9 @@ def _register_hook_on_class(
             if hasattr(base, "_hook_registry"):
                 parent_registry = base._hook_registry
                 break
-        target_class._hook_registry = HookRegistry(parent_registry)
+        target_class._hook_registry = HookRegistry(parent_registry)  # type: ignore[attr-defined]
 
-    target_class._hook_registry.register_hook(
+    target_class._hook_registry.register_hook(  # type: ignore[attr-defined]
         target_class,
         method_name,
         timing,
@@ -734,13 +734,13 @@ def auto_register_hooks(manager_class: Type["AbstractBLLManager"]) -> None:
             if hasattr(base, "_hook_registry"):
                 parent_registry = base._hook_registry
                 break
-        manager_class._hook_registry = HookRegistry(parent_registry)
+        manager_class._hook_registry = HookRegistry(parent_registry)  # type: ignore[attr-defined]
 
     hookable_methods = discover_hookable_methods(manager_class)
 
     for method_name in hookable_methods:
-        if method_name not in manager_class._hook_registry.hooks:
-            manager_class._hook_registry.hooks[method_name] = {
+        if method_name not in manager_class._hook_registry.hooks:  # type: ignore[attr-defined]
+            manager_class._hook_registry.hooks[method_name] = {  # type: ignore[attr-defined]
                 "before": [],
                 "after": [],
             }
@@ -789,11 +789,11 @@ def wrap_method_with_hooks(
             if method_name in ["get", "update", "delete"] and not args:
                 kwargs["id"] = self.target_id
 
-        context = HookContext(self, method_name, args, kwargs, timing=HookTiming.BEFORE)
+        context = HookContext(self, method_name, args, kwargs, timing=HookTiming.BEFORE)  # type: ignore[var-annotated]
 
         # Execute before hooks
         hooks = (
-            self._hook_registry.get_hooks(method_name)
+            self._hook_registry.get_hooks(method_name)  # type: ignore[attr-defined]
             if hasattr(self.__class__, "_hook_registry")
             else {"before": [], "after": []}
         )
@@ -884,7 +884,7 @@ def wrap_method_with_hooks(
     # Preserve method metadata
     wrapped_method.__name__ = method_name
     wrapped_method.__doc__ = original_method.__doc__
-    wrapped_method._original_method = original_method
+    wrapped_method._original_method = original_method  # type: ignore[attr-defined]
     # Forward framework-decorator markers so router/SDK/test discovery
     # walking ``vars(manager_cls)`` finds the same metadata as on the
     # raw method. Without this, ``@custom_route`` and ``@rate_limit``
@@ -946,7 +946,7 @@ class ModelMeta(ModelMetaclass):
         if model_fields and item in model_fields:
             if cls._is_schema_generation_context():
                 raise AttributeError(item)
-            return ModelFieldAccessor(cls, item)
+            return ModelFieldAccessor(cls, item)  # type: ignore[arg-type]
         raise AttributeError(item)
 
     @staticmethod
@@ -959,7 +959,7 @@ class ModelMeta(ModelMetaclass):
                 "fastapi.openapi"
             ):
                 return True
-            frame = frame.f_back
+            frame = frame.f_back  # type: ignore[assignment]
             depth += 1
         return False
 
@@ -1391,7 +1391,7 @@ class TemplateNetworkModel(BaseModel):
         templates: List[TemplateModel]
 
 
-T = TypeVar("T")
+T = TypeVar("T")  # type: ignore[misc]
 DtoT = TypeVar("DtoT")
 ModelT = TypeVar("ModelT")
 
@@ -1659,7 +1659,7 @@ class AbstractBLLManager(ABC):
                     exc,
                 )
 
-    @property
+    @property  # type: ignore[no-redef]
     def DB(self):
         """Property that returns the SQLAlchemy model class from the Pydantic Model."""
         return self.Model.DB(self.model_registry.DB.manager.Base)
@@ -1709,7 +1709,7 @@ class AbstractBLLManager(ABC):
         Returns:
             The target_id if set, otherwise the requester's ID
         """
-        return self.target_id if self.target_id else self.requester.id
+        return self.target_id if self.target_id else self.requester.id  # type: ignore[union-attr]
 
     def _register_search_transformers(self):
         """
@@ -2063,7 +2063,7 @@ class AbstractBLLManager(ABC):
             HTTPException: 422 status if invalid fields are detected
         """
         if not fields:
-            return fields
+            return fields  # type: ignore[return-value]
 
         # Parse fields - handle both CSV strings and lists
         fields_list = self._parse_fields(fields)
@@ -2100,7 +2100,7 @@ class AbstractBLLManager(ABC):
         without actually generating the join options.
         """
         if not includes:
-            return includes
+            return includes  # type: ignore[return-value]
 
         includes_list = self._parse_includes(includes)
 
@@ -2583,7 +2583,7 @@ class AbstractBLLManager(ABC):
 
         # Create the entity using ModelRegistry.DB for database access
         entity = self.DB.create(
-            requester_id=self.requester.id,
+            requester_id=self.requester.id,  # type: ignore[union-attr]
             model_registry=self.model_registry,
             return_type="dto",
             override_dto=self.model_registry.apply(self.Model),
@@ -2629,7 +2629,7 @@ class AbstractBLLManager(ABC):
         db_kwargs = {k: v for k, v in kwargs.items() if k not in ["hook_processed"]}
 
         return self.DB.get(
-            requester_id=self.requester.id,
+            requester_id=self.requester.id,  # type: ignore[union-attr]
             model_registry=self.model_registry,
             return_type="dto",
             override_dto=self.model_registry.apply(self.Model),
@@ -2689,7 +2689,7 @@ class AbstractBLLManager(ABC):
 
             if hasattr(self.DB, sort_by):
                 column = getattr(self.DB, sort_by)
-                if sort_order.lower() == "asc":
+                if sort_order.lower() == "asc":  # type: ignore[union-attr]
                     order_by = [asc(column)]
                 else:
                     order_by = [desc(column)]
@@ -2708,12 +2708,12 @@ class AbstractBLLManager(ABC):
         search_filters = self.build_search_filters(complex_search_params)
         # Combine with any explicitly passed filters
         combined_filters = filters + search_filters if filters else search_filters
-        combined_filters = self._normalize_filters(combined_filters)
+        combined_filters = self._normalize_filters(combined_filters)  # type: ignore[assignment]
 
         self.parent_validation(simple_kwargs)
 
         return self.DB.list(
-            requester_id=self.requester.id,
+            requester_id=self.requester.id,  # type: ignore[union-attr]
             model_registry=self.model_registry,
             return_type=return_type,
             override_dto=self.model_registry.apply(self.Model),
@@ -2788,7 +2788,7 @@ class AbstractBLLManager(ABC):
 
             if hasattr(self.DB, sort_by):
                 column = getattr(self.DB, sort_by)
-                if sort_order.lower() == "asc":
+                if sort_order.lower() == "asc":  # type: ignore[union-attr]
                     order_by = [asc(column)]
                 else:
                     order_by = [desc(column)]
@@ -2796,12 +2796,12 @@ class AbstractBLLManager(ABC):
         # Generate filters from complex search_params only
         search_filters = self.build_search_filters(complex_search_params)
         combined_filters = filters + search_filters if filters else search_filters
-        combined_filters = self._normalize_filters(combined_filters)
+        combined_filters = self._normalize_filters(combined_filters)  # type: ignore[assignment]
 
         # Pass the converted SQLAlchemy constructs to the DBClass.list method
         # Use combined_filters for the 'filters' arg and simple_kwargs for '**kwargs'
         return self.DB.list(
-            requester_id=self.requester.id,
+            requester_id=self.requester.id,  # type: ignore[union-attr]
             model_registry=self.model_registry,
             return_type=return_type,  # Use the saved value instead of hardcoding "dto"
             options=options,
@@ -2893,7 +2893,7 @@ class AbstractBLLManager(ABC):
 
         # Update the entity
         updated_entity = self.DB.update(
-            requester_id=self.requester.id,
+            requester_id=self.requester.id,  # type: ignore[union-attr]
             model_registry=self.model_registry,
             return_type="dto",
             override_dto=self.model_registry.apply(self.Model),
@@ -2947,7 +2947,7 @@ class AbstractBLLManager(ABC):
         """Delete an entity by ID."""
         # Delete the entity
         self.DB.delete(
-            requester_id=self.requester.id,
+            requester_id=self.requester.id,  # type: ignore[union-attr]
             model_registry=self.model_registry,
             id=id,
         )
@@ -2986,7 +2986,7 @@ class AbstractBLLManager(ABC):
             )
 
     # checks if parent exists by reference_id
-    def parent_validation(self, args):
+    def parent_validation(self, args):  # type: ignore[no-redef]
         """Override this method to add validation logic for parent entities."""
         if self._parent:
             ref_model = self._parent.Model.Reference

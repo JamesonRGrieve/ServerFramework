@@ -44,7 +44,7 @@ class AbstractSVCTest(AbstractTest):
     """
 
     # Class to be tested
-    service_class: Type[T] = None
+    service_class: Type[T] = None  # type: ignore[assignment, valid-type]
 
     # Default service initialization parameters
     service_init_params: Dict[str, Any] = {
@@ -87,7 +87,7 @@ class AbstractSVCTest(AbstractTest):
         init_params = {**self.service_init_params}
 
         # Initialize the service
-        service = self.service_class(requester_id=requester_id, db=db, **init_params)
+        service = self.service_class(requester_id=requester_id, db=db, **init_params)  # type: ignore[misc]
 
         yield service
 
@@ -118,7 +118,7 @@ class AbstractSVCTest(AbstractTest):
         # Apply mock patches as needed
         with patch.multiple(self.service_class, **self._get_mocks()):
             # Initialize the service
-            service = self.service_class(
+            service = self.service_class(  # type: ignore[misc]
                 requester_id=requester_id, db=db, **init_params
             )
 

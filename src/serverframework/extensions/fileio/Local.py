@@ -304,7 +304,7 @@ class LocalFileSystem(AbstractFileIOProvider):
                                     removable_storage.append(
                                         {
                                             "device": f"/dev/{device}",
-                                            "mountpoint": mounted_at,
+                                            "mountpoint": mounted_at,  # type: ignore[dict-item]
                                             "type": "removable",
                                         }
                                     )

@@ -2266,7 +2266,7 @@ class TestInviteeManager(AbstractBLLTest):
         create_data = self.create_fields.copy()
         for field in create_data:
             if callable(create_data[field]):
-                create_data[field] = create_data[field]()
+                create_data[field] = create_data[field]()  # type: ignore[operator]
 
         # Set the invitation_id from our manually created invitation
         create_data["invitation_id"] = invitation.id
@@ -3018,7 +3018,7 @@ class TestPermissionManager(AbstractBLLTest):
         return permission
 
     def _create_role_permission(
-        self, role_id: str, resource_id: str, team_id: str = None, **kwargs
+        self, role_id: str, resource_id: str, team_id: str = None, **kwargs  # type: ignore[assignment]
     ):
         """Helper method to create a role-specific permission (Case 4)."""
         # For team-specific roles, we need to include the team_id

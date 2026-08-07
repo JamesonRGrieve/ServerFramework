@@ -157,9 +157,9 @@ def _fixtures_from_sdl(
     for d in document.definitions:
         if d.kind != "object_type_definition":
             continue
-        if d.name.value in {"Query", "Mutation", "Subscription"}:
+        if d.name.value in {"Query", "Mutation", "Subscription"}:  # type: ignore[attr-defined]
             continue
-        type_names.append(d.name.value)
+        type_names.append(d.name.value)  # type: ignore[attr-defined]
     out: List[FederationFixture] = []
     for type_name in type_names:
         out.append(

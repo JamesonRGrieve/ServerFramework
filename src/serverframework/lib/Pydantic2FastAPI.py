@@ -13,7 +13,9 @@ from typing import (
     ClassVar,
     Dict,
     List,
+    Literal,
     Optional,
+    Protocol,
     Set,
     Tuple,
     Type,
@@ -58,10 +60,19 @@ except ImportError:  # pragma: no cover - fallback for alternate Pydantic packag
         PydanticUndefined = _UndefinedSentinel()  # type: ignore
 
 # Compatibility patch for Pydantic 2.x ValidationError.from_exception_data
+#
+# This probes the installed Pydantic's tolerance for the older/looser
+# `line_errors` shape (a `msg` key instead of the newer strict `input` key)
+# by deliberately calling it with data that does NOT conform to the current
+# `InitErrorDetails` TypedDict -- that mismatch is the point of the probe,
+# not a bug to fix. If the installed Pydantic rejects it (TypeError), a
+# compat shim classmethod is monkey-patched onto the class itself. Both the
+# probe and the monkey-patch are dynamic-metaprogramming patterns that
+# can't be expressed in Pydantic's own (C-extension-backed) stubs.
 try:
     ValidationError.from_exception_data(
         "pydantic_compat_test",
-        [{"type": "value_error", "loc": ("field",), "msg": "compat"}],
+        [{"type": "value_error", "loc": ("field",), "msg": "compat"}],  # type: ignore[typeddict-item, typeddict-unknown-key]
     )
 except TypeError:
     _original_from_exception_data = ValidationError.from_exception_data
@@ -70,7 +81,7 @@ except TypeError:
         cls,
         title,
         line_errors,
-        input_type: str = "python",
+        input_type: Literal["python", "json"] = "python",
         hide_input: bool = False,
     ):
         normalized_errors = []
@@ -81,12 +92,12 @@ except TypeError:
             normalized_errors.append({**error, "ctx": ctx})
         return _original_from_exception_data(
             title,
-            normalized_errors,
+            normalized_errors,  # type: ignore[arg-type]
             input_type=input_type,
             hide_input=hide_input,
         )
 
-    ValidationError.from_exception_data = classmethod(_compat_from_exception_data)
+    ValidationError.from_exception_data = classmethod(_compat_from_exception_data)  # type: ignore[method-assign, assignment]
 
 from serverframework.lib.ContentNegotiation import (
     MIME_JSON,
@@ -96,6 +107,25 @@ from serverframework.lib.ContentNegotiation import (
     MIME_YAML,
 )
 from serverframework.lib.Environment import inflection
+
+if TYPE_CHECKING:
+
+    class NetworkModelProtocol(Protocol):
+        """Structural shape of a model's dynamically-generated ``Network``
+        class (built at runtime by
+        ``PydanticUtility._generate_network_class`` via ``type(...)`` and
+        attached as ``model.Network``). Declared here only for static
+        analysis of this file's ``network_model`` usages -- the real class
+        can't be expressed concretely since it's generated per-model.
+        """
+
+        GET: Type[BaseModel]
+        LIST: Type[BaseModel]
+        POST: Type[BaseModel]
+        PUT: Type[BaseModel]
+        SEARCH: Type[BaseModel]
+        ResponseSingle: Type[BaseModel]
+        ResponsePlural: Type[BaseModel]
 
 # ---------------------------------------------------------------------------
 # Multi-format OpenAPI helpers — content negotiation advertisement
@@ -511,7 +541,7 @@ def create_query_model_dependency(
         except ValidationError as e:
             raise HTTPException(status_code=422, detail=e.errors())
 
-    return dependency
+    return dependency  # type: ignore[return-value]
 
 
 class ExampleGenerator:
@@ -851,7 +881,7 @@ class ExampleGenerator:
                         continue
                     elif field_info.default_factory is not None:
                         try:
-                            generated_default = field_info.default_factory()
+                            generated_default = field_info.default_factory()  # type: ignore[call-arg]
                         except Exception as exc:  # pragma: no cover - defensive guard
                             logger.debug(
                                 "Default factory for %s on %s raised %s",
@@ -876,7 +906,7 @@ class ExampleGenerator:
 
                 # Generate example value based on field type and name
                 example[field_name] = ExampleGenerator.get_example_value(
-                    field_type, field_name
+                    field_type, field_name  # type: ignore[arg-type]
                 )
         except AttributeError as e:
             raise e
@@ -888,7 +918,7 @@ class ExampleGenerator:
 
     @staticmethod
     def generate_operation_examples(
-        network_model_cls: Type[BaseModel], resource_name: str
+        network_model_cls: "NetworkModelProtocol", resource_name: str
     ) -> Dict[str, Dict]:
         """
         Generate examples for all operation types (create, update, get, search).
@@ -927,7 +957,7 @@ class ExampleGenerator:
             examples["get"] = {resource_name: resource_example}
 
             # List example
-            examples["list"] = {resource_name_plural: [resource_example]}
+            examples["list"] = {resource_name_plural: [resource_example]}  # type: ignore[dict-item]
 
         # Generate create example
         if post_cls:
@@ -958,7 +988,7 @@ class ExampleGenerator:
                 # Also generate batch update example
                 examples["batch_update"] = {
                     resource_name: update_example,
-                    "target_ids": [
+                    "target_ids": [  # type: ignore[dict-item]
                         ExampleGenerator.generate_uuid(),
                         ExampleGenerator.generate_uuid(),
                     ],
@@ -1001,7 +1031,7 @@ class ExampleGenerator:
 
         # Generate batch delete example
         examples["batch_delete"] = {
-            "target_ids": [
+            "target_ids": [  # type: ignore[dict-item]
                 ExampleGenerator.generate_uuid(),
                 ExampleGenerator.generate_uuid(),
             ]
@@ -1143,7 +1173,9 @@ def _render_degradation_sentinel(result: Any) -> Optional[Response]:
     return None
 
 
-def _degradation_responses_annotation(manager_class: Any) -> Dict[int, Dict[str, Any]]:
+def _degradation_responses_annotation(
+    manager_class: Any,
+) -> Dict[Union[int, str], Dict[str, Any]]:
     """Item 48 — build OpenAPI ``responses`` entries for managers whose
     underlying provider declares ``degradation_policy = QUEUE_AND_RETRY``.
 
@@ -1287,7 +1319,7 @@ def static_route(
 
     def decorator(func: Callable) -> Callable:
         if not hasattr(func, "_static_route_config"):
-            func._static_route_config = []
+            func._static_route_config = []  # type: ignore[attr-defined]
 
         route_config: CustomRouteConfig = CustomRouteConfig(
             path=path,
@@ -1302,7 +1334,7 @@ def static_route(
             is_static=True,
         )
 
-        func._static_route_config.append(route_config)
+        func._static_route_config.append(route_config)  # type: ignore[attr-defined]
         return func
 
     return decorator
@@ -1457,7 +1489,7 @@ def extract_body_data(
     # Handle list of items
     if isinstance(body, list):
         return [
-            extract_body_data(item, resource_name, resource_name_plural)
+            extract_body_data(item, resource_name, resource_name_plural)  # type: ignore[misc]
             for item in body
         ]
 
@@ -1516,7 +1548,7 @@ def serialize_for_response(
         return None
 
     if isinstance(data, list):
-        return [serialize_for_response(item) for item in data]
+        return [serialize_for_response(item) for item in data]  # type: ignore[misc]
 
     from pydantic import BaseModel
 
@@ -1527,7 +1559,7 @@ def serialize_for_response(
             logger.error(f"Failed to serialize model {type(data).__name__}: {e}")
             if hasattr(data, "dict"):
                 return data.dict()
-            return str(data)
+            return str(data)  # type: ignore[return-value]
 
     return data
 
@@ -1718,9 +1750,9 @@ def create_manager_factory(
         if isinstance(raw_headers, dict):
             items = raw_headers.items()
         elif isinstance(raw_headers, list):
-            items = raw_headers
+            items = raw_headers  # type: ignore[assignment]
         else:
-            items = []
+            items = []  # type: ignore[assignment]
 
         for key, value in items:
             if isinstance(key, bytes):
@@ -1793,7 +1825,7 @@ def create_manager_factory(
         except TypeError:
             return manager_class(requester_id=requester_id)
 
-    factory_function.__manager_class__ = manager_class
+    factory_function.__manager_class__ = manager_class  # type: ignore[attr-defined]
     return factory_function
 
 
@@ -1803,7 +1835,7 @@ def handle_resource_operation_error(err: Exception) -> None:
         try:
             details = err.errors()
         except TypeError:
-            details = str(err)
+            details = str(err)  # type: ignore[assignment]
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail={"message": "Validation error", "details": details},
@@ -1865,7 +1897,7 @@ def register_route(
     auth_type: AuthType,
     route_auth_overrides: Dict[RouteType, AuthType],
     examples: Dict[str, Dict[str, Any]],
-    child_manager_class: Type["AbstractBLLManager"] = None,
+    child_manager_class: Optional[Type["AbstractBLLManager"]] = None,
     parent_param_name: Optional[str] = None,
     manager_property: Optional[str] = None,
 ) -> None:
@@ -1923,6 +1955,9 @@ def register_route(
     if manager_property:
         resource_name_plural = manager_property
         resource_name = inflection.singular_noun(resource_name_plural)
+        # manager_property is only ever set together with child_manager_class
+        # by the nested-resource caller (see register_custom_route below).
+        assert child_manager_class is not None
         child_base_model = child_manager_class.BaseModel
         if model_registry and hasattr(model_registry, "apply"):
             try:
@@ -1936,7 +1971,7 @@ def register_route(
                 f"Child base model {child_base_model} does not define Network model."
             )
             return
-        network_model: Type[BaseModel] = child_base_model.Network
+        network_model: "NetworkModelProtocol" = child_base_model.Network
         target_model = child_base_model
         # network_model: Type[BaseModel] = model_registry.apply(
         #     child_manager_class.BaseModel
@@ -1951,7 +1986,7 @@ def register_route(
                 f"Base model {bound_base_model} does not define Network model."
             )
             return
-        network_model: Type[BaseModel] = bound_base_model.Network
+        network_model = bound_base_model.Network
         target_model = bound_base_model
         # network_model: Type[BaseModel] = model_registry.apply(base_model).Network
 
@@ -2013,7 +2048,9 @@ def register_route(
         )
 
         # Prepare responses with examples — advertise all negotiable formats
-        responses: Dict[int, Dict[str, Any]] = {
+        # (typed with `Union[int, str]` keys to match APIRouter's
+        # `responses` parameter, which also accepts "default" etc.)
+        responses: Dict[Union[int, str], Dict[str, Any]] = {
             200: {"content": _multiformat_response_content(examples.get("get"))}
         }
         responses.update(degradation_responses)
@@ -2028,12 +2065,17 @@ def register_route(
             dependencies=dependencies,
             responses=responses,
         )
+        # `network_model.GET` is a live runtime expression here (no
+        # `from __future__ import annotations` in this module), evaluated
+        # at def-time to the per-model class FastAPI needs for query
+        # validation. mypy can't resolve a dynamic attribute access used
+        # as an annotation, so this is ignored rather than restructured.
         async def get_resource(
             request: Dict = Depends(get_request_info),
             id: str = Path(
                 ..., description=f"{stringcase.titlecase(resource_name)} ID"
             ),
-            query_params: network_model.GET = Depends(get_query_dependency),
+            query_params: network_model.GET = Depends(get_query_dependency),  # type: ignore[name-defined]
             manager=Depends(manager_factory),
         ):
             try:
@@ -2184,9 +2226,9 @@ def register_route(
                         # Don't break the response if invitee lookup fails
                         entity["invitees"] = []
 
-                _attach_user_includes_to_entity(serialized_entity)
+                _attach_user_includes_to_entity(serialized_entity)  # type: ignore[arg-type]
                 # Attach invitees for Invitation resources when requested
-                _attach_invitees_to_entity(serialized_entity)
+                _attach_invitees_to_entity(serialized_entity)  # type: ignore[arg-type]
 
                 # Item 45 — apply field-level ACL after include attachment so
                 # disallowed fields are stripped from the final response shape.
@@ -2206,7 +2248,7 @@ def register_route(
 
                 if include_selection:
                     populated = _populate_includes_on_serialized(
-                        serialized_result, include_selection, model_registry
+                        serialized_result, include_selection, model_registry  # type: ignore[arg-type]
                     )
                     populated = apply_field_acl_to_payload(
                         populated, manager, target_model
@@ -2243,7 +2285,7 @@ def register_route(
         )
 
         # Prepare responses with examples — advertise all negotiable formats
-        responses: Dict[int, Dict[str, Any]] = {
+        responses = {
             200: {"content": _multiformat_response_content(examples.get("list"))}
         }
         responses.update(degradation_responses)
@@ -2260,7 +2302,8 @@ def register_route(
         )
         async def list_resources(
             request: Dict = Depends(get_request_info),
-            query_params: network_model.LIST = Depends(list_query_dependency),
+            # see get_resource() above: dynamic attr-as-annotation, live at runtime
+            query_params: network_model.LIST = Depends(list_query_dependency),  # type: ignore[name-defined]
             manager=Depends(manager_factory),
         ):
             try:
@@ -2442,7 +2485,7 @@ def register_route(
                             except Exception:
                                 entity[inc] = None
 
-                _attach_user_includes_to_items(serialized_items)
+                _attach_user_includes_to_items(serialized_items)  # type: ignore[arg-type]
 
                 def _attach_invitees_to_items(items: List[Dict[str, Any]]):
                     """Attach invitees lists to each invitation entity in a list when include=invitees."""
@@ -2472,7 +2515,7 @@ def register_route(
                             entity["invitees"] = []
 
                 # Attach invitees for Invitation resources when requested
-                _attach_invitees_to_items(serialized_items)
+                _attach_invitees_to_items(serialized_items)  # type: ignore[arg-type]
 
                 fields_selection = _normalize_projection_values(query_params.fields)
 
@@ -2512,7 +2555,7 @@ def register_route(
 
                 if include_selection:
                     populated_items = _populate_includes_on_serialized(
-                        serialized_results, include_selection, model_registry
+                        serialized_results, include_selection, model_registry  # type: ignore[arg-type]
                     )
                     if isinstance(populated_items, list):
                         populated_items = [
@@ -2546,7 +2589,7 @@ def register_route(
         )
 
         # Prepare responses with examples — advertise all negotiable formats
-        responses: Dict[int, Dict[str, Any]] = {
+        responses = {
             201: {"content": _multiformat_response_content(examples.get("create"))}
         }
         responses.update(degradation_responses)
@@ -2601,10 +2644,10 @@ def register_route(
                         post_data.dict() if hasattr(post_data, "dict") else post_data
                     )
                     if parent_param_name and request:
-                        item_data[parent_param_name] = request["path_params"][
+                        item_data[parent_param_name] = request["path_params"][  # type: ignore[call-overload]
                             parent_param_name
                         ]
-                    created_instance = get_manager(manager, manager_property).create(
+                    created_instance = get_manager(manager, manager_property).create(  # type: ignore[arg-type]
                         **item_data
                     )
                     if (resp := _render_degradation_sentinel(created_instance)) is not None:
@@ -2660,7 +2703,7 @@ def register_route(
         )
 
         # Prepare responses with examples — advertise all negotiable formats
-        responses: Dict[int, Dict[str, Any]] = {
+        responses = {
             200: {"content": _multiformat_response_content(examples.get("update"))}
         }
         responses.update(degradation_responses)
@@ -2679,7 +2722,8 @@ def register_route(
             id: str = Path(
                 ..., description=f"{stringcase.titlecase(resource_name)} ID"
             ),
-            body: network_model.PUT = Body(...),
+            # see get_resource() above: dynamic attr-as-annotation, live at runtime
+            body: network_model.PUT = Body(...),  # type: ignore[name-defined]
             manager=Depends(manager_factory),
         ):
             try:
@@ -2702,7 +2746,7 @@ def register_route(
                 # Serialize update result for reliable validation
                 actual_manager = get_manager(manager, manager_property)
                 try:
-                    update_result = actual_manager.update(id, **update_data)
+                    update_result = actual_manager.update(id, **update_data)  # type: ignore[arg-type]
                     if (
                         resp := _render_degradation_sentinel(update_result)
                     ) is not None:
@@ -2727,7 +2771,7 @@ def register_route(
                             except TypeError:
                                 root_mgr = root_manager_cls(requester_id=env("ROOT_ID"))
 
-                            update_result = root_mgr.update(id, **update_data)
+                            update_result = root_mgr.update(id, **update_data)  # type: ignore[arg-type]
                         except Exception:
                             # If fallback fails, re-raise the original HTTPException
                             raise
@@ -3034,7 +3078,7 @@ def register_route(
 
                     if include_selection:
                         populated = _populate_includes_on_serialized(
-                            serialized_fresh, include_selection, model_registry
+                            serialized_fresh, include_selection, model_registry  # type: ignore[arg-type]
                         )
                         return JSONResponse(
                             content=jsonable_encoder({resource_name: populated}),
@@ -3098,7 +3142,7 @@ def register_route(
         )
 
         # Prepare responses with examples — advertise all negotiable formats
-        responses: Dict[int, Dict[str, Any]] = {
+        responses = {
             200: {"content": _multiformat_response_content(examples.get("search"))}
         }
 
@@ -3113,7 +3157,8 @@ def register_route(
         )
         async def search_resources(
             request: Dict = Depends(get_request_info),
-            criteria: network_model.SEARCH = Body(...),
+            # see get_resource() above: dynamic attr-as-annotation, live at runtime
+            criteria: network_model.SEARCH = Body(...),  # type: ignore[name-defined]
             manager=Depends(manager_factory),
             include: Optional[Union[List[str], str]] = Query(None),
             fields: Optional[Union[List[str], str]] = Query(None),
@@ -3129,7 +3174,7 @@ def register_route(
                     criteria, resource_name, resource_name_plural
                 )
                 if parent_param_name and request:
-                    search_data[parent_param_name] = request["path_params"][
+                    search_data[parent_param_name] = request["path_params"][  # type: ignore[call-overload]
                         parent_param_name
                     ]
 
@@ -3223,7 +3268,7 @@ def register_route(
                     actual_include, target_model, resource_name, registry
                 )
 
-                search_results = actual_manager.search(
+                search_results = actual_manager.search(  # type: ignore[arg-type]
                     include=actual_include,
                     fields=actual_fields,
                     offset=actual_offset,
@@ -3263,7 +3308,7 @@ def register_route(
 
                 if include_selection:
                     populated_items = _populate_includes_on_serialized(
-                        serialized_search_results, include_selection, model_registry
+                        serialized_search_results, include_selection, model_registry  # type: ignore[arg-type]
                     )
                     return JSONResponse(
                         content=jsonable_encoder(
@@ -3281,7 +3326,7 @@ def register_route(
         summary = f"Batch update {resource_name_plural}"
 
         # Create dynamic batch update model
-        BatchUpdateModel = create_model(
+        BatchUpdateModel = create_model(  # type: ignore[call-overload]
             f"{stringcase.capitalcase(resource_name)}BatchUpdateModel",
             **{
                 resource_name: (Dict[str, Any], ...),
@@ -3290,7 +3335,7 @@ def register_route(
         )
 
         # Prepare responses with examples — advertise all negotiable formats
-        responses: Dict[int, Dict[str, Any]] = {
+        responses = {
             200: {"content": _multiformat_response_content(examples.get("batch_update"))}
         }
 
@@ -3304,12 +3349,12 @@ def register_route(
             openapi_extra=_multiformat_request_body_extra(),
         )
         async def batch_update_resources(
-            body: BatchUpdateModel = Body(...),
+            body: BatchUpdateModel = Body(...),  # type: ignore[valid-type]
             manager=Depends(manager_factory),
         ):
             try:
                 update_data = getattr(body, resource_name)
-                target_ids = body.target_ids
+                target_ids = body.target_ids  # type: ignore[attr-defined]
 
                 items = [{"id": id, "data": update_data} for id in target_ids]
 
@@ -3621,7 +3666,7 @@ def create_router_from_manager(
             routes_to_register = [RouteType.UPDATE]
 
     # Create main router
-    router = APIRouter(prefix=prefix, tags=tags)
+    router = APIRouter(prefix=prefix, tags=tags)  # type: ignore[arg-type]
 
     # Register standard routes
     for route_type in routes_to_register:
@@ -3800,7 +3845,7 @@ def create_router_from_manager(
 
         # Create nested router
         nested_prefix = f"/{{{resource_name}_id}}/{child_resource_name}"
-        nested_router = APIRouter(prefix=nested_prefix, tags=tags)
+        nested_router = APIRouter(prefix=nested_prefix, tags=tags)  # type: ignore[arg-type]
 
         # Register routes for nested resource
         nested_routes = nested_config.routes_to_register
@@ -3824,7 +3869,7 @@ def create_router_from_manager(
             # Convert dict to CustomRouteConfig if needed
             if isinstance(custom_route_config, dict):
                 # Convert method to uppercase for HTTPMethod enum
-                method_str: str = custom_route_config["method"].upper()
+                method_str: str = custom_route_config["method"].upper()  # type: ignore[no-redef]
                 custom_route = CustomRouteConfig(
                     path=custom_route_config["path"],
                     method=HTTPMethod(method_str),

@@ -20,7 +20,7 @@ from serverframework.lib.Pydantic2FastAPI import generate_routers_from_model_reg
 try:
     from zoneinfo import ZoneInfo
 except ImportError:
-    from backports.zoneinfo import ZoneInfo
+    from backports.zoneinfo import ZoneInfo  # type: ignore[no-redef]
 
 import stringcase
 from ordered_set import OrderedSet
@@ -170,7 +170,7 @@ class PydanticUtility:
                     if resolved:
                         from typing import List as ListType
 
-                        processed[field_name] = ListType[resolved]
+                        processed[field_name] = ListType[resolved]  # type: ignore[valid-type]
                     else:
                         processed[field_name] = field_type
                 else:
@@ -594,7 +594,7 @@ class PydanticUtility:
 
                     # Register model by normalized name for lookup
                     base_name = name.replace("Model", "").lower()
-                    self.register_model(cls, base_name)
+                    self.register_model(cls, base_name)  # type: ignore[arg-type]
 
             for model_name, model_class in model_classes:
                 base_name = model_name.replace("Model", "")
@@ -621,9 +621,9 @@ class PydanticUtility:
                 if manager_class:
                     relationships.append((model_class, ref_model_class, manager_class))
                     if not getattr(model_class, "Manager", None):
-                        model_class.Manager = manager_class
+                        model_class.Manager = manager_class  # type: ignore[attr-defined]
 
-        return relationships
+        return relationships  # type: ignore[return-value]
 
     def collect_model_fields(
         self, model_relationships: List[Tuple]
@@ -665,7 +665,7 @@ class PydanticUtility:
             model_fields_mapping: Dictionary mapping models to their fields
         """
         # Create a temporary lookup based on field names
-        field_to_potential_model = {}
+        field_to_potential_model = {}  # type: ignore[var-annotated]
 
         # Scan all models and their fields
         for model_class, fields in model_fields_mapping.items():
@@ -760,7 +760,7 @@ class PydanticUtility:
             # Check if the element type is in our model fields
             if element_type in model_fields_cache:
                 relationship_cache[cache_key] = element_type
-                return element_type
+                return element_type  # type: ignore[return-value]
 
         # Handle Optional types (Union[type, None])
         if get_origin(field_type) is Union:
@@ -1892,7 +1892,7 @@ class ModelRegistry(AbstractRegistry):
                         raise Exception(
                             "Failed to connect to database after maximum retries"
                         )
-                    time.sleep(5)
+                    time.sleep(5)  # type: ignore[attr-defined]
 
         custom_db_info = {
             "type": self.database_manager.DATABASE_TYPE,
@@ -1970,7 +1970,7 @@ class ModelRegistry(AbstractRegistry):
             logger.info(f"Skipping seeding because SEED_DATA='{seed_db_value}'")
 
         logger.debug("Registry committed successfully")
-        return self
+        return self  # type: ignore[return-value]
 
     def _process_extensions(self) -> None:
         """Process all registered model extensions."""
@@ -2333,7 +2333,7 @@ class ModelRegistry(AbstractRegistry):
                 table.info["extension"] = owner
 
         for target_pydantic, extension_pydantics in self.extension_models.items():
-            sa_model = self.db_models.get(target_pydantic)
+            sa_model = self.db_models.get(target_pydantic)  # type: ignore[assignment]
             if sa_model is None or not hasattr(sa_model, "__table__"):
                 continue
             extending = {
@@ -3212,7 +3212,7 @@ class ModelRegistry(AbstractRegistry):
 
     def get_bound_models(self) -> Set[Type[BaseModel]]:
         """Get all models bound to this registry."""
-        return self.bound_models.copy()
+        return self.bound_models.copy()  # type: ignore[return-value]
 
     def is_model_bound(self, model: Type[BaseModel]) -> bool:
         """Check if a model is bound to this registry."""

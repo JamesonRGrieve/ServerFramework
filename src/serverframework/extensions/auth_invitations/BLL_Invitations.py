@@ -49,7 +49,7 @@ class InvitationModel(
     RoleModel.Reference.Optional,
     metaclass=ModelMeta,
 ):
-    Manager: ClassVar[Type["InvitationManager"]] = None
+    Manager: ClassVar[Type["InvitationManager"]] = None  # type: ignore[assignment]
     code: Optional[str] = Field(None, description="Invitation code")
     max_uses: Optional[int] = Field(None, description="Maximum number of uses allowed")
     expires_at: Optional[datetime] = Field(None, description="Expiration date/time")
@@ -558,10 +558,10 @@ class InviteeModel(
     ApplicationModel.Optional,
     UpdateMixinModel.Optional,
     UserModel.Reference.Optional,
-    InvitationModel.Reference,
+    InvitationModel.Reference,  # type: ignore[name-defined]
     metaclass=ModelMeta,
 ):
-    Manager: ClassVar[Type["InviteeManager"]] = None
+    Manager: ClassVar[Type["InviteeManager"]] = None  # type: ignore[assignment]
     email: str = Field(..., description="Email of the invitee")
     declined_at: Optional[datetime] = Field(
         None, description="When the invitation was declined"
@@ -573,7 +573,7 @@ class InviteeModel(
     table_comment: ClassVar[str] = "Tracks specific individuals invited to join a team"
 
     class Create(
-        BaseModel, InvitationModel.Reference.ID, UserModel.Reference.ID.Optional
+        BaseModel, InvitationModel.Reference.ID, UserModel.Reference.ID.Optional  # type: ignore[name-defined]
     ):
         email: str = Field(..., description="Email of the invitee")
         declined_at: Optional[datetime] = Field(None)
@@ -585,7 +585,7 @@ class InviteeModel(
 
     class Search(
         ApplicationModel.Search,
-        InvitationModel.Reference.ID.Search,
+        InvitationModel.Reference.ID.Search,  # type: ignore[name-defined]
         UserModel.Reference.ID.Search,
     ):
         email: Optional[StringSearchModel] = None

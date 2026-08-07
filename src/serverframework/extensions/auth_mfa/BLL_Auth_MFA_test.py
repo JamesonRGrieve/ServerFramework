@@ -39,7 +39,7 @@ class TestMultifactorMethodManager(AbstractBLLTest, ExtensionServerMixin):
         "is_primary": True,
         "always_ask": True,
     }
-    unique_fields = []  # No unique fields for MFA methods
+    unique_fields: list[str] = []  # No unique fields for MFA methods  # type: ignore[var-annotated]
     parent_entities = [
         ParentEntity(
             name="user",
@@ -260,7 +260,7 @@ class TestMultifactorRecoveryCodeManager(AbstractBLLTest, ExtensionServerMixin):
         "is_used": True,
         "used_at": datetime.now(),
     }
-    unique_fields = []  # No unique fields for recovery codes
+    unique_fields: list[str] = []  # No unique fields for recovery codes  # type: ignore[var-annotated]
     parent_entities = [
         ParentEntity(
             name="mfa_method",

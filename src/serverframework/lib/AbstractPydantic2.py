@@ -343,7 +343,7 @@ class FieldProcessor:
         self, field_name: str, field_type: Any | None = None, context: str | None = None
     ) -> bool:
         return (
-            field_name.startswith("_")
+            field_name.startswith("_")  # type: ignore[return-value]
             or (
                 context in ("input", "create", "update")
                 and field_name in self.READONLY_FIELDS

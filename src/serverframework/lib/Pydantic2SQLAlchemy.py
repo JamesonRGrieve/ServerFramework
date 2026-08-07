@@ -246,7 +246,7 @@ def clear_registry_cache() -> None:
         try:
             import starlette.concurrency
 
-            context = starlette.concurrency.context.get()
+            context = starlette.concurrency.context.get()  # type: ignore[attr-defined]
             if context and hasattr(context, "state"):
                 app_state = context.state
                 if hasattr(app_state, "DB") and hasattr(
@@ -291,7 +291,7 @@ def get_entity_module_class(
     """
 
     # Try to find in calling frame first
-    calling_frame = inspect.currentframe().f_back
+    calling_frame = inspect.currentframe().f_back  # type: ignore[union-attr]
     if calling_frame:
         # Check the caller's globals first
         caller_globals = calling_frame.f_globals
@@ -497,11 +497,11 @@ def _create_column_from_field(
         params["primary_key"] = True
         params["nullable"] = False
         # Ensure proper type for primary key - always use String for IDs
-        sa_type = String
+        sa_type = String  # type: ignore[assignment]
 
     # Force String type for all ID fields (UUID pattern)
     if name.endswith("_id") or name == "id":
-        sa_type = String
+        sa_type = String  # type: ignore[assignment]
 
     if field_info:
         # Extract description/comment from various possible locations
@@ -562,7 +562,7 @@ def _create_column_from_field(
                 try:
                     from pydantic.fields import PydanticUndefined
                 except ImportError:
-                    PydanticUndefined = None
+                    PydanticUndefined = None  # type: ignore[assignment]
 
             # Only set default if it's not PydanticUndefined
             if PydanticUndefined is None or default_value is not PydanticUndefined:
@@ -712,7 +712,7 @@ def _ensure_pending_relationship_targets(
         if pydantic_target in model_registry.db_models:
             continue
 
-        in_progress = getattr(model_registry, "_sqlalchemy_models_in_progress", set())
+        in_progress = getattr(model_registry, "_sqlalchemy_models_in_progress", set())  # type: ignore[var-annotated]
         if pydantic_target in in_progress:
             continue
 
@@ -1005,7 +1005,7 @@ def create_sqlalchemy_model(
         field_type = pydantic_model.model_fields[field_name].annotation
 
         # Create SQLAlchemy column from field
-        column = _create_column_from_field(field_name, field_type, field_info)
+        column = _create_column_from_field(field_name, field_type, field_info)  # type: ignore[arg-type]
         if column is not None:
             class_dict[_sanitize_field_name(field_name)] = column
 
@@ -1022,7 +1022,7 @@ def create_sqlalchemy_model(
         model_registry.db_models[pydantic_model] = model_class
         logger.debug(f"Registered {model_name} in isolated ModelRegistry")
 
-        model_class.dto = pydantic_model
+        model_class.dto = pydantic_model  # type: ignore[attr-defined]
 
         return model_class
     finally:
@@ -1362,7 +1362,7 @@ class ModelConverter:
             try:
                 from pydantic.fields import PydanticUndefined
             except ImportError:
-                PydanticUndefined = None
+                PydanticUndefined = None  # type: ignore[assignment]
 
         if PydanticUndefined is not None:
             keys_to_remove = []
@@ -1682,7 +1682,7 @@ class DatabaseMixin:
 
 # Backward compatibility registry for tracking extensions
 # In the new architecture, this is only used for test compatibility
-_EXTENSION_REGISTRY_COMPAT = {}
+_EXTENSION_REGISTRY_COMPAT = {}  # type: ignore[var-annotated]
 
 # Snapshots of model state taken before extensions mutate them,
 # keyed by (module, qualname). Used by reset_extension_system() to
@@ -1729,8 +1729,8 @@ def extension_model(
 
     def decorator(extension_class: Type[BaseModel]) -> Type[BaseModel]:
         # Store metadata for registry system - NO GLOBAL STATE
-        extension_class._extension_target = target_model
-        extension_class._is_extension_model = True
+        extension_class._extension_target = target_model  # type: ignore[attr-defined]
+        extension_class._is_extension_model = True  # type: ignore[attr-defined]
 
         # For backward compatibility, track in compatibility registry
         target_key = f"{target_model.__module__}.{target_model.__name__}"
@@ -1813,7 +1813,7 @@ def _undo_model_extension(target_model: Type[BaseModel]) -> None:
         target_model.__annotations__.pop(field_name, None)
         if hasattr(target_model, "model_fields"):
             target_model.model_fields.pop(field_name, None)
-    target_model._applied_extension_fields = set()
+    target_model._applied_extension_fields = set()  # type: ignore[attr-defined]
 
 
 def _apply_model_extension(
@@ -1851,9 +1851,9 @@ def _apply_model_extension(
     if not hasattr(target_model, "__annotations__"):
         target_model.__annotations__ = {}
     if not hasattr(target_model, "model_fields"):
-        target_model.model_fields = {}
+        target_model.model_fields = {}  # type: ignore[assignment]
     if not hasattr(target_model, "_applied_extension_fields"):
-        target_model._applied_extension_fields = set()
+        target_model._applied_extension_fields = set()  # type: ignore[attr-defined]
 
     # Track changes for logging
     added_fields: List[str] = []
@@ -1891,7 +1891,7 @@ def _apply_model_extension(
             # Add field to target model
             target_model.__annotations__[field_name] = field_type
             added_fields.append(field_name)
-            target_model._applied_extension_fields.add(field_name)
+            target_model._applied_extension_fields.add(field_name)  # type: ignore[attr-defined]
 
             # Copy field info if available from model_fields
             if field_name in extension_fields:

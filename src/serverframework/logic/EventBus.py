@@ -123,7 +123,7 @@ class InMemoryEventBus(AbstractEventBus):
         for handler in list(self._subscribers.get(key, [])):
             result = handler(event)
             if hasattr(result, "__await__"):
-                await result
+                await result  # type: ignore[misc]
 
     def subscribe(self, event_class: Type[BaseModel], handler: EventHandler) -> None:
         key = f"{event_class.__module__}.{event_class.__name__}"

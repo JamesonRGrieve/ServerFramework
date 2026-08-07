@@ -40,7 +40,7 @@ class PermissionModel(
     RoleModel.Reference.Optional,
     metaclass=ModelMeta,
 ):
-    Manager: ClassVar[Type["PermissionManager"]] = None
+    Manager: ClassVar[Type["PermissionManager"]] = None  # type: ignore[assignment]
     resource_type: str = Field(..., description="Type of resource")
     resource_id: str = Field(..., description="ID of the resource")
     can_view: bool = Field(False, description="Whether user/team can view the resource")
@@ -83,7 +83,7 @@ class PermissionModel(
         can_share: Optional[bool] = Field(False)
 
         @model_validator(mode="after")
-        def validate_permission_combination(self) -> "Create":
+        def validate_permission_combination(self) -> "Create":  # type: ignore[name-defined]
             # Case 1: User-specific permission (user_id only)
             if self.user_id and not self.team_id and not self.role_id:
                 return self

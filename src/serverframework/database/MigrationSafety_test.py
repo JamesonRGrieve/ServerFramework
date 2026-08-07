@@ -35,8 +35,8 @@ def _module_with_upgrade_source(
     fallback. This helper does the latter.
     """
     mod = types.ModuleType(f"_synth_migration_{revision}")
-    mod.revision = revision
-    mod.down_revision = down_revision
+    mod.revision = revision  # type: ignore[attr-defined]
+    mod.down_revision = down_revision  # type: ignore[attr-defined]
     full = textwrap.dedent(
         f"""
         from alembic import op
@@ -54,7 +54,7 @@ def _module_with_upgrade_source(
     code = compile(full, f"<synth-{revision}>", "exec")
     exec(code, mod.__dict__)  # noqa: S102 - test-only
     # Stash source on the upgrade function for inspect.getsource fallback.
-    mod._source_blob = full
+    mod._source_blob = full  # type: ignore[attr-defined]
     # Patch inspect.getsource lookup by attaching the source as the function's
     # ``__source__`` and overriding via a wrapper. Simpler: just inline the
     # source into a closure-free function with linecache.

@@ -90,7 +90,7 @@ class ReplayCache:
                 self._evict_expired(now)
                 if len(self._entries) >= self._max:
                     # Drop oldest if still full.
-                    oldest = min(self._entries, key=self._entries.get)
+                    oldest = min(self._entries, key=self._entries.get)  # type: ignore[arg-type]
                     self._entries.pop(oldest, None)
             existing = self._entries.get(key)
             if existing is not None and existing > now:

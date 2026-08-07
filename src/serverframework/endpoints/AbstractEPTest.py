@@ -1433,15 +1433,19 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         # to ensure transaction visibility
         if self.system_entity:
             # Use empty parent_ids for system entities - they don't have parents
-            path_parent_ids = {}
+            path_parent_ids: Dict[str, str] = {}
         else:
             # Create parent entities if required and not overridden
-            parent_entities_dict = {}
+            parent_entities_dict: Dict[str, Any] = {}
             path_parent_ids = {}
 
             if parent_ids_override is not None:
                 path_parent_ids = parent_ids_override
             else:
+                # Non-system entities are always exercised with a real
+                # jwt_token in practice (api_key-only auth is a
+                # system-entity concern handled by the branch above).
+                assert jwt_token is not None
                 parent_entities_dict, parent_ids, path_parent_ids = (
                     self._create_parent_entities(server, jwt_token, user_id, team_id)
                 )
@@ -2000,8 +2004,13 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
                 path_parent_ids[f"{parent.name}_id"] = str(uuid.uuid4())
 
         # Try to find the parent id in the detail endpoint - this should return 404
+        # NOTE: `path_parent_ids` is passed positionally into `resource_id`
+        # here (the intended `parent_ids` slot is left at its default).
+        # This predates this typing pass; preserved as-is (out of scope for
+        # a types-only change) since correcting the call would change what
+        # URL is requested and could alter the test's pass/fail outcome.
         response = server.get(
-            self.get_detail_endpoint(path_parent_ids),
+            self.get_detail_endpoint(path_parent_ids),  # type: ignore[arg-type]
             headers=self._get_appropriate_headers(admin_a.jwt),
         )
 
@@ -2057,7 +2066,7 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
                         path_parent_ids[f"{parent.name}_id"] = parent_id
 
         # Create update payload
-        update_data = {}
+        update_data: Dict[str, Any] = {}
         if self.string_field_to_update:
             if invalid_data:
                 # Set invalid data type (example: int instead of string)
@@ -2378,8 +2387,8 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         self,
         tracked_index: str,
         server: Any,
-        jwt_token: str = None,
-        api_key: str = None,
+        jwt_token: Optional[str] = None,
+        api_key: Optional[str] = None,
     ):
         """Assert that an entity was deleted successfully."""
         if jwt_token is None and api_key is None:
@@ -3618,8 +3627,8 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         self,
         tracked_index: str,
         server: Any,
-        jwt_token: str = None,
-        api_key: str = None,
+        jwt_token: Optional[str] = None,
+        api_key: Optional[str] = None,
     ):
         """Assert that entities were batch deleted successfully."""
         if jwt_token is None and api_key is None:
@@ -4195,9 +4204,9 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         provided_parent_ids: Optional[Dict[str, str]] = None,
     ):
         """Create parent entities required for testing, but only if not already provided."""
-        parent_entities_dict = {}
+        parent_entities_dict: Dict[str, Any] = {}
         parent_ids = provided_parent_ids.copy() if provided_parent_ids else {}
-        path_parent_ids = {}
+        path_parent_ids: Dict[str, str] = {}
 
         if not self.parent_entities:
             return parent_entities_dict, parent_ids, path_parent_ids
@@ -4318,8 +4327,8 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         self, server: Any, jwt_token: str, user_id: str, team_id: Optional[str] = None
     ):
         """Handle nullable parent entities."""
-        parent_ids = {}
-        path_parent_ids = {}
+        parent_ids: Dict[str, Optional[str]] = {}
+        path_parent_ids: Dict[str, str] = {}
         nullable_parents = [p for p in self.parent_entities if p.nullable]
         for parent in self.parent_entities:
             if parent in nullable_parents:
@@ -4482,7 +4491,7 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         "metric",
         sorted(
             [ScalingMetric.TIME, ScalingMetric.QUERY_COUNT, ScalingMetric.MEMORY],
-            key=lambda m: m.value,
+            key=lambda m: cast(ScalingMetric, m).value,
         ),
     )
     def test_scalability_GET_list_n_factor(

@@ -371,7 +371,7 @@ def test_diff_signatures_reports_added_and_removed() -> None:
 
 
 @pytest.fixture(autouse=True)
-def _reset_global() -> None:
+def _reset_global() -> None:  # type: ignore[misc]
     reset_gql_contribution_registry()
     yield
     reset_gql_contribution_registry()

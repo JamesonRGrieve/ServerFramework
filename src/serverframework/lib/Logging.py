@@ -60,7 +60,7 @@ from typing import Any, Mapping, Optional
 try:
     from zoneinfo import ZoneInfo
 except ImportError:
-    from backports.zoneinfo import ZoneInfo
+    from backports.zoneinfo import ZoneInfo  # type: ignore[no-redef]
 
 from loguru import logger
 

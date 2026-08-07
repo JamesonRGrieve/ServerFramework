@@ -111,14 +111,14 @@ class PostgresAdvisoryLock:
             raise RuntimeError(
                 "PostgresAdvisoryLock requires a session_provider injection."
             )
-        self._session = self._session_provider()
+        self._session = self._session_provider()  # type: ignore[assignment]
 
         if self.timeout is not None:
             ms = int(self.timeout * 1000)
-            self._session.execute(text(f"SET LOCAL lock_timeout = '{ms}ms'"))
+            self._session.execute(text(f"SET LOCAL lock_timeout = '{ms}ms'"))  # type: ignore[attr-defined]
 
         try:
-            self._session.execute(
+            self._session.execute(  # type: ignore[attr-defined]
                 text("SELECT pg_advisory_xact_lock(hashtext(:name))"),
                 {"name": self.name},
             )
@@ -175,6 +175,6 @@ async def acquire_lock(
         provider = session_provider or _global_postgres_session_provider
         lock = PostgresAdvisoryLock(name, timeout=timeout, session_provider=provider)
     else:
-        lock = InMemoryAdvisoryLock(name, timeout=timeout)
+        lock = InMemoryAdvisoryLock(name, timeout=timeout)  # type: ignore[assignment]
     async with lock:
         yield

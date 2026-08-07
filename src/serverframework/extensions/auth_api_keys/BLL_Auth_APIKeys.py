@@ -61,7 +61,7 @@ class APIKeyModel(
     """Persistent API key record. The raw key is returned exactly once at
     issuance; only its SHA-256 hash is persisted."""
 
-    Manager: ClassVar[Type["APIKeyManager"]] = None
+    Manager: ClassVar[Type["APIKeyManager"]] = None  # type: ignore[assignment]
     name: str = Field(..., description="Human-readable label for this key")
     key_hash: str = Field(
         ..., description="SHA-256 hex digest of the issued key"

@@ -456,7 +456,7 @@ def build_app(model_registry: ModelRegistry):
         lifespan=lifespan,
         openapi_version="3.1.0",
     )
-    app.extensions = {}
+    app.extensions = {}  # type: ignore[attr-defined]
 
     # ------------------------------------------------------------------
     # CORS configuration (Item 71a).
@@ -1292,7 +1292,7 @@ def build_app(model_registry: ModelRegistry):
             else:
                 raise
 
-    app.openapi = custom_openapi
+    app.openapi = custom_openapi  # type: ignore[method-assign]
 
     # Item 71b — populate the rate-limit registry from every mounted route
     # whose endpoint carries `@rate_limit(...)` metadata. This runs once at

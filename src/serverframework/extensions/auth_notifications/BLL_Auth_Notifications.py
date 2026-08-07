@@ -41,7 +41,7 @@ class NotificationModel(
     """A notification broadcast. ``user_id``/``team_id`` scope it to an
     audience; both null = global."""
 
-    Manager: ClassVar[Type["NotificationManager"]] = None
+    Manager: ClassVar[Type["NotificationManager"]] = None  # type: ignore[assignment]
     title: str = Field(..., description="Notification title")
     content: str = Field(..., description="Notification body")
     reference_type: Optional[str] = Field(
@@ -87,7 +87,7 @@ class UserNotificationModel(
 ):
     """Per-user delivery state for a notification."""
 
-    Manager: ClassVar[Type["UserNotificationManager"]] = None
+    Manager: ClassVar[Type["UserNotificationManager"]] = None  # type: ignore[assignment]
     notification_id: str = Field(..., description="Reference to NotificationModel")
     read: bool = Field(False, description="Whether the user has read it")
     read_at: Optional[datetime] = Field(None, description="When read")

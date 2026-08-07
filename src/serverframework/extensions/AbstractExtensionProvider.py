@@ -14,7 +14,7 @@ from pydantic import BaseModel
 try:
     import pytest
 except ImportError:
-    pytest = None
+    pytest = None  # type: ignore[assignment]
 import stringcase
 
 from serverframework.lib.Dependencies import Dependencies
@@ -36,7 +36,7 @@ try:
 except ImportError:
     # Handle case where these modules might not be available during testing
     # Removed inflect_engine - using shared inflection from Environment
-    select = None
+    select = None  # type: ignore[assignment]
 
 
 def get_session(db_manager: Optional[DatabaseManager] = None):
@@ -94,7 +94,7 @@ def ability(name: Optional[str] = None, enabled: bool = True) -> Callable:
         ability_name = name or method.__name__
 
         # The ability type will be determined at runtime based on which class it's defined in
-        method._ability_info = {
+        method._ability_info = {  # type: ignore[attr-defined]
             "name": ability_name,
             "enabled": enabled,
         }
@@ -129,11 +129,11 @@ class ExtensionRegistry(AbstractRegistry):
             router = router_info["router"]
 
         method_name = method.__name__
-        for config in method._static_route_config:
+        for config in method._static_route_config:  # type: ignore[attr-defined]
             # Extract route configuration
             path = getattr(config, "path", f"/{method_name}")
             http_method = (
-                getattr(config, "method", "POST").value.lower()
+                getattr(config, "method", "POST").value.lower()  # type: ignore[union-attr]
                 if hasattr(getattr(config, "method", "POST"), "value")
                 else str(getattr(config, "method", "POST")).lower()
             )
@@ -170,18 +170,14 @@ class ExtensionRegistry(AbstractRegistry):
         self.extensions: OrderedSet[Type[AbstractStaticExtension]] = (
             OrderedSet()
         )  # Extension classes in dependency order
-        self._extension_name_map = (
+        self._extension_name_map = (  # type: ignore[var-annotated]
             {}
         )  # Maps extension name to extension class for quick lookup
-        self.loaded_extensions = {}  # Maps extension name to version string
-        self.extension_models = (
-            {}
-        )  # Maps target model class path to list of extension models
-        self.extension_abilities = (
-            {}
-        )  # Maps extension name to list of abilities (both meta and provider)
-        self.extension_providers = {}  # Maps extension name to list of provider classes
-        self.provider_abilities = {}  # Maps provider class to list of abilities
+        self.loaded_extensions: dict[str, str] = {}
+        self.extension_models: dict[str, list[Any]] = {}
+        self.extension_abilities: dict[str, list[Any]] = {}
+        self.extension_providers: dict[str, list[Any]] = {}
+        self.provider_abilities: dict[Any, list[Any]] = {}
 
         # Per-instance override for the extensions root. ``None`` means "use
         # the bundled <src_dir>/extensions". Resolved through Paths so a
@@ -1010,7 +1006,7 @@ class AbstractStaticExtensionSystemComponent(ABC):
 
     @classproperty
     def hooks(cls) -> Set[str]:
-        return cls._hooks.copy()
+        return cls._hooks.copy()  # type: ignore[return-value]
 
     # Abilities of this extension
     _abilities: Set[str] = set()
@@ -1668,7 +1664,7 @@ class AbstractStaticExtension(
         # Prevent infinite recursion by checking if we're already inheriting
         if hasattr(cls, "_inheriting_hooks"):
             return
-        cls._inheriting_hooks = True
+        cls._inheriting_hooks = True  # type: ignore[attr-defined]
 
         try:
             for base in cls.__mro__[1:]:  # Skip self, start from first parent
@@ -1710,9 +1706,9 @@ class AbstractStaticExtension(
 
         def decorator(method: Callable) -> Callable:
             if not hasattr(method, "_hook_info"):
-                method._hook_info = []
+                method._hook_info = []  # type: ignore[attr-defined]
             hook_path = (layer, domain, entity, function, time)
-            method._hook_info.append(hook_path)
+            method._hook_info.append(hook_path)  # type: ignore[attr-defined]
             logger.debug(
                 f"Decorated static method {method.__name__} as hook for {hook_path}"
             )
@@ -2029,7 +2025,7 @@ class AbstractStaticExtension(
         cls._hooks[hook_path].append(handler)
         logger.debug(f"Registered hook {hook_path} -> {handler.__name__}")
 
-    class AbstractProvider(AbstractStaticProvider):
+    class AbstractProvider(AbstractStaticProvider):  # type: ignore[no-redef]
         """
         Inner abstract provider class for backward compatibility.
         Extensions can define this as an inner class to maintain the old pattern.

@@ -260,11 +260,11 @@ def validate_tool_call_payload(call: Any) -> ToolCall:
             f"tool_calls entries must be ToolCall or dict, got {type(call).__name__}"
         )
     function_block = call.get("function") if isinstance(call.get("function"), dict) else {}
-    name = call.get("name") or function_block.get("name")
+    name = call.get("name") or function_block.get("name")  # type: ignore[union-attr]
     args = (
         call.get("arguments")
         or call.get("input")
-        or function_block.get("arguments")
+        or function_block.get("arguments")  # type: ignore[union-attr]
     )
     if isinstance(args, str):
         import json

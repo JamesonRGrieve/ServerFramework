@@ -81,7 +81,7 @@ class _BareInstance(AbstractEmailProviderInstance):
     exercise the abstract-base `NotSupportedError` defaults in isolation.
     """
 
-    capabilities = frozenset()
+    capabilities = frozenset()  # type: ignore[var-annotated]
 
     async def send(self, message): raise NotImplementedError
     async def send_bulk(self, messages): raise NotImplementedError

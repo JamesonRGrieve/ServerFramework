@@ -55,7 +55,7 @@ class ConcreteEmailProvider(AbstractEmailProvider):
     extension = EXT_EMail
 
     @classmethod
-    def bond_instance(cls, config: Dict[str, any]) -> None:
+    def bond_instance(cls, config: Dict[str, any]) -> None:  # type: ignore[valid-type]
         """Configure the test provider"""
         cls._config = config
 
@@ -76,7 +76,7 @@ class ConcreteEmailProvider(AbstractEmailProvider):
         folder_name: str = "Inbox",
         max_emails: int = 10,
         page_size: int = 10,
-    ) -> List[Dict[str, any]]:
+    ) -> List[Dict[str, any]]:  # type: ignore[valid-type]
         """Mock email retrieval"""
         return [
             {
@@ -120,7 +120,7 @@ class ConcreteEmailProvider(AbstractEmailProvider):
         query: str,
         folder_name: str = "Inbox",
         max_emails: int = 10,
-    ) -> List[Dict[str, any]]:
+    ) -> List[Dict[str, any]]:  # type: ignore[valid-type]
         """Mock email search"""
         return [
             {
@@ -156,7 +156,7 @@ class ConcreteEmailProvider(AbstractEmailProvider):
         cls,
         provider_instance: ProviderInstanceModel,
         email_id: str,
-    ) -> List[Dict[str, any]]:
+    ) -> List[Dict[str, any]]:  # type: ignore[valid-type]
         """Mock attachment processing"""
         return [
             {

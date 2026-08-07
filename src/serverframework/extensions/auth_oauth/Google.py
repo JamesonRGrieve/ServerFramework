@@ -65,7 +65,7 @@ class GoogleOAuthProvider(AbstractOAuthProvider):
         except Exception as e:
             self.handle_auth_error(e, "token refresh")
 
-    def get_user_info(self) -> Dict[str, Any]:
+    def get_user_info(self) -> Dict[str, Any]:  # type: ignore[return]
         if not self.access_token:
             return {}
 

@@ -231,7 +231,7 @@ class EXT_Auth_MFA(AbstractStaticExtension):
     def verify_mfa_code(
         cls,
         mfa_method_id: str = Path(..., description="MFA method ID"),
-        request: "VerifyCodeRequest" = ...,
+        request: "VerifyCodeRequest" = ...,  # type: ignore[assignment]
         user=Depends(UserManager.auth),
         model_registry=Depends(lambda: None),  # Will be injected
     ) -> dict:
@@ -258,7 +258,7 @@ class EXT_Auth_MFA(AbstractStaticExtension):
     def verify_recovery_code(
         cls,
         mfa_method_id: str = Path(..., description="MFA method ID"),
-        request: "VerifyCodeRequest" = ...,
+        request: "VerifyCodeRequest" = ...,  # type: ignore[assignment]
         user=Depends(UserManager.auth),
         model_registry=Depends(lambda: None),  # Will be injected
     ) -> dict:

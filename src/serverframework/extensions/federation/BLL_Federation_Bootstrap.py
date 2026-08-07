@@ -240,14 +240,14 @@ async def install_external_federation(
             )
             continue
         try:
-            ingested = await provider_cls.register_with_registry(registry=target_registry)
+            ingested = await provider_cls.register_with_registry(registry=target_registry)  # type: ignore[attr-defined]
         except Exception as exc:
             logger.warning(
                 "Federation pipeline failed for %s: %s", provider_cls.__name__, exc
             )
             continue
         try:
-            lift_result = provider_cls.lift_to_pydantic(ingested)
+            lift_result = provider_cls.lift_to_pydantic(ingested)  # type: ignore[attr-defined]
         except Exception as exc:
             logger.warning(
                 "SDL→Pydantic lift failed for %s: %s", provider_cls.__name__, exc
@@ -330,7 +330,7 @@ def install_external_federation_sync(
             report.errors[provider_cls.__name__] = str(exc)
             continue
         try:
-            ingested = provider_cls.register_with_registry_sync(registry=target)
+            ingested = provider_cls.register_with_registry_sync(registry=target)  # type: ignore[union-attr]
         except Exception as exc:
             logger.warning(
                 "GQL federation failed for %s: %s", provider_cls.__name__, exc
@@ -338,7 +338,7 @@ def install_external_federation_sync(
             report.errors[provider_cls.__name__] = str(exc)
             continue
         try:
-            lift = provider_cls.lift_to_pydantic(ingested)
+            lift = provider_cls.lift_to_pydantic(ingested)  # type: ignore[union-attr]
         except Exception as exc:
             logger.warning(
                 "SDL→Pydantic lift failed for %s: %s", provider_cls.__name__, exc
@@ -404,7 +404,7 @@ def _bind_lifted_models_for_gql(
     ``*_via_provider`` static methods dispatch through the GQL transport.
     """
 
-    transport = provider_cls.upstream_transport()
+    transport = provider_cls.upstream_transport()  # type: ignore[attr-defined]
     for type_name, model_cls in (lift.models or {}).items():
         external_model_cls = _synthesize_gql_external_model(
             type_name=type_name,

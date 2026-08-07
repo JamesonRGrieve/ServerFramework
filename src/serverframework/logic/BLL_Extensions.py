@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 
 from serverframework.lib.Environment import env
 from serverframework.lib.Logging import logger
-from serverframework.lib.Pydantic import BaseModel
+from serverframework.lib.Pydantic import BaseModel  # type: ignore[no-redef]
 from serverframework.lib.Pydantic2FastAPI import AuthType, RouterMixin
 from serverframework.logic.AbstractLogicManager import (
     AbstractBLLManager,
@@ -171,13 +171,13 @@ class ExtensionManager(AbstractBLLManager, RouterMixin):
             AbilityManager instance
         """
         if self._abilities is None:
-            self._abilities = AbilityManager(
+            self._abilities = AbilityManager(  # type: ignore[assignment]
                 requester_id=self.requester_id,
                 target_id=self.target_id,
                 target_team_id=self.target_team_id,
                 model_registry=self.model_registry,
             )
-        return self._abilities
+        return self._abilities  # type: ignore[return-value]
 
     @staticmethod
     def list_runtime_extensions() -> List[str]:
@@ -233,7 +233,7 @@ class AbilityModel(
     ApplicationModel,
     NameMixinModel,
     UpdateMixinModel,
-    ExtensionModel.Reference,
+    ExtensionModel.Reference,  # type: ignore[name-defined]
     metaclass=ModelMeta,
 ):
     model_config = {"extra": "ignore"}
@@ -330,12 +330,12 @@ class AbilityModel(
             logger.error(f"Error generating ability seed data: {e}")
             return []
 
-    class Create(BaseModel, NameMixinModel, ExtensionModel.Reference.ID):
+    class Create(BaseModel, NameMixinModel, ExtensionModel.Reference.ID):  # type: ignore[name-defined]
         meta: Optional[bool] = False
         friendly_name: Optional[str] = None
 
     class Update(
-        BaseModel, NameMixinModel.Optional, ExtensionModel.Reference.ID.Optional
+        BaseModel, NameMixinModel.Optional, ExtensionModel.Reference.ID.Optional  # type: ignore[name-defined]
     ):
         meta: Optional[bool] = None
         friendly_name: Optional[str] = None
@@ -343,7 +343,7 @@ class AbilityModel(
     class Search(
         ApplicationModel.Search,
         NameMixinModel.Search,
-        ExtensionModel.Reference.ID.Search,
+        ExtensionModel.Reference.ID.Search,  # type: ignore[name-defined]
     ):
         meta: Optional[bool] = None
         friendly_name: Optional[StringSearchModel] = None

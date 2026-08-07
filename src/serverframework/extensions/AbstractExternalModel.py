@@ -148,7 +148,7 @@ def derive_batch_idempotency_key(per_item_keys: List[str]) -> str:
 # may resolve, and by `BatchedNavigationResolver` to know which fields
 # to eager-load.
 _navigation_includes_var: contextvars.ContextVar[Set[str]] = contextvars.ContextVar(
-    "external_navigation_includes", default=frozenset()
+    "external_navigation_includes", default=frozenset()  # type: ignore[arg-type]
 )
 
 
@@ -163,7 +163,7 @@ def set_navigation_includes(includes: Set[str]) -> contextvars.Token:
             reset_navigation_includes(token)
     """
 
-    return _navigation_includes_var.set(frozenset(includes or ()))
+    return _navigation_includes_var.set(frozenset(includes or ()))  # type: ignore[arg-type]
 
 
 def reset_navigation_includes(token: contextvars.Token) -> None:
@@ -517,9 +517,9 @@ def _unwrap_provider_call(model_class: type, method_name: str, fn: Callable, *ar
     # historical contract (the API client further translates it to a 404
     # for the legacy callers).
     if err_msg == "Not found":
-        exc: BaseExternalError = InvalidInputExternalError(err_msg, ability=method_name)
-        exc.upstream_status = 404
-        raise exc
+        exc: BaseExternalError = InvalidInputExternalError(err_msg, ability=method_name)  # type: ignore[no-redef]
+        exc.upstream_status = 404  # type: ignore[misc]
+        raise exc  # type: ignore[misc]
     raise PermanentExternalError(err_msg, ability=method_name)
 
 
@@ -1401,8 +1401,8 @@ def create_external_reference_model(
     )
 
     # Set the nested classes
-    ReferenceID.Optional = Optional
-    ReferenceID.Search = Search
+    ReferenceID.Optional = Optional  # type: ignore[attr-defined]
+    ReferenceID.Search = Search  # type: ignore[attr-defined]
 
     # Create the main reference model class
     class ExternalReferenceModel(ReferenceID):
@@ -1422,7 +1422,7 @@ def create_external_reference_model(
     setattr(OptionalReferenceModel, nav_property_name, nav_property)
 
     # Set nested classes
-    ExternalReferenceModel.Optional = OptionalReferenceModel
+    ExternalReferenceModel.Optional = OptionalReferenceModel  # type: ignore[attr-defined]
 
     return ExternalReferenceModel
 
@@ -1437,13 +1437,13 @@ class AbstractExternalManager(AbstractBLLManager):
     """
 
     # External model class
-    Model: Type[AbstractExternalModel] = None
+    Model: Type[AbstractExternalModel] = None  # type: ignore[assignment]
 
     # Reference model class (for relationships)
-    ReferenceModel: Type = None
+    ReferenceModel: Type = None  # type: ignore[assignment]
 
     # Network model class (for API schemas)
-    NetworkModel: Type = None
+    NetworkModel: Type = None  # type: ignore[assignment]
 
     def __init__(
         self,
@@ -1488,7 +1488,7 @@ class AbstractExternalManager(AbstractBLLManager):
             )
             self._api_client = DirectProviderAPIClient(self.provider_class, self.Model)
         else:
-            self._api_client = None
+            self._api_client = None  # type: ignore[assignment]
 
     @property
     def DB(self) -> AbstractExternalAPIClient:

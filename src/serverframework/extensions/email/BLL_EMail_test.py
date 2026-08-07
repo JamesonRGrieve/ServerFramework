@@ -27,9 +27,9 @@ class TestEmailManager(AbstractBLLTest, ExtensionServerMixin):
     class_under_test = InvitationManager
     extension_class = EXT_EMail
 
-    create_fields = {}
-    update_fields = {}
-    unique_fields = {}
+    create_fields = {}  # type: ignore[var-annotated]
+    update_fields = {}  # type: ignore[var-annotated]
+    unique_fields = {}  # type: ignore[var-annotated]
 
     def test_send_email_on_invitation(self, admin_a, team_a, model_registry):
         """

@@ -198,7 +198,7 @@ def check_compatibility(
 
     # Per-event field comparisons.
     for key, live in live_by_key.items():
-        snap = snapshot_by_key.get(key)
+        snap = snapshot_by_key.get(key)  # type: ignore[assignment]
         if snap is None:
             # New event class — additive, ok.
             report.additive.append(f"new event: {key}")

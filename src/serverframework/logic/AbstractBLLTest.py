@@ -34,7 +34,7 @@ class AbstractBLLTest(AbstractTest):
     """
 
     # Required overrides that child classes must provide
-    class_under_test: Type[AbstractBLLManager] = None
+    class_under_test: Type[AbstractBLLManager] = None  # type: ignore[assignment]
 
     # Default test configuration
     test_config: ClassOfTestsConfig = ClassOfTestsConfig(
@@ -42,7 +42,7 @@ class AbstractBLLTest(AbstractTest):
     )
 
     @classmethod
-    def get_model_class(cls, entity_name: str = None) -> Optional[Type]:
+    def get_model_class(cls, entity_name: str = None) -> Optional[Type]:  # type: ignore[assignment]
         """Get the Pydantic model class for this entity.
 
         Returns:
@@ -1585,7 +1585,7 @@ class AbstractBLLTest(AbstractTest):
         "metric",
         sorted(
             [ScalingMetric.TIME, ScalingMetric.QUERY_COUNT, ScalingMetric.MEMORY],
-            key=lambda m: m.value,
+            key=lambda m: m.value,  # type: ignore[attr-defined]
         ),
     )
     def test_scalability_list_n_factor(

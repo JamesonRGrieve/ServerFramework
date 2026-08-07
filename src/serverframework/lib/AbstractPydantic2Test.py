@@ -211,7 +211,7 @@ class MockRelationshipModel(
 
 
 # Add Create, Update, and Search classes to mock models BEFORE NetworkModel classes
-MockComprehensiveModel.Create = type(
+MockComprehensiveModel.Create = type(  # type: ignore[assignment, misc]
     "Create",
     (BaseModel,),
     {
@@ -226,7 +226,7 @@ MockComprehensiveModel.Create = type(
     },
 )
 
-MockComprehensiveModel.Update = type(
+MockComprehensiveModel.Update = type(  # type: ignore[assignment, misc]
     "Update",
     (BaseModel,),
     {
@@ -241,7 +241,7 @@ MockComprehensiveModel.Update = type(
     },
 )
 
-MockComprehensiveModel.Search = type(
+MockComprehensiveModel.Search = type(  # type: ignore[assignment, misc]
     "Search",
     (BaseModel,),
     {
@@ -366,15 +366,15 @@ class MockSimpleNetworkModel(BaseModel):
         sort_order: Optional[str] = Field("asc", pattern="^(asc|desc)$")
 
     class POST(BaseModel):
-        simple: MockSimpleModel.Create = Field(..., description="Simple model data")
+        simple: MockSimpleModel.Create = Field(..., description="Simple model data")  # type: ignore[name-defined]
 
     class PUT(BaseModel):
-        simple: MockSimpleModel.Update = Field(
+        simple: MockSimpleModel.Update = Field(  # type: ignore[name-defined]
             ..., description="Simple model update data"
         )
 
     class SEARCH(BaseModel):
-        simple: MockSimpleModel.Search = Field(
+        simple: MockSimpleModel.Search = Field(  # type: ignore[name-defined]
             ..., description="Simple model search criteria"
         )
 
@@ -400,17 +400,17 @@ class MockRelationshipNetworkModel(BaseModel):
         sort_order: Optional[str] = Field("asc", pattern="^(asc|desc)$")
 
     class POST(BaseModel):
-        relationship: MockRelationshipModel.Create = Field(
+        relationship: MockRelationshipModel.Create = Field(  # type: ignore[name-defined]
             ..., description="Relationship model data"
         )
 
     class PUT(BaseModel):
-        relationship: MockRelationshipModel.Update = Field(
+        relationship: MockRelationshipModel.Update = Field(  # type: ignore[name-defined]
             ..., description="Relationship model update data"
         )
 
     class SEARCH(BaseModel):
-        relationship: MockRelationshipModel.Search = Field(
+        relationship: MockRelationshipModel.Search = Field(  # type: ignore[name-defined]
             ..., description="Relationship model search criteria"
         )
 
@@ -604,7 +604,7 @@ def discover_bll_models_for_testing(
 
     from serverframework.lib.Pydantic import ModelRegistry
 
-    _DISCOVERED_MODELS_CACHE = {}
+    _DISCOVERED_MODELS_CACHE = {}  # type: ignore[var-annotated]
 
     try:
         # Create a temporary registry for model discovery
@@ -753,7 +753,7 @@ def discover_bll_managers_for_testing(
 
     from serverframework.lib.Pydantic import ModelRegistry
 
-    _DISCOVERED_MANAGERS_CACHE = {}
+    _DISCOVERED_MANAGERS_CACHE = {}  # type: ignore[var-annotated]
 
     try:
         # Create a temporary registry for manager discovery
@@ -1013,10 +1013,10 @@ class AbstractPydanticTestMixin:
     @classmethod
     def setup_test_database(cls, echo: bool = False):
         """Set up a test database and base model."""
-        cls.engine = create_engine("sqlite:///:memory:", echo=echo)
-        cls.TestBase = declarative_base()
-        cls.Session = sessionmaker(bind=cls.engine)
-        return cls.engine, cls.TestBase, cls.Session
+        cls.engine = create_engine("sqlite:///:memory:", echo=echo)  # type: ignore[attr-defined]
+        cls.TestBase = declarative_base()  # type: ignore[attr-defined]
+        cls.Session = sessionmaker(bind=cls.engine)  # type: ignore[attr-defined]
+        return cls.engine, cls.TestBase, cls.Session  # type: ignore[attr-defined]
 
     def setup_test_session(self):
         """Set up a test session and clear registries."""
@@ -1103,11 +1103,11 @@ class AbstractPydanticTestMixin:
                     # Check if it's Optional (Union with None)
                     args = getattr(field_type, "__args__", ())
                     if type(None) in args:
-                        analysis["nullable_fields"].append(field_name)
+                        analysis["nullable_fields"].append(field_name)  # type: ignore[attr-defined]
                     else:
-                        analysis["required_fields"].append(field_name)
+                        analysis["required_fields"].append(field_name)  # type: ignore[attr-defined]
                 else:
-                    analysis["required_fields"].append(field_name)
+                    analysis["required_fields"].append(field_name)  # type: ignore[attr-defined]
 
         except Exception as e:
             logger.debug(
@@ -1119,7 +1119,7 @@ class AbstractPydanticTestMixin:
             for base in model_class.__bases__:
                 base_name = base.__name__
                 if "Mixin" in base_name:
-                    analysis["mixins"].append(base_name)
+                    analysis["mixins"].append(base_name)  # type: ignore[attr-defined]
 
         # Analyze Reference.ID structure
         if hasattr(model_class, "Reference") and hasattr(model_class.Reference, "ID"):

@@ -108,7 +108,7 @@ class TestSendgridProvider(AbstractPRVTest, AbstractEmailProviderSecurityTests):
     )
 
     # Expected abilities and services
-    expected_abilities = []  # SendGrid provider doesn't expose abilities directly
+    expected_abilities: list[str] = []  # SendGrid provider doesn't expose abilities directly  # type: ignore[var-annotated]
     expected_services = ["email", "messaging", "communication"]
 
     # Tests to skip

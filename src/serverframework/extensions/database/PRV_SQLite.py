@@ -118,7 +118,7 @@ class PRV_SQLite(AbstractDatabaseProvider):
             return None
 
     @classmethod
-    async def execute_sql(cls, query: str, **kwargs) -> str:
+    async def execute_sql(cls, query: str, **kwargs) -> str:  # type: ignore[return]
         """Execute a custom SQL query in the SQLite database."""
         try:
             # Clean up query format

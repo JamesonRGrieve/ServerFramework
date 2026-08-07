@@ -68,7 +68,7 @@ class SkipThisTest(BaseModel):
     reason: SkipReason = Field(
         SkipReason.IRRELEVANT, description="Reason for skipping the test"
     )
-    details: str = Field(None, description="Additional details about the test to skip")
+    details: str = Field(None, description="Additional details about the test to skip")  # type: ignore[assignment]
     gh_issue_number: Optional[int] = Field(
         None, description="Optional GitHub ticket reference number"
     )
@@ -134,7 +134,7 @@ class AbstractTest:
     __skip_lookup__: ClassVar[Dict[str, SkipThisTest]] = {}
 
     # Test configuration - should be overridden by subclasses if needed
-    test_config: ClassOfTestsConfig = ClassOfTestsConfig()
+    test_config: ClassOfTestsConfig = ClassOfTestsConfig()  # type: ignore[call-arg]
 
     # Create a faker instance for generating test data
     faker = Faker()
@@ -189,7 +189,7 @@ class AbstractTest:
                 self.reason_to_skip(func.__name__)
                 return await func(self, *args, **kwargs)
 
-            async_wrapper.__skip_wrapper__ = True
+            async_wrapper.__skip_wrapper__ = True  # type: ignore[attr-defined]
             return async_wrapper
 
         @wraps(func)
@@ -197,7 +197,7 @@ class AbstractTest:
             self.reason_to_skip(func.__name__)
             return func(self, *args, **kwargs)
 
-        wrapper.__skip_wrapper__ = True
+        wrapper.__skip_wrapper__ = True  # type: ignore[attr-defined]
         return wrapper
 
     def ensure_model(self, server):
@@ -304,13 +304,13 @@ class AbstractTest:
         unique_fields = unique_fields or []
 
         for i in range(count):
-            entity_data = self.create_fields.copy()
-            for field in self.create_fields:
-                if callable(self.create_fields[field]):
-                    entity_data[field] = self.create_fields[field]()
+            entity_data = self.create_fields.copy()  # type: ignore[union-attr]
+            for field in self.create_fields:  # type: ignore[union-attr]
+                if callable(self.create_fields[field]):  # type: ignore[index]
+                    entity_data[field] = self.create_fields[field]()  # type: ignore[index]
             # Handle multiple unique fields
             for field in unique_fields:
-                if field in self.create_fields:
+                if field in self.create_fields:  # type: ignore[operator]
                     base_value = entity_data[field]
                     if field == "email":
                         random_part = "".join(
@@ -450,13 +450,13 @@ class AbstractTest:
     @property
     def model_class(self) -> BaseModel:
         if CategoryOfTest.DATABASE in self.test_config.categories:
-            return self.class_under_test
+            return self.class_under_test  # type: ignore[return-value]
         elif CategoryOfTest.LOGIC in self.test_config.categories:
-            return self.class_under_test.Model
+            return self.class_under_test.Model  # type: ignore[union-attr]
         elif CategoryOfTest.ENDPOINT in self.test_config.categories:
-            return self.class_under_test.manager_class.Model
+            return self.class_under_test.manager_class.Model  # type: ignore[union-attr]
         else:
-            return None
+            return None  # type: ignore[return-value]
 
     @property
     def is_system_entity(self) -> bool:
@@ -481,7 +481,7 @@ class AbstractTest:
         else:
             return False
 
-    def reason_to_skip(self, test_name: str) -> Optional[SkipReason]:
+    def reason_to_skip(self, test_name: str) -> Optional[SkipReason]:  # type: ignore[return]
         """
         Check if a specific test method should be skipped based on the skip_tests list of the enclosing class.
 

@@ -305,7 +305,7 @@ def _build_graphql_resolver(
                 result = await result
             return _coerce_output(result, spec.output_model)
     else:
-        async def resolver(info: Any, **kwargs: Any) -> spec.output_model:  # type: ignore[name-defined]
+        async def resolver(info: Any, **kwargs: Any) -> spec.output_model:  # type: ignore[name-defined, misc]
             instance = _instantiate_manager(info)
             target = (
                 getattr(instance, method_name) if instance is not None else bound_method

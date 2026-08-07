@@ -224,7 +224,7 @@ class TestPayment_UserAndSessionEndpoints(
             response_data["external_payment_id"] == "abc321"
         ), "Payment ID should have the value of 'abc321'."
 
-    def test_PUT_200_with_payment_field(
+    def test_PUT_200_with_payment_field(  # type: ignore[return]
         self, server: Any, admin_a: Any
     ) -> Dict[str, Any]:
         """Test updating current user profile with payment extension field - verifies payment field updates work"""
@@ -252,7 +252,7 @@ class TestPayment_UserAndSessionEndpoints(
             user["display_name"] == "Updated with Payment"
         ), "Display name should be updated"
 
-    def test_GET_200_with_payment_field(
+    def test_GET_200_with_payment_field(  # type: ignore[return]
         self, server: Any, admin_a: Any
     ) -> Dict[str, Any]:
         """Test retrieving current user profile with payment extension field - verifies payment field is included in responses"""

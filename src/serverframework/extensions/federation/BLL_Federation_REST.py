@@ -126,7 +126,7 @@ def openapi_to_pydantic_models(
             schema.get("type") in (None, "string")
         ):
             full = _full(raw_name)
-            enums[full] = Enum(
+            enums[full] = Enum(  # type: ignore[assignment]
                 full,
                 {str(v).replace("-", "_").replace(" ", "_"): v for v in schema["enum"]},
             )
@@ -153,7 +153,7 @@ def openapi_to_pydantic_models(
 
         annotations: Dict[str, Any] = {}
         defaults: Dict[str, Any] = {}
-        for fname, ann, required in specs:
+        for fname, ann, required in specs:  # type: ignore[assignment]
             annotations[fname] = ann if required else _Optional[ann]
             if not required:
                 defaults[fname] = None
@@ -289,7 +289,7 @@ def _openapi_to_python(
         return Literal[values] if values else str
     t = schema.get("type")
     if t == "array":
-        return _List[
+        return _List[  # type: ignore[misc]
             _openapi_to_python(schema.get("items") or {}, components, fullname, enums)
         ]
     if t in OPENAPI_TYPE_TO_PY:

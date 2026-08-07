@@ -81,7 +81,7 @@ class SQLiteProvider(AbstractDatabaseProvider):
             logger.error(f"Error connecting to SQLite Database. Error: {str(e)}")
             return None
 
-    async def execute_sql(self, query: str, retry_count: int = 0) -> str:
+    async def execute_sql(self, query: str, retry_count: int = 0) -> str:  # type: ignore[return]
         if "```sql" in query:
             query = query.split("```sql")[1].split("```")[0]
         query = query.replace("\n", " ")

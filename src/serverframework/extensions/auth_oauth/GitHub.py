@@ -34,7 +34,7 @@ class GitHubOAuthProvider(AbstractOAuthProvider):
     def services():
         return ["auth", "user_info", "repo_management"]
 
-    def get_new_token(self) -> str:
+    def get_new_token(self) -> str:  # type: ignore[return]
         try:
             # GitHub tokens do not support refresh tokens directly, we need to re-authorize.
             response = requests.post(
@@ -59,7 +59,7 @@ class GitHubOAuthProvider(AbstractOAuthProvider):
         except Exception as e:
             self.handle_auth_error(e, "token refresh")
 
-    def get_user_info(self) -> Dict[str, Any]:
+    def get_user_info(self) -> Dict[str, Any]:  # type: ignore[return]
         if not self.access_token:
             return {}
 

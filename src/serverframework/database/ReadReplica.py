@@ -72,7 +72,7 @@ def read_only(fn: Callable) -> Callable:
             @read_only
             def list_active(self): ...
     """
-    fn._read_only = True
+    fn._read_only = True  # type: ignore[attr-defined]
 
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):
@@ -92,7 +92,7 @@ def read_only(fn: Callable) -> Callable:
 
     import asyncio
     if asyncio.iscoroutinefunction(fn):
-        async_wrapper._read_only = True
+        async_wrapper._read_only = True  # type: ignore[attr-defined]
         return async_wrapper
     return wrapper
 

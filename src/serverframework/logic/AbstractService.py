@@ -139,7 +139,7 @@ class AbstractService(ABC):
     def db(self) -> Session:
         """Property that returns an active database session, creating a new one if needed."""
         if self._db is None or not self._db.is_active:
-            self._db = self.db_manager.get_session()
+            self._db = self.db_manager.get_session()  # type: ignore[union-attr]
             self._close_db_on_exit = True
         return self._db
 
@@ -282,7 +282,7 @@ class AbstractService(ABC):
                     continue
 
                 # Update last run time
-                self._last_run_time = current_time
+                self._last_run_time = current_time  # type: ignore[assignment]
 
                 # Run the update method
                 await self.update()

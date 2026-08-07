@@ -22,11 +22,11 @@ class DatabaseManager(AbstractBLLManager):
 
     def execute_query(self, query: str, **kwargs) -> Dict[str, Any]:
         """Execute a database query"""
-        return execute_database_query(self, query, **kwargs)
+        return execute_database_query(self, query, **kwargs)  # type: ignore[return-value]
 
     def get_schema(self, **kwargs) -> Dict[str, Any]:
         """Get database schema"""
-        return get_database_schema(self, **kwargs)
+        return get_database_schema(self, **kwargs)  # type: ignore[return-value]
 
 
 # Seed data functions for Provider Registration
@@ -237,7 +237,7 @@ class DatabaseHealthCheck:
                         issues = provider_class.validate_config()
                         healthy = len(issues) == 0
 
-                        health_status["providers"][provider_name] = {
+                        health_status["providers"][provider_name] = {  # type: ignore[index]
                             "healthy": healthy,
                             "issues": issues,
                         }
@@ -245,13 +245,13 @@ class DatabaseHealthCheck:
                         if not healthy:
                             health_status["overall_healthy"] = False
                     else:
-                        health_status["providers"][provider_name] = {
+                        health_status["providers"][provider_name] = {  # type: ignore[index]
                             "healthy": True,
                             "issues": [],
                         }
 
                 except Exception as e:
-                    health_status["providers"][provider_name] = {
+                    health_status["providers"][provider_name] = {  # type: ignore[index]
                         "healthy": False,
                         "issues": [f"Health check error: {str(e)}"],
                     }

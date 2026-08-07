@@ -62,7 +62,7 @@ class ExtensionTestConfig:
 class ExtensionServerMixin:
     """Simplified mixin for extension server fixtures."""
 
-    extension_class: Type[T] | None = None
+    extension_class: Type[T] | None = None  # type: ignore[valid-type]
 
     @pytest.fixture(scope="module")
     def server(self):
@@ -190,7 +190,7 @@ class AbstractEXTTest(AbstractTest, ExtensionServerMixin):
     hard-coded test methods.
     """
 
-    extension_class: Type[T] | None = None
+    extension_class: Type[T] | None = None  # type: ignore[valid-type]
     test_config: ExtensionTestConfig = ExtensionTestConfig()
 
     @classmethod

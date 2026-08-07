@@ -400,9 +400,9 @@ def get_extension_seed_items():
 
 
 # Initialize empty caches
-_CORE_SEED_ITEMS_CACHE = []
-_EXTENSION_SEED_ITEMS_CACHE = []
-_EXTENSION_GROUPS_CACHE = {}
+_CORE_SEED_ITEMS_CACHE = []  # type: ignore[var-annotated]
+_EXTENSION_SEED_ITEMS_CACHE = []  # type: ignore[var-annotated]
+_EXTENSION_GROUPS_CACHE = {}  # type: ignore[var-annotated]
 
 
 # Backwards compatibility - these will be populated lazily with error handling
@@ -427,9 +427,9 @@ try:
     _initialize_global_seed_items()
 except Exception as e:
     logger.warning(f"Failed to initialize seed items at module level: {e}")
-    CORE_SEED_ITEMS = []
-    EXTENSION_SEED_ITEMS = []
-    EXTENSION_GROUPS = {}
+    CORE_SEED_ITEMS = []  # type: ignore[var-annotated]
+    EXTENSION_SEED_ITEMS = []  # type: ignore[var-annotated]
+    EXTENSION_GROUPS = {}  # type: ignore[var-annotated]
 
 
 @pytest.mark.seed

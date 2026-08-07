@@ -400,7 +400,7 @@ from serverframework.lib.Dependencies import Dependencies, PIP_Dependency
 from serverframework.lib.Environment import env
 
 
-class ConcretePaymentProvider(AbstractPaymentProvider):
+class ConcretePaymentProvider(AbstractPaymentProvider):  # type: ignore[no-redef]
     """Concrete implementation of AbstractPaymentProvider for testing"""
 
     # Static provider metadata

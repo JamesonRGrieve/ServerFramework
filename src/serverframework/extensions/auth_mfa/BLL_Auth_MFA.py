@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field, model_validator
 from serverframework.lib.Environment import env
 from serverframework.lib.InboundSecurity import LockoutPolicy, LockoutTracker
 from serverframework.lib.Logging import logger
-from serverframework.lib.Pydantic import BaseModel
+from serverframework.lib.Pydantic import BaseModel  # type: ignore[no-redef]
 from serverframework.lib.Pydantic2FastAPI import AuthType, RouterMixin, RouteType
 
 
@@ -307,13 +307,13 @@ class MultifactorMethodManager(AbstractBLLManager, RouterMixin):
     def recovery_codes(self) -> "MultifactorRecoveryCodeManager":
         """Get the recovery codes manager for this MFA method manager."""
         if self._recovery_codes is None:
-            self._recovery_codes = MultifactorRecoveryCodeManager(
+            self._recovery_codes = MultifactorRecoveryCodeManager(  # type: ignore[assignment]
                 requester_id=self.requester.id,
                 target_id=self.target_id,
                 target_team_id=self.target_team_id,
                 model_registry=self.model_registry,
             )
-        return self._recovery_codes
+        return self._recovery_codes  # type: ignore[return-value]
 
     def create_validation(self, entity):
         """Validate MFA method creation"""
@@ -545,7 +545,7 @@ class MultifactorMethodManager(AbstractBLLManager, RouterMixin):
 class MultifactorRecoveryCodeModel(
     ApplicationModel,
     UpdateMixinModel,
-    MultifactorMethodModel.Reference,
+    MultifactorMethodModel.Reference,  # type: ignore[name-defined]
     metaclass=ModelMeta,
 ):
     code_hash: str = Field(..., description="Hashed recovery code")
@@ -558,7 +558,7 @@ class MultifactorRecoveryCodeModel(
         None, description="IP address where code was created"
     )
 
-    class Create(BaseModel, MultifactorMethodModel.Reference.ID):
+    class Create(BaseModel, MultifactorMethodModel.Reference.ID):  # type: ignore[name-defined]
         created_ip: Optional[str] = Field(
             None, description="IP address where code was created"
         )
@@ -578,7 +578,7 @@ class MultifactorRecoveryCodeModel(
     class Search(
         ApplicationModel.Search,
         UpdateMixinModel.Search,
-        MultifactorMethodModel.Reference.ID.Search,
+        MultifactorMethodModel.Reference.ID.Search,  # type: ignore[name-defined]
     ):
         is_used: Optional[bool] = None
         created_ip: Optional[StringSearchModel] = None
@@ -677,7 +677,7 @@ class MultifactorRecoveryCodeManager(AbstractBLLManager):
             )
 
             # Verify the code
-            if bcrypt.checkpw(code.encode(), code_hash.encode()):
+            if bcrypt.checkpw(code.encode(), code_hash.encode()):  # type: ignore[union-attr]
                 # Mark as used using the manager's update method
                 recovery_id = (
                     recovery_code.get("id")

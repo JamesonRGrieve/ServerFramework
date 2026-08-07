@@ -125,7 +125,7 @@ class AbstractDBTest(AbstractTest):
         permission_type: PermissionType = PermissionType.VIEW,
         team_id: str | None = None,
         role_id: str | None = None,
-        expires_at: datetime = None,
+        expires_at: datetime = None,  # type: ignore[assignment]
         can_view: bool | None = None,
         can_execute: bool | None = None,
         can_copy: bool | None = None,
@@ -327,7 +327,7 @@ class AbstractDBTest(AbstractTest):
             Dict[str, Any]: The created permission record
         """
         return self.grant_permission(
-            user_id=None,
+            user_id=None,  # type: ignore[arg-type]
             team_id=team_id,
             entity_id=entity_id,
             permission_type=permission_type,
@@ -351,7 +351,7 @@ class AbstractDBTest(AbstractTest):
             Dict[str, Any]: The created permission record
         """
         return self.grant_permission(
-            user_id=None,
+            user_id=None,  # type: ignore[arg-type]
             role_id=role_id,
             entity_id=entity_id,
             permission_type=permission_type,
@@ -619,11 +619,11 @@ class AbstractDBTest(AbstractTest):
                 )[0]
             )
         )
-        self.db.add(self.tracked_entities[key])
-        self.db.flush()
+        self.db.add(self.tracked_entities[key])  # type: ignore[attr-defined]
+        self.db.flush()  # type: ignore[attr-defined]
         self.tracked_entities[key].created_by_user_id = self.tracked_entities[key].id
-        self.db.commit()
-        self.db.refresh(self.tracked_entities[key])
+        self.db.commit()  # type: ignore[attr-defined]
+        self.db.refresh(self.tracked_entities[key])  # type: ignore[attr-defined]
 
     def test_ORM_create(self, server, admin_a, team_a):
         self.db = (
@@ -697,7 +697,7 @@ class AbstractDBTest(AbstractTest):
         requested_key="ORM_create",
     ):
         entity_id = self.tracked_entities[requested_key].id
-        self.tracked_entities[key] = self.db.get(self.sqlalchemy_model, entity_id)
+        self.tracked_entities[key] = self.db.get(self.sqlalchemy_model, entity_id)  # type: ignore[attr-defined]
         return self.tracked_entities[key]
 
     def test_ORM_get(self, server, admin_a, team_a):
@@ -814,8 +814,8 @@ class AbstractDBTest(AbstractTest):
         self._list_assert("CRUD_list_" + return_type)
 
     def _ORM_list(self, user_id: str = env("ROOT_ID"), team_id: str | None = None):
-        self.tracked_entities["ORM_list"] = self.db.query(self.sqlalchemy_model).all()
-        self.db.commit()
+        self.tracked_entities["ORM_list"] = self.db.query(self.sqlalchemy_model).all()  # type: ignore[attr-defined]
+        self.db.commit()  # type: ignore[attr-defined]
 
     # @pytest.mark.dependency(depends=["test_ORM_create"])
     def test_ORM_list(self, server, admin_a, team_a):
@@ -882,10 +882,10 @@ class AbstractDBTest(AbstractTest):
         """Count entities with proper permission filtering, to only return values user should see."""
         # For now, use basic count without permission filtering since we need server context
         # In the future, this should be updated to use server parameter for permission filtering
-        self.tracked_entities["ORM_count"] = self.db.query(
+        self.tracked_entities["ORM_count"] = self.db.query(  # type: ignore[attr-defined]
             self.sqlalchemy_model
         ).count()
-        self.db.commit()
+        self.db.commit()  # type: ignore[attr-defined]
 
     def test_ORM_count(self, server, admin_a, team_a):
         self.db = (
@@ -952,12 +952,12 @@ class AbstractDBTest(AbstractTest):
         """Check if entity exists using ORM."""
         entity_id = self.tracked_entities[requested_key].id
         self.tracked_entities[key + "_result"] = (
-            self.db.query(self.sqlalchemy_model.id)
+            self.db.query(self.sqlalchemy_model.id)  # type: ignore[attr-defined]
             .filter(self.sqlalchemy_model.id == entity_id)
             .scalar()
             is not None
         )
-        self.db.commit()
+        self.db.commit()  # type: ignore[attr-defined]
         return self.tracked_entities[key + "_result"]
 
     def test_ORM_exists(self, server, admin_a, team_a):
@@ -1077,10 +1077,10 @@ class AbstractDBTest(AbstractTest):
         entity = self.tracked_entities["ORM_update"]
         entity.name = "Updated ORM Name"
         entity.description = "Updated ORM Description"
-        self.db.add(entity)
-        self.db.flush()
-        self.db.commit()
-        self.db.refresh(entity)
+        self.db.add(entity)  # type: ignore[attr-defined]
+        self.db.flush()  # type: ignore[attr-defined]
+        self.db.commit()  # type: ignore[attr-defined]
+        self.db.refresh(entity)  # type: ignore[attr-defined]
         self.tracked_entities["ORM_update"] = entity
         return {"name": "Updated ORM Name", "description": "Updated ORM Description"}
 
@@ -1197,9 +1197,9 @@ class AbstractDBTest(AbstractTest):
     def _ORM_delete(self, user_id: str = env("ROOT_ID"), team_id: str | None = None):
         entity = self.tracked_entities["ORM_delete"]
         self.tracked_entities["ORM_delete_original"] = {"id": entity.id}
-        self.db.delete(entity)
-        self.db.flush()
-        self.db.commit()
+        self.db.delete(entity)  # type: ignore[attr-defined]
+        self.db.flush()  # type: ignore[attr-defined]
+        self.db.commit()  # type: ignore[attr-defined]
         self.tracked_entities["ORM_delete"] = True
 
     # @pytest.mark.dependency(depends=["test_ORM_create"])
@@ -1231,7 +1231,7 @@ class AbstractDBTest(AbstractTest):
         "metric",
         sorted(
             [ScalingMetric.TIME, ScalingMetric.QUERY_COUNT, ScalingMetric.MEMORY],
-            key=lambda m: m.value,
+            key=lambda m: m.value,  # type: ignore[attr-defined]
         ),
     )
     def test_scalability_list_n_factor(

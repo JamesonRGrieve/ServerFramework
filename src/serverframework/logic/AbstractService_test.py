@@ -44,7 +44,7 @@ class MockTestCounterService(AbstractService):
         super().__init__(requester_id, db, **kwargs)
         self.execution_count = 0
         self.last_execution_time = None
-        self.execution_history = []
+        self.execution_history = []  # type: ignore[var-annotated]
         self.test_data = kwargs.get("test_data", "default")
 
     def _configure_service(self, **kwargs):
@@ -134,7 +134,7 @@ class MockTestSlowService(AbstractService):
 
     def __init__(self, requester_id: str, db: Optional[Session] = None, **kwargs):
         super().__init__(requester_id, db, **kwargs)
-        self.execution_times = []
+        self.execution_times = []  # type: ignore[var-annotated]
 
     async def update(self):
         """Slow update method"""
@@ -251,7 +251,7 @@ class MockTestDatabaseService(AbstractService):
 
     def __init__(self, requester_id: str, db: Optional[Session] = None, **kwargs):
         super().__init__(requester_id, db, **kwargs)
-        self.entities_created = []
+        self.entities_created = []  # type: ignore[var-annotated]
         # Store db_manager from kwargs if provided
         self.db_manager = kwargs.get("db_manager")
 

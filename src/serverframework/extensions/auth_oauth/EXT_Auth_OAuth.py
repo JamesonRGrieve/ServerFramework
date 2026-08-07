@@ -101,11 +101,11 @@ class EXT_Auth_OAuth(AbstractStaticExtension):
         ),
     ]
 
-    sys_dependencies = []
+    sys_dependencies = []  # type: ignore[var-annotated]
 
     # Define database tables
     # db_tables = [OAuth2Client, OAuth2AuthCode, OAuth2Token, UserOAuth, OAuthExternalScope]
-    db_tables = []
+    db_tables = []  # type: ignore[var-annotated]
 
     # Define what capabilities this extension provides
     capabilities = [
@@ -190,13 +190,13 @@ class EXT_Auth_OAuth(AbstractStaticExtension):
 
         # Provider instance reference
         self.provider = None
-        self.oauth_clients = {}
-        self.registered_clients = {}
-        self.oauth_sessions = {}
-        self.active_flows = {}
-        self.session_store = {}
-        self.active_tokens = {}
-        self.active_auth_codes = {}
+        self.oauth_clients = {}  # type: ignore[var-annotated]
+        self.registered_clients = {}  # type: ignore[var-annotated]
+        self.oauth_sessions = {}  # type: ignore[var-annotated]
+        self.active_flows = {}  # type: ignore[var-annotated]
+        self.session_store = {}  # type: ignore[var-annotated]
+        self.active_tokens = {}  # type: ignore[var-annotated]
+        self.active_auth_codes = {}  # type: ignore[var-annotated]
         self.max_clients_per_user = kwargs.get("max_clients_per_user", 10)
         self.redis_client = None
 
@@ -468,7 +468,7 @@ class EXT_Auth_OAuth(AbstractStaticExtension):
 
             if code_challenge:
                 auth_params["code_challenge"] = code_challenge
-                auth_params["code_challenge_method"] = code_challenge_method
+                auth_params["code_challenge_method"] = code_challenge_method  # type: ignore[assignment]
 
             base_url = env("SERVER_URI", "http://localhost:8000")
             authorization_url = f"{base_url}/oauth/authorize?" + urlencode(auth_params)
@@ -750,7 +750,7 @@ class EXT_Auth_OAuth(AbstractStaticExtension):
                 }
 
             # Use default scopes if none provided
-            scopes = scopes or provider_config["scopes"]
+            scopes = scopes or provider_config["scopes"]  # type: ignore[assignment]
 
             # Generate state for security
             if not state:
@@ -761,12 +761,12 @@ class EXT_Auth_OAuth(AbstractStaticExtension):
                 "response_type": "code",
                 "client_id": provider_config["client_id"],
                 "redirect_uri": redirect_uri,
-                "scope": " ".join(scopes),
+                "scope": " ".join(scopes),  # type: ignore[arg-type]
                 "state": state,
             }
 
             authorization_url = (
-                provider_config["auth_url"] + "?" + urlencode(auth_params)
+                provider_config["auth_url"] + "?" + urlencode(auth_params)  # type: ignore[operator]
             )
 
             # Store OAuth session

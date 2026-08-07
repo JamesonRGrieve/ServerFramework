@@ -96,7 +96,7 @@ class _FakeDatabaseMemoryStreamsTransport:
         self._closed = False
 
     def _client(self) -> _FakeClient:
-        return self._provider.connect(self._instance)
+        return self._provider.connect(self._instance)  # type: ignore[attr-defined]
 
     async def send(self, topic: str, payload: bytes) -> None:
         if self._closed:
@@ -121,4 +121,4 @@ class _FakeDatabaseMemoryStreamsTransport:
 
     async def close(self) -> None:
         self._closed = True
-        await self._provider.close(self._instance)
+        await self._provider.close(self._instance)  # type: ignore[attr-defined]

@@ -78,7 +78,7 @@ def _make_stitching_app() -> "httpx.AsyncClient":
                 "Query",
                 {
                     "user": GraphQLField(
-                        user_t, resolve=lambda *_args, **_kw: USERS.get(_kw.get("id"))
+                        user_t, resolve=lambda *_args, **_kw: USERS.get(_kw.get("id"))  # type: ignore[arg-type]
                     ),
                     "users": GraphQLField(
                         user_t, resolve=lambda *_args, **_kw: list(USERS.values())

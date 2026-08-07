@@ -35,7 +35,7 @@ class UserPaymentPortalModel(
 ):
     """Per-user link to a payment provider (e.g. Stripe customer)."""
 
-    Manager: ClassVar[Type["UserPaymentPortalManager"]] = None
+    Manager: ClassVar[Type["UserPaymentPortalManager"]] = None  # type: ignore[assignment]
     payment_portal_id: str = Field(
         ..., description="Reference to a registered payment provider"
     )
@@ -72,7 +72,7 @@ class TeamPaymentPortalModel(
 ):
     """Per-team link to a payment provider (creator user_id is optional)."""
 
-    Manager: ClassVar[Type["TeamPaymentPortalManager"]] = None
+    Manager: ClassVar[Type["TeamPaymentPortalManager"]] = None  # type: ignore[assignment]
     payment_portal_id: str = Field(...)
     customer_id: Optional[str] = Field(None)
 

@@ -30,7 +30,7 @@ from serverframework.logic.AbstractService import (
 
 
 @pytest.fixture(autouse=True)
-def _clear_registry() -> None:
+def _clear_registry() -> None:  # type: ignore[misc]
     STREAMING_HANDLER_REGISTRY.clear()
     yield
     STREAMING_HANDLER_REGISTRY.clear()

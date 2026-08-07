@@ -17,7 +17,7 @@ from serverframework.database.DatabaseManager import DatabaseManager
 from serverframework.lib.Environment import env
 from serverframework.lib.Logging import logger
 from serverframework.lib.Metrics import get_metrics_backend
-from serverframework.lib.Pydantic import BaseModel
+from serverframework.lib.Pydantic import BaseModel  # type: ignore[no-redef]
 from serverframework.lib.Pydantic2FastAPI import AuthType, RouterMixin
 from serverframework.logic.AbstractLogicManager import (
     AbstractBLLManager,
@@ -139,7 +139,7 @@ def validate_manager_constructors(*managers: type) -> None:
         ManagerContractError: First offending manager's name + actual signature.
     """
     for cls in managers:
-        sig = inspect.signature(cls.__init__)
+        sig = inspect.signature(cls.__init__)  # type: ignore[misc]
         params = [p for p in sig.parameters.values() if p.name != "self"]
         if not params:
             raise ManagerContractError(
@@ -301,39 +301,39 @@ class ProviderManager(AbstractBLLManager, RouterMixin):
         """Get the provider extension manager."""
         if self._extensions is None:
             # Import locally to avoid circular imports
-            self._extensions = ProviderExtensionManager(
+            self._extensions = ProviderExtensionManager(  # type: ignore[assignment]
                 requester_id=self.requester.id,
                 target_id=self.target_id,
                 target_team_id=self.target_team_id,
                 model_registry=self.model_registry,
             )
-        return self._extensions
+        return self._extensions  # type: ignore[return-value]
 
     @property
     def instances(self) -> "ProviderInstanceManager":
         """Get the provider instance manager."""
         if self._instances is None:
             # Import locally to avoid circular imports
-            self._instances = ProviderInstanceManager(
+            self._instances = ProviderInstanceManager(  # type: ignore[assignment]
                 requester_id=self.requester.id,
                 target_id=self.target_id,
                 target_team_id=self.target_team_id,
                 model_registry=self.model_registry,
             )
-        return self._instances
+        return self._instances  # type: ignore[return-value]
 
     @property
     def rotations(self) -> "RotationManager":
         """Get the rotation manager."""
         if self._rotations is None:
             # Import locally to avoid circular imports
-            self._rotations = RotationManager(
+            self._rotations = RotationManager(  # type: ignore[assignment]
                 requester_id=self.requester.id,
                 target_id=self.target_id,
                 target_team_id=self.target_team_id,
                 model_registry=self.model_registry,
             )
-        return self._rotations
+        return self._rotations  # type: ignore[return-value]
 
     @staticmethod
     def list_runtime_providers():
@@ -493,13 +493,13 @@ class ProviderExtensionManager(AbstractBLLManager, RouterMixin):
         """Get the provider extension ability manager."""
         if self._ability is None:
             # Import locally to avoid circular imports
-            self._ability = ProviderExtensionAbilityManager(
+            self._ability = ProviderExtensionAbilityManager(  # type: ignore[assignment]
                 requester_id=self.requester.id,
                 target_id=self.target_id,
                 target_team_id=self.target_team_id,
                 model_registry=self.model_registry,
             )
-        return self._ability
+        return self._ability  # type: ignore[return-value]
 
     def create_validation(self, entity):
         """Validate provider extension creation - check that provider and extension exist."""
@@ -591,7 +591,7 @@ class ProviderInstanceModel(
     NameMixinModel,
     UserModel.Reference.Optional,
     TeamModel.Reference.Optional,
-    ProviderModel.Reference,
+    ProviderModel.Reference,  # type: ignore[name-defined]
     metaclass=ModelMeta,
 ):
     model_name: Optional[str] | None = None
@@ -757,7 +757,7 @@ class ProviderInstanceModel(
         NameMixinModel.Search,
         UserModel.Reference.ID.Search,
         TeamModel.Reference.ID.Search,
-        ProviderModel.Reference.ID.Search,
+        ProviderModel.Reference.ID.Search,  # type: ignore[name-defined]
     ):
         model_name: Optional[StringSearchModel] | None = None
         api_key: Optional[StringSearchModel] | None = None
@@ -811,39 +811,39 @@ class ProviderInstanceManager(AbstractBLLManager, RouterMixin):
         """Get the provider instance usage manager."""
         if self._usage is None:
             # Import locally to avoid circular imports
-            self._usage = ProviderInstanceUsageManager(
+            self._usage = ProviderInstanceUsageManager(  # type: ignore[assignment]
                 requester_id=self.requester.id,
                 target_id=self.target_id,
                 target_team_id=self.target_team_id,
                 model_registry=self.model_registry,
             )
-        return self._usage
+        return self._usage  # type: ignore[return-value]
 
     @property
     def setting(self) -> "ProviderInstanceSettingManager":
         """Get the provider instance setting manager."""
         if self._setting is None:
             # Import locally to avoid circular imports
-            self._setting = ProviderInstanceSettingManager(
+            self._setting = ProviderInstanceSettingManager(  # type: ignore[assignment]
                 requester_id=self.requester.id,
                 target_id=self.target_id,
                 target_team_id=self.target_team_id,
                 model_registry=self.model_registry,
             )
-        return self._setting
+        return self._setting  # type: ignore[return-value]
 
     @property
     def ability(self) -> "ProviderInstanceExtensionAbilityManager":
         """Get the provider instance extension ability manager."""
         if self._ability is None:
             # Import locally to avoid circular imports
-            self._ability = ProviderInstanceExtensionAbilityManager(
+            self._ability = ProviderInstanceExtensionAbilityManager(  # type: ignore[assignment]
                 requester_id=self.requester.id,
                 target_id=self.target_id,
                 target_team_id=self.target_team_id,
                 model_registry=self.model_registry,
             )
-        return self._ability
+        return self._ability  # type: ignore[return-value]
 
     def create_validation(self, entity):
         """Validate provider instance creation - check that provider exists."""
@@ -2148,7 +2148,7 @@ class RotationProviderInstanceModel(
         "A RotationProviderInstance represents a link between a Rotation and a ProviderInstance. Order is determined by record parentage (NULL parent is first)."
     )
     is_system_entity: ClassVar[bool] = False
-    permission_references: ClassVar[List[str]] = ["rotation"]
+    permission_references: ClassVar[List[str]] = ["rotation"]  # type: ignore[no-redef]
 
     @classmethod
     def seed_data(cls, model_registry=None) -> List[Dict[str, Any]]:
@@ -2335,13 +2335,13 @@ class RotationProviderInstanceManager(AbstractBLLManager, RouterMixin):
         """Get the rotation manager instance."""
         if self._rotation is None:
             # Import locally to avoid circular imports
-            self._rotation = RotationManager(
+            self._rotation = RotationManager(  # type: ignore[assignment]
                 requester_id=self.requester.id,
                 target_id=self.target_id,
                 target_team_id=self.target_team_id,
                 model_registry=self.model_registry,
             )
-        return self._rotation
+        return self._rotation  # type: ignore[return-value]
 
     def create_validation(self, entity):
         """Validate rotation provider instance creation - check that rotation and provider instance exist."""

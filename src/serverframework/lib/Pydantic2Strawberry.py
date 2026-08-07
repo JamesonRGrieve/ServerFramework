@@ -823,7 +823,7 @@ class RequestDataLoader:
                     fut.set_exception(err)
             return
         if len(result) != len(keys):
-            err = ValueError(
+            err = ValueError(  # type: ignore[assignment]
                 f"DataLoader batch_load_fn returned {len(result)} results for"
                 f" {len(keys)} keys; lengths must match."
             )
@@ -1010,14 +1010,14 @@ class GraphQLManager(ErrorHandlerMixin):
                     )
                 bucket[emitted_name] = self._wrap_contribution(contribution)
 
-        for emitted_name, contribution in self._contributions.resolve_types().items():
+        for emitted_name, contribution in self._contributions.resolve_types().items():  # type: ignore[assignment]
             self._global_type_names.setdefault(
                 emitted_name,
-                f"{contribution.type_class.__module__}.{contribution.type_class.__name__}",
+                f"{contribution.type_class.__module__}.{contribution.type_class.__name__}",  # type: ignore[attr-defined]
             )
-            if contribution.federation_directives:
+            if contribution.federation_directives:  # type: ignore[attr-defined]
                 _apply_federation_directives(
-                    contribution.type_class, contribution.federation_directives
+                    contribution.type_class, contribution.federation_directives  # type: ignore[attr-defined]
                 )
 
     def _wrap_contribution(self, contribution: FieldContribution) -> Any:
@@ -1175,7 +1175,7 @@ class GraphQLManager(ErrorHandlerMixin):
             and model_class._is_extension_model
         ):
             logger.debug(
-                f"Skipping GraphQL generation for extension model {model_class.__name__} "
+                f"Skipping GraphQL generation for extension model {model_class.__name__} "  # type: ignore[union-attr]
                 f"(extends {getattr(model_class, '_extension_target', 'Unknown').__name__})"
             )
             return
@@ -1243,8 +1243,8 @@ class GraphQLManager(ErrorHandlerMixin):
             # Generate resolvers using safe operations
             self.safe_operation(
                 lambda: (
-                    self._add_query_resolver(model_name_camel, gql_type, manager_class),
-                    self._add_list_query_resolver(
+                    self._add_query_resolver(model_name_camel, gql_type, manager_class),  # type: ignore[func-returns-value, arg-type]
+                    self._add_list_query_resolver(  # type: ignore[func-returns-value]
                         model_name_plural, gql_type, manager_class, filter_input
                     ),
                 ),
@@ -1254,13 +1254,13 @@ class GraphQLManager(ErrorHandlerMixin):
 
             self.safe_operation(
                 lambda: (
-                    self._add_create_mutation_resolver(
+                    self._add_create_mutation_resolver(  # type: ignore[func-returns-value]
                         f"create{base_name}", gql_type, manager_class, create_input
                     ),
-                    self._add_update_mutation_resolver(
+                    self._add_update_mutation_resolver(  # type: ignore[func-returns-value]
                         f"update{base_name}", gql_type, manager_class, update_input
                     ),
-                    self._add_delete_mutation_resolver(
+                    self._add_delete_mutation_resolver(  # type: ignore[func-returns-value]
                         f"delete{base_name}", manager_class
                     ),
                 ),
@@ -1270,13 +1270,13 @@ class GraphQLManager(ErrorHandlerMixin):
 
             self.safe_operation(
                 lambda: (
-                    self._add_subscription_resolver(
+                    self._add_subscription_resolver(  # type: ignore[func-returns-value]
                         f"{model_name_camel}Created", model_name
                     ),
-                    self._add_subscription_resolver(
+                    self._add_subscription_resolver(  # type: ignore[func-returns-value]
                         f"{model_name_camel}Updated", model_name
                     ),
-                    self._add_subscription_resolver(
+                    self._add_subscription_resolver(  # type: ignore[func-returns-value]
                         f"{model_name_camel}Deleted", model_name
                     ),
                 ),
@@ -1389,13 +1389,13 @@ class GraphQLManager(ErrorHandlerMixin):
                         f"is_dict={isinstance(field_type, dict)}"
                     )
 
-                gql_field_type = self._convert_python_type_to_gql(field_type)
+                gql_field_type = self._convert_python_type_to_gql(field_type)  # type: ignore[arg-type]
                 # Convert snake_case field names to camelCase for GraphQL (GraphQL convention)
                 gql_field_name = convert_field_name(field_name, use_camelcase=True)
-                annotations[gql_field_name] = gql_field_type
+                annotations[gql_field_name] = gql_field_type  # type: ignore[index]
                 # Store mapping for resolver if names differ
                 if gql_field_name != field_name:
-                    field_name_mappings[gql_field_name] = field_name
+                    field_name_mappings[gql_field_name] = field_name  # type: ignore[index]
 
             # Add reverse navigation properties
             if model_class in self._reverse_relationships:
@@ -1405,16 +1405,16 @@ class GraphQLManager(ErrorHandlerMixin):
                 ) in self._reverse_relationships[model_class].items():
                     # Add annotation for the reverse field using the lazy type
                     source_gql_type: Type = self._get_or_create_type(source_model)
-                    annotations[reverse_field_name] = List[source_gql_type]
+                    annotations[reverse_field_name] = List[source_gql_type]  # type: ignore[valid-type]
 
             # Always add at least one field to avoid empty type error
             if not annotations:
-                annotations["_dummy"] = Optional[str]
+                annotations["_dummy"] = Optional[str]  # type: ignore[assignment]
 
             # Check if a type with this name already exists
             # This is a global registry to track all type names
             if not hasattr(self, "_global_type_names"):
-                self._global_type_names: Dict[str, str] = {}
+                self._global_type_names: Dict[str, str] = {}  # type: ignore[no-redef]
 
             if type_name in self._global_type_names:
                 existing_model = self._global_type_names[type_name]
@@ -1592,11 +1592,11 @@ class GraphQLManager(ErrorHandlerMixin):
             gql_field_name = convert_field_name(field_name, use_camelcase=True)
 
             gql_field_type = self._convert_python_type_to_gql(field_type)
-            annotations[gql_field_name] = gql_field_type
+            annotations[gql_field_name] = gql_field_type  # type: ignore[index]
 
         # Always add at least one field to avoid empty input type error
         if not annotations:
-            annotations["_dummy"] = Optional[str]
+            annotations["_dummy"] = Optional[str]  # type: ignore[assignment]
 
         # Create the input type class with proper annotations
         # Use strawberry.field with default=None to make all fields truly optional
@@ -1635,16 +1635,16 @@ class GraphQLManager(ErrorHandlerMixin):
         for field_name, field_info in model_class.model_fields.items():
             field_type = field_info.annotation
             if field_type == str:
-                annotations[f"{field_name}_contains"] = Optional[str]
-                annotations[f"{field_name}_equals"] = Optional[str]
+                annotations[f"{field_name}_contains"] = Optional[str]  # type: ignore[assignment]
+                annotations[f"{field_name}_equals"] = Optional[str]  # type: ignore[assignment]
             elif field_type in [int, float]:
-                annotations[f"{field_name}_equals"] = Optional[field_type]
-                annotations[f"{field_name}_gt"] = Optional[field_type]
-                annotations[f"{field_name}_lt"] = Optional[field_type]
+                annotations[f"{field_name}_equals"] = Optional[field_type]  # type: ignore[assignment]
+                annotations[f"{field_name}_gt"] = Optional[field_type]  # type: ignore[assignment]
+                annotations[f"{field_name}_lt"] = Optional[field_type]  # type: ignore[assignment]
 
         # Always add at least one field to avoid empty input type error
         if not annotations:
-            annotations["_dummy"] = Optional[str]
+            annotations["_dummy"] = Optional[str]  # type: ignore[assignment]
 
         filter_class = type(filter_name, (), {"__annotations__": annotations})
         return strawberry.input(filter_class)
@@ -1661,13 +1661,13 @@ class GraphQLManager(ErrorHandlerMixin):
                 args = get_args(python_type)
                 if len(args) == 2 and type(None) in args:
                     inner_type = next(arg for arg in args if arg is not type(None))
-                    return Optional[self._convert_python_type_to_gql(inner_type)]
+                    return Optional[self._convert_python_type_to_gql(inner_type)]  # type: ignore[return-value]
 
             # Handle List types
             if get_origin(python_type) is list:
                 args = get_args(python_type)
                 return (
-                    List[self._convert_python_type_to_gql(args[0])]
+                    List[self._convert_python_type_to_gql(args[0])]  # type: ignore[misc, return-value]
                     if args
                     else List[str]
                 )
@@ -1715,10 +1715,10 @@ class GraphQLManager(ErrorHandlerMixin):
 
                         new_enum = type(enum_name, (Enum,), enum_values)
                         new_enum.__module__ = python_type.__module__
-                        return strawberry.enum(new_enum)
+                        return strawberry.enum(new_enum)  # type: ignore[call-overload]
 
                     # Try direct strawberry conversion
-                    return strawberry.enum(python_type)
+                    return strawberry.enum(python_type)  # type: ignore[call-overload]
                 except Exception:
                     return TYPE_MAPPING[str]
 
@@ -1822,7 +1822,7 @@ class GraphQLManager(ErrorHandlerMixin):
         # Special handling for user queries - users can only query themselves
         if "User" in manager_class.__name__:
 
-            async def user_resolver(info: Info, **kwargs: Optional[str]) -> return_type:
+            async def user_resolver(info: Info, **kwargs: Optional[str]) -> return_type:  # type: ignore[valid-type]
                 try:
                     context = self._get_context_from_info(info)
                     requester_id = context.get("requester_id")
@@ -1846,7 +1846,7 @@ class GraphQLManager(ErrorHandlerMixin):
             )
         else:
             # Create resolver with only ID parameter to avoid unknown argument errors
-            async def resolver(id: str, info: Info) -> return_type:
+            async def resolver(id: str, info: Info) -> return_type:  # type: ignore[valid-type]
                 try:
                     context = self._get_context_from_info(info)
                     requester_id = context.get("requester_id")
@@ -1884,9 +1884,9 @@ class GraphQLManager(ErrorHandlerMixin):
                 teamId: Optional[str] = None,
                 limit: Optional[int] = 100,
                 offset: Optional[int] = 0,
-                info: Info = None,
+                info: Info = None,  # type: ignore[assignment]
                 **kwargs: Optional[str],
-            ) -> List[return_type]:
+            ) -> List[return_type]:  # type: ignore[valid-type]
                 try:
                     context = self._get_context_from_info(info)
                     requester_id = context.get("requester_id")
@@ -1904,7 +1904,7 @@ class GraphQLManager(ErrorHandlerMixin):
                         filter_params = {"team_id": teamId}
                         for key, value in kwargs.items():
                             snake_key = stringcase.snakecase(key)
-                            filter_params[snake_key] = value
+                            filter_params[snake_key] = value  # type: ignore[assignment]
 
                         result = manager.list(
                             offset=offset or 0,
@@ -1930,11 +1930,11 @@ class GraphQLManager(ErrorHandlerMixin):
         else:
 
             async def resolver(
-                filter: Optional[filter_type] = None,
+                filter: Optional[filter_type] = None,  # type: ignore[valid-type]
                 limit: Optional[int] = 100,
                 offset: Optional[int] = 0,
-                info: Info = None,
-            ) -> List[return_type]:
+                info: Info = None,  # type: ignore[assignment]
+            ) -> List[return_type]:  # type: ignore[valid-type]
                 try:
                     context = self._get_context_from_info(info)
                     requester_id = context.get("requester_id")
@@ -1971,7 +1971,7 @@ class GraphQLManager(ErrorHandlerMixin):
     ) -> None:
         """Add a mutation resolver for creating items"""
 
-        async def resolver(input: input_type, info: Info) -> return_type:
+        async def resolver(input: input_type, info: Info) -> return_type:  # type: ignore[valid-type]
             try:
                 context = self._get_context_from_info(info)
                 requester_id = context.get("requester_id")
@@ -2037,8 +2037,8 @@ class GraphQLManager(ErrorHandlerMixin):
         if "User" in manager_class.__name__:
 
             async def user_update_resolver(
-                input: input_type, info: Info
-            ) -> return_type:
+                input: input_type, info: Info  # type: ignore[valid-type]
+            ) -> return_type:  # type: ignore[valid-type]
                 try:
                     context = self._get_context_from_info(info)
                     requester_id = context.get("requester_id")
@@ -2052,7 +2052,7 @@ class GraphQLManager(ErrorHandlerMixin):
                     logger.info(f"GraphQL update input: {input}")
                     logger.info(f"GraphQL update input type: {type(input)}")
                     logger.info(
-                        f"GraphQL update input dict: {input.__dict__ if hasattr(input, '__dict__') else 'No __dict__'}"
+                        f"GraphQL update input dict: {input.__dict__ if hasattr(input, '__dict__') else 'No __dict__'}"  # type: ignore[attr-defined]
                     )
                     data = self._convert_input_to_dict(input)
 
@@ -2089,7 +2089,7 @@ class GraphQLManager(ErrorHandlerMixin):
             )
         else:
 
-            async def resolver(id: str, input: input_type, info: Info) -> return_type:
+            async def resolver(id: str, input: input_type, info: Info) -> return_type:  # type: ignore[valid-type]
                 try:
                     context = self._get_context_from_info(info)
                     requester_id = context.get("requester_id")
@@ -2214,8 +2214,8 @@ class GraphQLManager(ErrorHandlerMixin):
         async def resolver() -> AsyncGenerator[str, None]:
             channel = f"{model_name.lower()}_created"  # Simplified for now
             async with self.broadcast.subscribe(channel=channel) as subscriber:
-                async for event in subscriber:
-                    yield event.message
+                async for event in subscriber:  # type: ignore[union-attr]
+                    yield event.message  # type: ignore[union-attr]
 
         self._subscription_fields[field_name] = strawberry.subscription(resolver)
 
@@ -2313,7 +2313,7 @@ class GraphQLManager(ErrorHandlerMixin):
             data = input_obj.model_dump(exclude_none=True)
         elif hasattr(input_obj, "__dict__"):
             # Convert from input object, excluding None values
-            data: Dict[str, Any] = {}
+            data: Dict[str, Any] = {}  # type: ignore[no-redef]
             for k, v in input_obj.__dict__.items():
                 if v is not None and not k.startswith("_"):
                     data[k] = v
@@ -2371,16 +2371,16 @@ class GraphQLManager(ErrorHandlerMixin):
                 continue
 
             # Convert field type to optional GraphQL type
-            gql_type = self._convert_python_type_to_gql(field_type)
+            gql_type = self._convert_python_type_to_gql(field_type)  # type: ignore[arg-type]
             if not self._is_already_optional(gql_type):
-                gql_type = Optional[gql_type]
+                gql_type = Optional[gql_type]  # type: ignore[assignment]
             # Convert snake_case field names to camelCase for GraphQL input types
             gql_field_name = convert_field_name(field_name, use_camelcase=True)
-            annotations[gql_field_name] = gql_type
+            annotations[gql_field_name] = gql_type  # type: ignore[index]
 
         # Always add at least one field to avoid empty input type error
         if not annotations:
-            annotations["_dummy"] = Optional[str]
+            annotations["_dummy"] = Optional[str]  # type: ignore[assignment]
 
         # Create the input type class with proper annotations
         input_fields: Dict[str, Any] = {}
@@ -2479,7 +2479,7 @@ class GraphQLManager(ErrorHandlerMixin):
 
                 # Look for a corresponding object field
                 if base_field_name in model_class.model_fields:
-                    object_field_type: Type = model_class.model_fields[
+                    object_field_type: Type = model_class.model_fields[  # type: ignore[assignment]
                         base_field_name
                     ].annotation
 
@@ -2571,7 +2571,7 @@ class GraphQLManager(ErrorHandlerMixin):
             # Reverse navigation (one-to-many)
             async def reverse_resolver(
                 self, info: Info, limit: Optional[int] = 100, offset: Optional[int] = 0
-            ) -> List[target_model]:
+            ) -> List[target_model]:  # type: ignore[valid-type]
                 try:
                     context = self._get_context_from_info(info)
                     requester_id = context.get("requester_id")
@@ -2604,7 +2604,7 @@ class GraphQLManager(ErrorHandlerMixin):
             return reverse_resolver
         else:
             # Forward navigation (many-to-one)
-            async def forward_resolver(self, info: Info) -> Optional[target_model]:
+            async def forward_resolver(self, info: Info) -> Optional[target_model]:  # type: ignore[valid-type]
                 try:
                     # Check if we already have the object loaded
                     if (
@@ -2696,6 +2696,6 @@ class GraphQLManager(ErrorHandlerMixin):
 
         # Set the return type annotation dynamically
         source_gql_type: Type = manager_ref._get_or_create_type(source_model)
-        resolver.__annotations__["return"] = List[source_gql_type]
+        resolver.__annotations__["return"] = List[source_gql_type]  # type: ignore[valid-type]
 
         return resolver

@@ -97,7 +97,7 @@ class GraphQLTestMixin:
     def _get_graphql_entity_name(self, plural: bool = False) -> str:
         """Get the GraphQL field name for the external entity."""
         if not self.graphql_config.external_entity_name:
-            return None
+            return None  # type: ignore[return-value]
 
         entity_name = self.graphql_config.external_entity_name
         if "_" in entity_name:
@@ -111,7 +111,7 @@ class GraphQLTestMixin:
         """Get the GraphQL mutation name for external entity operations."""
         entity_name = self._get_graphql_entity_name()
         if not entity_name:
-            return None
+            return None  # type: ignore[return-value]
         return f"{operation}{stringcase.pascalcase(entity_name)}"
 
     def _create_test_data(self) -> Dict[str, Any]:
@@ -346,7 +346,7 @@ class AbstractPRVTest(AbstractTest):
     expectations, and behavior.
     """
 
-    provider_class: Type[T] | None = None
+    provider_class: Type[T] | None = None  # type: ignore[valid-type]
     test_config: ProviderTestConfig = ProviderTestConfig()
 
     def _should_run_test(self, test_type: ProviderTestType) -> bool:

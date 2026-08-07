@@ -56,7 +56,7 @@ class ConcreteDatabaseProvider(AbstractDatabaseExtensionProvider):
     extension = EXT_Database
 
     @classmethod
-    def bond_instance(cls, config: Dict[str, any]) -> None:
+    def bond_instance(cls, config: Dict[str, any]) -> None:  # type: ignore[valid-type]
         cls._config = config
 
     @classmethod

@@ -603,7 +603,7 @@ class EXT_Database(AbstractStaticExtension):
                         issues = provider_class.validate_config()
                         healthy = len(issues) == 0
 
-                        health_status["providers"][provider_name] = {
+                        health_status["providers"][provider_name] = {  # type: ignore[index]
                             "healthy": healthy,
                             "issues": issues,
                         }
@@ -611,13 +611,13 @@ class EXT_Database(AbstractStaticExtension):
                         if not healthy:
                             health_status["overall_healthy"] = False
                     else:
-                        health_status["providers"][provider_name] = {
+                        health_status["providers"][provider_name] = {  # type: ignore[index]
                             "healthy": True,
                             "issues": [],
                         }
 
                 except Exception as e:
-                    health_status["providers"][provider_name] = {
+                    health_status["providers"][provider_name] = {  # type: ignore[index]
                         "healthy": False,
                         "issues": [f"Health check error: {str(e)}"],
                     }

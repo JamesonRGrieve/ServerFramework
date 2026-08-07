@@ -110,7 +110,7 @@ class TestManager(AbstractBLLManager, RouterMixin):
 
     def __init__(self, requester_id: Optional[str] = None, model_registry=None):
         super().__init__(requester_id=requester_id, model_registry=model_registry)
-        self._data_store = {}  # Simple in-memory store for testing
+        self._data_store: dict[str, Any] = {}
 
     def create(self, **kwargs):
         """Create a test entity."""

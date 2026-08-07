@@ -213,7 +213,7 @@ class QueryCounter:
         event.listen(self._engine, "before_cursor_execute", self._listener)
         return self
 
-    def __exit__(self, exc_type, exc, tb) -> bool:
+    def __exit__(self, exc_type, exc, tb) -> bool:  # type: ignore[exit-return]
         if self._listener is not None:
             event.remove(self._engine, "before_cursor_execute", self._listener)
             self._listener = None
@@ -257,7 +257,7 @@ def collect_samples(
                     operation(n)
                 runs.append(float(get_value()))
             else:
-                with QueryCounter(engine) as counter:
+                with QueryCounter(engine) as counter:  # type: ignore[arg-type]
                     operation(n)
                 runs.append(float(counter.count))
         if teardown is not None:

@@ -55,7 +55,7 @@ class UserRecoveryQuestionModel(
     UserModel.Reference,
     metaclass=ModelMeta,
 ):
-    Manager: ClassVar[Type["UserRecoveryQuestionManager"]] = None
+    Manager: ClassVar[Type["UserRecoveryQuestionManager"]] = None  # type: ignore[assignment]
     question: str = Field(..., description="Recovery question")
     # H-3 — the bcrypt hash of the answer must NEVER appear in any
     # response. Recovery answers have low entropy and crack offline; the

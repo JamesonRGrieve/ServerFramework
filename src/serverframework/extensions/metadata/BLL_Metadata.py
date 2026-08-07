@@ -31,7 +31,7 @@ class MetadataModel(
     UpdateMixinModel.Optional,
     metaclass=ModelMeta,
 ):
-    Manager: ClassVar[Type["MetadataManager"]] = None
+    Manager: ClassVar[Type["MetadataManager"]] = None  # type: ignore[assignment]
     # Foreign key fields (optional since metadata can be user-only, team-only, or both)
     user_id: Optional[str] = Field(None, description="Optional foreign key to User")
     team_id: Optional[str] = Field(None, description="Optional foreign key to Team")
@@ -194,12 +194,12 @@ class TeamMetadataManager(MetadataManager):
             )
         super().create_validation(entity)
 
-    def set_preference(self, key: str, value: str) -> Dict[str, str]:
+    def set_preference(self, key: str, value: str) -> Dict[str, str]:  # type: ignore[override]
         if not self.target_team_id:
             raise HTTPException(status_code=400, detail="Team ID is required")
         return super().set_preference(key, value, team_id=self.target_team_id)
 
-    def get_preference(self, key: str) -> Optional[str]:
+    def get_preference(self, key: str) -> Optional[str]:  # type: ignore[override]
         if not self.target_team_id:
             raise HTTPException(status_code=400, detail="Team ID is required")
         return super().get_preference(key, team_id=self.target_team_id)
@@ -215,12 +215,12 @@ class UserMetadataManager(MetadataManager):
             )
         super().create_validation(entity)
 
-    def set_preference(self, key: str, value: str) -> Dict[str, str]:
+    def set_preference(self, key: str, value: str) -> Dict[str, str]:  # type: ignore[override]
         if not self.target_user_id:
             raise HTTPException(status_code=400, detail="User ID is required")
         return super().set_preference(key, value, user_id=self.target_user_id)
 
-    def get_preference(self, key: str) -> Optional[str]:
+    def get_preference(self, key: str) -> Optional[str]:  # type: ignore[override]
         if not self.target_user_id:
             raise HTTPException(status_code=400, detail="User ID is required")
         return super().get_preference(key, user_id=self.target_user_id)

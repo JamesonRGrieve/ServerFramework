@@ -222,19 +222,19 @@ class AbstractFederationMatrixTest(ABC):
 
         provider_instance = None
         if op == "get":
-            return external_model_cls.get_via_provider(provider_instance, fixture.sample_id)
+            return external_model_cls.get_via_provider(provider_instance, fixture.sample_id)  # type: ignore[attr-defined]
         if op == "list":
-            return external_model_cls.list_via_provider(provider_instance)
+            return external_model_cls.list_via_provider(provider_instance)  # type: ignore[attr-defined]
         if op == "create":
-            return external_model_cls.create_via_provider(
+            return external_model_cls.create_via_provider(  # type: ignore[attr-defined]
                 provider_instance, **(fixture.create_payload or {})
             )
         if op == "update":
-            return external_model_cls.update_via_provider(
+            return external_model_cls.update_via_provider(  # type: ignore[attr-defined]
                 provider_instance, fixture.sample_id, **(fixture.update_payload or {})
             )
         if op == "delete":
-            return external_model_cls.delete_via_provider(provider_instance, fixture.sample_id)
+            return external_model_cls.delete_via_provider(provider_instance, fixture.sample_id)  # type: ignore[attr-defined]
         raise ValueError(f"Unknown op: {op}")
 
     def _call_via_gql_surface(

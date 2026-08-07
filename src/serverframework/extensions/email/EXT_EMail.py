@@ -913,7 +913,7 @@ def iter_configured_email_providers(
         if not issubclass(settings_cls, BaseModel):
             continue
         try:
-            if settings_cls.is_configured(env_source):
+            if settings_cls.is_configured(env_source):  # type: ignore[attr-defined]
                 configured.append(provider_cls)
         except Exception as exc:  # noqa: BLE001 — defensive at startup
             logger.debug(
@@ -942,7 +942,7 @@ def validate_email_provider_settings_at_startup(
             report[name] = False
             continue
         try:
-            ok = bool(settings_cls.is_configured(env_source))
+            ok = bool(settings_cls.is_configured(env_source))  # type: ignore[attr-defined]
         except Exception as exc:  # noqa: BLE001
             logger.info(
                 f"Email provider {name}: Settings.is_configured raised {exc}"

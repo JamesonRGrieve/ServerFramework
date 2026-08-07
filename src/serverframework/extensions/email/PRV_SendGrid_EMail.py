@@ -447,7 +447,7 @@ class SendgridProvider(AbstractEmailProvider):
             sig_bytes = base64.b64decode(signature_b64)
             # SendGrid's signature is DER-encoded ECDSA; cryptography
             # verifies DER directly, so we pass it through.
-            key.verify(sig_bytes, signed_payload, ec.ECDSA(hashes.SHA256()))
+            key.verify(sig_bytes, signed_payload, ec.ECDSA(hashes.SHA256()))  # type: ignore[union-attr, arg-type, call-arg]
             return True
         except InvalidSignature:
             logger.debug("SendGrid webhook ECDSA signature invalid.")
@@ -1258,7 +1258,7 @@ class SendgridEmailInstance(AbstractEmailProviderInstance):
         # SendGrid returns a list of `{date, stats: [{metrics: {...}}]}`;
         # aggregate across the window.
         delivered = opens = clicks = bounces = spam = unsub = requests = 0
-        for row in data if isinstance(data, list) else []:
+        for row in data if isinstance(data, list) else []:  # type: ignore[var-annotated]
             for stat in row.get("stats", []) or []:
                 metrics = stat.get("metrics", {}) or {}
                 delivered += int(metrics.get("delivered", 0))

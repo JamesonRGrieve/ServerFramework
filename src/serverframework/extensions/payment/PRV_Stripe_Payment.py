@@ -28,7 +28,7 @@ from serverframework.extensions.payment.EXT_Payment import AbstractPaymentProvid
 from serverframework.lib.Dependencies import Dependencies, PIP_Dependency
 from serverframework.lib.Environment import env
 from serverframework.lib.Logging import logger
-from serverframework.lib.Pydantic import BaseModel
+from serverframework.lib.Pydantic import BaseModel  # type: ignore[no-redef]
 from serverframework.logic.AbstractLogicManager import ModelMeta
 from serverframework.logic.BLL_Providers import ProviderInstanceModel
 
@@ -947,7 +947,7 @@ class PaymentExtensionStripeProvider(AbstractPaymentProvider):
             refund_data = {"payment_intent": payment_id}
 
             if amount is not None:
-                refund_data["amount"] = int(amount * 100)  # Convert to cents
+                refund_data["amount"] = int(amount * 100)  # type: ignore[assignment]
 
             if reason:
                 refund_data["reason"] = reason
@@ -992,7 +992,7 @@ class PaymentExtensionStripeProvider(AbstractPaymentProvider):
             if phone:
                 customer_data["phone"] = phone
             if metadata:
-                customer_data["metadata"] = metadata
+                customer_data["metadata"] = metadata  # type: ignore[assignment]
 
             customer = stripe_client.Customer.create(**customer_data)
 
@@ -1064,9 +1064,9 @@ class PaymentExtensionStripeProvider(AbstractPaymentProvider):
             if payment_method_id:
                 sub_data["default_payment_method"] = payment_method_id
             if trial_days:
-                sub_data["trial_period_days"] = trial_days
+                sub_data["trial_period_days"] = trial_days  # type: ignore[assignment]
             if metadata:
-                sub_data["metadata"] = metadata
+                sub_data["metadata"] = metadata  # type: ignore[assignment]
 
             subscription = stripe_client.Subscription.create(**sub_data)
 

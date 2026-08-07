@@ -28,7 +28,7 @@ class FailedLoginAttemptModel(
     UserModel.Reference.Optional,
     metaclass=ModelMeta,
 ):
-    Manager: ClassVar[Type["FailedLoginAttemptManager"]] = None
+    Manager: ClassVar[Type["FailedLoginAttemptManager"]] = None  # type: ignore[assignment]
     ip_address: Optional[str] = Field(
         None, description="IP address of failed login attempt"
     )

@@ -30,7 +30,7 @@ class MockDBModel:
     """
 
     # Class-level store to remember entities between operations
-    _entity_store = {}
+    _entity_store = {}  # type: ignore[var-annotated]
 
     # Define class attributes that will be accessible via hasattr/getattr
     id = MagicMock()

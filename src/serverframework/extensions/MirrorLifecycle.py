@@ -80,8 +80,8 @@ def _attach_spec(manager_cls: type, spec: MirrorSpec) -> None:
     if "_mirror_specs" not in manager_cls.__dict__:
         # Copy the parent's list so we do not mutate it.
         parent_specs = list(getattr(manager_cls, "_mirror_specs", []) or [])
-        manager_cls._mirror_specs = parent_specs
-    manager_cls._mirror_specs.append(spec)
+        manager_cls._mirror_specs = parent_specs  # type: ignore[attr-defined]
+    manager_cls._mirror_specs.append(spec)  # type: ignore[attr-defined]
 
 
 def _register_hook(manager_cls: type, spec: MirrorSpec) -> None:

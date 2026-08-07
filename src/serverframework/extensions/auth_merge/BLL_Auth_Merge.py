@@ -183,7 +183,7 @@ class UserMergeModel(
 ):
     """Audit record of a user-account merge."""
 
-    Manager: ClassVar[Type["UserMergeManager"]] = None
+    Manager: ClassVar[Type["UserMergeManager"]] = None  # type: ignore[assignment]
     initiating_user_id: str = Field(
         ..., description="User who survives the merge (data-owner)"
     )

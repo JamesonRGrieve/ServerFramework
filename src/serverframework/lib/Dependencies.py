@@ -24,7 +24,7 @@ from serverframework.lib.Logging import logger
 try:
     from importlib.metadata import PackageNotFoundError, version
 except ImportError:
-    from importlib_metadata import version, PackageNotFoundError
+    from importlib_metadata import version, PackageNotFoundError  # type: ignore[no-redef]
 
 # Import for better OS detection
 try:
@@ -37,7 +37,7 @@ except ImportError:
 # Import for dependency resolution
 try:
     import resolvelib
-    from resolvelib.providers import AbstractExtensionProvider
+    from resolvelib.providers import AbstractExtensionProvider  # type: ignore[attr-defined]
     from resolvelib.resolvers import RequirementInformation, Resolver
 
     HAS_RESOLVELIB = True
@@ -45,10 +45,10 @@ except ImportError:
     HAS_RESOLVELIB = False
 
     # Create stub classes to avoid errors when importing
-    class AbstractExtensionProvider:
+    class AbstractExtensionProvider:  # type: ignore[no-redef]
         pass
 
-    class Resolver:
+    class Resolver:  # type: ignore[no-redef]
         def __init__(self, provider, reporter=None):
             pass
 
@@ -356,10 +356,10 @@ class PackageManager(ABC):
     """Abstract base class for package managers."""
 
     # Dictionary mapping commands to their respective arguments
-    COMMANDS = {}
+    COMMANDS = {}  # type: ignore[var-annotated]
 
     # List of supported operating systems
-    SUPPORTED_OS = []
+    SUPPORTED_OS = []  # type: ignore[var-annotated]
 
     @classmethod
     def _build_command(cls, command_type: str, *args) -> List[str]:
@@ -377,7 +377,7 @@ class PackageManager(ABC):
             raise ValueError(f"Unsupported command type: {command_type}")
 
         command_template = cls.COMMANDS[command_type]
-        command = []
+        command = []  # type: ignore[var-annotated]
 
         # Process each part of the command template
         for part in command_template:
@@ -710,7 +710,7 @@ class DependencyFactory:
                     SystemPackageMapping(manager=manager, package_name=pkg_name)
                 )
 
-        return SYS_Dependency(
+        return SYS_Dependency(  # type: ignore[call-arg]
             name=name,
             friendly_name=friendly_name or name,
             optional=optional,
@@ -749,19 +749,19 @@ class DependencyFactory:
 
 
 # Static methods for SYS_Dependency to make creation more convenient
-@staticmethod
+@staticmethod  # type: ignore[misc]
 def for_apt(name: str, package: str, **kwargs) -> "SYS_Dependency":
     """Create a dependency for APT package manager."""
     return DependencyFactory.create_system_dependency(name=name, apt=package, **kwargs)
 
 
-@staticmethod
+@staticmethod  # type: ignore[misc]
 def for_brew(name: str, package: str, **kwargs) -> "SYS_Dependency":
     """Create a dependency for Homebrew package manager."""
     return DependencyFactory.create_system_dependency(name=name, brew=package, **kwargs)
 
 
-@staticmethod
+@staticmethod  # type: ignore[misc]
 def for_winget(name: str, package: str, **kwargs) -> "SYS_Dependency":
     """Create a dependency for WinGet package manager."""
     return DependencyFactory.create_system_dependency(
@@ -769,7 +769,7 @@ def for_winget(name: str, package: str, **kwargs) -> "SYS_Dependency":
     )
 
 
-@staticmethod
+@staticmethod  # type: ignore[misc]
 def for_chocolatey(name: str, package: str, **kwargs) -> "SYS_Dependency":
     """Create a dependency for Chocolatey package manager."""
     return DependencyFactory.create_system_dependency(
@@ -777,13 +777,13 @@ def for_chocolatey(name: str, package: str, **kwargs) -> "SYS_Dependency":
     )
 
 
-@staticmethod
+@staticmethod  # type: ignore[misc]
 def for_snap(name: str, package: str, **kwargs) -> "SYS_Dependency":
     """Create a dependency for Snap package manager."""
     return DependencyFactory.create_system_dependency(name=name, snap=package, **kwargs)
 
 
-@staticmethod
+@staticmethod  # type: ignore[misc]
 def for_all_platforms(
     name: str,
     apt_pkg: Optional[str] | None = None,
@@ -806,12 +806,12 @@ def for_all_platforms(
 
 
 # Add static methods to SYS_Dependency class
-SYS_Dependency.for_apt = for_apt
-SYS_Dependency.for_brew = for_brew
-SYS_Dependency.for_winget = for_winget
-SYS_Dependency.for_chocolatey = for_chocolatey
-SYS_Dependency.for_snap = for_snap
-SYS_Dependency.for_all_platforms = for_all_platforms
+SYS_Dependency.for_apt = for_apt  # type: ignore[attr-defined]
+SYS_Dependency.for_brew = for_brew  # type: ignore[attr-defined]
+SYS_Dependency.for_winget = for_winget  # type: ignore[attr-defined]
+SYS_Dependency.for_chocolatey = for_chocolatey  # type: ignore[attr-defined]
+SYS_Dependency.for_snap = for_snap  # type: ignore[attr-defined]
+SYS_Dependency.for_all_platforms = for_all_platforms  # type: ignore[attr-defined]
 
 
 def install_system_dependencies(
@@ -836,9 +836,9 @@ def install_system_dependencies(
 
     # Resolve dependencies to get proper installation order
     try:
-        resolved_deps = resolve_dependencies(deps_dict)
+        resolved_deps = resolve_dependencies(deps_dict)  # type: ignore[arg-type]
         # Convert back to list but in resolved order
-        dependencies = list(resolved_deps.values())
+        dependencies = list(resolved_deps.values())  # type: ignore[arg-type]
         logger.debug(
             f"Resolved dependencies in order: {[dep.name for dep in dependencies]}"
         )
@@ -1195,9 +1195,9 @@ def install_pip_dependencies(
 
     # Resolve dependencies to get proper installation order
     try:
-        resolved_deps = resolve_dependencies(deps_dict)
+        resolved_deps = resolve_dependencies(deps_dict)  # type: ignore[arg-type]
         # Convert back to list but in resolved order
-        dependencies = list(resolved_deps.values())
+        dependencies = list(resolved_deps.values())  # type: ignore[arg-type]
         logger.debug(
             f"Resolved PIP dependencies in order: {[dep.name for dep in dependencies]}"
         )
@@ -1205,7 +1205,7 @@ def install_pip_dependencies(
         logger.warning(f"Dependency resolution failed: {str(e)}. Using original order.")
 
     # Determine which dependencies to install
-    to_install = []
+    to_install = []  # type: ignore[var-annotated]
     if only_missing:
         dependency_status = check_pip_dependencies(dependencies)
         to_install = []
@@ -1298,7 +1298,7 @@ class DependencyNode:
 
     def add_dependency(self, name: str, version_constraint: Optional[str] | None = None):
         """Add a dependency to this node."""
-        self.dependencies[name] = version_constraint
+        self.dependencies[name] = version_constraint  # type: ignore[assignment]
 
     def __repr__(self):
         return f"<DependencyNode {self.name}@{self.version}>"
@@ -1573,7 +1573,7 @@ def resolve_dependencies(dependencies: Dict[str, Dependency]) -> Dict[str, Depen
     provider = DependencyProvider(dependency_map)
 
     try:
-        resolver = Resolver(provider, BaseReporter())
+        resolver = Resolver(provider, BaseReporter())  # type: ignore[arg-type, var-annotated]
 
         # Create initial requirements
         requirements = [DependencyRequirement(name) for name in dependencies.keys()]
@@ -1594,7 +1594,7 @@ def resolve_dependencies(dependencies: Dict[str, Dependency]) -> Dict[str, Depen
         raise DependencyResolutionError(f"Failed to resolve dependencies: {str(e)}")
 
 
-def resolve_extension_dependencies(available_extensions: Dict[str, any]) -> List[str]:
+def resolve_extension_dependencies(available_extensions: Dict[str, any]) -> List[str]:  # type: ignore[valid-type]
     """
     DEPRECATED: Use ExtensionRegistry.resolve_extension_dependencies instead.
 
@@ -1620,16 +1620,16 @@ def resolve_extension_dependencies(available_extensions: Dict[str, any]) -> List
     dependency_graph = {}
     for ext_name, ext_class in available_extensions.items():
         deps = []
-        if hasattr(ext_class, "dependencies") and ext_class.dependencies:
+        if hasattr(ext_class, "dependencies") and ext_class.dependencies:  # type: ignore[attr-defined]
             # Handle both Dependencies object and list of dependencies
-            if hasattr(ext_class.dependencies, "ext"):
+            if hasattr(ext_class.dependencies, "ext"):  # type: ignore[attr-defined]
                 # Dependencies object with .ext property
-                for dep in ext_class.dependencies.ext:
+                for dep in ext_class.dependencies.ext:  # type: ignore[attr-defined]
                     if not dep.optional:  # Only consider required dependencies
                         deps.append(dep.name)
-            elif hasattr(ext_class.dependencies, "__iter__"):
+            elif hasattr(ext_class.dependencies, "__iter__"):  # type: ignore[attr-defined]
                 # Direct list/iterable of EXT_Dependency objects
-                for dep in ext_class.dependencies:
+                for dep in ext_class.dependencies:  # type: ignore[attr-defined]
                     if isinstance(dep, EXT_Dependency) and not dep.optional:
                         deps.append(dep.name)
         dependency_graph[ext_name] = deps

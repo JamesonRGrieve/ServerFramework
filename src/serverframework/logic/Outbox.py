@@ -234,7 +234,7 @@ class OutboxDrainService:
     def __init__(
         self,
         store: OutboxStore,
-        executor: "Optional[OutboxOperationExecutor]" = None,
+        executor: "Optional[OutboxOperationExecutor]" = None,  # type: ignore[valid-type]
         max_retries: int = 5,
         **service_kwargs,
     ) -> None:
@@ -340,12 +340,12 @@ OutboxOperationExecutor = "Optional[ ... ]"  # documented below.
 
 import typing as _t  # noqa: E402
 
-OutboxOperationExecutor = _t.Callable[[dict], _t.Awaitable[None]]
+OutboxOperationExecutor = _t.Callable[[dict], _t.Awaitable[None]]  # type: ignore[assignment]
 
 
 def make_outbox_drain_service(
     store: OutboxStore,
-    executor: Optional[OutboxOperationExecutor] = None,
+    executor: Optional[OutboxOperationExecutor] = None,  # type: ignore[valid-type]
     **kwargs,
 ) -> OutboxDrainService:
     """Factory that produces a fully-wired :class:`OutboxDrainService`.

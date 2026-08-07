@@ -38,7 +38,7 @@ class AmazonOAuthProvider(AbstractOAuthProvider):
     def services():
         return ["auth", "user_info", "aws_services"]
 
-    def get_new_token(self) -> str:
+    def get_new_token(self) -> str:  # type: ignore[return]
         try:
             response = requests.post(
                 f"https://{self.user_pool_id}.auth.{self.region}.amazoncognito.com/oauth2/token",
@@ -61,7 +61,7 @@ class AmazonOAuthProvider(AbstractOAuthProvider):
         except Exception as e:
             self.handle_auth_error(e, "token refresh")
 
-    def get_user_info(self) -> Dict[str, Any]:
+    def get_user_info(self) -> Dict[str, Any]:  # type: ignore[return]
         if not self.access_token:
             return {}
 

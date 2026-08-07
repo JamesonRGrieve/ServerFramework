@@ -76,26 +76,26 @@ class AbstractFileIOProvider(AbstractProvider):
 
         # Add commands based on permissions
         if FileIOPermission.LIST in self.allowed_permissions:
-            self.commands["List Directory"] = self.list_directory
+            self.commands["List Directory"] = self.list_directory  # type: ignore[assignment]
 
         if FileIOPermission.READ in self.allowed_permissions:
-            self.commands["Read File"] = self.read_file
-            self.commands["Get File Info"] = self.get_file_info
+            self.commands["Read File"] = self.read_file  # type: ignore[assignment]
+            self.commands["Get File Info"] = self.get_file_info  # type: ignore[assignment]
 
         if FileIOPermission.WRITE in self.allowed_permissions:
-            self.commands["Write File"] = self.write_file
-            self.commands["Append To File"] = self.append_to_file
-            self.commands["Copy File"] = self.copy_file
+            self.commands["Write File"] = self.write_file  # type: ignore[assignment]
+            self.commands["Append To File"] = self.append_to_file  # type: ignore[assignment]
+            self.commands["Copy File"] = self.copy_file  # type: ignore[assignment]
 
         if FileIOPermission.CREATE in self.allowed_permissions:
-            self.commands["Create Directory"] = self.create_directory
+            self.commands["Create Directory"] = self.create_directory  # type: ignore[assignment]
 
         if FileIOPermission.DELETE in self.allowed_permissions:
-            self.commands["Delete File"] = self.delete_file
-            self.commands["Delete Directory"] = self.delete_directory
+            self.commands["Delete File"] = self.delete_file  # type: ignore[assignment]
+            self.commands["Delete Directory"] = self.delete_directory  # type: ignore[assignment]
 
         if FileIOPermission.EXECUTE in self.allowed_permissions:
-            self.commands["Execute File"] = self.execute_file
+            self.commands["Execute File"] = self.execute_file  # type: ignore[assignment]
 
     def _check_path_permissions(
         self, path: Union[str, Path], check_exists: bool = True

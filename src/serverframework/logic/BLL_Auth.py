@@ -47,7 +47,7 @@ from serverframework.lib.InboundSecurity import (
     rate_limit,
 )
 from serverframework.lib.Logging import logger
-from serverframework.lib.Pydantic import BaseModel
+from serverframework.lib.Pydantic import BaseModel  # type: ignore[no-redef]
 from serverframework.lib.Pydantic2FastAPI import (
     AuthType,
     RequestInfo,
@@ -225,7 +225,7 @@ class UserModel(
     metaclass=ModelMeta,
 ):
     model_config = {"extra": "ignore", "populate_by_name": True}
-    Manager: ClassVar[Type["UserManager"]] = None
+    Manager: ClassVar[Type["UserManager"]] = None  # type: ignore[assignment]
     email: Optional[str] = Field(description="User's email address")
     username: Optional[str] = Field(description="User's username")
     display_name: Optional[str] = Field(description="User's display name")
@@ -540,7 +540,7 @@ class UserModel(
         language: Optional[str] | None = None
 
 
-class UserManager(AbstractBLLManager, RouterMixin):
+class UserManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef]
     _model = UserModel
 
     # RouterMixin configuration
@@ -1042,10 +1042,10 @@ class UserManager(AbstractBLLManager, RouterMixin):
         # bypass auth for user registration
         if (
             request
-            and str(request.url).endswith("/v1/user")
-            and request.method == "POST"
+            and str(request.url).endswith("/v1/user")  # type: ignore[attr-defined]
+            and request.method == "POST"  # type: ignore[attr-defined]
         ):
-            return None
+            return None  # type: ignore[return-value]
 
         if not authorization:
             raise HTTPException(
@@ -1070,8 +1070,8 @@ class UserManager(AbstractBLLManager, RouterMixin):
                 elif isinstance(client_obj, dict) and "host" in client_obj:
                     peer_host = client_obj["host"]
             ip = resolve_client_ip(request, peer_host=peer_host)
-            host = request.headers.get("Host")
-            scheme = request.headers.get("X-Forwarded-Proto", "http")
+            host = request.headers.get("Host")  # type: ignore[attr-defined]
+            scheme = request.headers.get("X-Forwarded-Proto", "http")  # type: ignore[attr-defined]
             if host:
                 server = f"{scheme}://{host}"
         db_manager = model_registry.DB
@@ -1098,7 +1098,7 @@ class UserManager(AbstractBLLManager, RouterMixin):
                 )
 
                 api_key_header = (
-                    request.headers.get("X-API-Key") if request else None
+                    request.headers.get("X-API-Key") if request else None  # type: ignore[attr-defined]
                 )
                 principal = resolve_principal_from_api_key(api_key_header)
                 if not principal and token:
@@ -1904,8 +1904,8 @@ class UserManager(AbstractBLLManager, RouterMixin):
             # Add email to registration_data for user creation
             registration_data["email"] = email
         else:
-            email = email_from_body
-            password = password_from_body
+            email = email_from_body  # type: ignore[assignment]
+            password = password_from_body  # type: ignore[assignment]
 
         # Extract invitation fields
         invitation_code = registration_data.pop("invitation_code", None)
@@ -2193,10 +2193,10 @@ class UserManager(AbstractBLLManager, RouterMixin):
 class UserCredentialModel(
     ApplicationModel.Optional,
     UpdateMixinModel.Optional,
-    UserModel.Reference,
+    UserModel.Reference,  # type: ignore[name-defined]
     metaclass=ModelMeta,
 ):
-    Manager: ClassVar[Type["UserCredentialManager"]] = None
+    Manager: ClassVar[Type["UserCredentialManager"]] = None  # type: ignore[assignment]
     password_hash: Optional[str] = Field(None, description="Hashed password")
     password_salt: Optional[str] = Field(
         None, description="Salt used for hashing the password"
@@ -2210,22 +2210,22 @@ class UserCredentialModel(
         "Stores user password hashes and tracks password change history"
     )
 
-    class Create(BaseModel, UserModel.Reference.ID):
+    class Create(BaseModel, UserModel.Reference.ID):  # type: ignore[name-defined]
         password_hash: Optional[str]
 
-    class CreateRaw(BaseModel, UserModel.Reference.ID):
-        password: str = Field(None, description="New password (will be hashed)")
+    class CreateRaw(BaseModel, UserModel.Reference.ID):  # type: ignore[name-defined]
+        password: str = Field(None, description="New password (will be hashed)")  # type: ignore[assignment]
 
     class Update(BaseModel):
         # This model and entity should not be manually updatable, only via the User password change function.
         # However, we need to allow updating the password_changed_at field for tests
         password_changed_at: Optional[datetime] | None = None
 
-    class Search(ApplicationModel.Search, UserModel.Reference.ID.Search):
+    class Search(ApplicationModel.Search, UserModel.Reference.ID.Search):  # type: ignore[name-defined]
         password_changed_at: Optional[DateSearchModel] | None = None
 
 
-class UserCredentialManager(AbstractBLLManager, RouterMixin):
+class UserCredentialManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef]
     _model = UserCredentialModel
 
     def create(self, **kwargs):
@@ -2655,7 +2655,7 @@ class TeamModel(
     ImageMixinModel.Optional,
     metaclass=ModelMeta,
 ):
-    Manager: ClassVar[Type["TeamManager"]] = None
+    Manager: ClassVar[Type["TeamManager"]] = None  # type: ignore[assignment]
     description: Optional[str] = Field(None, description="Team description")
     encryption_salt: Optional[str] = Field(
         ..., description="Per-team salt for row-level encryption of team data"
@@ -2785,7 +2785,7 @@ class TeamModel(
         description: Optional[StringSearchModel] | None = None
 
 
-class TeamManager(AbstractBLLManager, RouterMixin):
+class TeamManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef]
     _model = TeamModel
 
     # RouterMixin configuration
@@ -3189,10 +3189,10 @@ class RoleModel(
     ParentMixinModel,
     NameMixinModel,
     UpdateMixinModel,
-    TeamModel.Reference.Optional,
+    TeamModel.Reference.Optional,  # type: ignore[name-defined]
     metaclass=ModelMeta,
 ):
-    Manager: ClassVar[Type["RoleManager"]] = None
+    Manager: ClassVar[Type["RoleManager"]] = None  # type: ignore[assignment]
     friendly_name: Optional[str] = Field(None, description="Human-readable role name")
     mfa_count: int = Field(1, description="Number of MFA verifications required")
     password_change_frequency_days: int = Field(
@@ -3231,7 +3231,7 @@ class RoleModel(
         BaseModel,
         NameMixinModel,  # Name is required for creation
         ParentMixinModel.Optional,
-        TeamModel.Reference.ID.Optional,
+        TeamModel.Reference.ID.Optional,  # type: ignore[name-defined]
     ):
         friendly_name: Optional[str] = Field(
             None, description="Human-readable role name"
@@ -3260,7 +3260,7 @@ class RoleModel(
         ApplicationModel.Search,
         NameMixinModel.Search,
         ParentMixinModel.Search,
-        TeamModel.Reference.ID.Search,
+        TeamModel.Reference.ID.Search,  # type: ignore[name-defined]
     ):
         friendly_name: Optional[StringSearchModel] | None = None
         mfa_count: Optional[NumericalSearchModel] | None = None
@@ -3337,7 +3337,7 @@ class RoleModel(
         return False
 
 
-class RoleManager(AbstractBLLManager, RouterMixin):
+class RoleManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef]
     _model = RoleModel
 
     # RouterMixin configuration
@@ -3540,12 +3540,12 @@ class RoleManager(AbstractBLLManager, RouterMixin):
 class UserTeamModel(
     ApplicationModel,
     UpdateMixinModel,
-    UserModel.Reference,
-    TeamModel.Reference,
-    RoleModel.Reference,
+    UserModel.Reference,  # type: ignore[name-defined]
+    TeamModel.Reference,  # type: ignore[name-defined]
+    RoleModel.Reference,  # type: ignore[name-defined]
     metaclass=ModelMeta,
 ):
-    Manager: ClassVar[Type["UserTeamManager"]] = None
+    Manager: ClassVar[Type["UserTeamManager"]] = None  # type: ignore[assignment]
     enabled: bool = Field(True, description="Whether this membership is enabled")
     expires_at: Optional[datetime] = Field(
         None, description="When this membership expires"
@@ -3558,9 +3558,9 @@ class UserTeamModel(
 
     class Create(
         BaseModel,
-        UserModel.Reference.ID,
-        TeamModel.Reference.ID,
-        RoleModel.Reference.ID,
+        UserModel.Reference.ID,  # type: ignore[name-defined]
+        TeamModel.Reference.ID,  # type: ignore[name-defined]
+        RoleModel.Reference.ID,  # type: ignore[name-defined]
     ):
         enabled: Optional[bool] = Field(
             True, description="Whether this membership is enabled"
@@ -3575,15 +3575,15 @@ class UserTeamModel(
         )
 
     class Patch(BaseModel):
-        role_id: str = Field(
+        role_id: str = Field(  # type: ignore[assignment]
             None, description="Role ID to be assigned to the user in this team"
         )
 
     class Search(
         ApplicationModel.Search,
-        UserModel.Reference.ID.Search,
-        TeamModel.Reference.ID.Search,
-        RoleModel.Reference.ID.Search,
+        UserModel.Reference.ID.Search,  # type: ignore[name-defined]
+        TeamModel.Reference.ID.Search,  # type: ignore[name-defined]
+        RoleModel.Reference.ID.Search,  # type: ignore[name-defined]
     ):
         enabled: Optional[bool] | None = None
 
@@ -3747,7 +3747,7 @@ class UserTeamModel(
             raise
 
 
-class UserTeamManager(AbstractBLLManager, RouterMixin):
+class UserTeamManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef]
     _model = UserTeamModel
 
     def get(
@@ -3980,7 +3980,7 @@ class UserTeamManager(AbstractBLLManager, RouterMixin):
                 detail="Request searched TeamModel and could not find the required record.",
             )
 
-        role_id = body["user_team"]["role_id"]
+        role_id = body["user_team"]["role_id"]  # type: ignore[index]
         try:
             RoleModel.DB(self.model_registry.DB.manager.Base).get(
                 requester_id=self.requester.id,
@@ -4007,7 +4007,7 @@ class UserTeamManager(AbstractBLLManager, RouterMixin):
 
         target_user_team = user_team_list[0]
 
-        target_role_id = body["user_team"]["role_id"]
+        target_role_id = body["user_team"]["role_id"]  # type: ignore[index]
         updated_data = {"role_id": target_role_id}
 
         self.update(id=target_user_team.id, team_id=team_id, **updated_data)
@@ -4022,7 +4022,7 @@ class RateLimitPolicyModel(
     NameMixinModel,
     metaclass=ModelMeta,
 ):
-    Manager: ClassVar[Type["RateLimitPolicyManager"]] = None
+    Manager: ClassVar[Type["RateLimitPolicyManager"]] = None  # type: ignore[assignment]
     resource_pattern: str = Field(..., description="Resource pattern to match")
     window_seconds: int = Field(..., description="Time window in seconds")
     max_requests: int = Field(..., description="Maximum requests in time window")
@@ -4063,7 +4063,7 @@ class RateLimitPolicyModel(
         scope: Optional[StringSearchModel] | None = None
 
 
-class RateLimitPolicyManager(AbstractBLLManager, RouterMixin):
+class RateLimitPolicyManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef]
     _model = RateLimitPolicyModel
 
 

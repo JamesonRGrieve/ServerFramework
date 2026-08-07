@@ -150,7 +150,7 @@ class _ValkeyStreamsTransport:
         self._closed = False
 
     async def _client(self) -> Any:
-        return self._provider.connect(self._instance)
+        return self._provider.connect(self._instance)  # type: ignore[attr-defined]
 
     async def send(self, topic: str, payload: bytes) -> None:
         if self._closed:
@@ -219,4 +219,4 @@ class _ValkeyStreamsTransport:
             except (asyncio.CancelledError, Exception):
                 pass
         self._consumer_tasks.clear()
-        await self._provider.close(self._instance)
+        await self._provider.close(self._instance)  # type: ignore[attr-defined]

@@ -41,7 +41,7 @@ class LabelModel(
 ):
     """A label/tag the system can attach to other entities."""
 
-    Manager: ClassVar[Type["LabelManager"]] = None
+    Manager: ClassVar[Type["LabelManager"]] = None  # type: ignore[assignment]
     name: str = Field(..., description="Lowercase kebab-case identifier")
     description: Optional[str] = Field(None, description="Optional description")
     color: Optional[str] = Field(None, description="Optional display colour")
@@ -68,7 +68,7 @@ class LabelLinkModel(
 ):
     """An attachment of a ``LabelModel`` to another entity."""
 
-    Manager: ClassVar[Type["LabelLinkManager"]] = None
+    Manager: ClassVar[Type["LabelLinkManager"]] = None  # type: ignore[assignment]
     label_id: str = Field(..., description="Reference to LabelModel")
     target_type: str = Field(
         ..., description="Logical type name of the labelled entity"

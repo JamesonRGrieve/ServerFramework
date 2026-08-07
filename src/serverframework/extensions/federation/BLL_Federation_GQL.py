@@ -134,7 +134,7 @@ def _format_args(arguments: Any) -> str:
         items = arguments.items()
     else:
         # iterables of objects with `.name`/`.value`
-        items = ((_get(a, "name"), _get(a, "value")) for a in arguments)
+        items = ((_get(a, "name"), _get(a, "value")) for a in arguments)  # type: ignore[assignment]
     formatted = ", ".join(
         f"{k}: {_format_argument_value(v)}" for k, v in items if k is not None
     )
@@ -464,7 +464,7 @@ def detect_federation_directives(sdl: str) -> Dict[str, List[str]]:
     for d in document.definitions:
         if d.kind != "object_type_definition":
             continue
-        for directive in d.directives or ():
+        for directive in d.directives or ():  # type: ignore[attr-defined]
             if directive.name.value != "key":
                 continue
             for arg in directive.arguments or ():
@@ -472,7 +472,7 @@ def detect_federation_directives(sdl: str) -> Dict[str, List[str]]:
                     continue
                 value = getattr(arg.value, "value", None)
                 if value:
-                    out.setdefault(d.name.value, []).append(value)
+                    out.setdefault(d.name.value, []).append(value)  # type: ignore[attr-defined]
     return out
 
 
@@ -1079,7 +1079,7 @@ class MergedSchemaRegistry:
                     "scalar_type_definition",
                 ):
                     continue
-                name = d.name.value
+                name = d.name.value  # type: ignore[attr-defined]
                 if name in {"Query", "Mutation", "Subscription"}:
                     fields = self._field_lines_for_root(d, sg, seen_field_names)
                     if name == "Query":
@@ -1263,20 +1263,20 @@ def sdl_to_pydantic_models(
 
     for d in document.definitions:
         if d.kind == "enum_type_definition":
-            enum_names[_full(_name(d))] = [v.name.value for v in d.values or ()]
+            enum_names[_full(_name(d))] = [v.name.value for v in d.values or ()]  # type: ignore[attr-defined]
         elif d.kind == "union_type_definition":
-            union_members[_full(_name(d))] = [_full(t.name.value) for t in d.types or ()]
+            union_members[_full(_name(d))] = [_full(t.name.value) for t in d.types or ()]  # type: ignore[attr-defined]
         elif d.kind in ("object_type_definition", "interface_type_definition"):
             if _name(d) in {"Query", "Mutation", "Subscription"}:
                 continue  # Roots are not materialized as Pydantic models
             specs: List[Tuple[str, Any, bool]] = []
-            for f in d.fields or ():
+            for f in d.fields or ():  # type: ignore[attr-defined]
                 ann, required = _gql_type_to_python(f.type, _full)
                 specs.append((f.name.value, ann, required))
             type_field_specs[_full(_name(d))] = specs
         elif d.kind == "input_object_type_definition":
             specs2: List[Tuple[str, Any, bool]] = []
-            for f in d.fields or ():
+            for f in d.fields or ():  # type: ignore[attr-defined]
                 ann, required = _gql_type_to_python(f.type, _full)
                 specs2.append((f.name.value, ann, required))
             input_field_specs[_full(_name(d))] = specs2
@@ -1284,7 +1284,7 @@ def sdl_to_pydantic_models(
     # Build enum classes first so models can reference them.
     enums: Dict[str, type] = {}
     for name, values in enum_names.items():
-        enums[name] = Enum(name, {v: v for v in values})
+        enums[name] = Enum(name, {v: v for v in values})  # type: ignore[assignment]
 
     # Second pass: materialize models. Resolve string references against
     # the in-progress dict so cycles are handled by `model_rebuild` later.
@@ -1343,12 +1343,12 @@ def sdl_to_pydantic_models(
     namespace = {**models, **enums, **inputs}
     for cls in models.values():
         try:
-            cls.model_rebuild(_types_namespace=namespace)
+            cls.model_rebuild(_types_namespace=namespace)  # type: ignore[attr-defined]
         except Exception:
             continue
     for cls in inputs.values():
         try:
-            cls.model_rebuild(_types_namespace=namespace)
+            cls.model_rebuild(_types_namespace=namespace)  # type: ignore[attr-defined]
         except Exception:
             continue
 
@@ -1373,7 +1373,7 @@ def _gql_type_to_python(
         type_node = type_node.type
     if isinstance(type_node, gql_ast.ListTypeNode):
         inner_ann, _inner_required = _gql_type_to_python(type_node.type, fullname)
-        return _List[inner_ann], required
+        return _List[inner_ann], required  # type: ignore[valid-type]
     if isinstance(type_node, gql_ast.NamedTypeNode):
         name = type_node.name.value
         if name in GQL_SCALAR_TO_PY:

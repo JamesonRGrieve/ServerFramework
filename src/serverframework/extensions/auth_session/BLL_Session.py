@@ -57,7 +57,7 @@ class SessionModel(
     """
 
     model_config = {"extra": "ignore", "populate_by_name": True}
-    Manager: ClassVar[Type["SessionManager"]] = None
+    Manager: ClassVar[Type["SessionManager"]] = None  # type: ignore[assignment]
     session_key: str = Field(
         ..., description="Unique session identifier used in JWT jti claim"
     )
@@ -507,12 +507,12 @@ def enforce_not_revoked(
         model_registry.DB.manager if model_registry is not None else None
     )
     try:
-        session_dto = SessionModel.DB(db_manager.Base).get(
+        session_dto = SessionModel.DB(db_manager.Base).get(  # type: ignore[union-attr]
             requester_id=env("ROOT_ID"),
             model_registry=model_registry,
             db=db,
             filters=[
-                SessionModel.DB(db_manager.Base).session_key == session_key
+                SessionModel.DB(db_manager.Base).session_key == session_key  # type: ignore[union-attr]
             ],
         )
     except Exception:

@@ -251,7 +251,7 @@ class DatabaseManager:
         self._thread_local = local()
 
         # Track active sessions for cleanup (thread-safe)
-        self._active_sessions = WeakSet()
+        self._active_sessions = WeakSet()  # type: ignore[var-annotated]
         self._sessions_lock = threading.RLock()
         if db_prefix:
             self.init_engine_config(db_prefix, test_connection)
@@ -300,7 +300,7 @@ class DatabaseManager:
         self._database_file_path = db_info.get(
             "file_path"
         )  # Store file path for migrations
-        self._pk_type = String if database_type == "sqlite" else UUID
+        self._pk_type = String if database_type == "sqlite" else UUID  # type: ignore[assignment]
 
         if database_type == "sqlite":
             self.engine_config = {
@@ -540,7 +540,7 @@ class DatabaseManager:
             url = self._replica_pool.next_url()
             if url is not None and url in self._replica_session_factories:
                 return self._replica_session_factories[url]
-        return self._session_factory
+        return self._session_factory  # type: ignore[return-value]
 
     def _select_async_session_factory(self) -> "async_sessionmaker":
         """Async counterpart of `_select_session_factory`."""
@@ -554,7 +554,7 @@ class DatabaseManager:
             url = self._replica_pool.next_url()
             if url is not None and url in self._replica_async_session_factories:
                 return self._replica_async_session_factories[url]
-        return self._async_session_factory
+        return self._async_session_factory  # type: ignore[return-value]
 
     async def close_worker(self) -> None:
         """Clean up database connections for this worker."""
@@ -890,7 +890,7 @@ class DatabaseManager:
         if self.async_engine:
             try:
                 # Note: async_engine.dispose() is synchronous
-                self.async_engine.sync_dispose()
+                self.async_engine.sync_dispose()  # type: ignore[attr-defined]
             except Exception:
                 pass
 

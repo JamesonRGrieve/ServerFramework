@@ -50,25 +50,25 @@ try:
     )
 except ImportError:  # pragma: no cover - safety net during phased rollout
 
-    class BaseExternalError(Exception):
+    class BaseExternalError(Exception):  # type: ignore[no-redef]
         def __init__(self, message: str = "", **_: Any) -> None:
             super().__init__(message)
 
-    class TransientExternalError(BaseExternalError):
+    class TransientExternalError(BaseExternalError):  # type: ignore[no-redef]
         pass
 
-    class AuthExternalError(BaseExternalError):
+    class AuthExternalError(BaseExternalError):  # type: ignore[no-redef]
         pass
 
-    class InvalidInputExternalError(BaseExternalError):
+    class InvalidInputExternalError(BaseExternalError):  # type: ignore[no-redef]
         pass
 
-    class RateLimitExternalError(BaseExternalError):
+    class RateLimitExternalError(BaseExternalError):  # type: ignore[no-redef]
         def __init__(self, message: str = "", *, retry_after_seconds: Optional[float] = None, **kw: Any) -> None:
             super().__init__(message, **kw)
             self.retry_after_seconds = retry_after_seconds
 
-    class PermanentExternalError(BaseExternalError):
+    class PermanentExternalError(BaseExternalError):  # type: ignore[no-redef]
         pass
 
 
@@ -158,7 +158,7 @@ def _ip_is_blocked(addr: str) -> bool:
             if ip in net:
                 return True
         return False
-    for net in _BLOCKED_V6_NETWORKS:
+    for net in _BLOCKED_V6_NETWORKS:  # type: ignore[assignment]
         if ip in net:
             return True
     return False
@@ -217,7 +217,7 @@ def validate_outbound_url(url: str) -> None:
     for info in infos:
         sockaddr = info[4]
         addr = sockaddr[0]
-        if _ip_is_blocked(addr):
+        if _ip_is_blocked(addr):  # type: ignore[arg-type]
             raise SSRFGuardError(
                 f"Refusing outbound URL {url!r}: host {host!r} resolves to "
                 f"blocked address {addr}"

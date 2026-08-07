@@ -129,8 +129,8 @@ def test_get_required_permissions_with_metadata():
 
 class SensitiveDemo(BaseModel):
     public: str
-    secret: str = Field(..., **Sensitive("auth.read_secret"))
-    multi_secret: str = Field(
+    secret: str = Field(..., **Sensitive("auth.read_secret"))  # type: ignore[misc]
+    multi_secret: str = Field(  # type: ignore[misc]
         ...,
         **Sensitive("auth.read_a", additional=["auth.read_b"]),
     )

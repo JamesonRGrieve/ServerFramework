@@ -150,7 +150,7 @@ def db():
 
 
 # Define real database models for testing
-class ResourceForTest(Base):
+class ResourceForTest(Base):  # type: ignore[misc, valid-type]
     __tablename__ = "test_resources"
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     user_id = Column(String, nullable=True)
@@ -158,7 +158,7 @@ class ResourceForTest(Base):
     name = Column(String, nullable=True)
 
 
-class TeamResource(Base):
+class TeamResource(Base):  # type: ignore[misc, valid-type]
     __tablename__ = "team_resources"
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     user_id = Column(String, nullable=True)
@@ -166,7 +166,7 @@ class TeamResource(Base):
     name = Column(String, nullable=True)
 
 
-class SystemResource(Base):
+class SystemResource(Base):  # type: ignore[misc, valid-type]
     __tablename__ = "system_resources"
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     user_id = Column(String, nullable=True)
@@ -174,7 +174,7 @@ class SystemResource(Base):
     name = Column(String, nullable=True)
 
 
-class TemplateResource(Base):
+class TemplateResource(Base):  # type: ignore[misc, valid-type]
     __tablename__ = "template_resources"
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     user_id = Column(String, nullable=True)
@@ -182,14 +182,14 @@ class TemplateResource(Base):
     name = Column(String, nullable=True)
 
 
-class ResourceWithPermissionReferences(Base):
+class ResourceWithPermissionReferences(Base):  # type: ignore[misc, valid-type]
     __tablename__ = "resources_with_references"
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     parent_resource_id = Column(String, nullable=True)
     permission_references = ["parent_resource"]
 
 
-class ResourceWithCreatePermissionReference(Base):
+class ResourceWithCreatePermissionReference(Base):  # type: ignore[misc, valid-type]
     __tablename__ = "resources_with_create_reference"
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     parent_resource_id = Column(String, nullable=True)

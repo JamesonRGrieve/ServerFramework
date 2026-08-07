@@ -20,6 +20,8 @@ is the existing class to keep this module loadable in isolation.
 
 from __future__ import annotations
 
+from __future__ import annotations
+
 from abc import abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -187,14 +189,14 @@ class AbstractEmailProviderInstance(AbstractProviderInstance):
     # The eight typed abilities --------------------------------------------
 
     @abstractmethod
-    async def send(self, message: "EmailMessage") -> SentMessage:  # noqa: F821
+    async def send(self, message: "EmailMessage") -> "SentMessage":  # type: ignore[name-defined]
         """Send a single typed `EmailMessage`. Raises typed errors from
         `EmailErrors` on failure."""
 
     @abstractmethod
     async def send_bulk(
-        self, messages: List["EmailMessage"]  # noqa: F821
-    ) -> "BatchResult":  # noqa: F821
+        self, messages: List["EmailMessage"]  # type: ignore[name-defined]
+    ) -> "BatchResult":  # type: ignore[name-defined]
         """Send up to N messages in one upstream call; returns
         `BatchResult` with per-item success/failure rows."""
 

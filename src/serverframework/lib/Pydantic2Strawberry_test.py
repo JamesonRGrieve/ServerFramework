@@ -102,10 +102,10 @@ class ChildModel(BaseModel):
 # Mock manager classes
 class MockTestManager:
     async def get(self, id: str, context: dict) -> MockTestModel:
-        return MockTestModel(id=id, name="Test")
+        return MockTestModel(id=id, name="Test")  # type: ignore[call-arg]
 
     async def list(self, search_params: dict, context: dict) -> List[MockTestModel]:
-        return [MockTestModel(id="1", name="Test1")]
+        return [MockTestModel(id="1", name="Test1")]  # type: ignore[call-arg]
 
     async def create(self, data: dict, context: dict) -> MockTestModel:
         return MockTestModel(id="new", **data)
@@ -114,7 +114,7 @@ class MockTestManager:
         return MockTestModel(id=id, **data)
 
     async def delete(self, id: str, context: dict) -> MockTestModel:
-        return MockTestModel(id=id, name="Deleted")
+        return MockTestModel(id=id, name="Deleted")  # type: ignore[call-arg]
 
 
 class ParentManager:
@@ -267,7 +267,7 @@ class TestSchemaManager(AbstractPydanticTestMixin):
                 include: Optional[Any] = None,
                 fields: Optional[Any] = None,
             ) -> MockTestModel:
-                return MockTestModel(id=id, name="Dummy")
+                return MockTestModel(id=id, name="Dummy")  # type: ignore[call-arg]
 
             def list(
                 self,
@@ -277,13 +277,13 @@ class TestSchemaManager(AbstractPydanticTestMixin):
                 fields: Optional[Any] = None,
                 **kwargs: Any,
             ) -> List[MockTestModel]:
-                return [MockTestModel(id="1", name="Dummy")]
+                return [MockTestModel(id="1", name="Dummy")]  # type: ignore[call-arg]
 
             def create(self, **data: Any) -> MockTestModel:
-                return MockTestModel(id="created", name=data.get("name", "Created"))
+                return MockTestModel(id="created", name=data.get("name", "Created"))  # type: ignore[call-arg]
 
             def update(self, id: str, **data: Any) -> MockTestModel:
-                return MockTestModel(id=id, name=data.get("name", "Updated"))
+                return MockTestModel(id=id, name=data.get("name", "Updated"))  # type: ignore[call-arg]
 
             def delete(self, id: str) -> bool:
                 return True

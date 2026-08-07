@@ -98,7 +98,7 @@ class AppSettings(BaseModel):
     USER_ROLE_ID: str = "FFFFFFFF-0000-0000-0000-FFFFFFFFFFFF"
 
     TZ: str = "UTC"
-    UVICORN_WORKERS: Optional[str] = 1
+    UVICORN_WORKERS: Optional[str] = 1  # type: ignore[assignment]
 
     @field_validator("DATABASE_NAME", "DATABASE_USER", mode="before")
     @classmethod
@@ -253,7 +253,7 @@ class AppSettings(BaseModel):
             )
         return self
 
-    model_config = {"env_file": ".env", "case_sensitive": True, "extra": "ignore"}
+    model_config = {"env_file": ".env", "case_sensitive": True, "extra": "ignore"}  # type: ignore[typeddict-unknown-key]
 
     @classmethod
     def register_env_vars(cls, env: Dict[str, Any]) -> None:
@@ -280,14 +280,14 @@ class AppSettings(BaseModel):
                     if isinstance(default_value, bool):
                         field_type = bool
                     elif isinstance(default_value, int):
-                        field_type = int
+                        field_type = int  # type: ignore[assignment]
                     elif isinstance(default_value, float):
-                        field_type = float
+                        field_type = float  # type: ignore[assignment]
                     elif isinstance(default_value, str):
-                        field_type = str
+                        field_type = str  # type: ignore[assignment]
                     else:
                         # Default to str for unknown types
-                        field_type = str
+                        field_type = str  # type: ignore[assignment]
 
                     new_fields[var_name] = (field_type, default_value)
                     registered_count += 1
@@ -302,7 +302,7 @@ class AppSettings(BaseModel):
             # Create new model with additional fields if we have any
             if new_fields:
                 # Create new model class
-                new_model = create_model(cls.__name__, __base__=BaseModel, **new_fields)
+                new_model = create_model(cls.__name__, __base__=BaseModel, **new_fields)  # type: ignore[call-overload]
 
             # Log success message if we registered any new variables
             if registered_count > 0:

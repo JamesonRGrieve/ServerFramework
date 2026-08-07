@@ -28,19 +28,19 @@ try:
     )
 except Exception:  # pragma: no cover — only when the canonical module is missing
     # Local stub. Batch A will rebase these to the canonical location.
-    class BaseExternalError(Exception):
+    class BaseExternalError(Exception):  # type: ignore[no-redef]
         """Stub base; replaced by `extensions.ExternalErrors.BaseExternalError`."""
 
-    class InvalidInputExternalError(BaseExternalError):
+    class InvalidInputExternalError(BaseExternalError):  # type: ignore[no-redef]
         """Stub; replaced by canonical InvalidInputExternalError."""
 
-    class TransientExternalError(BaseExternalError):
+    class TransientExternalError(BaseExternalError):  # type: ignore[no-redef]
         """Stub; replaced by canonical TransientExternalError."""
 
-    class RateLimitExternalError(BaseExternalError):
+    class RateLimitExternalError(BaseExternalError):  # type: ignore[no-redef]
         """Stub; replaced by canonical RateLimitExternalError."""
 
-    class AuthExternalError(BaseExternalError):
+    class AuthExternalError(BaseExternalError):  # type: ignore[no-redef]
         """Stub; replaced by canonical AuthExternalError."""
 
 

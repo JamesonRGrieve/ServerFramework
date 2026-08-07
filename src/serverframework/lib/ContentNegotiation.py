@@ -276,7 +276,7 @@ def resolve_response_format(
                 best_q = q
                 best_key = DEFAULT_FORMAT
             continue
-        key = _MEDIA_TYPE_MAP.get(media)
+        key = _MEDIA_TYPE_MAP.get(media)  # type: ignore[assignment]
         if key is not None and q > best_q:
             best_q = q
             best_key = key
@@ -421,7 +421,7 @@ class ContentNegotiationMiddleware:
             nonlocal response_started, initial_message
             if message["type"] == "http.response.start":
                 response_started = True
-                initial_message = message
+                initial_message = message  # type: ignore[assignment]
             elif message["type"] == "http.response.body":
                 response_body_parts.append(message.get("body", b""))
                 if not message.get("more_body", False):

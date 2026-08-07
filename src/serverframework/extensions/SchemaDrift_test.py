@@ -239,15 +239,15 @@ class TestDiffOpenAPI:
         assert not is_breaking(result)
 
     def test_removed_path_is_breaking(self, tmp_path: Path):
-        committed = {"paths": {"/users": {"get": {}}}}
-        live = {"paths": {}}
+        committed = {"paths": {"/users": {"get": {}}}}  # type: ignore[var-annotated]
+        live = {"paths": {}}  # type: ignore[var-annotated]
         p = _write_spec(tmp_path, "spec.json", committed)
         result = diff_openapi(p, live)
         assert is_breaking(result)
 
     def test_added_path_is_non_breaking(self, tmp_path: Path):
-        committed = {"paths": {}}
-        live = {"paths": {"/users": {"get": {}}}}
+        committed = {"paths": {}}  # type: ignore[var-annotated]
+        live = {"paths": {"/users": {"get": {}}}}  # type: ignore[var-annotated]
         p = _write_spec(tmp_path, "spec.json", committed)
         result = diff_openapi(p, live)
         assert not is_breaking(result)

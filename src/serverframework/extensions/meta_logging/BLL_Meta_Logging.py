@@ -218,7 +218,7 @@ class AuditLogManager(AbstractBLLManager):
             }
 
             # Write to InfluxDB via database extension
-            result = await self.database_extension.execute_ability(
+            result = await self.database_extension.execute_ability(  # type: ignore[attr-defined]
                 "write_data", {"points": [influx_data]}
             )
 
@@ -275,7 +275,7 @@ class AuditLogManager(AbstractBLLManager):
             flux_query = "\n  ".join(query_parts)
 
             # Execute query via database extension
-            result = await self.database_extension.execute_ability(
+            result = await self.database_extension.execute_ability(  # type: ignore[attr-defined]
                 "execute_query", flux_query
             )
 
@@ -334,7 +334,7 @@ class AuditLogManager(AbstractBLLManager):
             )
 
             # Group by data categories
-            data_category_counts = {}
+            data_category_counts = {}  # type: ignore[var-annotated]
             for event in privacy_events:
                 categories = (
                     event.get("data_categories", "").split(",")
@@ -448,7 +448,7 @@ class SystemLogManager(AbstractBLLManager):
             }
 
             # Write to InfluxDB via database extension
-            result = await self.database_extension.execute_ability(
+            result = await self.database_extension.execute_ability(  # type: ignore[attr-defined]
                 "write_data", {"points": [influx_data]}
             )
 

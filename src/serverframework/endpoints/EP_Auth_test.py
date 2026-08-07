@@ -39,8 +39,8 @@ class TestTeamEndpoints(AbstractEPTest):
     team_scoped = False
 
     create_fields = {
-        "name": lambda: f"Test Team {pytest.faker.company()}",
-        "description": lambda: f"Test team description {pytest.faker.uuid4()}",
+        "name": lambda: f"Test Team {pytest.faker.company()}",  # type: ignore[attr-defined]
+        "description": lambda: f"Test team description {pytest.faker.uuid4()}",  # type: ignore[attr-defined]
         "encryption_salt": "test_key",
     }
     update_fields = {
@@ -551,10 +551,10 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
 
     create_fields = {
         "email": lambda: f"user_{uuid.uuid4().hex[:8]}@example.com",
-        "display_name": lambda: faker.unique.user_name().upper(),
-        "first_name": lambda: faker.first_name(),
-        "last_name": lambda: faker.last_name(),
-        "password": lambda: faker.password(
+        "display_name": lambda: faker.unique.user_name().upper(),  # type: ignore[attr-defined]
+        "first_name": lambda: faker.first_name(),  # type: ignore[attr-defined]
+        "last_name": lambda: faker.last_name(),  # type: ignore[attr-defined]
+        "password": lambda: faker.password(  # type: ignore[attr-defined]
             length=12, special_chars=True, digits=True, upper_case=True, lower_case=True
         ),
     }
@@ -860,7 +860,7 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
             model_registry=registry,
         )
 
-    def test_POST_200_authorize(self, admin_a: Any) -> str:
+    def test_POST_200_authorize(self, admin_a: Any) -> str:  # type: ignore[return]
         """Test that admin JWT token is valid."""
         admin_a.jwt
 
@@ -920,7 +920,7 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
         assert "token" in json_response, "JWT token missing from response"
         return json_response["token"]
 
-    def test_GET_200(self, server: Any, admin_a: Any) -> Dict[str, Any]:
+    def test_GET_200(self, server: Any, admin_a: Any) -> Dict[str, Any]:  # type: ignore[return]
         """Test retrieving current user profile."""
 
         endpoint = "/v1/user"
@@ -952,7 +952,7 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
         response = server.delete(endpoint, headers={})
         self._assert_response_status(response, 401, "DELETE current user", endpoint)
 
-    def test_PUT_200(self, server: Any, db: Any, **kwargs: Any) -> Dict[str, Any]:
+    def test_PUT_200(self, server: Any, db: Any, **kwargs: Any) -> Dict[str, Any]:  # type: ignore[return]
         """Test updating current user profile with isolated user."""
 
         # Create isolated user for this test only
@@ -985,7 +985,7 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
         self._assert_response_status(response, 200, "PUT", endpoint, payload)
         self._assert_entity_in_response(response, "display_name", display_name)
 
-    def test_PATCH_200_password(self, server: Any, db: Any) -> Dict[str, Any]:
+    def test_PATCH_200_password(self, server: Any, db: Any) -> Dict[str, Any]:  # type: ignore[return]
         """Test updating user password with isolated user."""
 
         # Create isolated user for this test only
@@ -1080,7 +1080,7 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
         ), f"Invalid data update should return 422, got {response.status_code}"
 
     @pytest.mark.dependency(name="ep_auth_verify_jwt", scope="session")
-    def test_GET_200_verify_jwt(self, server: Any, admin_a: Any) -> Dict[str, Any]:
+    def test_GET_200_verify_jwt(self, server: Any, admin_a: Any) -> Dict[str, Any]:  # type: ignore[return]
         """Test verifying a valid JWT token."""
 
         endpoint = "/v1"
@@ -1133,7 +1133,7 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
         )
 
     # Session endpoint tests
-    def test_GET_200_user_sessions(self, server: Any, admin_a: Any) -> Dict[str, Any]:
+    def test_GET_200_user_sessions(self, server: Any, admin_a: Any) -> Dict[str, Any]:  # type: ignore[return]
         """Test listing sessions for current user."""
 
         endpoint = "/v1/session"
@@ -1146,7 +1146,7 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
         assert "sessions" in sessions_data, "Response should contain 'sessions' key"
         assert isinstance(sessions_data["sessions"], list), "sessions should be a list"
 
-    def test_GET_200_id(self, server: Any, admin_a: Any) -> Dict[str, Any]:
+    def test_GET_200_id(self, server: Any, admin_a: Any) -> Dict[str, Any]:  # type: ignore[return]
         """Test retrieving a specific session by ID."""
 
         # First, get all sessions to find one to retrieve
@@ -2449,7 +2449,7 @@ class TestRoleEndpoints(AbstractEPTest):
         print(f"Updating entity: {entity_to_update}")
 
         # We are not using parent IDs for roles, so we can skip that part
-        path_parent_ids = {}
+        path_parent_ids = {}  # type: ignore[var-annotated]
         print(f"Path to update: {path_parent_ids}")
 
         # Create update payload
@@ -2460,7 +2460,7 @@ class TestRoleEndpoints(AbstractEPTest):
                 update_data[self.string_field_to_update] = 12345
             else:
                 update_data[self.string_field_to_update] = (
-                    f"Updated {self.faker.word()}"
+                    f"Updated {self.faker.word()}"  # type: ignore[assignment]
                 )
         print(f"Update data: {update_data}")
 
@@ -2515,9 +2515,9 @@ class TestRoleEndpoints(AbstractEPTest):
                 if callable(value):
                     update_data[field] = value()
                 else:
-                    update_data[field] = value
+                    update_data[field] = value  # type: ignore[assignment]
 
-        path_parent_ids = {}
+        path_parent_ids = {}  # type: ignore[var-annotated]
 
         # Get the update endpoint
         endpoint = self.get_update_endpoint(entity_id, path_parent_ids)
@@ -2583,7 +2583,7 @@ class TestRoleEndpoints(AbstractEPTest):
         entity = self.tracked_entities["update_malformed"]
         entity_id = entity["id"]
 
-        path_parent_ids = {}
+        path_parent_ids = {}  # type: ignore[var-annotated]
 
         # Get the update endpoint
         endpoint = self.get_update_endpoint(entity_id, path_parent_ids)
@@ -3402,7 +3402,7 @@ class TestInvitationEndpoints(AbstractEPTest):
         invitation = self._create_team_invitation_auto_code(server, admin_a, team_a)
 
         # Test with neither invitation_code nor invitee_id
-        payload = {"invitation": {}}
+        payload = {"invitation": {}}  # type: ignore[var-annotated]
 
         endpoint = f"/v1/invitation/{invitation['id']}"
         response = server.patch(
@@ -3629,8 +3629,8 @@ class TestInvitationEndpoints(AbstractEPTest):
             # Auto-detect team_a fixture from the calling test method (same logic as base class)
             frame = inspect.currentframe()
             try:
-                caller_frame = frame.f_back
-                caller_locals = caller_frame.f_locals
+                caller_frame = frame.f_back  # type: ignore[union-attr]
+                caller_locals = caller_frame.f_locals  # type: ignore[union-attr]
 
                 # Look for team_a fixture
                 for suffix in ["_a", "_b", ""]:

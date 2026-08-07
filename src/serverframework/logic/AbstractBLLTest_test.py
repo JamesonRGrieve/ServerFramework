@@ -28,14 +28,14 @@ from serverframework.logic.AbstractBLLTest import AbstractBLLTest
 Base = declarative_base()
 
 
-class _Author(Base):
+class _Author(Base):  # type: ignore[misc, valid-type]
     __tablename__ = "_acl_test_author"
     id = Column(Integer, primary_key=True)
     name = Column(String)
     books = relationship("_Book", back_populates="author")
 
 
-class _Book(Base):
+class _Book(Base):  # type: ignore[misc, valid-type]
     __tablename__ = "_acl_test_book"
     id = Column(Integer, primary_key=True)
     title = Column(String)

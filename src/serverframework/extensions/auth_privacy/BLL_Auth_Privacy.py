@@ -39,7 +39,7 @@ class DataRegionModel(
 ):
     """A data region a tenant may pin residency to."""
 
-    Manager: ClassVar[Type["DataRegionManager"]] = None
+    Manager: ClassVar[Type["DataRegionManager"]] = None  # type: ignore[assignment]
     name: str = Field(..., description="Region identifier, e.g. 'eu-west-1'")
     description: Optional[str] = Field(None, description="Human-readable description")
     is_available: bool = Field(True, description="Whether new data may be placed here")
@@ -75,7 +75,7 @@ class DataResidencyPreferenceModel(
 ):
     """Per-user OR per-team mapping of a data-type to a region."""
 
-    Manager: ClassVar[Type["DataResidencyPreferenceManager"]] = None
+    Manager: ClassVar[Type["DataResidencyPreferenceManager"]] = None  # type: ignore[assignment]
     user_id: Optional[str] = Field(
         None, description="User this preference belongs to (xor team_id)"
     )
