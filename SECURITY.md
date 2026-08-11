@@ -1,6 +1,6 @@
 # Security Policy
 
-This policy applies to ZephyrexFrameworkServer and the tooling shipped under the
+This policy applies to Zephyrex Framework Server and the tooling shipped under the
 `zephyrex` package on PyPI.
 
 ## Supported Versions
