@@ -77,7 +77,7 @@ def _cmd_bootstrap(_args: argparse.Namespace) -> int:
 
 
 def _cmd_version(_args: argparse.Namespace) -> int:
-    version: Optional[str] = None
+    version: str | None = None
     try:
         import zephyrex as _sf
 
@@ -86,18 +86,10 @@ def _cmd_version(_args: argparse.Namespace) -> int:
         version = None
 
     if not version:
-        try:
-            from importlib.metadata import PackageNotFoundError, version as _pkg_version
+        from zephyrex import get_framework_version
 
-            try:
-                version = _pkg_version("zephyrex")
-            except PackageNotFoundError:
-                try:
-                    version = _pkg_version("server")
-                except PackageNotFoundError:
-                    version = None
-        except Exception:
-            version = None
+        resolved = get_framework_version()
+        version = resolved if resolved != "0.0.0" else None
 
     if not version:
         print("zephyrex version: unknown")

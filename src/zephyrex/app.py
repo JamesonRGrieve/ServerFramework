@@ -24,7 +24,6 @@ if __name__ == "__main__":
 
 from contextlib import asynccontextmanager
 
-import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -44,15 +43,18 @@ from zephyrex.lib.RequestContext import (
 )
 
 
+def parse_extension_csv(csv: str) -> list[str]:
+    """Split a comma-separated extensions string into a trimmed, non-empty list."""
+    return [name.strip() for name in csv.split(",") if name.strip()]
+
+
 def _install_extension_deps(
     extensions_str: str,
 ) -> tuple[list[str], list[str]]:
     """Install extension dependencies and return ``(failed, successful)`` lists."""
     from zephyrex.extensions.AbstractExtensionProvider import ExtensionRegistry
 
-    extension_names = [
-        name.strip() for name in extensions_str.split(",") if name.strip()
-    ]
+    extension_names = parse_extension_csv(extensions_str)
     if not extension_names:
         return [], []
 
@@ -182,9 +184,7 @@ def create_registry_with_db_manager(
 
     # Discover extension models for backward compatibility
     if extensions_list:
-        extension_names = [
-            name.strip() for name in extensions_list.split(",") if name.strip()
-        ]
+        extension_names = parse_extension_csv(extensions_list)
         logger.debug(
             f"Calling discover_extension_models with extension_names={extension_names}"
         )
@@ -374,28 +374,9 @@ def build_app(model_registry: ModelRegistry):
     from zephyrex.lib.Environment import env
     from zephyrex.lib.Logging import logger
 
-    # Item 67 — single source of truth: the installed distribution's
-    # metadata. Editable installs (`pip install -e .`) populate this
-    # the same way wheel installs do, so in-tree development keeps
-    # working. The sibling ``version`` file fallback was removed
-    # because it drifted from the actual release version (and was a
-    # second source of truth that defeated the purpose of having
-    # ``[project.version]`` in pyproject.toml at all). When the package
-    # is not installed at all (rare — e.g. running directly from a
-    # source checkout without `pip install`), we default to "0.0.0"
-    # rather than masking the missing-install with stale file data.
-    version: str = "0.0.0"
-    try:
-        from importlib.metadata import PackageNotFoundError, version as _pkg_version
+    from zephyrex import get_framework_version
 
-        for _dist_name in ("zephyrex", "server"):
-            try:
-                version = _pkg_version(_dist_name)
-                break
-            except PackageNotFoundError:
-                continue
-    except ImportError:
-        pass
+    version = get_framework_version()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -1294,35 +1275,3 @@ def build_app(model_registry: ModelRegistry):
         logger.warning(f"Item 71 rate-limit registry population failed: {exc}")
 
     return app
-
-
-if __name__ == "__main__":
-    from zephyrex.lib.Environment import env
-
-    env_log_level = env("LOG_LEVEL").lower()
-    workers = env("UVICORN_WORKERS")
-    if workers.isnumeric():
-        workers = int(workers)
-    else:
-        workers = 1
-    host = env("UVICORN_HOST")
-    port = env("UVICORN_PORT")
-    log_level = env_log_level
-    if log_level == "debug":
-        log_level = "trace"
-    reload = env("UVICORN_RELOAD").lower() == "true"
-    logger.debug(f"Booting server...")
-    uvicorn.run(
-        "app:instance",
-        host="0.0.0.0",
-        port=1996,
-        workers=workers,
-        log_level=(
-            env_log_level
-            if env_log_level in ["info", "debug", "warning", "error", "critical"]
-            else "info"
-        ),
-        proxy_headers=True,
-        reload=env_log_level == "debug",
-        factory=True,
-    )

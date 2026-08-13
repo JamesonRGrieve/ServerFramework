@@ -65,10 +65,31 @@ from zephyrex.app import build_app, instance  # noqa: E402
 
 __all__ = [
     "build_app",
+    "get_framework_version",
     "instance",
     "run",
     "set_extensions_root",
 ]
+
+
+def get_framework_version() -> str:
+    """Return the installed framework version from distribution metadata.
+
+    Tries the ``zephyrex`` distribution first, then the legacy ``server``
+    name, and falls back to ``"0.0.0"`` when neither is installed (e.g.
+    running directly from a source checkout without ``pip install``).
+    """
+    try:
+        from importlib.metadata import PackageNotFoundError, version as _pkg_version
+
+        for _dist_name in ("zephyrex", "server"):
+            try:
+                return _pkg_version(_dist_name)
+            except PackageNotFoundError:
+                continue
+    except ImportError:
+        pass
+    return "0.0.0"
 
 
 def set_extensions_root(path: Optional[Union[str, os.PathLike]]) -> None:
