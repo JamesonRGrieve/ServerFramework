@@ -34,35 +34,34 @@ from zephyrex.lib.Pydantic import obj_to_dict
 
 
 def get_db_manager(
-    request: Request | None = None, db: Session | None = None
+    db: Session | None = None, request: Request | None = None
 ) -> Optional[DatabaseManager]:
-    """Get the database manager from app state, database session, or return None."""
+    """Get the database manager from a request, a session, or return None.
+
+    Probe order:
+    1. ``request.app.state`` (if *request* is provided)
+    2. ``db._db_manager`` (direct session reference)
+    3. ``db.bind._db_manager`` (engine-level reference)
+    4. ``db.bind.engine._db_manager`` (engine wrapper)
+    """
+    # Request-based lookup (FastAPI app state)
     if request and hasattr(request.app.state, "DB"):
         return request.app.state.model_registry.database_manager
-    if db and hasattr(db, "bind") and hasattr(db.bind, "_db_manager"):
-        return db.bind._db_manager  # type: ignore[union-attr]
-    # Try to get from session's bind if it has a db_manager attribute
-    if db and hasattr(db, "bind") and hasattr(db.bind.engine, "_db_manager"):  # type: ignore[union-attr]
-        return db.bind.engine._db_manager  # type: ignore[union-attr]
-    return None
 
-
-def get_db_manager_from_session(db: Session) -> Optional[DatabaseManager]:
-    """Extract database manager from a session."""
     if not db:
         return None
 
-    # Check if the session has a direct reference to the database manager
+    # Direct session reference
     if hasattr(db, "_db_manager"):
-        return db._db_manager
+        return db._db_manager  # type: ignore[return-value]
 
-    # Check the bound engine
+    # Bound engine / engine wrapper
     if hasattr(db, "bind") and db.bind:
-        engine = db.bind
-        if hasattr(engine, "_db_manager"):
-            return engine._db_manager
+        if hasattr(db.bind, "_db_manager"):
+            return db.bind._db_manager  # type: ignore[union-attr]
+        if hasattr(db.bind, "engine") and hasattr(db.bind.engine, "_db_manager"):  # type: ignore[union-attr]
+            return db.bind.engine._db_manager  # type: ignore[union-attr]
 
-    # No fallbacks - return None if not properly configured
     return None
 
 
@@ -134,7 +133,7 @@ def get_declarative_base_from_db(db: Session) -> Any:
         RuntimeError: If no model registry is available
     """
     # Get database manager from the session's model registry
-    db_manager = get_db_manager_from_session(db)
+    db_manager = get_db_manager(db)
     if db_manager and hasattr(db_manager, "Base"):
         return db_manager.Base
 
