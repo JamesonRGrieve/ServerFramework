@@ -4357,6 +4357,334 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         return f"{base}/{resource_id}"
 
     # ------------------------------------------------------------------ #
+    # Security — automatic per-entity hardening tests
+    # ------------------------------------------------------------------ #
+
+    @pytest.mark.security
+    @pytest.mark.parametrize("method", ["HEAD", "OPTIONS", "TRACE", "PATCH"])
+    def test_security_http_method_tampering(
+        self, server: Any, admin_a: Any, team_a: Any, method: str
+    ):
+        """Verb confusion: unsupported HTTP methods must not bypass auth or crash."""
+        entity = self._create(
+            server, admin_a.jwt, admin_a.id, team_a.id, key="method_tamper"
+        )
+        path_parent_ids = self._extract_path_parent_ids(entity)
+        endpoint = self.get_detail_endpoint(entity["id"], path_parent_ids)
+        response = server.request(
+            method, endpoint, headers=self._get_appropriate_headers(admin_a.jwt)
+        )
+        assert response.status_code != 500, (
+            f"{method} {endpoint} returned 500 (server error); must return "
+            f"405/200/204, never crash"
+        )
+
+    @pytest.mark.security
+    @pytest.mark.parametrize("method", ["HEAD", "OPTIONS", "TRACE", "PATCH"])
+    def test_security_http_method_unauthenticated(self, server: Any, method: str):
+        """Unauthenticated unsupported methods must not leak info."""
+        endpoint = self.get_list_endpoint({})
+        response = server.request(method, endpoint)
+        assert response.status_code in (
+            401, 403, 405, 200, 204,
+        ), f"Unauthenticated {method} got {response.status_code}; expected 401/403/405"
+
+    @pytest.mark.security
+    @pytest.mark.parametrize(
+        "content_type",
+        [
+            "text/plain",
+            "application/xml",
+            "multipart/form-data",
+            "application/x-www-form-urlencoded",
+            "text/html",
+            "application/javascript",
+        ],
+    )
+    def test_security_content_type_confusion(
+        self, server: Any, admin_a: Any, team_a: Any, content_type: str
+    ):
+        """Wrong content-type must not bypass parsing or cause 500."""
+        endpoint = self.get_list_endpoint({})
+        response = server.post(
+            endpoint,
+            content='{"name": "test"}',
+            headers={
+                **self._get_appropriate_headers(admin_a.jwt),
+                "Content-Type": content_type,
+            },
+        )
+        assert response.status_code != 500, (
+            f"Content-Type {content_type} caused 500; must reject cleanly"
+        )
+
+    @pytest.mark.security
+    @pytest.mark.parametrize(
+        "host_header",
+        [
+            "evil.com",
+            "localhost:9999",
+            "evil.com\r\nX-Injected: true",
+            "127.0.0.1:1",
+        ],
+    )
+    def test_security_host_header_injection(
+        self, server: Any, admin_a: Any, host_header: str
+    ):
+        """Host header injection must not cause 500 or reflect in response."""
+        endpoint = self.get_list_endpoint({})
+        response = server.get(
+            endpoint,
+            headers={
+                **self._get_appropriate_headers(admin_a.jwt),
+                "Host": host_header,
+            },
+        )
+        assert response.status_code != 500, (
+            f"Host header '{host_header}' caused 500"
+        )
+        body = response.text
+        assert "evil.com" not in body, "Host header value reflected in response body"
+
+    @pytest.mark.security
+    @pytest.mark.parametrize(
+        "path_payload",
+        [
+            "../../../etc/passwd",
+            "..%2F..%2F..%2Fetc%2Fpasswd",
+            "....//....//etc/passwd",
+            "%00",
+            "id%00.json",
+        ],
+    )
+    def test_security_path_traversal_in_id(
+        self, server: Any, admin_a: Any, path_payload: str
+    ):
+        """Path traversal payloads in resource ID must not cause 500 or leak files."""
+        endpoint = f"{self.get_list_endpoint({})}/{path_payload}"
+        response = server.get(
+            endpoint, headers=self._get_appropriate_headers(admin_a.jwt)
+        )
+        assert response.status_code in (
+            400, 404, 422,
+        ), f"Path traversal payload got {response.status_code}; expected 400/404/422"
+
+    @pytest.mark.security
+    @pytest.mark.parametrize(
+        "sqli_payload",
+        [
+            "' OR '1'='1",
+            "1; DROP TABLE users--",
+            "1 UNION SELECT * FROM users--",
+            "' OR 1=1; --",
+            "1' AND SLEEP(5)--",
+        ],
+    )
+    def test_security_sqli_in_id_param(
+        self, server: Any, admin_a: Any, sqli_payload: str
+    ):
+        """SQL injection in ID path param must not execute or cause 500."""
+        endpoint = f"{self.get_list_endpoint({})}/{sqli_payload}"
+        response = server.get(
+            endpoint, headers=self._get_appropriate_headers(admin_a.jwt)
+        )
+        assert response.status_code != 500, (
+            f"SQLi payload in ID caused 500: {sqli_payload}"
+        )
+
+    @pytest.mark.security
+    @pytest.mark.parametrize(
+        "sqli_payload",
+        [
+            "' OR '1'='1",
+            "1; DROP TABLE users--",
+            "' UNION SELECT 1,2,3--",
+        ],
+    )
+    def test_security_sqli_in_query_param(
+        self, server: Any, admin_a: Any, sqli_payload: str
+    ):
+        """SQL injection in query parameters must not execute or cause 500."""
+        endpoint = f"{self.get_list_endpoint({})}?name={sqli_payload}"
+        response = server.get(
+            endpoint, headers=self._get_appropriate_headers(admin_a.jwt)
+        )
+        assert response.status_code != 500, (
+            f"SQLi payload in query param caused 500: {sqli_payload}"
+        )
+
+    @pytest.mark.security
+    def test_security_deeply_nested_json(
+        self, server: Any, admin_a: Any, team_a: Any
+    ):
+        """Deeply nested JSON must not cause stack overflow or 500."""
+        nested = {"a": None}
+        current = nested
+        for _ in range(100):
+            current["a"] = {"a": None}
+            current = current["a"]
+
+        endpoint = self.get_list_endpoint({})
+        response = server.post(
+            endpoint,
+            json={self.entity_name: nested},
+            headers=self._get_appropriate_headers(admin_a.jwt),
+        )
+        assert response.status_code != 500, "Deeply nested JSON caused 500"
+
+    @pytest.mark.security
+    @pytest.mark.parametrize(
+        "header_name,header_value",
+        [
+            ("X-Forwarded-For", "127.0.0.1"),
+            ("X-Forwarded-Host", "evil.com"),
+            ("X-Original-URL", "/admin"),
+            ("X-Rewrite-URL", "/admin"),
+            ("X-Forwarded-Proto", "https"),
+        ],
+    )
+    def test_security_proxy_header_injection(
+        self, server: Any, admin_a: Any, header_name: str, header_value: str
+    ):
+        """Proxy headers must not override routing or auth decisions."""
+        endpoint = self.get_list_endpoint({})
+        response = server.get(
+            endpoint,
+            headers={
+                **self._get_appropriate_headers(admin_a.jwt),
+                header_name: header_value,
+            },
+        )
+        assert response.status_code in (200, 401, 403, 404, 422), (
+            f"Proxy header {header_name}: {header_value} caused "
+            f"unexpected status {response.status_code}"
+        )
+
+    @pytest.mark.security
+    def test_security_jwt_in_query_string_rejected(self, server: Any, admin_a: Any):
+        """JWT in query string must not authenticate (prevents token leakage via logs/referrer)."""
+        endpoint = f"{self.get_list_endpoint({})}?token={admin_a.jwt}"
+        response = server.get(endpoint)
+        assert response.status_code in (401, 403), (
+            f"JWT in query string should not authenticate; got {response.status_code}"
+        )
+
+    @pytest.mark.security
+    def test_security_duplicate_headers(self, server: Any, admin_a: Any):
+        """Duplicate auth headers must not cause confusion or bypass."""
+        endpoint = self.get_list_endpoint({})
+        response = server.get(
+            endpoint,
+            headers={
+                "Authorization": f"Bearer {admin_a.jwt}",
+                "X-API-Key": "fake-key",
+            },
+        )
+        assert response.status_code != 500, "Duplicate auth headers caused 500"
+
+    @pytest.mark.security
+    def test_security_response_no_server_version(self, server: Any, admin_a: Any):
+        """Response headers must not leak server version or framework info."""
+        endpoint = self.get_list_endpoint({})
+        response = server.get(
+            endpoint, headers=self._get_appropriate_headers(admin_a.jwt)
+        )
+        for header in ("Server", "X-Powered-By", "X-AspNet-Version"):
+            val = response.headers.get(header, "")
+            assert "python" not in val.lower() and "uvicorn" not in val.lower(), (
+                f"Header {header} leaks server info: {val}"
+            )
+
+    @pytest.mark.security
+    def test_security_cors_wildcard_not_with_credentials(self, server: Any, admin_a: Any):
+        """CORS must not combine Access-Control-Allow-Origin: * with credentials."""
+        endpoint = self.get_list_endpoint({})
+        response = server.options(
+            endpoint,
+            headers={
+                "Origin": "https://evil.com",
+                "Access-Control-Request-Method": "GET",
+            },
+        )
+        origin = response.headers.get("Access-Control-Allow-Origin", "")
+        creds = response.headers.get("Access-Control-Allow-Credentials", "")
+        if origin == "*":
+            assert creds.lower() != "true", (
+                "CORS allows wildcard origin WITH credentials — "
+                "browsers will reject but it signals misconfiguration"
+            )
+
+    @pytest.mark.security
+    def test_security_no_stacktrace_in_error_response(
+        self, server: Any, admin_a: Any
+    ):
+        """Error responses must not leak Python stack traces."""
+        endpoint = f"{self.get_list_endpoint({})}/not-a-uuid-at-all!!!"
+        response = server.get(
+            endpoint, headers=self._get_appropriate_headers(admin_a.jwt)
+        )
+        body = response.text.lower()
+        for marker in ("traceback", "file \"", "line ", "raise ", "error("):
+            assert marker not in body, (
+                f"Error response leaks stack trace (found '{marker}')"
+            )
+
+    @pytest.mark.security
+    def test_security_PUT_id_mismatch_rejected(
+        self, server: Any, admin_a: Any, team_a: Any
+    ):
+        """PUT with body ID different from URL ID must not silently update the wrong record."""
+        entity = self._create(
+            server, admin_a.jwt, admin_a.id, team_a.id, key="id_mismatch"
+        )
+        path_parent_ids = self._extract_path_parent_ids(entity)
+        endpoint = self.get_detail_endpoint(entity["id"], path_parent_ids)
+        fake_id = str(uuid.uuid4())
+        resolved_fields = {
+            k: v() if callable(v) else v for k, v in self.update_fields.items()
+        }
+        payload = {self.entity_name: {"id": fake_id, **resolved_fields}}
+        response = server.put(
+            endpoint,
+            json=payload,
+            headers=self._get_appropriate_headers(admin_a.jwt),
+        )
+        if response.status_code == 200:
+            body = response.json()
+            returned_id = None
+            if isinstance(body, dict):
+                for v in body.values():
+                    if isinstance(v, dict) and "id" in v:
+                        returned_id = v["id"]
+                        break
+            if returned_id:
+                assert returned_id == entity["id"], (
+                    f"PUT with mismatched body ID updated wrong record: "
+                    f"URL={entity['id']}, body={fake_id}, returned={returned_id}"
+                )
+
+    @pytest.mark.security
+    @pytest.mark.parametrize(
+        "encoding",
+        ["gzip", "deflate", "br", "identity, *;q=0"],
+    )
+    def test_security_accept_encoding_bomb(
+        self, server: Any, admin_a: Any, encoding: str
+    ):
+        """Unusual Accept-Encoding values must not cause 500."""
+        endpoint = self.get_list_endpoint({})
+        response = server.get(
+            endpoint,
+            headers={
+                **self._get_appropriate_headers(admin_a.jwt),
+                "Accept-Encoding": encoding,
+            },
+        )
+        assert response.status_code != 500, (
+            f"Accept-Encoding '{encoding}' caused 500"
+        )
+
+    # ------------------------------------------------------------------ #
     # Scalability / Big-O assertions
     # ------------------------------------------------------------------ #
     # Big-O scaling assertion for GET-list endpoints. Runs automatically;

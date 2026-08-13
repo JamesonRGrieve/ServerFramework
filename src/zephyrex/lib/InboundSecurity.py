@@ -288,6 +288,134 @@ class BodySizeLimitMiddleware:
         await send({"type": "http.response.body", "body": body})
 
 
+MAX_JSON_DEPTH: int = 32
+
+
+class PathSanitizationMiddleware:
+    """ASGI middleware that rejects request paths containing null bytes
+    or path-traversal sequences (``..``).
+
+    Null bytes in URLs can confuse C-backed path parsers and cause 500s.
+    Traversal sequences in API resource IDs should never resolve — they
+    indicate an attack, not a valid resource path.
+    """
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+
+        path: str = scope.get("path", "")
+        if "\x00" in path or "%00" in path or ".." in path:
+            await self._send_400(send, path)
+            return
+
+        await self.app(scope, receive, send)
+
+    @staticmethod
+    async def _send_400(send, path: str) -> None:
+        from json import dumps as _json_dumps
+
+        body = _json_dumps(
+            {"detail": "Invalid characters in request path"}
+        ).encode("utf-8")
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 400,
+                "headers": [
+                    (b"content-type", b"application/json"),
+                    (b"content-length", str(len(body)).encode("ascii")),
+                ],
+            }
+        )
+        await send({"type": "http.response.body", "body": body})
+
+
+class JSONDepthMiddleware:
+    """ASGI middleware that rejects JSON request bodies nested beyond
+    ``MAX_JSON_DEPTH`` levels.
+
+    Prevents stack overflow and excessive memory allocation from
+    adversarial deeply-nested payloads. Only inspects requests with
+    a JSON content-type.
+    """
+
+    def __init__(self, app: Any, max_depth: int = MAX_JSON_DEPTH) -> None:
+        self.app = app
+        self.max_depth = max_depth
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+
+        content_type = ""
+        for raw_name, raw_value in scope.get("headers") or []:
+            if raw_name.decode("latin-1").lower() == "content-type":
+                content_type = raw_value.decode("latin-1").lower()
+                break
+
+        if "json" not in content_type:
+            await self.app(scope, receive, send)
+            return
+
+        chunks: list[bytes] = []
+
+        async def receive_wrapper():
+            message = await receive()
+            if message.get("type") == "http.request":
+                body = message.get("body") or b""
+                chunks.append(body)
+                if message.get("more_body", False):
+                    return message
+                full_body = b"".join(chunks)
+                if full_body and self._exceeds_depth(full_body):
+                    return {"type": "http.disconnect"}
+            return message
+
+        try:
+            await self.app(scope, receive_wrapper, send)
+        except Exception:
+            if chunks and self._exceeds_depth(b"".join(chunks)):
+                await self._send_400(send)
+            else:
+                raise
+
+    def _exceeds_depth(self, body: bytes) -> bool:
+        depth = 0
+        for ch in body:
+            if ch in (123, 91):  # '{' or '['
+                depth += 1
+                if depth > self.max_depth:
+                    return True
+            elif ch in (125, 93):  # '}' or ']'
+                depth -= 1
+        return False
+
+    @staticmethod
+    async def _send_400(send) -> None:
+        from json import dumps as _json_dumps
+
+        body = _json_dumps(
+            {"detail": f"Request body exceeds maximum JSON nesting depth ({MAX_JSON_DEPTH})"}
+        ).encode("utf-8")
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 400,
+                "headers": [
+                    (b"content-type", b"application/json"),
+                    (b"content-length", str(len(body)).encode("ascii")),
+                ],
+            }
+        )
+        await send({"type": "http.response.body", "body": body})
+
+
 import hmac as _hmac
 
 

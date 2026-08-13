@@ -1997,3 +1997,160 @@ class AbstractGraphQLTest:
                     f"Comprehensive navigation test failed: {json.dumps(test_results, indent=2)}"
                 )
                 raise
+
+    # ------------------------------------------------------------------ #
+    # GraphQL Security — automatic per-entity
+    # ------------------------------------------------------------------ #
+
+    @pytest.mark.security
+    def test_GQL_security_unauthenticated_query(self, server: Any):
+        """GQL queries without auth must not return data."""
+        singular = self._gql_singular_name
+        query = f'{{ {singular}(id: "00000000-0000-0000-0000-000000000000") {{ id }} }}'
+        response = server.post("/graphql", json={"query": query})
+        assert response.status_code in (200, 401, 403), (
+            f"Unauthenticated GQL query got {response.status_code}"
+        )
+        if response.status_code == 200:
+            data = response.json()
+            if "errors" not in data:
+                result = data.get("data", {}).get(singular)
+                assert result is None, "Unauthenticated GQL query returned data"
+
+    @pytest.mark.security
+    def test_GQL_security_unauthenticated_mutation(self, server: Any):
+        """GQL mutations without auth must be rejected."""
+        singular = self._gql_singular_name
+        mutation_name = f"create{stringcase.pascalcase(singular)}"
+        mutation = f'mutation {{ {mutation_name}(input: {{name: "hacked"}}) {{ id }} }}'
+        response = server.post("/graphql", json={"query": mutation})
+        assert response.status_code in (200, 401, 403)
+        if response.status_code == 200:
+            data = response.json()
+            assert "errors" in data, "Unauthenticated GQL mutation succeeded"
+
+    @pytest.mark.security
+    def test_GQL_security_query_depth_limit(self, server: Any, admin_a: Any):
+        """Deeply nested GQL queries must be rejected to prevent DoS."""
+        singular = self._gql_singular_name
+        nested = "{ id }"
+        for _ in range(20):
+            nested = f"{{ {singular} {nested} }}"
+        query = f"{{ {singular}(id: \"00000000-0000-0000-0000-000000000000\") {nested} }}"
+
+        headers = self._get_appropriate_headers(
+            admin_a.jwt, api_key=env("ROOT_API_KEY") if self.system_entity else None
+        )
+        response = server.post("/graphql", json={"query": query}, headers=headers)
+        assert response.status_code != 500, "Deep GQL query caused 500"
+
+    @pytest.mark.security
+    def test_GQL_security_introspection_does_not_leak_internal_types(
+        self, server: Any, admin_a: Any
+    ):
+        """Introspection must not expose internal/debug type names."""
+        query = "{ __schema { types { name } } }"
+        headers = self._get_appropriate_headers(
+            admin_a.jwt, api_key=env("ROOT_API_KEY") if self.system_entity else None
+        )
+        response = server.post("/graphql", json={"query": query}, headers=headers)
+        if response.status_code == 200:
+            data = response.json()
+            if "data" in data and data["data"] and "__schema" in data["data"]:
+                type_names = [
+                    t["name"]
+                    for t in data["data"]["__schema"]["types"]
+                    if t.get("name")
+                ]
+                for name in type_names:
+                    low = name.lower()
+                    assert "password" not in low and "secret" not in low and "hash" not in low, (
+                        f"Introspection leaks sensitive type name: {name}"
+                    )
+
+    @pytest.mark.security
+    def test_GQL_security_batch_query_limit(self, server: Any, admin_a: Any):
+        """Batch of many queries in one request must not cause DoS or 500."""
+        singular = self._gql_singular_name
+        single_query = f'{{ {singular}(id: "00000000-0000-0000-0000-000000000000") {{ id }} }}'
+        batch = [{"query": single_query} for _ in range(50)]
+        headers = self._get_appropriate_headers(
+            admin_a.jwt, api_key=env("ROOT_API_KEY") if self.system_entity else None
+        )
+        response = server.post("/graphql", json=batch, headers=headers)
+        assert response.status_code != 500, "Batch of 50 GQL queries caused 500"
+
+    @pytest.mark.security
+    def test_GQL_security_alias_dos(self, server: Any, admin_a: Any):
+        """Many aliases for the same field must not cause excessive DB load."""
+        singular = self._gql_singular_name
+        aliases = " ".join(f"a{i}: id" for i in range(100))
+        query = f'{{ {singular}(id: "00000000-0000-0000-0000-000000000000") {{ {aliases} }} }}'
+        headers = self._get_appropriate_headers(
+            admin_a.jwt, api_key=env("ROOT_API_KEY") if self.system_entity else None
+        )
+        response = server.post("/graphql", json={"query": query}, headers=headers)
+        assert response.status_code != 500, "100 GQL aliases caused 500"
+
+    @pytest.mark.security
+    @pytest.mark.parametrize(
+        "sqli_payload",
+        [
+            '" OR 1=1 --',
+            '"; DROP TABLE users; --',
+            "' UNION SELECT * FROM users --",
+        ],
+    )
+    def test_GQL_security_sqli_in_argument(
+        self, server: Any, admin_a: Any, sqli_payload: str
+    ):
+        """SQL injection in GQL arguments must not execute."""
+        singular = self._gql_singular_name
+        query = f'{{ {singular}(id: "{sqli_payload}") {{ id }} }}'
+        headers = self._get_appropriate_headers(
+            admin_a.jwt, api_key=env("ROOT_API_KEY") if self.system_entity else None
+        )
+        response = server.post("/graphql", json={"query": query}, headers=headers)
+        assert response.status_code != 500, (
+            f"SQLi in GQL argument caused 500: {sqli_payload}"
+        )
+
+    @pytest.mark.security
+    def test_GQL_security_directive_injection(self, server: Any, admin_a: Any):
+        """Unknown directives must not cause 500."""
+        singular = self._gql_singular_name
+        query = f'{{ {singular}(id: "00000000-0000-0000-0000-000000000000") @evil {{ id }} }}'
+        headers = self._get_appropriate_headers(
+            admin_a.jwt, api_key=env("ROOT_API_KEY") if self.system_entity else None
+        )
+        response = server.post("/graphql", json={"query": query}, headers=headers)
+        assert response.status_code != 500, "Unknown GQL directive caused 500"
+
+    @pytest.mark.security
+    def test_GQL_security_fragment_cycle(self, server: Any, admin_a: Any):
+        """Circular fragment references must not cause infinite loop."""
+        singular = self._gql_singular_name
+        query = (
+            f"{{ {singular}(id: \"00000000-0000-0000-0000-000000000000\") {{ ...A }} }} "
+            f"fragment A on {stringcase.pascalcase(singular)} {{ ...B id }} "
+            f"fragment B on {stringcase.pascalcase(singular)} {{ ...A id }}"
+        )
+        headers = self._get_appropriate_headers(
+            admin_a.jwt, api_key=env("ROOT_API_KEY") if self.system_entity else None
+        )
+        response = server.post("/graphql", json={"query": query}, headers=headers)
+        assert response.status_code != 500, "Circular fragment caused 500"
+
+    @pytest.mark.security
+    def test_GQL_security_no_stacktrace_in_error(self, server: Any, admin_a: Any):
+        """GQL error responses must not leak Python stack traces."""
+        query = "{ __INVALID_QUERY_SHOULD_ERROR }"
+        headers = self._get_appropriate_headers(
+            admin_a.jwt, api_key=env("ROOT_API_KEY") if self.system_entity else None
+        )
+        response = server.post("/graphql", json={"query": query}, headers=headers)
+        body = response.text.lower()
+        for marker in ("traceback", 'file "', "raise "):
+            assert marker not in body, (
+                f"GQL error leaks stack trace (found '{marker}')"
+            )

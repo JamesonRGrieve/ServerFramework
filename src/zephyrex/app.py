@@ -487,6 +487,8 @@ def build_app(model_registry: ModelRegistry):
     # below after every router has been mounted onto the app.
     from zephyrex.lib.InboundSecurity import (
         BodySizeLimitMiddleware,
+        JSONDepthMiddleware,
+        PathSanitizationMiddleware,
         RateLimitMiddleware,
         SecurityHeadersMiddleware,
     )
@@ -499,6 +501,8 @@ def build_app(model_registry: ModelRegistry):
     app.add_middleware(SecurityHeadersMiddleware)
     app.add_middleware(BodySizeLimitMiddleware)
     app.add_middleware(RateLimitMiddleware)
+    app.add_middleware(PathSanitizationMiddleware)
+    app.add_middleware(JSONDepthMiddleware)
 
     # Multi-format content negotiation (JSON, TOON, YAML, TOML, XML).
     # Transcodes non-JSON request bodies to JSON for Pydantic/FastAPI and
