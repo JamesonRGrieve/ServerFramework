@@ -1025,49 +1025,44 @@ def create_test_extension_server(extension_names):
     return TestClient(instance(db_prefix=db_prefix, extensions=extensions))
 
 
-@pytest.fixture(scope="session")
-def admin_a(server):
-    """Admin user for team_a"""
-    return create_user(
-        server,
-        email=generate_test_email("admin_a"),
-        last_name="AdminA",
-    )
+# =============================================================================
+# SHARED FIXTURE FACTORIES
+# =============================================================================
+# Factory functions for test fixture bodies shared between conftest (session-
+# scoped) and ExtensionServerMixin (module-scoped).  Each factory takes the
+# server and any prerequisite entities, returning the created object.
+# =============================================================================
 
 
-@pytest.fixture(scope="session")
-def team_a(server, admin_a):
-    """Create team_a for testing"""
+def make_admin_a(server):
+    """Create the admin user for team_a."""
+    return create_user(server, email=generate_test_email("admin_a"), last_name="AdminA")
+
+
+def make_team_a(server, admin_a):
+    """Create team_a."""
     return create_team(server, admin_a.id, name="Team A")
 
 
-@pytest.fixture(scope="session")
-def admin_b(server):
-    """Admin user for team_b"""
-    return create_user(
-        server,
-        email=generate_test_email("admin_b"),
-        last_name="AdminB",
-    )
+def make_admin_b(server):
+    """Create the admin user for team_b."""
+    return create_user(server, email=generate_test_email("admin_b"), last_name="AdminB")
 
 
-@pytest.fixture(scope="session")
-def team_b(server, admin_b):
-    """Create team_b for testing"""
+def make_team_b(server, admin_b):
+    """Create team_b."""
     return create_team(server, admin_b.id, name="Team B")
 
 
-@pytest.fixture(scope="session")
-def user_b(server, team_b):
-    """Regular user for team_b"""
+def make_user_b(server, team_b):
+    """Create a regular user for team_b."""
     user = create_user(server, email=generate_test_email("user_b"), last_name="UserB")
     add_user_to_team(server, user.id, team_b.id, env("USER_ROLE_ID"))
     return user
 
 
-@pytest.fixture(scope="session")
-def mod_b_role(server, admin_a, team_b):
-    """Moderator role for team_b"""
+def make_mod_b_role(server, admin_a, team_b):
+    """Create the moderator role for team_b."""
     return create_role(
         server,
         admin_a.id,
@@ -1078,12 +1073,53 @@ def mod_b_role(server, admin_a, team_b):
     )
 
 
-@pytest.fixture(scope="session")
-def mod_b(server, admin_b, team_b, mod_b_role):
-    """Moderator user for team_b"""
+def make_mod_b(server, admin_b, team_b, mod_b_role):
+    """Create the moderator user for team_b."""
     user = create_user(server, email=generate_test_email("mod_b"), last_name="ModB")
     add_user_to_team(server, user.id, team_b.id, mod_b_role.id, requester_id=admin_b.id)
     return user
+
+
+@pytest.fixture(scope="session")
+def admin_a(server):
+    """Admin user for team_a"""
+    return make_admin_a(server)
+
+
+@pytest.fixture(scope="session")
+def team_a(server, admin_a):
+    """Create team_a for testing"""
+    return make_team_a(server, admin_a)
+
+
+@pytest.fixture(scope="session")
+def admin_b(server):
+    """Admin user for team_b"""
+    return make_admin_b(server)
+
+
+@pytest.fixture(scope="session")
+def team_b(server, admin_b):
+    """Create team_b for testing"""
+    return make_team_b(server, admin_b)
+
+
+@pytest.fixture(scope="session")
+def user_b(server, team_b):
+    """Regular user for team_b"""
+    return make_user_b(server, team_b)
+
+
+@pytest.fixture(scope="session")
+def mod_b_role(server, admin_a, team_b):
+    """Moderator role for team_b"""
+    return make_mod_b_role(server, admin_a, team_b)
+
+
+@pytest.fixture(scope="session")
+def mod_b(server, admin_b, team_b, mod_b_role):
+    """Moderator user for team_b"""
+    return make_mod_b(server, admin_b, team_b, mod_b_role)
 
 
 @pytest.fixture(scope="session")

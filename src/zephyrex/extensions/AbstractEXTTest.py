@@ -14,6 +14,13 @@ from conftest import (
     create_team,
     create_user,
     generate_test_email,
+    make_admin_a,
+    make_admin_b,
+    make_mod_b,
+    make_mod_b_role,
+    make_team_a,
+    make_team_b,
+    make_user_b,
 )
 from zephyrex.extensions.AbstractExtensionProvider import AbstractStaticExtension
 from zephyrex.lib.Dependencies import Dependencies
@@ -109,60 +116,37 @@ class ExtensionServerMixin:
     @pytest.fixture(scope="module")
     def admin_a(self, server):
         """Admin user for team_a"""
-        return create_user(
-            server,
-            email=generate_test_email("admin_a"),
-            last_name="AdminA",
-        )
+        return make_admin_a(server)
 
     @pytest.fixture(scope="module")
     def team_a(self, server, admin_a):
         """Create team_a for testing"""
-        return create_team(server, admin_a.id, name="Team A")
+        return make_team_a(server, admin_a)
 
     @pytest.fixture(scope="module")
     def admin_b(self, server):
         """Admin user for team_b"""
-        return create_user(
-            server,
-            email=generate_test_email("admin_b"),
-            last_name="AdminB",
-        )
+        return make_admin_b(server)
 
     @pytest.fixture(scope="module")
     def team_b(self, server, admin_b):
         """Create team_b for testing"""
-        return create_team(server, admin_b.id, name="Team B")
+        return make_team_b(server, admin_b)
 
     @pytest.fixture(scope="module")
     def user_b(self, server, team_b):
         """Regular user for team_b"""
-        user = create_user(
-            server, email=generate_test_email("user_b"), last_name="UserB"
-        )
-        add_user_to_team(server, user.id, team_b.id, env("USER_ROLE_ID"))
-        return user
+        return make_user_b(server, team_b)
 
     @pytest.fixture(scope="module")
     def mod_b_role(self, server, admin_a, team_b):
         """Moderator role for team_b"""
-        return create_role(
-            server,
-            admin_a.id,
-            team_b.id,
-            name="mod_b",
-            friendly_name="Moderator B",
-            parent_id=env("USER_ROLE_ID"),
-        )
+        return make_mod_b_role(server, admin_a, team_b)
 
     @pytest.fixture(scope="module")
     def mod_b(self, server, admin_b, team_b, mod_b_role):
         """Moderator user for team_b"""
-        user = create_user(server, email=generate_test_email("mod_b"), last_name="ModB")
-        add_user_to_team(
-            server, user.id, team_b.id, mod_b_role.id, requester_id=admin_b.id
-        )
-        return user
+        return make_mod_b(server, admin_b, team_b, mod_b_role)
 
     @pytest.fixture(scope="module")
     def model_registry(self, server):
