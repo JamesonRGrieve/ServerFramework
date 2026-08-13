@@ -519,7 +519,79 @@
 <div class="s">
 <h4>Entity Cache JSON Deserialization from Untrusted Valkey <span class="tag tag-2">Gaps</span></h4>
 <p>ValkeyEntityCache.py:77 — json.loads on raw bytes from Valkey. If Valkey is compromised, poisoned JSON could cause issues in consumers.</p>
-<div class="t"><span class="m">test_valkey_entity_cache_handles_corrupted_data</span></div>
+<div class="t"><span class="e">test_valkey_entity_cache_handles_corrupted_data</span></div>
+</div>
+
+<div class="s">
+<h4>Valkey TLS Never Enforced (HIGH) <span class="tag tag-2">Gaps</span></h4>
+<p>PRV_Valkey.py:91 — DATABASE_MEMORY_TLS declared in _env but never read. All traffic crosses wire in cleartext including credentials and cached DTOs.</p>
+<div class="t"><span class="m">test_valkey_tls_enforced_when_configured</span></div>
+</div>
+
+<div class="s">
+<h4>Valkey AUTH/ACL Not Applied (HIGH) <span class="tag tag-2">Gaps</span></h4>
+<p>DATABASE_MEMORY_USERNAME/PASSWORD declared but never injected into from_url. Default is unauthenticated localhost with full command access (FLUSHALL, CONFIG SET, DEBUG).</p>
+<div class="t"><span class="m">test_valkey_auth_credentials_applied_from_env</span></div>
+</div>
+
+<div class="s">
+<h4>Valkey Instance URL SSRF (HIGH) <span class="tag tag-2">Gaps</span></h4>
+<p>PRV_Valkey.py:53 — tenant-settable instance.api_key passed to from_url with no host allowlist. Tenants can connect to arbitrary internal hosts.</p>
+<div class="t"><span class="m">test_valkey_instance_url_host_allowlisted</span></div>
+</div>
+
+<div class="s">
+<h4>Response Cache SCAN Glob Injection (HIGH) <span class="tag tag-2">Gaps</span></h4>
+<p>ValkeyResponseCache.py:86 — invalidate_prefix doesn't strip Redis glob metachars (*, ?, []). Path /v1/*  produces broadened SCAN MATCH deleting unintended keys.</p>
+<div class="t"><span class="m">test_valkey_response_invalidate_prefix_strips_glob_metachars</span></div>
+</div>
+
+<div class="s">
+<h4>Unbounded SCAN+DELETE on Mutation Path (HIGH) <span class="tag tag-2">Gaps</span></h4>
+<p>app.py middleware runs invalidate_prefix on every POST/PUT/PATCH/DELETE — full O(N) scan/delete storm per mutation with no batching.</p>
+<div class="t"><span class="m">test_valkey_invalidation_bounded_not_unbounded_scan</span></div>
+</div>
+
+<div class="s">
+<h4>Response Cache Unbounded Key Cardinality (HIGH) <span class="tag tag-2">Gaps</span></h4>
+<p>cache_key varies freely per (method, path, query, requester_id). Attacker varying query string creates unbounded keys before TTL expires → OOM.</p>
+<div class="t"><span class="m">test_valkey_response_cache_key_cardinality_bounded</span></div>
+</div>
+
+<div class="s">
+<h4>Entity Cache Poisoning via Forged DTO (HIGH) <span class="tag tag-2">Gaps</span></h4>
+<p>Valid-but-malicious JSON in entity cache survives json.loads + model_validate and is returned as authoritative entity, bypassing DB. No HMAC binding.</p>
+<div class="t"><span class="m">test_valkey_entity_cache_rejects_forged_privileged_dto</span></div>
+</div>
+
+<div class="s">
+<h4>Entity Cache Index Key Colon Collision (HIGH) <span class="tag tag-2">Gaps</span></h4>
+<p>ValkeyEntityCache._index_key uses f"idx:{table}:{field}:{value}" with no escaping. User-controlled email/session_key with colons collides index entries.</p>
+<div class="t"><span class="m">test_valkey_entity_cache_index_key_collision_rejected</span></div>
+</div>
+
+<div class="s">
+<h4>Entity Cache Non-Atomic Put (MEDIUM) <span class="tag tag-2">Gaps</span></h4>
+<p>ValkeyEntityCache.put uses pipeline(transaction=False). Entity/index desync under concurrency — index points to missing or stale entity.</p>
+<div class="t"><span class="m">test_valkey_entity_cache_put_atomic_or_index_consistent</span></div>
+</div>
+
+<div class="s">
+<h4>Entity Cache Invalidation Fails Open (MEDIUM) <span class="tag tag-2">Gaps</span></h4>
+<p>All invalidation paths swallow exceptions. Revoked session/user/permission served from cache until TTL expires (up to 3600s).</p>
+<div class="t"><span class="m">test_valkey_entity_cache_invalidation_failure_surfaced</span></div>
+</div>
+
+<div class="s">
+<h4>No Max Value Size on Cache Write (MEDIUM) <span class="tag tag-2">Gaps</span></h4>
+<p>No path caps value size before SET/XADD. Large response body cached wholesale → OOM on read amplification.</p>
+<div class="t"><span class="m">test_valkey_response_cache_rejects_oversized_body</span></div>
+</div>
+
+<div class="s">
+<h4>Connection Pool Unbounded + Cross-Loop Reuse (MEDIUM) <span class="tag tag-2">Gaps</span></h4>
+<p>from_url sets no max_connections. Sync bridges spin ThreadPoolExecutor + asyncio.run per call, driving shared async client from transient loops → connection leak.</p>
+<div class="t"><span class="m">test_valkey_pool_bounded_and_loop_safe</span></div>
 </div>
 
 <div class="s">
