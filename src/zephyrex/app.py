@@ -14,7 +14,6 @@ from zephyrex.bootstrap import setup_python_path
 
 from zephyrex.lib.Logging import logger
 
-
 if __name__ == "__main__":
     _venv()
 
@@ -104,9 +103,7 @@ def setup_extension_dependencies():
     try:
         failed, _successful = _install_extension_deps(app_extensions_str)
         if failed:
-            logger.error(
-                f"Failed to install some extension dependencies: {failed}"
-            )
+            logger.error(f"Failed to install some extension dependencies: {failed}")
             return False
         logger.info("Extension dependency installation completed")
         return True
@@ -150,14 +147,10 @@ def install_extension_dependencies_with_restart(extensions_str: str):
 
         if failed:
             logger.error(f"Failed to install extension dependencies: {failed}")
-            raise Exception(
-                f"Failed to install extension dependencies: {failed}"
-            )
+            raise Exception(f"Failed to install extension dependencies: {failed}")
 
         if successful:
-            logger.info(
-                f"Successfully installed extension dependencies: {successful}"
-            )
+            logger.info(f"Successfully installed extension dependencies: {successful}")
             logger.info(
                 "Restarting application to ensure dependencies are properly loaded..."
             )
@@ -169,9 +162,7 @@ def install_extension_dependencies_with_restart(extensions_str: str):
         raise Exception(f"Failed to setup extension dependencies: {e}")
 
 
-def create_registry_with_db_manager(
-    db_manager, extensions_list: Optional[str] = None
-):
+def create_registry_with_db_manager(db_manager, extensions_list: Optional[str] = None):
     """Create a ModelRegistry with the proper DatabaseManager attached.
 
     Sentinel: ``extensions_list=None`` means "fall back to APP_EXTENSIONS";
@@ -341,9 +332,13 @@ def install_sighup_handler(app: FastAPI) -> None:
         logger.info("SIGHUP received -- computing extension registry diff")
         try:
             registry = getattr(app.state, "model_registry", None)
-            ext_registry = getattr(registry, "extension_registry", None) if registry else None
+            ext_registry = (
+                getattr(registry, "extension_registry", None) if registry else None
+            )
             if ext_registry is None:
-                logger.warning("SIGHUP: no extension registry on app.state; exiting anyway")
+                logger.warning(
+                    "SIGHUP: no extension registry on app.state; exiting anyway"
+                )
             else:
                 _, diff = rebuild_registry(ext_registry, run_migrations=True)
                 logger.info(f"SIGHUP: {diff.summary()}")
@@ -394,11 +389,8 @@ def build_app(model_registry: ModelRegistry):
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         """Handles startup and shutdown events for each worker"""
-        # Get the database manager from app state (attached during app creation)
         db_mgr = getattr(app.state, "DB", None)
         if db_mgr is None:
-            # Fallback: create a default instance if not attached
-            # Use test prefix if running in pytest to avoid touching production database
             import os
 
             db_prefix = (
@@ -409,12 +401,54 @@ def build_app(model_registry: ModelRegistry):
             db_mgr = DatabaseManager(db_prefix)
             db_mgr.init_engine_config()
         db_mgr.init_worker()
-        # Item 16 — federation already ran inside ``ModelRegistry.commit()``;
-        # the FastAPI router from any GQL→REST projection is mounted below
-        # in ``build_app`` so the lifespan body has nothing more to do.
+
+        valkey_client = None
+        valkey_uri = getattr(app.state, "_valkey_uri", None)
+        if valkey_uri:
+            try:
+                from zephyrex.extensions.database_memory.PRV_Valkey import PRV_Valkey
+
+                _stub = type("_FrameworkInstance", (), {"api_key": valkey_uri})()
+                valkey_client = PRV_Valkey.connect(_stub)
+                await valkey_client.ping()
+                app.state.valkey = valkey_client
+                _redacted = (
+                    valkey_uri.split("@")[-1] if "@" in valkey_uri else valkey_uri
+                )
+                logger.info("Valkey connected: %s", _redacted)
+
+                from zephyrex.extensions.database_memory.EXT_DatabaseMemory import (
+                    EXT_DatabaseMemory,
+                )
+
+                EXT_DatabaseMemory.wire_framework_backends(valkey_client)
+            except ImportError:
+                logger.warning(
+                    "VALKEY_URI is set but 'redis' package is not installed. "
+                    "Install with: pip install zephyrex[cache]. "
+                    "Falling back to in-memory backends."
+                )
+                valkey_client = None
+            except Exception as exc:
+                logger.warning(
+                    "Valkey connection failed (%s); falling back to in-memory backends",
+                    exc,
+                )
+                valkey_client = None
+
         try:
             yield
         finally:
+            if valkey_client is not None:
+                try:
+                    from zephyrex.extensions.database_memory.PRV_Valkey import (
+                        PRV_Valkey,
+                    )
+
+                    _stub = type("_FrameworkInstance", (), {"api_key": valkey_uri})()
+                    await PRV_Valkey.close(_stub)
+                except Exception as exc:
+                    logger.debug("Valkey close error: %s", exc)
             await db_mgr.close_worker()
 
     # H-4 — gate the OpenAPI surface in production. Unauthenticated docs
@@ -570,15 +604,11 @@ def build_app(model_registry: ModelRegistry):
                     },
                 )
 
-                model_registry = getattr(
-                    request.app.state, "model_registry", None
-                )
+                model_registry = getattr(request.app.state, "model_registry", None)
                 if model_registry is not None:
                     from zephyrex.logic.BLL_Auth import UserManager
 
-                    UserManager._enforce_session_not_revoked(
-                        payload, model_registry
-                    )
+                    UserManager._enforce_session_not_revoked(payload, model_registry)
 
                 user_info = {
                     "user_id": payload.get("sub"),
@@ -1081,6 +1111,54 @@ def build_app(model_registry: ModelRegistry):
 
         mcp_mount = env("MCP_MOUNT_PATH") or "/mcp"
         app.state.mcp = mount_mcp(app, name=env("APP_NAME"), mount_path=mcp_mount)
+    valkey_uri = env("VALKEY_URI").strip()
+    if valkey_uri:
+        _valkey_importable = True
+        try:
+            import redis.asyncio as _redis_check  # noqa: F401
+        except ImportError:
+            logger.warning(
+                "VALKEY_URI is set but 'redis' package is not installed. "
+                "Install with: pip install zephyrex[cache]. "
+                "Falling back to in-memory backends."
+            )
+            _valkey_importable = False
+
+        if _valkey_importable:
+            app.state._valkey_uri = valkey_uri
+
+            @app.get("/health/valkey", tags=["Health"])
+            async def valkey_health():
+                client = getattr(app.state, "valkey", None)
+                if client is None:
+                    return {"status": "DISABLED"}
+                try:
+                    info = await client.info("server")
+                    await client.ping()
+                    return {
+                        "status": "UP",
+                        "version": info.get("redis_version", "unknown"),
+                    }
+                except Exception as exc:
+                    return {"status": "DOWN", "error": str(exc)}
+
+            @app.middleware("http")
+            async def invalidate_response_cache_on_mutation(
+                request: Request, call_next
+            ):
+                response = await call_next(request)
+                if request.method in ("POST", "PUT", "PATCH", "DELETE"):
+                    try:
+                        from zephyrex.lib.ResponseCache import get_response_cache
+
+                        rcache = get_response_cache()
+                        if rcache is not None and response.status_code < 400:
+                            path_prefix = "/".join(request.url.path.split("/")[:4])
+                            await rcache.invalidate_prefix(path_prefix)
+                    except Exception:
+                        pass
+                return response
+
     app.state.model_registry = model_registry
     app.state.federation_report = federation_report
 
@@ -1102,6 +1180,50 @@ def build_app(model_registry: ModelRegistry):
     # in-process ``rebuild_registry`` helper directly.
     # ------------------------------------------------------------------
     install_sighup_handler(app)
+
+    # ------------------------------------------------------------------
+    # 418 I'm a Teapot — honeypot trap for scanner probes.
+    #
+    # Routes that no legitimate client would hit but automated scanners
+    # always try. Returns 418 instead of 404 so: (a) the scanner knows
+    # it's been fingerprinted, (b) real 404s stay meaningful, (c) the
+    # audit log can alert on 418s as a scanner-presence signal.
+    # ------------------------------------------------------------------
+    _HONEYPOT_PATHS = [
+        "/wp-admin", "/wp-login.php", "/wp-content",
+        "/administrator", "/admin.php", "/phpmyadmin",
+        "/.env", "/.git/config", "/.git/HEAD",
+        "/config.php", "/info.php", "/phpinfo.php",
+        "/server-status", "/server-info",
+        "/actuator", "/actuator/health", "/actuator/env",
+        "/console", "/debug/vars", "/debug/pprof",
+        "/elmah.axd", "/trace.axd",
+        "/api/v1/pods", "/api/v1/nodes",
+        "/_all_dbs", "/_config",
+        "/solr/admin", "/manager/html",
+    ]
+
+    async def _honeypot_response(request: Request):
+        logger.warning(
+            "Honeypot probe: %s %s from %s",
+            request.method,
+            request.url.path,
+            request.client.host if request.client else "unknown",
+        )
+        return JSONResponse(status_code=418, content={
+            "detail": "I'm a teapot",
+            "brew": "short and stout",
+            "tip_me_over": "pour me out",
+            "documentation": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        })
+
+    for _hp_path in _HONEYPOT_PATHS:
+        app.add_api_route(
+            _hp_path,
+            _honeypot_response,
+            methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"],
+            include_in_schema=False,
+        )
 
     # Test all models for PydanticUndefinedType before OpenAPI generation
     def test_all_models_for_undefined_types():

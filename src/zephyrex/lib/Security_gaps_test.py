@@ -99,12 +99,17 @@ class TestRouteInventory:
         return instance(extensions="", db_prefix=f"inv.{worker}.{os.getpid()}")
 
     @pytest.mark.security
-    def test_no_debug_endpoints(self, app):
-        """No debug/admin/internal endpoints should be mounted."""
-        routes = [r.path for r in app.routes if hasattr(r, "path")]
-        for path in routes:
-            low = path.lower()
-            assert "/debug" not in low, f"Debug endpoint exposed: {path}"
+    def test_no_debug_endpoints_serve_real_data(self, app):
+        """Debug/admin paths must either not exist or return 418 (honeypot)."""
+        from starlette.testclient import TestClient
+
+        client = TestClient(app)
+        for path in ["/debug/vars", "/debug/pprof", "/console"]:
+            response = client.get(path)
+            assert response.status_code in (404, 418), (
+                f"Debug endpoint {path} returned {response.status_code}; "
+                "must be 404 (absent) or 418 (honeypot)"
+            )
 
 
 # ------------------------------------------------------------------ #
@@ -2147,6 +2152,35 @@ class TestDeepAuditPagination:
             assert response.status_code != 500, (
                 f"Pagination {params} caused 500"
             )
+
+
+class TestHoneypotTrap:
+    @pytest.mark.security
+    @pytest.mark.parametrize("path", [
+        "/wp-admin", "/wp-login.php", "/.env", "/.git/config",
+        "/phpmyadmin", "/actuator", "/actuator/env",
+        "/console", "/debug/vars", "/api/v1/pods",
+    ])
+    def test_honeypot_returns_418(self, server, path):
+        """Scanner-probe paths must return 418 I'm a Teapot."""
+        response = server.get(path)
+        assert response.status_code == 418, (
+            f"Honeypot path {path} returned {response.status_code}; expected 418"
+        )
+        body = response.json()
+        assert body["detail"] == "I'm a teapot"
+        assert "dQw4w9WgXcQ" in body.get("documentation", "")
+
+    @pytest.mark.security
+    def test_real_404_not_418(self, server, admin_a):
+        """Legitimate missing paths must return 404, not 418."""
+        response = server.get(
+            f"/v1/nonexistent-{uuid.uuid4().hex}",
+            headers={"Authorization": f"Bearer {admin_a.jwt}"},
+        )
+        assert response.status_code in (404, 405), (
+            f"Real missing path got {response.status_code}; expected 404"
+        )
 
 
 class TestDeepAuditSortBy:
