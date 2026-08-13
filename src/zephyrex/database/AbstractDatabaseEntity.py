@@ -25,6 +25,7 @@ from zephyrex.database.StaticPermissions import (
     check_permission,
     gen_not_found_msg,
     generate_permission_filter,
+    user_has_permission,
     validate_columns,
 )
 from zephyrex.lib.Environment import env
@@ -727,53 +728,17 @@ class BaseMixin:
 
     @classmethod
     def user_has_admin_access(cls, user_id, id, db, db_manager: DatabaseManager):
-        """
-        Check admin access using the optimized DB-level check (user_can_edit).
-        (Consider removing this if not directly used elsewhere)
-
-        Args:
-            user_id: The ID of the user to check
-            id: The ID of the record to check
-            model_registry: ModelRegistry instance for database access
-
-        Returns:
-            bool: True if user has admin access, False otherwise
-        """
-        # Use the provided database session and manager
-        # db parameter is already provided
-        declarative_base = db_manager.Base
-
-        has_access = check_permission(user_id, cls, id, db, declarative_base, "admin")
-        return has_access[0].value == "granted"
+        """Check if a user has admin (edit) access for a record."""
+        return user_has_permission(
+            user_id, cls, id, db, PermissionType.EDIT, db_manager=db_manager
+        )
 
     @classmethod
     def user_has_all_access(cls, user_id, id, db, db_manager: DatabaseManager):
-        """
-        Check highest level access using the optimized DB-level check (user_can_share).
-        (Consider removing this if not directly used elsewhere)
-
-        Args:
-            user_id: The ID of the user to check
-            id: The ID of the record to check
-            model_registry: ModelRegistry instance for database access
-
-        Returns:
-            bool: True if user has all access, False otherwise
-        """
-        from zephyrex.database.StaticPermissions import (
-            PermissionResult,
-            PermissionType,
-            check_permission,
+        """Check if a user has full (share) access for a record."""
+        return user_has_permission(
+            user_id, cls, id, db, PermissionType.SHARE, db_manager=db_manager
         )
-
-        # Use the provided database session and manager
-        # db parameter is already provided
-        declarative_base = db_manager.Base
-
-        result, _ = check_permission(
-            user_id, cls, id, db, declarative_base, PermissionType.SHARE
-        )
-        return result == PermissionResult.GRANTED
 
     @classmethod
     def user_can_create(cls, user_id, db, team_id=None, minimum_role="user", **kwargs):

@@ -1654,25 +1654,34 @@ def generate_permission_filter(
     return final_filter
 
 
-def user_can_edit(
-    user_id, record_cls, record_id, db, declarative_base=None, db_manager=None
-):
+def user_has_permission(
+    user_id,
+    record_cls,
+    record_id,
+    db,
+    permission_type: PermissionType,
+    declarative_base=None,
+    db_manager=None,
+) -> bool:
     """
-    Check if a user has edit permission for a record.
-    This function exists for backward compatibility and delegates to check_permission.
+    Check if a user has a specific permission for a record.
+
+    This is the single parameterized entry point for permission-type checks.
+    ``user_can_edit``, ``user_can_share``, and the ADE ``user_has_*`` helpers
+    all delegate here.
 
     Args:
         user_id: The ID of the user requesting access
         record_cls: The model class
         record_id: The ID of the record to check
         db: Database session
+        permission_type: The PermissionType to check (EDIT, SHARE, etc.)
         declarative_base: The declarative base to use for accessing SQLAlchemy models
         db_manager: Database manager instance (optional, takes precedence over declarative_base)
 
     Returns:
-        bool: True if user has edit permission, False otherwise
+        bool: True if user has the requested permission, False otherwise
     """
-    # Use db_manager if provided, otherwise fall back to declarative_base
     if db_manager and hasattr(db_manager, "Base"):
         declarative_base = db_manager.Base
     elif declarative_base is None:
@@ -1681,41 +1690,27 @@ def user_can_edit(
         )
 
     result, _ = check_permission(
-        user_id, record_cls, record_id, db, declarative_base, PermissionType.EDIT
+        user_id, record_cls, record_id, db, declarative_base, permission_type
     )
     return result == PermissionResult.GRANTED
+
+
+def user_can_edit(
+    user_id, record_cls, record_id, db, declarative_base=None, db_manager=None
+):
+    """Check if a user has edit permission for a record."""
+    return user_has_permission(
+        user_id, record_cls, record_id, db, PermissionType.EDIT, declarative_base, db_manager
+    )
 
 
 def user_can_share(
     user_id, record_cls, record_id, db, declarative_base=None, db_manager=None
 ):
-    """
-    Check if a user has share permission for a record.
-    This function exists for backward compatibility and delegates to check_permission.
-
-    Args:
-        user_id: The ID of the user requesting access
-        record_cls: The model class
-        record_id: The ID of the record to check
-        db: Database session
-        declarative_base: The declarative base to use for accessing SQLAlchemy models
-        db_manager: Database manager instance (optional, takes precedence over declarative_base)
-
-    Returns:
-        bool: True if user has share permission, False otherwise
-    """
-    # Use db_manager if provided, otherwise fall back to declarative_base
-    if db_manager and hasattr(db_manager, "Base"):
-        declarative_base = db_manager.Base
-    elif declarative_base is None:
-        raise ValueError(
-            "Either declarative_base or db_manager is required for permission checks"
-        )
-
-    result, _ = check_permission(
-        user_id, record_cls, record_id, db, declarative_base, PermissionType.SHARE
+    """Check if a user has share permission for a record."""
+    return user_has_permission(
+        user_id, record_cls, record_id, db, PermissionType.SHARE, declarative_base, db_manager
     )
-    return result == PermissionResult.GRANTED
 
 
 def auto_determine_create_permission_reference(cls):
