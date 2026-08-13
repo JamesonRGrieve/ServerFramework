@@ -433,8 +433,14 @@ class AbstractSDKHandler(ABC):
         data: Any = None,
         params: Dict[str, Any] = None,
         headers: Dict[str, str] = None,
+        client: Any = None,
     ) -> Dict[str, Any]:
-        """Make HTTP request using httpx.
+        """Make an HTTP request, optionally using a caller-supplied *client*.
+
+        When *client* is ``None`` a fresh ``httpx.Client`` is created for
+        the call (the default production path).  When a *client* is
+        provided (e.g. a ``TestClient``), it is used directly without
+        ``timeout`` / ``verify`` kwargs that test clients do not accept.
 
         Args:
             method: HTTP method
@@ -442,10 +448,12 @@ class AbstractSDKHandler(ABC):
             data: Request data
             params: Query parameters
             headers: Additional headers
+            client: Optional pre-built HTTP client (e.g. for testing)
 
         Returns:
             Response data
         """
+        use_custom = client is not None
         url = self._build_url(endpoint, params)
         request_headers = self._get_headers()
         if headers:
@@ -453,11 +461,14 @@ class AbstractSDKHandler(ABC):
 
         self.logger.debug(f"Making {method} request to {url}")
 
-        request_kwargs = {
+        request_kwargs: Dict[str, Any] = {
             "headers": request_headers,
-            "timeout": self.timeout,
-            "verify": self.verify_ssl,
         }
+
+        # Only pass transport-level options to real httpx clients.
+        if not use_custom:
+            request_kwargs["timeout"] = self.timeout
+            request_kwargs["verify"] = self.verify_ssl
 
         if data is not None:
             if isinstance(data, (dict, list)):
@@ -465,83 +476,23 @@ class AbstractSDKHandler(ABC):
             else:
                 request_kwargs["data"] = data
 
-        try:
-            with httpx.Client() as client:
-                response = client.request(method, url, **request_kwargs)
-
-            # Log response status
-            self.logger.debug(f"Response status: {response.status_code}")
-
-            # Check for errors
-            if not (200 <= response.status_code < 300):
-                self._handle_response_error(response)
-
-            # Return response data
-            if response.status_code == 204:  # No content
-                return {}
-
-            result = self._format_response(response)
-            self.logger.debug(f"Response data: {result}")
-            return result
-
-        except Exception as e:
-            if isinstance(e, SDKException):
-                raise
-            self.logger.error(f"Request failed: {str(e)}")
-            raise SDKException(f"Request failed: {str(e)}")
-
-    def _make_request_with_custom_client(
-        self,
-        method: str,
-        endpoint: str,
-        data: Any = None,
-        params: Dict[str, Any] = None,
-        headers: Dict[str, str] = None,
-    ) -> Dict[str, Any]:
-        """Make HTTP request using custom client (for testing).
-
-        Args:
-            method: HTTP method
-            endpoint: API endpoint
-            data: Request data
-            params: Query parameters
-            headers: Additional headers
-
-        Returns:
-            Response data
-        """
-        url = self._build_url(endpoint, params)
-        request_headers = self._get_headers()
-        if headers:
-            request_headers.update(headers)
-
-        self.logger.debug(f"Making {method} request to {url} with custom client")
-
-        request_kwargs = {
-            "headers": request_headers,
-        }
-
-        if data is not None:
-            if isinstance(data, (dict, list)):
-                request_kwargs["json"] = data
-            else:
-                request_kwargs["data"] = data
-
-        if params:
+        # Custom clients (e.g. TestClient) expect params in request_kwargs
+        # rather than pre-encoded into the URL.
+        if use_custom and params:
             request_kwargs["params"] = params
 
         try:
-            # Make request using custom client
-            response = self.http_client.request(method, url, **request_kwargs)
+            if use_custom:
+                response = client.request(method, url, **request_kwargs)
+            else:
+                with httpx.Client() as http_client:
+                    response = http_client.request(method, url, **request_kwargs)
 
-            # Log response status
             self.logger.debug(f"Response status: {response.status_code}")
 
-            # Check for errors
             if not (200 <= response.status_code < 300):
                 self._handle_response_error(response)
 
-            # Return response data
             if response.status_code == 204:  # No content
                 return {}
 
@@ -583,12 +534,9 @@ class AbstractSDKHandler(ABC):
             ResourceNotFoundError: If the resource is not found
             ValidationError: If request validation fails
         """
-        if self.http_client:
-            return self._make_request_with_custom_client(
-                method, endpoint, data, query_params, headers
-            )
-        else:
-            return self._make_request(method, endpoint, data, query_params, headers)
+        return self._make_request(
+            method, endpoint, data, query_params, headers, client=self.http_client
+        )
 
     # Convenience methods for common HTTP operations
     def get(
