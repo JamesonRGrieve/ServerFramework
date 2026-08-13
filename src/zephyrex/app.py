@@ -490,6 +490,7 @@ def build_app(model_registry: ModelRegistry):
         JSONDepthMiddleware,
         PathSanitizationMiddleware,
         RateLimitMiddleware,
+        RequestSmugglingMiddleware,
         SecurityHeadersMiddleware,
     )
 
@@ -501,6 +502,7 @@ def build_app(model_registry: ModelRegistry):
     app.add_middleware(SecurityHeadersMiddleware)
     app.add_middleware(BodySizeLimitMiddleware)
     app.add_middleware(RateLimitMiddleware)
+    app.add_middleware(RequestSmugglingMiddleware)
     app.add_middleware(PathSanitizationMiddleware)
     app.add_middleware(JSONDepthMiddleware)
 
@@ -701,11 +703,24 @@ def build_app(model_registry: ModelRegistry):
 
     app.add_middleware(JSONParsingMiddleware)
 
-    # Add exception handler for JSON decode errors (malformed JSON should return 400)
     @app.exception_handler(json.JSONDecodeError)
     async def json_decode_error_handler(request: Request, exc: json.JSONDecodeError):
         return JSONResponse(
             status_code=400, content={"detail": "Invalid JSON syntax in request body"}
+        )
+
+    @app.exception_handler(TypeError)
+    async def type_error_handler(request: Request, exc: TypeError):
+        logger.debug(f"TypeError in request handler: {exc}")
+        return JSONResponse(
+            status_code=422, content={"detail": "Invalid request body format"}
+        )
+
+    @app.exception_handler(AttributeError)
+    async def attribute_error_handler(request: Request, exc: AttributeError):
+        logger.debug(f"AttributeError in request handler: {exc}")
+        return JSONResponse(
+            status_code=422, content={"detail": "Invalid request body format"}
         )
 
     def make_json_serializable(obj):

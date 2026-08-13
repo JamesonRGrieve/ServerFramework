@@ -25,6 +25,7 @@ on `LockoutTracker`.
 from __future__ import annotations
 
 import ipaddress
+import json
 import os
 import re
 import time
@@ -289,6 +290,51 @@ class BodySizeLimitMiddleware:
 
 
 MAX_JSON_DEPTH: int = 32
+
+
+class RequestSmugglingMiddleware:
+    """Reject requests that set both Transfer-Encoding and Content-Length.
+
+    HTTP request smuggling exploits front-end/back-end disagreement on
+    which header determines the body boundary. Rejecting the ambiguity
+    eliminates the attack surface.
+    """
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+
+        has_te = False
+        has_cl = False
+        for raw_name, _ in scope.get("headers") or []:
+            name = raw_name.decode("latin-1").lower()
+            if name == "transfer-encoding":
+                has_te = True
+            elif name == "content-length":
+                has_cl = True
+
+        if has_te and has_cl:
+            body = json.dumps(
+                {"detail": "Conflicting Transfer-Encoding and Content-Length headers"}
+            ).encode("utf-8")
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 400,
+                    "headers": [
+                        (b"content-type", b"application/json"),
+                        (b"content-length", str(len(body)).encode("ascii")),
+                    ],
+                }
+            )
+            await send({"type": "http.response.body", "body": body})
+            return
+
+        await self.app(scope, receive, send)
 
 
 class PathSanitizationMiddleware:

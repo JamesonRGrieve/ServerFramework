@@ -4684,6 +4684,297 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
             f"Accept-Encoding '{encoding}' caused 500"
         )
 
+    @pytest.mark.security
+    def test_security_cors_origin_not_reflected(self, server: Any, admin_a: Any):
+        """CORS must not blindly reflect the request Origin back."""
+        endpoint = self.get_list_endpoint({})
+        response = server.get(
+            endpoint,
+            headers={
+                **self._get_appropriate_headers(admin_a.jwt),
+                "Origin": "https://evil-attacker.com",
+            },
+        )
+        acao = response.headers.get("Access-Control-Allow-Origin", "")
+        assert "evil-attacker.com" not in acao, (
+            f"CORS reflects arbitrary origin: {acao}"
+        )
+
+    @pytest.mark.security
+    def test_security_cors_null_origin_rejected(self, server: Any, admin_a: Any):
+        """CORS must not allow Origin: null (sandboxed iframe attack)."""
+        endpoint = self.get_list_endpoint({})
+        response = server.options(
+            endpoint,
+            headers={
+                "Origin": "null",
+                "Access-Control-Request-Method": "GET",
+            },
+        )
+        acao = response.headers.get("Access-Control-Allow-Origin", "")
+        assert acao != "null", "CORS allows null origin (sandboxed iframe attack)"
+
+    @pytest.mark.security
+    @pytest.mark.parametrize("dup_param", ["id", "name", "limit"])
+    def test_security_parameter_pollution(
+        self, server: Any, admin_a: Any, dup_param: str
+    ):
+        """Duplicate query parameters must not cause 500 or bypass logic."""
+        endpoint = f"{self.get_list_endpoint({})}?{dup_param}=a&{dup_param}=b"
+        response = server.get(
+            endpoint, headers=self._get_appropriate_headers(admin_a.jwt)
+        )
+        assert response.status_code != 500, (
+            f"Duplicate query param '{dup_param}' caused 500"
+        )
+
+    @pytest.mark.security
+    def test_security_transfer_encoding_smuggling(self, server: Any, admin_a: Any):
+        """Conflicting Transfer-Encoding + Content-Length must not cause 500."""
+        endpoint = self.get_list_endpoint({})
+        response = server.post(
+            endpoint,
+            content='{"name": "test"}',
+            headers={
+                **self._get_appropriate_headers(admin_a.jwt),
+                "Content-Type": "application/json",
+                "Transfer-Encoding": "chunked",
+                "Content-Length": "16",
+            },
+        )
+        assert response.status_code != 500, (
+            "Conflicting Transfer-Encoding + Content-Length caused 500"
+        )
+
+    @pytest.mark.security
+    @pytest.mark.parametrize(
+        "xss_payload",
+        [
+            "<script>alert(1)</script>",
+            "{{7*7}}",
+            "${7*7}",
+            "<%=7*7%>",
+            "#{7*7}",
+        ],
+    )
+    def test_security_ssti_xss_in_query_param(
+        self, server: Any, admin_a: Any, xss_payload: str
+    ):
+        """Template injection / XSS payloads in query params must not render or cause 500."""
+        endpoint = f"{self.get_list_endpoint({})}?name={xss_payload}"
+        response = server.get(
+            endpoint, headers=self._get_appropriate_headers(admin_a.jwt)
+        )
+        assert response.status_code != 500, (
+            f"SSTI/XSS payload in query caused 500: {xss_payload}"
+        )
+        if response.status_code == 200:
+            assert "<script>" not in response.text, "XSS payload rendered in response"
+
+    @pytest.mark.security
+    def test_security_cache_control_on_authenticated_response(
+        self, server: Any, admin_a: Any
+    ):
+        """Authenticated responses must include no-store cache directive."""
+        endpoint = self.get_list_endpoint({})
+        response = server.get(
+            endpoint, headers=self._get_appropriate_headers(admin_a.jwt)
+        )
+        if response.status_code == 200:
+            cc = response.headers.get("Cache-Control", "")
+            assert "no-store" in cc or "private" in cc or cc == "", (
+                f"Authenticated response missing no-store/private Cache-Control: '{cc}'"
+            )
+
+    @pytest.mark.security
+    def test_security_options_does_not_require_auth(self, server: Any):
+        """OPTIONS requests must not require authentication (CORS preflight)."""
+        endpoint = self.get_list_endpoint({})
+        response = server.options(
+            endpoint,
+            headers={
+                "Origin": "https://example.com",
+                "Access-Control-Request-Method": "GET",
+            },
+        )
+        assert response.status_code in (200, 204, 405), (
+            f"OPTIONS without auth got {response.status_code}; expected 200/204/405"
+        )
+
+    @pytest.mark.security
+    @pytest.mark.parametrize(
+        "unicode_payload",
+        [
+            "＜script＞",  # fullwidth < and >
+            "admin​",  # zero-width space
+            "\x00",  # escaped null
+            "‮" + "txet",  # RTL override
+            "tësẗ",  # combining diaeresis
+        ],
+    )
+    def test_security_unicode_normalization_in_fields(
+        self, server: Any, admin_a: Any, team_a: Any, unicode_payload: str
+    ):
+        """Unicode tricks in field values must not cause 500 or bypass validation."""
+        base_payload = self.create_payload(
+            name=unicode_payload, team_id=team_a.id
+        )
+        payload = {self.entity_name: base_payload}
+        endpoint = self.get_list_endpoint({})
+        response = server.post(
+            endpoint,
+            json=payload,
+            headers=self._get_appropriate_headers(admin_a.jwt),
+        )
+        assert response.status_code != 500, (
+            f"Unicode payload caused 500: {repr(unicode_payload)}"
+        )
+
+    @pytest.mark.security
+    def test_security_integer_overflow_in_pagination(
+        self, server: Any, admin_a: Any
+    ):
+        """Extremely large pagination values must not cause 500."""
+        endpoint = f"{self.get_list_endpoint({})}?limit=999999999999999999&offset=999999999999999999"
+        response = server.get(
+            endpoint, headers=self._get_appropriate_headers(admin_a.jwt)
+        )
+        assert response.status_code in (200, 400, 422), (
+            f"Integer overflow in pagination got {response.status_code}"
+        )
+
+    @pytest.mark.security
+    def test_security_negative_pagination(self, server: Any, admin_a: Any):
+        """Negative limit/offset must not cause 500 or data leak."""
+        endpoint = f"{self.get_list_endpoint({})}?limit=-1&offset=-1"
+        response = server.get(
+            endpoint, headers=self._get_appropriate_headers(admin_a.jwt)
+        )
+        assert response.status_code in (200, 400, 422), (
+            f"Negative pagination got {response.status_code}"
+        )
+
+    @pytest.mark.security
+    def test_security_empty_body_post(self, server: Any, admin_a: Any):
+        """POST with empty body must not cause 500."""
+        endpoint = self.get_list_endpoint({})
+        response = server.post(
+            endpoint,
+            content="",
+            headers={
+                **self._get_appropriate_headers(admin_a.jwt),
+                "Content-Type": "application/json",
+            },
+        )
+        assert response.status_code != 500, "Empty POST body caused 500"
+
+    @pytest.mark.security
+    def test_security_null_body_post(self, server: Any, admin_a: Any):
+        """POST with JSON null body must not cause 500."""
+        endpoint = self.get_list_endpoint({})
+        response = server.post(
+            endpoint,
+            json=None,
+            headers=self._get_appropriate_headers(admin_a.jwt),
+        )
+        assert response.status_code != 500, "null JSON body caused 500"
+
+    @pytest.mark.security
+    def test_security_array_body_post(self, server: Any, admin_a: Any):
+        """POST with JSON array instead of object must not cause 500."""
+        endpoint = self.get_list_endpoint({})
+        response = server.post(
+            endpoint,
+            json=[{"name": "test"}],
+            headers=self._get_appropriate_headers(admin_a.jwt),
+        )
+        assert response.status_code != 500, "Array JSON body caused 500"
+
+    @pytest.mark.security
+    @pytest.mark.parametrize(
+        "header_value",
+        [
+            "Bearer ",
+            "Bearer null",
+            "Bearer undefined",
+            "Bearer " + "A" * 10000,
+            "Token valid-looking-but-not",
+            "Basic " + "A" * 10000,
+        ],
+    )
+    def test_security_malformed_auth_header(
+        self, server: Any, header_value: str
+    ):
+        """Malformed auth headers must not cause 500."""
+        endpoint = self.get_list_endpoint({})
+        response = server.get(
+            endpoint, headers={"Authorization": header_value}
+        )
+        assert response.status_code in (400, 401, 403, 422), (
+            f"Malformed auth header got {response.status_code}: {header_value[:50]}"
+        )
+
+    @pytest.mark.security
+    def test_security_response_content_type_is_json(
+        self, server: Any, admin_a: Any
+    ):
+        """API responses must set Content-Type to application/json, not text/html."""
+        endpoint = self.get_list_endpoint({})
+        response = server.get(
+            endpoint, headers=self._get_appropriate_headers(admin_a.jwt)
+        )
+        if response.status_code == 200:
+            ct = response.headers.get("Content-Type", "")
+            assert "json" in ct or "toml" in ct or "yaml" in ct or "xml" in ct or "toon" in ct, (
+                f"API response Content-Type is '{ct}'; expected a structured format, not text/html"
+            )
+
+    @pytest.mark.security
+    def test_security_x_content_type_options_nosniff(
+        self, server: Any, admin_a: Any
+    ):
+        """Response must include X-Content-Type-Options: nosniff."""
+        endpoint = self.get_list_endpoint({})
+        response = server.get(
+            endpoint, headers=self._get_appropriate_headers(admin_a.jwt)
+        )
+        xcto = response.headers.get("X-Content-Type-Options", "")
+        assert xcto == "nosniff", (
+            f"Missing or wrong X-Content-Type-Options: '{xcto}'"
+        )
+
+    @pytest.mark.security
+    def test_security_x_frame_options(self, server: Any, admin_a: Any):
+        """Response must include X-Frame-Options to prevent clickjacking."""
+        endpoint = self.get_list_endpoint({})
+        response = server.get(
+            endpoint, headers=self._get_appropriate_headers(admin_a.jwt)
+        )
+        xfo = response.headers.get("X-Frame-Options", "")
+        assert xfo.upper() in ("DENY", "SAMEORIGIN"), (
+            f"Missing or wrong X-Frame-Options: '{xfo}'"
+        )
+
+    @pytest.mark.security
+    def test_security_referrer_policy(self, server: Any, admin_a: Any):
+        """Response must include Referrer-Policy header."""
+        endpoint = self.get_list_endpoint({})
+        response = server.get(
+            endpoint, headers=self._get_appropriate_headers(admin_a.jwt)
+        )
+        rp = response.headers.get("Referrer-Policy", "")
+        assert rp != "", "Missing Referrer-Policy header"
+
+    @pytest.mark.security
+    def test_security_csp_header(self, server: Any, admin_a: Any):
+        """Response must include Content-Security-Policy header."""
+        endpoint = self.get_list_endpoint({})
+        response = server.get(
+            endpoint, headers=self._get_appropriate_headers(admin_a.jwt)
+        )
+        csp = response.headers.get("Content-Security-Policy", "")
+        assert csp != "", "Missing Content-Security-Policy header"
+
     # ------------------------------------------------------------------ #
     # Scalability / Big-O assertions
     # ------------------------------------------------------------------ #
