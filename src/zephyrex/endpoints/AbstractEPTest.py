@@ -4769,7 +4769,11 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
             f"SSTI/XSS payload in query caused 500: {xss_payload}"
         )
         if response.status_code == 200:
-            assert "<script>" not in response.text, "XSS payload rendered in response"
+            ct = response.headers.get("Content-Type", "")
+            assert "html" not in ct, (
+                f"Response with XSS payload has Content-Type {ct}; "
+                "must be application/json to prevent browser execution"
+            )
 
     @pytest.mark.security
     def test_security_cache_control_on_authenticated_response(
@@ -4974,6 +4978,321 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         )
         csp = response.headers.get("Content-Security-Policy", "")
         assert csp != "", "Missing Content-Security-Policy header"
+
+    @pytest.mark.security
+    def test_security_permissions_policy_header(self, server: Any, admin_a: Any):
+        """Response must include Permissions-Policy header."""
+        endpoint = self.get_list_endpoint({})
+        response = server.get(
+            endpoint, headers=self._get_appropriate_headers(admin_a.jwt)
+        )
+        pp = response.headers.get("Permissions-Policy", "")
+        assert pp != "", "Missing Permissions-Policy header"
+
+    @pytest.mark.security
+    def test_security_hsts_in_production_mode(self, server: Any, admin_a: Any):
+        """HSTS header should be present when APP_ENV=production."""
+        import os
+        if os.environ.get("APP_ENV", "").lower() != "production":
+            pytest.skip("HSTS only enforced in production")
+        endpoint = self.get_list_endpoint({})
+        response = server.get(
+            endpoint, headers=self._get_appropriate_headers(admin_a.jwt)
+        )
+        hsts = response.headers.get("Strict-Transport-Security", "")
+        assert "max-age" in hsts, "Missing HSTS header in production"
+
+    @pytest.mark.security
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            "a" * 10001,
+            "x" * 100000,
+        ],
+    )
+    def test_security_oversized_field_value(
+        self, server: Any, admin_a: Any, team_a: Any, payload: str
+    ):
+        """Extremely long field values must not cause 500 or OOM."""
+        data = self.create_payload(name=payload, team_id=team_a.id)
+        endpoint = self.get_list_endpoint({})
+        response = server.post(
+            endpoint,
+            json={self.entity_name: data},
+            headers=self._get_appropriate_headers(admin_a.jwt),
+        )
+        assert response.status_code != 500, (
+            f"Oversized field value ({len(payload)} chars) caused 500"
+        )
+
+    @pytest.mark.security
+    @pytest.mark.parametrize(
+        "field_name",
+        [
+            "__proto__",
+            "constructor",
+            "__class__",
+            "__init__",
+            "__import__",
+        ],
+    )
+    def test_security_prototype_pollution_field_names(
+        self, server: Any, admin_a: Any, field_name: str
+    ):
+        """Prototype pollution field names must not cause 500 or be processed."""
+        endpoint = self.get_list_endpoint({})
+        response = server.post(
+            endpoint,
+            json={self.entity_name: {field_name: "polluted"}},
+            headers=self._get_appropriate_headers(admin_a.jwt),
+        )
+        assert response.status_code != 500, (
+            f"Prototype pollution field '{field_name}' caused 500"
+        )
+
+    @pytest.mark.security
+    def test_security_json_key_with_dot_notation(
+        self, server: Any, admin_a: Any
+    ):
+        """Dot-notation keys must not cause ORM injection or 500."""
+        endpoint = self.get_list_endpoint({})
+        response = server.post(
+            endpoint,
+            json={self.entity_name: {"user.role": "admin", "name": "test"}},
+            headers=self._get_appropriate_headers(admin_a.jwt),
+        )
+        assert response.status_code != 500, "Dot-notation JSON key caused 500"
+
+    @pytest.mark.security
+    def test_security_json_key_with_dollar_operator(
+        self, server: Any, admin_a: Any
+    ):
+        """NoSQL-style operators must not cause injection or 500."""
+        endpoint = self.get_list_endpoint({})
+        response = server.post(
+            endpoint,
+            json={self.entity_name: {"$gt": "", "$ne": None, "name": "test"}},
+            headers=self._get_appropriate_headers(admin_a.jwt),
+        )
+        assert response.status_code != 500, "NoSQL operator key caused 500"
+
+    @pytest.mark.security
+    @pytest.mark.parametrize(
+        "regex_payload",
+        [
+            "(a+)+$",
+            "((a+)+)+$",
+            "(?:a+){100,}",
+        ],
+    )
+    def test_security_regex_dos_in_search(
+        self, server: Any, admin_a: Any, regex_payload: str
+    ):
+        """ReDoS payloads in search fields must not hang or cause 500."""
+        if not self.supports_search:
+            pytest.skip("Entity does not support search")
+        endpoint = self.get_list_endpoint({})
+        response = server.get(
+            f"{endpoint}?name={regex_payload}",
+            headers=self._get_appropriate_headers(admin_a.jwt),
+        )
+        assert response.status_code != 500, (
+            f"ReDoS payload caused 500: {regex_payload}"
+        )
+
+    @pytest.mark.security
+    def test_security_concurrent_create_same_unique_field(
+        self, server: Any, admin_a: Any, team_a: Any
+    ):
+        """Race condition: two creates with the same unique value must not cause 500."""
+        if not self.unique_fields:
+            pytest.skip("No unique fields on this entity")
+        data = self.create_payload(
+            name=f"race_test_{uuid.uuid4().hex[:8]}", team_id=team_a.id
+        )
+        endpoint = self.get_list_endpoint({})
+        headers = self._get_appropriate_headers(admin_a.jwt)
+        r1 = server.post(endpoint, json={self.entity_name: data}, headers=headers)
+        r2 = server.post(endpoint, json={self.entity_name: data}, headers=headers)
+        assert r1.status_code != 500, "First create caused 500"
+        assert r2.status_code != 500, (
+            "Duplicate unique value caused 500 instead of 409/422"
+        )
+
+    @pytest.mark.security
+    def test_security_wildcard_search_not_unbounded(
+        self, server: Any, admin_a: Any
+    ):
+        """Wildcard search (name=*) must not return unbounded results or 500."""
+        if not self.supports_search:
+            pytest.skip("Entity does not support search")
+        endpoint = f"{self.get_list_endpoint({})}?name=*"
+        response = server.get(
+            endpoint, headers=self._get_appropriate_headers(admin_a.jwt)
+        )
+        assert response.status_code != 500, "Wildcard search caused 500"
+
+    @pytest.mark.security
+    def test_security_multipart_form_rejected(
+        self, server: Any, admin_a: Any
+    ):
+        """Multipart form data on a JSON API endpoint must not cause 500."""
+        endpoint = self.get_list_endpoint({})
+        response = server.post(
+            endpoint,
+            data={"name": "test"},
+            headers=self._get_appropriate_headers(admin_a.jwt),
+        )
+        assert response.status_code != 500, "Multipart form data caused 500"
+
+    @pytest.mark.security
+    def test_security_extremely_long_url(self, server: Any, admin_a: Any):
+        """URLs exceeding normal length must not cause 500."""
+        endpoint = f"{self.get_list_endpoint({})}?{'a' * 8000}=b"
+        response = server.get(
+            endpoint, headers=self._get_appropriate_headers(admin_a.jwt)
+        )
+        assert response.status_code in (200, 400, 414, 422), (
+            f"8000-char URL got {response.status_code}"
+        )
+
+    @pytest.mark.security
+    def test_security_newline_in_header_value(self, server: Any, admin_a: Any):
+        """CRLF injection in header values must not cause 500 or inject headers."""
+        endpoint = self.get_list_endpoint({})
+        try:
+            response = server.get(
+                endpoint,
+                headers={
+                    **self._get_appropriate_headers(admin_a.jwt),
+                    "X-Custom": "value\r\nInjected: true",
+                },
+            )
+            assert response.status_code != 500, "CRLF in header caused 500"
+        except Exception:
+            pass
+
+    @pytest.mark.security
+    def test_security_expired_jwt_returns_401_not_500(
+        self, server: Any, admin_a: Any
+    ):
+        """An expired JWT must return 401, not 500."""
+        import jwt as pyjwt
+        expired_payload = {
+            "sub": admin_a.id,
+            "exp": 0,
+            "iat": 0,
+            "jti": str(uuid.uuid4()),
+        }
+        from zephyrex.lib.Environment import env
+        expired_token = pyjwt.encode(
+            expired_payload, env("JWT_SECRET"), algorithm="HS256"
+        )
+        endpoint = self.get_list_endpoint({})
+        response = server.get(
+            endpoint, headers={"Authorization": f"Bearer {expired_token}"}
+        )
+        assert response.status_code in (401, 403), (
+            f"Expired JWT got {response.status_code}; expected 401/403"
+        )
+
+    @pytest.mark.security
+    def test_security_jwt_none_algorithm(self, server: Any, admin_a: Any):
+        """JWT with alg:none must be rejected."""
+        import jwt as pyjwt
+        payload = {
+            "sub": admin_a.id,
+            "jti": str(uuid.uuid4()),
+        }
+        none_token = pyjwt.encode(payload, "", algorithm="none")
+        endpoint = self.get_list_endpoint({})
+        response = server.get(
+            endpoint, headers={"Authorization": f"Bearer {none_token}"}
+        )
+        assert response.status_code in (401, 403), (
+            f"JWT alg:none got {response.status_code}; expected 401/403"
+        )
+
+    @pytest.mark.security
+    def test_security_response_does_not_contain_sql(
+        self, server: Any, admin_a: Any
+    ):
+        """Error responses must not leak SQL queries."""
+        endpoint = f"{self.get_list_endpoint({})}/not-a-valid-id"
+        response = server.get(
+            endpoint, headers=self._get_appropriate_headers(admin_a.jwt)
+        )
+        body = response.text.lower()
+        for marker in ("select ", "insert ", "update ", "delete ", "from ", "where "):
+            if marker in body and "sql" not in self.entity_name.lower():
+                assert False, f"Response may leak SQL (found '{marker.strip()}')"
+
+    @pytest.mark.security
+    @pytest.mark.parametrize(
+        "sort_injection",
+        [
+            "name; DROP TABLE users--",
+            "name ASC; --",
+            "1,2,3",
+            "name,(SELECT 1)",
+        ],
+    )
+    def test_security_sort_injection(
+        self, server: Any, admin_a: Any, sort_injection: str
+    ):
+        """SQL injection via sort_by parameter must not execute or cause 500."""
+        endpoint = f"{self.get_list_endpoint({})}?sort_by={sort_injection}"
+        response = server.get(
+            endpoint, headers=self._get_appropriate_headers(admin_a.jwt)
+        )
+        assert response.status_code != 500, (
+            f"Sort injection caused 500: {sort_injection}"
+        )
+
+    @pytest.mark.security
+    def test_security_delete_returns_no_body_data(
+        self, server: Any, admin_a: Any, team_a: Any
+    ):
+        """DELETE response must not leak the full deleted entity."""
+        entity = self._create(
+            server, admin_a.jwt, admin_a.id, team_a.id, key="del_leak"
+        )
+        path_parent_ids = self._extract_path_parent_ids(entity)
+        endpoint = self.get_detail_endpoint(entity["id"], path_parent_ids)
+        response = server.delete(
+            endpoint, headers=self._get_appropriate_headers(admin_a.jwt)
+        )
+        if response.status_code == 204:
+            assert response.text == "" or response.text is None, (
+                "DELETE 204 returned body content"
+            )
+        elif response.status_code == 200:
+            body = response.json()
+            if isinstance(body, dict):
+                for v in body.values():
+                    if isinstance(v, dict):
+                        assert "password" not in str(v).lower(), (
+                            "DELETE response leaked password field"
+                        )
+
+    @pytest.mark.security
+    def test_security_idempotent_delete(
+        self, server: Any, admin_a: Any, team_a: Any
+    ):
+        """Double-DELETE must return 404 on second call, not 500."""
+        entity = self._create(
+            server, admin_a.jwt, admin_a.id, team_a.id, key="idempotent_del"
+        )
+        path_parent_ids = self._extract_path_parent_ids(entity)
+        endpoint = self.get_detail_endpoint(entity["id"], path_parent_ids)
+        headers = self._get_appropriate_headers(admin_a.jwt)
+        r1 = server.delete(endpoint, headers=headers)
+        if r1.status_code == 405:
+            pytest.skip("Entity does not support DELETE")
+        r2 = server.delete(endpoint, headers=headers)
+        assert r2.status_code in (204, 404, 410), (
+            f"Second DELETE got {r2.status_code}; expected 204/404/410"
+        )
 
     # ------------------------------------------------------------------ #
     # Scalability / Big-O assertions

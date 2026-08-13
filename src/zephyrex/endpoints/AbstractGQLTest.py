@@ -2154,3 +2154,125 @@ class AbstractGraphQLTest:
             assert marker not in body, (
                 f"GQL error leaks stack trace (found '{marker}')"
             )
+
+    @pytest.mark.security
+    def test_GQL_security_mutation_with_extra_fields(self, server: Any, admin_a: Any):
+        """GQL mutation with unknown/forbidden fields must not cause 500."""
+        singular = self._gql_singular_name
+        mutation_name = f"create{stringcase.pascalcase(singular)}"
+        mutation = f'''mutation {{ {mutation_name}(input: {{
+            name: "test", __proto__: "polluted", password_hash: "hacked"
+        }}) {{ id }} }}'''
+        headers = self._get_appropriate_headers(
+            admin_a.jwt, api_key=env("ROOT_API_KEY") if self.system_entity else None
+        )
+        response = server.post("/graphql", json={"query": mutation}, headers=headers)
+        assert response.status_code != 500, "GQL mutation with extra fields caused 500"
+
+    @pytest.mark.security
+    def test_GQL_security_query_with_sqli_in_variable(
+        self, server: Any, admin_a: Any
+    ):
+        """SQL injection in GQL variables must not execute."""
+        singular = self._gql_singular_name
+        query = f'query($id: String!) {{ {singular}(id: $id) {{ id }} }}'
+        headers = self._get_appropriate_headers(
+            admin_a.jwt, api_key=env("ROOT_API_KEY") if self.system_entity else None
+        )
+        response = server.post(
+            "/graphql",
+            json={
+                "query": query,
+                "variables": {"id": "' OR 1=1; DROP TABLE users--"},
+            },
+            headers=headers,
+        )
+        assert response.status_code != 500, "SQLi in GQL variable caused 500"
+
+    @pytest.mark.security
+    def test_GQL_security_oversized_query_string(self, server: Any, admin_a: Any):
+        """Extremely large GQL query must not cause OOM or 500."""
+        singular = self._gql_singular_name
+        padding = " ".join(f"field{i}: id" for i in range(1000))
+        query = f'{{ {singular}(id: "00000000-0000-0000-0000-000000000000") {{ {padding} }} }}'
+        headers = self._get_appropriate_headers(
+            admin_a.jwt, api_key=env("ROOT_API_KEY") if self.system_entity else None
+        )
+        response = server.post("/graphql", json={"query": query}, headers=headers)
+        assert response.status_code != 500, "Oversized GQL query caused 500"
+
+    @pytest.mark.security
+    def test_GQL_security_mutation_xss_in_input(self, server: Any, admin_a: Any):
+        """XSS payloads in GQL mutation input must not render or cause 500."""
+        singular = self._gql_singular_name
+        mutation_name = f"create{stringcase.pascalcase(singular)}"
+        mutation = f'''mutation {{ {mutation_name}(input: {{
+            name: "<script>alert(1)</script>"
+        }}) {{ id name }} }}'''
+        headers = self._get_appropriate_headers(
+            admin_a.jwt, api_key=env("ROOT_API_KEY") if self.system_entity else None
+        )
+        response = server.post("/graphql", json={"query": mutation}, headers=headers)
+        assert response.status_code != 500, "XSS in GQL mutation caused 500"
+        if response.status_code == 200:
+            ct = response.headers.get("Content-Type", "")
+            assert "html" not in ct, (
+                f"GQL response with XSS payload has Content-Type {ct}; "
+                "must be application/json to prevent browser execution"
+            )
+
+    @pytest.mark.security
+    def test_GQL_security_null_variable(self, server: Any, admin_a: Any):
+        """Null values in GQL variables must not cause 500."""
+        singular = self._gql_singular_name
+        query = f'query($id: String) {{ {singular}(id: $id) {{ id }} }}'
+        headers = self._get_appropriate_headers(
+            admin_a.jwt, api_key=env("ROOT_API_KEY") if self.system_entity else None
+        )
+        response = server.post(
+            "/graphql",
+            json={"query": query, "variables": {"id": None}},
+            headers=headers,
+        )
+        assert response.status_code != 500, "Null GQL variable caused 500"
+
+    @pytest.mark.security
+    def test_GQL_security_empty_query(self, server: Any, admin_a: Any):
+        """Empty GQL query must not cause 500."""
+        headers = self._get_appropriate_headers(
+            admin_a.jwt, api_key=env("ROOT_API_KEY") if self.system_entity else None
+        )
+        response = server.post("/graphql", json={"query": ""}, headers=headers)
+        assert response.status_code != 500, "Empty GQL query caused 500"
+
+    @pytest.mark.security
+    def test_GQL_security_malformed_json_body(self, server: Any, admin_a: Any):
+        """Malformed JSON in GQL request must not cause 500."""
+        headers = self._get_appropriate_headers(
+            admin_a.jwt, api_key=env("ROOT_API_KEY") if self.system_entity else None
+        )
+        response = server.post(
+            "/graphql",
+            content="not valid json {{{",
+            headers={**headers, "Content-Type": "application/json"},
+        )
+        assert response.status_code in (400, 422), (
+            f"Malformed JSON to /graphql got {response.status_code}"
+        )
+
+    @pytest.mark.security
+    def test_GQL_security_response_does_not_leak_sql(
+        self, server: Any, admin_a: Any
+    ):
+        """GQL error responses must not contain SQL fragments."""
+        singular = self._gql_singular_name
+        query = f'{{ {singular}(id: "invalid\'; DROP TABLE--") {{ id }} }}'
+        headers = self._get_appropriate_headers(
+            admin_a.jwt, api_key=env("ROOT_API_KEY") if self.system_entity else None
+        )
+        response = server.post("/graphql", json={"query": query}, headers=headers)
+        body = response.text.lower()
+        for marker in ("select ", "insert ", "from ", "where ", "drop "):
+            assert marker not in body or "graphql" in body, (
+                f"GQL error may leak SQL (found '{marker.strip()}')"
+            )

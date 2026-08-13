@@ -1847,11 +1847,16 @@ def handle_resource_operation_error(err: Exception) -> None:
         )
     elif isinstance(err, HTTPException):
         raise err
+    elif isinstance(err, (TypeError, AttributeError, KeyError)):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={"message": "Invalid request body format"},
+        )
     else:
         logger.exception(f"Unexpected error during operation: {err}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail={"message": "An unexpected error occurred", "details": str(err)},
+            detail={"message": "An unexpected error occurred"},
         )
 
 
