@@ -4359,14 +4359,12 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
     # ------------------------------------------------------------------ #
     # Scalability / Big-O assertions
     # ------------------------------------------------------------------ #
-    # Subclasses opt in by setting `scalability_profile`. Asserts that the
-    # GET-list endpoint scales within the configured exponent for time,
-    # query count, and peak memory as the underlying entity count grows.
-    # Catches regressions like: list endpoints that materialise full
-    # objects per row, serializers with O(n^2) field walks, or include=
-    # resolvers that fan out one upstream call per item.
+    # Big-O scaling assertion for GET-list endpoints. Runs automatically;
+    # subclasses may override with a custom profile.
 
-    scalability_profile: Optional[ScalabilityProfile] = None
+    scalability_profile: Optional[ScalabilityProfile] = ScalabilityProfile.default(
+        n_values=[3, 8, 20], repetitions=2
+    )
 
     @pytest.mark.parametrize(
         "metric",
@@ -4382,8 +4380,6 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         configured exponent across the request/response stack as row count
         grows. Time covers handler + serialization, query count covers DB
         access pattern (N+1 detector), memory covers payload growth."""
-        if self.scalability_profile is None:
-            pytest.skip("scalability_profile not configured on this test class")
         if metric not in self.scalability_profile.metrics:
             pytest.skip(f"metric {metric.value} not enabled in scalability_profile")
 

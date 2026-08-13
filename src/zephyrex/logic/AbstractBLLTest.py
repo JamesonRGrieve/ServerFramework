@@ -1553,14 +1553,12 @@ class AbstractBLLTest(AbstractTest):
     # ------------------------------------------------------------------ #
     # Scalability / Big-O assertions
     # ------------------------------------------------------------------ #
-    # Subclasses opt in by setting `scalability_profile`. Asserts that
-    # `manager.list()` scales within the configured exponent for time,
-    # query count, and peak memory as the underlying entity count grows.
-    # The Big-O exponent caught here is the one driving the framework's
-    # n-factor SLO: regressions surface as a metric-specific assertion
-    # rather than a single opaque pass/fail.
+    # Big-O scaling assertion for manager.list(). Runs automatically on
+    # every entity; subclasses may override with a custom profile.
 
-    scalability_profile: Optional[ScalabilityProfile] = None
+    scalability_profile: Optional[ScalabilityProfile] = ScalabilityProfile.default(
+        n_values=[3, 8, 20], repetitions=2
+    )
 
     @pytest.mark.parametrize(
         "metric",
@@ -1576,8 +1574,6 @@ class AbstractBLLTest(AbstractTest):
         exponent for time, query count, and peak memory as the BLL surface
         scales out. Catches accidental N+1 in resolver chains, hook-storm
         regressions, and per-entity fan-out."""
-        if self.scalability_profile is None:
-            pytest.skip("scalability_profile not configured on this test class")
         if metric not in self.scalability_profile.metrics:
             pytest.skip(f"metric {metric.value} not enabled in scalability_profile")
 

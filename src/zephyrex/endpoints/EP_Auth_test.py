@@ -12,7 +12,7 @@ from zephyrex.endpoints.AbstractEPTest import AbstractEPTest, HttpMethod, Status
 from zephyrex.lib.Environment import env
 from zephyrex.lib.Logging import logger
 from zephyrex.lib.Pydantic2Strawberry import convert_field_name
-from zephyrex.lib.Scalability import ScalabilityProfile, ScalingMetric
+
 from zephyrex.extensions.auth_invitations.BLL_Invitations import InvitationModel
 from zephyrex.logic.BLL_Auth import RoleModel, TeamModel, UserModel
 
@@ -48,11 +48,6 @@ class TestTeamEndpoints(AbstractEPTest):
         "description": "Updated team description",
     }
     unique_fields = ["name"]
-    scalability_profile = ScalabilityProfile.default(
-        n_values=[3, 8, 20],
-        metrics=[ScalingMetric.TIME, ScalingMetric.QUERY_COUNT, ScalingMetric.MEMORY],
-        repetitions=2,
-    )
 
     def create_payload(
         self,

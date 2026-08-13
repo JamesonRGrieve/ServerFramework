@@ -1219,13 +1219,12 @@ class AbstractDBTest(AbstractTest):
     # ------------------------------------------------------------------ #
     # Scalability / Big-O assertions
     # ------------------------------------------------------------------ #
-    # Subclasses opt in by setting `scalability_profile`. The list-scaling
-    # test seeds N entities at each step and asserts that
-    # sqlalchemy_model.list() scales within the configured Big-O bound for
-    # the chosen metric. Time/query/memory exponents are evaluated
-    # independently so the failure points to the regressing axis.
+    # Big-O scaling assertion for sqlalchemy_model.list(). Runs automatically;
+    # subclasses may override with a custom profile.
 
-    scalability_profile: Optional[ScalabilityProfile] | None = None
+    scalability_profile: Optional[ScalabilityProfile] = ScalabilityProfile.default(
+        n_values=[3, 8, 20], repetitions=2
+    )
 
     @pytest.mark.parametrize(
         "metric",
@@ -1241,8 +1240,6 @@ class AbstractDBTest(AbstractTest):
         configured exponent for time, query count, and peak memory as the
         underlying row count grows. Catches accidental N+1, O(n^2) joins,
         and per-row materialization regressions."""
-        if self.scalability_profile is None:
-            pytest.skip("scalability_profile not configured on this test class")
         if metric not in self.scalability_profile.metrics:
             pytest.skip(f"metric {metric.value} not enabled in scalability_profile")
 

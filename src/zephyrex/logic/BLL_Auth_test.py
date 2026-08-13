@@ -17,7 +17,7 @@ from zephyrex.AbstractTest import (
     SkipThisTest,
 )
 from zephyrex.lib.Environment import env
-from zephyrex.lib.Scalability import ScalabilityProfile, ScalingMetric
+
 from zephyrex.logic.AbstractBLLTest import AbstractBLLTest
 from zephyrex.extensions.acl_rbac.BLL_ACL import PermissionManager
 from zephyrex.extensions.auth_invitations.BLL_Invitations import (
@@ -402,11 +402,6 @@ class TestTeamManager(AbstractBLLTest):
         "description": f"Updated {faker.sentence()}",
     }
     unique_fields = ["name"]
-    scalability_profile = ScalabilityProfile.default(
-        n_values=[3, 8, 20],
-        metrics=[ScalingMetric.TIME, ScalingMetric.QUERY_COUNT, ScalingMetric.MEMORY],
-        repetitions=2,
-    )
 
     def test_create_team_with_empty_name_fails(self, admin_a, model_registry):
         """Test that team creation with empty name fails."""
