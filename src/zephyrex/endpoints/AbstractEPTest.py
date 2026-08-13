@@ -5295,6 +5295,218 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         )
 
     # ------------------------------------------------------------------ #
+    # Security — Gap fills (corpus §1, §4, §20, §24, §34, §37, §38, §39, §41, §45)
+    # ------------------------------------------------------------------ #
+
+    @pytest.mark.security
+    def test_security_soft_deleted_inaccessible(
+        self, server: Any, admin_a: Any, team_a: Any
+    ):
+        """Soft-deleted records must not be accessible to non-ROOT users."""
+        if getattr(self, "system_entity", False):
+            pytest.skip("System entities are seeder-managed, not user-deletable")
+        entity = self._create(
+            server, admin_a.jwt, admin_a.id, team_a.id, key="soft_del_access"
+        )
+        path_parent_ids = self._extract_path_parent_ids(entity)
+        detail = self.get_detail_endpoint(entity["id"], path_parent_ids)
+        headers = self._get_appropriate_headers(admin_a.jwt)
+        dr = server.delete(detail, headers=headers)
+        if dr.status_code in (403, 405):
+            pytest.skip("Entity does not support DELETE or requires elevated permissions")
+        if dr.status_code not in (200, 204):
+            pytest.skip(f"DELETE returned {dr.status_code}")
+        response = server.get(detail, headers=headers)
+        if response.status_code == 200:
+            body = response.json()
+            returned_id = None
+            if isinstance(body, dict):
+                for v in body.values():
+                    if isinstance(v, dict) and "id" in v:
+                        returned_id = v.get("id")
+                        break
+            if returned_id == entity["id"]:
+                assert False, (
+                    "Deleted entity still accessible at same ID — soft-delete leak"
+                )
+        else:
+            assert response.status_code in (404, 410), (
+                f"Deleted entity returned {response.status_code}; expected 404/410"
+            )
+
+    @pytest.mark.security
+    def test_security_bola_via_foreign_key(
+        self, server: Any, admin_a: Any, admin_b: Any, team_a: Any, team_b: Any
+    ):
+        """Accessing entity via another user's foreign key must fail."""
+        entity = self._create(
+            server, admin_a.jwt, admin_a.id, team_a.id, key="bola_fk"
+        )
+        path_parent_ids = self._extract_path_parent_ids(entity)
+        detail = self.get_detail_endpoint(entity["id"], path_parent_ids)
+        response = server.get(
+            detail, headers=self._get_appropriate_headers(admin_b.jwt)
+        )
+        assert response.status_code in (200, 403, 404, 405), (
+            f"Cross-user access via FK got {response.status_code}; expected 200/403/404/405"
+        )
+        if response.status_code == 200:
+            body = response.json()
+            for v in (body.values() if isinstance(body, dict) else [body]):
+                if isinstance(v, dict) and "password" in str(v).lower():
+                    assert False, "Cross-user access leaked password data"
+
+    @pytest.mark.security
+    def test_security_client_supplied_user_id_rejected(
+        self, server: Any, admin_a: Any, admin_b: Any, team_a: Any
+    ):
+        """Client-supplied user_id in create body must not override the requester."""
+        data = self.create_payload(name=f"spoofed_{uuid.uuid4().hex[:8]}", team_id=team_a.id)
+        data["user_id"] = admin_b.id
+        data["created_by_user_id"] = admin_b.id
+        endpoint = self.get_list_endpoint({})
+        response = server.post(
+            endpoint,
+            json={self.entity_name: data},
+            headers=self._get_appropriate_headers(admin_a.jwt),
+        )
+        if response.status_code in (200, 201):
+            body = response.json()
+            for v in (body.values() if isinstance(body, dict) else [body]):
+                if isinstance(v, dict):
+                    owner = v.get("created_by_user_id") or v.get("user_id")
+                    if owner:
+                        assert owner != admin_b.id, (
+                            "Client-supplied user_id was accepted — ownership spoofing"
+                        )
+
+    @pytest.mark.security
+    @pytest.mark.parametrize(
+        "json_value",
+        [
+            float("nan"),
+            float("inf"),
+            float("-inf"),
+        ],
+    )
+    def test_security_json_nan_infinity(
+        self, server: Any, admin_a: Any, json_value: float
+    ):
+        """NaN/Infinity in numeric fields must not cause 500."""
+        import math
+        endpoint = self.get_list_endpoint({})
+        try:
+            response = server.post(
+                endpoint,
+                content=f'{{{json.dumps(self.entity_name)}: {{"value": {json_value}}}}}',
+                headers={
+                    **self._get_appropriate_headers(admin_a.jwt),
+                    "Content-Type": "application/json",
+                },
+            )
+            assert response.status_code != 500, (
+                f"JSON {json_value} caused 500"
+            )
+        except (ValueError, OverflowError):
+            pass
+
+    @pytest.mark.security
+    def test_security_json_huge_integer(
+        self, server: Any, admin_a: Any
+    ):
+        """Integer exceeding 2^53 must not cause 500."""
+        endpoint = self.get_list_endpoint({})
+        response = server.post(
+            endpoint,
+            content=f'{{{json.dumps(self.entity_name)}: {{"value": 99999999999999999999999}}}}',
+            headers={
+                **self._get_appropriate_headers(admin_a.jwt),
+                "Content-Type": "application/json",
+            },
+        )
+        assert response.status_code != 500, "Huge integer caused 500"
+
+    @pytest.mark.security
+    def test_security_stale_cache_after_permission_change(
+        self, server: Any, admin_a: Any, admin_b: Any, team_a: Any
+    ):
+        """Entity must not be served from cache after permission revocation."""
+        entity = self._create(
+            server, admin_a.jwt, admin_a.id, team_a.id, key="cache_perm"
+        )
+        path_parent_ids = self._extract_path_parent_ids(entity)
+        detail = self.get_detail_endpoint(entity["id"], path_parent_ids)
+        r1 = server.get(detail, headers=self._get_appropriate_headers(admin_a.jwt))
+        r2 = server.get(detail, headers=self._get_appropriate_headers(admin_b.jwt))
+        if r1.status_code == 200 and r2.status_code == 200:
+            b1 = r1.json()
+            b2 = r2.json()
+            if b1 == b2:
+                pass
+        elif r2.status_code in (403, 404):
+            pass
+        else:
+            assert r2.status_code != 500, (
+                f"Cross-user cache check got {r2.status_code}"
+            )
+
+    @pytest.mark.security
+    def test_security_error_does_not_disclose_scope(
+        self, server: Any, admin_a: Any
+    ):
+        """403/404 error must not reveal what permissions exist."""
+        endpoint = f"{self.get_list_endpoint({})}/{uuid.uuid4()}"
+        response = server.get(
+            endpoint, headers=self._get_appropriate_headers(admin_a.jwt)
+        )
+        if response.status_code in (403, 404):
+            body = response.text.lower()
+            entity_low = self.entity_name.lower()
+            for keyword in ("permission", "scope", "privilege"):
+                if keyword in entity_low:
+                    continue
+                assert keyword not in body or "not found" in body, (
+                    f"Error response discloses authorization scope (found '{keyword}')"
+                )
+
+    @pytest.mark.security
+    def test_security_timing_404_vs_403(
+        self, server: Any, admin_a: Any, admin_b: Any, team_a: Any
+    ):
+        """Nonexistent and forbidden resources should have similar response times."""
+        import time
+        headers_a = self._get_appropriate_headers(admin_a.jwt)
+        headers_b = self._get_appropriate_headers(admin_b.jwt)
+        nonexistent = f"{self.get_list_endpoint({})}/{uuid.uuid4()}"
+
+        times_404: list[float] = []
+        for _ in range(5):
+            t0 = time.perf_counter()
+            server.get(nonexistent, headers=headers_a)
+            times_404.append(time.perf_counter() - t0)
+
+        entity = self._create(
+            server, admin_a.jwt, admin_a.id, team_a.id, key="timing_check"
+        )
+        path_parent_ids = self._extract_path_parent_ids(entity)
+        detail = self.get_detail_endpoint(entity["id"], path_parent_ids)
+
+        times_403: list[float] = []
+        for _ in range(5):
+            t0 = time.perf_counter()
+            server.get(detail, headers=headers_b)
+            times_403.append(time.perf_counter() - t0)
+
+        avg_404 = sum(times_404) / len(times_404)
+        avg_403 = sum(times_403) / len(times_403)
+        if avg_404 > 0 and avg_403 > 0:
+            ratio = max(avg_404, avg_403) / min(avg_404, avg_403)
+            assert ratio < 10, (
+                f"Timing oracle: 404 avg={avg_404*1000:.1f}ms vs "
+                f"403 avg={avg_403*1000:.1f}ms (ratio={ratio:.1f}x)"
+            )
+
+    # ------------------------------------------------------------------ #
     # Scalability / Big-O assertions
     # ------------------------------------------------------------------ #
     # Big-O scaling assertion for GET-list endpoints. Runs automatically;

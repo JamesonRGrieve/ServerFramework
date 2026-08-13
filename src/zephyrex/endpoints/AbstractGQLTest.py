@@ -2276,3 +2276,101 @@ class AbstractGraphQLTest:
             assert marker not in body or "graphql" in body, (
                 f"GQL error may leak SQL (found '{marker.strip()}')"
             )
+
+    # ------------------------------------------------------------------ #
+    # GraphQL Security — Gap fills (corpus §12, §14, §15)
+    # ------------------------------------------------------------------ #
+
+    @pytest.mark.security
+    def test_GQL_security_mutation_over_GET(self, server: Any, admin_a: Any):
+        """Mutations over GET must be rejected (prevents CSRF via img/link tags)."""
+        singular = self._gql_singular_name
+        mutation_name = f"create{stringcase.pascalcase(singular)}"
+        mutation = f'mutation {{ {mutation_name}(input: {{name: "via-get"}}) {{ id }} }}'
+        headers = self._get_appropriate_headers(
+            admin_a.jwt, api_key=env("ROOT_API_KEY") if self.system_entity else None
+        )
+        response = server.get(
+            f"/graphql?query={mutation}", headers=headers
+        )
+        if response.status_code == 200:
+            data = response.json()
+            assert "errors" in data or data.get("data", {}).get(mutation_name) is None, (
+                "Mutation executed over GET — CSRF risk"
+            )
+
+    @pytest.mark.security
+    def test_GQL_security_multiple_operations_without_name(
+        self, server: Any, admin_a: Any
+    ):
+        """Multiple operations without operationName must be rejected or clarified."""
+        singular = self._gql_singular_name
+        query = (
+            f'query A {{ {singular}(id: "00000000-0000-0000-0000-000000000000") {{ id }} }} '
+            f'query B {{ {singular}(id: "00000000-0000-0000-0000-000000000001") {{ id }} }}'
+        )
+        headers = self._get_appropriate_headers(
+            admin_a.jwt, api_key=env("ROOT_API_KEY") if self.system_entity else None
+        )
+        response = server.post("/graphql", json={"query": query}, headers=headers)
+        assert response.status_code != 500, (
+            "Multiple GQL operations without operationName caused 500"
+        )
+
+    @pytest.mark.security
+    def test_GQL_security_duplicate_operation_names(
+        self, server: Any, admin_a: Any
+    ):
+        """Duplicate operation names must not cause 500."""
+        singular = self._gql_singular_name
+        query = (
+            f'query Dup {{ {singular}(id: "00000000-0000-0000-0000-000000000000") {{ id }} }} '
+            f'query Dup {{ {singular}(id: "00000000-0000-0000-0000-000000000001") {{ id }} }}'
+        )
+        headers = self._get_appropriate_headers(
+            admin_a.jwt, api_key=env("ROOT_API_KEY") if self.system_entity else None
+        )
+        response = server.post(
+            "/graphql",
+            json={"query": query, "operationName": "Dup"},
+            headers=headers,
+        )
+        assert response.status_code != 500, "Duplicate GQL operation names caused 500"
+
+    @pytest.mark.security
+    def test_GQL_security_deprecated_fields_not_exposed(
+        self, server: Any, admin_a: Any
+    ):
+        """Introspection should not reveal deprecated internal fields."""
+        query = """
+        { __type(name: "%s") {
+            fields(includeDeprecated: true) {
+                name isDeprecated deprecationReason
+            }
+        }}
+        """ % stringcase.pascalcase(self._gql_singular_name)
+        headers = self._get_appropriate_headers(
+            admin_a.jwt, api_key=env("ROOT_API_KEY") if self.system_entity else None
+        )
+        response = server.post("/graphql", json={"query": query}, headers=headers)
+        if response.status_code == 200:
+            data = response.json()
+            type_data = (data.get("data") or {}).get("__type")
+            if type_data and type_data.get("fields"):
+                for field in type_data["fields"]:
+                    if field.get("isDeprecated"):
+                        name = field.get("name", "").lower()
+                        assert "password" not in name and "secret" not in name and "hash" not in name, (
+                            f"Deprecated field exposes sensitive name: {field['name']}"
+                        )
+
+    @pytest.mark.security
+    def test_GQL_security_graphiql_not_exposed(self, server: Any):
+        """GraphiQL IDE must not be accessible in the running app."""
+        for path in ("/graphiql", "/graphql/graphiql", "/graphql/explorer"):
+            response = server.get(path)
+            if response.status_code == 200:
+                ct = response.headers.get("Content-Type", "")
+                assert "html" not in ct, (
+                    f"GraphiQL exposed at {path} (Content-Type: {ct})"
+                )
