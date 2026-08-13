@@ -1088,6 +1088,23 @@ def _get_role_hierarchy_map(db: Session, declarative_base) -> dict:
     return role_hierarchy
 
 
+def _resolve_db_class(resource_cls: Type[Any], declarative_base) -> Type[Any]:
+    """Resolve a resource class to its SQLAlchemy model class.
+
+    Handles three cases:
+    - Already a SQLAlchemy model (has ``__tablename__``): returned as-is.
+    - Pydantic model with ``DatabaseMixin`` (has ``.DB()``): resolved via
+      ``resource_cls.DB(declarative_base)``.
+    - Fallback: returned as-is (assumed SQLAlchemy).
+    """
+    if hasattr(resource_cls, "__tablename__"):
+        return resource_cls
+    elif hasattr(resource_cls, "DB"):
+        return resource_cls.DB(declarative_base)
+    else:
+        return resource_cls
+
+
 def _build_direct_permission_filter(
     user_id: str,
     resource_cls: Type[Any],
@@ -1128,16 +1145,7 @@ def _build_direct_permission_filter(
     permission_db_cls = permission_db_class_hook(declarative_base)
     user_team_db_cls = UserTeamModel.DB(declarative_base)
 
-    # Check if resource_cls is already a SQLAlchemy model class or a Pydantic model class
-    if hasattr(resource_cls, "__tablename__"):
-        # It's already a SQLAlchemy model class
-        resource_db_cls = resource_cls
-    elif hasattr(resource_cls, "DB"):
-        # It's a Pydantic model class with DatabaseMixin
-        resource_db_cls = resource_cls.DB(declarative_base)
-    else:
-        # Fallback - assume it's already a SQLAlchemy model class
-        resource_db_cls = resource_cls
+    resource_db_cls = _resolve_db_class(resource_cls, declarative_base)
 
     permission_field = getattr(permission_db_cls, required_permission_level.value)
 
@@ -1253,17 +1261,7 @@ def generate_permission_filter(
         required_permission_level = PermissionType.VIEW
 
     # Get SQLAlchemy models using the declarative base
-    # Check if resource_cls is already a SQLAlchemy model class or a Pydantic model class
-    # SQLAlchemy models have __tablename__ attribute, Pydantic models do not
-    if hasattr(resource_cls, "__tablename__"):
-        # It's already a SQLAlchemy model class
-        resource_db_cls = resource_cls
-    elif hasattr(resource_cls, "DB"):
-        # It's a Pydantic model class with DatabaseMixin
-        resource_db_cls = resource_cls.DB(declarative_base)
-    else:
-        # Fallback - assume it's already a SQLAlchemy model class
-        resource_db_cls = resource_cls
+    resource_db_cls = _resolve_db_class(resource_cls, declarative_base)
 
     # Import the Pydantic models for other entities
     from zephyrex.database.DatabaseManager import DatabaseManager
