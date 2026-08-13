@@ -24,15 +24,16 @@ import asyncio
 import threading
 import time
 from dataclasses import dataclass
-from email.utils import parsedate_to_datetime
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Optional
+
+from zephyrex.lib.DateTimeUtils import ensure_utc
 
 from zephyrex.lib.DistributedCounter import (
     DistributedCounter,
     InMemoryDistributedCounter,
 )
-
 
 # ----- Token bucket ---------------------------------------------------------
 
@@ -171,8 +172,7 @@ def parse_retry_after(header_value: Optional[str]) -> Optional[int]:
         dt = parsedate_to_datetime(s)
         if dt is None:
             return None
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
+        dt = ensure_utc(dt)
         delta = (dt - datetime.now(timezone.utc)).total_seconds()
         return max(0, int(delta))
     except (TypeError, ValueError):

@@ -11,6 +11,8 @@ Walks through the door opened by the framework primitives in ``BLL_Auth.py``:
 from datetime import datetime, timezone
 from typing import Any, Callable, ClassVar, List, Optional
 
+from zephyrex.lib.DateTimeUtils import ensure_utc
+
 from pydantic import BaseModel, ConfigDict, Field
 
 from zephyrex.lib.CustomRoute import custom_route
@@ -32,7 +34,6 @@ from zephyrex.logic.BLL_Auth import (
     UserManager,
     UserModel,
 )
-
 
 # ---------------------------------------------------------------------------
 # Test-visible email-send listeners. Tests register a callable here to capture
@@ -242,8 +243,8 @@ class MagicLinkManager(AbstractBLLManager, RouterMixin):
         matched: Optional[AuthMagicLinkTokenModel] = None
         for candidate in candidates:
             expires_at = candidate.expires_at
-            if expires_at and expires_at.tzinfo is None:
-                expires_at = expires_at.replace(tzinfo=timezone.utc)
+            if expires_at:
+                expires_at = ensure_utc(expires_at)
             if expires_at < now:
                 continue
             # Constant-time bcrypt confirm — the fingerprint narrows the

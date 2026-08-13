@@ -15,6 +15,8 @@ import string
 from datetime import datetime, timezone
 from typing import Any, ClassVar, Dict, List, Optional, Type
 
+from zephyrex.lib.DateTimeUtils import ensure_utc
+
 from fastapi import HTTPException, status
 from pydantic import Field, model_validator
 
@@ -465,9 +467,7 @@ class InvitationManager(AbstractBLLManager, RouterMixin):
                     )
                 invitation = self.get(id=invitee.invitation_id)
                 if invitation.expires_at:
-                    expires_at = invitation.expires_at
-                    if expires_at.tzinfo is None:
-                        expires_at = expires_at.replace(tzinfo=timezone.utc)
+                    expires_at = ensure_utc(invitation.expires_at)
                     if expires_at < datetime.now(timezone.utc):
                         raise HTTPException(
                             status_code=410, detail="Invitation has expired"
@@ -621,9 +621,7 @@ class InviteeManager(AbstractBLLManager):
         if not invitation:
             raise HTTPException(status_code=404, detail="Invalid invitation code")
         if invitation.expires_at:
-            expires_at = invitation.expires_at
-            if expires_at.tzinfo is None:
-                expires_at = expires_at.replace(tzinfo=timezone.utc)
+            expires_at = ensure_utc(invitation.expires_at)
             if expires_at < datetime.now(timezone.utc):
                 raise HTTPException(status_code=410, detail="Invitation has expired")
         if invitation.max_uses is not None:
@@ -721,9 +719,7 @@ class InviteeManager(AbstractBLLManager):
         if not invitation:
             raise HTTPException(status_code=404, detail="Invalid invitation code")
         if invitation.expires_at:
-            expires_at = invitation.expires_at
-            if expires_at.tzinfo is None:
-                expires_at = expires_at.replace(tzinfo=timezone.utc)
+            expires_at = ensure_utc(invitation.expires_at)
             if expires_at < datetime.now(timezone.utc):
                 raise HTTPException(status_code=410, detail="Invitation has expired")
         if invitation.max_uses is not None:

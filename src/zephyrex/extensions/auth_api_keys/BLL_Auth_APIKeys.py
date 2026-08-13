@@ -21,6 +21,8 @@ import secrets
 from datetime import datetime, timezone
 from typing import ClassVar, List, Optional, Type
 
+from zephyrex.lib.DateTimeUtils import ensure_utc
+
 from fastapi import HTTPException
 from pydantic import BaseModel, Field
 
@@ -63,9 +65,7 @@ class APIKeyModel(
 
     Manager: ClassVar[Type["APIKeyManager"]] = None  # type: ignore[assignment]
     name: str = Field(..., description="Human-readable label for this key")
-    key_hash: str = Field(
-        ..., description="SHA-256 hex digest of the issued key"
-    )
+    key_hash: str = Field(..., description="SHA-256 hex digest of the issued key")
     last_used_at: Optional[datetime] = Field(
         None, description="When the key was most recently presented and accepted"
     )
@@ -115,7 +115,9 @@ class APIKeyIssueResponse(BaseModel):
 
     id: str
     name: str
-    key: str = Field(..., description="Raw API key — store securely; never returned again")
+    key: str = Field(
+        ..., description="Raw API key — store securely; never returned again"
+    )
     expires_at: Optional[datetime] = None
 
 
@@ -328,9 +330,7 @@ class APIKeyManager(AbstractBLLManager, RouterMixin):
         now = datetime.now(timezone.utc)
         for record in rows:
             if record.expires_at is not None:
-                expires_at = record.expires_at
-                if expires_at.tzinfo is None:
-                    expires_at = expires_at.replace(tzinfo=timezone.utc)
+                expires_at = ensure_utc(record.expires_at)
                 if expires_at < now:
                     continue
             if hmac.compare_digest(record.key_hash, candidate_hash):

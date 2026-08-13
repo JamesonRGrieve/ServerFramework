@@ -25,6 +25,8 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, List, Literal, Optional
 
+from zephyrex.lib.DateTimeUtils import ensure_utc
+
 from pydantic import BaseModel, ConfigDict, Field
 
 # ---------------------------------------------------------------------------
@@ -61,10 +63,8 @@ def derive_period_key(
 
     if now is None:
         now = datetime.now(timezone.utc)
-    elif now.tzinfo is None:
-        now = now.replace(tzinfo=timezone.utc)
     else:
-        now = now.astimezone(timezone.utc)
+        now = ensure_utc(now)
 
     if period == "minute":
         return now.strftime("%Y-%m-%dT%H:%M")
@@ -179,10 +179,7 @@ def find_matching_quotas(
             if quota.period_key != current_key:
                 continue
         # User-only row: user_id == requester, team_id is NULL.
-        if (
-            quota.user_id == user_id
-            and quota.team_id is None
-        ):
+        if quota.user_id == user_id and quota.team_id is None:
             matches.append(quota)
             continue
         # Team-only row: team_id == requester team, user_id is NULL.
@@ -217,9 +214,7 @@ def find_matching_quotas(
 _FALLBACK_LOCK = threading.Lock()
 
 
-def _try_distributed_consume(
-    quotas: List[Quota], amount: int
-) -> Optional[bool]:
+def _try_distributed_consume(quotas: List[Quota], amount: int) -> Optional[bool]:
     """Try to delegate to ``lib.DistributedCounter``. Returns the boolean
     result if available, ``None`` to signal the caller should fall back."""
     try:

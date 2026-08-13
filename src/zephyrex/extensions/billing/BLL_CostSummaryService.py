@@ -17,6 +17,8 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Callable, Dict, List, Optional
 
+from zephyrex.lib.DateTimeUtils import ensure_utc
+
 from zephyrex.extensions.billing.BLL_CostSummary import (
     CostRollupAggregator,
     CostSummaryModel,
@@ -28,10 +30,8 @@ def _default_period_key(period: str, now: Optional[datetime] = None) -> str:
     """UTC period bucket key. Daily uses ``YYYY-MM-DD`` to match Quota."""
     if now is None:
         now = datetime.now(timezone.utc)
-    elif now.tzinfo is None:
-        now = now.replace(tzinfo=timezone.utc)
     else:
-        now = now.astimezone(timezone.utc)
+        now = ensure_utc(now)
     if period == "day":
         return now.strftime("%Y-%m-%d")
     if period == "week":
@@ -119,7 +119,9 @@ class CostSummaryRollup:
                 self._upsert(create)
                 report.rows_written += 1
             except Exception as exc:  # noqa: BLE001
-                report.errors.append(f"upsert {create.tenant_id}/{create.provider}: {exc!r}")
+                report.errors.append(
+                    f"upsert {create.tenant_id}/{create.provider}: {exc!r}"
+                )
 
         if not report.errors:
             try:

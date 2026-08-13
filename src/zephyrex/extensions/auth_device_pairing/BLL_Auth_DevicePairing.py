@@ -9,6 +9,8 @@ Guard / Discord cross-device approval flow.
 from datetime import datetime, timedelta, timezone
 from typing import Any, AsyncIterator, ClassVar, List, Optional
 
+from zephyrex.lib.DateTimeUtils import ensure_utc
+
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
@@ -32,7 +34,6 @@ from zephyrex.logic.BLL_Auth import (
     UserManager,
     UserModel,
 )
-
 
 # ---------------------------------------------------------------------------
 # Pydantic input/output models
@@ -180,8 +181,8 @@ class DevicePairingManager(AbstractBLLManager, RouterMixin):
         if row.approved_at is not None:
             return "approved"
         expires_at = row.expires_at
-        if expires_at and expires_at.tzinfo is None:
-            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if expires_at:
+            expires_at = ensure_utc(expires_at)
         if expires_at and expires_at < datetime.now(timezone.utc):
             return "expired"
         return "pending"
@@ -197,9 +198,7 @@ class DevicePairingManager(AbstractBLLManager, RouterMixin):
         )
         return rows[0] if rows else None
 
-    def _resolve_token(
-        self, raw_token: str
-    ) -> Optional[DevicePairingRequestModel]:
+    def _resolve_token(self, raw_token: str) -> Optional[DevicePairingRequestModel]:
         # H-5 — indexed fingerprint lookup; bcrypt verifies the unique
         # candidate. Replaces the bcrypt-against-every-unused-token loop.
         DB = DevicePairingRequestModel.DB(self.model_registry.DB.manager.Base)
@@ -220,8 +219,8 @@ class DevicePairingManager(AbstractBLLManager, RouterMixin):
         now = datetime.now(timezone.utc)
         for row in candidates:
             expires_at = row.expires_at
-            if expires_at and expires_at.tzinfo is None:
-                expires_at = expires_at.replace(tzinfo=timezone.utc)
+            if expires_at:
+                expires_at = ensure_utc(expires_at)
             if expires_at < now:
                 continue
             if row.verify(raw_token):
@@ -262,9 +261,7 @@ class DevicePairingManager(AbstractBLLManager, RouterMixin):
         )
 
         base = self._base_url()
-        qr_payload = (
-            f"{base}/approve?token={raw_code}" if base else raw_code
-        )
+        qr_payload = f"{base}/approve?token={raw_code}" if base else raw_code
 
         return PairingResponse(
             pairing_id=created.id,
@@ -341,9 +338,7 @@ class DevicePairingManager(AbstractBLLManager, RouterMixin):
             user_id=session.user_id,
         )
 
-    def deny_pairing(
-        self, token: str, approver_user_id: str
-    ) -> PairingActionResponse:
+    def deny_pairing(self, token: str, approver_user_id: str) -> PairingActionResponse:
         if not approver_user_id:
             raise HTTPException(
                 status_code=401, detail="Denial requires an authenticated session"
@@ -409,9 +404,7 @@ class DevicePairingManager(AbstractBLLManager, RouterMixin):
     ) -> AsyncIterator[str]:
         import asyncio
 
-        deadline = datetime.now(timezone.utc) + timedelta(
-            seconds=self._ttl_seconds()
-        )
+        deadline = datetime.now(timezone.utc) + timedelta(seconds=self._ttl_seconds())
         while datetime.now(timezone.utc) < deadline:
             row = self._get_row_by_id(pairing_id)
             if row is None:
@@ -420,10 +413,7 @@ class DevicePairingManager(AbstractBLLManager, RouterMixin):
             state = self._state_for(row)
             if state in ("approved", "denied", "expired"):
                 status = self.get_status(pairing_id)
-                yield (
-                    f"event: {state}\n"
-                    f"data: {status.model_dump_json()}\n\n"
-                )
+                yield (f"event: {state}\n" f"data: {status.model_dump_json()}\n\n")
                 return
             await asyncio.sleep(poll_interval)
         yield "event: expired\ndata: timed_out\n\n"

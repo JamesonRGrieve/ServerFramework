@@ -38,6 +38,8 @@ import secrets
 from datetime import datetime, timezone
 from typing import ClassVar, List, Optional, Set
 
+from zephyrex.lib.DateTimeUtils import ensure_utc
+
 from fastapi import HTTPException
 from pydantic import BaseModel, Field
 
@@ -58,7 +60,6 @@ from zephyrex.logic.BLL_Auth import (
     UserModel,
 )
 from zephyrex.logic.Permissions import PermissionRegistry, has_permission
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -81,9 +82,7 @@ def _token_fingerprint(raw: str) -> str:
     records.
     """
     key_material = env("JWT_SECRET") or env("ROOT_ID") or "oauth-provider"
-    namespaced = b"oauth_provider.token_fingerprint.v1:" + key_material.encode(
-        "utf-8"
-    )
+    namespaced = b"oauth_provider.token_fingerprint.v1:" + key_material.encode("utf-8")
     derived = hashlib.sha256(namespaced).digest()
     return hmac.new(derived, raw.encode("utf-8"), hashlib.sha256).hexdigest()[:32]
 
@@ -103,15 +102,14 @@ class OAuth2ClientModel(
     name: str = Field(..., description="Friendly client name")
     client_id: str = Field(..., description="Public client identifier")
     client_secret_hash: str = Field(
-        ..., description="Hashed client secret (raw secret is returned once at creation)"
+        ...,
+        description="Hashed client secret (raw secret is returned once at creation)",
     )
     client_secret_salt: str = Field(..., description="Per-client salt for secret hash")
     owner_user_id: Optional[str] = Field(
         None, description="User who registered this client"
     )
-    redirect_uris: str = Field(
-        ..., description="JSON array of allowed redirect URIs"
-    )
+    redirect_uris: str = Field(..., description="JSON array of allowed redirect URIs")
     allowed_scopes: str = Field(
         "", description="Space-delimited scopes the client may request"
     )
@@ -128,7 +126,9 @@ class OAuth2ClientModel(
     # CRUD POST is blocked by ``OAuth2ClientManager.create_validation``.
     class Create(BaseModel):
         name: str
-        redirect_uris: str = Field(..., description="JSON array of allowed redirect URIs")
+        redirect_uris: str = Field(
+            ..., description="JSON array of allowed redirect URIs"
+        )
         allowed_scopes: str = Field("", description="Space-delimited scopes")
         is_confidential: bool = True
 
@@ -211,9 +211,7 @@ class OAuth2TokenModel(
     expires_at: datetime = Field(..., description="Token expiry")
     is_revoked: bool = Field(False, description="Soft-revoke flag")
 
-    table_comment: ClassVar[str] = (
-        "OAuth2 access and refresh tokens; hashed at rest"
-    )
+    table_comment: ClassVar[str] = "OAuth2 access and refresh tokens; hashed at rest"
 
     # No public CRUD; tokens are minted by ``issue_token_pair`` and
     # revoked by ``/revoke``. These schemas exist for ``ModelMeta`` only.
@@ -484,7 +482,9 @@ class OAuth2ClientManager(AbstractBLLManager, RouterMixin):
                 # Reject silently: a public client should never be sent a
                 # secret. We don't differentiate from "wrong secret" so a
                 # leaked secret-check oracle can't infer client mode.
-                raise HTTPException(status_code=401, detail="Invalid client credentials")
+                raise HTTPException(
+                    status_code=401, detail="Invalid client credentials"
+                )
             return client  # type: ignore[no-any-return]
         if not client_secret:
             raise HTTPException(status_code=401, detail="Invalid client credentials")
@@ -552,9 +552,8 @@ class OAuth2AuthCodeManager(AbstractBLLManager, RouterMixin):
         # clients SHOULD; opt-out is gated on an explicit env flag so the
         # default posture is strict.
         require_pkce_for_confidential = (
-            (env("OAUTH_PROVIDER_REQUIRE_PKCE_FOR_CONFIDENTIAL") or "true").lower()
-            != "false"
-        )
+            env("OAUTH_PROVIDER_REQUIRE_PKCE_FOR_CONFIDENTIAL") or "true"
+        ).lower() != "false"
         if not client.is_confidential and not code_challenge:
             raise HTTPException(
                 status_code=400,
@@ -624,8 +623,8 @@ class OAuth2AuthCodeManager(AbstractBLLManager, RouterMixin):
         now = datetime.now(timezone.utc)
         for candidate in candidates:
             expires_at = candidate.expires_at
-            if expires_at and expires_at.tzinfo is None:
-                expires_at = expires_at.replace(tzinfo=timezone.utc)
+            if expires_at:
+                expires_at = ensure_utc(expires_at)
             if expires_at < now:
                 continue
             if candidate.redirect_uri != redirect_uri:
@@ -653,7 +652,9 @@ class OAuth2AuthCodeManager(AbstractBLLManager, RouterMixin):
                 new_properties={"is_used": True, "used_at": now},
             )
             return candidate  # type: ignore[no-any-return]
-        raise HTTPException(status_code=400, detail="Invalid or expired authorization code")
+        raise HTTPException(
+            status_code=400, detail="Invalid or expired authorization code"
+        )
 
 
 class OAuth2TokenManager(AbstractBLLManager, RouterMixin):
@@ -737,8 +738,8 @@ class OAuth2TokenManager(AbstractBLLManager, RouterMixin):
         now = datetime.now(timezone.utc)
         for candidate in candidates:
             expires_at = candidate.expires_at
-            if expires_at and expires_at.tzinfo is None:
-                expires_at = expires_at.replace(tzinfo=timezone.utc)
+            if expires_at:
+                expires_at = ensure_utc(expires_at)
             if expires_at < now:
                 continue
             expected = _hash_secret(raw_token, candidate.token_salt)
@@ -920,7 +921,8 @@ class OAuth2ProviderManager(AbstractBLLManager, RouterMixin):
     async def token_route(self, body: OAuth2TokenRequest) -> OAuth2TokenIssueResponse:
         if body.grant_type != "authorization_code":
             raise HTTPException(
-                status_code=400, detail="Only authorization_code grant_type is supported"
+                status_code=400,
+                detail="Only authorization_code grant_type is supported",
             )
         client_mgr = OAuth2ClientManager(
             requester_id=env("ROOT_ID"), model_registry=self.model_registry

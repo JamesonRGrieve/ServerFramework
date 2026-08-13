@@ -17,6 +17,8 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, ClassVar, Dict, List, Literal, Optional, Type
 
+from zephyrex.lib.DateTimeUtils import ensure_utc
+
 from fastapi import HTTPException
 from pydantic import Field
 
@@ -103,9 +105,7 @@ class SessionModel(
     )
 
     @classmethod
-    def user_has_all_access(
-        cls, user_id, id, db, db_manager=None, model_registry=None
-    ):
+    def user_has_all_access(cls, user_id, id, db, db_manager=None, model_registry=None):
         """Allow users to delete their own sessions even if a different
         actor created them (e.g. an admin minted the row on a remote device).
         """
@@ -125,16 +125,11 @@ class SessionModel(
 
         SQLAlchemy_model = cls.DB(Base)
         session_record = (
-            db.query(SQLAlchemy_model)
-            .filter(SQLAlchemy_model.id == id)
-            .first()
+            db.query(SQLAlchemy_model).filter(SQLAlchemy_model.id == id).first()
         )
         if session_record is None:
             return False
-        if (
-            hasattr(session_record, "user_id")
-            and session_record.user_id == user_id
-        ):
+        if hasattr(session_record, "user_id") and session_record.user_id == user_id:
             return True
 
         return super().user_has_all_access(user_id, id, db, db_manager)
@@ -193,9 +188,9 @@ class SessionModel(
         expires_at: Optional[datetime] = Field(None)
         revoked: Optional[bool] = Field(None)
         requires_verification: Optional[bool] = Field(None)
-        pending_state: Optional[
-            Literal["awaiting_approval", "approved", "denied"]
-        ] = Field(None)
+        pending_state: Optional[Literal["awaiting_approval", "approved", "denied"]] = (
+            Field(None)
+        )
 
     class Search(ApplicationModel.Search, UserModel.Reference.ID.Search):
         session_key: Optional[StringSearchModel] = None
@@ -261,9 +256,7 @@ class SessionManager(AbstractBLLManager, RouterMixin):
             model_registry=self.model_registry,
             session_key=entity.session_key,
         ):
-            raise HTTPException(
-                status_code=400, detail="Session key already exists"
-            )
+            raise HTTPException(status_code=400, detail="Session key already exists")
 
     def revoke_session(self, id: str) -> Dict[str, str]:
         # Sessions are minted by the framework as ROOT (the user is not
@@ -285,10 +278,7 @@ class SessionManager(AbstractBLLManager, RouterMixin):
         )
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
-        if (
-            session.user_id != self.requester.id
-            and not is_root_id(self.requester.id)
-        ):
+        if session.user_id != self.requester.id and not is_root_id(self.requester.id):
             raise HTTPException(
                 status_code=403,
                 detail="Cannot revoke another user's session",
@@ -365,12 +355,9 @@ class SessionManager(AbstractBLLManager, RouterMixin):
             return False
         session = sessions[0]
         expires_at = (
-            session["expires_at"]
-            if isinstance(session, dict)
-            else session.expires_at
+            session["expires_at"] if isinstance(session, dict) else session.expires_at
         )
-        if expires_at.tzinfo is None:
-            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        expires_at = ensure_utc(expires_at)
         return expires_at > datetime.now(timezone.utc)  # type: ignore[no-any-return]
 
     def cleanup_expired_sessions(self) -> Dict[str, Any]:
@@ -503,9 +490,7 @@ def enforce_not_revoked(
         # outside a request context (test scaffolding, CLI tooling) hit
         # this path. Production verify paths always carry a registry.
         return
-    db_manager = (
-        model_registry.DB.manager if model_registry is not None else None
-    )
+    db_manager = model_registry.DB.manager if model_registry is not None else None
     try:
         session_dto = SessionModel.DB(db_manager.Base).get(  # type: ignore[union-attr]
             requester_id=env("ROOT_ID"),
@@ -518,9 +503,7 @@ def enforce_not_revoked(
     except Exception:
         session_dto = None
     if session_dto is None:
-        raise HTTPException(
-            status_code=401, detail="Session has been revoked"
-        )
+        raise HTTPException(status_code=401, detail="Session has been revoked")
     is_active = (
         session_dto["is_active"]
         if isinstance(session_dto, dict)
@@ -532,9 +515,7 @@ def enforce_not_revoked(
         else getattr(session_dto, "revoked", False)
     )
     if not is_active or revoked:
-        raise HTTPException(
-            status_code=401, detail="Session has been revoked"
-        )
+        raise HTTPException(status_code=401, detail="Session has been revoked")
     pending_state = (
         session_dto["pending_state"]
         if isinstance(session_dto, dict)
