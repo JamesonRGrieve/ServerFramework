@@ -1,0 +1,579 @@
+<title>Zephyrex Security Test Corpus — Coverage Analysis</title>
+<style>
+  @font-face {
+    font-family: 'Body';
+    src: local('SF Pro Text'), local('Inter'), local('Segoe UI'), local('system-ui');
+  }
+  @font-face {
+    font-family: 'Mono';
+    src: local('SF Mono'), local('JetBrains Mono'), local('Cascadia Code'), local('monospace');
+  }
+
+  :root {
+    --bg: #fafaf9;
+    --bg-section: #f5f5f4;
+    --fg: #1c1917;
+    --fg-muted: #78716c;
+    --fg-dim: #a8a29e;
+    --accent: #b45309;
+    --accent-bg: #fef3c7;
+    --green: #15803d;
+    --green-bg: #dcfce7;
+    --amber: #a16207;
+    --amber-bg: #fef9c3;
+    --red: #b91c1c;
+    --red-bg: #fee2e2;
+    --blue: #1d4ed8;
+    --blue-bg: #dbeafe;
+    --slate: #475569;
+    --slate-bg: #f1f5f9;
+    --border: #e7e5e4;
+    --rule: #d6d3d1;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1a1a1a;
+      --bg-section: #262626;
+      --fg: #e7e5e4;
+      --fg-muted: #a8a29e;
+      --fg-dim: #78716c;
+      --accent: #f59e0b;
+      --accent-bg: #422006;
+      --green: #4ade80;
+      --green-bg: #052e16;
+      --amber: #fbbf24;
+      --amber-bg: #422006;
+      --red: #f87171;
+      --red-bg: #450a0a;
+      --blue: #60a5fa;
+      --blue-bg: #172554;
+      --slate: #94a3b8;
+      --slate-bg: #1e293b;
+      --border: #3f3f46;
+      --rule: #52525b;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #1a1a1a; --bg-section: #262626; --fg: #e7e5e4; --fg-muted: #a8a29e; --fg-dim: #78716c;
+    --accent: #f59e0b; --accent-bg: #422006; --green: #4ade80; --green-bg: #052e16;
+    --amber: #fbbf24; --amber-bg: #422006; --red: #f87171; --red-bg: #450a0a;
+    --blue: #60a5fa; --blue-bg: #172554; --slate: #94a3b8; --slate-bg: #1e293b;
+    --border: #3f3f46; --rule: #52525b;
+  }
+  :root[data-theme="light"] {
+    --bg: #fafaf9; --bg-section: #f5f5f4; --fg: #1c1917; --fg-muted: #78716c; --fg-dim: #a8a29e;
+    --accent: #b45309; --accent-bg: #fef3c7; --green: #15803d; --green-bg: #dcfce7;
+    --amber: #a16207; --amber-bg: #fef9c3; --red: #b91c1c; --red-bg: #fee2e2;
+    --blue: #1d4ed8; --blue-bg: #dbeafe; --slate: #475569; --slate-bg: #f1f5f9;
+    --border: #e7e5e4; --rule: #d6d3d1;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: Body, system-ui, sans-serif;
+    background: var(--bg); color: var(--fg);
+    line-height: 1.6; font-size: 15px;
+    max-width: 960px; margin: 0 auto; padding: 2rem 1.5rem 4rem;
+  }
+
+  h1 { font-size: 1.75rem; font-weight: 700; letter-spacing: -0.02em; margin-bottom: 0.25rem; text-wrap: balance; }
+  .subtitle { color: var(--fg-muted); font-size: 0.95rem; margin-bottom: 2rem; }
+  h2 { font-size: 1.15rem; font-weight: 700; letter-spacing: -0.01em; margin: 2.5rem 0 0.75rem; padding-bottom: 0.4rem; border-bottom: 2px solid var(--rule); }
+  h3 { font-size: 0.95rem; font-weight: 600; margin: 1.5rem 0 0.5rem; color: var(--fg-muted); text-transform: uppercase; letter-spacing: 0.05em; }
+  p { margin-bottom: 0.75rem; max-width: 72ch; }
+
+  .stats { display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 2rem; }
+  .stat { background: var(--bg-section); border: 1px solid var(--border); border-radius: 6px; padding: 0.75rem 1rem; min-width: 120px; }
+  .stat-value { font-size: 1.5rem; font-weight: 700; font-family: Mono, monospace; font-variant-numeric: tabular-nums; }
+  .stat-label { font-size: 0.75rem; color: var(--fg-muted); text-transform: uppercase; letter-spacing: 0.05em; }
+  .stat-green .stat-value { color: var(--green); }
+  .stat-amber .stat-value { color: var(--amber); }
+  .stat-red .stat-value { color: var(--red); }
+  .stat-blue .stat-value { color: var(--blue); }
+
+  .legend { display: flex; gap: 0.75rem; flex-wrap: wrap; margin-bottom: 1.5rem; font-size: 0.8rem; }
+  .legend-item { display: flex; align-items: center; gap: 0.35rem; }
+  .dot { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }
+  .dot-green { background: var(--green); }
+  .dot-amber { background: var(--amber); }
+  .dot-red { background: var(--red); }
+  .dot-blue { background: var(--blue); }
+  .dot-slate { background: var(--slate); }
+
+  table { width: 100%; border-collapse: collapse; font-size: 0.85rem; margin-bottom: 1.5rem; }
+  th { text-align: left; font-weight: 600; padding: 0.5rem 0.75rem; border-bottom: 2px solid var(--rule); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--fg-muted); }
+  td { padding: 0.4rem 0.75rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+
+  .tag { display: inline-block; font-size: 0.7rem; font-weight: 600; padding: 0.15rem 0.5rem; border-radius: 3px; text-transform: uppercase; letter-spacing: 0.03em; white-space: nowrap; }
+  .tag-covered { background: var(--green-bg); color: var(--green); }
+  .tag-gap { background: var(--amber-bg); color: var(--amber); }
+  .tag-single { background: var(--blue-bg); color: var(--blue); }
+  .tag-abstract { background: var(--red-bg); color: var(--red); }
+  .tag-na { background: var(--slate-bg); color: var(--slate); }
+
+  .category-block { background: var(--bg-section); border: 1px solid var(--border); border-radius: 6px; padding: 1rem 1.25rem; margin-bottom: 1rem; }
+  .category-block h4 { font-size: 0.9rem; font-weight: 600; margin-bottom: 0.4rem; }
+  .category-block p { font-size: 0.85rem; color: var(--fg-muted); margin-bottom: 0.5rem; max-width: none; }
+  .test-list { font-family: Mono, monospace; font-size: 0.78rem; color: var(--fg-dim); line-height: 1.8; }
+  .test-list .existing { color: var(--green); }
+  .test-list .missing { color: var(--red); }
+  .reason { font-size: 0.8rem; color: var(--fg-muted); font-style: italic; }
+
+  .toc { list-style: none; columns: 2; column-gap: 2rem; margin-bottom: 2rem; font-size: 0.85rem; }
+  .toc li { break-inside: avoid; padding: 0.15rem 0; }
+  .toc a { color: var(--accent); text-decoration: none; }
+  .toc a:hover { text-decoration: underline; }
+
+  .overflow-x { overflow-x: auto; }
+
+  @media (max-width: 640px) {
+    .stats { flex-direction: column; }
+    .toc { columns: 1; }
+    table { font-size: 0.78rem; }
+    td, th { padding: 0.3rem 0.5rem; }
+  }
+</style>
+
+<h1>Security Test Corpus</h1>
+<p class="subtitle">Zephyrex Server Framework — Coverage analysis against OWASP API Top 10, ASVS 5.0, MCP 2026-07-28, OAuth BCP (RFC 9700), JWT BCP (RFC 8725), and GraphQL security guidelines.</p>
+
+<div class="stats">
+  <div class="stat stat-green"><div class="stat-value">2,351</div><div class="stat-label">Tests passing</div></div>
+  <div class="stat stat-green"><div class="stat-value">180</div><div class="stat-label">Unique test types</div></div>
+  <div class="stat stat-amber"><div class="stat-value">47</div><div class="stat-label">Sections in corpus</div></div>
+  <div class="stat stat-blue"><div class="stat-value">5</div><div class="stat-label">Categories</div></div>
+</div>
+
+<div class="legend">
+  <div class="legend-item"><div class="dot dot-green"></div> Fully covered</div>
+  <div class="legend-item"><div class="dot dot-amber"></div> Has gaps</div>
+  <div class="legend-item"><div class="dot dot-blue"></div> Single unit test needed</div>
+  <div class="legend-item"><div class="dot dot-red"></div> Abstract test needed (every entity)</div>
+  <div class="legend-item"><div class="dot dot-slate"></div> Not relevant</div>
+</div>
+
+<!-- ============================================================ -->
+<h2>Summary by corpus section</h2>
+
+<div class="overflow-x">
+<table>
+<tr><th>#</th><th>Corpus Section</th><th>Status</th><th>Notes</th></tr>
+<tr><td>1</td><td>Authorization (BOLA/IDOR/BFLA)</td><td><span class="tag tag-gap">Gaps</span></td><td>Strong per-entity coverage; missing: deleted/archived object access, post-revocation token, cache confusion, full role&times;operation matrix generation</td></tr>
+<tr><td>2</td><td>Property-level / mass assignment</td><td><span class="tag tag-covered">Covered</span></td><td>audit_fields, id stripping, secret field omission, mass assignment in pentest suite</td></tr>
+<tr><td>3</td><td>Authentication</td><td><span class="tag tag-covered">Covered</span></td><td>JWT alg:none, wrong key/algo, expired, nbf, tampered sub, missing jti, garbage, replay, API key, basic auth</td></tr>
+<tr><td>4</td><td>Session / credential lifecycle</td><td><span class="tag tag-gap">Gaps</span></td><td>Covered: revocation, password-change invalidation, lockout. Missing: session fixation, idle/absolute timeout, concurrent-session limits, refresh-token rotation/reuse detection</td></tr>
+<tr><td>5</td><td>OAuth / authorization-server</td><td><span class="tag tag-na">N/A</span></td><td>OAuth consumer/provider extensions exist but are unported (broken imports). Tests needed when ported.</td></tr>
+<tr><td>6</td><td>MCP authorization</td><td><span class="tag tag-na">N/A</span></td><td>No MCP implementation exists in the codebase. No files, no endpoints, no handlers.</td></tr>
+<tr><td>7</td><td>MCP stateless request model</td><td><span class="tag tag-na">N/A</span></td><td>Same — no MCP surface.</td></tr>
+<tr><td>8</td><td>REST parameter attacks</td><td><span class="tag tag-covered">Covered</span></td><td>Per-entity: null, overflow, negative, unicode, encoding, duplicate params, wrong types, nested JSON, empty/array body, oversized values</td></tr>
+<tr><td>9</td><td>Injection</td><td><span class="tag tag-gap">Gaps</span></td><td>Covered: SQLi (ID, query, sort, login, GQL), SSTI, XSS, CRLF, SOQL. Missing: LDAP injection, command injection, second-order SQLi, blind/time-based SQLi</td></tr>
+<tr><td>10</td><td>Path traversal / filesystem</td><td><span class="tag tag-gap">Gaps</span></td><td>Covered: path traversal in REST ID params (middleware blocks). Missing: fileio extension traversal tests (symlink, encoded separators, archive traversal)</td></tr>
+<tr><td>11</td><td>SSRF</td><td><span class="tag tag-single">Single</span></td><td>No SSRF protection in ProviderHTTPClient. Need: localhost/private IP/metadata/DNS rebinding tests + framework fix</td></tr>
+<tr><td>12</td><td>GraphQL authorization</td><td><span class="tag tag-gap">Gaps</span></td><td>Covered: unauthenticated query/mutation, introspection type leak. Missing: field-level authz per resolver, alias bypass, fragment bypass, DataLoader tenant bleed, cache cross-user</td></tr>
+<tr><td>13</td><td>GraphQL complexity / DoS</td><td><span class="tag tag-covered">Covered</span></td><td>Per-entity: depth limit, alias DoS, batch limit, oversized query, fragment cycle</td></tr>
+<tr><td>14</td><td>GraphQL introspection / metadata</td><td><span class="tag tag-gap">Gaps</span></td><td>Covered: sensitive type names, production disable. Missing: GraphiQL exposure, deprecated field disclosure, schema diff by role</td></tr>
+<tr><td>15</td><td>GraphQL parser edge cases</td><td><span class="tag tag-gap">Gaps</span></td><td>Covered: empty query, malformed JSON, null vars, directive injection. Missing: duplicate op names, coercion edge cases, mutation over GET</td></tr>
+<tr><td>16</td><td>HTTP parser / proxy attacks</td><td><span class="tag tag-covered">Covered</span></td><td>RequestSmugglingMiddleware (CL+TE), content-type confusion, method tampering, Transfer-Encoding</td></tr>
+<tr><td>17</td><td>Host-header attacks</td><td><span class="tag tag-covered">Covered</span></td><td>Per-entity: Host injection, X-Forwarded-Host, X-Original-URL, proxy headers</td></tr>
+<tr><td>18</td><td>CORS / browser API security</td><td><span class="tag tag-covered">Covered</span></td><td>Per-entity: origin reflection, null origin, wildcard+credentials, OPTIONS preflight</td></tr>
+<tr><td>19</td><td>CSRF</td><td><span class="tag tag-na">N/A</span></td><td>API-only server; no browser-attached credentials (no cookies, no session cookies). JWT in Authorization header is not auto-attached by browsers.</td></tr>
+<tr><td>20</td><td>Rate limiting / resource exhaustion</td><td><span class="tag tag-gap">Gaps</span></td><td>Covered: login lockout, pagination cap. Missing: per-endpoint rate-limit verification, GraphQL batching bypass, resource-exhaustion limits (CPU/memory/connections)</td></tr>
+<tr><td>21</td><td>Pagination / enumeration</td><td><span class="tag tag-covered">Covered</span></td><td>Per-entity: overflow, negative, cap, wildcard search, 404-vs-403 (via IDOR tests)</td></tr>
+<tr><td>22</td><td>Sensitive information disclosure</td><td><span class="tag tag-covered">Covered</span></td><td>Per-entity: secret fields, stack traces, SQL in errors, server version, Content-Type, log redaction</td></tr>
+<tr><td>23</td><td>Error handling</td><td><span class="tag tag-covered">Covered</span></td><td>Per-entity: malformed JSON, invalid JWT, wrong content-type, oversized body, deeply nested JSON, empty/null/array body</td></tr>
+<tr><td>24</td><td>JSON / serialization attacks</td><td><span class="tag tag-gap">Gaps</span></td><td>Covered: deep nesting, prototype pollution, dot-notation, dollar operators, unicode, duplicate keys (via parameter pollution). Missing: NaN/Infinity, integer overflow in JSON values, polymorphic type fields</td></tr>
+<tr><td>25</td><td>MCP JSON-RPC protocol</td><td><span class="tag tag-na">N/A</span></td><td>No MCP implementation.</td></tr>
+<tr><td>26</td><td>MCP tool security</td><td><span class="tag tag-na">N/A</span></td><td>No MCP implementation.</td></tr>
+<tr><td>27</td><td>MCP prompt/context injection</td><td><span class="tag tag-na">N/A</span></td><td>No MCP implementation.</td></tr>
+<tr><td>28</td><td>MCP resource security</td><td><span class="tag tag-na">N/A</span></td><td>No MCP implementation.</td></tr>
+<tr><td>29</td><td>MCP Tasks / durable handles</td><td><span class="tag tag-na">N/A</span></td><td>No MCP implementation.</td></tr>
+<tr><td>30</td><td>MCP sampling / elicitation</td><td><span class="tag tag-na">N/A</span></td><td>No MCP implementation.</td></tr>
+<tr><td>31</td><td>MCP capability confusion</td><td><span class="tag tag-na">N/A</span></td><td>No MCP implementation.</td></tr>
+<tr><td>32</td><td>Secrets</td><td><span class="tag tag-covered">Covered</span></td><td>Log redaction, response omission, production JWT secret required, default API key rejected, schema stripping</td></tr>
+<tr><td>33</td><td>Webhooks / callbacks</td><td><span class="tag tag-gap">Gaps</span></td><td>Covered: Stripe signature verification, timestamp replay (xfailed without key). Missing: outbound webhook SSRF, redirect-to-internal, DNS rebinding, TLS validation</td></tr>
+<tr><td>34</td><td>HTTP caching</td><td><span class="tag tag-gap">Gaps</span></td><td>Covered: Cache-Control on authenticated responses. Missing: cross-tenant cache poisoning, cache-key manipulation, GraphQL cache collision</td></tr>
+<tr><td>35</td><td>HTTP method confusion</td><td><span class="tag tag-covered">Covered</span></td><td>Per-entity: HEAD/OPTIONS/TRACE/PATCH, method override headers, unauthenticated methods</td></tr>
+<tr><td>36</td><td>File upload/download</td><td><span class="tag tag-gap">Gaps</span></td><td>FileIO extension has path containment (is_relative_to + symlink guard). Missing: MIME spoofing, extension spoofing, archive bomb, filename traversal, symlink race tests</td></tr>
+<tr><td>37</td><td>Cryptography</td><td><span class="tag tag-gap">Gaps</span></td><td>Covered: JWT algo validation, key entropy, TOTP replay, constant-time comparison. Missing: weak key rejection, deprecated TLS, key rotation, predictable nonce/state tests</td></tr>
+<tr><td>38</td><td>Race conditions / TOCTOU</td><td><span class="tag tag-gap">Gaps</span></td><td>Covered: concurrent unique-field create. Missing: authorization-then-object-change, token revocation race, refresh rotation race, quota counter race</td></tr>
+<tr><td>39</td><td>Business-logic abuse</td><td><span class="tag tag-gap">Gaps</span></td><td>Covered: duplicate registration, invitation state machine, role escalation. Missing: unlimited invitations, unlimited password resets, state-machine skipping/reversal</td></tr>
+<tr><td>40</td><td>Third-party API consumption</td><td><span class="tag tag-single">Single</span></td><td>ProviderHTTPClient exists but no tests for hostile responses, SSRF through provider URLs, response injection</td></tr>
+<tr><td>41</td><td>Logging / audit / telemetry</td><td><span class="tag tag-gap">Gaps</span></td><td>Covered: password/token/header redaction. Missing: auth-failure logging assertion, privilege-change logging, audit-event tamper resistance, correlation-ID preservation</td></tr>
+<tr><td>42</td><td>Inventory / forgotten endpoints</td><td><span class="tag tag-single">Single</span></td><td>No route-inventory test. Need: compare deployed routes against expected inventory, detect debug/admin/undocumented endpoints</td></tr>
+<tr><td>43</td><td>Security configuration</td><td><span class="tag tag-covered">Covered</span></td><td>Per-entity: CSP, XFO, nosniff, Referrer-Policy, Permissions-Policy, HSTS, body size limit, CORS strictness</td></tr>
+<tr><td>44</td><td>Dependency / supply-chain</td><td><span class="tag tag-na">N/A</span></td><td>CI-level concern, not a unit/integration test. Handled by lockfile integrity check in pre-commit ratchet.</td></tr>
+<tr><td>45</td><td>Niche / cross-cutting</td><td><span class="tag tag-gap">Gaps</span></td><td>See detailed breakdown below.</td></tr>
+</table>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="cat1">Category 1 — Fully Covered</h2>
+<p>These sections have test coverage across all relevant entities and attack vectors. No additional tests needed.</p>
+
+<div class="category-block">
+<h4>Property-level authorization / mass assignment (Corpus &sect;2)</h4>
+<p>Every entity: audit field stripping on POST/PUT, secret field omission, ID injection rejection. Pentest suite: forbidden fields, admin role escalation, caller-owned field enforcement.</p>
+<div class="test-list">
+<span class="existing">test_POST_ignores_audit_fields_in_body</span> &middot;
+<span class="existing">test_PUT_ignores_audit_fields_in_body</span> &middot;
+<span class="existing">test_GET_response_omits_secret_fields</span> &middot;
+<span class="existing">test_mass_assignment_forbidden_fields</span> &middot;
+<span class="existing">test_register_ignores_caller_supplied_id</span> &middot;
+<span class="existing">test_registration_with_admin_role_id</span> &middot;
+<span class="existing">test_security_PUT_id_mismatch_rejected</span> &middot;
+<span class="existing">test_security_prototype_pollution_field_names</span> &middot;
+<span class="existing">test_security_json_key_with_dot_notation</span> &middot;
+<span class="existing">test_security_json_key_with_dollar_operator</span>
+</div>
+</div>
+
+<div class="category-block">
+<h4>Authentication (Corpus &sect;3)</h4>
+<p>Comprehensive JWT attack surface. Pentest suite covers 40+ auth scenarios. Per-entity abstract tests cover expired, alg:none, wrong secret.</p>
+<div class="test-list">
+<span class="existing">test_jwt_alg_none_rejected</span> &middot;
+<span class="existing">test_jwt_alg_none_mixed_case</span> &middot;
+<span class="existing">test_jwt_wrong_algorithm_rs256</span> &middot;
+<span class="existing">test_jwt_wrong_secret</span> &middot;
+<span class="existing">test_jwt_expired_token</span> &middot;
+<span class="existing">test_jwt_future_nbf</span> &middot;
+<span class="existing">test_jwt_wrong_aud_iss</span> &middot;
+<span class="existing">test_jwt_tampered_sub</span> &middot;
+<span class="existing">test_jwt_missing_jti</span> &middot;
+<span class="existing">test_jwt_empty_signature</span> &middot;
+<span class="existing">test_jwt_replay_after_session_revocation</span> &middot;
+<span class="existing">test_jwt_garbage_tokens</span> &middot;
+<span class="existing">test_security_jwt_none_algorithm</span> &middot;
+<span class="existing">test_security_expired_jwt_returns_401_not_500</span> &middot;
+<span class="existing">test_security_malformed_auth_header</span> &middot;
+<span class="existing">test_security_jwt_in_query_string_rejected</span>
+</div>
+</div>
+
+<div class="category-block">
+<h4>REST parameter attacks (Corpus &sect;8)</h4>
+<p>Per-entity abstract tests cover every parameter abuse vector.</p>
+</div>
+
+<div class="category-block">
+<h4>HTTP parser / smuggling (Corpus &sect;16)</h4>
+<p>RequestSmugglingMiddleware rejects CL+TE conflict. Per-entity: content-type confusion, method tampering.</p>
+</div>
+
+<div class="category-block">
+<h4>Host-header attacks (Corpus &sect;17), CORS (Corpus &sect;18), HTTP method confusion (Corpus &sect;35)</h4>
+<p>All per-entity via AbstractEPTest.</p>
+</div>
+
+<div class="category-block">
+<h4>Sensitive-information disclosure (Corpus &sect;22), Error handling (Corpus &sect;23), Secrets (Corpus &sect;32), Security configuration (Corpus &sect;43)</h4>
+<p>Per-entity: stack traces, SQL in errors, server version, secret fields, all security headers, Cache-Control. Log redaction tested standalone.</p>
+</div>
+
+<div class="category-block">
+<h4>GraphQL complexity / DoS (Corpus &sect;13), Pagination / enumeration (Corpus &sect;21)</h4>
+<p>Per-entity via AbstractGQLTest and AbstractEPTest respectively.</p>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="cat2">Category 2 — Has Gaps That Need Filled</h2>
+<p>Partial coverage exists. Listed items are the specific missing tests.</p>
+
+<div class="category-block">
+<h4>Authorization — BOLA/IDOR/BFLA (Corpus &sect;1)</h4>
+<p>Strong per-entity coverage for cross-user, cross-team, 401/403. Missing edge cases:</p>
+<div class="test-list">
+<span class="missing">Soft-deleted-object access (verify 404, not data leak)</span><br>
+<span class="missing">Archived-object access</span><br>
+<span class="missing">Object access after membership removal</span><br>
+<span class="missing">Object access after role downgrade</span><br>
+<span class="missing">Object access after account suspension</span><br>
+<span class="missing">Object access using token issued before permission revocation</span><br>
+<span class="missing">Authorization checked on GET but not PATCH</span><br>
+<span class="missing">Authorization checked on parent but not child</span><br>
+<span class="missing">Full role &times; operation &times; entity matrix generation</span><br>
+<span class="missing">User A accessing User B via slug/email/encoded identifier</span><br>
+<span class="missing">Authorization based on client-supplied tenant_id/user_id/role</span>
+</div>
+</div>
+
+<div class="category-block">
+<h4>Session / credential lifecycle (Corpus &sect;4)</h4>
+<p>Covered: revocation, password-change invalidation, lockout. Missing:</p>
+<div class="test-list">
+<span class="missing">Session fixation (session ID reuse after auth)</span><br>
+<span class="missing">Idle timeout enforcement</span><br>
+<span class="missing">Absolute timeout enforcement</span><br>
+<span class="missing">Concurrent-session limit (if applicable)</span><br>
+<span class="missing">Refresh-token rotation</span><br>
+<span class="missing">Refresh-token reuse detection</span><br>
+<span class="missing">Concurrent refresh requests</span><br>
+<span class="missing">Session resurrection after expiry</span><br>
+<span class="missing">Race between revocation and API request</span>
+</div>
+</div>
+
+<div class="category-block">
+<h4>Injection (Corpus &sect;9)</h4>
+<p>Covered: SQLi, SSTI, XSS, CRLF, SOQL, ReDoS. Missing:</p>
+<div class="test-list">
+<span class="missing">LDAP injection (ldap_consumer extension)</span><br>
+<span class="missing">OS command injection (fileio execute_file)</span><br>
+<span class="missing">Second-order SQLi (stored payload triggered later)</span><br>
+<span class="missing">Blind/time-based SQLi</span><br>
+<span class="missing">GraphQL resolver injection</span><br>
+<span class="missing">CSV injection in export endpoints</span>
+</div>
+</div>
+
+<div class="category-block">
+<h4>Path traversal / filesystem (Corpus &sect;10)</h4>
+<p>REST path traversal covered via PathSanitizationMiddleware. FileIO-specific gaps:</p>
+<div class="test-list">
+<span class="missing">FileIO: symlink-to-outside-base-directory</span><br>
+<span class="missing">FileIO: encoded separator bypass (%2F, %5C)</span><br>
+<span class="missing">FileIO: null-byte extension (.txt%00.exe)</span><br>
+<span class="missing">FileIO: archive extraction traversal (zip/tar)</span><br>
+<span class="missing">FileIO: Unicode path normalization</span><br>
+<span class="missing">FileIO: race between validation and access (TOCTOU)</span>
+</div>
+</div>
+
+<div class="category-block">
+<h4>GraphQL authorization (Corpus &sect;12)</h4>
+<p>Covered: unauthenticated query/mutation, introspection. Missing:</p>
+<div class="test-list">
+<span class="missing">Field-level authorization per resolver</span><br>
+<span class="missing">Aliased field bypasses authorization</span><br>
+<span class="missing">Fragment/inline-fragment bypasses authorization</span><br>
+<span class="missing">DataLoader/cache crosses users or tenants</span><br>
+<span class="missing">Batch requests bypass per-request authorization</span><br>
+<span class="missing">Deprecated fields retain weaker authorization</span>
+</div>
+</div>
+
+<div class="category-block">
+<h4>GraphQL introspection / metadata (Corpus &sect;14)</h4>
+<div class="test-list">
+<span class="missing">GraphiQL exposed in production</span><br>
+<span class="missing">Deprecated fields reveal internal functionality</span><br>
+<span class="missing">Schema differs between roles unexpectedly</span>
+</div>
+</div>
+
+<div class="category-block">
+<h4>GraphQL parser edge cases (Corpus &sect;15)</h4>
+<div class="test-list">
+<span class="missing">Duplicate operation names</span><br>
+<span class="missing">Mutation over GET</span><br>
+<span class="missing">Coercion edge cases (enum, custom scalar)</span><br>
+<span class="missing">Multiple operations without operationName</span>
+</div>
+</div>
+
+<div class="category-block">
+<h4>Rate limiting / resource exhaustion (Corpus &sect;20)</h4>
+<div class="test-list">
+<span class="missing">Per-endpoint rate-limit enforcement (beyond login)</span><br>
+<span class="missing">Rate-limit bypass via GraphQL batching</span><br>
+<span class="missing">Rate-limit bypass via aliases</span><br>
+<span class="missing">Rate-limit bypass via multiple identities</span><br>
+<span class="missing">Resource exhaustion: DB connections, threads, file descriptors</span>
+</div>
+</div>
+
+<div class="category-block">
+<h4>JSON / serialization (Corpus &sect;24)</h4>
+<div class="test-list">
+<span class="missing">NaN / Infinity / -Infinity in numeric fields</span><br>
+<span class="missing">Integer overflow in JSON values (2^53+)</span><br>
+<span class="missing">Polymorphic type fields ($type, @type, __class__)</span><br>
+<span class="missing">Object graph cycles</span>
+</div>
+</div>
+
+<div class="category-block">
+<h4>Webhooks / callbacks (Corpus &sect;33)</h4>
+<div class="test-list">
+<span class="missing">Outbound webhook SSRF (redirect to internal network)</span><br>
+<span class="missing">Outbound webhook DNS rebinding</span><br>
+<span class="missing">Outbound webhook TLS validation</span><br>
+<span class="missing">Webhook signature canonicalization differences</span>
+</div>
+</div>
+
+<div class="category-block">
+<h4>HTTP caching (Corpus &sect;34)</h4>
+<div class="test-list">
+<span class="missing">Tenant A response served to Tenant B</span><br>
+<span class="missing">Cache poisoning through unkeyed headers</span><br>
+<span class="missing">GraphQL query cache collision</span><br>
+<span class="missing">Stale authorization data after revocation</span>
+</div>
+</div>
+
+<div class="category-block">
+<h4>File upload/download (Corpus &sect;36)</h4>
+<div class="test-list">
+<span class="missing">MIME spoofing (image/png containing HTML)</span><br>
+<span class="missing">Double extension (.php.jpg)</span><br>
+<span class="missing">Archive bomb (zip/gzip decompression bomb)</span><br>
+<span class="missing">Symlink archive entries</span><br>
+<span class="missing">Filename collision after normalization</span>
+</div>
+</div>
+
+<div class="category-block">
+<h4>Cryptography (Corpus &sect;37)</h4>
+<div class="test-list">
+<span class="missing">Weak JWT key rejection (short symmetric key)</span><br>
+<span class="missing">Key rotation: old key rejected after grace period</span><br>
+<span class="missing">Predictable session ID detection</span><br>
+<span class="missing">Predictable OAuth state parameter</span>
+</div>
+</div>
+
+<div class="category-block">
+<h4>Race conditions / TOCTOU (Corpus &sect;38)</h4>
+<div class="test-list">
+<span class="missing">Authorization-check then object-changes race</span><br>
+<span class="missing">Token revocation concurrent with request</span><br>
+<span class="missing">Refresh-token rotation race</span><br>
+<span class="missing">Quota/rate-limit counter race</span><br>
+<span class="missing">Idempotency key collision</span>
+</div>
+</div>
+
+<div class="category-block">
+<h4>Business-logic abuse (Corpus &sect;39)</h4>
+<div class="test-list">
+<span class="missing">Unlimited invitation creation</span><br>
+<span class="missing">Unlimited password-reset attempts</span><br>
+<span class="missing">State-machine skipping (invitation: pending&rarr;accepted without code)</span><br>
+<span class="missing">State-machine reversal</span><br>
+<span class="missing">Self-approval</span><br>
+<span class="missing">Negative quantity/price in billing</span>
+</div>
+</div>
+
+<div class="category-block">
+<h4>Logging / audit / telemetry (Corpus &sect;41)</h4>
+<div class="test-list">
+<span class="missing">Auth-failure events logged</span><br>
+<span class="missing">Privilege-change events logged</span><br>
+<span class="missing">Audit event cannot be forged by client</span><br>
+<span class="missing">Correlation-ID preserved across log entries</span>
+</div>
+</div>
+
+<div class="category-block">
+<h4>Niche / cross-cutting (Corpus &sect;45)</h4>
+<div class="test-list">
+<span class="missing">JWT cross-context confusion (REST token accepted by GQL)</span><br>
+<span class="missing">GraphQL DataLoader tenant bleed</span><br>
+<span class="missing">Soft-delete authorization failure (alternate endpoint)</span><br>
+<span class="missing">ID enumeration through timing (inaccessible vs nonexistent)</span><br>
+<span class="missing">Error-based scope disclosure</span><br>
+<span class="missing">Duplicate JSON-key differential (proxy vs app disagree)</span><br>
+<span class="missing">Unicode security-boundary collision</span><br>
+<span class="missing">Authorization decision based on untrusted host metadata</span>
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="cat3">Category 3 — Single Unit Test Required</h2>
+<p>Framework-level tests, not per-entity. One test (or small test class) covers the surface.</p>
+
+<div class="category-block">
+<h4>SSRF (Corpus &sect;11)</h4>
+<p>ProviderHTTPClient makes outbound HTTP calls with no private-IP/localhost blocking. Needs a test class that verifies rejection of internal addresses.</p>
+<div class="test-list">
+<span class="missing">test_provider_http_client_rejects_localhost</span><br>
+<span class="missing">test_provider_http_client_rejects_private_ipv4</span><br>
+<span class="missing">test_provider_http_client_rejects_private_ipv6</span><br>
+<span class="missing">test_provider_http_client_rejects_link_local</span><br>
+<span class="missing">test_provider_http_client_rejects_cloud_metadata</span><br>
+<span class="missing">test_provider_http_client_rejects_file_scheme</span><br>
+<span class="missing">test_provider_http_client_rejects_redirect_to_internal</span>
+</div>
+</div>
+
+<div class="category-block">
+<h4>Third-party API consumption (Corpus &sect;40)</h4>
+<p>ProviderHTTPClient handles external API responses. Needs tests for hostile response handling.</p>
+<div class="test-list">
+<span class="missing">test_provider_http_client_handles_malformed_response</span><br>
+<span class="missing">test_provider_http_client_handles_huge_response</span><br>
+<span class="missing">test_provider_http_client_handles_redirect_chain</span><br>
+<span class="missing">test_provider_http_client_handles_tls_failure</span>
+</div>
+</div>
+
+<div class="category-block">
+<h4>Inventory / forgotten endpoints (Corpus &sect;42)</h4>
+<p>Need a test that enumerates all mounted routes and asserts none are debug/admin/undocumented.</p>
+<div class="test-list">
+<span class="missing">test_no_debug_endpoints_in_production</span><br>
+<span class="missing">test_all_routes_have_authentication</span><br>
+<span class="missing">test_route_inventory_matches_expected</span>
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="cat4">Category 4 — Abstract Test Required (Every Entity / Relation)</h2>
+<p>These need to run on every entity via the AbstractEPTest / AbstractGQLTest / AbstractBLLTest / AbstractDBTest bases.</p>
+
+<div class="category-block">
+<h4>Authorization matrix generation (Corpus &sect;1)</h4>
+<p>Generate the full role &times; operation matrix per entity instead of testing only the happy path.</p>
+<div class="test-list">
+<span class="missing">test_security_bola_access_via_uuid</span> (per entity)<br>
+<span class="missing">test_security_bola_access_via_foreign_key</span> (per entity)<br>
+<span class="missing">test_security_bfla_role_matrix</span> (per entity &times; role &times; operation)<br>
+<span class="missing">test_security_soft_deleted_object_inaccessible</span> (per entity)
+</div>
+</div>
+
+<div class="category-block">
+<h4>GraphQL field-level authorization (Corpus &sect;12)</h4>
+<p>Per-entity GQL tests should verify authorization at the resolver/field level, not just the query level.</p>
+<div class="test-list">
+<span class="missing">test_GQL_security_field_authorization_per_resolver</span><br>
+<span class="missing">test_GQL_security_alias_does_not_bypass_authz</span><br>
+<span class="missing">test_GQL_security_fragment_does_not_bypass_authz</span>
+</div>
+</div>
+
+<div class="category-block">
+<h4>JSON numeric edge cases (Corpus &sect;24)</h4>
+<p>Per-entity tests for numeric fields that could overflow or cause precision issues.</p>
+<div class="test-list">
+<span class="missing">test_security_json_nan_infinity</span> (per entity)<br>
+<span class="missing">test_security_json_integer_overflow</span> (per entity)
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="cat5">Category 5 — Not Relevant to This Project</h2>
+
+<div class="category-block">
+<h4>CSRF (Corpus &sect;19)</h4>
+<p class="reason">Zephyrex is an API-only server. Authentication uses JWT in the Authorization header, not cookies. Browsers do not auto-attach Authorization headers cross-origin, so CSRF is architecturally eliminated.</p>
+</div>
+
+<div class="category-block">
+<h4>MCP &mdash; all sections (Corpus &sect;&sect;6, 7, 25&ndash;31)</h4>
+<p class="reason">No MCP implementation exists in the codebase. Zero files, endpoints, handlers, or protocol support. When MCP is implemented, all 7 MCP corpus sections become mandatory. This should be a blocking gate on any MCP PR.</p>
+</div>
+
+<div class="category-block">
+<h4>OAuth / authorization-server (Corpus &sect;5)</h4>
+<p class="reason">The OAuth consumer/provider extensions exist as code but are in the unported-extensions set (broken imports, excluded from test collection). When ported, the full OAuth corpus (&sect;5) becomes mandatory &mdash; PKCE, redirect validation, issuer verification, scope escalation, and all token-lifecycle tests.</p>
+</div>
+
+<div class="category-block">
+<h4>Dependency / supply-chain (Corpus &sect;44)</h4>
+<p class="reason">CI-level concern, not a unit/integration test. The pre-commit ratchet already verifies lockfile integrity and minor-version freshness. Vulnerability scanning (CVE databases) belongs in CI pipeline tooling (e.g., <code>pip-audit</code>, Dependabot), not in the pytest suite.</p>
+</div>
+
