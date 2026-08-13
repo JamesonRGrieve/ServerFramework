@@ -2438,17 +2438,6 @@ class AbstractBLLManager(ABC):
         """Property that returns an active database session from ModelRegistry."""
         return self.model_registry.DB.session()  # type: ignore[no-any-return]
 
-    # checks if parent exists by reference_id
-    def parent_validation(self, args):
-        """Override this method to add validation logic for parent entities."""
-        if self._parent:
-            ref_model = self._parent.Model.Reference
-            if ref_model:
-                parent_class = ref_model.__bases__[0]
-                for key in parent_class.__annotations__.keys():
-                    if args.get(key) is not None:
-                        self._parent.get(id=args[key])
-
     def create_validation(self, entity):
         """Override this method to add validation logic for entity creation."""
         pass
@@ -2986,7 +2975,7 @@ class AbstractBLLManager(ABC):
             )
 
     # checks if parent exists by reference_id
-    def parent_validation(self, args):  # type: ignore[no-redef]
+    def parent_validation(self, args):
         """Override this method to add validation logic for parent entities."""
         if self._parent:
             ref_model = self._parent.Model.Reference
