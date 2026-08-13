@@ -46,8 +46,8 @@ def _resolve_provider_name(provider_class: Any, *, warn_missing: bool = False) -
     a warning is logged on the fallback path (useful during seeding).
     """
     if hasattr(provider_class, "name") and provider_class.name:
-        return provider_class.name
-    name = provider_class.__name__.replace("Provider", "").replace("PRV_", "")
+        return str(provider_class.name)
+    name: str = provider_class.__name__.replace("Provider", "").replace("PRV_", "")
     if warn_missing:
         logger.warning(
             "Provider class %s missing 'name' attribute, using %s",

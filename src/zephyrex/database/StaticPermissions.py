@@ -1100,7 +1100,7 @@ def _resolve_db_class(resource_cls: Type[Any], declarative_base) -> Type[Any]:
     if hasattr(resource_cls, "__tablename__"):
         return resource_cls
     elif hasattr(resource_cls, "DB"):
-        return resource_cls.DB(declarative_base)
+        return resource_cls.DB(declarative_base)  # type: ignore[no-any-return]
     else:
         return resource_cls
 
@@ -1692,7 +1692,7 @@ def user_has_permission(
     result, _ = check_permission(
         user_id, record_cls, record_id, db, declarative_base, permission_type
     )
-    return result == PermissionResult.GRANTED
+    return bool(result == PermissionResult.GRANTED)
 
 
 def user_can_edit(

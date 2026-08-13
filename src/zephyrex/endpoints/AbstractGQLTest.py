@@ -94,7 +94,7 @@ class AbstractGraphQLTest:
     def _gql_singular_name(self) -> str:
         """Return entity_name converted to camelCase for GraphQL field/mutation names."""
         if "_" in self.entity_name:
-            return stringcase.camelcase(self.entity_name)
+            return str(stringcase.camelcase(self.entity_name))
         return self.entity_name
 
     def _gql_response_fields(self) -> list[str]:
