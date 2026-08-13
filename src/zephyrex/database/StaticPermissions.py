@@ -1579,24 +1579,6 @@ def generate_permission_filter(
 
     permission_db_class_hook = _acl_hooks["permission_db_class"]
     if permission_db_class_hook is not None:
-        permission_db_cls = permission_db_class_hook(declarative_base)
-
-        # Convert to column name based on required permission
-        if required_permission_level == PermissionType.VIEW:
-            perm_column_name = "can_view"
-        elif required_permission_level == PermissionType.EXECUTE:
-            perm_column_name = "can_execute"
-        elif required_permission_level == PermissionType.COPY:
-            perm_column_name = "can_copy"
-        elif required_permission_level == PermissionType.EDIT:
-            perm_column_name = "can_edit"
-        elif required_permission_level == PermissionType.DELETE:
-            perm_column_name = "can_delete"
-        elif required_permission_level == PermissionType.SHARE:
-            perm_column_name = "can_share"
-        else:
-            perm_column_name = "can_view"
-
         direct_permissions = _build_direct_permission_filter(
             user_id,
             resource_cls,
@@ -1606,49 +1588,6 @@ def generate_permission_filter(
             declarative_base,
         )
         conditions.append(direct_permissions)
-
-        # Direct permission filter for explicit permissions (user/team/role).
-        direct_perm_filter = and_(
-            permission_db_cls.resource_type == resource_db_cls.__tablename__,
-            permission_db_cls.resource_id == resource_db_cls.id,
-            or_(
-                permission_db_cls.expires_at == None,
-                permission_db_cls.expires_at > func.now(),
-            ),
-            getattr(permission_db_cls, perm_column_name) == True,
-        )
-
-        user_perm_exists = exists().where(
-            and_(
-                direct_perm_filter,
-                permission_db_cls.user_id == user_id,
-            )
-        )
-
-        team_perm_exists = exists().where(
-            and_(
-                direct_perm_filter,
-                permission_db_cls.team_id.in_(
-                    select(accessible_team_ids_cte.c.id)
-                ),
-            )
-        )
-
-        user_roles = select(accessible_team_ids_cte.c.role_id).distinct()
-
-        role_perm_exists_specific = exists().where(
-            and_(
-                direct_perm_filter,
-                permission_db_cls.role_id.in_(user_roles),
-            )
-        )
-
-        perm_conditions = or_(
-            user_perm_exists,
-            team_perm_exists,
-            role_perm_exists_specific,
-        )
-        conditions.append(perm_conditions)
 
     # Combine all conditions with OR
     if not conditions:
