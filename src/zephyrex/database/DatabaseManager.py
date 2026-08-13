@@ -203,6 +203,31 @@ def get_database_info(db_prefix: str = ""):
         return {"type": db_type, "name": db_name, "url": db_url, "file_path": db_file}
 
 
+def _sync_to_async_url(sync_url: str) -> str:
+    """Convert a synchronous SQLAlchemy database URL to its async equivalent.
+
+    Handles all supported database backends:
+      - sqlite     -> sqlite+aiosqlite
+      - postgresql -> postgresql+asyncpg
+      - mysql      -> mysql+aiomysql
+      - mariadb    -> mariadb+aiomysql
+      - mssql      -> mssql+aioodbc
+
+    If the URL does not match a known sync scheme, it is returned unchanged.
+    """
+    _SYNC_TO_ASYNC_SCHEMES = (
+        ("sqlite://", "sqlite+aiosqlite://"),
+        ("postgresql://", "postgresql+asyncpg://"),
+        ("mysql://", "mysql+aiomysql://"),
+        ("mariadb://", "mariadb+aiomysql://"),
+        ("mssql://", "mssql+aioodbc://"),
+    )
+    for sync_scheme, async_scheme in _SYNC_TO_ASYNC_SCHEMES:
+        if sync_url.startswith(sync_scheme):
+            return sync_url.replace(sync_scheme, async_scheme, 1)
+    return sync_url
+
+
 class DatabaseManager:
     """
     Thread-safe database manager with parent/worker process separation.
@@ -315,9 +340,8 @@ class DatabaseManager:
                 "pool_size": 10,
                 "max_overflow": 20,
             }
-            async_url = database_uri.replace("sqlite://", "sqlite+aiosqlite://")
             self.async_engine_config = {
-                "url": async_url,
+                "url": _sync_to_async_url(database_uri),
                 "connect_args": {
                     "check_same_thread": False,
                     "timeout": 30,  # 30 second timeout for database locks
@@ -335,22 +359,8 @@ class DatabaseManager:
                 "pool_pre_ping": True,
                 "pool_recycle": 3600,
             }
-            # Generate async URL based on database type
-            if database_type == "postgresql":
-                async_url = database_uri.replace(
-                    "postgresql://", "postgresql+asyncpg://"
-                )
-            elif database_type == "mysql":
-                async_url = database_uri.replace("mysql://", "mysql+aiomysql://")
-            elif database_type == "mariadb":
-                async_url = database_uri.replace("mariadb://", "mariadb+aiomysql://")
-            elif database_type == "mssql":
-                async_url = database_uri.replace("mssql://", "mssql+aioodbc://")
-            else:
-                # Fallback for any other type - use the sync URL
-                async_url = database_uri
             self.async_engine_config = {
-                "url": async_url,
+                "url": _sync_to_async_url(database_uri),
                 "pool_size": 20,
                 "max_overflow": 30,  # Increased for tests
                 "pool_pre_ping": True,
@@ -486,16 +496,9 @@ class DatabaseManager:
                     bind=engine,
                     expire_on_commit=False,
                 )
-                # Async replica
+                # Async replica — use the shared sync-to-async mapping.
                 async_cfg = dict(self.async_engine_config)
-                # Translate sync URL to async per the same rules used for
-                # primary at init_engine_config time.
-                async_url = url
-                if self._database_type == "sqlite":
-                    async_url = url.replace("sqlite://", "sqlite+aiosqlite://")
-                elif self._database_type == "postgresql":
-                    async_url = url.replace("postgresql://", "postgresql+asyncpg://")
-                async_cfg["url"] = async_url
+                async_cfg["url"] = _sync_to_async_url(url)
                 async_engine = create_async_engine(**async_cfg)
                 self._replica_async_engines[url] = async_engine
                 self._replica_async_session_factories[url] = async_sessionmaker(
