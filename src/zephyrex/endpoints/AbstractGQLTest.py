@@ -90,6 +90,24 @@ class AbstractGraphQLTest:
             expected_value: Optional[Any] = None,
         ) -> Dict[str, Any]: ...
 
+    @property
+    def _gql_singular_name(self) -> str:
+        """Return entity_name converted to camelCase for GraphQL field/mutation names."""
+        if "_" in self.entity_name:
+            return stringcase.camelcase(self.entity_name)
+        return self.entity_name
+
+    def _gql_response_fields(self) -> list[str]:
+        """Return standard GQL response fields: id, optional string field, createdAt, updatedAt."""
+        fields = ["id", "createdAt", "updatedAt"]
+        if self.string_field_to_update:
+            gql_string_field = convert_field_name(
+                self.string_field_to_update, use_camelcase=True
+            )
+            if gql_string_field is not None:
+                fields.insert(1, gql_string_field)
+        return fields
+
     def test_GQL_query_single(self, server: Any, admin_a: Any, team_a: Any):
         """Test GraphQL single entity query."""
         # Create an entity to query (for user, this is just to ensure the user exists and is authenticated)
@@ -97,22 +115,10 @@ class AbstractGraphQLTest:
             server, admin_a.jwt, admin_a.id, team_a.id, key="gql_single"
         )
 
-        # Convert entity_name to camelCase for GraphQL field name
-        if "_" in self.entity_name:
-            singular_name = stringcase.camelcase(self.entity_name)
-        else:
-            singular_name = self.entity_name
-
+        singular_name = self._gql_singular_name
         is_user_query = singular_name.lower() == "user"
 
-        # Build response fields - only include string field if it exists, using camelCase
-        response_fields = ["id", "createdAt", "updatedAt"]
-        if self.string_field_to_update:
-            gql_string_field = convert_field_name(
-                self.string_field_to_update, use_camelcase=True
-            )
-            if gql_string_field is not None:
-                response_fields.insert(1, gql_string_field)
+        response_fields = self._gql_response_fields()
         response_fields_str = "\n                ".join(response_fields)
 
         if is_user_query:
@@ -164,22 +170,10 @@ class AbstractGraphQLTest:
             server, admin_a.jwt, admin_a.id, team_a.id, key="gql_single_id_only"
         )
 
-        # Convert entity_name to camelCase for GraphQL field name
-        if "_" in self.entity_name:
-            singular_name = stringcase.camelcase(self.entity_name)
-        else:
-            singular_name = self.entity_name
-
+        singular_name = self._gql_singular_name
         is_user_query = singular_name.lower() == "user"
 
-        # Build response fields
-        response_fields = ["id", "createdAt", "updatedAt"]
-        if self.string_field_to_update:
-            gql_string_field = convert_field_name(
-                self.string_field_to_update, use_camelcase=True
-            )
-            if gql_string_field is not None:
-                response_fields.insert(1, gql_string_field)
+        response_fields = self._gql_response_fields()
         response_fields_str = "\n                ".join(response_fields)
 
         if is_user_query:
@@ -238,11 +232,7 @@ class AbstractGraphQLTest:
             server, admin_a.jwt, admin_a.id, team_a.id, key="gql_foreign_keys_only"
         )
 
-        # Convert entity_name to camelCase for GraphQL field name
-        if "_" in self.entity_name:
-            singular_name = stringcase.camelcase(self.entity_name)
-        else:
-            singular_name = self.entity_name
+        singular_name = self._gql_singular_name
 
         # Build query arguments using ONLY foreign keys (no primary ID)
         query_args = []
@@ -274,15 +264,7 @@ class AbstractGraphQLTest:
 
         query_params_str = ", ".join(query_args)
 
-        # Build response fields
-        response_fields = ["id", "createdAt", "updatedAt"]
-        if self.string_field_to_update:
-            gql_string_field = convert_field_name(
-                self.string_field_to_update, use_camelcase=True
-            )
-            if gql_string_field is not None:
-                response_fields.insert(1, gql_string_field)
-
+        response_fields = self._gql_response_fields()
         response_fields_str = "\n                ".join(response_fields)
 
         query = f"""
@@ -390,11 +372,7 @@ class AbstractGraphQLTest:
             # Track entity for cleanup
             self.tracked_entities[f"multi_fields_{i}"] = entity
 
-        # Convert entity_name to camelCase for GraphQL field name
-        if "_" in self.entity_name:
-            singular_name = stringcase.camelcase(self.entity_name)
-        else:
-            singular_name = self.entity_name
+        singular_name = self._gql_singular_name
 
         # Test querying with multiple fields: ID + string field
         target_entity = entities[1]  # Use the middle entity
@@ -416,11 +394,7 @@ class AbstractGraphQLTest:
 
         query_params_str = ", ".join(query_args)
 
-        # Build response fields
-        response_fields = ["id", "createdAt", "updatedAt"]
-        if gql_string_field is not None:
-            response_fields.append(gql_string_field)
-
+        response_fields = self._gql_response_fields()
         response_fields_str = "\n                ".join(response_fields)
 
         # Build query
@@ -515,11 +489,7 @@ class AbstractGraphQLTest:
         self, server: Any, admin_a: Any, team_a: Any
     ):
         """Test that GraphQL query fails when no identifying parameters are provided."""
-        # Convert entity_name to camelCase for GraphQL field name
-        if "_" in self.entity_name:
-            singular_name = stringcase.camelcase(self.entity_name)
-        else:
-            singular_name = self.entity_name
+        singular_name = self._gql_singular_name
 
         # Query with NO identifying parameters
         query = f"""
@@ -578,17 +548,7 @@ class AbstractGraphQLTest:
         # Note: GraphQL list resolvers don't accept parent entity arguments like teamId
         # They handle filtering internally based on the authenticated user's context
         query_params_str = ""
-        # Build the field list for the query
-        field_list = ["id", "createdAt", "updatedAt"]
-        # Only include string field if it exists
-        if self.string_field_to_update:
-            # Convert string_field_to_update to camelCase for GraphQL
-            gql_string_field = convert_field_name(
-                self.string_field_to_update, use_camelcase=True
-            )
-            field_list.insert(
-                1, gql_string_field
-            )  # Insert after id but before timestamps
+        field_list = self._gql_response_fields()
 
         # Build query (using camelCase for response fields)
         fields_str = "\n                ".join(field_list)
@@ -631,11 +591,7 @@ class AbstractGraphQLTest:
             server, admin_a.jwt, admin_a.id, team_a.id, key="gql_fields"
         )
 
-        # Convert entity_name to camelCase for GraphQL field name
-        if "_" in self.entity_name:
-            singular_name = stringcase.camelcase(self.entity_name)
-        else:
-            singular_name = self.entity_name
+        singular_name = self._gql_singular_name
 
         # Test selecting only specific fields (using camelCase)
         fields = ["id"]
@@ -720,19 +676,14 @@ class AbstractGraphQLTest:
         else:
             plural_name = self.resource_name_plural
 
-        # Build the field list for the query
+        # Pagination queries omit updatedAt but include the string field
         field_list = ["id", "createdAt"]
-
-        # Only include string field if it exists
         if self.string_field_to_update:
-            # Convert string_field_to_update to camelCase for GraphQL
             gql_string_field = convert_field_name(
                 self.string_field_to_update, use_camelcase=True
             )
             if gql_string_field is not None:
-                field_list.insert(
-                    1, gql_string_field
-                )  # Insert after id but before timestamps
+                field_list.insert(1, gql_string_field)
 
         # Test pagination with limit and offset (using camelCase)
         fields_str = "\n                ".join(field_list)
@@ -772,12 +723,7 @@ class AbstractGraphQLTest:
 
     def test_GQL_mutation_create(self, server: Any, admin_a: Any, team_a: Any):
         """Test GraphQL create mutation."""
-        # Convert entity_name to camelCase for GraphQL mutation name
-        if "_" in self.entity_name:
-            camel_case_entity = stringcase.camelcase(self.entity_name)
-        else:
-            camel_case_entity = self.entity_name
-        # Convert to PascalCase for the mutation name
+        camel_case_entity = self._gql_singular_name
         mutation_name = f"create{stringcase.pascalcase(camel_case_entity)}"
 
         # Build input data using the configured string field
@@ -853,10 +799,7 @@ class AbstractGraphQLTest:
 
         input_str = "{" + ", ".join(input_fields) + "}"
 
-        # Build the response fields - include gql_string_field only if it exists
-        response_fields = ["id", "createdAt", "updatedAt"]
-        if gql_string_field is not None:
-            response_fields.append(gql_string_field)
+        response_fields = self._gql_response_fields()
 
         mutation = f"""
         mutation {{
@@ -903,12 +846,7 @@ class AbstractGraphQLTest:
             server, admin_a.jwt, admin_a.id, team_a.id, key="gql_update"
         )
 
-        # Convert entity_name to camelCase for GraphQL mutation name
-        if "_" in self.entity_name:
-            camel_case_entity = stringcase.camelcase(self.entity_name)
-        else:
-            camel_case_entity = self.entity_name
-        # Convert to PascalCase for the mutation name
+        camel_case_entity = self._gql_singular_name
         mutation_name = f"update{stringcase.pascalcase(camel_case_entity)}"
 
         # Build update data using the configured string field if it exists
@@ -942,10 +880,7 @@ class AbstractGraphQLTest:
 
         input_str = "{" + ", ".join(input_fields) + "}"
 
-        # Build the response fields - include gql_string_field only if it exists
-        response_fields = ["id", "createdAt", "updatedAt"]
-        if gql_string_field is not None:
-            response_fields.append(gql_string_field)
+        response_fields = self._gql_response_fields()
 
         mutation = f"""
         mutation {{
@@ -992,13 +927,7 @@ class AbstractGraphQLTest:
             server, admin_a.jwt, admin_a.id, team_a.id, key="gql_delete"
         )
 
-        # Convert entity_name to camelCase for GraphQL mutation name
-        # Use the same logic as create/update methods
-        if "_" in self.entity_name:
-            camel_case_entity = stringcase.camelcase(self.entity_name)
-        else:
-            camel_case_entity = self.entity_name
-        # Capitalize only the first letter for the mutation name
+        camel_case_entity = self._gql_singular_name
         mutation_name = f"delete{stringcase.pascalcase(camel_case_entity)}"
 
         # Use API key for system entities
@@ -1040,13 +969,7 @@ class AbstractGraphQLTest:
 
     def test_GQL_mutation_validation(self, server: Any, admin_a: Any, team_a: Any):
         """Test GraphQL mutation validation."""
-        # Convert entity_name to camelCase for GraphQL mutation name
-        # Use the same logic as create/update/delete methods
-        if "_" in self.entity_name:
-            camel_case_entity = stringcase.camelcase(self.entity_name)
-        else:
-            camel_case_entity = self.entity_name
-        # Convert to PascalCase for the mutation name
+        camel_case_entity = self._gql_singular_name
         mutation_name = f"create{stringcase.pascalcase(camel_case_entity)}"
 
         # Build invalid mutation (missing required field)
@@ -1080,13 +1003,7 @@ class AbstractGraphQLTest:
 
     def test_GQL_subscription(self, server: Any, admin_a: Any, team_a: Any):
         """Test GraphQL subscription."""
-        # Convert entity_name to camelCase for GraphQL subscription name
-        # Use the same logic as create/update/delete methods
-        if "_" in self.entity_name:
-            camel_case_entity = stringcase.camelcase(self.entity_name)
-        else:
-            camel_case_entity = self.entity_name
-        # Use camelCase for subscription name: provider_extension -> providerExtensionCreated
+        camel_case_entity = self._gql_singular_name
         subscription_name = f"{camel_case_entity}Created"
 
         # Build subscription query (using camelCase for response fields)
@@ -1741,13 +1658,7 @@ class AbstractGraphQLTest:
 
             input_str = "{" + ", ".join(input_fields) + "}"
 
-            # Build response fields with navigation properties
-            response_fields = ["id", "createdAt", "updatedAt"]
-            if self.string_field_to_update:
-                gql_string_field = convert_field_name(
-                    self.string_field_to_update, use_camelcase=True
-                )
-                response_fields.append(gql_string_field)
+            response_fields = self._gql_response_fields()
 
             # Add navigation fields in response
             if self._has_self_referential_properties():
@@ -1859,13 +1770,7 @@ class AbstractGraphQLTest:
 
             input_str = "{" + ", ".join(input_fields) + "}"
 
-            # Build response fields with navigation properties
-            response_fields = ["id", "createdAt", "updatedAt"]
-            if self.string_field_to_update:
-                gql_string_field = convert_field_name(
-                    self.string_field_to_update, use_camelcase=True
-                )
-                response_fields.append(gql_string_field)
+            response_fields = self._gql_response_fields()
 
             mutation = f"""
             mutation {{
