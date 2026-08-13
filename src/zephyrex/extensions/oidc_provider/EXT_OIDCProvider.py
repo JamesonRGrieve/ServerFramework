@@ -67,27 +67,16 @@ class EXT_OIDCProvider(AbstractStaticExtension):
         return True
 
     @classmethod
-    def on_start(cls) -> bool:
-        return True
-
-    @classmethod
-    def on_stop(cls) -> bool:
-        return True
-
-    @classmethod
     def validate_config(cls) -> List[str]:
         from zephyrex.lib.Environment import env as _env
 
         issues: List[str] = []
         if not _env("OIDC_PROVIDER_ISSUER_URL"):
-            issues.append("OIDC_PROVIDER_ISSUER_URL is unset; discovery document incomplete")
+            issues.append(
+                "OIDC_PROVIDER_ISSUER_URL is unset; discovery document incomplete"
+            )
         if not _env("OIDC_PROVIDER_SIGNING_KEY_PATH"):
-            issues.append("OIDC_PROVIDER_SIGNING_KEY_PATH is unset; ID token signing will fail")
+            issues.append(
+                "OIDC_PROVIDER_SIGNING_KEY_PATH is unset; ID token signing will fail"
+            )
         return issues
-
-    @classmethod
-    def get_abilities(cls) -> Set[str]:
-        return cls._abilities.copy()
-
-    def has_ability(self, ability: str) -> bool:
-        return ability in self._abilities

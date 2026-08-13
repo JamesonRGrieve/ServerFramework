@@ -40,22 +40,3 @@ class EXT_Auth_Notifications(AbstractStaticExtension):
         register_merge_participation()
         logger.debug("auth_notifications initialized")
         return True
-
-    @classmethod
-    def on_start(cls) -> bool:
-        return True
-
-    @classmethod
-    def on_stop(cls) -> bool:
-        return True
-
-    @classmethod
-    def validate_config(cls) -> List[str]:
-        return []
-
-    @classmethod
-    def get_abilities(cls) -> Set[str]:
-        return cls._abilities.copy()
-
-    def has_ability(self, ability: str) -> bool:
-        return ability in self._abilities

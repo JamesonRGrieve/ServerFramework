@@ -76,14 +76,6 @@ class EXT_OIDCConsumer(AbstractStaticExtension):
         return True
 
     @classmethod
-    def on_start(cls) -> bool:
-        return True
-
-    @classmethod
-    def on_stop(cls) -> bool:
-        return True
-
-    @classmethod
     def validate_config(cls) -> List[str]:
         from zephyrex.lib.Environment import env as _env
 
@@ -93,10 +85,3 @@ class EXT_OIDCConsumer(AbstractStaticExtension):
         if not _env("OIDC_CONSUMER_CLIENT_ID"):
             issues.append("OIDC_CONSUMER_CLIENT_ID is unset; auth flow will fail")
         return issues
-
-    @classmethod
-    def get_abilities(cls) -> Set[str]:
-        return cls._abilities.copy()
-
-    def has_ability(self, ability: str) -> bool:
-        return ability in self._abilities

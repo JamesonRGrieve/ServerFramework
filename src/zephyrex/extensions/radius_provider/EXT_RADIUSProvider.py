@@ -59,14 +59,6 @@ class EXT_RADIUSProvider(AbstractStaticExtension):
         return True
 
     @classmethod
-    def on_start(cls) -> bool:
-        return True
-
-    @classmethod
-    def on_stop(cls) -> bool:
-        return True
-
-    @classmethod
     def validate_config(cls) -> List[str]:
         from zephyrex.lib.Environment import env as _env
 
@@ -76,10 +68,3 @@ class EXT_RADIUSProvider(AbstractStaticExtension):
                 "RADIUS_PROVIDER_DEFAULT_SECRET is unset; NAS clients will need per-client secrets"
             )
         return issues
-
-    @classmethod
-    def get_abilities(cls) -> Set[str]:
-        return cls._abilities.copy()
-
-    def has_ability(self, ability: str) -> bool:
-        return ability in self._abilities

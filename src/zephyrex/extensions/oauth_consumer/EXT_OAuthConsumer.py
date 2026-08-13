@@ -92,14 +92,6 @@ class EXT_OAuthConsumer(AbstractStaticExtension):
         return True
 
     @classmethod
-    def on_start(cls) -> bool:
-        return True
-
-    @classmethod
-    def on_stop(cls) -> bool:
-        return True
-
-    @classmethod
     def validate_config(cls) -> List[str]:
         from zephyrex.lib.Environment import env as _env
         from zephyrex.lib.SecretEncryption import (
@@ -117,10 +109,3 @@ class EXT_OAuthConsumer(AbstractStaticExtension):
         except MissingFernetKeyError as e:
             issues.append(str(e))
         return issues
-
-    @classmethod
-    def get_abilities(cls) -> Set[str]:
-        return cls._abilities.copy()
-
-    def has_ability(self, ability: str) -> bool:
-        return ability in self._abilities

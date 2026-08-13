@@ -19,9 +19,7 @@ from zephyrex.lib.Logging import logger
 class EXT_SAMLProvider(AbstractStaticExtension):
     name: ClassVar[str] = "saml_provider"
     version: ClassVar[str] = "1.0.0"
-    description: ClassVar[str] = (
-        "Run this server as a SAML 2.0 Identity Provider."
-    )
+    description: ClassVar[str] = "Run this server as a SAML 2.0 Identity Provider."
 
     _env: ClassVar[Dict[str, Any]] = {
         "SAML_PROVIDER_ENTITY_ID": "",
@@ -64,14 +62,6 @@ class EXT_SAMLProvider(AbstractStaticExtension):
         return True
 
     @classmethod
-    def on_start(cls) -> bool:
-        return True
-
-    @classmethod
-    def on_stop(cls) -> bool:
-        return True
-
-    @classmethod
     def validate_config(cls) -> List[str]:
         from zephyrex.lib.Environment import env as _env
 
@@ -79,12 +69,7 @@ class EXT_SAMLProvider(AbstractStaticExtension):
         if not _env("SAML_PROVIDER_ENTITY_ID"):
             issues.append("SAML_PROVIDER_ENTITY_ID is unset; IdP metadata incomplete")
         if not _env("SAML_PROVIDER_CERT_PATH"):
-            issues.append("SAML_PROVIDER_CERT_PATH is unset; assertion signing will fail")
+            issues.append(
+                "SAML_PROVIDER_CERT_PATH is unset; assertion signing will fail"
+            )
         return issues
-
-    @classmethod
-    def get_abilities(cls) -> Set[str]:
-        return cls._abilities.copy()
-
-    def has_ability(self, ability: str) -> bool:
-        return ability in self._abilities

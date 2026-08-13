@@ -35,24 +35,3 @@ class EXT_Quota(AbstractStaticExtension):
     def on_initialize(cls) -> bool:
         logger.debug("Initializing quota extension")
         return True
-
-    @classmethod
-    def on_start(cls) -> bool:
-        logger.debug("quota extension started")
-        return True
-
-    @classmethod
-    def on_stop(cls) -> bool:
-        logger.debug("quota extension stopped")
-        return True
-
-    @classmethod
-    def validate_config(cls) -> List[str]:
-        return []
-
-    @classmethod
-    def get_abilities(cls) -> Set[str]:
-        return cls._abilities.copy()
-
-    def has_ability(self, ability: str) -> bool:
-        return ability in self._abilities

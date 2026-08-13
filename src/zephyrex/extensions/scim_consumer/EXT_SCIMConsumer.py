@@ -60,14 +60,6 @@ class EXT_SCIMConsumer(AbstractStaticExtension):
         return True
 
     @classmethod
-    def on_start(cls) -> bool:
-        return True
-
-    @classmethod
-    def on_stop(cls) -> bool:
-        return True
-
-    @classmethod
     def validate_config(cls) -> List[str]:
         from zephyrex.lib.Environment import env as _env
 
@@ -77,10 +69,3 @@ class EXT_SCIMConsumer(AbstractStaticExtension):
                 "SCIM_CONSUMER_BEARER_TOKEN is unset; SCIM endpoints will be unauthenticated"
             )
         return issues
-
-    @classmethod
-    def get_abilities(cls) -> Set[str]:
-        return cls._abilities.copy()
-
-    def has_ability(self, ability: str) -> bool:
-        return ability in self._abilities

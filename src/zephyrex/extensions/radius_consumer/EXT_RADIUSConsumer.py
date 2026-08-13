@@ -61,27 +61,14 @@ class EXT_RADIUSConsumer(AbstractStaticExtension):
         return True
 
     @classmethod
-    def on_start(cls) -> bool:
-        return True
-
-    @classmethod
-    def on_stop(cls) -> bool:
-        return True
-
-    @classmethod
     def validate_config(cls) -> List[str]:
         from zephyrex.lib.Environment import env as _env
 
         issues: List[str] = []
         if not _env("RADIUS_CONSUMER_HOST"):
-            issues.append("RADIUS_CONSUMER_HOST is unset; RADIUS authentication will fail")
+            issues.append(
+                "RADIUS_CONSUMER_HOST is unset; RADIUS authentication will fail"
+            )
         if not _env("RADIUS_CONSUMER_SECRET"):
             issues.append("RADIUS_CONSUMER_SECRET is unset; shared secret required")
         return issues
-
-    @classmethod
-    def get_abilities(cls) -> Set[str]:
-        return cls._abilities.copy()
-
-    def has_ability(self, ability: str) -> bool:
-        return ability in self._abilities

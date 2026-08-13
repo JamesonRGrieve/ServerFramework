@@ -49,14 +49,6 @@ class EXT_ProxyAuthConsumer(AbstractStaticExtension):
         return True
 
     @classmethod
-    def on_start(cls) -> bool:
-        return True
-
-    @classmethod
-    def on_stop(cls) -> bool:
-        return True
-
-    @classmethod
     def validate_config(cls) -> List[str]:
         from zephyrex.lib.Environment import env as _env
 
@@ -67,10 +59,3 @@ class EXT_ProxyAuthConsumer(AbstractStaticExtension):
                 "proxy auth headers will be rejected from all sources"
             )
         return issues
-
-    @classmethod
-    def get_abilities(cls) -> Set[str]:
-        return cls._abilities.copy()
-
-    def has_ability(self, ability: str) -> bool:
-        return ability in self._abilities

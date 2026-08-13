@@ -18,9 +18,7 @@ from zephyrex.lib.Logging import logger
 class EXT_WebAuthnConsumer(AbstractStaticExtension):
     name: ClassVar[str] = "webauthn_consumer"
     version: ClassVar[str] = "1.0.0"
-    description: ClassVar[str] = (
-        "Authenticate users via WebAuthn/FIDO2/Passkeys."
-    )
+    description: ClassVar[str] = "Authenticate users via WebAuthn/FIDO2/Passkeys."
 
     _env: ClassVar[Dict[str, Any]] = {
         "WEBAUTHN_CONSUMER_RP_ID": "",
@@ -59,14 +57,6 @@ class EXT_WebAuthnConsumer(AbstractStaticExtension):
         return True
 
     @classmethod
-    def on_start(cls) -> bool:
-        return True
-
-    @classmethod
-    def on_stop(cls) -> bool:
-        return True
-
-    @classmethod
     def validate_config(cls) -> List[str]:
         from zephyrex.lib.Environment import env as _env
 
@@ -74,12 +64,7 @@ class EXT_WebAuthnConsumer(AbstractStaticExtension):
         if not _env("WEBAUTHN_CONSUMER_RP_ID"):
             issues.append("WEBAUTHN_CONSUMER_RP_ID is unset; relying party ID required")
         if not _env("WEBAUTHN_CONSUMER_ORIGIN"):
-            issues.append("WEBAUTHN_CONSUMER_ORIGIN is unset; origin validation will fail")
+            issues.append(
+                "WEBAUTHN_CONSUMER_ORIGIN is unset; origin validation will fail"
+            )
         return issues
-
-    @classmethod
-    def get_abilities(cls) -> Set[str]:
-        return cls._abilities.copy()
-
-    def has_ability(self, ability: str) -> bool:
-        return ability in self._abilities

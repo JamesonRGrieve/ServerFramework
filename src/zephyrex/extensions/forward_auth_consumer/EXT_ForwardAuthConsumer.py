@@ -59,14 +59,6 @@ class EXT_ForwardAuthConsumer(AbstractStaticExtension):
         return True
 
     @classmethod
-    def on_start(cls) -> bool:
-        return True
-
-    @classmethod
-    def on_stop(cls) -> bool:
-        return True
-
-    @classmethod
     def validate_config(cls) -> List[str]:
         from zephyrex.lib.Environment import env as _env
 
@@ -74,10 +66,3 @@ class EXT_ForwardAuthConsumer(AbstractStaticExtension):
         if not _env("FORWARD_AUTH_CONSUMER_URL"):
             issues.append("FORWARD_AUTH_CONSUMER_URL is unset; subrequests will fail")
         return issues
-
-    @classmethod
-    def get_abilities(cls) -> Set[str]:
-        return cls._abilities.copy()
-
-    def has_ability(self, ability: str) -> bool:
-        return ability in self._abilities

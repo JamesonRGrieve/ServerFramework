@@ -34,24 +34,3 @@ class EXT_Privacy(AbstractStaticExtension):
     def on_initialize(cls) -> bool:
         logger.debug("Initializing privacy extension")
         return True
-
-    @classmethod
-    def on_start(cls) -> bool:
-        logger.debug("privacy extension started")
-        return True
-
-    @classmethod
-    def on_stop(cls) -> bool:
-        logger.debug("privacy extension stopped")
-        return True
-
-    @classmethod
-    def validate_config(cls) -> List[str]:
-        return []
-
-    @classmethod
-    def get_abilities(cls) -> Set[str]:
-        return cls._abilities.copy()
-
-    def has_ability(self, ability: str) -> bool:
-        return ability in self._abilities

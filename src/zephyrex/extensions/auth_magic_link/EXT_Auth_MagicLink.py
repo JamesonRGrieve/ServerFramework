@@ -39,16 +39,6 @@ class EXT_Auth_MagicLink(AbstractStaticExtension):
         return True
 
     @classmethod
-    def on_start(cls) -> bool:
-        logger.debug("Magic-link extension started")
-        return True
-
-    @classmethod
-    def on_stop(cls) -> bool:
-        logger.debug("Magic-link extension stopped")
-        return True
-
-    @classmethod
     def validate_config(cls) -> List[str]:
         from zephyrex.lib.Environment import env as _env
 
@@ -58,10 +48,3 @@ class EXT_Auth_MagicLink(AbstractStaticExtension):
                 "MAGIC_LINK_BASE_URL not configured; redirect target will be empty"
             )
         return issues
-
-    @classmethod
-    def get_abilities(cls) -> Set[str]:
-        return cls._abilities.copy()
-
-    def has_ability(self, ability: str) -> bool:
-        return ability in self._abilities

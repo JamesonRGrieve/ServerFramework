@@ -60,27 +60,16 @@ class EXT_X509Provider(AbstractStaticExtension):
         return True
 
     @classmethod
-    def on_start(cls) -> bool:
-        return True
-
-    @classmethod
-    def on_stop(cls) -> bool:
-        return True
-
-    @classmethod
     def validate_config(cls) -> List[str]:
         from zephyrex.lib.Environment import env as _env
 
         issues: List[str] = []
         if not _env("X509_PROVIDER_CA_CERT_PATH"):
-            issues.append("X509_PROVIDER_CA_CERT_PATH is unset; cannot sign certificates")
+            issues.append(
+                "X509_PROVIDER_CA_CERT_PATH is unset; cannot sign certificates"
+            )
         if not _env("X509_PROVIDER_CA_KEY_PATH"):
-            issues.append("X509_PROVIDER_CA_KEY_PATH is unset; cannot sign certificates")
+            issues.append(
+                "X509_PROVIDER_CA_KEY_PATH is unset; cannot sign certificates"
+            )
         return issues
-
-    @classmethod
-    def get_abilities(cls) -> Set[str]:
-        return cls._abilities.copy()
-
-    def has_ability(self, ability: str) -> bool:
-        return ability in self._abilities

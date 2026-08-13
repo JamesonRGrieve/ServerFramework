@@ -15,9 +15,7 @@ from zephyrex.lib.Logging import logger
 class EXT_Meta_Labels(AbstractStaticExtension):
     name: ClassVar[str] = "meta_labels"
     version: ClassVar[str] = "1.0.0"
-    description: ClassVar[str] = (
-        "Polymorphic label catalog and attachment table."
-    )
+    description: ClassVar[str] = "Polymorphic label catalog and attachment table."
 
     _env: ClassVar[Dict[str, Any]] = {}
     dependencies: ClassVar[Dependencies] = Dependencies([])
@@ -34,22 +32,3 @@ class EXT_Meta_Labels(AbstractStaticExtension):
 
         logger.debug("meta_labels initialized")
         return True
-
-    @classmethod
-    def on_start(cls) -> bool:
-        return True
-
-    @classmethod
-    def on_stop(cls) -> bool:
-        return True
-
-    @classmethod
-    def validate_config(cls) -> List[str]:
-        return []
-
-    @classmethod
-    def get_abilities(cls) -> Set[str]:
-        return cls._abilities.copy()
-
-    def has_ability(self, ability: str) -> bool:
-        return ability in self._abilities

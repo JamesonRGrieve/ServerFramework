@@ -60,14 +60,6 @@ class EXT_LDAPProvider(AbstractStaticExtension):
         return True
 
     @classmethod
-    def on_start(cls) -> bool:
-        return True
-
-    @classmethod
-    def on_stop(cls) -> bool:
-        return True
-
-    @classmethod
     def validate_config(cls) -> List[str]:
         from zephyrex.lib.Environment import env as _env
 
@@ -75,10 +67,3 @@ class EXT_LDAPProvider(AbstractStaticExtension):
         if not _env("LDAP_PROVIDER_BASE_DN"):
             issues.append("LDAP_PROVIDER_BASE_DN is unset; directory root undefined")
         return issues
-
-    @classmethod
-    def get_abilities(cls) -> Set[str]:
-        return cls._abilities.copy()
-
-    def has_ability(self, ability: str) -> bool:
-        return ability in self._abilities

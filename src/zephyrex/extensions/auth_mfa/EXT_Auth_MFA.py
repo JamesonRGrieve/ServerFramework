@@ -3,7 +3,10 @@ from typing import Any, ClassVar, Dict, List, Set
 from fastapi import Depends, HTTPException, Path
 from pydantic import BaseModel
 
-from zephyrex.extensions.AbstractExtensionProvider import AbstractStaticExtension, ability
+from zephyrex.extensions.AbstractExtensionProvider import (
+    AbstractStaticExtension,
+    ability,
+)
 from zephyrex.extensions.auth_mfa.BLL_Auth_MFA import (
     MultifactorMethodManager,
     MultifactorRecoveryCodeManager,
@@ -112,9 +115,7 @@ class EXT_Auth_MFA(AbstractStaticExtension):
         try:
             import pyotp  # noqa: F401
         except ImportError:
-            logger.error(
-                "PyOTP library is required for MFA but is not installed"
-            )
+            logger.error("PyOTP library is required for MFA but is not installed")
             return False
 
         logger.debug("MFA extension initialized successfully")
@@ -173,15 +174,6 @@ class EXT_Auth_MFA(AbstractStaticExtension):
             )
 
         return issues
-
-    @classmethod
-    def get_abilities(cls) -> Set[str]:
-        """Return the abilities this extension provides."""
-        return cls._abilities.copy()
-
-    def has_ability(self, ability: str) -> bool:
-        """Check if this extension has a specific ability."""
-        return ability in self._abilities
 
     # Static routes for MFA operations
     @classmethod

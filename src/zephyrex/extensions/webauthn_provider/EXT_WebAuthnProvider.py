@@ -61,31 +61,14 @@ class EXT_WebAuthnProvider(AbstractStaticExtension):
         return True
 
     @classmethod
-    def on_start(cls) -> bool:
-        return True
-
-    @classmethod
-    def on_stop(cls) -> bool:
-        return True
-
-    @classmethod
     def validate_config(cls) -> List[str]:
         from zephyrex.lib.Environment import env as _env
 
         issues: List[str] = []
         if not _env("WEBAUTHN_PROVIDER_RP_ID"):
-            issues.append(
-                "WEBAUTHN_PROVIDER_RP_ID is unset; relying party ID required"
-            )
+            issues.append("WEBAUTHN_PROVIDER_RP_ID is unset; relying party ID required")
         if not _env("WEBAUTHN_PROVIDER_ORIGIN"):
             issues.append(
                 "WEBAUTHN_PROVIDER_ORIGIN is unset; origin validation will fail"
             )
         return issues
-
-    @classmethod
-    def get_abilities(cls) -> Set[str]:
-        return cls._abilities.copy()
-
-    def has_ability(self, ability: str) -> bool:
-        return ability in self._abilities

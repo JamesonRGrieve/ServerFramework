@@ -60,14 +60,6 @@ class EXT_KerberosConsumer(AbstractStaticExtension):
         return True
 
     @classmethod
-    def on_start(cls) -> bool:
-        return True
-
-    @classmethod
-    def on_stop(cls) -> bool:
-        return True
-
-    @classmethod
     def validate_config(cls) -> List[str]:
         from zephyrex.lib.Environment import env as _env
 
@@ -77,10 +69,3 @@ class EXT_KerberosConsumer(AbstractStaticExtension):
         if not _env("KERBEROS_CONSUMER_KDC_HOST"):
             issues.append("KERBEROS_CONSUMER_KDC_HOST is unset; cannot reach KDC")
         return issues
-
-    @classmethod
-    def get_abilities(cls) -> Set[str]:
-        return cls._abilities.copy()
-
-    def has_ability(self, ability: str) -> bool:
-        return ability in self._abilities

@@ -66,14 +66,6 @@ class EXT_SAMLConsumer(AbstractStaticExtension):
         return True
 
     @classmethod
-    def on_start(cls) -> bool:
-        return True
-
-    @classmethod
-    def on_stop(cls) -> bool:
-        return True
-
-    @classmethod
     def validate_config(cls) -> List[str]:
         from zephyrex.lib.Environment import env as _env
 
@@ -81,12 +73,7 @@ class EXT_SAMLConsumer(AbstractStaticExtension):
         if not _env("SAML_CONSUMER_ENTITY_ID"):
             issues.append("SAML_CONSUMER_ENTITY_ID is unset; SP metadata incomplete")
         if not _env("SAML_CONSUMER_ACS_URL"):
-            issues.append("SAML_CONSUMER_ACS_URL is unset; assertion consumer service undefined")
+            issues.append(
+                "SAML_CONSUMER_ACS_URL is unset; assertion consumer service undefined"
+            )
         return issues
-
-    @classmethod
-    def get_abilities(cls) -> Set[str]:
-        return cls._abilities.copy()
-
-    def has_ability(self, ability: str) -> bool:
-        return ability in self._abilities

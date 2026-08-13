@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Set
 
-from zephyrex.extensions.AbstractExtensionProvider import AbstractStaticExtension, ability
+from zephyrex.extensions.AbstractExtensionProvider import (
+    AbstractStaticExtension,
+    ability,
+)
 from zephyrex.lib.Dependencies import EXT_Dependency, PIP_Dependency
 from zephyrex.lib.Environment import env
 from zephyrex.lib.Logging import logger
@@ -76,11 +79,6 @@ class EXT_Meta_Logging(AbstractStaticExtension):
 
         # Logging manager instance
         self.logging_manager = None
-
-    @classmethod
-    def get_abilities(cls) -> Set[str]:
-        """Return the abilities this extension provides."""
-        return cls.abilities.copy()
 
     @classmethod
     def register_ability(cls, ability: str):
@@ -194,7 +192,9 @@ class EXT_Meta_Logging(AbstractStaticExtension):
         """Initialize the logging manager."""
         try:
             if self.influxdb_available:
-                from zephyrex.extensions.meta_logging.BLL_Meta_Logging import MetaLoggingManager
+                from zephyrex.extensions.meta_logging.BLL_Meta_Logging import (
+                    MetaLoggingManager,
+                )
 
                 model_registry = self._get_model_registry()
                 if not model_registry:
@@ -287,7 +287,9 @@ class EXT_Meta_Logging(AbstractStaticExtension):
             return {"success": False, "message": "Logging manager not available"}
 
         try:
-            from zephyrex.extensions.meta_logging.BLL_Meta_Logging import FailedLoginAttemptModel
+            from zephyrex.extensions.meta_logging.BLL_Meta_Logging import (
+                FailedLoginAttemptModel,
+            )
 
             login_data = FailedLoginAttemptModel.Create(
                 username=username,
@@ -435,7 +437,9 @@ class EXT_Meta_Logging(AbstractStaticExtension):
         try:
             from datetime import datetime
 
-            from zephyrex.extensions.meta_logging.BLL_Meta_Logging import FailedLoginAttemptModel
+            from zephyrex.extensions.meta_logging.BLL_Meta_Logging import (
+                FailedLoginAttemptModel,
+            )
 
             # Parse datetime strings if provided
             start_dt = (
@@ -577,10 +581,6 @@ class EXT_Meta_Logging(AbstractStaticExtension):
             issues.append("InfluxDB not configured - audit logs will not be stored")
 
         return issues
-
-    def has_ability(self, ability: str) -> bool:
-        """Check if this extension has a specific ability."""
-        return ability in self.abilities
 
     def get_audit_summary(self, hours: int = 24) -> Dict[str, Any]:
         """

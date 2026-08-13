@@ -1015,6 +1015,15 @@ class AbstractStaticExtensionSystemComponent(ABC):
     def abilities(cls) -> Set[str]:
         return cls._abilities.copy()
 
+    @classmethod
+    def get_abilities(cls) -> Set[str]:
+        """Return the abilities this extension/provider offers."""
+        return cls._abilities.copy()
+
+    def has_ability(self, ability: str) -> bool:
+        """Check whether this extension/provider has a specific ability."""
+        return ability in self._abilities
+
     def __init_subclass__(cls, **kwargs):
         """Automatically register abilities when extension class is defined."""
         super().__init_subclass__(**kwargs)
@@ -1298,9 +1307,7 @@ class AbstractStaticProvider(AbstractStaticExtensionSystemComponent):
 
     @classmethod
     @abstractmethod
-    def bond_instance(
-        cls, instance: ProviderInstanceModel
-    ) -> AbstractProviderInstance:
+    def bond_instance(cls, instance: ProviderInstanceModel) -> AbstractProviderInstance:
         """Bond a provider instance with the service SDK."""
         return AbstractProviderInstance(instance)
 
@@ -1308,11 +1315,6 @@ class AbstractStaticProvider(AbstractStaticExtensionSystemComponent):
     @abstractmethod
     def root(cls) -> AbstractProviderInstance:
         pass
-
-    @classmethod
-    def get_abilities(cls) -> Set[str]:
-        """Get provider abilities for rotation system."""
-        return cls._abilities.copy()
 
     @classmethod
     def is_configured(cls) -> bool:
@@ -1358,10 +1360,7 @@ class AbstractStaticProvider(AbstractStaticExtensionSystemComponent):
         """
         from zephyrex.extensions.AuthStrategy import AuthStrategyRegistry
 
-        name = (
-            getattr(instance, "auth_strategy_name", None)
-            or cls.auth_strategy_name
-        )
+        name = getattr(instance, "auth_strategy_name", None) or cls.auth_strategy_name
         return AuthStrategyRegistry.get(name, payload or {})
 
     @classmethod
@@ -1401,7 +1400,11 @@ class AbstractStaticExtensionMeta(ABCMeta):
                 # and the legacy bare-extensions layout (extensions.<name>...) so
                 # ExtensionLoader's synthesized "extensions.<name>.<file>" sys.modules
                 # alias keeps resolving without metaclass complaint.
-                if paths[0] == "zephyrex" and len(paths) > 2 and paths[1] == "extensions":
+                if (
+                    paths[0] == "zephyrex"
+                    and len(paths) > 2
+                    and paths[1] == "extensions"
+                ):
                     extension_name = paths[2]
                 elif paths[0] == "extensions":
                     extension_name = paths[1]
@@ -1438,6 +1441,25 @@ class AbstractStaticExtension(
 
     # Extension metadata (class attributes)
     version: str = "0.1.0"
+
+    # -- Default lifecycle methods -----------------------------------------
+    # Subclasses override only when they have real work to do (e.g. connect
+    # to Redis, validate env vars, clean up resources).
+
+    @classmethod
+    def on_start(cls) -> bool:
+        """Called when the extension starts. Override for real init work."""
+        return True
+
+    @classmethod
+    def on_stop(cls) -> bool:
+        """Called when the extension stops. Override for cleanup work."""
+        return True
+
+    @classmethod
+    def validate_config(cls) -> List[str]:
+        """Return a list of configuration issues. Empty means valid."""
+        return []
 
     @classproperty
     def extension_type(cls) -> str:
@@ -1838,9 +1860,7 @@ class AbstractStaticExtension(
             module_name = os.path.basename(bll_file)[:-3]  # Remove .py
             try:
                 # Item 61: out-of-tree-compatible loader.
-                module = load_extension_module(
-                    extensions_root, cls.name, module_name
-                )
+                module = load_extension_module(extensions_root, cls.name, module_name)
                 for name, obj in inspect.getmembers(module, inspect.isclass):
                     # Check if it's a BLL model with DatabaseMixin (has .DB property)
                     if (
@@ -1856,9 +1876,7 @@ class AbstractStaticExtension(
             module_name = os.path.basename(prv_file)[:-3]  # Remove .py
             try:
                 # Item 61: out-of-tree-compatible loader.
-                module = load_extension_module(
-                    extensions_root, cls.name, module_name
-                )
+                module = load_extension_module(extensions_root, cls.name, module_name)
                 for name, obj in inspect.getmembers(module, inspect.isclass):
                     # Check if it's an external model
                     if hasattr(obj, "_is_extension_model") and obj._is_extension_model:

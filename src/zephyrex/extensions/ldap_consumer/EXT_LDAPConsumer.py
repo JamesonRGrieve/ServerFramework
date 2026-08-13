@@ -64,14 +64,6 @@ class EXT_LDAPConsumer(AbstractStaticExtension):
         return True
 
     @classmethod
-    def on_start(cls) -> bool:
-        return True
-
-    @classmethod
-    def on_stop(cls) -> bool:
-        return True
-
-    @classmethod
     def validate_config(cls) -> List[str]:
         from zephyrex.lib.Environment import env as _env
 
@@ -81,10 +73,3 @@ class EXT_LDAPConsumer(AbstractStaticExtension):
         if not _env("LDAP_CONSUMER_BASE_DN"):
             issues.append("LDAP_CONSUMER_BASE_DN is unset; user search will fail")
         return issues
-
-    @classmethod
-    def get_abilities(cls) -> Set[str]:
-        return cls._abilities.copy()
-
-    def has_ability(self, ability: str) -> bool:
-        return ability in self._abilities
