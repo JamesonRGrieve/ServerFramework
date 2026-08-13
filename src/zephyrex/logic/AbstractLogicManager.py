@@ -2634,10 +2634,9 @@ class AbstractBLLManager(ABC):
 
         result = self.DB.get(
             requester_id=self.requester.id,  # type: ignore[union-attr]
-            fields=fields_list,
             model_registry=self.model_registry,
-            return_type="dto" if not fields_list else "dict",
-            override_dto=self.Model if not fields_list else None,
+            return_type="dto",
+            override_dto=self.Model,
             options=options,
             **db_kwargs,
         )
