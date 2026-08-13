@@ -270,6 +270,35 @@ def _check_creator_ownership(entity, requester_id: str) -> None:
         )
 
 
+def _filter_dict_fields(entity_dict: dict, fields: List[str]) -> None:
+    """Remove keys from *entity_dict* that are not in *fields*.
+
+    Loaded SQLAlchemy relationships (dicts with an ``id`` key or lists of
+    such dicts) are always preserved so that ``fields`` and ``include``
+    parameters can be combined.  Mutates *entity_dict* in place.
+    """
+    keys_to_remove = []
+    for key in list(entity_dict.keys()):
+        if key not in fields:
+            value = entity_dict[key]
+            is_relationship = False
+            if isinstance(value, dict) and "id" in value:
+                is_relationship = True
+            elif (
+                isinstance(value, list)
+                and value
+                and isinstance(value[0], dict)
+                and "id" in value[0]
+            ):
+                is_relationship = True
+
+            if not is_relationship:
+                keys_to_remove.append(key)
+
+    for key in keys_to_remove:
+        del entity_dict[key]
+
+
 def db_to_return_type(
     entity: Union[T, List[T]],
     return_type: Literal["db", "dict", "dto", "model"] = "dict",
@@ -302,68 +331,16 @@ def db_to_return_type(
                 return []
 
             dict_entities = [obj_to_dict(item) for item in entity]
-            # Filter fields if specified
             if fields:
                 for entity_dict in dict_entities:
-                    # Keep only requested fields, but preserve any relationship keys (dict/list values)
-                    # This allows combining fields with include parameters
-                    keys_to_remove = []
-                    for key in list(entity_dict.keys()):
-                        if key not in fields:
-                            # Check if this is a loaded SQLAlchemy relationship
-                            # Relationships are dicts with 'id' field or lists of such dicts
-                            value = entity_dict[key]
-                            is_relationship = False
-                            if isinstance(value, dict) and "id" in value:
-                                # Dict with 'id' field is likely a loaded relationship
-                                is_relationship = True
-                            elif (
-                                isinstance(value, list)
-                                and value
-                                and isinstance(value[0], dict)
-                                and "id" in value[0]
-                            ):
-                                # List of dicts with 'id' field is likely a loaded relationship collection
-                                is_relationship = True
-
-                            if not is_relationship:
-                                keys_to_remove.append(key)
-
-                    for key in keys_to_remove:
-                        del entity_dict[key]
+                    _filter_dict_fields(entity_dict, fields)
 
             return dict_entities
         else:
             # First convert the entire entity to dict to avoid expired attribute issues
             entity_dict = obj_to_dict(entity)
-            # Filter fields if specified
             if fields:
-                # Keep only requested fields, but preserve any relationship keys (dict/list values)
-                # This allows combining fields with include parameters
-                keys_to_remove = []
-                for key in list(entity_dict.keys()):
-                    if key not in fields:
-                        # Check if this is a loaded SQLAlchemy relationship
-                        # Relationships are dicts with 'id' field or lists of such dicts
-                        value = entity_dict[key]
-                        is_relationship = False
-                        if isinstance(value, dict) and "id" in value:
-                            # Dict with 'id' field is likely a loaded relationship
-                            is_relationship = True
-                        elif (
-                            isinstance(value, list)
-                            and value
-                            and isinstance(value[0], dict)
-                            and "id" in value[0]
-                        ):
-                            # List of dicts with 'id' field is likely a loaded relationship collection
-                            is_relationship = True
-
-                        if not is_relationship:
-                            keys_to_remove.append(key)
-
-                for key in keys_to_remove:
-                    del entity_dict[key]
+                _filter_dict_fields(entity_dict, fields)
 
             return entity_dict  # type: ignore[no-any-return]
 
