@@ -424,6 +424,30 @@
 </div>
 
 <div class="s">
+<h4>Unbounded Include Nesting Depth → Joinedload DoS (HIGH) <span class="tag tag-2">Gaps</span></h4>
+<p>AbstractLogicManager.py:2378 — _parse_includes has no depth cap. Self-referential parent/children joins with include=children.children.children... creates cartesian-product queries that pin DB/worker.</p>
+<div class="t"><span class="m">test_nested_include_depth_is_bounded</span></div>
+</div>
+
+<div class="s">
+<h4>Content-Negotiation Chunked Body Bypasses Size Limit <span class="tag tag-2">Gaps</span></h4>
+<p>ContentNegotiationMiddleware runs BEFORE BodySizeLimitMiddleware. Chunked bodies with no Content-Length skip the header check entirely — unlimited data consumed pre-guard.</p>
+<div class="t"><span class="m">test_content_negotiation_chunked_body_bypasses_size_limit</span></div>
+</div>
+
+<div class="s">
+<h4>Global TypeError/AttributeError Handler Masks Internal Faults as 422 <span class="tag tag-2">Gaps</span></h4>
+<p>app.py:722 — broad exception handlers convert internal bugs (NoneType access, failed mutations) to 422 "invalid body", hiding them from error reporting and alerting.</p>
+<div class="t"><span class="m">test_internal_type_error_is_reported_not_masked_as_422</span></div>
+</div>
+
+<div class="s">
+<h4>OpenAPI Generation Instantiates Response Models (Side Effects) <span class="tag tag-2">Gaps</span></h4>
+<p>app.py:1128 — first /openapi.json request instantiates every response model with model_class() + model_dump(). Models with default_factory/validator side effects execute unintended code.</p>
+<div class="t"><span class="m">test_openapi_generation_has_no_response_model_side_effects</span></div>
+</div>
+
+<div class="s">
 <h4>Pagination Negative/Unbounded Page Values <span class="tag tag-2">Gaps</span></h4>
 <p>AbstractLogicManager.py:2672 — page=0 yields negative OFFSET (500). Unbounded pageSize passed directly to query.</p>
 <div class="t"><span class="m">test_pagination_rejects_nonpositive_page_and_caps_page_size</span></div>

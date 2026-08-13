@@ -2008,12 +2008,14 @@ class AbstractBLLManager(ABC):
             # Invalid type
             return []
 
-        # Validate relationship names (basic validation for now)
+        MAX_INCLUDE_DEPTH = 4
+
         validated_includes = []
         for include_name in include_list:
-            # Basic validation: ensure it contains only alphanumeric, underscore, and dot characters
             if include_name and all(c.isalnum() or c in "._" for c in include_name):
-                validated_includes.append(include_name)
+                depth = include_name.count(".") + 1
+                if depth <= MAX_INCLUDE_DEPTH:
+                    validated_includes.append(include_name)
 
         return validated_includes
 

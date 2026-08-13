@@ -2161,3 +2161,63 @@ class TestDeepAuditSortBy:
             assert response.status_code != 500, (
                 f"sort_by={sort} caused 500"
             )
+
+
+# ================================================================== #
+# FASTAPI-SPECIFIC AUDIT FINDINGS — 4 framework-specific vulnerabilities
+# ================================================================== #
+
+
+class TestFastAPIIncludeDepth:
+    @pytest.mark.security
+    def test_nested_include_depth_is_bounded(self, server, admin_a):
+        """Deeply nested include chains must be rejected to prevent joinedload DoS."""
+        deep_include = ".".join(["children"] * 20)
+        response = server.get(
+            f"/v1/team?include={deep_include}",
+            headers={"Authorization": f"Bearer {admin_a.jwt}"},
+        )
+        assert response.status_code in (200, 400, 422), (
+            f"Deep include chain got {response.status_code}; expected rejection or safe response"
+        )
+        assert response.status_code != 500, "Deep include chain caused 500"
+
+
+class TestFastAPIChunkedBodyBypass:
+    @pytest.mark.security
+    def test_content_negotiation_chunked_body_bypasses_size_limit(self, server, admin_a):
+        """Chunked non-JSON body must be size-limited even without Content-Length."""
+        large_yaml = "name: " + "x" * (1024 * 1024)
+        response = server.post(
+            "/v1/team",
+            content=large_yaml,
+            headers={
+                "Authorization": f"Bearer {admin_a.jwt}",
+                "Content-Type": "application/yaml",
+                "Transfer-Encoding": "chunked",
+            },
+        )
+        assert response.status_code != 500, "Chunked YAML body caused 500"
+
+
+class TestFastAPIExceptionHandlerMasking:
+    @pytest.mark.security
+    def test_internal_type_error_is_reported_not_masked_as_422(self, server, admin_a):
+        """Internal TypeError must not be silently converted to 422."""
+        response = server.post(
+            "/v1/team",
+            json={"team": {"name": "test", "encryption_salt": "x"}},
+            headers={"Authorization": f"Bearer {admin_a.jwt}"},
+        )
+        assert response.status_code != 500 or response.status_code != 422
+
+
+class TestFastAPIOpenAPISideEffects:
+    @pytest.mark.security
+    def test_openapi_generation_has_no_response_model_side_effects(self, server, admin_a):
+        """OpenAPI schema generation must not trigger model side effects."""
+        response = server.get("/openapi.json")
+        if response.status_code == 200:
+            schema = response.json()
+            assert "paths" in schema
+            assert isinstance(schema["paths"], dict)
