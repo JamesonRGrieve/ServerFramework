@@ -212,17 +212,20 @@ def build_query(
 # ---------------------------------------------------------------------------
 
 
-def _apply_soft_delete_filter(db_cls, requester_id: str, filters: list) -> None:
-    """Append a ``deleted_at IS NULL`` filter when applicable.
+def _apply_soft_delete_filter(db_cls, requester_id: str, filters: list) -> list:
+    """Return *filters* with a ``deleted_at IS NULL`` clause when applicable.
 
-    Only appends when the model has a ``deleted_at`` column *and* the
-    requester is not ROOT (ROOT sees tombstoned rows via the execution-
-    option bypass set by the caller).
+    Creates a **new** list when *filters* is empty to avoid mutating the
+    shared mutable-default ``filters=[]`` that several CRUD methods use.
     """
     from zephyrex.database.StaticPermissions import is_root_id
 
     if hasattr(db_cls, "deleted_at") and not is_root_id(requester_id):
-        filters.append(db_cls.deleted_at == None)  # type: ignore[attr-defined]
+        if filters:
+            filters.append(db_cls.deleted_at == None)  # type: ignore[attr-defined]
+        else:
+            filters = [db_cls.deleted_at == None]  # type: ignore[attr-defined]
+    return filters
 
 
 def _should_include_deleted(db_cls, requester_id: str) -> bool:
@@ -958,7 +961,7 @@ class BaseMixin:
             else:
                 filters = [perm_filter]
 
-            _apply_soft_delete_filter(db_cls, requester_id, filters)
+            filters = _apply_soft_delete_filter(db_cls, requester_id, filters)
 
         # Build query with all filters
         query = build_query(db, db_cls, joins, options, filters, **kwargs)
@@ -1050,7 +1053,7 @@ class BaseMixin:
                 else:
                     filters = [perm_filter]
 
-                _apply_soft_delete_filter(db_cls, requester_id, filters)
+                filters = _apply_soft_delete_filter(db_cls, requester_id, filters)
 
                 # Build a query with the filters
                 query = build_query(
@@ -1074,7 +1077,7 @@ class BaseMixin:
             else:
                 filters = [perm_filter]
 
-            _apply_soft_delete_filter(db_cls, requester_id, filters)
+            filters = _apply_soft_delete_filter(db_cls, requester_id, filters)
 
             # Build a query with the filters
             query = build_query(
@@ -1119,7 +1122,7 @@ class BaseMixin:
         # Get the SQLAlchemy model
         db_cls = cls
 
-        _apply_soft_delete_filter(db_cls, requester_id, filters)
+        filters = _apply_soft_delete_filter(db_cls, requester_id, filters)
 
         # Apply permission filter
         perm_filter = generate_permission_filter(
@@ -1244,7 +1247,7 @@ class BaseMixin:
         # cls is already the SQLAlchemy model class
         db_cls = cls
 
-        _apply_soft_delete_filter(db_cls, requester_id, filters)
+        filters = _apply_soft_delete_filter(db_cls, requester_id, filters)
 
         # Apply permission filter
         perm_filter = generate_permission_filter(
