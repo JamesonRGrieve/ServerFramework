@@ -325,9 +325,7 @@ class AbstractBLLTest(AbstractTest):
             try:
                 if hasattr(entity, "id") and entity.id:
                     # Create a manager to delete this entity
-                    requester_id = (
-                        env("SYSTEM_ID") if self.is_system_entity else env("ROOT_ID")
-                    )
+                    requester_id = self._effective_requester(env("ROOT_ID"))
                     # Only try to clean up if we have model_registry available
                     if hasattr(self, "model_registry") and self.model_registry:
                         manager = self.class_under_test(
@@ -347,6 +345,16 @@ class AbstractBLLTest(AbstractTest):
                     f"{self.class_under_test.__name__}: Error cleaning up entity {entity_key}: {str(e)}"
                 )
 
+    def _effective_requester(self, user_id: str) -> str:
+        """Return SYSTEM_ID for system entities, otherwise the given user_id."""
+        return env("SYSTEM_ID") if self.is_system_entity else user_id
+
+    def _resolve_registry(self, model_registry: Any) -> Any:
+        """Fall back to self.model_registry when model_registry is None."""
+        if model_registry is None and hasattr(self, "model_registry"):
+            return self.model_registry
+        return model_registry
+
     def _create_assert(self, tracked_index: str):
         entity = self.tracked_entities[tracked_index]
         assertion_index = f"{self.class_under_test.__name__} / {tracked_index}"
@@ -364,8 +372,7 @@ class AbstractBLLTest(AbstractTest):
         model_registry=None,
     ):
         """Create a test entity using the manager."""
-        # Use SYSTEM_ID for system entities, otherwise use the provided user_id
-        requester_id = env("SYSTEM_ID") if self.is_system_entity else user_id
+        requester_id = self._effective_requester(user_id)
 
         # Get model_registry from server if not provided
         if model_registry is None and server is not None:
@@ -418,12 +425,9 @@ class AbstractBLLTest(AbstractTest):
         get_key="get",
         model_registry=None,
     ):
-        # Use SYSTEM_ID for system entities, otherwise use the provided user_id
-        requester_id = env("SYSTEM_ID") if self.is_system_entity else user_id
+        requester_id = self._effective_requester(user_id)
 
-        # Get model_registry if not provided
-        if model_registry is None and hasattr(self, "model_registry"):
-            model_registry = self.model_registry
+        model_registry = self._resolve_registry(model_registry)
 
         manager = self.class_under_test(
             requester_id=requester_id,
@@ -468,12 +472,9 @@ class AbstractBLLTest(AbstractTest):
         team_id: Optional[str] = None,
         model_registry=None,
     ):
-        # Use SYSTEM_ID for system entities, otherwise use the provided user_id
-        requester_id = env("SYSTEM_ID") if self.is_system_entity else user_id
+        requester_id = self._effective_requester(user_id)
 
-        # Get model_registry if not provided
-        if model_registry is None and hasattr(self, "model_registry"):
-            model_registry = self.model_registry
+        model_registry = self._resolve_registry(model_registry)
 
         manager = self.class_under_test(
             requester_id=requester_id,
@@ -534,12 +535,9 @@ class AbstractBLLTest(AbstractTest):
         team_id: Optional[str] = None,
         model_registry=None,
     ):
-        # Use SYSTEM_ID for system entities, otherwise use the provided user_id
-        requester_id = env("SYSTEM_ID") if self.is_system_entity else user_id
+        requester_id = self._effective_requester(user_id)
 
-        # Get model_registry if not provided
-        if model_registry is None and hasattr(self, "model_registry"):
-            model_registry = self.model_registry
+        model_registry = self._resolve_registry(model_registry)
 
         manager = self.class_under_test(
             requester_id=requester_id,
@@ -620,7 +618,7 @@ class AbstractBLLTest(AbstractTest):
 
         # Create entity if not already created
         if not hasattr(self, "_search_test_entity"):
-            requester_id = env("SYSTEM_ID") if self.is_system_entity else admin_a.id
+            requester_id = self._effective_requester(admin_a.id)
 
             # Try the new approach first (build_entities), fall back to legacy approach
             entity_data = self._get_entity_data_for_search(
@@ -685,7 +683,7 @@ class AbstractBLLTest(AbstractTest):
         requester_id = getattr(
             self,
             "_search_effective_requester_id",
-            env("SYSTEM_ID") if self.is_system_entity else admin_a.id,
+            self._effective_requester(admin_a.id),
         )
         manager = self.class_under_test(
             requester_id=requester_id,
@@ -818,11 +816,9 @@ class AbstractBLLTest(AbstractTest):
         team_id: Optional[str] = None,
         model_registry=None,
     ):
-        requester_id = env("SYSTEM_ID") if self.is_system_entity else user_id
+        requester_id = self._effective_requester(user_id)
 
-        # Get model_registry if not provided
-        if model_registry is None and hasattr(self, "model_registry"):
-            model_registry = self.model_registry
+        model_registry = self._resolve_registry(model_registry)
 
         manager = self.class_under_test(
             requester_id=requester_id,
@@ -898,12 +894,9 @@ class AbstractBLLTest(AbstractTest):
         team_id: Optional[str] = None,
         model_registry=None,
     ):
-        # Use SYSTEM_ID for system entities, otherwise use the provided user_id
-        requester_id = env("SYSTEM_ID") if self.is_system_entity else user_id
+        requester_id = self._effective_requester(user_id)
 
-        # Get model_registry if not provided
-        if model_registry is None and hasattr(self, "model_registry"):
-            model_registry = self.model_registry
+        model_registry = self._resolve_registry(model_registry)
 
         manager = self.class_under_test(
             requester_id=requester_id,
@@ -962,12 +955,9 @@ class AbstractBLLTest(AbstractTest):
         self._batch_update_assert("batch_update_result", 3)
 
     def _delete_assert(self, entity_id: str, user_id: str, model_registry=None):
-        # Use SYSTEM_ID for system entities, otherwise use the provided user_id
-        requester_id = env("SYSTEM_ID") if self.is_system_entity else user_id
+        requester_id = self._effective_requester(user_id)
 
-        # Get model_registry if not provided
-        if model_registry is None and hasattr(self, "model_registry"):
-            model_registry = self.model_registry
+        model_registry = self._resolve_registry(model_registry)
 
         # Try to get the entity - should either raise an exception or return None
         manager = self.class_under_test(
@@ -991,11 +981,9 @@ class AbstractBLLTest(AbstractTest):
         team_id: Optional[str] = None,
         model_registry=None,
     ):
-        requester_id = env("SYSTEM_ID") if self.is_system_entity else user_id
+        requester_id = self._effective_requester(user_id)
 
-        # Get model_registry if not provided
-        if model_registry is None and hasattr(self, "model_registry"):
-            model_registry = self.model_registry
+        model_registry = self._resolve_registry(model_registry)
 
         manager = self.class_under_test(
             requester_id=requester_id,
@@ -1023,12 +1011,9 @@ class AbstractBLLTest(AbstractTest):
     def _batch_delete_assert(
         self, entity_ids: List[str], user_id: str, model_registry=None
     ):
-        # Use SYSTEM_ID for system entities, otherwise use the provided user_id
-        requester_id = env("SYSTEM_ID") if self.is_system_entity else user_id
+        requester_id = self._effective_requester(user_id)
 
-        # Get model_registry if not provided
-        if model_registry is None and hasattr(self, "model_registry"):
-            model_registry = self.model_registry
+        model_registry = self._resolve_registry(model_registry)
 
         manager = self.class_under_test(
             requester_id=requester_id,
@@ -1054,12 +1039,9 @@ class AbstractBLLTest(AbstractTest):
         team_id: Optional[str] = None,
         model_registry=None,
     ):
-        # Use SYSTEM_ID for system entities, otherwise use the provided user_id
-        requester_id = env("SYSTEM_ID") if self.is_system_entity else user_id
+        requester_id = self._effective_requester(user_id)
 
-        # Get model_registry if not provided
-        if model_registry is None and hasattr(self, "model_registry"):
-            model_registry = self.model_registry
+        model_registry = self._resolve_registry(model_registry)
 
         manager = self.class_under_test(
             requester_id=requester_id,
@@ -1112,8 +1094,7 @@ class AbstractBLLTest(AbstractTest):
         """Test that the new hook_bll system is properly configured."""
         self.server = server
         self.model_registry = model_registry
-        # Use SYSTEM_ID for system entities, otherwise use the provided user_id
-        requester_id = env("SYSTEM_ID") if self.is_system_entity else admin_a.id
+        requester_id = self._effective_requester(admin_a.id)
 
         manager = self.class_under_test(
             requester_id=requester_id,
@@ -1260,7 +1241,7 @@ class AbstractBLLTest(AbstractTest):
         self.model_registry = model_registry
         from fastapi import HTTPException
 
-        requester_id = env("SYSTEM_ID") if self.is_system_entity else admin_a.id
+        requester_id = self._effective_requester(admin_a.id)
         manager = self.class_under_test(
             requester_id=requester_id,
             target_team_id=team_a.id,
@@ -1300,7 +1281,7 @@ class AbstractBLLTest(AbstractTest):
         self.model_registry = model_registry
         from fastapi import HTTPException
 
-        requester_id = env("SYSTEM_ID") if self.is_system_entity else admin_a.id
+        requester_id = self._effective_requester(admin_a.id)
         manager = self.class_under_test(
             requester_id=requester_id,
             target_team_id=team_a.id,
@@ -1341,7 +1322,7 @@ class AbstractBLLTest(AbstractTest):
         database."""
         self.server = server
         self.model_registry = model_registry
-        requester_id = env("SYSTEM_ID") if self.is_system_entity else admin_a.id
+        requester_id = self._effective_requester(admin_a.id)
         manager = self.class_under_test(
             requester_id=requester_id,
             target_team_id=team_a.id,
@@ -1421,7 +1402,7 @@ class AbstractBLLTest(AbstractTest):
         self.model_registry = model_registry
         from fastapi import HTTPException
 
-        requester_id = env("SYSTEM_ID") if self.is_system_entity else admin_a.id
+        requester_id = self._effective_requester(admin_a.id)
         manager = self.class_under_test(
             requester_id=requester_id,
             target_team_id=team_a.id,
@@ -1462,7 +1443,7 @@ class AbstractBLLTest(AbstractTest):
         ``include=`` produce one batched join, not one query per row."""
         self.server = server
         self.model_registry = model_registry
-        requester_id = env("SYSTEM_ID") if self.is_system_entity else admin_a.id
+        requester_id = self._effective_requester(admin_a.id)
         manager = self.class_under_test(
             requester_id=requester_id,
             target_team_id=team_a.id,
@@ -1497,7 +1478,7 @@ class AbstractBLLTest(AbstractTest):
         Catches regressions where one option clobbers the other."""
         self.server = server
         self.model_registry = model_registry
-        requester_id = env("SYSTEM_ID") if self.is_system_entity else admin_a.id
+        requester_id = self._effective_requester(admin_a.id)
         manager = self.class_under_test(
             requester_id=requester_id,
             target_team_id=team_a.id,
@@ -1550,7 +1531,7 @@ class AbstractBLLTest(AbstractTest):
             server=server,
             model_registry=model_registry,
         )
-        requester_id = env("SYSTEM_ID") if self.is_system_entity else admin_a.id
+        requester_id = self._effective_requester(admin_a.id)
         manager = self.class_under_test(
             requester_id=requester_id,
             target_team_id=team_a.id,
@@ -1615,7 +1596,7 @@ class AbstractBLLTest(AbstractTest):
                 )
                 seeded["count"] += 1
 
-        requester = env("SYSTEM_ID") if self.is_system_entity else admin_a.id
+        requester = self._effective_requester(admin_a.id)
 
         def operation(_n: int) -> None:
             manager = self.class_under_test(
