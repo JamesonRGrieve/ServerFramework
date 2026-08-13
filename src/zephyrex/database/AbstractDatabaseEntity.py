@@ -207,6 +207,69 @@ def build_query(
     return to_return
 
 
+# ---------------------------------------------------------------------------
+# CRUD guard helpers — extracted from count/exists/get/list/update/delete
+# ---------------------------------------------------------------------------
+
+
+def _apply_soft_delete_filter(db_cls, requester_id: str, filters: list) -> None:
+    """Append a ``deleted_at IS NULL`` filter when applicable.
+
+    Only appends when the model has a ``deleted_at`` column *and* the
+    requester is not ROOT (ROOT sees tombstoned rows via the execution-
+    option bypass set by the caller).
+    """
+    from zephyrex.database.StaticPermissions import is_root_id
+
+    if hasattr(db_cls, "deleted_at") and not is_root_id(requester_id):
+        filters.append(db_cls.deleted_at == None)  # type: ignore[attr-defined]
+
+
+def _should_include_deleted(db_cls, requester_id: str) -> bool:
+    """Return True when the query should set ``include_deleted=True``.
+
+    ROOT users bypass the DB-layer auto-filter so admin/audit reads
+    continue to surface soft-deleted rows.
+    """
+    from zephyrex.database.StaticPermissions import is_root_id
+
+    return is_root_id(requester_id) and hasattr(db_cls, "deleted_at")
+
+
+def _require_system_user(cls, requester_id: str, action_verb: str) -> None:
+    """Raise 403 if ``cls`` is system-flagged and requester is not root/system."""
+    from zephyrex.database.StaticPermissions import is_root_id, is_system_id
+
+    if hasattr(cls, "system") and getattr(cls, "system", False):
+        if not (is_root_id(requester_id) or is_system_id(requester_id)):
+            raise HTTPException(
+                status_code=403,
+                detail=f"Only system users can {action_verb} {cls.__name__} records",
+            )
+
+
+def _check_creator_ownership(entity, requester_id: str) -> None:
+    """Raise 403 if the entity was created by ROOT/SYSTEM and requester lacks privileges."""
+    from zephyrex.database.StaticPermissions import is_root_id, is_system_id
+
+    if not hasattr(entity, "created_by_user_id"):
+        return
+
+    if entity.created_by_user_id == env("ROOT_ID") and not is_root_id(requester_id):
+        raise HTTPException(
+            status_code=403,
+            detail="Only ROOT can modify records created by ROOT",
+        )
+
+    if entity.created_by_user_id == env("SYSTEM_ID") and not (
+        is_root_id(requester_id) or is_system_id(requester_id)
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Only system users can modify records created by SYSTEM",
+        )
+
+
 def db_to_return_type(
     entity: Union[T, List[T]],
     return_type: Literal["db", "dict", "dto", "model"] = "dict",
@@ -801,13 +864,7 @@ class BaseMixin:
         # Validate fields parameter
         validate_fields(cls, fields)
 
-        # Check system flag - only ROOT_ID and SYSTEM_ID can create in system-flagged tables
-        if hasattr(cls, "system") and getattr(cls, "system", False):
-            if not (is_root_id(requester_id) or is_system_id(requester_id)):
-                raise HTTPException(
-                    status_code=403,
-                    detail=f"Only system users can create {cls.__name__} records",
-                )
+        _require_system_user(cls, requester_id, "create")
 
         # Check if the user can create this entity
         # Remove user_id from kwargs if it exists to prevent duplicate parameters
@@ -924,19 +981,14 @@ class BaseMixin:
             else:
                 filters = [perm_filter]
 
-            # Only add deleted_at filter for non-ROOT users
-            if hasattr(db_cls, "deleted_at") and not is_root_id(requester_id):
-                filters.append(db_cls.deleted_at == None)  # type: ignore[attr-defined]
+            _apply_soft_delete_filter(db_cls, requester_id, filters)
 
         # Build query with all filters
         query = build_query(db, db_cls, joins, options, filters, **kwargs)
 
         # Item 75 follow-up: ROOT bypass for the soft-delete auto-filter.
-        if check_permissions:
-            from zephyrex.database.StaticPermissions import is_root_id as _is_root
-
-            if _is_root(requester_id) and hasattr(db_cls, "deleted_at"):
-                query = query.execution_options(include_deleted=True)
+        if check_permissions and _should_include_deleted(db_cls, requester_id):
+            query = query.execution_options(include_deleted=True)
 
         # Get count
         return query.count()  # type: ignore[no-any-return]
@@ -1021,9 +1073,7 @@ class BaseMixin:
                 else:
                     filters = [perm_filter]
 
-                # Add deleted_at filter for non-ROOT users
-                if hasattr(db_cls, "deleted_at") and not is_root_id(requester_id):
-                    filters.append(db_cls.deleted_at == None)  # type: ignore[attr-defined]
+                _apply_soft_delete_filter(db_cls, requester_id, filters)
 
                 # Build a query with the filters
                 query = build_query(
@@ -1031,7 +1081,7 @@ class BaseMixin:
                 )
 
                 # Item 75 follow-up: ROOT bypass for the auto-filter.
-                if is_root_id(requester_id) and hasattr(db_cls, "deleted_at"):
+                if _should_include_deleted(db_cls, requester_id):
                     query = query.execution_options(include_deleted=True)
 
                 # Check if any results exist with permission filtering
@@ -1047,9 +1097,7 @@ class BaseMixin:
             else:
                 filters = [perm_filter]
 
-            # Add deleted_at filter for non-ROOT users
-            if hasattr(db_cls, "deleted_at") and not is_root_id(requester_id):
-                filters.append(db_cls.deleted_at == None)  # type: ignore[attr-defined]
+            _apply_soft_delete_filter(db_cls, requester_id, filters)
 
             # Build a query with the filters
             query = build_query(
@@ -1057,7 +1105,7 @@ class BaseMixin:
             )
 
             # Item 75 follow-up: ROOT bypass for the auto-filter.
-            if is_root_id(requester_id) and hasattr(db_cls, "deleted_at"):
+            if _should_include_deleted(db_cls, requester_id):
                 query = query.execution_options(include_deleted=True)
 
             # Check if any results exist with permission filtering
@@ -1094,11 +1142,7 @@ class BaseMixin:
         # Get the SQLAlchemy model
         db_cls = cls
 
-        # Only add deleted_at filter for non-ROOT users
-        from zephyrex.database.StaticPermissions import is_root_id
-
-        if hasattr(db_cls, "deleted_at") and not is_root_id(requester_id):
-            filters = filters + [db_cls.deleted_at == None]  # type: ignore[attr-defined]
+        _apply_soft_delete_filter(db_cls, requester_id, filters)
 
         # Apply permission filter
         perm_filter = generate_permission_filter(
@@ -1118,13 +1162,8 @@ class BaseMixin:
         # Build query with permission filter included
         query = build_query(db, db_cls, joins, options, filters, **kwargs)
 
-        # Item 75 follow-up: ROOT must continue to see soft-deleted rows
-        # for admin/audit reads — the BLL layer above already preserved
-        # this by skipping the explicit deleted_at filter for ROOT, but
-        # the DB-layer auto-filter (`_soft_delete_before_compile`) would
-        # re-impose it. Pass the bypass execution option for ROOT so the
-        # auto-filter exits early.
-        if is_root_id(requester_id) and hasattr(db_cls, "deleted_at"):
+        # Item 75 follow-up: ROOT bypass for the soft-delete auto-filter.
+        if _should_include_deleted(db_cls, requester_id):
             query = query.execution_options(include_deleted=True)
 
         # Get the single result
@@ -1228,14 +1267,7 @@ class BaseMixin:
         # cls is already the SQLAlchemy model class
         db_cls = cls
 
-        # Only add deleted_at filter for non-ROOT users
-        from zephyrex.database.StaticPermissions import is_root_id
-
-        if hasattr(db_cls, "deleted_at") and not is_root_id(requester_id):
-            if filters:
-                filters.append(db_cls.deleted_at == None)  # type: ignore[attr-defined]
-            else:
-                filters = [db_cls.deleted_at == None]  # type: ignore[attr-defined]
+        _apply_soft_delete_filter(db_cls, requester_id, filters)
 
         # Apply permission filter
         perm_filter = generate_permission_filter(
@@ -1258,7 +1290,7 @@ class BaseMixin:
 
         # Item 75 follow-up: same ROOT bypass as in get() above so admin
         # listings continue to surface tombstoned rows.
-        if is_root_id(requester_id) and hasattr(db_cls, "deleted_at"):
+        if _should_include_deleted(db_cls, requester_id):
             query = query.execution_options(include_deleted=True)
 
         # Fetch records based on filtered query
@@ -1509,31 +1541,8 @@ class UpdateMixin(SoftDeleteMixin):
                 detail=f"Permission denied: Multiple {cls.__name__} matched query criteria",
             )
 
-        # Check for system flag - only ROOT_ID and SYSTEM_ID can modify system-flagged tables
-        if hasattr(cls, "system") and getattr(cls, "system", False):
-            if not (is_root_id(requester_id) or is_system_id(requester_id)):
-                raise HTTPException(
-                    status_code=403,
-                    detail=f"Only system users can modify {cls.__name__} records",
-                )
-
-        # Check if the record was created by ROOT_ID or SYSTEM_ID
-        if hasattr(entity, "created_by_user_id"):
-            if entity.created_by_user_id == env("ROOT_ID") and not is_root_id(
-                requester_id
-            ):
-                raise HTTPException(
-                    status_code=403,
-                    detail=f"Only ROOT can modify records created by ROOT",
-                )
-
-            if entity.created_by_user_id == env("SYSTEM_ID") and not (
-                is_root_id(requester_id) or is_system_id(requester_id)
-            ):
-                raise HTTPException(
-                    status_code=403,
-                    detail=f"Only system users can modify records created by SYSTEM",
-                )
+        _require_system_user(cls, requester_id, "modify")
+        _check_creator_ownership(entity, requester_id)
 
         # Copy updated properties to avoid modifying the input
         updated = dict(new_properties)
@@ -1655,31 +1664,10 @@ class UpdateMixin(SoftDeleteMixin):
                 status_code=500, detail=f"Multiple {cls.__name__} found"
             )
 
-        # Check for system flag - only ROOT_ID and SYSTEM_ID can delete from system-flagged tables
-        if hasattr(cls, "system") and getattr(cls, "system", False):
-            if not (is_root_id(requester_id) or is_system_id(requester_id)):
-                raise HTTPException(
-                    status_code=403,
-                    detail=f"Only system users can delete {cls.__name__} records",
-                )
+        _require_system_user(cls, requester_id, "delete")
+        _check_creator_ownership(entity, requester_id)
 
-        # Check if the record was created by ROOT_ID or SYSTEM_ID
-        if hasattr(entity, "created_by_user_id"):
-            if entity.created_by_user_id == env("ROOT_ID") and not is_root_id(
-                requester_id
-            ):
-                raise HTTPException(
-                    status_code=403,
-                    detail=f"Only ROOT can delete records created by ROOT",
-                )
-
-            if entity.created_by_user_id == env("SYSTEM_ID") and not (
-                is_root_id(requester_id) or is_system_id(requester_id)
-            ):
-                raise HTTPException(
-                    status_code=403,
-                    detail=f"Only system users can delete records created by SYSTEM",
-                )
+        # Non-system users can only delete records they created
         if hasattr(entity, "created_by_user_id"):
             if (
                 entity.created_by_user_id is not None
@@ -1688,7 +1676,7 @@ class UpdateMixin(SoftDeleteMixin):
             ):
                 raise HTTPException(
                     status_code=403,
-                    detail=f"Only the creator can delete this record",
+                    detail="Only the creator can delete this record",
                 )
         # Get hooks for before_delete
         hooks = cls.hooks  # type: ignore[attr-defined]
