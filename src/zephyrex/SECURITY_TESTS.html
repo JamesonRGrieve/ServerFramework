@@ -303,6 +303,138 @@
 <h2>Category 5 — Not Relevant to This Project</h2>
 
 
+<!-- ============================================================ -->
+<!-- CODE-AUDIT FINDINGS — vulnerabilities found by static analysis -->
+<!-- ============================================================ -->
+<h2>Code-Audit Findings</h2>
+<p>15 vulnerabilities found by static analysis of the actual codebase. Each must have a test AND a framework fix.</p>
+
+<div class="s">
+<h4>XXE / XML Bomb via ContentNegotiation <span class="tag tag-2">Gaps</span></h4>
+<p>ContentNegotiation.py:32 — xml.etree.ElementTree.fromstring without defusedxml. Billion-laughs payload under 1KB can expand to GB in memory. JSONDepthMiddleware only checks JSON, not XML.</p>
+<div class="t"><span class="m">test_xxe_billion_laughs_xml_bomb_rejected</span></div>
+</div>
+
+<div class="s">
+<h4>OAuth2 Client Secret Uses SHA-256 Not bcrypt <span class="tag tag-2">Gaps</span></h4>
+<p>oauth_provider/BLL_OAuthProvider.py:69 — _hash_secret uses single-round SHA-256 for client secrets while core passwords use bcrypt.</p>
+<div class="t"><span class="m">test_oauth2_client_secret_uses_slow_hash_not_sha256</span></div>
+</div>
+
+<div class="s">
+<h4>FileIO execute_file Argument Injection <span class="tag tag-2">Gaps</span></h4>
+<p>fileio/Local.py:781 — arguments list passed to create_subprocess_exec without validation. Dangerous flags (--output, --exec) can alter executable behavior.</p>
+<div class="t"><span class="m">test_fileio_execute_arguments_cannot_inject_dangerous_flags</span></div>
+</div>
+
+<div class="s">
+<h4>FileIO get_file_info TOCTOU Bypass <span class="tag tag-2">Gaps</span></h4>
+<p>fileio/Local.py:768 — uses plain open() instead of _safe_open(O_NOFOLLOW). Symlink race window for reading files outside base directory.</p>
+<div class="t"><span class="m">test_fileio_get_file_info_uses_safe_open_no_symlink_follow</span></div>
+</div>
+
+<div class="s">
+<h4>GraphQL Federation Credentials Not Actually Hashed <span class="tag tag-2">Gaps</span></h4>
+<p>app.py:1047 — federation_credentials_hash is set to the raw API key / auth header, not a hash. Leaks credentials in cache/memory/logs.</p>
+<div class="t"><span class="m">test_graphql_federation_credentials_hash_is_actually_hashed</span></div>
+</div>
+
+<div class="s">
+<h4>FileIO get_file_info Bare except Swallows Security Errors <span class="tag tag-2">Gaps</span></h4>
+<p>fileio/Local.py:773 — bare except catches PermissionError and ELOOP from O_NOFOLLOW, silently accepting symlink attacks instead of denying.</p>
+<div class="t"><span class="m">test_fileio_get_file_info_does_not_swallow_security_errors</span></div>
+</div>
+
+<div class="s">
+<h4>Extension Install Restart with Unvalidated Args <span class="tag tag-2">Gaps</span></h4>
+<p>app.py:152 — os.execl passes sys.argv verbatim after pip-installing extensions from APP_EXTENSIONS. Attacker-controlled APP_EXTENSIONS can install malicious packages.</p>
+<div class="t"><span class="m">test_extension_install_restart_validates_extension_names</span></div>
+</div>
+
+<div class="s">
+<h4>SYSTEM_API_KEY / TEMPLATE_API_KEY Not Production-Enforced <span class="tag tag-2">Gaps</span></h4>
+<p>Environment.py:169 — production fail-closed validates ROOT_API_KEY but not SYSTEM_API_KEY or TEMPLATE_API_KEY. SYSTEM_ID bypasses many permission checks.</p>
+<div class="t"><span class="m">test_production_enforces_system_and_template_api_key_strength</span></div>
+</div>
+
+<div class="s">
+<h4>SQLite REGEXP ReDoS via User-Controlled Patterns <span class="tag tag-2">Gaps</span></h4>
+<p>DatabaseManager.py:70 — REGEXP SQL function calls re.compile on user-supplied patterns without timeout or safety validation.</p>
+<div class="t"><span class="m">test_sqlite_regexp_rejects_catastrophic_backtracking_patterns</span></div>
+</div>
+
+<div class="s">
+<h4>Webhook Replay Error Leaks Timing Details <span class="tag tag-2">Gaps</span></h4>
+<p>webhooks/EP_Webhooks.py:140 — replay rejection includes timestamp skew and nonce details in error response.</p>
+<div class="t"><span class="m">test_webhook_replay_rejection_does_not_leak_internal_timing</span></div>
+</div>
+
+<div class="s">
+<h4>YAML Serialization Uses yaml.dump Not yaml.safe_dump <span class="tag tag-2">Gaps</span></h4>
+<p>ContentNegotiation.py:104 — yaml.dump can emit Python-specific type tags (!!python/object) if response contains native objects.</p>
+<div class="t"><span class="m">test_yaml_serialization_uses_safe_dump_no_python_tags</span></div>
+</div>
+
+<div class="s">
+<h4>DeadlineExceeded Exposes Internal Layer Name <span class="tag tag-2">Gaps</span></h4>
+<p>app.py:633 — 504 response includes exc.layer which reveals BLL/provider/database topology.</p>
+<div class="t"><span class="m">test_deadline_exceeded_response_does_not_expose_internal_layer</span></div>
+</div>
+
+<div class="s">
+<h4>ReplayCache mark_if_unused Not Atomic <span class="tag tag-2">Gaps</span></h4>
+<p>ReplayCache.py:47 — check-then-act is documented as non-atomic. InMemoryReplayCache inherits the racy default. TOTP, OAuth state, single-use tokens all affected.</p>
+<div class="t"><span class="m">test_replay_cache_mark_if_unused_is_atomic_under_concurrency</span></div>
+</div>
+
+<div class="s">
+<h4>OAuth2 redirect_uri Scheme Not Validated <span class="tag tag-2">Gaps</span></h4>
+<p>oauth_provider/BLL_OAuthProvider.py:539 — redirect_uri is exact-matched against whitelist but scheme (javascript:, data:) is not validated per RFC 6749 §3.1.2.</p>
+<div class="t"><span class="m">test_oauth2_redirect_uri_rejects_non_https_schemes</span></div>
+</div>
+
+<div class="s">
+<h4>Non-Production Default Database Password Accepted Silently <span class="tag tag-2">Gaps</span></h4>
+<p>Environment.py:202 — PASSWORD_1! rejected in production but silently accepted in dev/staging/local with real databases.</p>
+<div class="t"><span class="m">test_non_production_warns_on_default_database_password</span></div>
+</div>
+
+<div class="s">
+<h4>YAML Alias/Anchor Bomb DoS (unauthenticated) <span class="tag tag-2">Gaps</span></h4>
+<p>ContentNegotiation.py:132 — yaml.safe_load resolves anchors/aliases. A few-KB YAML body with nested &amp;a/*a references expands exponentially in memory pre-auth.</p>
+<div class="t"><span class="m">test_content_negotiation_yaml_alias_bomb_rejected</span></div>
+</div>
+
+<div class="s">
+<h4>Body-Size Limit Bypass via Middleware Ordering <span class="tag tag-2">Gaps</span></h4>
+<p>ContentNegotiationMiddleware runs BEFORE BodySizeLimitMiddleware (Starlette stack inversion). Non-JSON bodies (YAML/XML/TOML) read in full with no size check, bypassing the 10MB cap.</p>
+<div class="t"><span class="m">test_oversized_non_json_body_rejected_before_transcode</span></div>
+</div>
+
+<div class="s">
+<h4>Tar Symlink/Hardlink Traversal in Extension Install <span class="tag tag-2">Gaps</span></h4>
+<p>extensions/Install.py:114 — _safe_extract_tar validates member.name but not member.linkname. Symlink → / followed by regular member writes through symlink outside dest.</p>
+<div class="t"><span class="m">test_install_tar_symlink_member_cannot_escape_dest</span></div>
+</div>
+
+<div class="s">
+<h4>OAuth Client Secret Non-Constant-Time Comparison <span class="tag tag-2">Gaps</span></h4>
+<p>auth_oauth/EXT_Auth_OAuth.py:510 — client_secret compared with != instead of hmac.compare_digest. Timing oracle enables incremental secret recovery.</p>
+<div class="t"><span class="m">test_oauth_client_secret_comparison_is_constant_time</span></div>
+</div>
+
+<div class="s">
+<h4>Pagination Negative/Unbounded Page Values <span class="tag tag-2">Gaps</span></h4>
+<p>AbstractLogicManager.py:2672 — page=0 yields negative OFFSET (500). Unbounded pageSize passed directly to query.</p>
+<div class="t"><span class="m">test_pagination_rejects_nonpositive_page_and_caps_page_size</span></div>
+</div>
+
+<div class="s">
+<h4>sort_by Accepts Non-Field ORM Attributes <span class="tag tag-2">Gaps</span></h4>
+<p>AbstractLogicManager.py:2703 — hasattr(self.DB, sort_by) accepts relationships/hybrids, not just columns. Should validate against model_fields first.</p>
+<div class="t"><span class="m">test_list_sort_by_rejects_non_field_attributes</span></div>
+</div>
+
 <div class="s">
 <h4>§19 CSRF (corpus §85) <span class="tag tag-5">N/A — API-only</span></h4>
 <p class="reason">API-only server. Authentication uses JWT in the Authorization header, not cookies. Browsers do not auto-attach Authorization headers cross-origin, so CSRF is architecturally eliminated. If cookie-based auth is ever added, all 11 CSRF tests become mandatory.</p>

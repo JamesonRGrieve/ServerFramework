@@ -44,8 +44,21 @@ from zephyrex.lib.RequestContext import (
 
 
 def parse_extension_csv(csv: str) -> list[str]:
-    """Split a comma-separated extensions string into a trimmed, non-empty list."""
-    return [name.strip() for name in csv.split(",") if name.strip()]
+    """Split a comma-separated extensions string into a trimmed, non-empty list.
+
+    Extension names must be valid Python identifiers (alphanumeric + underscore).
+    Names containing path separators, shell metacharacters, or dots are rejected.
+    """
+    import re
+
+    names = [name.strip() for name in csv.split(",") if name.strip()]
+    validated = []
+    for name in names:
+        if re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*$", name):
+            validated.append(name)
+        else:
+            logger.warning("Rejected invalid extension name: %s", name)
+    return validated
 
 
 def _install_extension_deps(
@@ -630,13 +643,10 @@ def build_app(model_registry: ModelRegistry):
         try:
             response = await call_next(request)
         except DeadlineExceededError as exc:
+            logger.debug("Request deadline exceeded: %s (layer=%s)", exc, exc.layer)
             return JSONResponse(
                 status_code=504,
-                content={
-                    "detail": str(exc),
-                    "elapsed_ms": exc.elapsed_ms,
-                    "layer": exc.layer,
-                },
+                content={"detail": "Request deadline exceeded"},
             )
         finally:
             # Item 34 — restore the prior traceparent contextvar (or

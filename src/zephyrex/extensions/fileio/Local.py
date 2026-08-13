@@ -765,12 +765,12 @@ class LocalFileSystem(AbstractFileIOProvider):
 
                 # Check if it's a text file (simple check)
                 try:
-                    with open(
-                        resolved_path, "r", encoding="utf-8", errors="replace"
+                    with _safe_open(
+                        str(resolved_path), "r", encoding="utf-8", errors="replace"
                     ) as f:
-                        f.read(1024)  # Read a bit of the file to see if it's text
+                        f.read(1024)
                     info["text_file"] = True
-                except:
+                except (OSError, UnicodeDecodeError):
                     info["text_file"] = False
 
             return info

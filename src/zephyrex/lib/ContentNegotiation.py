@@ -29,7 +29,8 @@ import json
 import tomllib
 from typing import Any
 from xml.etree.ElementTree import Element, indent, tostring
-from xml.etree.ElementTree import fromstring as xml_fromstring
+
+from defusedxml.ElementTree import fromstring as xml_fromstring
 
 import tomli_w
 import yaml
@@ -101,7 +102,7 @@ def serialize(data: Any, fmt: str) -> tuple[str, str]:
     if fmt == "toon":
         return toon_encode(data), MIME_TOON
     if fmt == "yaml":
-        return yaml.dump(data, default_flow_style=False, allow_unicode=True), MIME_YAML
+        return yaml.safe_dump(data, default_flow_style=False, allow_unicode=True), MIME_YAML
     if fmt == "toml":
         # TOML requires a top-level table; wrap bare values.
         if not isinstance(data, dict):

@@ -70,6 +70,8 @@ def setup_sqlite_for_regex(engine):
     def regexp(expr, item):
         if item is None:
             return False
+        if len(expr) > 200:
+            return False
         try:
             reg = re.compile(expr)
             return reg.search(item) is not None

@@ -116,6 +116,10 @@ def _safe_extract_tar(archive: Path, dest: Path) -> None:
     dest_resolved = dest.resolve()
     with tarfile.open(archive, "r:*") as tf:
         for member in tf.getmembers():
+            if member.issym() or member.islnk():
+                raise InstallError(
+                    f"archive contains symlink/hardlink: {member.name!r} -> {member.linkname!r}"
+                )
             target = (dest / member.name).resolve()
             if not str(target).startswith(str(dest_resolved) + os.sep) and target != dest_resolved:
                 raise InstallError(f"archive entry escapes dest: {member.name!r}")
