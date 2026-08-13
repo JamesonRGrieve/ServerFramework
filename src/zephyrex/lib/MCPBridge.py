@@ -59,7 +59,7 @@ def _build_tools_from_openapi(schema: dict) -> list[types.Tool]:
                 types.Tool(
                     name=_operation_id_to_tool_name(op_id),
                     description=description[:1024],
-                    inputSchema={
+                    input_schema={
                         "type": "object",
                         "properties": input_props,
                         "required": required,
@@ -80,10 +80,10 @@ async def _call_tool_via_app(
     if not tool:
         return types.CallToolResult(
             content=[types.TextContent(type="text", text=f"Unknown tool: {name}")],
-            isError=True,
+            is_error=True,
         )
 
-    props = tool.inputSchema.get("properties", {})
+    props = tool.input_schema.get("properties", {})
     method = props.get("method", {}).get("const", "GET")
     path = props.get("path", {}).get("const", "/")
 
@@ -105,7 +105,7 @@ async def _call_tool_via_app(
 
     headers = {**forwarded_headers}
     if "accept" not in {k.lower() for k in headers}:
-        headers["Accept"] = "application/json"
+        headers["Accept"] = "application/toon"
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app),
@@ -124,7 +124,7 @@ async def _call_tool_via_app(
 
     return types.CallToolResult(
         content=[types.TextContent(type="text", text=text)],
-        isError=response.status_code >= 400,
+        is_error=response.status_code >= 400,
     )
 
 

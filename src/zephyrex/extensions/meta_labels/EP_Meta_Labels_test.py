@@ -5,11 +5,14 @@ from typing import Any
 import pytest
 
 from zephyrex.endpoints.AbstractEPTest import AbstractEPTest
+from zephyrex.extensions.AbstractEXTTest import ExtensionServerMixin
 from zephyrex.extensions.meta_labels.BLL_Meta_Labels import LabelModel
+from zephyrex.extensions.meta_labels.EXT_Meta_Labels import EXT_Meta_Labels
 
 
 @pytest.mark.labels
-class TestLabelEP(AbstractEPTest):
+class TestLabelEP(AbstractEPTest, ExtensionServerMixin):
+    extension_class = EXT_Meta_Labels
     base_endpoint = "labels"
     entity_name = "label"
     class_under_test = LabelModel
