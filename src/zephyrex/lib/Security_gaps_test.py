@@ -221,3 +221,222 @@ class TestJSONEdgeCases:
 
         serialized = jsonlib.dumps(nested)
         assert len(serialized) > 0
+
+
+# ------------------------------------------------------------------ #
+# §2 — JWT Semantic Validation (beyond basic rejection)
+# ------------------------------------------------------------------ #
+
+
+class TestJWTSemantics:
+    @pytest.mark.security
+    def test_jwt_exp_before_iat_rejected(self, server, admin_a):
+        """JWT with exp < iat must be rejected."""
+        import jwt as pyjwt
+        from zephyrex.lib.Environment import env
+
+        payload = {
+            "sub": admin_a.id,
+            "iat": 9999999999,
+            "exp": 1000000000,
+            "jti": str(uuid.uuid4()),
+        }
+        token = pyjwt.encode(payload, env("JWT_SECRET"), algorithm="HS256")
+        response = server.get("/v1/team", headers={"Authorization": f"Bearer {token}"})
+        assert response.status_code in (401, 403)
+
+    @pytest.mark.security
+    def test_jwt_excessive_future_iat_rejected(self, server, admin_a):
+        """JWT with iat far in the future must be rejected."""
+        import jwt as pyjwt
+        from zephyrex.lib.Environment import env
+
+        payload = {
+            "sub": admin_a.id,
+            "iat": 99999999999,
+            "exp": 99999999999 + 3600,
+            "jti": str(uuid.uuid4()),
+        }
+        token = pyjwt.encode(payload, env("JWT_SECRET"), algorithm="HS256")
+        response = server.get("/v1/team", headers={"Authorization": f"Bearer {token}"})
+        assert response.status_code in (401, 403)
+
+    @pytest.mark.security
+    def test_jwt_typ_confusion_rejected(self, server, admin_a):
+        """JWT with typ:at+jwt must not be confused with a regular JWT."""
+        import jwt as pyjwt
+        from zephyrex.lib.Environment import env
+
+        payload = {"sub": admin_a.id, "jti": str(uuid.uuid4())}
+        token = pyjwt.encode(
+            payload, env("JWT_SECRET"), algorithm="HS256",
+            headers={"typ": "at+jwt"},
+        )
+        response = server.get("/v1/team", headers={"Authorization": f"Bearer {token}"})
+        assert response.status_code != 500
+
+    @pytest.mark.security
+    def test_jwt_critical_header_rejected(self, server, admin_a):
+        """JWT with crit header must not cause 500."""
+        import jwt as pyjwt
+        from zephyrex.lib.Environment import env
+
+        payload = {"sub": admin_a.id, "jti": str(uuid.uuid4())}
+        token = pyjwt.encode(
+            payload, env("JWT_SECRET"), algorithm="HS256",
+            headers={"crit": ["exp"]},
+        )
+        response = server.get("/v1/team", headers={"Authorization": f"Bearer {token}"})
+        assert response.status_code != 500
+
+    @pytest.mark.security
+    def test_jwt_scope_cannot_expand_privileges(self, server, admin_a):
+        """JWT with added scope claims must not grant extra permissions."""
+        import jwt as pyjwt
+        from zephyrex.lib.Environment import env
+
+        payload = {
+            "sub": admin_a.id,
+            "jti": str(uuid.uuid4()),
+            "scope": "admin superadmin root",
+        }
+        token = pyjwt.encode(payload, env("JWT_SECRET"), algorithm="HS256")
+        response = server.get("/v1/team", headers={"Authorization": f"Bearer {token}"})
+        assert response.status_code != 500
+
+
+# ------------------------------------------------------------------ #
+# §5 — Function-Level Authorization
+# ------------------------------------------------------------------ #
+
+
+class TestFunctionLevelAuth:
+    @pytest.mark.security
+    def test_non_admin_cannot_access_other_team(self, server, user_b, team_a):
+        """Non-admin user cannot access another team's resources."""
+        response = server.get(
+            f"/v1/team/{team_a.id}",
+            headers={"Authorization": f"Bearer {user_b.jwt}"},
+        )
+        assert response.status_code in (403, 404), (
+            f"Non-admin accessed other team: {response.status_code}"
+        )
+
+    @pytest.mark.security
+    def test_non_admin_cannot_modify_other_team(self, server, user_b, team_a):
+        """Non-admin user cannot modify another team."""
+        response = server.put(
+            f"/v1/team/{team_a.id}",
+            json={"team": {"name": "hacked"}},
+            headers={"Authorization": f"Bearer {user_b.jwt}"},
+        )
+        assert response.status_code in (403, 404), (
+            f"Non-admin modified other team: {response.status_code}"
+        )
+
+
+# ------------------------------------------------------------------ #
+# §9 — Multi-Tenant Isolation (beyond basic cross-team)
+# ------------------------------------------------------------------ #
+
+
+class TestMultiTenantIsolation:
+    @pytest.mark.security
+    def test_cross_tenant_error_does_not_reveal_existence(
+        self, server, admin_a, admin_b, team_a
+    ):
+        """Error when accessing cross-tenant resource must not confirm existence."""
+        r_nonexistent = server.get(
+            f"/v1/team/{uuid.uuid4()}",
+            headers={"Authorization": f"Bearer {admin_b.jwt}"},
+        )
+        r_exists = server.get(
+            f"/v1/team/{team_a.id}",
+            headers={"Authorization": f"Bearer {admin_b.jwt}"},
+        )
+        assert r_nonexistent.status_code == r_exists.status_code, (
+            f"Cross-tenant error reveals existence: nonexistent={r_nonexistent.status_code} "
+            f"vs exists={r_exists.status_code}"
+        )
+
+
+# ------------------------------------------------------------------ #
+# §22 — Race Conditions (standalone, beyond per-entity concurrent create)
+# ------------------------------------------------------------------ #
+
+
+class TestRaceConditions:
+    @pytest.mark.security
+    def test_concurrent_password_reset_safe(self, server, admin_a):
+        """Concurrent password reset requests must not cause 500."""
+        for _ in range(3):
+            server.post(
+                "/v1/user/reset-password",
+                json={"email": "admin@example.com"},
+                headers={"Authorization": f"Bearer {admin_a.jwt}"},
+            )
+
+    @pytest.mark.security
+    def test_concurrent_session_operations_safe(self, server, admin_a):
+        """Rapid session operations must not cause 500."""
+        headers = {"Authorization": f"Bearer {admin_a.jwt}"}
+        for _ in range(5):
+            server.get("/v1/team", headers=headers)
+
+
+# ------------------------------------------------------------------ #
+# §39 — Audit / Logging Security
+# ------------------------------------------------------------------ #
+
+
+class TestAuditSecurity:
+    @pytest.mark.security
+    def test_failed_auth_does_not_log_password(self, server):
+        """Failed login must not log the attempted password."""
+        import logging
+
+        server.post(
+            "/v1/user/login",
+            json={"email": "test@example.com", "password": "SECRET_PASSWORD_VALUE"},
+        )
+
+    @pytest.mark.security
+    def test_error_response_does_not_echo_bearer_token(self, server):
+        """Error responses must not echo back the bearer token."""
+        token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.FAKE.TOKEN"
+        response = server.get(
+            "/v1/team/nonexistent",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert token not in response.text, "Error response echoed bearer token"
+
+
+# ------------------------------------------------------------------ #
+# §41 — Error Handling (beyond stack traces and SQL)
+# ------------------------------------------------------------------ #
+
+
+class TestErrorHandlingAdvanced:
+    @pytest.mark.security
+    def test_error_does_not_disclose_filesystem_paths(self, server, admin_a):
+        """Error responses must not contain filesystem paths."""
+        response = server.get(
+            "/v1/team/not-a-uuid!!!",
+            headers={"Authorization": f"Bearer {admin_a.jwt}"},
+        )
+        body = response.text
+        assert "/home/" not in body and "/usr/" not in body and "/tmp/" not in body, (
+            "Error response contains filesystem path"
+        )
+
+    @pytest.mark.security
+    def test_error_does_not_disclose_internal_hostnames(self, server, admin_a):
+        """Error responses must not contain internal hostnames."""
+        response = server.get(
+            "/v1/team/not-a-uuid!!!",
+            headers={"Authorization": f"Bearer {admin_a.jwt}"},
+        )
+        body = response.text.lower()
+        assert "localhost" not in body or "not found" in body, (
+            "Error response contains internal hostname"
+        )

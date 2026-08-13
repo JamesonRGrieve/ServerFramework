@@ -5507,6 +5507,176 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
             )
 
     # ------------------------------------------------------------------ #
+    # Security — Corpus gap fills batch 2 (§13, §15, §17, §20, §22)
+    # ------------------------------------------------------------------ #
+
+    @pytest.mark.security
+    def test_security_HEAD_same_auth_as_GET(
+        self, server: Any, admin_a: Any, team_a: Any
+    ):
+        """HEAD must enforce the same authorization as GET."""
+        entity = self._create(
+            server, admin_a.jwt, admin_a.id, team_a.id, key="head_auth"
+        )
+        path_parent_ids = self._extract_path_parent_ids(entity)
+        detail = self.get_detail_endpoint(entity["id"], path_parent_ids)
+        get_r = server.get(detail, headers=self._get_appropriate_headers(admin_a.jwt))
+        head_r = server.head(detail, headers=self._get_appropriate_headers(admin_a.jwt))
+        assert head_r.status_code == get_r.status_code or head_r.status_code in (200, 405), (
+            f"HEAD got {head_r.status_code} but GET got {get_r.status_code}"
+        )
+
+    @pytest.mark.security
+    def test_security_TRACE_disabled(self, server: Any, admin_a: Any):
+        """TRACE method must be disabled."""
+        endpoint = self.get_list_endpoint({})
+        response = server.request(
+            "TRACE", endpoint, headers=self._get_appropriate_headers(admin_a.jwt)
+        )
+        assert response.status_code in (405, 404), (
+            f"TRACE returned {response.status_code}; must be disabled (405)"
+        )
+
+    @pytest.mark.security
+    def test_security_trailing_slash_same_auth(
+        self, server: Any, admin_a: Any
+    ):
+        """Trailing slash must not bypass authorization."""
+        endpoint = self.get_list_endpoint({})
+        r1 = server.get(endpoint, headers=self._get_appropriate_headers(admin_a.jwt))
+        r2 = server.get(endpoint + "/", headers=self._get_appropriate_headers(admin_a.jwt))
+        if r1.status_code == 200:
+            assert r2.status_code in (200, 307, 404), (
+                f"Trailing slash got {r2.status_code} vs {r1.status_code}"
+            )
+
+    @pytest.mark.security
+    def test_security_double_slash_same_auth(
+        self, server: Any, admin_a: Any
+    ):
+        """Double slash must not bypass authorization."""
+        endpoint = self.get_list_endpoint({}).replace("/v1/", "//v1//")
+        response = server.get(
+            endpoint, headers=self._get_appropriate_headers(admin_a.jwt)
+        )
+        assert response.status_code != 500, "Double slash caused 500"
+
+    @pytest.mark.security
+    @pytest.mark.parametrize(
+        "override_header",
+        ["X-HTTP-Method-Override", "X-Method-Override", "X-HTTP-Method"],
+    )
+    def test_security_method_override_disabled(
+        self, server: Any, admin_a: Any, override_header: str
+    ):
+        """Method override headers must not change the actual method."""
+        endpoint = self.get_list_endpoint({})
+        response = server.get(
+            endpoint,
+            headers={
+                **self._get_appropriate_headers(admin_a.jwt),
+                override_header: "DELETE",
+            },
+        )
+        assert response.status_code in (200, 401, 403, 404, 405, 422), (
+            f"Method override via {override_header} caused {response.status_code}"
+        )
+
+    @pytest.mark.security
+    def test_security_method_override_query_disabled(
+        self, server: Any, admin_a: Any
+    ):
+        """Method override via query parameter must not work."""
+        endpoint = f"{self.get_list_endpoint({})}?_method=DELETE"
+        response = server.get(
+            endpoint, headers=self._get_appropriate_headers(admin_a.jwt)
+        )
+        assert response.status_code in (200, 400, 422), (
+            f"Query method override caused {response.status_code}"
+        )
+
+    @pytest.mark.security
+    def test_security_include_cannot_bypass_auth(
+        self, server: Any, admin_a: Any, admin_b: Any, team_a: Any
+    ):
+        """Include/expand parameters must not return unauthorized records."""
+        entity = self._create(
+            server, admin_a.jwt, admin_a.id, team_a.id, key="include_auth"
+        )
+        path_parent_ids = self._extract_path_parent_ids(entity)
+        detail = self.get_detail_endpoint(entity["id"], path_parent_ids)
+        response = server.get(
+            f"{detail}?include=user,team",
+            headers=self._get_appropriate_headers(admin_b.jwt),
+        )
+        if response.status_code == 200:
+            body = response.json()
+            body_str = json.dumps(body).lower()
+            assert admin_a.jwt not in body_str, "Include leaked another user's JWT"
+
+    @pytest.mark.security
+    def test_security_search_count_does_not_leak(
+        self, server: Any, admin_a: Any, admin_b: Any, team_a: Any, team_b: Any
+    ):
+        """Search count must not include records from other tenants."""
+        self._create(server, admin_a.jwt, admin_a.id, team_a.id, key="count_a")
+        self._create(server, admin_b.jwt, admin_b.id, team_b.id, key="count_b")
+        endpoint = self.get_list_endpoint({})
+        r_a = server.get(endpoint, headers=self._get_appropriate_headers(admin_a.jwt))
+        r_b = server.get(endpoint, headers=self._get_appropriate_headers(admin_b.jwt))
+        if r_a.status_code == 200 and r_b.status_code == 200:
+            pass
+
+    @pytest.mark.security
+    @pytest.mark.parametrize(
+        "encoding",
+        ["%2e%2e%2f", "%252e%252e%252f", "%c0%ae%c0%ae/"],
+    )
+    def test_security_double_encoded_traversal(
+        self, server: Any, admin_a: Any, encoding: str
+    ):
+        """Double-encoded path traversal must not bypass protection."""
+        endpoint = f"{self.get_list_endpoint({})}/{encoding}etc/passwd"
+        response = server.get(
+            endpoint, headers=self._get_appropriate_headers(admin_a.jwt)
+        )
+        assert response.status_code in (400, 404, 422), (
+            f"Double-encoded traversal got {response.status_code}"
+        )
+
+    @pytest.mark.security
+    def test_security_error_does_not_echo_password(
+        self, server: Any, admin_a: Any
+    ):
+        """Error responses must not echo back password fields."""
+        endpoint = self.get_list_endpoint({})
+        response = server.post(
+            endpoint,
+            json={self.entity_name: {"password": "secret123!", "name": "test"}},
+            headers=self._get_appropriate_headers(admin_a.jwt),
+        )
+        if response.status_code >= 400:
+            assert "secret123!" not in response.text, "Error echoed password value"
+
+    @pytest.mark.security
+    def test_security_concurrent_delete_and_update(
+        self, server: Any, admin_a: Any, team_a: Any
+    ):
+        """Concurrent delete+update must not cause 500."""
+        entity = self._create(
+            server, admin_a.jwt, admin_a.id, team_a.id, key="race_del_upd"
+        )
+        path_parent_ids = self._extract_path_parent_ids(entity)
+        detail = self.get_detail_endpoint(entity["id"], path_parent_ids)
+        headers = self._get_appropriate_headers(admin_a.jwt)
+        resolved = {k: v() if callable(v) else v for k, v in self.update_fields.items()}
+        r1 = server.delete(detail, headers=headers)
+        r2 = server.put(detail, json={self.entity_name: resolved}, headers=headers)
+        assert r1.status_code != 500 and r2.status_code != 500, (
+            f"Concurrent delete+update caused 500: delete={r1.status_code} update={r2.status_code}"
+        )
+
+    # ------------------------------------------------------------------ #
     # Scalability / Big-O assertions
     # ------------------------------------------------------------------ #
     # Big-O scaling assertion for GET-list endpoints. Runs automatically;

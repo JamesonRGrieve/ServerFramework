@@ -18,16 +18,7 @@ import sys
 from pathlib import Path
 
 BASELINE_FILE = Path(__file__).resolve().parent.parent / ".ratchet-baseline.json"
-IGNORES = [
-    "--ignore=src/zephyrex/extensions/auth_api_keys",
-    "--ignore=src/zephyrex/extensions/auth_marketplace",
-    "--ignore=src/zephyrex/extensions/auth_merge",
-    "--ignore=src/zephyrex/extensions/auth_notifications",
-    "--ignore=src/zephyrex/extensions/auth_oauth",
-    "--ignore=src/zephyrex/extensions/auth_privacy",
-    "--ignore=src/zephyrex/extensions/fileio",
-    "--ignore=src/zephyrex/extensions/meta_labels",
-]
+IGNORES = []
 
 
 def _load_baseline() -> dict:

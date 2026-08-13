@@ -8,14 +8,6 @@ VENV_PYTHON="$(dirname "$(git rev-parse --git-dir)")/.venv/bin/python"
 
 echo "[pre-commit] Running test suite..."
 "$VENV_PYTHON" -m pytest src/ \
-  --ignore=src/zephyrex/extensions/auth_api_keys \
-  --ignore=src/zephyrex/extensions/auth_marketplace \
-  --ignore=src/zephyrex/extensions/auth_merge \
-  --ignore=src/zephyrex/extensions/auth_notifications \
-  --ignore=src/zephyrex/extensions/auth_oauth \
-  --ignore=src/zephyrex/extensions/auth_privacy \
-  --ignore=src/zephyrex/extensions/fileio \
-  --ignore=src/zephyrex/extensions/meta_labels \
   -q --tb=no 2>&1 | tail -3
 if [ ${PIPESTATUS[0]} -ne 0 ]; then
   echo "[pre-commit] FAIL: tests did not pass"

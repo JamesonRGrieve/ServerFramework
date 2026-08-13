@@ -2984,6 +2984,28 @@ class TeamManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef]
 
     def update(self, id: str, **kwargs):
         """Update a team with metadata"""
+        from zephyrex.database.StaticPermissions import is_root_id, is_system_id
+
+        if not (is_root_id(self.requester.id) or is_system_id(self.requester.id)):
+            db_session = self.model_registry.DB.session()
+            try:
+                team_db = TeamModel.DB(self.model_registry.DB.manager.Base)
+                team = db_session.query(team_db).filter(team_db.id == id).first()
+                if team is None:
+                    raise HTTPException(status_code=404, detail="Team not found")
+                is_creator = team.created_by_user_id == self.requester.id
+                ut_db = UserTeamModel.DB(self.model_registry.DB.manager.Base)
+                is_member = (
+                    db_session.query(ut_db)
+                    .filter(ut_db.team_id == id, ut_db.user_id == self.requester.id)
+                    .first()
+                    is not None
+                )
+                if not is_creator and not is_member:
+                    raise HTTPException(status_code=403, detail="Not a member of this team")
+            finally:
+                db_session.close()
+
         # Extract metadata fields (non-model fields)
         metadata_fields = {}
         model_fields = {}
