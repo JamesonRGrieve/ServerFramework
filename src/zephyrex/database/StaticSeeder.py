@@ -17,91 +17,69 @@ from zephyrex.lib.Logging import logger
 # Helper lookup functions
 
 
-def get_provider_by_name(session, provider_name, db_manager: DatabaseManager):
-    """
-    Helper function to look up a provider by name.
+def _get_entity_by_name(
+    session,
+    name: str,
+    pydantic_model,
+    entity_label: str,
+    db_manager: DatabaseManager,
+):
+    """Look up any entity by its ``name`` column.
+
+    Args:
+        session: SQLAlchemy session.
+        name: The value to match against ``Model.name``.
+        pydantic_model: Pydantic model class exposing ``.DB(base)``.
+        entity_label: Human-readable label for log messages (e.g. "provider").
+        db_manager: ``DatabaseManager`` providing the declarative base.
+
+    Returns:
+        The entity row, or ``None`` if not found / on error.
     """
     try:
-        from zephyrex.logic.BLL_Providers import ProviderModel
+        db_cls = pydantic_model.DB(db_manager.Base)
+        stmt = select(db_cls).where(db_cls.name == name)
+        entity = session.execute(stmt).scalar_one_or_none()
 
-        Provider = ProviderModel.DB(db_manager.Base)
-        stmt = select(Provider).where(Provider.name == provider_name)
-        provider = session.execute(stmt).scalar_one_or_none()
-
-        if provider:
-            logger.log("SQL", f"Found provider {provider_name} with ID {provider.id}")
-            return provider
+        if entity:
+            logger.log("SQL", f"Found {entity_label} {name} with ID {entity.id}")
+            return entity
         else:
-            logger.warning(f"Provider {provider_name} not found")
+            logger.warning(f"{entity_label.capitalize()} {name} not found")
             return None
     except Exception as e:
-        logger.error(f"Error looking up provider {provider_name}: {str(e)}")
+        logger.error(f"Error looking up {entity_label} {name}: {str(e)}")
         return None
+
+
+def get_provider_by_name(session, provider_name, db_manager: DatabaseManager):
+    """Helper function to look up a provider by name."""
+    from zephyrex.logic.BLL_Providers import ProviderModel
+
+    return _get_entity_by_name(session, provider_name, ProviderModel, "provider", db_manager)
 
 
 def get_extension_by_name(session, extension_name, db_manager: DatabaseManager):
     """Helper function to look up an extension by name."""
-    try:
-        from zephyrex.logic.BLL_Extensions import ExtensionModel
+    from zephyrex.logic.BLL_Extensions import ExtensionModel
 
-        Extension = ExtensionModel.DB(db_manager.Base)
-        stmt = select(Extension).where(Extension.name == extension_name)
-        extension = session.execute(stmt).scalar_one_or_none()
-
-        if extension:
-            logger.log(
-                "SQL", f"Found extension {extension_name} with ID {extension.id}"
-            )
-            return extension
-        else:
-            logger.warning(f"Extension {extension_name} not found")
-            return None
-    except Exception as e:
-        logger.error(f"Error looking up extension {extension_name}: {str(e)}")
-        return None
+    return _get_entity_by_name(session, extension_name, ExtensionModel, "extension", db_manager)
 
 
 def get_rotation_by_name(session, rotation_name, db_manager: DatabaseManager):
     """Helper function to look up a rotation by name."""
-    try:
-        from zephyrex.logic.BLL_Providers import RotationModel
+    from zephyrex.logic.BLL_Providers import RotationModel
 
-        Rotation = RotationModel.DB(db_manager.Base)
-        stmt = select(Rotation).where(Rotation.name == rotation_name)
-        rotation = session.execute(stmt).scalar_one_or_none()
-
-        if rotation:
-            logger.log("SQL", f"Found rotation {rotation_name} with ID {rotation.id}")
-            return rotation
-        else:
-            logger.warning(f"Rotation {rotation_name} not found")
-            return None
-    except Exception as e:
-        logger.error(f"Error looking up rotation {rotation_name}: {str(e)}")
-        return None
+    return _get_entity_by_name(session, rotation_name, RotationModel, "rotation", db_manager)
 
 
 def get_provider_instance_by_name(session, instance_name, db_manager: DatabaseManager):
     """Helper function to look up a provider instance by name."""
-    try:
-        from zephyrex.logic.BLL_Providers import ProviderInstanceModel
+    from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 
-        ProviderInstance = ProviderInstanceModel.DB(db_manager.Base)
-        stmt = select(ProviderInstance).where(ProviderInstance.name == instance_name)
-        instance = session.execute(stmt).scalar_one_or_none()
-
-        if instance:
-            logger.log(
-                "SQL",
-                f"Found provider instance {instance_name} with ID {instance.id}",
-            )
-            return instance
-        else:
-            logger.warning(f"Provider instance {instance_name} not found")
-            return None
-    except Exception as e:
-        logger.error(f"Error looking up provider instance {instance_name}: {str(e)}")
-        return None
+    return _get_entity_by_name(
+        session, instance_name, ProviderInstanceModel, "provider instance", db_manager
+    )
 
 
 def _resolve_placeholder_fields(item, session, class_name, db_manager):
