@@ -4,19 +4,18 @@ These tests measure wall-clock time for critical operations and assert
 they stay within acceptable bounds. They are NOT micro-benchmarks —
 they test real framework code paths end-to-end.
 
-Run standalone:
-    pytest src/zephyrex/lib/Efficiency_test.py -v -n0
+Each test uses per-worker database isolation (db_prefix derived from
+PYTEST_XDIST_WORKER + PID) so they run safely under xdist parallelism.
 """
 
 from __future__ import annotations
 
 import os
 import time
-from pathlib import Path
 from typing import Optional
 
 import pytest
-from pydantic import BaseModel, Field
+from pydantic import Field
 
 
 os.environ.setdefault("JWT_SECRET", "test-jwt-secret-32-bytes-or-more-aaaaaa")
@@ -24,27 +23,35 @@ os.environ.setdefault("DATABASE_TYPE", "sqlite")
 os.environ.setdefault("SEED_DATA", "false")
 
 
+def _worker_db_prefix(label: str) -> str:
+    """Build a per-worker, per-PID database prefix for xdist isolation."""
+    worker = os.environ.get("PYTEST_XDIST_WORKER", "main")
+    return f"bench.{label}.{worker}.{os.getpid()}"
+
+
+def _reset_registry():
+    from zephyrex.lib.Pydantic2SQLAlchemy import (
+        clear_registry_cache,
+        reset_extension_system,
+    )
+
+    clear_registry_cache()
+    reset_extension_system()
+
+
 class TestBootPerformance:
     """Measure app boot (instance() call) time."""
 
     def test_instance_boots_under_5_seconds(self, tmp_path):
-        if os.environ.get("PYTEST_XDIST_WORKER"):
-            pytest.skip("Boot benchmark requires serial execution (-n0) to avoid corrupting shared state")
         os.environ["DATABASE_NAME"] = f"bench_boot_{os.getpid()}"
         os.environ["DATABASE_PATH"] = str(tmp_path)
 
-        from zephyrex.lib.Pydantic2SQLAlchemy import (
-            clear_registry_cache,
-            reset_extension_system,
-        )
-
-        clear_registry_cache()
-        reset_extension_system()
+        _reset_registry()
 
         start = time.perf_counter()
         from zephyrex.app import instance
 
-        app = instance(extensions="", db_prefix=f"bench.{os.getpid()}")
+        app = instance(extensions="", db_prefix=_worker_db_prefix("boot"))
         elapsed = time.perf_counter() - start
 
         assert app is not None
@@ -56,22 +63,16 @@ class TestModelRegistryPerformance:
     """Measure model registry commit time."""
 
     def test_commit_under_3_seconds(self, tmp_path):
-        if os.environ.get("PYTEST_XDIST_WORKER"):
-            pytest.skip("Registry benchmark requires serial execution (-n0) to avoid corrupting shared state")
         os.environ["DATABASE_NAME"] = f"bench_registry_{os.getpid()}"
         os.environ["DATABASE_PATH"] = str(tmp_path)
 
         from zephyrex.database.DatabaseManager import DatabaseManager
         from zephyrex.lib.Pydantic import ModelRegistry
-        from zephyrex.lib.Pydantic2SQLAlchemy import (
-            clear_registry_cache,
-            reset_extension_system,
-        )
 
-        clear_registry_cache()
-        reset_extension_system()
+        _reset_registry()
 
-        db_mgr = DatabaseManager(db_prefix=f"bench.reg.{os.getpid()}")
+        db_prefix = _worker_db_prefix("reg")
+        db_mgr = DatabaseManager(db_prefix=db_prefix)
         registry = ModelRegistry()
         registry.database_manager = db_mgr
 
@@ -154,25 +155,18 @@ class TestRequestLatency:
     @pytest.fixture(scope="class")
     @classmethod
     def client(cls, tmp_path_factory):
-        if os.environ.get("PYTEST_XDIST_WORKER"):
-            pytest.skip("Latency benchmarks require serial execution (-n0)")
         tmp = tmp_path_factory.mktemp("bench_latency")
         os.environ["DATABASE_NAME"] = f"bench_latency_{os.getpid()}"
         os.environ["DATABASE_PATH"] = str(tmp)
         os.environ["SEED_DATA"] = "true"
 
-        from zephyrex.lib.Pydantic2SQLAlchemy import (
-            clear_registry_cache,
-            reset_extension_system,
-        )
+        _reset_registry()
 
-        clear_registry_cache()
-        reset_extension_system()
-
-        from zephyrex.app import instance
         from starlette.testclient import TestClient
 
-        app = instance(extensions="", db_prefix=f"bench.lat.{os.getpid()}")
+        from zephyrex.app import instance
+
+        app = instance(extensions="", db_prefix=_worker_db_prefix("lat"))
         return TestClient(app)
 
     def test_openapi_under_200ms(self, client):
@@ -193,8 +187,6 @@ class TestRequestLatency:
 
     @pytest.mark.parametrize("n", [10, 50])
     def test_list_endpoint_latency(self, client, n):
-        import base64
-
         from conftest import create_user
 
         try:
