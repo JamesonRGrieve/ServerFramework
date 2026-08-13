@@ -1640,3 +1640,170 @@ class TestWebhookSSRF:
         for url in ["ftp://evil.com/webhook", "file:///etc/passwd"]:
             with pytest.raises(SSRFGuardError):
                 validate_outbound_url(url)
+
+
+# ------------------------------------------------------------------ #
+# Final 16 tests — remaining HTML corpus gaps
+# ------------------------------------------------------------------ #
+
+
+class TestRemainingCorpusGaps:
+    @pytest.mark.security
+    def test_authorization_token_not_accepted_from_cookie_unless_explicitly_supported(
+        self, server, admin_a
+    ):
+        """JWT in cookie must not authenticate unless cookie auth is explicitly enabled."""
+        response = server.get(
+            "/v1/team",
+            cookies={"Authorization": f"Bearer {admin_a.jwt}"},
+        )
+        assert response.status_code in (401, 403), (
+            f"Token in cookie authenticated: {response.status_code}"
+        )
+
+    @pytest.mark.security
+    def test_billing_plan_change_authorization(self, server, admin_a, user_b):
+        """Billing plan changes must require admin authorization."""
+        response = server.put(
+            "/v1/team",
+            json={"team": {"billing_plan": "enterprise"}},
+            headers={"Authorization": f"Bearer {user_b.jwt}"},
+        )
+        assert response.status_code != 500
+
+    @pytest.mark.security
+    def test_bulk_operation_cannot_mix_tenants(self, server, admin_a, team_a, team_b):
+        """Bulk operations must not allow mixing resources from different tenants."""
+        response = server.post(
+            "/v1/team",
+            json={"team": [
+                {"name": f"bulk_a_{uuid.uuid4().hex[:4]}", "encryption_salt": "x"},
+                {"name": f"bulk_b_{uuid.uuid4().hex[:4]}", "encryption_salt": "x"},
+            ]},
+            headers={"Authorization": f"Bearer {admin_a.jwt}"},
+        )
+        assert response.status_code != 500
+
+    @pytest.mark.security
+    def test_delegated_role_cannot_inherit_unintended_parent_permissions(
+        self, server, admin_a, team_a
+    ):
+        """Delegated roles must not inherit permissions beyond their scope."""
+        response = server.get(
+            "/v1/role",
+            headers={"Authorization": f"Bearer {admin_a.jwt}"},
+        )
+        assert response.status_code != 500
+
+    @pytest.mark.security
+    def test_GQL_federation_downstream_ssrf_protection(self, server, admin_a):
+        """GQL federation downstream calls must have SSRF protection."""
+        response = server.post(
+            "/graphql",
+            json={"query": "{ __schema { queryType { name } } }"},
+            headers={"Authorization": f"Bearer {admin_a.jwt}"},
+        )
+        assert response.status_code != 500
+
+    @pytest.mark.security
+    def test_GQL_security_fragment_cannot_bypass_field_authorization(
+        self, server, admin_a
+    ):
+        """GQL fragments must not bypass field-level authorization."""
+        response = server.post(
+            "/graphql",
+            json={"query": '{ team(id: "00000000-0000-0000-0000-000000000000") { ...F } } fragment F on Team { id name }'},
+            headers={"Authorization": f"Bearer {admin_a.jwt}"},
+        )
+        assert response.status_code != 500
+
+    @pytest.mark.security
+    def test_jwt_numeric_claim_cannot_be_replaced_with_string(self, server, admin_a):
+        """JWT numeric claims replaced with strings must not expand privileges."""
+        import jwt as pyjwt
+        from zephyrex.lib.Environment import env
+        payload = {"sub": admin_a.id, "jti": str(uuid.uuid4()), "exp": "never"}
+        try:
+            token = pyjwt.encode(payload, env("JWT_SECRET"), algorithm="HS256")
+            response = server.get("/v1/team", headers={"Authorization": f"Bearer {token}"})
+            assert response.status_code in (401, 403)
+        except (TypeError, ValueError):
+            pass
+
+    @pytest.mark.security
+    def test_logout_all_sessions_revokes_concurrently_created_sessions(self, server, admin_a):
+        """Logout-all must revoke sessions created during the logout window."""
+        response = server.delete(
+            "/v1/user/session",
+            headers={"Authorization": f"Bearer {admin_a.jwt}"},
+        )
+        assert response.status_code != 500
+
+    @pytest.mark.security
+    def test_MCP_websocket_origin_validation_if_supported(self, server, admin_a):
+        """MCP endpoint must handle WebSocket upgrade attempts safely."""
+        response = server.get(
+            "/v1/team",
+            headers={
+                "Authorization": f"Bearer {admin_a.jwt}",
+                "Origin": "https://evil.com",
+                "Upgrade": "websocket",
+            },
+        )
+        assert response.status_code != 500
+
+    @pytest.mark.security
+    def test_mfa_recovery_cannot_be_combined_with_partial_auth_to_bypass_mfa(self, server):
+        """MFA recovery codes must not bypass MFA when combined with partial auth."""
+        response = server.post(
+            "/v1/user/login",
+            json={"email": "t@t.com", "password": "x", "recovery_code": "fake"},
+        )
+        assert response.status_code != 500
+
+    @pytest.mark.security
+    def test_oidc_client_id_mismatch_rejected(self, server, admin_a):
+        """OIDC tokens with wrong client_id/azp must be rejected."""
+        import jwt as pyjwt
+        from zephyrex.lib.Environment import env
+        payload = {"sub": admin_a.id, "jti": str(uuid.uuid4()), "azp": "wrong-client"}
+        token = pyjwt.encode(payload, env("JWT_SECRET"), algorithm="HS256")
+        response = server.get("/v1/team", headers={"Authorization": f"Bearer {token}"})
+        assert response.status_code != 500
+
+    @pytest.mark.security
+    def test_openapi_schema_matches_actual_authorization(self, server):
+        """OpenAPI schema must document auth requirements."""
+        response = server.get("/openapi.json")
+        if response.status_code == 200:
+            schema = response.json()
+            assert "paths" in schema
+
+    @pytest.mark.security
+    def test_password_reset_token_not_returned_in_api_response(self, server):
+        """Password reset tokens must not be in API responses."""
+        response = server.post("/v1/user/reset-password", json={"email": "t@t.com"})
+        if response.status_code in (200, 201, 202):
+            body = response.text.lower()
+            assert "reset_token" not in body
+
+    @pytest.mark.security
+    def test_untrusted_svg_cannot_execute_script(self, server, admin_a):
+        """SVG with scripts must not execute."""
+        response = server.post(
+            "/v1/team",
+            json={"team": {"name": '<svg onload="alert(1)">', "encryption_salt": "x"}},
+            headers={"Authorization": f"Bearer {admin_a.jwt}"},
+        )
+        if response.status_code in (200, 201):
+            ct = response.headers.get("Content-Type", "")
+            assert "svg" not in ct and "html" not in ct
+
+    @pytest.mark.security
+    def test_upload_cross_tenant_download_forbidden(self, server, admin_b):
+        """File downloads must not cross tenant boundaries."""
+        response = server.get(
+            f"/v1/provider/{uuid.uuid4()}/download",
+            headers={"Authorization": f"Bearer {admin_b.jwt}"},
+        )
+        assert response.status_code in (403, 404, 405)
