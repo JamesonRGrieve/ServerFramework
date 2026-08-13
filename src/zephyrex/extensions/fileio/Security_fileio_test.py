@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """FileIO security tests — path containment validation (corpus §10, §36).
 
-Uses a real concrete LocalFileSystem instance against a tmp_path base.
+Uses a real LocalFileSystem instance against a tmp_path base directory.
 """
 
 from __future__ import annotations
@@ -10,25 +10,8 @@ from pathlib import Path
 
 import pytest
 
-try:
-    from zephyrex.extensions.fileio.Local import LocalFileSystem
-    from zephyrex.extensions.fileio.PRV_FileIO import FileIOPermission
-
-    class _ConcreteLocalFS(LocalFileSystem):
-        @classmethod
-        def bond_instance(cls, instance):
-            return None
-
-    _ConcreteLocalFS(base_directory="/tmp", allowed_permissions={FileIOPermission.READ})
-    _FILEIO_AVAILABLE = True
-except (TypeError, ImportError):
-    _FILEIO_AVAILABLE = False
-
-if not _FILEIO_AVAILABLE:
-    pytest.skip("FileIO extension not ported — cannot instantiate provider", allow_module_level=True)
-
-from zephyrex.extensions.fileio.Local import LocalFileSystem  # noqa: E402
-from zephyrex.extensions.fileio.PRV_FileIO import FileIOPermission  # noqa: E402
+from zephyrex.extensions.fileio.Local import LocalFileSystem
+from zephyrex.extensions.fileio.PRV_FileIO import FileIOPermission
 
 
 @pytest.fixture
@@ -36,7 +19,7 @@ def fs(tmp_path):
     (tmp_path / "test.txt").write_text("safe content")
     (tmp_path / "subdir").mkdir()
     (tmp_path / "subdir" / "nested.txt").write_text("nested")
-    return _ConcreteLocalFS(
+    return LocalFileSystem(
         base_directory=str(tmp_path),
         allowed_permissions={FileIOPermission.READ, FileIOPermission.WRITE, FileIOPermission.DELETE, FileIOPermission.CREATE, FileIOPermission.LIST},
         allowlist_patterns=[str(tmp_path / "*")],
@@ -79,7 +62,7 @@ class TestFileIOPathTraversal:
         try:
             link.symlink_to(Path("/etc/hostname"))
         except OSError:
-            pytest.skip("Cannot create symlinks")
+            pytest.skip("Cannot create symlinks on this platform")
         result = await fs.read_file("evil_link")
         assert "denied" in result.lower() or "error" in result.lower() or "failed" in result.lower()
 
@@ -87,15 +70,13 @@ class TestFileIOPathTraversal:
         result = await fs.list_directory("../../")
         if isinstance(result, str):
             assert "denied" in result.lower() or "error" in result.lower()
-        elif isinstance(result, list):
-            pass
 
 
 @pytest.mark.security
 class TestFileIOBlocklist:
     async def test_blocklist_rejects_pattern(self, tmp_path):
         (tmp_path / "secret.key").write_text("private key data")
-        provider = _ConcreteLocalFS(
+        provider = LocalFileSystem(
             base_directory=str(tmp_path),
             allowed_permissions={FileIOPermission.READ},
             allowlist_patterns=[str(tmp_path / "*")],
@@ -105,11 +86,11 @@ class TestFileIOBlocklist:
         assert "private key data" not in result
 
     async def test_allowlist_rejects_unlisted(self, tmp_path):
-        (tmp_path / "unlisted.dat").write_text("data")
-        provider = _ConcreteLocalFS(
+        (tmp_path / "unlisted.dat").write_text("secret data")
+        provider = LocalFileSystem(
             base_directory=str(tmp_path),
             allowed_permissions={FileIOPermission.READ},
             allowlist_patterns=[str(tmp_path / "*.txt")],
         )
         result = await provider.read_file("unlisted.dat")
-        assert "data" != result or "denied" in result.lower()
+        assert "secret data" not in result

@@ -45,12 +45,7 @@ class AbstractFileIOProvider(AbstractProvider):
             extension_id: Optional extension identifier
             **kwargs: Additional keyword arguments
         """
-        super().__init__(
-            api_key="",  # File I/O doesn't use API keys
-            api_uri="",  # File I/O doesn't use API URIs
-            extension_id=extension_id,
-            **kwargs,
-        )
+        self._extension_id = extension_id
 
         self.base_directory = Path(base_directory).resolve()
 

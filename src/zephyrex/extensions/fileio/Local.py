@@ -100,6 +100,10 @@ class LocalFileSystem(AbstractFileIOProvider):
             **kwargs,
         )
 
+    @classmethod
+    def bond_instance(cls, instance):
+        return cls(base_directory=instance.settings.get("base_directory", "/tmp"))
+
     def _detect_os(self) -> str:
         """Detect the operating system."""
         if sys.platform.startswith("win"):
