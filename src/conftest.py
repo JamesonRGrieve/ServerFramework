@@ -7,6 +7,8 @@ from pathlib import Path
 from types import NoneType
 from typing import Annotated, Any, Dict, List, Tuple, get_args, get_origin, ForwardRef
 
+pytest_plugins = ["conftest_serial"]
+
 # Test-only crypto material. Set BEFORE any application imports so the
 # ``AppSettings`` model picks them up. PyJWT 2.10+ raises
 # ``InsecureKeyLengthWarning`` on a sub-32-byte HMAC key and the framework's
