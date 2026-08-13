@@ -50,7 +50,6 @@ from zephyrex.logic.BLL_Auth import (
 
 from zephyrex.extensions.oauth_consumer.IdPRegistry import get_idp
 
-
 # State TTL: window between /authorize and /callback. Long enough for the
 # user to authenticate at the IdP, short enough to bound an attacker's
 # replay window.
@@ -154,9 +153,7 @@ class OAuthAuthorizeResponse(BaseModel):
 class OAuthCallbackRequest(BaseModel):
     provider: str
     code: str = Field(..., description="Authorization code from the IdP callback")
-    state: str = Field(
-        ..., description="State value originally returned by /authorize"
-    )
+    state: str = Field(..., description="State value originally returned by /authorize")
     redirect_uri: Optional[str] = Field(
         None, description="Must match the URI provided to /authorize"
     )
@@ -311,13 +308,17 @@ class OAuthConsumerManager(AbstractBLLManager, RouterMixin):
         profile = await idp.get_user_info(idp.access_token)
         provider_user_id = profile.get("provider_user_id") or profile.get("email")
         if not provider_user_id:
-            raise InvalidGrantError(detail="IdP did not return a stable user identifier")
+            raise InvalidGrantError(
+                detail="IdP did not return a stable user identifier"
+            )
 
         # Encrypt tokens before they touch the DB. The helper raises if the
         # deployment is not configured for encryption-at-rest, which is
         # exactly what we want — tokens never go to disk in plaintext.
         encrypted_access = encrypt_secret(idp.access_token)
-        encrypted_refresh = encrypt_secret(idp.refresh_token) if idp.refresh_token else None
+        encrypted_refresh = (
+            encrypt_secret(idp.refresh_token) if idp.refresh_token else None
+        )
 
         link = self._find_link(provider, provider_user_id)
         now = datetime.now(timezone.utc)
@@ -426,9 +427,7 @@ class OAuthConsumerManager(AbstractBLLManager, RouterMixin):
         summary="Complete an OAuth consumer flow and issue a session",
     )
     @rate_limit(DEFAULT_AUTH_RATE_LIMIT, scope="ip")
-    async def callback_route(
-        self, body: OAuthCallbackRequest
-    ) -> OAuthCallbackResponse:
+    async def callback_route(self, body: OAuthCallbackRequest) -> OAuthCallbackResponse:
         return await self.complete_callback(
             provider=body.provider,
             code=body.code,
@@ -522,9 +521,7 @@ def _merge_handler(ctx) -> None:
 
 def register_merge_participation() -> None:
     try:
-        from zephyrex.extensions.auth_merge.BLL_Auth_Merge import (
-            register_merge_handler,
-        )
+        from zephyrex.extensions.auth_merge.BLL_Auth_Merge import make_merge_registrar
     except ImportError:
         return
-    register_merge_handler("oauth_consumer", _merge_handler)
+    make_merge_registrar("oauth_consumer", _merge_handler)()

@@ -44,7 +44,6 @@ from zephyrex.logic.BLL_Auth import (
     UserTeamModel,
 )
 
-
 # C-1 — merge target-consent tokens.
 #
 # A merge absorbs the target user's data and deactivates their account.
@@ -63,9 +62,7 @@ _MERGE_CONSENT_AUD = "auth.user_merge.consent"
 _MERGE_CONSENT_KEY_PREFIX = "auth.user_merge.consent.jti:"
 
 
-def _mint_merge_consent_token(
-    *, target_user_id: str, initiating_user_id: str
-) -> str:
+def _mint_merge_consent_token(*, target_user_id: str, initiating_user_id: str) -> str:
     """Mint a single-use JWT proving the target consents to be merged
     into the initiating user. Caller is responsible for verifying the
     target's own session before calling this helper."""
@@ -110,9 +107,7 @@ def _verify_merge_consent_token(
     cache = get_replay_cache()
     jti_key = _MERGE_CONSENT_KEY_PREFIX + payload["jti"]
     if not cache.mark_if_unused(jti_key, ttl_seconds=_MERGE_CONSENT_TTL_SECONDS * 2):
-        raise HTTPException(
-            status_code=403, detail="Consent token already redeemed"
-        )
+        raise HTTPException(status_code=403, detail="Consent token already redeemed")
 
 
 # ---------------------------------------------------------------------------
@@ -152,6 +147,29 @@ def unregister_merge_handler(name: str) -> None:
     teardown paths; production extensions register at boot and never
     unregister."""
     _HANDLERS.pop(name, None)
+
+
+def make_merge_registrar(name: str, handler: MergeHandler) -> Callable[[], None]:
+    """Return a no-arg callable that registers *handler* under *name*.
+
+    This is a convenience factory so extensions that participate in user-merge
+    can define their ``register_merge_participation`` in one line instead of
+    copy-pasting the try/import/register boilerplate::
+
+        register_merge_participation = make_merge_registrar(
+            "my_extension", _merge_handler
+        )
+
+    The returned callable safely no-ops when ``auth_merge`` is not loaded.
+    """
+
+    def _register() -> None:
+        try:
+            register_merge_handler(name, handler)
+        except Exception:  # pragma: no cover — defensive
+            pass
+
+    return _register
 
 
 def list_merge_handlers() -> List[str]:
@@ -201,9 +219,7 @@ class UserMergeModel(
         ),
     )
 
-    table_comment: ClassVar[str] = (
-        "Audit record of user-account consolidation events"
-    )
+    table_comment: ClassVar[str] = "Audit record of user-account consolidation events"
 
     class Create(BaseModel):
         initiating_user_id: str
@@ -220,9 +236,7 @@ class UserMergeModel(
 
 
 class UserMergeRequest(BaseModel):
-    initiating_user_id: str = Field(
-        ..., description="The surviving user (data-owner)"
-    )
+    initiating_user_id: str = Field(..., description="The surviving user (data-owner)")
     target_user_id: str = Field(
         ..., description="The user being merged in and deactivated"
     )
@@ -303,9 +317,7 @@ class UserMergeManager(AbstractBLLManager, RouterMixin):
         if self.requester.id != initiating_user_id:
             raise HTTPException(
                 status_code=403,
-                detail=(
-                    "Only the initiating (surviving) user can drive the merge"
-                ),
+                detail=("Only the initiating (surviving) user can drive the merge"),
             )
         if not consent_token:
             raise HTTPException(

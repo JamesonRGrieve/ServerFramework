@@ -196,9 +196,7 @@ def _merge_handler(ctx) -> None:
 
 def register_merge_participation() -> None:
     try:
-        from zephyrex.extensions.auth_merge.BLL_Auth_Merge import (
-            register_merge_handler,
-        )
+        from zephyrex.extensions.auth_merge.BLL_Auth_Merge import make_merge_registrar
     except ImportError:
         return
-    register_merge_handler("auth_recovery_questions", _merge_handler)
+    make_merge_registrar("auth_recovery_questions", _merge_handler)()

@@ -47,9 +47,7 @@ class NotificationModel(
     reference_type: Optional[str] = Field(
         None, description="Type of referenced entity, e.g. 'invitation'"
     )
-    reference_id: Optional[str] = Field(
-        None, description="ID of referenced entity"
-    )
+    reference_id: Optional[str] = Field(None, description="ID of referenced entity")
 
     table_comment: ClassVar[str] = (
         "System and user notifications with team/user scoping"
@@ -170,10 +168,7 @@ class UserNotificationManager(AbstractBLLManager, RouterMixin):
             raise HTTPException(status_code=404, detail="Notification not found")
         from zephyrex.database.StaticPermissions import is_root_id
 
-        if (
-            existing.user_id != self.requester.id
-            and not is_root_id(self.requester.id)
-        ):
+        if existing.user_id != self.requester.id and not is_root_id(self.requester.id):
             raise HTTPException(
                 status_code=403,
                 detail="Cannot modify another user's notification state",
@@ -220,9 +215,7 @@ class UserNotificationManager(AbstractBLLManager, RouterMixin):
     ) -> MarkReadResponse:
         del body
         result = self.mark_as_read(id)
-        return MarkReadResponse(
-            id=result.id, read=True, read_at=result.read_at
-        )
+        return MarkReadResponse(id=result.id, read=True, read_at=result.read_at)
 
     @custom_route(
         method="PATCH",
@@ -291,10 +284,7 @@ def register_merge_participation() -> None:
     is loaded. Safe to call repeatedly: the registry overwrites by name.
     """
     try:
-        from zephyrex.extensions.auth_merge.BLL_Auth_Merge import (
-            register_merge_handler,
-        )
+        from zephyrex.extensions.auth_merge.BLL_Auth_Merge import make_merge_registrar
     except ImportError:
-        # auth_merge is not loaded; nothing to register against.
         return
-    register_merge_handler("auth_notifications", _merge_handler)
+    make_merge_registrar("auth_notifications", _merge_handler)()
