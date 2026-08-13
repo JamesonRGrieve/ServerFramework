@@ -7,7 +7,7 @@ import uuid
 import warnings
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Any, ClassVar, Dict, List, Literal, Optional, Tuple
+from typing import Any, ClassVar, Dict, Iterator, List, Literal, Optional, Tuple
 
 import stringcase
 from fastapi import HTTPException
@@ -36,6 +36,51 @@ from zephyrex.logic.BLL_Extensions import AbilityModel, ExtensionModel
 class ManagerContractError(TypeError):
     """Raised by `validate_manager_constructors` when a manager violates the
     documented `model_registry`-first contract (Item 70)."""
+
+
+def _resolve_provider_name(provider_class: Any, *, warn_missing: bool = False) -> str:
+    """Derive a canonical provider name from a provider class.
+
+    Checks for an explicit ``name`` attribute first; falls back to stripping
+    ``Provider`` / ``PRV_`` from the class name.  When *warn_missing* is True
+    a warning is logged on the fallback path (useful during seeding).
+    """
+    if hasattr(provider_class, "name") and provider_class.name:
+        return provider_class.name
+    name = provider_class.__name__.replace("Provider", "").replace("PRV_", "")
+    if warn_missing:
+        logger.warning(
+            "Provider class %s missing 'name' attribute, using %s",
+            provider_class.__name__,
+            name,
+        )
+    return name
+
+
+def _get_extension_registry(model_registry: Any) -> Any | None:
+    """Return the ``ExtensionRegistry`` from *model_registry*, or ``None``
+    when it is absent or empty.  Replaces the 3-line guard that was
+    duplicated across every ``seed_data`` classmethod.
+    """
+    if (
+        model_registry
+        and hasattr(model_registry, "extension_registry")
+        and model_registry.extension_registry
+    ):
+        return model_registry.extension_registry
+    return None
+
+
+def _iter_extension_providers(
+    model_registry: Any,
+) -> Iterator[Tuple[str, list]]:
+    """Yield ``(ext_name, providers)`` tuples from *model_registry*'s
+    ``ExtensionRegistry``.  Yields nothing when the registry is absent or
+    empty.
+    """
+    ext_reg = _get_extension_registry(model_registry)
+    if ext_reg is not None:
+        yield from ext_reg.extension_providers.items()
 
 
 # Item 2 — per-process auth cooldown tracker. Module-level so the
@@ -178,49 +223,31 @@ class ProviderModel(
             logger.debug("Discovering providers for seeding...")
 
             seed_data = []
+            found_any = False
 
-            # Get providers from ModelRegistry's ExtensionRegistry
-            if (
-                model_registry
-                and hasattr(model_registry, "extension_registry")
-                and model_registry.extension_registry
-            ):
-                extension_registry = model_registry.extension_registry
-                logger.debug(f"Using ExtensionRegistry for provider discovery")
+            for ext_name, providers in _iter_extension_providers(model_registry):
+                found_any = True
+                logger.debug(
+                    f"Processing {len(providers)} providers for extension: {ext_name}"
+                )
 
-                # Iterate through registered extensions and their providers
-                for (
-                    ext_name,
-                    providers,
-                ) in extension_registry.extension_providers.items():
-                    logger.debug(
-                        f"Processing {len(providers)} providers for extension: {ext_name}"
+                for provider_class in providers:
+                    provider_name = _resolve_provider_name(
+                        provider_class, warn_missing=True
                     )
 
-                    for provider_class in providers:
-                        # Get provider name
-                        if hasattr(provider_class, "name") and provider_class.name:
-                            provider_name = provider_class.name
-                        else:
-                            provider_name = provider_class.__name__.replace(
-                                "Provider", ""
-                            ).replace("PRV_", "")
-                            logger.warning(
-                                f"Provider class {provider_class.__name__} missing 'name' attribute, using {provider_name}"
-                            )
+                    provider_data = {
+                        "name": provider_name,
+                        "friendly_name": f"{provider_name} Provider",
+                        "agent_settings_json": None,
+                        "system": True,
+                    }
+                    seed_data.append(provider_data)
+                    logger.debug(
+                        f"Added provider {provider_name} to seed data for extension {ext_name}"
+                    )
 
-                        provider_data = {
-                            "name": provider_name,
-                            "friendly_name": f"{provider_name} Provider",
-                            "agent_settings_json": None,
-                            "system": True,
-                        }
-                        seed_data.append(provider_data)
-                        logger.debug(
-                            f"Added provider {provider_name} to seed data for extension {ext_name}"
-                        )
-
-            else:
+            if not found_any:
                 logger.warning(
                     "No ExtensionRegistry available in ModelRegistry, no providers to seed"
                 )
@@ -388,41 +415,23 @@ class ProviderExtensionModel(ApplicationModel, UpdateMixinModel, metaclass=Model
             logger.debug("Creating provider-extension links for seeding...")
 
             seed_data = []
+            found_any = False
 
-            # Get providers and extensions from ModelRegistry's ExtensionRegistry
-            if (
-                model_registry
-                and hasattr(model_registry, "extension_registry")
-                and model_registry.extension_registry
-            ):
-                extension_registry = model_registry.extension_registry
-                logger.debug(
-                    f"Using ExtensionRegistry for provider-extension link discovery"
-                )
+            for ext_name, providers in _iter_extension_providers(model_registry):
+                found_any = True
+                for provider_class in providers:
+                    provider_name = _resolve_provider_name(provider_class)
 
-                # Create provider-extension links
-                for (
-                    ext_name,
-                    providers,
-                ) in extension_registry.extension_providers.items():
-                    for provider_class in providers:
-                        # Get provider name
-                        if hasattr(provider_class, "name") and provider_class.name:
-                            provider_name = provider_class.name
-                        else:
-                            provider_name = provider_class.__name__.replace(
-                                "Provider", ""
-                            ).replace("PRV_", "")
+                    link_data = {
+                        "_provider_name": provider_name,  # Will be resolved to provider_id
+                        "_extension_name": ext_name,  # Will be resolved to extension_id
+                    }
+                    seed_data.append(link_data)
+                    logger.debug(
+                        f"Added ProviderExtension link for provider '{provider_name}' and extension '{ext_name}'"
+                    )
 
-                        link_data = {
-                            "_provider_name": provider_name,  # Will be resolved to provider_id
-                            "_extension_name": ext_name,  # Will be resolved to extension_id
-                        }
-                        seed_data.append(link_data)
-                        logger.debug(
-                            f"Added ProviderExtension link for provider '{provider_name}' and extension '{ext_name}'"
-                        )
-            else:
+            if not found_any:
                 logger.warning(
                     "No ExtensionRegistry available in ModelRegistry, no provider-extension links to seed"
                 )
@@ -639,73 +648,47 @@ class ProviderInstanceModel(
     @classmethod
     def seed_data(cls, model_registry=None) -> List[Dict[str, Any]]:
         """Return empty seed data - provider instances should be created by extension hooks."""
-        # Provider instances are created by extension-specific hooks
-        # Each extension knows best which environment variables to check
-        # and how to configure their provider instances
-        # logger.debug(
-        #     "ProviderInstance seed_data called - delegating to extension hooks"
-        # )
-        # return []
-
         try:
             logger.debug("Discovering provider instances for seeding...")
 
             seed_data = []
+            found_any = False
 
-            # Get providers from ModelRegistry's ExtensionRegistry
-            if (
-                model_registry
-                and hasattr(model_registry, "extension_registry")
-                and model_registry.extension_registry
-            ):
-                extension_registry = model_registry.extension_registry
-                logger.debug(f"Using ExtensionRegistry for provider discovery")
+            for ext_name, providers in _iter_extension_providers(model_registry):
+                found_any = True
+                logger.debug(
+                    f"Processing provider instances for {len(providers)} providers for extension: {ext_name}"
+                )
 
-                # Iterate through registered extensions and their providers
-                for (
-                    ext_name,
-                    providers,
-                ) in extension_registry.extension_providers.items():
-                    logger.debug(
-                        f"Processing provider instances for {len(providers)} providers for extension: {ext_name}"
+                for provider_class in providers:
+                    provider_name = _resolve_provider_name(
+                        provider_class, warn_missing=True
                     )
 
-                    for provider_class in providers:
-                        # Get provider name
-                        if hasattr(provider_class, "name") and provider_class.name:
-                            provider_name = provider_class.name
-                        else:
-                            provider_name = provider_class.__name__.replace(
-                                "Provider", ""
-                            ).replace("PRV_", "")
-                            logger.warning(
-                                f"Provider class {provider_class.__name__} missing 'name' attribute, using {provider_name}"
-                            )
+                    # Create provider instance name using PascalCase of provider name
+                    provider_instance_name = (
+                        f"Root_{stringcase.pascalcase(provider_name)}"
+                    )
 
-                        # Create provider instance name using PascalCase of provider name
-                        provider_instance_name = (
-                            f"Root_{stringcase.pascalcase(provider_name)}"
-                        )
+                    provider_data = {
+                        "_provider_name": provider_name,  # Will be resolved to provider_id
+                        "name": provider_instance_name,
+                        "model_name": provider_name,
+                        "api_key": None,  # Will be set by extension hooks
+                    }
 
-                        provider_data = {
-                            "_provider_name": provider_name,  # Will be resolved to provider_id
-                            "name": provider_instance_name,
-                            "model_name": provider_name,
-                            "api_key": None,  # Will be set by extension hooks
-                        }
+                    envs = provider_class._env
+                    for env_name, env_value in envs.items():
+                        if "API_KEY" in env_name:
+                            provider_data["api_key"] = env(env_name) or env_value
+                            break
 
-                        envs = provider_class._env
-                        for env_name, env_value in envs.items():
-                            if "API_KEY" in env_name:
-                                provider_data["api_key"] = env(env_name) or env_value
-                                break
+                    seed_data.append(provider_data)
+                    logger.debug(
+                        f"Added provider instance {provider_instance_name} to seed data for extension {ext_name}"
+                    )
 
-                        seed_data.append(provider_data)
-                        logger.debug(
-                            f"Added provider instance {provider_instance_name} to seed data for extension {ext_name}"
-                        )
-
-            else:
+            if not found_any:
                 logger.warning(
                     "No ExtensionRegistry available in ModelRegistry, no providers to seed"
                 )
@@ -1054,13 +1037,8 @@ class RotationModel(
 
             seed_data = []
 
-            # Get extensions from ModelRegistry's ExtensionRegistry
-            if (
-                model_registry
-                and hasattr(model_registry, "extension_registry")
-                and model_registry.extension_registry
-            ):
-                extension_registry = model_registry.extension_registry
+            extension_registry = _get_extension_registry(model_registry)
+            if extension_registry is not None:
                 logger.debug(f"Using ExtensionRegistry for root rotation discovery")
 
                 # Create a root rotation for each extension that has providers
@@ -2162,13 +2140,8 @@ class RotationProviderInstanceModel(
 
             seed_data = []
 
-            # Get providers from ModelRegistry's ExtensionRegistry
-            if (
-                model_registry
-                and hasattr(model_registry, "extension_registry")
-                and model_registry.extension_registry
-            ):
-                extension_registry = model_registry.extension_registry
+            extension_registry = _get_extension_registry(model_registry)
+            if extension_registry is not None:
                 logger.debug(
                     f"Using ExtensionRegistry for rotation/provider-instance link discovery"
                 )
@@ -2180,16 +2153,9 @@ class RotationProviderInstanceModel(
                 ) in extension_registry.extension_providers.items():
                     for prv_class in providers:
                         try:
-                            # Get consistent provider name
-                            if hasattr(prv_class, "name") and prv_class.name:
-                                provider_name = prv_class.name
-                            else:
-                                provider_name = prv_class.__name__.replace(
-                                    "Provider", ""
-                                ).replace("PRV_", "")
-                                logger.warning(
-                                    f"Provider class {prv_class.__name__} missing 'name' attribute, using {provider_name}"
-                                )
+                            provider_name = _resolve_provider_name(
+                                prv_class, warn_missing=True
+                            )
 
                             # Check if provider has required environment variables set
                             required_env_vars = getattr(prv_class, "_env", {})
