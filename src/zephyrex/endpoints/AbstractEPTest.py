@@ -27,7 +27,12 @@ import pytest
 import stringcase
 from faker import Faker
 
-from zephyrex.AbstractTest import AbstractTest, CategoryOfTest, ClassOfTestsConfig, ParentEntity
+from zephyrex.AbstractTest import (
+    AbstractTest,
+    CategoryOfTest,
+    ClassOfTestsConfig,
+    ParentEntity,
+)
 from zephyrex.endpoints.AbstractGQLTest import AbstractGraphQLTest
 from zephyrex.lib.ContentNegotiation import (
     MIME_JSON,
@@ -430,9 +435,7 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
                     union_args = [
                         arg for arg in get_args(annotation) if arg is not type(None)
                     ]
-                    return (
-                        _resolve_related_model(union_args[0]) if union_args else None
-                    )
+                    return _resolve_related_model(union_args[0]) if union_args else None
 
             if isinstance(annotation, str):
                 if utility is None:
@@ -1079,20 +1082,17 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         detail_nesting_level = self.NESTING_CONFIG_OVERRIDES.get("DETAIL", 0)
 
         parent_ids = {}
-        path_parent_ids = {}
-
         if self.parent_entities:
             for parent in self.parent_entities:
                 if parent.foreign_key in entity_to_get:
-                    parent_id = entity_to_get[parent.foreign_key]
-                    parent_ids[parent.foreign_key] = parent_id
+                    parent_ids[parent.foreign_key] = entity_to_get[parent.foreign_key]
 
-                    # Only add path_parent_ids if DETAIL override requires nesting
-                    if detail_nesting_level > 0 and (
-                        parent.path_level in [1, 2]
-                        or (parent.is_path and parent.path_level is None)
-                    ):
-                        path_parent_ids[f"{parent.name}_id"] = parent_id
+        # Only extract path parent IDs if DETAIL override requires nesting
+        path_parent_ids = (
+            self._extract_path_parent_ids(entity_to_get)
+            if detail_nesting_level > 0
+            else {}
+        )
 
         # Build query parameters
         query_params = []
@@ -1753,16 +1753,7 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         self._create(server, admin_a.jwt, admin_a.id, key="get_invalid_fields")
         entity = self.tracked_entities["get_invalid_fields"]
 
-        # Extract parent IDs if needed for nested endpoints
-        path_parent_ids = {}
-        if self.parent_entities:
-            for parent in self.parent_entities:
-                if parent.foreign_key in entity:
-                    parent_id = entity[parent.foreign_key]
-                    if parent.path_level in [1, 2] or (
-                        hasattr(parent, "is_path") and parent.is_path
-                    ):
-                        path_parent_ids[f"{parent.name}_id"] = parent_id
+        path_parent_ids = self._extract_path_parent_ids(entity)
 
         # Build endpoint with query string for fields
         endpoint = self.get_detail_endpoint(entity["id"], path_parent_ids)
@@ -1792,16 +1783,7 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         self._create(server, admin_a.jwt, admin_a.id, key="get_invalid_includes")
         entity = self.tracked_entities["get_invalid_includes"]
 
-        # Extract parent IDs if needed for nested endpoints
-        path_parent_ids = {}
-        if self.parent_entities:
-            for parent in self.parent_entities:
-                if parent.foreign_key in entity:
-                    parent_id = entity[parent.foreign_key]
-                    if parent.path_level in [1, 2] or (
-                        hasattr(parent, "is_path") and parent.is_path
-                    ):
-                        path_parent_ids[f"{parent.name}_id"] = parent_id
+        path_parent_ids = self._extract_path_parent_ids(entity)
 
         # Build endpoint with query string for includes
         endpoint = self.get_detail_endpoint(entity["id"], path_parent_ids)
@@ -1831,16 +1813,7 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         self._create(server, admin_a.jwt, admin_a.id, key="get_unknown_param")
         entity = self.tracked_entities["get_unknown_param"]
 
-        # Extract parent IDs if needed for nested endpoints
-        path_parent_ids = {}
-        if self.parent_entities:
-            for parent in self.parent_entities:
-                if parent.foreign_key in entity:
-                    parent_id = entity[parent.foreign_key]
-                    if parent.path_level in [1, 2] or (
-                        hasattr(parent, "is_path") and parent.is_path
-                    ):
-                        path_parent_ids[f"{parent.name}_id"] = parent_id
+        path_parent_ids = self._extract_path_parent_ids(entity)
 
         # Build endpoint with unknown query parameter
         endpoint = self.get_detail_endpoint(entity["id"], path_parent_ids)
@@ -1870,16 +1843,7 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         self._create(server, admin_a.jwt, admin_a.id, key="list_invalid_fields")
         entity = self.tracked_entities["list_invalid_fields"]
 
-        # Extract parent IDs if needed for nested endpoints
-        path_parent_ids = {}
-        if self.parent_entities:
-            for parent in self.parent_entities:
-                if parent.foreign_key in entity:
-                    parent_id = entity[parent.foreign_key]
-                    if parent.path_level in [1, 2] or (
-                        hasattr(parent, "is_path") and parent.is_path
-                    ):
-                        path_parent_ids[f"{parent.name}_id"] = parent_id
+        path_parent_ids = self._extract_path_parent_ids(entity)
 
         # Build endpoint with invalid fields query parameter
         endpoint = self.get_list_endpoint(path_parent_ids)
@@ -1909,16 +1873,7 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         self._create(server, admin_a.jwt, admin_a.id, key="list_invalid_sort")
         entity = self.tracked_entities["list_invalid_sort"]
 
-        # Extract parent IDs if needed for nested endpoints
-        path_parent_ids = {}
-        if self.parent_entities:
-            for parent in self.parent_entities:
-                if parent.foreign_key in entity:
-                    parent_id = entity[parent.foreign_key]
-                    if parent.path_level in [1, 2] or (
-                        hasattr(parent, "is_path") and parent.is_path
-                    ):
-                        path_parent_ids[f"{parent.name}_id"] = parent_id
+        path_parent_ids = self._extract_path_parent_ids(entity)
 
         # Build endpoint with invalid sort_by query parameter
         endpoint = self.get_list_endpoint(path_parent_ids)
@@ -1950,16 +1905,7 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         self._create(server, admin_a.jwt, admin_a.id, key="list_invalid_sort_order")
         entity = self.tracked_entities["list_invalid_sort_order"]
 
-        # Extract parent IDs if needed for nested endpoints
-        path_parent_ids = {}
-        if self.parent_entities:
-            for parent in self.parent_entities:
-                if parent.foreign_key in entity:
-                    parent_id = entity[parent.foreign_key]
-                    if parent.path_level in [1, 2] or (
-                        hasattr(parent, "is_path") and parent.is_path
-                    ):
-                        path_parent_ids[f"{parent.name}_id"] = parent_id
+        path_parent_ids = self._extract_path_parent_ids(entity)
 
         # Build endpoint with invalid sort_order query parameter
         endpoint = self.get_list_endpoint(path_parent_ids)
@@ -2054,16 +2000,13 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
 
         # Extract parent IDs from the entity
         parent_ids = {}
-        path_parent_ids = {}
         if self.parent_entities:
             for parent in self.parent_entities:
                 if parent.foreign_key in entity_to_update:
-                    parent_id = entity_to_update[parent.foreign_key]
-                    parent_ids[parent.foreign_key] = parent_id
-                    if parent.path_level in [1, 2] or (
-                        parent.is_path and parent.path_level is None
-                    ):
-                        path_parent_ids[f"{parent.name}_id"] = parent_id
+                    parent_ids[parent.foreign_key] = entity_to_update[
+                        parent.foreign_key
+                    ]
+        path_parent_ids = self._extract_path_parent_ids(entity_to_update)
 
         # Create update payload
         update_data: Dict[str, Any] = {}
@@ -2137,16 +2080,7 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
                 else:
                     update_data[field] = value
 
-        # Extract parent IDs for the endpoint
-        path_parent_ids = {}
-        if self.parent_entities:
-            for parent in self.parent_entities:
-                if parent.foreign_key in entity:
-                    parent_id = entity[parent.foreign_key]
-                    if parent.path_level in [1, 2] or (
-                        hasattr(parent, "is_path") and parent.is_path
-                    ):
-                        path_parent_ids[parent.path_key] = parent_id
+        path_parent_ids = self._extract_path_parent_ids(entity)
 
         # Get the update endpoint
         endpoint = self.get_update_endpoint(entity_id, path_parent_ids)
@@ -2211,16 +2145,7 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         self._create(server, admin_a.jwt, admin_a.id, team_a.id, key="update_malformed")
         entity = self.tracked_entities["update_malformed"]
 
-        # Extract parent IDs for the endpoint
-        path_parent_ids = {}
-        if self.parent_entities:
-            for parent in self.parent_entities:
-                if parent.foreign_key in entity:
-                    parent_id = entity[parent.foreign_key]
-                    if parent.path_level in [1, 2] or (
-                        parent.is_path and parent.path_level is None
-                    ):
-                        path_parent_ids[f"{parent.name}_id"] = parent_id
+        path_parent_ids = self._extract_path_parent_ids(entity)
 
         # Send malformed JSON
         response = server.put(
@@ -2397,16 +2322,7 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         entity = self.tracked_entities[tracked_index]
         assertion_index = f"{self.entity_name} / {tracked_index}"
 
-        # Extract parent IDs from the entity
-        path_parent_ids = {}
-        if self.parent_entities:
-            for parent in self.parent_entities:
-                if parent.foreign_key in entity:
-                    parent_id = entity[parent.foreign_key]
-                    if parent.path_level in [1, 2] or (
-                        parent.is_path and parent.path_level is None
-                    ):
-                        path_parent_ids[f"{parent.name}_id"] = parent_id
+        path_parent_ids = self._extract_path_parent_ids(entity)
 
         # Verify the entity is gone
         # For system entities, when jwt_token is provided explicitly (without api_key),
@@ -2443,16 +2359,13 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
 
         # Extract parent IDs from the entity
         parent_ids = {}
-        path_parent_ids = {}
         if self.parent_entities:
             for parent in self.parent_entities:
                 if parent.foreign_key in entity_to_delete:
-                    parent_id = entity_to_delete[parent.foreign_key]
-                    parent_ids[parent.foreign_key] = parent_id
-                    if parent.path_level in [1, 2] or (
-                        parent.is_path and parent.path_level is None
-                    ):
-                        path_parent_ids[f"{parent.name}_id"] = parent_id
+                    parent_ids[parent.foreign_key] = entity_to_delete[
+                        parent.foreign_key
+                    ]
+        path_parent_ids = self._extract_path_parent_ids(entity_to_delete)
 
         # Make the request
         response = server.delete(
@@ -2748,7 +2661,7 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
             entity["id"] not in response.text
         ), f"Cross-tenant list leaked entity id {entity['id']} from team_a to admin_b"
 
-    def _path_parent_ids_from_entity(self, entity: Dict[str, Any]) -> Dict[str, str]:
+    def _extract_path_parent_ids(self, entity: Dict[str, Any]) -> Dict[str, str]:
         """Build path_parent_ids from a created entity for nested-URL tests."""
         path_parent_ids: Dict[str, str] = {}
         if self.parent_entities:
@@ -2779,7 +2692,7 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
                 f"Hijacked by B {self.faker.word()}"
             )
 
-        path_parent_ids = self._path_parent_ids_from_entity(entity)
+        path_parent_ids = self._extract_path_parent_ids(entity)
         response = server.put(
             self.get_update_endpoint(entity["id"], path_parent_ids),
             json={self.entity_name: update_data},
@@ -2819,9 +2732,7 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
     ):
         """Mass-assignment denial: client-supplied audit fields are stripped/ignored."""
         if self.system_entity:
-            pytest.skip(
-                "System entities are created via API key; audit-field test n/a"
-            )
+            pytest.skip("System entities are created via API key; audit-field test n/a")
 
         attacker_uuid = str(uuid.uuid4())
         attacker_iso = "1999-01-01T00:00:00+00:00"
@@ -2888,9 +2799,7 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
     ):
         """Mass-assignment denial on PUT: audit fields in body are stripped/ignored."""
         if self.system_entity:
-            pytest.skip(
-                "System entities are mutated via API key; audit-field test n/a"
-            )
+            pytest.skip("System entities are mutated via API key; audit-field test n/a")
 
         entity = self._create(
             server, admin_a.jwt, admin_a.id, team_a.id, key="audit_put_test"
@@ -2946,24 +2855,16 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
             server, admin_a.jwt, admin_a.id, team_a.id, key="secret_field_test"
         )
 
-        path_parent_ids: Dict[str, str] = {}
-        if self.parent_entities:
-            for parent in self.parent_entities:
-                if parent.foreign_key in entity:
-                    parent_id = entity[parent.foreign_key]
-                    if parent.path_level in [1, 2] or (
-                        hasattr(parent, "is_path") and parent.is_path
-                    ):
-                        path_parent_ids[f"{parent.name}_id"] = parent_id
+        path_parent_ids = self._extract_path_parent_ids(entity)
 
         response = server.get(
             self.get_detail_endpoint(entity["id"], path_parent_ids),
             headers=self._get_appropriate_headers(admin_a.jwt),
         )
 
-        assert response.status_code == 200, (
-            f"Expected 200 reading own entity; got {response.status_code}"
-        )
+        assert (
+            response.status_code == 200
+        ), f"Expected 200 reading own entity; got {response.status_code}"
 
         leaked = self._walk_for_secret_fields(
             response.json(), self.SECRET_RESPONSE_FIELDS
@@ -2974,9 +2875,7 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         )
 
     @pytest.mark.security
-    def test_GET_pagination_cap_enforced(
-        self, server: Any, admin_a: Any, team_a: Any
-    ):
+    def test_GET_pagination_cap_enforced(self, server: Any, admin_a: Any, team_a: Any):
         """DoS denial: list endpoint clamps oversized limit to the framework cap."""
         # Create one row so the list response is well-formed.
         self._create(server, admin_a.jwt, admin_a.id, team_a.id, key="pagination_cap")
@@ -2986,9 +2885,10 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
             headers=self._get_appropriate_headers(admin_a.jwt),
         )
         # Either silently clamped (200) or rejected (422). Never 500.
-        assert response.status_code in (200, 422), (
-            f"Oversized limit should clamp (200) or 422; got {response.status_code}"
-        )
+        assert response.status_code in (
+            200,
+            422,
+        ), f"Oversized limit should clamp (200) or 422; got {response.status_code}"
         if response.status_code != 200:
             return
         body = response.json()
@@ -3029,9 +2929,7 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         if response.status_code == 200:
             # Silently ignored is acceptable; assert the secret name didn't leak
             # back as a key in the response.
-            leaked = self._walk_for_secret_fields(
-                response.json(), (forbidden_field,)
-            )
+            leaked = self._walk_for_secret_fields(response.json(), (forbidden_field,))
             assert not leaked, (
                 f"Search accepted unknown field {forbidden_field} and surfaced it "
                 "in the response; whitelist enforcement is missing."
@@ -3637,16 +3535,7 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         assertion_index = f"{self.entity_name} / {tracked_index}"
 
         # Extract parent IDs from the first entity (assuming all have same parents)
-        path_parent_ids = {}
-        if self.parent_entities and entities:
-            first_entity = entities[0]
-            for parent in self.parent_entities:
-                if parent.foreign_key in first_entity:
-                    parent_id = first_entity[parent.foreign_key]
-                    if parent.path_level in [1, 2] or (
-                        parent.is_path and parent.path_level is None
-                    ):
-                        path_parent_ids[f"{parent.name}_id"] = parent_id
+        path_parent_ids = self._extract_path_parent_ids(entities[0]) if entities else {}
 
         # Verify each entity is gone
         # For system entities, when jwt_token is provided explicitly (without api_key),
@@ -3909,7 +3798,8 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         operators_matching_many = ["sw", "ew", "inc", "before", "after"]
         fields_matching_many = ["created_by_user_id", "updated_by_user_id"]
         if (
-            search_operator in operators_matching_many or search_field in fields_matching_many
+            search_operator in operators_matching_many
+            or search_field in fields_matching_many
         ) and "id" in entity:
             search_payload["id"] = {"eq": entity["id"]}
 
@@ -3965,16 +3855,7 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
 
         search_payload = {self.entity_name: inner_payload}
 
-        # Extract parent IDs for the endpoint
-        path_parent_ids = {}
-        if self.parent_entities:
-            for parent in self.parent_entities:
-                if parent.foreign_key in entity:
-                    parent_id = entity[parent.foreign_key]
-                    if parent.path_level in [1, 2] or (
-                        hasattr(parent, "is_path") and parent.is_path
-                    ):
-                        path_parent_ids[parent.path_key] = parent_id
+        path_parent_ids = self._extract_path_parent_ids(entity)
 
         # Build query string with fields parameter (like _search does)
         query_params = [f"fields={field_name}", "limit=10"]
@@ -4622,7 +4503,7 @@ class FormatTestMixin:
             invalid_data: bool = False,
         ) -> Dict[str, Any]: ...
 
-        def _path_parent_ids_from_entity(
+        def _extract_path_parent_ids(
             self, entity: Dict[str, Any]
         ) -> Dict[str, str]: ...
 
@@ -4717,18 +4598,21 @@ class FormatTestMixin:
     ) -> None:
         """GET single entity with each Accept header; validate Content-Type and body."""
         entity = self._create(
-            server, admin_a.jwt, admin_a.id, team_a.id,
+            server,
+            admin_a.jwt,
+            admin_a.id,
+            team_a.id,
             key=f"fmt_get_accept_{fmt}",
         )
-        path_parent_ids = self._path_parent_ids_from_entity(entity)
+        path_parent_ids = self._extract_path_parent_ids(entity)
         endpoint = self.get_detail_endpoint(entity["id"], path_parent_ids)
 
         headers = {**self._get_appropriate_headers(admin_a.jwt), "Accept": mime}
         resp = server.get(endpoint, headers=headers)
 
-        assert resp.status_code == 200, (
-            f"GET {endpoint} Accept:{mime} -> {resp.status_code}: {resp.text}"
-        )
+        assert (
+            resp.status_code == 200
+        ), f"GET {endpoint} Accept:{mime} -> {resp.status_code}: {resp.text}"
 
         if fmt == "json":
             data = resp.json()
@@ -4744,24 +4628,32 @@ class FormatTestMixin:
 
     @pytest.mark.parametrize("suffix,fmt,mime", _FMT_SUFFIX_RESPONSE)
     def test_format_GET_200_id_suffix(
-        self, server: Any, admin_a: Any, team_a: Any,
-        suffix: str, fmt: str, mime: str,
+        self,
+        server: Any,
+        admin_a: Any,
+        team_a: Any,
+        suffix: str,
+        fmt: str,
+        mime: str,
     ) -> None:
         """GET single entity with URL suffix; suffix overrides Accept header."""
         entity = self._create(
-            server, admin_a.jwt, admin_a.id, team_a.id,
+            server,
+            admin_a.jwt,
+            admin_a.id,
+            team_a.id,
             key=f"fmt_get_suffix_{fmt}",
         )
-        path_parent_ids = self._path_parent_ids_from_entity(entity)
+        path_parent_ids = self._extract_path_parent_ids(entity)
         endpoint = self.get_detail_endpoint(entity["id"], path_parent_ids)
 
         # Explicitly request JSON via Accept to prove suffix wins.
         headers = {**self._get_appropriate_headers(admin_a.jwt), "Accept": MIME_JSON}
         resp = server.get(f"{endpoint}{suffix}", headers=headers)
 
-        assert resp.status_code == 200, (
-            f"GET {endpoint}{suffix} -> {resp.status_code}: {resp.text}"
-        )
+        assert (
+            resp.status_code == 200
+        ), f"GET {endpoint}{suffix} -> {resp.status_code}: {resp.text}"
 
         if fmt != "json":
             ct = resp.headers.get("content-type", "")
@@ -4785,18 +4677,21 @@ class FormatTestMixin:
     ) -> None:
         """GET entity list with each Accept header; validate format and structure."""
         entity = self._create(
-            server, admin_a.jwt, admin_a.id, team_a.id,
+            server,
+            admin_a.jwt,
+            admin_a.id,
+            team_a.id,
             key=f"fmt_list_accept_{fmt}",
         )
-        path_parent_ids = self._path_parent_ids_from_entity(entity)
+        path_parent_ids = self._extract_path_parent_ids(entity)
         endpoint = self.get_list_endpoint(path_parent_ids)
 
         headers = {**self._get_appropriate_headers(admin_a.jwt), "Accept": mime}
         resp = server.get(endpoint, headers=headers)
 
-        assert resp.status_code == 200, (
-            f"GET {endpoint} Accept:{mime} -> {resp.status_code}: {resp.text}"
-        )
+        assert (
+            resp.status_code == 200
+        ), f"GET {endpoint} Accept:{mime} -> {resp.status_code}: {resp.text}"
 
         if fmt == "json":
             data = resp.json()
@@ -4819,23 +4714,31 @@ class FormatTestMixin:
 
     @pytest.mark.parametrize("suffix,fmt,mime", _FMT_SUFFIX_RESPONSE)
     def test_format_GET_200_list_suffix(
-        self, server: Any, admin_a: Any, team_a: Any,
-        suffix: str, fmt: str, mime: str,
+        self,
+        server: Any,
+        admin_a: Any,
+        team_a: Any,
+        suffix: str,
+        fmt: str,
+        mime: str,
     ) -> None:
         """GET entity list with URL suffix; validate format and structure."""
         entity = self._create(
-            server, admin_a.jwt, admin_a.id, team_a.id,
+            server,
+            admin_a.jwt,
+            admin_a.id,
+            team_a.id,
             key=f"fmt_list_suffix_{fmt}",
         )
-        path_parent_ids = self._path_parent_ids_from_entity(entity)
+        path_parent_ids = self._extract_path_parent_ids(entity)
         endpoint = self.get_list_endpoint(path_parent_ids)
 
         headers = {**self._get_appropriate_headers(admin_a.jwt), "Accept": MIME_JSON}
         resp = server.get(f"{endpoint}{suffix}", headers=headers)
 
-        assert resp.status_code == 200, (
-            f"GET {endpoint}{suffix} -> {resp.status_code}: {resp.text}"
-        )
+        assert (
+            resp.status_code == 200
+        ), f"GET {endpoint}{suffix} -> {resp.status_code}: {resp.text}"
 
         if fmt != "json":
             ct = resp.headers.get("content-type", "")
@@ -4846,9 +4749,9 @@ class FormatTestMixin:
 
         if isinstance(data, dict):
             list_values = [v for v in data.values() if isinstance(v, list)]
-            assert len(list_values) > 0, (
-                f"{fmt}: expected at least one list in response dict"
-            )
+            assert (
+                len(list_values) > 0
+            ), f"{fmt}: expected at least one list in response dict"
         elif isinstance(data, list):
             pass
         else:
@@ -4863,8 +4766,10 @@ class FormatTestMixin:
         self, server: Any, admin_a: Any, team_a: Any, fmt: str, mime: str
     ) -> None:
         """POST create entity with each Content-Type; middleware transcodes to JSON."""
-        _parent_entities_dict, parent_ids, path_parent_ids = self._create_parent_entities(
-            server, admin_a.jwt, admin_a.id, team_a.id, None
+        _parent_entities_dict, parent_ids, path_parent_ids = (
+            self._create_parent_entities(
+                server, admin_a.jwt, admin_a.id, team_a.id, None
+            )
         )
 
         payload = {
@@ -4878,7 +4783,9 @@ class FormatTestMixin:
         endpoint = self.get_create_endpoint(path_parent_ids)
 
         # TOML cannot serialize None -- strip them from the payload.
-        serializable_payload = self._strip_none_values(payload) if fmt == "toml" else payload
+        serializable_payload = (
+            self._strip_none_values(payload) if fmt == "toml" else payload
+        )
 
         if fmt == "json":
             body = json.dumps(serializable_payload)
@@ -4888,9 +4795,9 @@ class FormatTestMixin:
         headers = {**self._get_appropriate_headers(admin_a.jwt), "Content-Type": mime}
         resp = server.post(endpoint, content=body, headers=headers)
 
-        assert resp.status_code == 201, (
-            f"POST {endpoint} Content-Type:{mime} -> {resp.status_code}: {resp.text}"
-        )
+        assert (
+            resp.status_code == 201
+        ), f"POST {endpoint} Content-Type:{mime} -> {resp.status_code}: {resp.text}"
 
         # Response defaults to JSON (no Accept header).
         data = resp.json()
@@ -4909,19 +4816,26 @@ class FormatTestMixin:
     ) -> None:
         """PUT update entity with each Content-Type; middleware transcodes to JSON."""
         entity = self._create(
-            server, admin_a.jwt, admin_a.id, team_a.id,
+            server,
+            admin_a.jwt,
+            admin_a.id,
+            team_a.id,
             key=f"fmt_put_req_{fmt}",
         )
-        path_parent_ids = self._path_parent_ids_from_entity(entity)
+        path_parent_ids = self._extract_path_parent_ids(entity)
         endpoint = self.get_update_endpoint(entity["id"], path_parent_ids)
 
         update_data: Dict[str, Any] = {}
         if self.string_field_to_update:
-            update_data[self.string_field_to_update] = f"FmtPut-{fmt}-{self.faker.random_int()}"
+            update_data[self.string_field_to_update] = (
+                f"FmtPut-{fmt}-{self.faker.random_int()}"
+            )
 
         payload = {self.entity_name: update_data}
 
-        serializable_payload = self._strip_none_values(payload) if fmt == "toml" else payload
+        serializable_payload = (
+            self._strip_none_values(payload) if fmt == "toml" else payload
+        )
 
         if fmt == "json":
             body = json.dumps(serializable_payload)
@@ -4931,9 +4845,9 @@ class FormatTestMixin:
         headers = {**self._get_appropriate_headers(admin_a.jwt), "Content-Type": mime}
         resp = server.put(endpoint, content=body, headers=headers)
 
-        assert resp.status_code == 200, (
-            f"PUT {endpoint} Content-Type:{mime} -> {resp.status_code}: {resp.text}"
-        )
+        assert (
+            resp.status_code == 200
+        ), f"PUT {endpoint} Content-Type:{mime} -> {resp.status_code}: {resp.text}"
 
         data = resp.json()
         entity_data = self._extract_fmt_entity(data)
@@ -4949,8 +4863,10 @@ class FormatTestMixin:
         self, server: Any, admin_a: Any, team_a: Any, fmt: str, mime: str
     ) -> None:
         """POST create with JSON body and Accept header for response format."""
-        _parent_entities_dict, parent_ids, path_parent_ids = self._create_parent_entities(
-            server, admin_a.jwt, admin_a.id, team_a.id, None
+        _parent_entities_dict, parent_ids, path_parent_ids = (
+            self._create_parent_entities(
+                server, admin_a.jwt, admin_a.id, team_a.id, None
+            )
         )
 
         payload = {
@@ -4969,9 +4885,9 @@ class FormatTestMixin:
         }
         resp = server.post(endpoint, content=json.dumps(payload), headers=headers)
 
-        assert resp.status_code == 201, (
-            f"POST {endpoint} Accept:{mime} -> {resp.status_code}: {resp.text}"
-        )
+        assert (
+            resp.status_code == 201
+        ), f"POST {endpoint} Accept:{mime} -> {resp.status_code}: {resp.text}"
 
         if fmt == "json":
             data = resp.json()
@@ -4991,12 +4907,19 @@ class FormatTestMixin:
 
     @pytest.mark.parametrize("suffix,fmt,mime", _FMT_SUFFIX_RESPONSE)
     def test_format_POST_201_response_suffix(
-        self, server: Any, admin_a: Any, team_a: Any,
-        suffix: str, fmt: str, mime: str,
+        self,
+        server: Any,
+        admin_a: Any,
+        team_a: Any,
+        suffix: str,
+        fmt: str,
+        mime: str,
     ) -> None:
         """POST create with JSON body and URL suffix for response format."""
-        _parent_entities_dict, parent_ids, path_parent_ids = self._create_parent_entities(
-            server, admin_a.jwt, admin_a.id, team_a.id, None
+        _parent_entities_dict, parent_ids, path_parent_ids = (
+            self._create_parent_entities(
+                server, admin_a.jwt, admin_a.id, team_a.id, None
+            )
         )
 
         payload = {
@@ -5013,11 +4936,13 @@ class FormatTestMixin:
             "Content-Type": MIME_JSON,
             "Accept": MIME_JSON,  # suffix should override
         }
-        resp = server.post(f"{endpoint}{suffix}", content=json.dumps(payload), headers=headers)
-
-        assert resp.status_code == 201, (
-            f"POST {endpoint}{suffix} -> {resp.status_code}: {resp.text}"
+        resp = server.post(
+            f"{endpoint}{suffix}", content=json.dumps(payload), headers=headers
         )
+
+        assert (
+            resp.status_code == 201
+        ), f"POST {endpoint}{suffix} -> {resp.status_code}: {resp.text}"
 
         if fmt != "json":
             ct = resp.headers.get("content-type", "")
@@ -5040,10 +4965,13 @@ class FormatTestMixin:
     ) -> None:
         """Unsupported Accept type returns 406 on the entity endpoint."""
         entity = self._create(
-            server, admin_a.jwt, admin_a.id, team_a.id,
+            server,
+            admin_a.jwt,
+            admin_a.id,
+            team_a.id,
             key="fmt_406_test",
         )
-        path_parent_ids = self._path_parent_ids_from_entity(entity)
+        path_parent_ids = self._extract_path_parent_ids(entity)
         endpoint = self.get_detail_endpoint(entity["id"], path_parent_ids)
 
         headers = {
@@ -5052,6 +4980,6 @@ class FormatTestMixin:
         }
         resp = server.get(endpoint, headers=headers)
 
-        assert resp.status_code == 406, (
-            f"Expected 406 Not Acceptable, got {resp.status_code}: {resp.text}"
-        )
+        assert (
+            resp.status_code == 406
+        ), f"Expected 406 Not Acceptable, got {resp.status_code}: {resp.text}"
