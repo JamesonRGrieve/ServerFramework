@@ -44,9 +44,36 @@ from zephyrex.lib.RequestContext import (
 )
 
 
+def _install_extension_deps(
+    extensions_str: str,
+) -> tuple[list[str], list[str]]:
+    """Install extension dependencies and return ``(failed, successful)`` lists."""
+    from zephyrex.extensions.AbstractExtensionProvider import ExtensionRegistry
+
+    extension_names = [
+        name.strip() for name in extensions_str.split(",") if name.strip()
+    ]
+    if not extension_names:
+        return [], []
+
+    registry = ExtensionRegistry(extensions_str)
+    install_results = registry.install_extension_dependencies(extension_names)
+
+    failed = [
+        dep_name
+        for dep_name, success in install_results.items()
+        if not success and not dep_name.endswith("_error")
+    ]
+    successful = [
+        dep_name
+        for dep_name, success in install_results.items()
+        if success and not dep_name.endswith("_error")
+    ]
+    return failed, successful
+
+
 def setup_extension_dependencies():
     """Install PIP dependencies for all configured extensions using ExtensionRegistry"""
-    from zephyrex.extensions.AbstractExtensionProvider import ExtensionRegistry
     from zephyrex.lib.Environment import env
     from zephyrex.lib.Logging import logger
 
@@ -57,34 +84,17 @@ def setup_extension_dependencies():
         logger.debug("No extensions configured, skipping extension dependency check")
         return True
 
-    extension_names = [
-        name.strip() for name in app_extensions_str.split(",") if name.strip()
-    ]
-
-    if not extension_names:
-        logger.debug("No valid extension names found")
-        return True
-
-    logger.info(f"Installing dependencies for extensions: {extension_names}")
+    logger.info(f"Installing dependencies for extensions: {app_extensions_str}")
 
     try:
-        registry = ExtensionRegistry(app_extensions_str)
-        install_results = registry.install_extension_dependencies(extension_names)
-
-        failed_installs = [
-            dep_name
-            for dep_name, success in install_results.items()
-            if not success and not dep_name.endswith("_error")
-        ]
-
-        if failed_installs:
+        failed, _successful = _install_extension_deps(app_extensions_str)
+        if failed:
             logger.error(
-                f"Failed to install some extension dependencies: {failed_installs}"
+                f"Failed to install some extension dependencies: {failed}"
             )
             return False
-        else:
-            logger.info("Extension dependency installation completed")
-            return True
+        logger.info("Extension dependency installation completed")
+        return True
 
     except Exception as e:
         logger.error(f"Error installing extension dependencies: {e}")
@@ -106,13 +116,11 @@ _STRICT_TRACE_ID_RE = _re_module.compile(r"^[0-9a-f]{32}$")
 
 def install_extension_dependencies_with_restart(extensions_str: str):
     """Install extension dependencies and restart if needed."""
-    from zephyrex.extensions.AbstractExtensionProvider import ExtensionRegistry
     from zephyrex.lib.Logging import logger
 
     if not extensions_str:
         return
 
-    # Check if we're in a restart loop (prevent infinite restarts)
     restart_flag = os.environ.get("_APP_DEPENDENCY_RESTART", "0")
     if restart_flag == "1":
         logger.debug(
@@ -120,46 +128,24 @@ def install_extension_dependencies_with_restart(extensions_str: str):
         )
         return
 
-    extension_names = [
-        name.strip() for name in extensions_str.split(",") if name.strip()
-    ]
-    logger.debug(f"Installing dependencies for extensions: {extension_names}")
-
-    # Create ExtensionRegistry temporarily for dependency installation
-    extension_registry = ExtensionRegistry(extensions_str)
+    logger.debug(f"Installing dependencies for extensions: {extensions_str}")
 
     try:
-        install_results = extension_registry.install_extension_dependencies(
-            extension_names
-        )
+        failed, successful = _install_extension_deps(extensions_str)
 
-        failed_installs = [
-            dep_name
-            for dep_name, success in install_results.items()
-            if not success and not dep_name.endswith("_error")
-        ]
-
-        if failed_installs:
-            logger.error(f"Failed to install extension dependencies: {failed_installs}")
+        if failed:
+            logger.error(f"Failed to install extension dependencies: {failed}")
             raise Exception(
-                f"Failed to install extension dependencies: {failed_installs}"
+                f"Failed to install extension dependencies: {failed}"
             )
 
-        # Check if any dependencies were actually installed (restart needed)
-        successful_installs = [
-            dep_name
-            for dep_name, success in install_results.items()
-            if success and not dep_name.endswith("_error")
-        ]
-
-        if successful_installs:
+        if successful:
             logger.info(
-                f"Successfully installed extension dependencies: {successful_installs}"
+                f"Successfully installed extension dependencies: {successful}"
             )
             logger.info(
                 "Restarting application to ensure dependencies are properly loaded..."
             )
-            # Set restart flag and restart
             os.environ["_APP_DEPENDENCY_RESTART"] = "1"
             os.execl(sys.executable, sys.executable, *sys.argv)
 
