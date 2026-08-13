@@ -1067,10 +1067,10 @@ def build_app(model_registry: ModelRegistry):
                 logger.warning("Failed to mount federation REST router: %s", exc)
 
     if env("MCP").strip().lower() == "true":
-        from fastapi_mcp import FastApiMCP
+        from zephyrex.lib.MCPBridge import mount_mcp
 
-        mcp = FastApiMCP(app)
-        mcp.mount()
+        mcp_mount = env("MCP_MOUNT_PATH") or "/mcp"
+        app.state.mcp = mount_mcp(app, name=env("APP_NAME"), mount_path=mcp_mount)
     app.state.model_registry = model_registry
     app.state.federation_report = federation_report
 
