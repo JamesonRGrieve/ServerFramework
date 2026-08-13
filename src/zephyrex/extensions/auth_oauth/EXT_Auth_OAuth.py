@@ -4,7 +4,10 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Set
 from urllib.parse import urlencode, urlparse
 
-from zephyrex.extensions.AbstractExtensionProvider import AbstractStaticExtension, ability
+from zephyrex.extensions.AbstractExtensionProvider import (
+    AbstractStaticExtension,
+    ability,
+)
 
 # from extensions.auth_oauth.DB_Auth_OAuth import (
 #     OAuth2AuthCode,

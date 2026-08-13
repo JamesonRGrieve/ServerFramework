@@ -68,9 +68,7 @@ def _lookup_by_code(invitation_code: str, model_registry) -> Optional[Dict[str, 
     }
 
 
-def _apply_to_user(
-    invitation: Dict[str, Any], user_id: str, model_registry
-) -> None:
+def _apply_to_user(invitation: Dict[str, Any], user_id: str, model_registry) -> None:
     """Bind a freshly-registered user to the invitation: invitee row +
     user-team membership. Idempotent — existing membership is updated.
     """

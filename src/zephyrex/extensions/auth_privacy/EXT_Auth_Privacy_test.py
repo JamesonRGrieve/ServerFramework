@@ -26,9 +26,7 @@ class TestCanonicalWiring:
 
     def test_data_residency_manager_round_trip(self):
         assert DataResidencyPreferenceModel.Manager is DataResidencyPreferenceManager
-        assert (
-            DataResidencyPreferenceManager._model is DataResidencyPreferenceModel
-        )
+        assert DataResidencyPreferenceManager._model is DataResidencyPreferenceModel
 
     def test_extension_metadata(self):
         assert EXT_Auth_Privacy.name == "auth_privacy"
@@ -40,9 +38,7 @@ class TestCanonicalWiring:
 class TestUserXorTeamValidation:
     def test_neither_set_rejected(self):
         with pytest.raises(HTTPException) as exc_info:
-            DataResidencyPreferenceModel.Create(
-                data_type="user_data", region_id="r1"
-            )
+            DataResidencyPreferenceModel.Create(data_type="user_data", region_id="r1")
         assert exc_info.value.status_code == 422
 
     def test_both_set_rejected(self):

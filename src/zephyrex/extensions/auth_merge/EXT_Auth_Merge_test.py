@@ -336,9 +336,7 @@ class TestAuthorization:
     def test_consent_token_garbage_rejected(self):
         manager = self._manager_with_requester("user-a")
         with pytest.raises(HTTPException) as exc_info:
-            manager._assert_can_merge(
-                "user-a", "user-b", consent_token="not.a.jwt"
-            )
+            manager._assert_can_merge("user-a", "user-b", consent_token="not.a.jwt")
         assert exc_info.value.status_code == 403
 
     def test_root_bypasses_consent(self):

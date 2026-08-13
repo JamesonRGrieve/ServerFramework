@@ -113,12 +113,8 @@ class TestSecurityPosture:
         assert "is_revoked" not in fields
 
     def test_client_manager_routes_exclude_create_and_update(self):
-        assert RouteType.CREATE not in (
-            OAuth2ClientManager.routes_to_register or []
-        )
-        assert RouteType.UPDATE not in (
-            OAuth2ClientManager.routes_to_register or []
-        )
+        assert RouteType.CREATE not in (OAuth2ClientManager.routes_to_register or [])
+        assert RouteType.UPDATE not in (OAuth2ClientManager.routes_to_register or [])
 
     def test_authcode_and_token_managers_have_no_crud_routes(self):
         assert OAuth2AuthCodeManager.routes_to_register == []
@@ -141,9 +137,7 @@ class TestPKCE:
     def test_s256_match_succeeds(self):
         verifier = "verifier-string-that-is-long-enough-for-rfc"
         challenge = (
-            base64.urlsafe_b64encode(
-                hashlib.sha256(verifier.encode("ascii")).digest()
-            )
+            base64.urlsafe_b64encode(hashlib.sha256(verifier.encode("ascii")).digest())
             .rstrip(b"=")
             .decode("ascii")
         )
@@ -151,9 +145,7 @@ class TestPKCE:
 
     def test_s256_mismatch_fails(self):
         challenge = (
-            base64.urlsafe_b64encode(
-                hashlib.sha256(b"different").digest()
-            )
+            base64.urlsafe_b64encode(hashlib.sha256(b"different").digest())
             .rstrip(b"=")
             .decode("ascii")
         )

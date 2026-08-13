@@ -198,7 +198,9 @@ class TestEXTAuthOAuth(AbstractEXTTest):
         assert pip_deps["redis"].optional
 
     @pytest.mark.dependency(depends=["auth_oauth_dependencies"])
-    @pytest.mark.skip(reason="db_tables not populated yet — BLL_Auth_OAuth and DB models not created")
+    @pytest.mark.skip(
+        reason="db_tables not populated yet — BLL_Auth_OAuth and DB models not created"
+    )
     def test_db_tables_structure(self, extension):
         """Test that database tables are properly defined"""
         assert len(extension.db_tables) == 4
@@ -668,9 +670,13 @@ class TestEXTAuthOAuth(AbstractEXTTest):
     @pytest.mark.dependency(depends=["auth_oauth_dependencies"])
     def test_validate_redirect_uri(self, oauth_instance):
         """Test redirect URI validation"""
-        assert oauth_instance._validate_redirect_uri("https://example.com/callback") is True
         assert (
-            oauth_instance._validate_redirect_uri("http://localhost:3000/callback") is True
+            oauth_instance._validate_redirect_uri("https://example.com/callback")
+            is True
+        )
+        assert (
+            oauth_instance._validate_redirect_uri("http://localhost:3000/callback")
+            is True
         )
         assert oauth_instance._validate_redirect_uri("invalid-uri") is False
 
@@ -722,7 +728,9 @@ class TestEXTAuthOAuth(AbstractEXTTest):
         assert result is True
 
         # Test invalid challenge
-        result = oauth_instance._verify_pkce_challenge(verifier, "invalid_challenge", "S256")
+        result = oauth_instance._verify_pkce_challenge(
+            verifier, "invalid_challenge", "S256"
+        )
         assert result is False
 
     @pytest.mark.dependency(depends=["auth_oauth_dependencies"])
@@ -777,7 +785,9 @@ class TestEXTAuthOAuth(AbstractEXTTest):
         assert "oauth:token:create" in permissions
 
     @pytest.mark.dependency(depends=["auth_oauth_dependencies"])
-    @pytest.mark.skip(reason="_initialize_redis method not implemented yet — on_start calls it unconditionally")
+    @pytest.mark.skip(
+        reason="_initialize_redis method not implemented yet — on_start calls it unconditionally"
+    )
     def test_on_start_success(self):
         """Test successful extension start"""
         with patch("zephyrex.lib.Logging.logger"):
@@ -824,7 +834,9 @@ class TestEXTAuthOAuth(AbstractEXTTest):
         assert stats["active_auth_codes"] == 1
 
     @pytest.mark.dependency(depends=["auth_oauth_dependencies"])
-    @pytest.mark.skip(reason="discover_abilities() method does not exist on AbstractStaticExtension")
+    @pytest.mark.skip(
+        reason="discover_abilities() method does not exist on AbstractStaticExtension"
+    )
     def test_abilities_discovery(self, extension):
         """Test that all expected abilities are discovered"""
         extension.discover_abilities()
@@ -835,7 +847,9 @@ class TestEXTAuthOAuth(AbstractEXTTest):
 
     @pytest.mark.asyncio
     @pytest.mark.dependency(depends=["auth_oauth_dependencies"])
-    @pytest.mark.skip(reason="execute_ability() method does not exist on AbstractStaticExtension")
+    @pytest.mark.skip(
+        reason="execute_ability() method does not exist on AbstractStaticExtension"
+    )
     async def test_execute_ability_success(self, extension):
         """Test successful ability execution"""
         result = await extension.execute_ability(
@@ -851,7 +865,9 @@ class TestEXTAuthOAuth(AbstractEXTTest):
 
     @pytest.mark.asyncio
     @pytest.mark.dependency(depends=["auth_oauth_dependencies"])
-    @pytest.mark.skip(reason="execute_ability() method does not exist on AbstractStaticExtension")
+    @pytest.mark.skip(
+        reason="execute_ability() method does not exist on AbstractStaticExtension"
+    )
     async def test_execute_ability_not_found(self, extension):
         """Test executing non-existent ability"""
         result = await extension.execute_ability("non_existent_ability")

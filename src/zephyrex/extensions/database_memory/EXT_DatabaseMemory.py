@@ -89,7 +89,9 @@ class AbstractDatabaseMemoryProvider(AbstractStaticProvider):
         raise NotImplementedError
 
     @classmethod
-    def build_streams_transport(cls, instance: Any, consumer_group: str = "zephyrex") -> Any:
+    def build_streams_transport(
+        cls, instance: Any, consumer_group: str = "zephyrex"
+    ) -> Any:
         """Return a ``BrokerTransport`` over the backend's streams primitive.
 
         Subclasses construct their backend-specific transport. The

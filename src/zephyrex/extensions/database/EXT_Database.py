@@ -368,7 +368,9 @@ class EXT_Database(AbstractStaticExtension):
         )
 
     @classmethod
-    def get_database_classifications(cls, db_type: str | None = None) -> Dict[str, List[str]]:
+    def get_database_classifications(
+        cls, db_type: str | None = None
+    ) -> Dict[str, List[str]]:
         """
         Get database type classifications. If db_type is provided, returns only the
         classifications for that specific database type.

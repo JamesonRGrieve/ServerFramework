@@ -217,9 +217,7 @@ class TestIssueSession:
     def test_uses_provided_session_key(self):
         from zephyrex.extensions.auth_session.BLL_Session import issue_session
 
-        key = issue_session(
-            user_id="u1", model_registry=None, session_key="custom-key"
-        )
+        key = issue_session(user_id="u1", model_registry=None, session_key="custom-key")
         assert key == "custom-key"
 
     def test_persist_failure_still_returns_key(self):
@@ -314,9 +312,7 @@ class TestSessionManagerFactory:
         )
 
         mock_registry = MagicMock()
-        mgr = session_manager_factory(
-            requester_id="u1", model_registry=mock_registry
-        )
+        mgr = session_manager_factory(requester_id="u1", model_registry=mock_registry)
         assert mgr is not None
 
     def test_accepts_none_registry(self):
@@ -334,6 +330,4 @@ class TestRevokeUserSessions:
             revoke_user_sessions,
         )
 
-        revoke_user_sessions(
-            user_id="u1", requester_id="admin", model_registry=None
-        )
+        revoke_user_sessions(user_id="u1", requester_id="admin", model_registry=None)

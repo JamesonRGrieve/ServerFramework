@@ -362,9 +362,7 @@ class TestEXTEMail(ExtensionServerMixin):
         """Live sandbox: static email reply via rotation system."""
         creds = sandbox_credentials_for("sendgrid")
         assert creds.get("SENDGRID_API_KEY"), "SENDGRID_API_KEY required for live test"
-        result = await EXT_EMail.reply_to_email(
-            email_id="test_123", body="Reply body"
-        )
+        result = await EXT_EMail.reply_to_email(email_id="test_123", body="Reply body")
         assert result is not None
         assert "not configured" not in str(result).lower()
 
@@ -515,6 +513,7 @@ class TestAbstractEmailProvider:
     @pytest.mark.asyncio
     async def test_provider_methods(self):
         """Test provider method implementations using a real DTO instance."""
+
         # No-mock pillar: build a real ProviderInstanceModel-shaped object.
         # The ConcreteEmailProvider methods don't actually inspect their
         # provider_instance argument (they're test stubs that always return

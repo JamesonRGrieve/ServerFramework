@@ -41,9 +41,7 @@ class TestCanonicalClassLocation:
         contract: any direct ``from zephyrex.extensions.acl_rbac``
         import in the core permission filter regresses the
         delete-extensions invariant."""
-        with open(
-            "src/zephyrex/database/StaticPermissions.py", "r"
-        ) as fh:
+        with open("src/zephyrex/database/StaticPermissions.py", "r") as fh:
             src = fh.read()
 
         # No direct extension imports in the core permission engine.
@@ -52,14 +50,11 @@ class TestCanonicalClassLocation:
             not in src
         )
         # And no path through the legacy BLL_Auth re-export either.
-        assert (
-            "from zephyrex.logic.BLL_Auth import PermissionModel"
-            not in src
-        )
+        assert "from zephyrex.logic.BLL_Auth import PermissionModel" not in src
         # Hook is consulted at the call sites (permission lookup, filter
         # generator, invitation special-case).
         assert "_acl_hooks" in src
-        assert 'permission_db_class' in src
+        assert "permission_db_class" in src
 
 
 class TestPermissionCreateValidation:

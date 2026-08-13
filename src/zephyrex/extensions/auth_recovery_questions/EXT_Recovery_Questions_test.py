@@ -38,10 +38,7 @@ class TestCanonicalClassLocation:
 
 class TestExtensionLifecycle:
     def test_models_returns_recovery_question_model(self):
-        assert (
-            UserRecoveryQuestionModel
-            in AuthRecoveryQuestionsExtension.models()
-        )
+        assert UserRecoveryQuestionModel in AuthRecoveryQuestionsExtension.models()
 
 
 class TestAnswerHashRoundTrip:

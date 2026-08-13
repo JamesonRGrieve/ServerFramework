@@ -214,7 +214,9 @@ class TestEXTPayment:
         assert hasattr(EXT_Payment, "description")
 
         # Test inheritance
-        from zephyrex.extensions.AbstractExtensionProvider import AbstractStaticExtension
+        from zephyrex.extensions.AbstractExtensionProvider import (
+            AbstractStaticExtension,
+        )
 
         assert issubclass(EXT_Payment, AbstractStaticExtension)
 
@@ -851,7 +853,9 @@ class TestAbstractPaymentProvider:
         original_env = dict(ConcretePaymentProvider.env)
         try:
             ConcretePaymentProvider.env["CONCRETEPAYMENT_SECRET_KEY"] = "sk_test_123"
-            ConcretePaymentProvider.env["CONCRETEPAYMENT_WEBHOOK_SECRET"] = "whsec_test_123"
+            ConcretePaymentProvider.env["CONCRETEPAYMENT_WEBHOOK_SECRET"] = (
+                "whsec_test_123"
+            )
 
             secret_key = ConcretePaymentProvider.get_secret_key()
             assert secret_key == "sk_test_123"

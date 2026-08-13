@@ -309,9 +309,9 @@ def test_old_valkey_extension_directory_removed():
     from zephyrex.extensions.database_memory import EXT_DatabaseMemory as _self
 
     extensions_dir = pathlib.Path(_self.__file__).parent.parent
-    assert not (extensions_dir / "valkey").exists(), (
-        "extensions/valkey/ should be removed by the Item 98 restructure"
-    )
+    assert not (
+        extensions_dir / "valkey"
+    ).exists(), "extensions/valkey/ should be removed by the Item 98 restructure"
 
 
 def test_old_valkey_imports_no_longer_resolvable():

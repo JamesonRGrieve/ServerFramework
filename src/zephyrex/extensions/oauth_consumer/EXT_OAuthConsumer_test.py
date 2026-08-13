@@ -59,9 +59,9 @@ class TestIdPRegistry:
         for name in ("amazon", "github", "google", "microsoft"):
             cls = get_idp(name)
             instance = cls()
-            assert getattr(instance, "AUTHORIZE_URL", None), (
-                f"{name} IdP missing AUTHORIZE_URL"
-            )
+            assert getattr(
+                instance, "AUTHORIZE_URL", None
+            ), f"{name} IdP missing AUTHORIZE_URL"
 
     def test_unknown_idp_raises(self):
         with pytest.raises(ValueError):
@@ -153,6 +153,6 @@ class TestPreAccountTakeoverGuard:
 
         for module in (Amazon, GitHub, Google, Microsoft):
             source = inspect.getsource(module)
-            assert "email_verified" in source, (
-                f"{module.__name__} must surface email_verified in profile"
-            )
+            assert (
+                "email_verified" in source
+            ), f"{module.__name__} must surface email_verified in profile"

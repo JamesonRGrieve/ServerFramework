@@ -356,7 +356,9 @@ class AbstractEmailProvider(AbstractStaticProvider):
             return True
 
         @classmethod
-        def from_env(cls, env_map: Mapping[str, str]) -> "AbstractEmailProvider.Settings":
+        def from_env(
+            cls, env_map: Mapping[str, str]
+        ) -> "AbstractEmailProvider.Settings":
             """Build a Settings instance from the canonical env-var names.
 
             Raises a Pydantic `ValidationError` whose error rows name the
@@ -518,7 +520,10 @@ class AbstractEmailProvider(AbstractStaticProvider):
             return "Failed to send email: subject exceeds 998 octets"
 
         # Bodies: NUL + size cap.
-        for label, body in (("body_text", message.body_text), ("body_html", message.body_html)):
+        for label, body in (
+            ("body_text", message.body_text),
+            ("body_html", message.body_html),
+        ):
             if body is None:
                 continue
             if not isinstance(body, str):
@@ -529,7 +534,11 @@ class AbstractEmailProvider(AbstractStaticProvider):
                 return "Failed to send email: body exceeds 10 MiB cap"
 
         # Address fields: every ``EmailAddress`` everywhere on the message.
-        addr_groups: List[tuple] = [("to", message.to), ("cc", message.cc), ("bcc", message.bcc)]
+        addr_groups: List[tuple] = [
+            ("to", message.to),
+            ("cc", message.cc),
+            ("bcc", message.bcc),
+        ]
         for label, group in addr_groups:
             for entry in group:
                 err = cls._validate_email_address(entry, label)
@@ -852,9 +861,7 @@ class AbstractEmailProvider(AbstractStaticProvider):
         elif flagged is False:
             results.append(await cls.unflag_email(provider_instance, message_id))
         if folder is not None:
-            results.append(
-                await cls.move_email(provider_instance, message_id, folder)
-            )
+            results.append(await cls.move_email(provider_instance, message_id, folder))
         if deleted:
             results.append(await cls.delete_email(provider_instance, message_id))
         if not results:
@@ -944,9 +951,7 @@ def validate_email_provider_settings_at_startup(
         try:
             ok = bool(settings_cls.is_configured(env_source))  # type: ignore[attr-defined]
         except Exception as exc:  # noqa: BLE001
-            logger.info(
-                f"Email provider {name}: Settings.is_configured raised {exc}"
-            )
+            logger.info(f"Email provider {name}: Settings.is_configured raised {exc}")
             report[name] = False
             continue
         if ok:
@@ -1200,7 +1205,9 @@ class EXT_EMail(AbstractStaticExtension):
         cls.register_ability("process_attachments")
 
     @classmethod
-    async def execute_ability(cls, ability_name: str, params: dict | None = None) -> str:
+    async def execute_ability(
+        cls, ability_name: str, params: dict | None = None
+    ) -> str:
         """Execute an ability by name."""
         if ability_name not in cls.get_abilities():
             return f"Ability '{ability_name}' not found"
