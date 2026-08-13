@@ -622,6 +622,25 @@ def _restore_settings_after_test():
     refresh_settings()
 
 
+def _build_test_server(db_prefix: str, extensions: str = _CORE_TEST_EXTENSIONS):
+    """Build a FastAPI test app with the given database prefix and extensions.
+
+    Shared bootstrap sequence used by both ``server`` and ``mock_server``
+    fixtures so the initialization logic lives in one place.
+    """
+    prepare_test_registry()
+    from zephyrex.lib.Environment import refresh_settings
+
+    refresh_settings()
+
+    logger.debug("Setting up Python path...")
+    setup_python_path()
+
+    from zephyrex.app import instance
+
+    return instance(db_prefix=db_prefix, extensions=extensions)
+
+
 @pytest.fixture(scope="session")
 def mock_server():
     """
@@ -632,7 +651,6 @@ def mock_server():
     Note: This fixture is for core system tests. Extension tests should use
     AbstractEXTTest.extension_server for proper isolation.
     """
-    # Each xdist worker gets its own database to avoid migration conflicts
     worker_id = os.environ.get("PYTEST_XDIST_WORKER", "main")
     db_prefix = f"mock.{worker_id}"
 
@@ -640,19 +658,7 @@ def mock_server():
         f"Worker {worker_id}: Setting up mock server with db_prefix={db_prefix}"
     )
 
-    prepare_test_registry()
-    from zephyrex.lib.Environment import refresh_settings
-
-    refresh_settings()
-
-    # Follow the same initialization process as app.py
-    logger.debug("Setting up Python path...")
-    setup_python_path()
-
-    # Use the new instance function with worker-specific prefix and no extensions
-    from zephyrex.app import instance
-
-    app = instance(db_prefix=db_prefix, extensions=_CORE_TEST_EXTENSIONS)
+    app = _build_test_server(db_prefix)
 
     logger.debug(f"Worker {worker_id}: Mock server initialization complete")
 
@@ -669,25 +675,12 @@ def server():
     Note: This fixture is for core system tests. Extension tests should use
     AbstractEXTTest.extension_server for proper isolation.
     """
-    # Each xdist worker gets its own database to avoid migration conflicts
     worker_id = os.environ.get("PYTEST_XDIST_WORKER", "main")
     db_prefix = f"test.{worker_id}"
 
     logger.debug(f"Worker {worker_id}: Setting up server with db_prefix={db_prefix}")
 
-    prepare_test_registry()
-    from zephyrex.lib.Environment import refresh_settings
-
-    refresh_settings()
-
-    # Follow the same initialization process as app.py
-    logger.debug("Setting up Python path...")
-    setup_python_path()
-
-    # Use the new instance function with worker-specific prefix and no extensions
-    from zephyrex.app import instance
-
-    app = instance(db_prefix=db_prefix, extensions=_CORE_TEST_EXTENSIONS)
+    app = _build_test_server(db_prefix)
     test_client = TestClient(app)
     _set_test_model_registry(app.state.model_registry)
 
