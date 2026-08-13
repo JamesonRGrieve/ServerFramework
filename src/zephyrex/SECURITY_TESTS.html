@@ -459,6 +459,69 @@
 <div class="t"><span class="m">test_list_sort_by_rejects_non_field_attributes</span></div>
 </div>
 
+<h2>Valkey Integration Security</h2>
+<p>Deep Valkey support introduces rate limiting, replay cache, entity cache, response cache, EventBus streams, and distributed counters — all backed by Valkey. Each is a cross-process shared-state security surface.</p>
+
+<div class="s">
+<h4>Entity Cache Cross-Tenant Key Injection <span class="tag tag-2">Gaps</span></h4>
+<p>ValkeyEntityCache.py:65 — cache key f"entity:{table}:{entity_id}" uses user-controlled entity_id without sanitization. A crafted ID containing : could read/write another entity's cache.</p>
+<div class="t"><span class="m">test_valkey_entity_cache_key_injection_rejected</span></div>
+</div>
+
+<div class="s">
+<h4>Entity Cache Cross-Tenant Isolation <span class="tag tag-2">Gaps</span></h4>
+<p>Entity cache keys do not include tenant_id. If two tenants have entities with the same ID (UUID collision or shared resources), cache hits cross tenant boundaries.</p>
+<div class="t"><span class="m">test_valkey_entity_cache_tenant_isolation</span></div>
+</div>
+
+<div class="s">
+<h4>Response Cache Cross-User Isolation <span class="tag tag-2">Gaps</span></h4>
+<p>ValkeyResponseCache.py:40 — cache key includes requester_id but an attacker who knows another user's ID could probe cache timing to detect resource existence.</p>
+<div class="t"><span class="m">test_valkey_response_cache_cross_user_isolation</span></div>
+</div>
+
+<div class="s">
+<h4>Response Cache Invalidation SCAN Pattern Injection <span class="tag tag-2">Gaps</span></h4>
+<p>ValkeyResponseCache.py:86 — invalidate_prefix uses SCAN with f"resp:{clean_prefix}:*". If path contains Valkey glob chars (*, ?, [), it could match unintended keys.</p>
+<div class="t"><span class="m">test_valkey_response_cache_invalidation_pattern_safe</span></div>
+</div>
+
+<div class="s">
+<h4>Rate Limit Counter Key Namespace Collision <span class="tag tag-2">Gaps</span></h4>
+<p>ValkeyRateLimitCounter.py:53 — key prefix is configurable but not validated. A key containing Valkey command separators could interfere with other namespaces.</p>
+<div class="t"><span class="m">test_valkey_rate_limit_key_namespace_safe</span></div>
+</div>
+
+<div class="s">
+<h4>Replay Cache Valkey Failure Must Fail Closed <span class="tag tag-2">Gaps</span></h4>
+<p>ValkeyReplayCache uses SET NX which is atomic, but if Valkey is down, mark_if_unused must fail closed (reject the request) not fail open (accept the nonce).</p>
+<div class="t"><span class="m">test_valkey_replay_cache_fails_closed_on_connection_error</span></div>
+</div>
+
+<div class="s">
+<h4>EventBus Streams Payload Deserialization <span class="tag tag-2">Gaps</span></h4>
+<p>PRV_Valkey.py:185 — stream handler receives raw bytes from Valkey and passes to handler. If handler deserializes (JSON/pickle), a poisoned stream message could inject.</p>
+<div class="t"><span class="m">test_valkey_streams_payload_validated_before_handler</span></div>
+</div>
+
+<div class="s">
+<h4>Distributed Counter Negative Amount <span class="tag tag-2">Gaps</span></h4>
+<p>ValkeyDistributedCounter Lua script checks current + amount > limit but doesn't validate amount >= 0. Negative amount could bypass limit or underflow the counter.</p>
+<div class="t"><span class="m">test_valkey_distributed_counter_rejects_negative_amount</span></div>
+</div>
+
+<div class="s">
+<h4>Valkey Connection URL Credential Exposure <span class="tag tag-2">Gaps</span></h4>
+<p>PRV_Valkey.py:70 — connection URL from env/api_key may contain redis://user:password@host. URL must not be logged or returned in error responses.</p>
+<div class="t"><span class="m">test_valkey_connection_url_not_logged_or_exposed</span></div>
+</div>
+
+<div class="s">
+<h4>Entity Cache JSON Deserialization from Untrusted Valkey <span class="tag tag-2">Gaps</span></h4>
+<p>ValkeyEntityCache.py:77 — json.loads on raw bytes from Valkey. If Valkey is compromised, poisoned JSON could cause issues in consumers.</p>
+<div class="t"><span class="m">test_valkey_entity_cache_handles_corrupted_data</span></div>
+</div>
+
 <div class="s">
 <h4>§19 CSRF (corpus §85) <span class="tag tag-5">N/A — API-only</span></h4>
 <p class="reason">API-only server. Authentication uses JWT in the Authorization header, not cookies. Browsers do not auto-attach Authorization headers cross-origin, so CSRF is architecturally eliminated. If cookie-based auth is ever added, all 11 CSRF tests become mandatory.</p>
