@@ -187,6 +187,10 @@ def validate_outbound_url(url: str) -> None:
         raise SSRFGuardError(
             f"Refusing outbound URL {url!r}: scheme {scheme!r} not in {{http, https}}"
         )
+    if parsed.username or parsed.password or "@" in (parsed.netloc or ""):
+        raise SSRFGuardError(
+            f"Refusing outbound URL {url!r}: embedded credentials / userinfo not allowed"
+        )
     host = (parsed.hostname or "").lower()
     if not host:
         raise SSRFGuardError(f"Refusing outbound URL {url!r}: missing host")

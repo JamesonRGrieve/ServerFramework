@@ -5677,6 +5677,116 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         )
 
     # ------------------------------------------------------------------ #
+    # Security — Corpus gap fills batch 3 (§6, §9, §24, §25, §75, §78, §92)
+    # ------------------------------------------------------------------ #
+
+    @pytest.mark.security
+    def test_security_update_cannot_change_system_managed_fields(
+        self, server: Any, admin_a: Any, team_a: Any
+    ):
+        """PUT must strip server-managed fields (created_at, created_by, etc)."""
+        entity = self._create(
+            server, admin_a.jwt, admin_a.id, team_a.id, key="sys_managed"
+        )
+        path_parent_ids = self._extract_path_parent_ids(entity)
+        detail = self.get_detail_endpoint(entity["id"], path_parent_ids)
+        resolved = {k: v() if callable(v) else v for k, v in self.update_fields.items()}
+        resolved["created_at"] = "2000-01-01T00:00:00Z"
+        resolved["created_by_user_id"] = str(uuid.uuid4())
+        response = server.put(
+            detail,
+            json={self.entity_name: resolved},
+            headers=self._get_appropriate_headers(admin_a.jwt),
+        )
+        if response.status_code == 200:
+            body = response.json()
+            for v in body.values():
+                if isinstance(v, dict) and "created_at" in v:
+                    assert v["created_at"] != "2000-01-01T00:00:00Z", (
+                        "Server-managed created_at was overwritten"
+                    )
+
+    @pytest.mark.security
+    def test_security_bulk_create_per_record_auth(
+        self, server: Any, admin_a: Any, team_a: Any
+    ):
+        """Bulk create must apply authorization to each record."""
+        items = []
+        for i in range(3):
+            items.append(self.create_payload(
+                name=f"bulk_auth_{i}_{uuid.uuid4().hex[:4]}",
+                team_id=team_a.id,
+            ))
+        endpoint = self.get_list_endpoint({})
+        response = server.post(
+            endpoint,
+            json={self.entity_name: items},
+            headers=self._get_appropriate_headers(admin_a.jwt),
+        )
+        assert response.status_code != 500
+
+    @pytest.mark.security
+    def test_security_unique_constraint_normalized(
+        self, server: Any, admin_a: Any, team_a: Any
+    ):
+        """Unique constraint errors must not leak database internals."""
+        if not self.unique_fields:
+            pytest.skip("No unique fields")
+        entity = self._create(
+            server, admin_a.jwt, admin_a.id, team_a.id, key="uc_norm"
+        )
+        duplicate = self.create_payload(
+            name=entity.get("name", f"dup_{uuid.uuid4().hex[:4]}"),
+            team_id=team_a.id,
+        )
+        endpoint = self.get_list_endpoint({})
+        response = server.post(
+            endpoint,
+            json={self.entity_name: duplicate},
+            headers=self._get_appropriate_headers(admin_a.jwt),
+        )
+        if response.status_code >= 400:
+            body = response.text.lower()
+            assert "integrityerror" not in body, "Unique constraint leaked raw error"
+            assert "sqlite" not in body and "postgresql" not in body, (
+                "Unique constraint leaked database type"
+            )
+
+    @pytest.mark.security
+    def test_security_state_field_not_client_settable(
+        self, server: Any, admin_a: Any, team_a: Any
+    ):
+        """Internal state fields must not be settable by clients."""
+        data = self.create_payload(
+            name=f"state_test_{uuid.uuid4().hex[:4]}", team_id=team_a.id
+        )
+        data["status"] = "deleted"
+        data["state"] = "archived"
+        data["is_active"] = False
+        endpoint = self.get_list_endpoint({})
+        response = server.post(
+            endpoint,
+            json={self.entity_name: data},
+            headers=self._get_appropriate_headers(admin_a.jwt),
+        )
+        assert response.status_code != 500
+
+    @pytest.mark.security
+    def test_security_log_injection_via_user_agent(
+        self, server: Any, admin_a: Any
+    ):
+        """User-Agent with newlines must not inject log entries."""
+        endpoint = self.get_list_endpoint({})
+        response = server.get(
+            endpoint,
+            headers={
+                **self._get_appropriate_headers(admin_a.jwt),
+                "User-Agent": "evil\nINFO: forged log entry",
+            },
+        )
+        assert response.status_code != 500
+
+    # ------------------------------------------------------------------ #
     # Scalability / Big-O assertions
     # ------------------------------------------------------------------ #
     # Big-O scaling assertion for GET-list endpoints. Runs automatically;

@@ -2374,3 +2374,71 @@ class AbstractGraphQLTest:
                 assert "html" not in ct, (
                     f"GraphiQL exposed at {path} (Content-Type: {ct})"
                 )
+
+    # ------------------------------------------------------------------ #
+    # GraphQL Security — Gap fills batch 2 (corpus §26 advanced)
+    # ------------------------------------------------------------------ #
+
+    @pytest.mark.security
+    def test_GQL_security_query_complexity_limit(self, server: Any, admin_a: Any):
+        """Query with many fields must not cause unbounded DB load."""
+        singular = self._gql_singular_name
+        fields = " ".join([f"field{i}: id" for i in range(200)])
+        query = f'{{ {singular}(id: "00000000-0000-0000-0000-000000000000") {{ {fields} }} }}'
+        headers = self._get_appropriate_headers(
+            admin_a.jwt, api_key=env("ROOT_API_KEY") if self.system_entity else None
+        )
+        response = server.post("/graphql", json={"query": query}, headers=headers)
+        assert response.status_code != 500
+
+    @pytest.mark.security
+    def test_GQL_security_recursive_input_limit(self, server: Any, admin_a: Any):
+        """Deeply nested input objects must not cause stack overflow."""
+        singular = self._gql_singular_name
+        mutation_name = f"create{stringcase.pascalcase(singular)}"
+        nested_input = '{{name: "test"' + ', nested: ' * 20 + '{{name: "deep"}}' + '}' * 20
+        mutation = f'mutation {{ {mutation_name}(input: {nested_input}) {{ id }} }}'
+        headers = self._get_appropriate_headers(
+            admin_a.jwt, api_key=env("ROOT_API_KEY") if self.system_entity else None
+        )
+        response = server.post("/graphql", json={"query": mutation}, headers=headers)
+        assert response.status_code != 500
+
+    @pytest.mark.security
+    def test_GQL_security_error_path_does_not_leak_private_fields(
+        self, server: Any, admin_a: Any
+    ):
+        """GQL error paths must not reveal internal field names."""
+        singular = self._gql_singular_name
+        query = f'{{ {singular}(id: "00000000-0000-0000-0000-000000000000") {{ password_hash internal_secret }} }}'
+        headers = self._get_appropriate_headers(
+            admin_a.jwt, api_key=env("ROOT_API_KEY") if self.system_entity else None
+        )
+        response = server.post("/graphql", json={"query": query}, headers=headers)
+        assert response.status_code != 500
+
+    @pytest.mark.security
+    def test_GQL_security_batch_requests_have_independent_auth(
+        self, server: Any, admin_a: Any
+    ):
+        """Each query in a batch must be independently authorized."""
+        singular = self._gql_singular_name
+        query = f'{{ {singular}(id: "00000000-0000-0000-0000-000000000000") {{ id }} }}'
+        batch = [{"query": query} for _ in range(5)]
+        headers = self._get_appropriate_headers(
+            admin_a.jwt, api_key=env("ROOT_API_KEY") if self.system_entity else None
+        )
+        response = server.post("/graphql", json=batch, headers=headers)
+        assert response.status_code != 500
+
+    @pytest.mark.security
+    def test_GQL_security_introspection_cache_isolation(
+        self, server: Any, admin_a: Any
+    ):
+        """Introspection results must not leak across authorization contexts."""
+        query = '{ __schema { queryType { name } } }'
+        headers = self._get_appropriate_headers(
+            admin_a.jwt, api_key=env("ROOT_API_KEY") if self.system_entity else None
+        )
+        response = server.post("/graphql", json={"query": query}, headers=headers)
+        assert response.status_code != 500

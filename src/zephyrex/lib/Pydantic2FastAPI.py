@@ -1834,6 +1834,9 @@ def handle_resource_operation_error(err: Exception) -> None:
     if isinstance(err, ValidationError):
         try:
             details = err.errors()
+            for error in details if isinstance(details, list) else []:
+                error.pop("input", None)
+                error.pop("ctx", None)
         except TypeError:
             details = str(err)  # type: ignore[assignment]
         raise HTTPException(
@@ -1843,7 +1846,7 @@ def handle_resource_operation_error(err: Exception) -> None:
     elif isinstance(err, ValueError):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail={"message": "Validation error", "details": str(err)},
+            detail={"message": "Validation error"},
         )
     elif isinstance(err, HTTPException):
         raise err
