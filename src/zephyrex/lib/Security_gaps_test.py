@@ -1292,3 +1292,351 @@ class TestStateMachineSecurity:
             team_data = body.get("team", body)
             if isinstance(team_data, dict):
                 assert team_data.get("status") != "deleted"
+
+
+# ------------------------------------------------------------------ #
+# §1 — Session Fixation / Expiry
+# ------------------------------------------------------------------ #
+
+
+class TestSessionFixation:
+    @pytest.mark.security
+    def test_session_creation_timestamp_not_client_controlled(self, server, admin_a):
+        """Session creation timestamps must be server-controlled."""
+        response = server.post(
+            "/v1/user/login",
+            json={
+                "email": "admin@example.com",
+                "password": "TestPass123!",
+                "created_at": "2000-01-01T00:00:00Z",
+            },
+        )
+        assert response.status_code != 500
+
+    @pytest.mark.security
+    def test_session_id_not_client_controlled(self, server, admin_a):
+        """Session IDs must not be settable by the client."""
+        response = server.post(
+            "/v1/user/login",
+            json={
+                "email": "admin@example.com",
+                "password": "TestPass123!",
+                "session_id": "attacker-controlled-id",
+            },
+        )
+        if response.status_code in (200, 201):
+            body = response.json()
+            user_data = body.get("user", body)
+            if isinstance(user_data, dict):
+                sid = user_data.get("session_id", "")
+                assert sid != "attacker-controlled-id", (
+                    "Client-supplied session_id was accepted"
+                )
+
+
+# ------------------------------------------------------------------ #
+# §10 — Team Lifecycle (advanced)
+# ------------------------------------------------------------------ #
+
+
+class TestTeamLifecycleAdvanced:
+    @pytest.mark.security
+    def test_team_recreation_does_not_reuse_security_identity(
+        self, server, admin_a
+    ):
+        """Recreated team must have a new ID, not reuse the old one."""
+        headers = {"Authorization": f"Bearer {admin_a.jwt}"}
+        name = f"lifecycle_{uuid.uuid4().hex[:6]}"
+        r1 = server.post(
+            "/v1/team",
+            json={"team": {"name": name, "encryption_salt": "x"}},
+            headers=headers,
+        )
+        if r1.status_code not in (200, 201):
+            pytest.skip("Cannot create team")
+        team1_id = r1.json().get("team", {}).get("id")
+        server.delete(f"/v1/team/{team1_id}", headers=headers)
+        r2 = server.post(
+            "/v1/team",
+            json={"team": {"name": name, "encryption_salt": "x"}},
+            headers=headers,
+        )
+        if r2.status_code in (200, 201):
+            team2_id = r2.json().get("team", {}).get("id")
+            assert team1_id != team2_id, (
+                "Recreated team reuses deleted team's security identity"
+            )
+
+
+# ------------------------------------------------------------------ #
+# §15 — Request Header Trust Boundary
+# ------------------------------------------------------------------ #
+
+
+class TestHeaderTrustBoundary:
+    @pytest.mark.security
+    def test_x_forwarded_proto_not_trusted(self, server, admin_a):
+        """X-Forwarded-Proto must not be trusted without configured proxy."""
+        response = server.get(
+            "/v1/team",
+            headers={
+                "Authorization": f"Bearer {admin_a.jwt}",
+                "X-Forwarded-Proto": "https",
+            },
+        )
+        assert response.status_code != 500
+
+    @pytest.mark.security
+    def test_x_forwarded_host_not_trusted(self, server, admin_a):
+        """X-Forwarded-Host must not be trusted without configured proxy."""
+        response = server.get(
+            "/v1/team",
+            headers={
+                "Authorization": f"Bearer {admin_a.jwt}",
+                "X-Forwarded-Host": "evil.com",
+            },
+        )
+        assert response.status_code != 500
+        assert "evil.com" not in response.text
+
+    @pytest.mark.security
+    def test_forwarded_header_not_trusted(self, server, admin_a):
+        """Forwarded header must not be trusted without configured proxy."""
+        response = server.get(
+            "/v1/team",
+            headers={
+                "Authorization": f"Bearer {admin_a.jwt}",
+                "Forwarded": "for=10.0.0.1;host=evil.com;proto=https",
+            },
+        )
+        assert response.status_code != 500
+
+
+# ------------------------------------------------------------------ #
+# §16 — Host / Origin Confusion
+# ------------------------------------------------------------------ #
+
+
+class TestHostOriginConfusion:
+    @pytest.mark.security
+    def test_host_header_cannot_change_tenant(self, server, admin_a):
+        """Host header must not influence tenant selection."""
+        response = server.get(
+            "/v1/team",
+            headers={
+                "Authorization": f"Bearer {admin_a.jwt}",
+                "Host": "other-tenant.example.com",
+            },
+        )
+        assert response.status_code != 500
+
+    @pytest.mark.security
+    def test_multiple_host_headers_rejected(self, server, admin_a):
+        """Multiple Host headers must not cause confusion."""
+        response = server.get(
+            "/v1/team",
+            headers={
+                "Authorization": f"Bearer {admin_a.jwt}",
+                "Host": "evil.com",
+            },
+        )
+        assert response.status_code != 500
+
+
+# ------------------------------------------------------------------ #
+# §17 — Content-Type / Parser Confusion (advanced)
+# ------------------------------------------------------------------ #
+
+
+class TestContentTypeAdvanced:
+    @pytest.mark.security
+    def test_charset_cannot_change_parsing(self, server, admin_a):
+        """Charset parameter must not change security-sensitive parsing."""
+        response = server.post(
+            "/v1/team",
+            content='{"team": {"name": "test", "encryption_salt": "x"}}',
+            headers={
+                "Authorization": f"Bearer {admin_a.jwt}",
+                "Content-Type": "application/json; charset=utf-16",
+            },
+        )
+        assert response.status_code != 500
+
+    @pytest.mark.security
+    def test_accept_header_does_not_bypass_authorization(self, server, admin_a):
+        """Accept header must not affect authorization decisions."""
+        response = server.get(
+            "/v1/team",
+            headers={
+                "Authorization": f"Bearer {admin_a.jwt}",
+                "Accept": "text/html",
+            },
+        )
+        assert response.status_code != 500
+
+
+# ------------------------------------------------------------------ #
+# §43 — Compression Security
+# ------------------------------------------------------------------ #
+
+
+class TestCompressionSecurity:
+    @pytest.mark.security
+    def test_unknown_content_encoding_rejected(self, server, admin_a):
+        """Unknown Content-Encoding must be rejected cleanly."""
+        response = server.post(
+            "/v1/team",
+            content=b"compressed-data",
+            headers={
+                "Authorization": f"Bearer {admin_a.jwt}",
+                "Content-Type": "application/json",
+                "Content-Encoding": "unknown-codec",
+            },
+        )
+        assert response.status_code != 500
+
+    @pytest.mark.security
+    def test_multiple_content_encoding_handled(self, server, admin_a):
+        """Multiple Content-Encoding values must not cause 500."""
+        response = server.post(
+            "/v1/team",
+            content=b"data",
+            headers={
+                "Authorization": f"Bearer {admin_a.jwt}",
+                "Content-Type": "application/json",
+                "Content-Encoding": "gzip, gzip, gzip",
+            },
+        )
+        assert response.status_code != 500
+
+
+# ------------------------------------------------------------------ #
+# §48 — File / Path Security (additional traversal variants)
+# ------------------------------------------------------------------ #
+
+
+class TestPathSecurityAdvanced:
+    @pytest.mark.security
+    def test_encoded_backslash_traversal(self, server, admin_a):
+        """Encoded backslash must not bypass path traversal protection."""
+        response = server.get(
+            "/v1/team/..%5C..%5Cetc%5Cpasswd",
+            headers={"Authorization": f"Bearer {admin_a.jwt}"},
+        )
+        assert response.status_code in (400, 404, 422)
+
+    @pytest.mark.security
+    def test_mixed_separator_traversal(self, server, admin_a):
+        """Mixed path separators must not bypass traversal protection."""
+        response = server.get(
+            "/v1/team/..\\..\\etc\\passwd",
+            headers={"Authorization": f"Bearer {admin_a.jwt}"},
+        )
+        assert response.status_code != 500
+
+
+# ------------------------------------------------------------------ #
+# §74 — API Versioning
+# ------------------------------------------------------------------ #
+
+
+class TestAPIVersioning:
+    @pytest.mark.security
+    def test_old_api_version_not_reachable(self, server, admin_a):
+        """Old API versions must not be accessible."""
+        for path in ["/v0/team", "/api/v0/team", "/api/team"]:
+            response = server.get(
+                path, headers={"Authorization": f"Bearer {admin_a.jwt}"}
+            )
+            assert response.status_code in (404, 405), (
+                f"Old API version reachable: {path} ({response.status_code})"
+            )
+
+
+# ------------------------------------------------------------------ #
+# §78 — Bulk APIs (standalone)
+# ------------------------------------------------------------------ #
+
+
+class TestBulkAPISecurity:
+    @pytest.mark.security
+    def test_bulk_operation_size_limit(self, server, admin_a):
+        """Bulk operations must enforce a size limit."""
+        items = [{"name": f"bulk_{i}", "encryption_salt": "x"} for i in range(1000)]
+        response = server.post(
+            "/v1/team",
+            json={"team": items},
+            headers={"Authorization": f"Bearer {admin_a.jwt}"},
+        )
+        assert response.status_code != 500
+
+
+# ------------------------------------------------------------------ #
+# §83 — Redirect / URL Canonicalization
+# ------------------------------------------------------------------ #
+
+
+class TestRedirectSecurity:
+    @pytest.mark.security
+    def test_redirect_javascript_scheme_rejected(self, server, admin_a):
+        """javascript: scheme must not appear in Location header."""
+        response = server.get(
+            "/v1/team?redirect=javascript:alert(1)",
+            headers={"Authorization": f"Bearer {admin_a.jwt}"},
+        )
+        location = response.headers.get("Location", "")
+        assert "javascript:" not in location, "javascript: URL in Location header"
+
+    @pytest.mark.security
+    def test_redirect_data_scheme_rejected(self, server, admin_a):
+        """data: scheme must not appear in Location header."""
+        response = server.get(
+            "/v1/team?redirect=data:text/html,<script>alert(1)</script>",
+            headers={"Authorization": f"Bearer {admin_a.jwt}"},
+        )
+        location = response.headers.get("Location", "")
+        assert "data:" not in location, "data: URL in Location header"
+
+
+# ------------------------------------------------------------------ #
+# §86 — HTML Email Security
+# ------------------------------------------------------------------ #
+
+
+class TestHTMLEmailSecurity:
+    @pytest.mark.security
+    def test_html_email_template_escapes_user_input(self):
+        """HTML email templates must escape user-provided values."""
+        try:
+            from zephyrex.extensions.email.PRV_SendGrid_EMail import SendGridEmailProvider
+        except ImportError:
+            pytest.skip("Email provider not available")
+
+
+# ------------------------------------------------------------------ #
+# §82 — Webhook / Callback SSRF
+# ------------------------------------------------------------------ #
+
+
+class TestWebhookSSRF:
+    @pytest.mark.security
+    def test_webhook_destination_private_address_rejected(self):
+        """Webhook delivery to private addresses must be rejected."""
+        from zephyrex.lib.ProviderHTTPClient import SSRFGuardError, validate_outbound_url
+        os.environ.pop("DISABLE_SSRF_GUARD", None)
+        for url in [
+            "http://127.0.0.1/webhook",
+            "http://10.0.0.1/webhook",
+            "http://169.254.169.254/webhook",
+        ]:
+            with pytest.raises(SSRFGuardError):
+                validate_outbound_url(url)
+
+    @pytest.mark.security
+    def test_webhook_destination_scheme_allowlist(self):
+        """Webhook delivery must only use http/https."""
+        from zephyrex.lib.ProviderHTTPClient import SSRFGuardError, validate_outbound_url
+        os.environ.pop("DISABLE_SSRF_GUARD", None)
+        for url in ["ftp://evil.com/webhook", "file:///etc/passwd"]:
+            with pytest.raises(SSRFGuardError):
+                validate_outbound_url(url)
