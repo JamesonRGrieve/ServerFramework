@@ -1436,6 +1436,9 @@ class _BoundModelDescriptor:
 class AbstractBLLManager(ABC):
     _model = None
 
+    # Human-readable label for 404 messages (defaults to class name if None)
+    _entity_label: ClassVar[Optional[str]] = None
+
     # Search transformer functions
     search_transformers: Dict[str, Callable] = {}
 
@@ -2589,6 +2592,13 @@ class AbstractBLLManager(ABC):
     ) -> Any:
         """Get an entity with optional included relationships.
 
+        Validates fields/includes, generates join options, delegates to
+        ``DB.get``, and raises 404 when the record is not found.  Subclasses
+        that need only pre- or post-processing can call ``super().get()``
+        instead of reimplementing the whole pipeline.
+
+        The 404 detail uses ``_entity_label`` (falls back to the class name).
+
         Args:
             include: List of relationships to include, or CSV string of relationships.
                     Supports nested relationships with dot notation (e.g., 'user_teams.team.roles')
@@ -2597,34 +2607,52 @@ class AbstractBLLManager(ABC):
 
         Returns:
             Entity with included relationships loaded
+
+        Raises:
+            HTTPException: 404 when the entity does not exist
         """
+        from fastapi import status
+
         options = []
+
+        fields_list = self.validate_fields(fields)
 
         if include:
             # Parse includes - handle both CSV strings and lists
             include_list = self._parse_includes(include)
             if include_list:
                 options = self.generate_joins(self.DB, include_list)
-        if fields:
+        if fields_list:
             from sqlalchemy.orm import load_only
 
-            fields_list = self.validate_fields(fields)
-            if fields_list:
-                columns = self._resolve_load_only_columns(fields_list)
-                if columns:
-                    options.append(load_only(*columns))
+            columns = self._resolve_load_only_columns(fields_list)
+            if columns:
+                options.append(load_only(*columns))
 
         # Filter out hook-related parameters before passing to database
         db_kwargs = {k: v for k, v in kwargs.items() if k not in ["hook_processed"]}
 
-        return self.DB.get(
+        result = self.DB.get(
             requester_id=self.requester.id,  # type: ignore[union-attr]
+            fields=fields_list,
             model_registry=self.model_registry,
-            return_type="dto",
-            override_dto=self.model_registry.apply(self.Model),
+            return_type="dto" if not fields_list else "dict",
+            override_dto=self.Model if not fields_list else None,
             options=options,
             **db_kwargs,
         )
+
+        if result is None:
+            label = self._entity_label or self.__class__.__name__.replace("Manager", "")
+            entity_id = kwargs.get("id") or next(
+                (v for k, v in kwargs.items() if k.endswith("_id")), "unknown"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"{label} with ID '{entity_id}' not found",
+            )
+
+        return result
 
     def list(
         self,

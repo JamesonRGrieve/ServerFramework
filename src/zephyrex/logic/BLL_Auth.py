@@ -542,6 +542,7 @@ class UserModel(
 
 class UserManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef]
     _model = UserModel
+    _entity_label: ClassVar[Optional[str]] = "User"
 
     # RouterMixin configuration
     prefix: ClassVar[Optional[str]] = "/v1/user"
@@ -1691,39 +1692,13 @@ class UserManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef]
         **kwargs,
     ) -> Any:
         """Get a user with optional included relationships."""
-        options = []
-
-        fields = self.validate_fields(fields)
-
-        if include:
-            include_list = self._parse_includes(include)
-            if include_list:
-                options = self.generate_joins(self.DB, include_list)
-
         if "team_id" in kwargs:
             if not self.DB.user_has_read_access(
                 self.requester.id, kwargs.get("team_id"), self.db
             ):
                 raise HTTPException(status_code=403, detail="get - not permissable")
 
-        result = self.DB.get(
-            requester_id=self.requester.id,
-            fields=fields,
-            model_registry=self.model_registry,
-            return_type="dto" if not fields else "dict",
-            override_dto=self.Model if not fields else None,
-            options=options,
-            **kwargs,
-        )
-
-        if result is None:
-            team_id = kwargs.get("team_id") or kwargs.get("user_id") or "unknown"
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"User Team with ID '{team_id}' not found",
-            )
-
-        return result
+        return super().get(include=include, fields=fields, **kwargs)
 
     def get_current_user(self, fields: Optional[List[str]] | None = None):
         """Get the current user's profile."""
@@ -2787,6 +2762,7 @@ class TeamModel(
 
 class TeamManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef]
     _model = TeamModel
+    _entity_label: ClassVar[Optional[str]] = "Team"
 
     # RouterMixin configuration
     prefix: ClassVar[Optional[str]] = "/v1/team"
@@ -3078,44 +3054,6 @@ class TeamManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef]
             results = mgr.search({"team_id": {"value": self.target_team_id}}) or []
             return {row.key: row.value for row in results}
 
-    def get(
-        self,
-        include: Optional[List[str]] | None = None,
-        fields: Optional[List[str]] = [],
-        **kwargs,
-    ) -> Any:
-        """Get a team with optional included relationships. Returns 404 if not found."""
-
-        fields_list = self.validate_fields(fields)
-
-        options = []
-        include_list = self.validate_includes(include)
-        if include_list:
-            options = self.generate_joins(self.DB, include_list)
-        # Item 87: push field selection through to the DB layer so the SQL
-        # only fetches the requested columns; matches AbstractBLLManager.get.
-        if fields_list:
-            from sqlalchemy.orm import load_only
-
-            columns = self._resolve_load_only_columns(fields_list)
-            if columns:
-                options.append(load_only(*columns))
-        team = self.DB.get(
-            requester_id=self.requester.id,
-            model_registry=self.model_registry,
-            return_type="dto",
-            override_dto=self.Model,
-            options=options,
-            **kwargs,
-        )
-        if team is None:
-            team_id = kwargs.get("id") or kwargs.get("team_id") or "unknown"
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Team with ID '{team_id}' not found",
-            )
-        return team
-
     def get_team_users(self, id: str):
         """Get users belonging to a team (custom route method)"""
         result = self.user_teams.list(team_id=id, include=["users"])
@@ -3339,6 +3277,7 @@ class RoleModel(
 
 class RoleManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef]
     _model = RoleModel
+    _entity_label: ClassVar[Optional[str]] = "Role"
 
     # RouterMixin configuration
     prefix: ClassVar[Optional[str]] = "/v1/role"
@@ -3421,29 +3360,7 @@ class RoleManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef]
         **kwargs,
     ) -> Any:
         """Get a role with optional included relationships. Returns 404 if not found."""
-
-        fields = self.validate_fields(fields)
-
-        options = []
-
-        include_list = self.validate_includes(include)
-        if include_list:
-            options = self.generate_joins(self.DB, include_list)
-        role = self.DB.get(
-            requester_id=self.requester.id,
-            fields=fields,
-            model_registry=self.model_registry,
-            return_type="dto" if not fields else "dict",
-            override_dto=self.Model if not fields else None,
-            options=options,
-            **kwargs,
-        )
-        if role is None:
-            role_id = kwargs.get("id") or kwargs.get("role_id") or "unknown"
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Role with ID '{role_id}' not found",
-            )
+        role = super().get(include=include, fields=fields, **kwargs)
 
         # Handle both dict and object access patterns (dict when fields is specified)
         created_by_user_id = (
@@ -3749,6 +3666,7 @@ class UserTeamModel(
 
 class UserTeamManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef]
     _model = UserTeamModel
+    _entity_label: ClassVar[Optional[str]] = "User Team"
 
     def get(
         self,
@@ -3756,32 +3674,8 @@ class UserTeamManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef
         fields: Optional[List[str]] = [],
         **kwargs,
     ) -> Any:
-        """Get a user with optional included relationships."""
-        options = []
-
-        fields = self.validate_fields(fields)
-        if include:
-            include_list = self._parse_includes(include)
-            if include_list:
-                options = self.generate_joins(self.DB, include_list)
-
-        # First check if the record exists
-        result = self.DB.get(
-            requester_id=self.requester.id,
-            fields=fields,
-            model_registry=self.model_registry,
-            return_type="dto" if not fields else "dict",
-            override_dto=self.Model if not fields else None,
-            options=options,
-            **kwargs,
-        )
-
-        if result is None:
-            team_id = kwargs.get("team_id") or kwargs.get("user_id") or "unknown"
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"User Team with ID '{team_id}' not found",
-            )
+        """Get a user-team with optional included relationships."""
+        result = super().get(include=include, fields=fields, **kwargs)
 
         # Only check permissions after confirming the record exists
         if "team_id" in kwargs:
