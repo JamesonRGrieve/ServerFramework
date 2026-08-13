@@ -123,8 +123,9 @@ def get_database_info(db_prefix: str = ""):
             - url: Full database URL
             - file_path: Full path to database file (for SQLite only)
     """
-    db_type = env("DATABASE_TYPE")
-    original_db_name = env("DATABASE_NAME")
+    # Read directly from os.environ to support test environment patching
+    db_type = os.getenv("DATABASE_TYPE") or env("DATABASE_TYPE")
+    original_db_name = os.getenv("DATABASE_NAME") or env("DATABASE_NAME")
 
     # Apply prefix if provided, but prevent nesting
     if db_prefix:
@@ -138,11 +139,11 @@ def get_database_info(db_prefix: str = ""):
 
     if db_type != "sqlite":
         # PostgreSQL connection setup
-        db_user = env("DATABASE_USER")
-        db_pass = env("DATABASE_PASSWORD")
-        db_host = env("DATABASE_HOST")
-        db_port = env("DATABASE_PORT")
-        db_ssl = env("DATABASE_SSL")
+        db_user = os.getenv("DATABASE_USER") or env("DATABASE_USER")
+        db_pass = os.getenv("DATABASE_PASSWORD") or env("DATABASE_PASSWORD")
+        db_host = os.getenv("DATABASE_HOST") or env("DATABASE_HOST")
+        db_port = os.getenv("DATABASE_PORT") or env("DATABASE_PORT")
+        db_ssl = os.getenv("DATABASE_SSL") or env("DATABASE_SSL")
 
         if db_ssl == "disable":
             login_uri = f"{db_user}:{db_pass}@{db_host}:{db_port}/{db_name}"
@@ -155,7 +156,11 @@ def get_database_info(db_prefix: str = ""):
         return {"type": db_type, "name": db_name, "url": db_url, "file_path": None}
     else:
         # SQLite connection setup
-        db_path = env("DATABASE_PATH") or tempfile.gettempdir()
+        db_path = (
+            os.getenv("DATABASE_PATH") or env("DATABASE_PATH")
+            if os.getenv("DATABASE_PATH") or env("DATABASE_PATH")
+            else tempfile.gettempdir()
+        )
 
         # Normalize the database path
         db_path = os.path.abspath(db_path)
@@ -371,7 +376,7 @@ class DatabaseManager:
         # Each URL is a complete connection string of the same shape as
         # DATABASE_URI; per-replica engine/session-factory pairs are built
         # in init_worker().
-        replica_env = env("DB_REPLICA_URLS") or ""
+        replica_env = os.getenv("DB_REPLICA_URLS") or env("DB_REPLICA_URLS") or ""
         self.replica_urls = [
             u.strip() for u in replica_env.split(",") if u.strip()
         ]
@@ -913,7 +918,11 @@ def db_name_to_path(
     """
     # Determine base directory
     if base_dir is None:
-        base_dir = env("DATABASE_PATH") or os.getcwd()
+        base_dir = (
+            os.getenv("DATABASE_PATH") or env("DATABASE_PATH")
+            if os.getenv("DATABASE_PATH") or env("DATABASE_PATH")
+            else os.getcwd()
+        )
 
     # Normalize the database path
     base_dir = os.path.abspath(base_dir)
