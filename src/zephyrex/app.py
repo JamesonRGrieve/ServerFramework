@@ -127,10 +127,17 @@ _STRICT_TRACE_ID_RE = _re_module.compile(r"^[0-9a-f]{32}$")
 
 
 def install_extension_dependencies_with_restart(extensions_str: str):
-    """Install extension dependencies and restart if needed."""
+    """Install extension dependencies and restart if needed.
+
+    Opt-in via INSTALL_EXTENSION_DEPS=true. Production deployments
+    should install deps at image build time instead.
+    """
     from zephyrex.lib.Logging import logger
 
     if not extensions_str:
+        return
+
+    if os.environ.get("INSTALL_EXTENSION_DEPS", "false").lower() not in ("true", "1", "yes"):
         return
 
     restart_flag = os.environ.get("_APP_DEPENDENCY_RESTART", "0")
