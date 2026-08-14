@@ -3123,45 +3123,31 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
 
         return updated_entity
 
-    def batch_update(self, items: List[Dict[str, Any]]) -> List[Any]:
+    def batch_update(self, items: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Update multiple entities in a batch.
 
-        Args:
-            items: List of dictionaries containing 'id' and 'data' for each entity to update
-
-        Returns:
-            List of updated entities
+        Returns a dict with ``results`` (per-item outcomes) and
+        ``errors`` (failed items). When any item fails, the endpoint
+        layer returns HTTP 207 Multi-Status with all per-item results
+        preserved — successful mutations are never discarded.
         """
         results = []
         errors = []
 
-        # Process each update
         for item in items:
+            entity_id = item.get("id", "unknown")
             try:
-                entity_id = item.get("id")
-                if not entity_id:
+                if not item.get("id"):
                     raise ValueError("Missing required 'id' field in batch update item")
-
                 update_data = item.get("data", {})
-                updated_entity = self.update(id=entity_id, **update_data)
-                results.append(updated_entity)
+                updated_entity = self.update(id=item["id"], **update_data)
+                results.append({"id": entity_id, "status": 200, "data": updated_entity})
             except Exception as e:
-                # Collect errors but continue processing other items
-                errors.append({"id": item.get("id", "unknown"), "error": str(e)})
+                status_code = getattr(e, "status_code", 400)
+                results.append({"id": entity_id, "status": status_code, "error": str(e)})
+                errors.append({"id": entity_id, "error": str(e)})
 
-        # If any errors occurred, raise an HTTPException with details
-        if errors:
-            raise HTTPException(
-                status_code=400,
-                detail={
-                    "message": "One or more batch update operations failed",
-                    "errors": errors,
-                    "successful_updates": len(results),
-                    "failed_updates": len(errors),
-                },
-            )
-
-        return results
+        return {"results": results, "errors": errors}
 
     def delete(self, id: str) -> None:
         """Delete an entity by ID."""
@@ -3191,38 +3177,26 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
             id=id,
         )
 
-    def batch_delete(self, ids: List[str]):
+    def batch_delete(self, ids: List[str]) -> Dict[str, Any]:
         """Delete multiple entities in a batch.
 
-        Args:
-            ids: List of entity IDs to delete
-
-        Returns:
-            None
+        Returns a dict with ``results`` (per-item outcomes) and
+        ``errors``. Partial failures return HTTP 207 at the endpoint
+        layer — successful deletes are never discarded.
         """
-        errors = []
-        successful_deletes = 0
+        results: List[Dict[str, Any]] = []
+        errors: List[Dict[str, Any]] = []
 
-        # Process each delete operation
         for entity_id in ids:
             try:
                 self.delete(id=entity_id)
-                successful_deletes += 1
+                results.append({"id": entity_id, "status": 204})
             except Exception as e:
-                # Collect errors but continue processing other items
+                status_code = getattr(e, "status_code", 400)
+                results.append({"id": entity_id, "status": status_code, "error": str(e)})
                 errors.append({"id": entity_id, "error": str(e)})
 
-        # If any errors occurred, raise an HTTPException with details
-        if errors:
-            raise HTTPException(
-                status_code=400,
-                detail={
-                    "message": "One or more batch delete operations failed",
-                    "errors": errors,
-                    "successful_deletes": successful_deletes,
-                    "failed_deletes": len(errors),
-                },
-            )
+        return {"results": results, "errors": errors}
 
     # checks if parent exists by reference_id
     def parent_validation(self, args):
