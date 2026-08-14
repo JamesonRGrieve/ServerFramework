@@ -11,6 +11,7 @@ from typing import (
     Callable,
     ClassVar,
     Dict,
+    Generic,
     List,
     Optional,
     Set,
@@ -22,12 +23,15 @@ from typing import (
     get_type_hints,
 )
 
+
 import numpy as np
 import stringcase
 from fastapi import HTTPException
 from fastapi.encoders import ENCODERS_BY_TYPE
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy import and_
+
+ModelT = TypeVar("ModelT", bound=BaseModel)
 from sqlalchemy.orm import Session, joinedload
 
 from zephyrex.lib.Logging import logger
@@ -1470,7 +1474,7 @@ def _cache_sync_run(coro):
     return asyncio.run(coro)
 
 
-class AbstractBLLManager(ABC):
+class AbstractBLLManager(ABC, Generic[ModelT]):
     _model = None
 
     # Human-readable label for 404 messages (defaults to class name if None)
@@ -2530,7 +2534,7 @@ class AbstractBLLManager(ABC):
         """Override this method to add validation logic for entity search."""
         pass
 
-    def create(self, **kwargs) -> Any:
+    def create(self, **kwargs) -> ModelT:
         """Create one or more entities."""
         # Handle single entity or list of entities
         if "entities" in kwargs and isinstance(kwargs["entities"], list):
@@ -2684,7 +2688,7 @@ class AbstractBLLManager(ABC):
         include: Optional[Union[List[str], str]] | None = None,
         fields: Optional[Union[List[str], str]] | None = None,
         **kwargs,
-    ) -> Any:
+    ) -> ModelT:
         """Get an entity with optional included relationships.
 
         Validates fields/includes, generates join options, delegates to
@@ -2813,7 +2817,7 @@ class AbstractBLLManager(ABC):
         pageSize: Optional[int] | None = None,
         return_type: str = "dto",
         **kwargs,
-    ) -> List[Any]:
+    ) -> List[ModelT]:
         """List entities with optional included relationships.
 
         Pagination supports negative page numbers: page=-1 returns the
@@ -2912,7 +2916,7 @@ class AbstractBLLManager(ABC):
         page_size: Optional[int] | None = None,
         pageSize: Optional[int] | None = None,
         **search_params,
-    ) -> List[Any]:
+    ) -> List[ModelT]:
         """Search entities with optional included relationships."""
         if pageSize is not None and page_size is None:
             page_size = pageSize
@@ -3048,7 +3052,7 @@ class AbstractBLLManager(ABC):
         ts = getattr(entity, "updated_at", None) or getattr(entity, "created_at", "")
         return f'W/"{hashlib.sha256(str(ts).encode()).hexdigest()[:16]}"'
 
-    def update(self, id: str, **kwargs):
+    def update(self, id: str, **kwargs) -> ModelT:
         """Update an entity by ID."""
         if_match = kwargs.pop("_if_match", None)
 
@@ -3159,7 +3163,7 @@ class AbstractBLLManager(ABC):
 
         return results
 
-    def delete(self, id: str):
+    def delete(self, id: str) -> None:
         """Delete an entity by ID."""
         cache = _entity_cache
         if cache is not None and not self._cache_disabled:
