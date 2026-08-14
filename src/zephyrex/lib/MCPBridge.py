@@ -36,10 +36,17 @@ def _build_tools_from_openapi(schema: dict) -> list[types.Tool]:
             op_id = spec.get("operationId")
             if not op_id:
                 continue
-            description = spec.get("summary") or spec.get("description") or f"{method.upper()} {path}"
+            summary = spec.get("summary") or f"{method.upper()} {path}"
+            desc_parts = [summary]
+            if spec.get("description") and spec["description"] != summary:
+                desc_parts.append(spec["description"])
+            desc_parts.append(f"Endpoint: {method.upper()} {path}")
+            desc_parts.append("Requires: Authorization: Bearer <JWT>")
+            description = "\n".join(desc_parts)
+
             input_props: dict[str, Any] = {
-                "method": {"type": "string", "const": method.upper()},
-                "path": {"type": "string", "const": path},
+                "method": {"type": "string", "const": method.upper(), "description": "HTTP method"},
+                "path": {"type": "string", "const": path, "description": "API path"},
             }
             required = ["method", "path"]
 
@@ -47,13 +54,16 @@ def _build_tools_from_openapi(schema: dict) -> list[types.Tool]:
             for param in params:
                 pname = param.get("name", "")
                 pschema = param.get("schema", {"type": "string"})
+                pschema["description"] = param.get("description", f"Parameter: {pname}")
                 input_props[f"param_{pname}"] = pschema
                 if param.get("required"):
                     required.append(f"param_{pname}")
 
             body = spec.get("requestBody", {})
             if body:
-                input_props["body"] = {"type": "object"}
+                body_content = body.get("content", {})
+                json_schema = body_content.get("application/json", {}).get("schema", {"type": "object"})
+                input_props["body"] = json_schema
 
             tools.append(
                 types.Tool(
