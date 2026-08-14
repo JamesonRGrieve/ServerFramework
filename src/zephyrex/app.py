@@ -366,8 +366,15 @@ def install_sighup_handler(app: FastAPI) -> None:
         # blue-green at the LB level instead.
         os._exit(SIGHUP_RESTART_EXIT_CODE)
 
+    def _handle_sigterm(signum, frame):  # pragma: no cover -- signal path
+        from zephyrex.lib.Logging import logger
+
+        logger.info("SIGTERM received -- draining")
+        app.state.draining = True
+
     try:
         signal.signal(signal.SIGHUP, _handle_sighup)
+        signal.signal(signal.SIGTERM, _handle_sigterm)
     except (ValueError, OSError) as e:
         # ``signal.signal`` only works on the main thread. Workers in some
         # uvicorn configurations call ``build_app`` off-main; in that
