@@ -1268,10 +1268,9 @@ class RateLimitMiddleware:
             await self.app(scope_dict, receive, send)
             return
 
+        remaining = max(0, count_limit - current)
+
         if current > count_limit:
-            # 429 with Retry-After. The simple deque-based fallback does
-            # not expose the oldest-entry timestamp cleanly, so we use the
-            # window as the conservative bound.
             from json import dumps as _json_dumps
 
             body = _json_dumps(
@@ -1303,7 +1302,19 @@ class RateLimitMiddleware:
             await send({"type": "http.response.body", "body": body})
             return
 
-        await self.app(scope_dict, receive, send)
+        _rl_headers = [
+            (b"x-ratelimit-limit", str(count_limit).encode("ascii")),
+            (b"x-ratelimit-remaining", str(remaining).encode("ascii")),
+        ]
+
+        async def _send_with_rl_headers(message: Dict[str, Any]) -> None:
+            if message.get("type") == "http.response.start":
+                headers = list(message.get("headers", []))
+                headers.extend(_rl_headers)
+                message = {**message, "headers": headers}
+            await send(message)
+
+        await self.app(scope_dict, receive, _send_with_rl_headers)
 
 
 def discover_rate_limited_routes(app: Any) -> int:

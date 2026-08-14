@@ -354,6 +354,36 @@ class TestRateLimitMiddleware:
         assert b"x-ratelimit-limit" in headers
 
     @pytest.mark.asyncio
+    async def test_2xx_includes_rate_limit_headers(self):
+        """Successful responses include X-RateLimit-Limit and X-RateLimit-Remaining."""
+        register_rate_limited_route("GET", "/v1/rl-headers", 10, 60, "ip")
+
+        async def app(scope, receive, send):
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b"ok"})
+
+        mw = RateLimitMiddleware(app)
+        sent: list = []
+
+        async def send(message):
+            sent.append(message)
+
+        scope = {
+            "type": "http",
+            "method": "GET",
+            "path": "/v1/rl-headers",
+            "client": ("5.5.5.5", 1),
+            "headers": [],
+        }
+
+        await mw(scope, lambda: {"type": "http.request", "body": b""}, send)
+        headers = dict(sent[0]["headers"])
+        assert b"x-ratelimit-limit" in headers
+        assert headers[b"x-ratelimit-limit"] == b"10"
+        assert b"x-ratelimit-remaining" in headers
+        assert headers[b"x-ratelimit-remaining"] == b"9"
+
+    @pytest.mark.asyncio
     async def test_skips_when_actor_unresolvable(self):
         """A user-scoped rule on an anonymous request flows through (per
         the documented "fail-open on actor-resolution miss" semantics)."""
