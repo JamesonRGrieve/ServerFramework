@@ -1894,37 +1894,41 @@ class ModelRegistry(AbstractRegistry):
                         )
                     time.sleep(5)  # type: ignore[attr-defined]
 
-        custom_db_info = {
-            "type": self.database_manager.DATABASE_TYPE,
-            "name": self.database_manager.DATABASE_NAME,
-            "url": self.database_manager.DATABASE_URI,
-            "file_path": getattr(self.database_manager, "_database_file_path", None),
-        }
-        logger.info(f"Migration target database: {custom_db_info}")
+        import os
 
-        migration_manager = MigrationManager(
-            custom_db_info=custom_db_info, model_registry=self
-        )
-        extensions_csv = self.extension_registry.csv if self.extension_registry else ""
+        run_migrations = os.environ.get("RUN_MIGRATIONS", "true").lower() in ("true", "1", "yes")
+        if not run_migrations:
+            logger.info("RUN_MIGRATIONS=false — skipping automatic migrations")
+        else:
+            custom_db_info = {
+                "type": self.database_manager.DATABASE_TYPE,
+                "name": self.database_manager.DATABASE_NAME,
+                "url": self.database_manager.DATABASE_URI,
+                "file_path": getattr(self.database_manager, "_database_file_path", None),
+            }
+            logger.info(f"Migration target database: {custom_db_info}")
 
-        result = migration_manager.run_all_migrations(
-            "upgrade",
-            "head",
-            extensions=extensions_csv.split(",") if extensions_csv else [],
-        )
-        if not result:
-            import os
+            migration_manager = MigrationManager(
+                custom_db_info=custom_db_info, model_registry=self
+            )
+            extensions_csv = self.extension_registry.csv if self.extension_registry else ""
 
-            worker_id = os.environ.get("PYTEST_XDIST_WORKER", "main")
-            db_info_str = (
-                f"db_name={custom_db_info['name']}, db_type={custom_db_info['type']}"
+            result = migration_manager.run_all_migrations(
+                "upgrade",
+                "head",
+                extensions=extensions_csv.split(",") if extensions_csv else [],
             )
-            logger.error(
-                f"Failed to apply migrations. Worker={worker_id}, {db_info_str}, Result={result}"
-            )
-            raise Exception(
-                f"Failed to apply migrations. Worker={worker_id}, {db_info_str}"
-            )
+            if not result:
+                worker_id = os.environ.get("PYTEST_XDIST_WORKER", "main")
+                db_info_str = (
+                    f"db_name={custom_db_info['name']}, db_type={custom_db_info['type']}"
+                )
+                logger.error(
+                    f"Failed to apply migrations. Worker={worker_id}, {db_info_str}, Result={result}"
+                )
+                raise Exception(
+                    f"Failed to apply migrations. Worker={worker_id}, {db_info_str}"
+                )
         logger.info(f"Successfully verified database migrations for {db_name}")
 
         configure_mappers()

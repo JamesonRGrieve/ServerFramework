@@ -38,6 +38,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Disable proxy header trust."
     )
 
+    migrate_p = sub.add_parser("migrate", help="Run database migrations (pre-deploy).")
+    migrate_p.add_argument("--extensions", default=None, help="CSV of extensions to migrate.")
+    migrate_p.add_argument(
+        "--extensions-path", default=None, help="Filesystem path to discover extensions."
+    )
+
     sub.add_parser("bootstrap", help="Run the venv + dependency bootstrap.")
     sub.add_parser("version", help="Print the framework version.")
 
@@ -98,8 +104,48 @@ def _cmd_version(_args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_migrate(args: argparse.Namespace) -> int:
+    import os
+
+    os.environ["RUN_MIGRATIONS"] = "false"
+
+    from zephyrex import instance, set_extensions_root
+
+    if args.extensions_path:
+        set_extensions_root(args.extensions_path)
+
+    kwargs = {}
+    if args.extensions:
+        kwargs["extensions"] = args.extensions
+
+    app = instance(**kwargs)
+
+    from zephyrex.database.migrations.Migration import MigrationManager
+
+    registry = app.state.model_registry
+    db_mgr = registry.database_manager
+    db_info = {
+        "type": db_mgr.DATABASE_TYPE,
+        "name": db_mgr.DATABASE_NAME,
+        "url": db_mgr.DATABASE_URI,
+        "file_path": getattr(db_mgr, "_database_file_path", None),
+    }
+    mgr = MigrationManager(custom_db_info=db_info, model_registry=registry)
+    ext_csv = registry.extension_registry.csv if registry.extension_registry else ""
+    success = mgr.run_all_migrations(
+        "upgrade", "head",
+        extensions=ext_csv.split(",") if ext_csv else [],
+    )
+    if success:
+        print("Migrations applied successfully.")
+        return 0
+    print("Migration failed.", file=sys.stderr)
+    return 1
+
+
 _DISPATCH = {
     "run": _cmd_run,
+    "migrate": _cmd_migrate,
     "bootstrap": _cmd_bootstrap,
     "version": _cmd_version,
 }

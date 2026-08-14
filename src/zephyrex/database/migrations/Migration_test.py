@@ -708,3 +708,34 @@ def test_item62_no_override_falls_back_to_bundled():
         assert Path(mgr.paths["extensions_dir"]).resolve() == expected
     finally:
         Paths._EXTENSIONS_ROOT_OVERRIDE = saved
+
+
+def test_run_migrations_env_false_skips_migrations(tmp_path, monkeypatch):
+    """RUN_MIGRATIONS=false skips automatic migrations during commit()."""
+    monkeypatch.setenv("RUN_MIGRATIONS", "false")
+    monkeypatch.setenv("DATABASE_PATH", str(tmp_path))
+    monkeypatch.setenv("DATABASE_TYPE", "sqlite")
+    monkeypatch.setenv("DATABASE_NAME", "database")
+
+    from zephyrex.lib import Environment as _env_mod
+    monkeypatch.setattr(_env_mod.settings, "DATABASE_TYPE", "sqlite", raising=False)
+    monkeypatch.setattr(_env_mod.settings, "DATABASE_NAME", "database", raising=False)
+
+    from zephyrex.lib.Pydantic2SQLAlchemy import clear_registry_cache
+    clear_registry_cache()
+
+    from zephyrex.app import instance
+
+    worker_id = os.environ.get("PYTEST_XDIST_WORKER", "main")
+    app = instance(db_prefix=f"test.nomig.{worker_id}", extensions="")
+    db_file = tmp_path / f"test.nomig.{worker_id}.database.db"
+    conn = sqlite3.connect(str(db_file))
+    tables = {
+        r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+    }
+    conn.close()
+    assert "alembic_version" not in tables, (
+        "alembic_version should not exist when RUN_MIGRATIONS=false"
+    )
