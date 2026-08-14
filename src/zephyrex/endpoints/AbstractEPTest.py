@@ -1570,6 +1570,65 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
             second_page_ids
         ), "Pages should not contain overlapping entities"
 
+    def test_GET_200_list_pagination_metadata(self, server: Any, admin_a: Any, team_a: Any):
+        """List responses include pagination metadata (offset, limit, total, has_more)."""
+        if getattr(self, "entity_name", None) == "user":
+            pytest.skip("User entity does not have a standard LIST endpoint")
+
+        self._batch_create(server, admin_a.jwt, admin_a.id, team_a.id, count=5)
+
+        if self.system_entity:
+            path_parent_ids: Dict[str, str] = {}
+        else:
+            _, _, path_parent_ids = self._create_parent_entities(
+                server, admin_a.jwt, admin_a.id, team_a.id
+            )
+
+        response = server.get(
+            f"{self.get_list_endpoint(path_parent_ids)}?page=1&pageSize=2",
+            headers={"Authorization": f"Bearer {admin_a.jwt}"},
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert "pagination" in body, "List response must include pagination metadata"
+        pag = body["pagination"]
+        assert "offset" in pag
+        assert "limit" in pag
+        assert "total" in pag
+        assert "has_more" in pag
+        assert pag["limit"] == 2
+        assert isinstance(pag["total"], int)
+        assert isinstance(pag["has_more"], bool)
+
+    def test_POST_200_search_pagination_metadata(self, server: Any, admin_a: Any, team_a: Any):
+        """Search responses include pagination metadata."""
+        if getattr(self, "entity_name", None) == "user":
+            pytest.skip("User entity does not have a standard search endpoint")
+        self._batch_create(server, admin_a.jwt, admin_a.id, team_a.id, count=3)
+
+        if self.system_entity:
+            path_parent_ids_s: Dict[str, str] = {}
+        else:
+            _, _, path_parent_ids_s = self._create_parent_entities(
+                server, admin_a.jwt, admin_a.id, team_a.id
+            )
+
+        search_body = {self.entity_name: {}}
+        response = server.post(
+            f"{self.get_list_endpoint(path_parent_ids_s)}/search?page=1&pageSize=2",
+            json=search_body,
+            headers={"Authorization": f"Bearer {admin_a.jwt}"},
+        )
+        if response.status_code in (405, 422):
+            pytest.skip("Search endpoint not available for this entity")
+        assert response.status_code == 200
+        body = response.json()
+        assert "pagination" in body, "Search response must include pagination metadata"
+        pag = body["pagination"]
+        assert pag["limit"] == 2
+        assert isinstance(pag["total"], int)
+        assert isinstance(pag["has_more"], bool)
+
     # @pytest.mark.dependency(depends=["test_POST_201"])
     def test_GET_200_list_via_parent_team(
         self, server: Any, admin_a: Any, admin_b: Any, team_a: Any, team_b: Any

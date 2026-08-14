@@ -2457,12 +2457,13 @@ def register_route(
 
                 page_param = getattr(query_params, "page", None)
                 page_size_param = getattr(query_params, "pageSize", None)
+                _pagination_total: Optional[int] = None
 
                 if page_param is not None and page_size_param is not None:
                     list_limit = page_size_param
                     if page_param < 0:
-                        total = actual_manager.count(**search_params)
-                        total_pages = max(1, -(-total // page_size_param))
+                        _pagination_total = actual_manager.count(**search_params)
+                        total_pages = max(1, -(-_pagination_total // page_size_param))
                         resolved_page = total_pages + 1 + page_param
                         list_offset = max(0, (resolved_page - 1) * page_size_param)
                     else:
@@ -2491,6 +2492,15 @@ def register_route(
                         content={"detail": "Requested range contains no items"},
                         headers={"Content-Range": "items */*"},
                     )
+
+                if _pagination_total is None:
+                    _pagination_total = actual_manager.count(**search_params)
+                _pagination_meta = {
+                    "offset": list_offset,
+                    "limit": list_limit,
+                    "total": _pagination_total,
+                    "has_more": (list_offset + _result_count) < _pagination_total,
+                }
 
                 # Serialize list items before constructing response model
                 serialized_results = serialize_for_response(results)
@@ -2611,7 +2621,7 @@ def register_route(
                     ]
                     return JSONResponse(
                         content=jsonable_encoder(
-                            {resource_name_plural: projected_items}
+                            {resource_name_plural: projected_items, "pagination": _pagination_meta}
                         ),
                         status_code=status.HTTP_200_OK,
                     )
@@ -2629,7 +2639,7 @@ def register_route(
                         ]
                     return JSONResponse(
                         content=jsonable_encoder(
-                            {resource_name_plural: populated_items}
+                            {resource_name_plural: populated_items, "pagination": _pagination_meta}
                         ),
                         status_code=status.HTTP_200_OK,
                     )
@@ -2637,11 +2647,16 @@ def register_route(
                 if _resolve_has_permission(manager) is not None:
                     return JSONResponse(
                         content=jsonable_encoder(
-                            {resource_name_plural: serialized_items}
+                            {resource_name_plural: serialized_items, "pagination": _pagination_meta}
                         ),
                         status_code=status.HTTP_200_OK,
                     )
-                return response_model_instance
+                return JSONResponse(
+                    content=jsonable_encoder(
+                        {**response_model_instance.model_dump(), "pagination": _pagination_meta}
+                    ),
+                    status_code=status.HTTP_200_OK,
+                )
             except Exception as err:
                 handle_resource_operation_error(err)
 
@@ -3334,6 +3349,12 @@ def register_route(
                     actual_include, target_model, resource_name, registry
                 )
 
+                _search_offset = actual_offset
+                _search_limit = actual_limit
+                if actual_page is not None and actual_page_size is not None:
+                    _search_limit = actual_page_size
+                    _search_offset = (actual_page - 1) * actual_page_size
+
                 search_results = actual_manager.search(  # type: ignore[arg-type]
                     include=actual_include,
                     fields=actual_fields,
@@ -3345,6 +3366,15 @@ def register_route(
                     pageSize=actual_page_size,
                     **search_data,
                 )
+
+                _search_result_count = len(search_results) if isinstance(search_results, list) else 0
+                _search_total = actual_manager.count(**search_data)
+                _search_pagination_meta = {
+                    "offset": _search_offset,
+                    "limit": _search_limit,
+                    "total": _search_total,
+                    "has_more": (_search_offset + _search_result_count) < _search_total,
+                }
 
                 # Serialize search results before building response model
                 serialized_search_results = serialize_for_response(search_results)
@@ -3367,7 +3397,7 @@ def register_route(
                     ]
                     return JSONResponse(
                         content=jsonable_encoder(
-                            {resource_name_plural: projected_items}
+                            {resource_name_plural: projected_items, "pagination": _search_pagination_meta}
                         ),
                         status_code=status.HTTP_200_OK,
                     )
@@ -3378,12 +3408,17 @@ def register_route(
                     )
                     return JSONResponse(
                         content=jsonable_encoder(
-                            {resource_name_plural: populated_items}
+                            {resource_name_plural: populated_items, "pagination": _search_pagination_meta}
                         ),
                         status_code=status.HTTP_200_OK,
                     )
 
-                return response_model_instance
+                return JSONResponse(
+                    content=jsonable_encoder(
+                        {**response_model_instance.model_dump(), "pagination": _search_pagination_meta}
+                    ),
+                    status_code=status.HTTP_200_OK,
+                )
             except Exception as err:
                 handle_resource_operation_error(err)
 
