@@ -44,6 +44,25 @@ from zephyrex.logic.BLL_Auth import (
 )
 
 
+def _invalidate_session_cache(session_key: str | None) -> None:
+    """Best-effort invalidation of a session's Valkey cache entry."""
+    if not session_key:
+        return
+    try:
+        from zephyrex.logic.AbstractLogicManager import (
+            _cache_sync_run,
+            get_entity_cache,
+        )
+
+        cache = get_entity_cache()
+        if cache is not None:
+            _cache_sync_run(
+                cache.invalidate("session", session_key, {"session_key": session_key})
+            )
+    except Exception:
+        pass
+
+
 class SessionModel(
     ApplicationModel.Optional,
     UpdateMixinModel.Optional,
@@ -289,6 +308,7 @@ class SessionManager(AbstractBLLManager, RouterMixin):
             id=id,
             new_properties={"revoked": True, "is_active": False},
         )
+        _invalidate_session_cache(getattr(session, "session_key", None))
         return {"message": "Session revoked successfully"}
 
     def revoke_all_user_sessions(self, user_id: str) -> Dict[str, Any]:
@@ -313,12 +333,18 @@ class SessionManager(AbstractBLLManager, RouterMixin):
         revoked_count = 0
         for session in sessions:
             session_id = session["id"] if isinstance(session, dict) else session.id
+            session_key = (
+                session["session_key"]
+                if isinstance(session, dict)
+                else getattr(session, "session_key", None)
+            )
             SessionDB.update(
                 requester_id=env("ROOT_ID"),
                 model_registry=self.model_registry,
                 id=session_id,
                 new_properties={"is_active": False, "revoked": True},
             )
+            _invalidate_session_cache(session_key)
             revoked_count += 1
         return {
             "message": f"Revoked {revoked_count} sessions successfully",

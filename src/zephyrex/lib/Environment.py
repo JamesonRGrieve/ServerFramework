@@ -82,6 +82,7 @@ class AppSettings(BaseModel):
     GQL: str = "true"
     GQL_DEPTH: int = 10
     MCP: str = "false"
+    VALKEY_URI: str = ""
     LOG_FORMAT: str = "%(asctime)s | %(levelname)s | %(message)s"
     LOG_LEVEL: str = "INFO"
     EXPOSE_DOCS: str = "false"
@@ -417,15 +418,19 @@ def is_production() -> bool:
     are accepted; ``ENVIRONMENT`` wins when both are set.
     """
     env_value = (
-        os.environ.get("ENVIRONMENT") or os.environ.get("APP_ENV") or ""
-    ).strip().lower()
+        (os.environ.get("ENVIRONMENT") or os.environ.get("APP_ENV") or "")
+        .strip()
+        .lower()
+    )
     return env_value == "production"
 
 
 def is_staging() -> bool:
     env_value = (
-        os.environ.get("ENVIRONMENT") or os.environ.get("APP_ENV") or ""
-    ).strip().lower()
+        (os.environ.get("ENVIRONMENT") or os.environ.get("APP_ENV") or "")
+        .strip()
+        .lower()
+    )
     return env_value == "staging"
 
 

@@ -62,6 +62,7 @@ class PRV_Valkey(AbstractDatabaseMemoryProvider):
         url = (
             getattr(instance, "api_key", None)
             or env("DATABASE_MEMORY_URL")
+            or env("VALKEY_URI")
             or env("VALKEY_URL")
             or "redis://localhost:6379/0"
         )

@@ -69,7 +69,7 @@ zephyrex = "zephyrex.cli:main"
 email = ["sendgrid"]
 mfa = ["pyotp", "qrcode"]
 payment = ["stripe"]
-cache = ["redis"]
+cache = ["redis>=4.2.0"]
 all = [
     "zephyrex[email,mfa,payment,cache]",
 ]

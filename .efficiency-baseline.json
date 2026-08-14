@@ -1,10 +1,10 @@
 {
   "boot": 3814.55083116889,
-  "create_models_1": 10.116755962371826,
+  "create_models_1": 6.3531238585710526,
   "create_models_10": 42.38771013915539,
-  "create_models_50": 405.14039285480976,
+  "create_models_50": 216.0855408757925,
   "health_check": 4.878780618309975,
-  "openapi_generation": 1446.3541109114885,
+  "openapi_generation": 0.010816007852554321,
   "prefix_derivation_100": 0.22507904469966888,
-  "registry_commit": 2044.897585362196
+  "registry_commit": 157.39964582026005
 }

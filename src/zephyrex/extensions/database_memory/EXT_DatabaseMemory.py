@@ -182,3 +182,73 @@ class EXT_DatabaseMemory(AbstractStaticExtension):
         from zephyrex.extensions.database_memory.PRV_Valkey import PRV_Valkey
 
         return PRV_Valkey
+
+    @classmethod
+    def wire_framework_backends(cls, client: Any) -> None:
+        """Auto-wire Valkey-backed backends into every framework consumer.
+
+        Called from ``build_app()`` lifespan when ``VALKEY_URI`` is set
+        and the connection has been verified via ``ping()``. Installs:
+
+        - Rate-limit counter (``InboundSecurity``)
+        - Replay cache (``ReplayCache``)
+        - Entity cache (``AbstractLogicManager``)
+        - Response cache (``ResponseCache``)
+        - EventBus streams transport (if still InMemory)
+        """
+        import logging
+
+        _wire_logger = logging.getLogger(__name__)
+
+        from zephyrex.extensions.database_memory.ValkeyRateLimitCounter import (
+            ValkeyRateLimitCounter,
+        )
+        from zephyrex.extensions.database_memory.ValkeyReplayCache import (
+            ValkeyReplayCache,
+        )
+        from zephyrex.extensions.database_memory.ValkeyEntityCache import (
+            ValkeyEntityCache,
+        )
+        from zephyrex.extensions.database_memory.ValkeyResponseCache import (
+            ValkeyResponseCache,
+        )
+
+        from zephyrex.lib.InboundSecurity import set_rate_limit_counter
+        from zephyrex.lib.ReplayCache import set_replay_cache
+        from zephyrex.lib.ResponseCache import set_response_cache
+
+        set_rate_limit_counter(ValkeyRateLimitCounter(client))
+        _wire_logger.info("Valkey: rate-limit counter wired")
+
+        set_replay_cache(ValkeyReplayCache(client))
+        _wire_logger.info("Valkey: replay cache wired")
+
+        entity_cache = ValkeyEntityCache(client)
+        entity_cache.configure_entity("user", ttl=600, index_fields={"email"})
+        entity_cache.configure_entity("team", ttl=600)
+        entity_cache.configure_entity("role", ttl=3600)
+        entity_cache.configure_entity("permission", ttl=3600)
+        entity_cache.configure_entity("session", ttl=120, index_fields={"session_key"})
+
+        from zephyrex.logic.AbstractLogicManager import set_entity_cache
+
+        set_entity_cache(entity_cache)
+        _wire_logger.info("Valkey: entity cache wired")
+
+        set_response_cache(ValkeyResponseCache(client))
+        _wire_logger.info("Valkey: response cache wired")
+
+        from zephyrex.logic.EventBus import (
+            InMemoryEventBus,
+            RedisStreamsEventBus,
+            get_event_bus,
+            set_event_bus,
+        )
+
+        if isinstance(get_event_bus(), InMemoryEventBus):
+            _stub = type("_FrameworkInstance", (), {"api_key": None})()
+            transport = cls.get_root_instance().build_streams_transport(
+                _stub, consumer_group="zephyrex"
+            )
+            set_event_bus(RedisStreamsEventBus(transport=transport))
+            _wire_logger.info("Valkey: EventBus streams transport wired")

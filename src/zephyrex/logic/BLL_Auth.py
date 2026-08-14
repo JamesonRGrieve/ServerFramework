@@ -25,6 +25,7 @@ if TYPE_CHECKING:
         UserTeamManager,
         RateLimitPolicyManager,
     )
+
     # Session symbols are owned by the ``auth_session`` extension and
     # are resolved through the PEP 562 ``__getattr__`` shim below at
     # runtime. Forward-references in core annotations use string
@@ -137,9 +138,7 @@ class OneTimeTokenMixin(BaseModel):
         """
         import hashlib
 
-        key_material = (
-            env("FRAMEWORK_FERNET_KEY") or env("JWT_SECRET") or ""
-        )
+        key_material = env("FRAMEWORK_FERNET_KEY") or env("JWT_SECRET") or ""
         if not key_material:
             raise ValueError(
                 "Cannot compute HMAC fingerprint: neither "
@@ -979,7 +978,37 @@ class UserManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef]
         enforce_hook = _session_hooks["enforce_not_revoked"]
         if enforce_hook is None:
             return
+
+        from zephyrex.logic.AbstractLogicManager import (
+            _cache_sync_run,
+            get_entity_cache,
+        )
+
+        cache = get_entity_cache()
+        if cache is not None:
+            try:
+                cached = _cache_sync_run(
+                    cache.get_by_field("session", "session_key", session_key)
+                )
+                if cached is not None:
+                    return
+            except Exception:
+                pass
+
         enforce_hook(payload, model_registry, db)
+
+        if cache is not None:
+            try:
+                _cache_sync_run(
+                    cache.put(
+                        "session",
+                        session_key,
+                        {"session_key": session_key, "valid": True},
+                        {"session_key": session_key},
+                    )
+                )
+            except Exception:
+                pass
 
     @staticmethod
     def verify_token(
@@ -1000,12 +1029,31 @@ class UserManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef]
                 audience=env("JWT_AUDIENCE"),
                 issuer=env("JWT_ISSUER"),
                 leeway=30,
-                options={
-                    "require": ["exp", "nbf", "iat", "jti", "aud", "iss"]
-                },
+                options={"require": ["exp", "nbf", "iat", "jti", "aud", "iss"]},
             )
 
             UserManager._enforce_session_not_revoked(payload, model_registry)
+
+            from zephyrex.logic.AbstractLogicManager import (
+                _cache_sync_run,
+                get_entity_cache,
+            )
+
+            cache = get_entity_cache()
+            if cache is not None:
+                try:
+                    cached_user = _cache_sync_run(
+                        cache.get_by_id("user", payload["sub"])
+                    )
+                    if cached_user is not None:
+                        user = UserModel.model_validate(cached_user)
+                        if not user.active:
+                            raise HTTPException(status_code=401, detail="Inactive user")
+                        return {"id": user.id, "email": user.email}
+                except HTTPException:
+                    raise
+                except Exception:
+                    pass
 
             user = UserModel.DB(model_registry.DB.manager.Base).get(
                 requester_id=env("ROOT_ID"),
@@ -1018,6 +1066,28 @@ class UserManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef]
             if not user.active:
                 raise HTTPException(status_code=401, detail="Inactive user")
 
+            if cache is not None:
+                try:
+                    dto_dict = (
+                        user.model_dump(mode="json")
+                        if hasattr(user, "model_dump")
+                        else {"id": user.id, "email": user.email, "active": user.active}
+                    )
+                    _cache_sync_run(
+                        cache.put(
+                            "user",
+                            payload["sub"],
+                            dto_dict,
+                            (
+                                {"email": user.email}
+                                if hasattr(user, "email") and user.email
+                                else None
+                            ),
+                        )
+                    )
+                except Exception:
+                    pass
+
             return {"id": user.id, "email": user.email}
         except jwt.ExpiredSignatureError:
             raise HTTPException(status_code=401, detail="Token has expired")
@@ -1027,9 +1097,7 @@ class UserManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef]
             raise
         except Exception as e:
             logger.error("Token verification failed: %s", e, exc_info=True)
-            raise HTTPException(
-                status_code=401, detail="Token verification failed"
-            )
+            raise HTTPException(status_code=401, detail="Token verification failed")
 
     @staticmethod
     def auth(
@@ -1240,9 +1308,7 @@ class UserManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef]
                             logger.info(
                                 "Login attempt used a previously valid password "
                                 "(changed %s)",
-                                old_credentials.password_changed_at.strftime(
-                                    "%Y-%m"
-                                ),
+                                old_credentials.password_changed_at.strftime("%Y-%m"),
                             )
                         raise HTTPException(
                             status_code=401, detail="Invalid credentials"
@@ -1480,9 +1546,7 @@ class UserManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef]
                         logger.info(
                             "Login attempt used a previously valid password "
                             "(changed %s)",
-                            old_credentials.password_changed_at.strftime(
-                                "%Y-%m"
-                            ),
+                            old_credentials.password_changed_at.strftime("%Y-%m"),
                         )
                         raise HTTPException(
                             status_code=401,
@@ -2302,9 +2366,7 @@ class UserCredentialManager(AbstractBLLManager, RouterMixin):  # type: ignore[no
         # Validate inputs up-front so a missing or weak password fails
         # cleanly with 422/401 rather than crashing inside bcrypt.
         if current_password is None or not isinstance(current_password, str):
-            raise HTTPException(
-                status_code=422, detail="current_password is required"
-            )
+            raise HTTPException(status_code=422, detail="current_password is required")
         self._validate_password_policy(new_password)
 
         # Find current active credential
@@ -2412,8 +2474,8 @@ _EXTRACTED = {
 # the extension isn't loaded; core code falls back to a safe default.
 _lockout_hooks: dict = {
     "assert_within_threshold": None,  # (user_id, model_registry) -> None | raises
-    "record_failure": None,            # (user_id, ip, model_registry) -> None
-    "manager_factory": None,           # (*, requester_id, target_id, model_registry) -> manager
+    "record_failure": None,  # (user_id, ip, model_registry) -> None
+    "manager_factory": None,  # (*, requester_id, target_id, model_registry) -> manager
 }
 
 
@@ -2439,10 +2501,10 @@ def register_lockout_hooks(
 # ``manager_factory``/``revoke_user_sessions`` raise 503 because the
 # per-user session surface is genuinely unavailable.
 _session_hooks: dict = {
-    "issue_session": None,        # (*, user_id, model_registry, expiration_hours, device_type, grant_type, pending_state) -> session_key
+    "issue_session": None,  # (*, user_id, model_registry, expiration_hours, device_type, grant_type, pending_state) -> session_key
     "enforce_not_revoked": None,  # (payload, model_registry, db) -> None | raises
-    "manager_factory": None,      # (*, requester_id, target_id, target_team_id, model_registry) -> manager
-    "revoke_user_sessions": None, # (*, user_id, requester_id, model_registry) -> int
+    "manager_factory": None,  # (*, requester_id, target_id, target_team_id, model_registry) -> manager
+    "revoke_user_sessions": None,  # (*, user_id, requester_id, model_registry) -> int
 }
 
 
@@ -2484,12 +2546,12 @@ def reset_session_hooks() -> None:
 # TeamMetadataManager directly now goes through these hooks; when the
 # extension is not loaded, calls degrade to no-ops or empty results.
 _metadata_hooks: dict = {
-    "list_preferences": None,           # (user_id, model_registry) -> Dict[str,str]
-    "list_user_metadata": None,         # (user_id, model_registry) -> List[Any]
-    "user_manager_factory": None,       # (requester_id, target_id, model_registry, **kw) -> manager
-    "team_manager_factory": None,       # (requester_id, target_team_id, model_registry, **kw) -> manager
-    "create_user_metadata": None,       # (user_id, key, value, model_registry, *, requester_id) -> None
-    "update_user_metadata": None,       # (id, value, model_registry, *, requester_id) -> None
+    "list_preferences": None,  # (user_id, model_registry) -> Dict[str,str]
+    "list_user_metadata": None,  # (user_id, model_registry) -> List[Any]
+    "user_manager_factory": None,  # (requester_id, target_id, model_registry, **kw) -> manager
+    "team_manager_factory": None,  # (requester_id, target_team_id, model_registry, **kw) -> manager
+    "create_user_metadata": None,  # (user_id, key, value, model_registry, *, requester_id) -> None
+    "update_user_metadata": None,  # (id, value, model_registry, *, requester_id) -> None
 }
 
 
@@ -2519,14 +2581,14 @@ def register_metadata_hooks(
 # (Scope #4). Encapsulate every place core BLL_Auth used to reach into
 # InvitationModel / InviteeModel / InvitationManager / InviteeManager.
 _invitation_hooks: dict = {
-    "lookup_by_id": None,                # (invitation_id, model_registry) -> dict | None
-    "lookup_by_code": None,              # (code, model_registry) -> dict | None
-    "apply_to_user": None,               # (invitation_dict, user_id, model_registry) -> None
+    "lookup_by_id": None,  # (invitation_id, model_registry) -> dict | None
+    "lookup_by_code": None,  # (code, model_registry) -> dict | None
+    "apply_to_user": None,  # (invitation_dict, user_id, model_registry) -> None
     "invitation_manager_factory": None,  # (requester_id, target_team_id, model_registry, **kw) -> manager
-    "invitee_manager_factory": None,     # (requester_id, target_id, model_registry, **kw) -> manager
-    "list_invitees_for_user": None,      # (user_id, email, model_registry) -> List[dict]
-    "invitation_db_class": None,         # (declarative_base) -> SA model
-    "invitee_db_class": None,            # (declarative_base) -> SA model
+    "invitee_manager_factory": None,  # (requester_id, target_id, model_registry, **kw) -> manager
+    "list_invitees_for_user": None,  # (user_id, email, model_registry) -> List[dict]
+    "invitation_db_class": None,  # (declarative_base) -> SA model
+    "invitee_db_class": None,  # (declarative_base) -> SA model
 }
 
 
@@ -2557,8 +2619,8 @@ def register_invitation_hooks(
 
 # acl_rbac extension hooks — populated by `acl_rbac.on_load` (Scope #5).
 _acl_hooks: dict = {
-    "permission_db_class": None,    # (declarative_base) -> SA model
-    "create_permission": None,      # (resource_type, resource_id, user_id, can_*, model_registry, **kw) -> Any
+    "permission_db_class": None,  # (declarative_base) -> SA model
+    "create_permission": None,  # (resource_type, resource_id, user_id, can_*, model_registry, **kw) -> Any
 }
 
 
@@ -2580,7 +2642,7 @@ def register_acl_hooks(
 # registered ``log_filter`` callable on every record. Without the
 # extension, only the registered-secret scrubbing in core fires.
 _pii_hooks: dict = {
-    "log_filter": None,             # (logging.LogRecord) -> bool
+    "log_filter": None,  # (logging.LogRecord) -> bool
 }
 
 
@@ -2595,7 +2657,7 @@ def register_pii_hooks(*, log_filter=None) -> None:
 # Without it, the framework runs as a single-app server (no upstream
 # federation) and the hook is a no-op.
 _registry_hooks: dict = {
-    "bootstrap_federation": None,   # (model_registry) -> federation_report | None
+    "bootstrap_federation": None,  # (model_registry) -> federation_report | None
 }
 
 
@@ -2621,6 +2683,7 @@ def __getattr__(name: str):  # PEP 562 — lazy module-level attribute access
 # FailedLoginAttempt extracted to extension `auth_lockout` (Scope #2). Core
 # `UserManager.login` consults it via the optional callable hooks below — when
 # the extension isn't loaded the gate is the IP-keyed `LockoutTracker` only.
+
 
 class TeamModel(
     ApplicationModel.Optional,
@@ -2802,7 +2865,14 @@ class TeamManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef]
                 "InvitationManager",
             ),
             # child_network_model_cls will be inferred from the manager
-            "routes_to_register": ["get", "list", "create", "search", "update", "batch_update"],
+            "routes_to_register": [
+                "get",
+                "list",
+                "create",
+                "search",
+                "update",
+                "batch_update",
+            ],
             "custom_routes": [
                 {
                     "path": "",
@@ -3002,7 +3072,9 @@ class TeamManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef]
                     is not None
                 )
                 if not is_creator and not is_member:
-                    raise HTTPException(status_code=403, detail="Not a member of this team")
+                    raise HTTPException(
+                        status_code=403, detail="Not a member of this team"
+                    )
             finally:
                 db_session.close()
 
@@ -3789,7 +3861,9 @@ class UserTeamManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef
 
         return records  # type: ignore[no-any-return]
 
-    def update(self, id: str, team_id: str | None = None, db=None, db_manager=None, **kwargs):
+    def update(
+        self, id: str, team_id: str | None = None, db=None, db_manager=None, **kwargs
+    ):
         """Update user team record with improved error handling"""
         db = db or self.db
 
@@ -3929,7 +4003,6 @@ class UserTeamManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef
         self.update(id=target_user_team.id, team_id=team_id, **updated_data)
 
         return {"message": "Role updated successfully"}
-
 
 
 class RateLimitPolicyModel(
