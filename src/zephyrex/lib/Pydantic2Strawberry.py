@@ -1922,7 +1922,7 @@ class GraphQLManager(ErrorHandlerMixin):
                         return [self._apply_field_acl(manager, user)]
                 except Exception as e:
                     logger.error(f"Error in {field_name} resolver: {e}")
-                    return []
+                    raise
 
             self._query_fields[field_name] = _versioned_field(
                 user_list_resolver, manager_class
@@ -1956,7 +1956,7 @@ class GraphQLManager(ErrorHandlerMixin):
                     return self._apply_field_acl(manager, result)  # type: ignore[no-any-return]
                 except Exception as e:
                     logger.error(f"Error in {field_name} resolver: {e}")
-                    return []
+                    raise
 
             self._query_fields[field_name] = _versioned_field(
                 resolver, manager_class
