@@ -447,6 +447,17 @@ def build_app(model_registry: ModelRegistry):
                 )
                 valkey_client = None
 
+        if valkey_client is None:
+            workers = int(os.environ.get("UVICORN_WORKERS", "1"))
+            if workers > 1:
+                logger.warning(
+                    "UVICORN_WORKERS=%d but VALKEY_URI is not set — "
+                    "rate limiter, event bus, advisory locks, and replay cache "
+                    "are per-process in-memory singletons. Set VALKEY_URI to "
+                    "enable distributed backends.",
+                    workers,
+                )
+
         try:
             yield
         finally:
