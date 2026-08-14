@@ -2368,6 +2368,7 @@ def register_route(
                     "offset",
                     "limit",
                     "page",
+                    "page_size",
                     "pageSize",
                     "sort_by",
                     "sort_order",
@@ -2456,7 +2457,7 @@ def register_route(
                     )
 
                 page_param = getattr(query_params, "page", None)
-                page_size_param = getattr(query_params, "pageSize", None)
+                page_size_param = getattr(query_params, "page_size", None) or getattr(query_params, "pageSize", None)
                 _pagination_total: Optional[int] = None
 
                 if page_param is not None and page_size_param is not None:
@@ -3300,7 +3301,7 @@ def register_route(
                 actual_page_size = (
                     page_size
                     if page_size is not None
-                    else getattr(criteria, "pageSize", None)
+                    else getattr(criteria, "page_size", getattr(criteria, "pageSize", None))
                 )
 
                 actual_sort_by = (

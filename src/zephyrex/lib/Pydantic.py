@@ -24,7 +24,7 @@ except ImportError:
 
 import stringcase
 from ordered_set import OrderedSet
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import configure_mappers
 
 from zephyrex.database.migrations.Migration import MigrationManager
@@ -1297,12 +1297,13 @@ class ModelRegistry(AbstractRegistry):
             "offset": int,
             "limit": int,
             "page": Optional[int],
-            "pageSize": Optional[int],
+            "page_size": Optional[int],
             "sort_by": Optional[str],
             "sort_order": Optional[str],
         }
         list_attrs = {
             "__module__": model.__module__,
+            "model_config": ConfigDict(populate_by_name=True),
             "offset": Field(
                 0, ge=0, description="Number of items to skip for pagination"
             ),
@@ -1312,11 +1313,12 @@ class ModelRegistry(AbstractRegistry):
             "page": Field(
                 None, ge=1, description="Page number (1-indexed) for pagination"
             ),
-            "pageSize": Field(
+            "page_size": Field(
                 None,
                 ge=1,
                 le=1000,
                 description="Number of items per page (alternative to limit/offset)",
+                validation_alias="pageSize",
             ),
             "sort_by": Field(None, description="Field to sort results by"),
             "sort_order": Field(

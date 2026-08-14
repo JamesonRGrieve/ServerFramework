@@ -2809,6 +2809,7 @@ class AbstractBLLManager(ABC):
         limit: Optional[int] | None = None,
         offset: Optional[int] | None = None,
         page: Optional[int] | None = None,
+        page_size: Optional[int] | None = None,
         pageSize: Optional[int] | None = None,
         return_type: str = "dto",
         **kwargs,
@@ -2818,15 +2819,17 @@ class AbstractBLLManager(ABC):
         Pagination supports negative page numbers: page=-1 returns the
         last page, page=-2 the second-to-last, etc.
         """
-        if page is not None and pageSize is not None:
-            limit = pageSize
+        if pageSize is not None and page_size is None:
+            page_size = pageSize
+        if page is not None and page_size is not None:
+            limit = page_size
             if page < 0:
                 total = self.count(**kwargs)
-                total_pages = max(1, -(-total // pageSize))
+                total_pages = max(1, -(-total // page_size))
                 resolved = total_pages + 1 + page
-                offset = max(0, (resolved - 1) * pageSize)
+                offset = max(0, (resolved - 1) * page_size)
             else:
-                offset = (page - 1) * pageSize
+                offset = (page - 1) * page_size
 
         options = []
         order_by = None
@@ -2906,14 +2909,16 @@ class AbstractBLLManager(ABC):
         limit: Optional[int] | None = None,
         offset: Optional[int] | None = None,
         page: Optional[int] | None = None,
+        page_size: Optional[int] | None = None,
         pageSize: Optional[int] | None = None,
         **search_params,
     ) -> List[Any]:
         """Search entities with optional included relationships."""
-        # Handle pagination - convert page/pageSize to limit/offset
-        if page is not None and pageSize is not None:
-            limit = pageSize
-            offset = (page - 1) * pageSize
+        if pageSize is not None and page_size is None:
+            page_size = pageSize
+        if page is not None and page_size is not None:
+            limit = page_size
+            offset = (page - 1) * page_size
 
         options = []
         order_by = None
