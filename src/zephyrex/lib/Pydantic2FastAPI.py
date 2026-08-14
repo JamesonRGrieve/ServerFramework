@@ -2396,13 +2396,25 @@ def register_route(
                     "sort_order",
                 }
 
-                # Add filter fields from query params to search_params
-                # These are model fields added to the LIST model for filtering
+                _FILTER_OPS = {"eq", "neq", "lt", "gt", "lteq", "gteq", "inc", "sw", "ew", "before", "after", "on"}
                 for field_name in type(query_params).model_fields.keys():
                     if field_name not in reserved_params:
                         field_value = getattr(query_params, field_name, None)
                         if field_value is not None:
                             search_params[field_name] = field_value
+
+                raw_qp = request.get("query_params", {}) if isinstance(request, dict) else {}
+                for raw_key, raw_val in raw_qp.items():
+                    if "__" not in raw_key:
+                        continue
+                    base, op = raw_key.rsplit("__", 1)
+                    if op not in _FILTER_OPS:
+                        continue
+                    if base not in search_params:
+                        search_params[base] = {}
+                    elif not isinstance(search_params[base], dict):
+                        search_params[base] = {"eq": search_params[base]}
+                    search_params[base][op] = raw_val
 
                 include_param = _normalize_query_list(
                     getattr(query_params, "include", None)

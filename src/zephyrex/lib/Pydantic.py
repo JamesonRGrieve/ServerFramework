@@ -1303,7 +1303,7 @@ class ModelRegistry(AbstractRegistry):
         }
         list_attrs = {
             "__module__": model.__module__,
-            "model_config": ConfigDict(populate_by_name=True),
+            "model_config": ConfigDict(populate_by_name=True, extra="ignore"),
             "offset": Field(
                 0, ge=0, description="Number of items to skip for pagination"
             ),

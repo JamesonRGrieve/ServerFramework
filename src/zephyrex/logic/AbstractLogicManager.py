@@ -2797,10 +2797,14 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
     def count(self, **kwargs) -> int:
         """Count entities matching the given filters."""
         kwargs.pop("hook_processed", None)
+        simple = {k: v for k, v in kwargs.items() if not isinstance(v, dict)}
+        complex_params = {k: v for k, v in kwargs.items() if isinstance(v, dict)}
+        filters = self.build_search_filters(complex_params) if complex_params else []
         return self.DB.count(
             requester_id=self.requester.id,
             model_registry=self.model_registry,
-            **kwargs,
+            filters=filters,
+            **simple,
         )
 
     def list(

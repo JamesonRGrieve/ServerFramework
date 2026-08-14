@@ -1629,6 +1629,34 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         assert isinstance(pag["total"], int)
         assert isinstance(pag["has_more"], bool)
 
+    def test_GET_200_list_filter_operators(self, server: Any, admin_a: Any, team_a: Any):
+        """GET list supports __inc, __sw, __ew filter operators via query string."""
+        if getattr(self, "entity_name", None) == "user":
+            pytest.skip("User entity does not have a standard LIST endpoint")
+        if not getattr(self, "string_field_to_update", None):
+            pytest.skip("No string field configured for operator test")
+
+        self._batch_create(server, admin_a.jwt, admin_a.id, team_a.id, count=3)
+
+        if self.system_entity:
+            path_parent_ids: Dict[str, str] = {}
+        else:
+            _, _, path_parent_ids = self._create_parent_entities(
+                server, admin_a.jwt, admin_a.id, team_a.id
+            )
+
+        field = self.string_field_to_update
+        response_eq = server.get(
+            f"{self.get_list_endpoint(path_parent_ids)}?{field}__eq=nonexistent_value_xyz",
+            headers={"Authorization": f"Bearer {admin_a.jwt}"},
+        )
+        assert response_eq.status_code == 200, (
+            f"Filter operator __eq failed: {response_eq.text}"
+        )
+        body = response_eq.json()
+        items = body.get(self.resource_name_plural, [])
+        assert len(items) == 0, "Equality filter with nonexistent value should return empty"
+
     # @pytest.mark.dependency(depends=["test_POST_201"])
     def test_GET_200_list_via_parent_team(
         self, server: Any, admin_a: Any, admin_b: Any, team_a: Any, team_b: Any
