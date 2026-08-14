@@ -522,7 +522,10 @@ def hook_bll(
                 del frame  # Prevent reference cycles
 
             if target_class is None:
-                raise ValueError("Could not determine target class for wrapped method")
+                raise ValueError(
+                    f"Could not determine target class for hook target {target!r}. "
+                    f"Pass a Manager class or ManagerClass.method_name."
+                )
 
             method_names = [method_name]
 
@@ -563,10 +566,15 @@ def hook_bll(
                 method_names = [method_name]
             else:
                 raise ValueError(
-                    "Could not extract class and method from function reference"
+                    f"Could not extract class and method from {target!r} "
+                    f"(qualname={getattr(target, '__qualname__', '?')}). "
+                    f"Pass ManagerClass.method_name."
                 )
         else:
-            raise ValueError("Invalid method reference")
+            raise ValueError(
+                f"Invalid hook target: {target!r} (type={type(target).__name__}). "
+                f"Expected a Manager class, Manager.method, or a decorated function."
+            )
     else:
         raise ValueError(
             "Target must be either a BLL manager class or a method reference"
