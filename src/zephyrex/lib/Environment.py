@@ -51,6 +51,7 @@ class AppSettings(BaseModel):
 
     ROOT_API_KEY: str = "n0ne"
     JWT_SECRET: str = ""
+    JWT_SECRET_PREVIOUS: str = ""
     JWT_ALGORITHM: str = "HS256"
     JWT_AUDIENCE: str = "zephyrex"
     JWT_ISSUER: str = "zephyrex"

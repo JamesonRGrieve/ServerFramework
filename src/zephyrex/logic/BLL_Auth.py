@@ -1011,6 +1011,24 @@ class UserManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef]
                 pass
 
     @staticmethod
+    def _decode_jwt(token: str) -> Dict[str, Any]:
+        """Decode a JWT trying current secret, then previous for rotation."""
+        decode_kwargs = dict(
+            algorithms=[env("JWT_ALGORITHM")],
+            audience=env("JWT_AUDIENCE"),
+            issuer=env("JWT_ISSUER"),
+            leeway=30,
+            options={"require": ["exp", "nbf", "iat", "jti", "aud", "iss"]},
+        )
+        try:
+            return jwt.decode(token, env("JWT_SECRET"), **decode_kwargs)
+        except jwt.InvalidSignatureError:
+            previous = env("JWT_SECRET_PREVIOUS")
+            if previous:
+                return jwt.decode(token, previous, **decode_kwargs)
+            raise
+
+    @staticmethod
     def verify_token(
         token: str,
         model_registry=None,
@@ -1020,17 +1038,7 @@ class UserManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef]
             raise ValueError("model_registry is required for verify_token")
 
         try:
-            # M-4/M-5 — require ``exp``, ``nbf``, ``iat``, ``jti``, ``aud``,
-            # ``iss``; ``leeway=30`` absorbs cross-host clock skew.
-            payload = jwt.decode(
-                token,
-                env("JWT_SECRET"),
-                algorithms=[env("JWT_ALGORITHM")],
-                audience=env("JWT_AUDIENCE"),
-                issuer=env("JWT_ISSUER"),
-                leeway=30,
-                options={"require": ["exp", "nbf", "iat", "jti", "aud", "iss"]},
-            )
+            payload = UserManager._decode_jwt(token)
 
             UserManager._enforce_session_not_revoked(payload, model_registry)
 
@@ -1180,23 +1188,26 @@ class UserManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef]
                     )
 
                 try:
-                    # Regular JWT auth
                     jwt_secret = env("JWT_SECRET")
                     if not jwt_secret:
                         raise jwt.InvalidTokenError("JWT_SECRET unset")
-                    payload = jwt.decode(
-                        jwt=token,
-                        key=jwt_secret,
+                    _auth_decode_kwargs = dict(
                         algorithms=[env("JWT_ALGORITHM")],
                         audience=env("JWT_AUDIENCE"),
                         issuer=env("JWT_ISSUER"),
-                        # Tight skew tolerance, not session extension. Five
-                        # minutes was a token-replay-friendly default.
                         leeway=timedelta(seconds=30),
                         options={"require": ["exp", "jti", "aud", "iss"]},
                         i=ip,
                         s=server,
                     )
+                    try:
+                        payload = jwt.decode(jwt=token, key=jwt_secret, **_auth_decode_kwargs)
+                    except jwt.InvalidSignatureError:
+                        previous = env("JWT_SECRET_PREVIOUS")
+                        if previous:
+                            payload = jwt.decode(jwt=token, key=previous, **_auth_decode_kwargs)
+                        else:
+                            raise
 
                     # If the token carries a `jti`, the bound session must
                     # still be active. A revoked session invalidates every

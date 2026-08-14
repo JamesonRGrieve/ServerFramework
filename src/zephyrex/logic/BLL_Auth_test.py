@@ -3336,3 +3336,62 @@ class TestPermissionManager(AbstractBLLTest):
             f"Entity not found when searching {search_field} with operator '{search_operator}' "
             f"and value '{search_value}' (type: {type(search_value).__name__}). Found {len(results)} results."
         )
+
+
+class TestJWTDualKeyRotation:
+    """JWT_SECRET_PREVIOUS allows zero-downtime key rotation."""
+
+    def test_token_signed_with_previous_key_validates(self, monkeypatch, server):
+        """A token signed with the old key still validates after rotation."""
+        from zephyrex.lib.Dependencies import jwt
+
+        old_secret = "old-rotation-secret-key-32bytes!"
+        new_secret = "new-rotation-secret-key-32bytes!"
+
+        payload = {
+            "sub": "test-user-id",
+            "email": "test@example.com",
+            "timezone": "UTC",
+            "exp": datetime.now(timezone.utc) + timedelta(hours=1),
+            "iat": datetime.now(timezone.utc),
+            "nbf": datetime.now(timezone.utc),
+            "aud": env("JWT_AUDIENCE"),
+            "iss": env("JWT_ISSUER"),
+            "jti": "test-session-key",
+        }
+        old_token = jwt.encode(payload, old_secret, algorithm="HS256")
+
+        monkeypatch.setenv("JWT_SECRET", new_secret)
+        monkeypatch.setenv("JWT_SECRET_PREVIOUS", old_secret)
+        from zephyrex.lib.Environment import refresh_settings
+        refresh_settings()
+
+        from zephyrex.logic.BLL_Auth import UserManager
+        decoded = UserManager._decode_jwt(old_token)
+        assert decoded["sub"] == "test-user-id"
+
+    def test_token_with_unknown_key_rejected(self, monkeypatch, server):
+        """A token signed with neither current nor previous key is rejected."""
+        from zephyrex.lib.Dependencies import jwt
+
+        payload = {
+            "sub": "test-user-id",
+            "email": "test@example.com",
+            "timezone": "UTC",
+            "exp": datetime.now(timezone.utc) + timedelta(hours=1),
+            "iat": datetime.now(timezone.utc),
+            "nbf": datetime.now(timezone.utc),
+            "aud": env("JWT_AUDIENCE"),
+            "iss": env("JWT_ISSUER"),
+            "jti": "test-session-key",
+        }
+        bad_token = jwt.encode(payload, "completely-wrong-key-never-used!", algorithm="HS256")
+
+        monkeypatch.setenv("JWT_SECRET", "current-secret-key-32-bytes-ok!")
+        monkeypatch.setenv("JWT_SECRET_PREVIOUS", "previous-secret-key-32-bytes-k!")
+        from zephyrex.lib.Environment import refresh_settings
+        refresh_settings()
+
+        from zephyrex.logic.BLL_Auth import UserManager
+        with pytest.raises(jwt.InvalidSignatureError):
+            UserManager._decode_jwt(bad_token)
