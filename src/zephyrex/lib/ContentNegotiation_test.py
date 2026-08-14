@@ -111,8 +111,8 @@ class TestResolveRequestFormat:
     def test_xml_alt(self) -> None:
         assert resolve_request_format("text/xml") == "xml"
 
-    def test_unknown_defaults_to_json(self) -> None:
-        assert resolve_request_format("text/plain") == "json"
+    def test_unknown_returns_none_for_415(self) -> None:
+        assert resolve_request_format("text/plain") is None
 
 
 # ---------------------------------------------------------------------------

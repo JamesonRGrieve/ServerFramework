@@ -1010,6 +1010,21 @@ def build_app(model_registry: ModelRegistry):
         async def health():
             return {"status": "UP"}
 
+        from zephyrex.endpoints.Operations import create_operations_router
+
+        def _db_health_check() -> bool:
+            try:
+                from sqlalchemy import text
+
+                with model_registry.DB.manager._get_db_session() as session:
+                    session.execute(text("SELECT 1"))
+                return True
+            except Exception:
+                return False
+
+        ops_router = create_operations_router(db_check=_db_health_check)
+        app.include_router(ops_router)
+
         @app.get("/v1", tags=["Authentication"], status_code=204)
         async def verify_jwt(request: Request):
             """Verify JWT token and return 204 if valid, 401 if invalid"""
@@ -1194,7 +1209,10 @@ def build_app(model_registry: ModelRegistry):
                         "version": info.get("redis_version", "unknown"),
                     }
                 except Exception as exc:
-                    return {"status": "DOWN", "error": str(exc)}
+                    return JSONResponse(
+                        status_code=503,
+                        content={"status": "DOWN", "error": str(exc)},
+                    )
 
             @app.middleware("http")
             async def invalidate_response_cache_on_mutation(
