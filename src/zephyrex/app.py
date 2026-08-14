@@ -147,7 +147,8 @@ def install_extension_dependencies_with_restart(extensions_str: str):
 
         if failed:
             logger.error(f"Failed to install extension dependencies: {failed}")
-            raise Exception(f"Failed to install extension dependencies: {failed}")
+            from zephyrex import ExtensionLoadError
+            raise ExtensionLoadError(f"Failed to install extension dependencies: {failed}")
 
         if successful:
             logger.info(f"Successfully installed extension dependencies: {successful}")
@@ -159,7 +160,8 @@ def install_extension_dependencies_with_restart(extensions_str: str):
 
     except Exception as e:
         logger.error(f"Error installing extension dependencies: {e}")
-        raise Exception(f"Failed to setup extension dependencies: {e}")
+        from zephyrex import ExtensionLoadError
+        raise ExtensionLoadError(f"Failed to setup extension dependencies: {e}")
 
 
 def create_registry_with_db_manager(db_manager, extensions_list: Optional[str] = None):
@@ -293,7 +295,8 @@ def instance(
             instance_model_registry.commit()
         except Exception as e:
             logger.error(f"Error booting {env('APP_NAME')} instance: {e}")
-            raise Exception(f"Error booting {env('APP_NAME')} instance: {e}") from e
+            from zephyrex import StartupError
+            raise StartupError(f"Error booting {env('APP_NAME')} instance: {e}") from e
         return build_app(instance_model_registry)
 
 
@@ -1002,7 +1005,9 @@ def build_app(model_registry: ModelRegistry):
                 app.include_router(router)
             except Exception as e:
                 logger.error(f"CRITICAL: Failed to include router {manager_name}: {e}")
-                raise Exception(
+                from zephyrex import RouterRegistrationError
+
+                raise RouterRegistrationError(
                     f"Critical error loading router for {manager_name}: {e}"
                 ) from e
 

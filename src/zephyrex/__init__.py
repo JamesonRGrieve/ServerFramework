@@ -63,12 +63,33 @@ from typing import Any, Dict, Optional, Union
 # need their environment configured before importing this module.
 from zephyrex.app import build_app, instance  # noqa: E402
 
+
+class ZephyrexError(Exception):
+    """Base exception for all framework errors."""
+
+
+class StartupError(ZephyrexError):
+    """Raised when the framework fails to start."""
+
+
+class ExtensionLoadError(ZephyrexError):
+    """Raised when an extension fails to load."""
+
+
+class RouterRegistrationError(ZephyrexError):
+    """Raised when a router fails to register."""
+
+
 __all__ = [
     "build_app",
     "get_framework_version",
     "instance",
     "run",
     "set_extensions_root",
+    "ZephyrexError",
+    "StartupError",
+    "ExtensionLoadError",
+    "RouterRegistrationError",
 ]
 
 
