@@ -195,7 +195,11 @@ LOG_LEVEL_MAP = {
 logger.level("VERBOSE", no=5, color="<blue>")
 logger.level("SQL", no=3, color="<magenta>")
 
-logger.add(sys.stdout, level=log_level, filter=format_with_timezone)
+_log_format_setting = env("LOG_FORMAT")
+if _log_format_setting.lower() == "json":
+    logger.add(sys.stdout, level=log_level, filter=format_with_timezone, serialize=True)
+else:
+    logger.add(sys.stdout, level=log_level, filter=format_with_timezone)
 
 
 # ---------------------------------------------------------------------------
