@@ -150,6 +150,13 @@ def mount_mcp(app: FastAPI, *, name: str, mount_path: str = "/mcp") -> Server:
 
     async def on_call_tool(ctx, params):
         forwarded = {}
+        http_request = getattr(ctx, "request", None)
+        if http_request is not None:
+            req_headers = getattr(http_request, "headers", {})
+            for hdr in ("authorization", "accept", "x-api-key"):
+                val = req_headers.get(hdr)
+                if val:
+                    forwarded[hdr] = val
         return await _call_tool_via_app(
             app, params.name, params.arguments, tools, forwarded
         )
