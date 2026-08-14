@@ -448,6 +448,29 @@ def env(var: str, default: Optional[str] = "") -> str:
     return os.getenv(var, default or "")
 
 
+def env_bool(var: str, default: bool = False) -> bool:
+    """Get an environment variable as a boolean.
+
+    Truthy values: ``"true"``, ``"1"``, ``"yes"``, ``"on"`` (case-insensitive).
+    Everything else (including empty/absent) is falsy.
+    """
+    val = env(var, "").strip().lower()
+    if not val:
+        return default
+    return val in ("true", "1", "yes", "on")
+
+
+def env_int(var: str, default: int = 0) -> int:
+    """Get an environment variable as an integer, with a fallback default."""
+    val = env(var, "").strip()
+    if not val:
+        return default
+    try:
+        return int(val)
+    except ValueError:
+        return default
+
+
 def extract_base_domain(uri: str) -> str:
     """
     Extracts the base domain or IP address from a given URI or email-like string.
