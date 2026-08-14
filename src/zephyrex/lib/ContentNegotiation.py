@@ -221,16 +221,19 @@ def _coerce_text(text: str | None) -> Any:
 # ---------------------------------------------------------------------------
 
 
-def resolve_request_format(content_type: str | None) -> str:
+def resolve_request_format(content_type: str | None) -> str | None:
     """Return the canonical format key for the given ``Content-Type`` header.
 
-    Returns ``"json"`` when the header is absent or unrecognized.
+    Returns ``"json"`` when the header is absent. Returns ``None`` when the
+    content type is explicitly set to an unsupported format (→ caller
+    should return 415).
     """
     if not content_type:
         return DEFAULT_FORMAT
-    # Strip parameters (charset, boundary, ...).
     media_type = content_type.split(";")[0].strip().lower()
-    return _MEDIA_TYPE_MAP.get(media_type, DEFAULT_FORMAT)
+    if not media_type or media_type in ("application/json", "text/json"):
+        return DEFAULT_FORMAT
+    return _MEDIA_TYPE_MAP.get(media_type)
 
 
 def resolve_response_format(
@@ -355,7 +358,20 @@ class ContentNegotiationMiddleware:
         req_fmt = resolve_request_format(content_type_value or None)
         method = scope.get("method", "GET")
 
-        if req_fmt != "json" and method in ("POST", "PUT", "PATCH"):
+        if req_fmt is None and method in ("POST", "PUT", "PATCH"):
+            supported = ", ".join(sorted(set(_MEDIA_TYPE_MAP.values())))
+            response = Response(
+                content=json.dumps({
+                    "detail": "Unsupported Media Type",
+                    "supported": [f"application/{f}" for f in sorted(set(_MEDIA_TYPE_MAP.values()))],
+                }),
+                status_code=415,
+                media_type=MIME_JSON,
+            )
+            await response(scope, receive, send)
+            return
+
+        if req_fmt is not None and req_fmt != "json" and method in ("POST", "PUT", "PATCH"):
             # Consume the full body from the original ``receive``.
             body_parts: list[bytes] = []
             while True:

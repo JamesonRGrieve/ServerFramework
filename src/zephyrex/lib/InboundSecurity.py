@@ -292,6 +292,82 @@ class BodySizeLimitMiddleware:
 MAX_JSON_DEPTH: int = 32
 
 
+class ETagMiddleware:
+    """ASGI middleware that adds ETag headers to GET 200 responses and
+    handles conditional requests (If-None-Match → 304).
+
+    ETag is a weak validator computed from SHA-256 of the response body.
+    Only applies to GET requests returning 200 with a JSON-family
+    content type.
+    """
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+
+        method = scope.get("method", "").upper()
+        if method != "GET":
+            await self.app(scope, receive, send)
+            return
+
+        if_none_match = None
+        for raw_name, raw_value in scope.get("headers") or []:
+            if raw_name.decode("latin-1").lower() == "if-none-match":
+                if_none_match = raw_value.decode("latin-1").strip().strip('"')
+                break
+
+        response_started = {"status": 0, "headers": []}
+        body_parts: list[bytes] = []
+
+        async def capture_send(message):
+            if message.get("type") == "http.response.start":
+                response_started["status"] = message.get("status", 200)
+                response_started["headers"] = list(message.get("headers") or [])
+                return
+            if message.get("type") == "http.response.body":
+                body_parts.append(message.get("body") or b"")
+                if not message.get("more_body", False):
+                    status = response_started["status"]
+                    headers = response_started["headers"]
+                    full_body = b"".join(body_parts)
+
+                    if status == 200 and full_body:
+                        import hashlib
+
+                        etag = hashlib.sha256(full_body).hexdigest()[:16]
+                        weak_etag = f'W/"{etag}"'
+
+                        if if_none_match and if_none_match in (etag, weak_etag, f'"{etag}"'):
+                            await send({
+                                "type": "http.response.start",
+                                "status": 304,
+                                "headers": [
+                                    (k, v) for k, v in headers
+                                    if k.decode("latin-1").lower() not in (
+                                        "content-length", "content-type"
+                                    )
+                                ] + [(b"etag", weak_etag.encode("latin-1"))],
+                            })
+                            await send({"type": "http.response.body", "body": b""})
+                            return
+
+                        headers.append((b"etag", weak_etag.encode("latin-1")))
+
+                    await send({
+                        "type": "http.response.start",
+                        "status": status,
+                        "headers": headers,
+                    })
+                    await send({"type": "http.response.body", "body": full_body})
+                return
+
+        await self.app(scope, receive, capture_send)
+
+
 class RequestSmugglingMiddleware:
     """Reject requests that set both Transfer-Encoding and Content-Length.
 

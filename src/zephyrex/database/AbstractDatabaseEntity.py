@@ -1140,6 +1140,12 @@ class BaseMixin:
                 )
             if allow_nonexistent:
                 return None  # type: ignore[return-value]
+            if hasattr(db_cls, "deleted_at"):
+                tombstone = build_query(db, db_cls, **kwargs).first()
+                if tombstone is not None and getattr(tombstone, "deleted_at", None) is not None:
+                    if hasattr(tombstone, "privacy_erased") and tombstone.privacy_erased:
+                        raise HTTPException(status_code=451, detail="Unavailable for legal reasons")
+                    raise HTTPException(status_code=410, detail="Gone")
             raise HTTPException(status_code=404, detail=gen_not_found_msg(cls.__name__))
         except MultipleResultsFound:
             raise HTTPException(

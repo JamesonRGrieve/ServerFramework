@@ -1855,6 +1855,18 @@ def handle_resource_operation_error(err: Exception) -> None:
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail={"message": "Invalid request body format"},
         )
+
+    try:
+        from zephyrex.extensions.ExternalErrors import TransientExternalError
+
+        if isinstance(err, TransientExternalError):
+            raise HTTPException(
+                status_code=502,
+                detail={"message": "Upstream service temporarily unavailable"},
+            )
+    except ImportError:
+        pass
+
     else:
         logger.exception(f"Unexpected error during operation: {err}")
         raise HTTPException(

@@ -329,7 +329,8 @@ def install_sighup_handler(app: FastAPI) -> None:
         from zephyrex.extensions.HotReload import rebuild_registry
         from zephyrex.lib.Logging import logger
 
-        logger.info("SIGHUP received -- computing extension registry diff")
+        logger.info("SIGHUP received -- draining, then computing extension registry diff")
+        app.state.draining = True
         try:
             registry = getattr(app.state, "model_registry", None)
             ext_registry = (
@@ -534,6 +535,7 @@ def build_app(model_registry: ModelRegistry):
     # below after every router has been mounted onto the app.
     from zephyrex.lib.InboundSecurity import (
         BodySizeLimitMiddleware,
+        ETagMiddleware,
         JSONDepthMiddleware,
         PathSanitizationMiddleware,
         RateLimitMiddleware,
@@ -552,6 +554,31 @@ def build_app(model_registry: ModelRegistry):
     app.add_middleware(RequestSmugglingMiddleware)
     app.add_middleware(PathSanitizationMiddleware)
     app.add_middleware(JSONDepthMiddleware)
+    app.add_middleware(ETagMiddleware)
+
+    class DrainingMiddleware:
+        """Returns 503 when the app is draining (SIGHUP graceful shutdown)."""
+
+        def __init__(self, asgi_app):
+            self.app = asgi_app
+
+        async def __call__(self, scope, receive, send):
+            if scope.get("type") == "http" and getattr(app.state, "draining", False):
+                body = json.dumps({"detail": "Service unavailable — shutting down"}).encode()
+                await send({
+                    "type": "http.response.start",
+                    "status": 503,
+                    "headers": [
+                        (b"content-type", b"application/json"),
+                        (b"retry-after", b"5"),
+                        (b"content-length", str(len(body)).encode()),
+                    ],
+                })
+                await send({"type": "http.response.body", "body": body})
+                return
+            await self.app(scope, receive, send)
+
+    app.add_middleware(DrainingMiddleware)
 
     # Multi-format content negotiation (JSON, TOON, YAML, TOML, XML).
     # Transcodes non-JSON request bodies to JSON for Pydantic/FastAPI and
@@ -762,6 +789,33 @@ def build_app(model_registry: ModelRegistry):
         return JSONResponse(
             status_code=422, content={"detail": "Invalid request body format"}
         )
+
+    from zephyrex.lib.AdvisoryLock import LockTimeoutError
+
+    @app.exception_handler(LockTimeoutError)
+    async def lock_timeout_handler(request: Request, exc: LockTimeoutError):
+        return JSONResponse(
+            status_code=423,
+            content={"detail": "Resource is locked"},
+            headers={"Retry-After": "5"},
+        )
+
+    try:
+        from zephyrex.extensions.quota.BLL_Quota import QuotaExhaustedError
+
+        @app.exception_handler(QuotaExhaustedError)
+        async def quota_exhausted_handler(request: Request, exc: QuotaExhaustedError):
+            return JSONResponse(
+                status_code=507,
+                content={
+                    "detail": "Quota exceeded",
+                    "scope": exc.scope,
+                    "ability": exc.ability,
+                    "period": exc.period,
+                },
+            )
+    except ImportError:
+        pass
 
     def make_json_serializable(obj):
         """Recursively convert objects to JSON-serializable format.
@@ -1160,6 +1214,7 @@ def build_app(model_registry: ModelRegistry):
                 return response
 
     app.state.model_registry = model_registry
+    app.state.draining = False
     app.state.federation_report = federation_report
 
     # ------------------------------------------------------------------
