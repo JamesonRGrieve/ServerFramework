@@ -449,8 +449,7 @@ class ContentNegotiationMiddleware:
             body = b"".join(response_body_parts)
             status = initial_message.get("status", 200)
 
-            # Only transcode successful JSON responses.
-            if status >= 400 or not body:
+            if not body:
                 await real_send(initial_message)
                 await real_send(
                     {"type": "http.response.body", "body": body, "more_body": False}

@@ -67,6 +67,13 @@ def _make_app() -> FastAPI:
         body = await request.json()
         return body  # type: ignore[no-any-return]
 
+    @app.get("/error")
+    async def error_endpoint() -> JSONResponse:
+        return JSONResponse(
+            status_code=422,
+            content={"detail": "Validation error", "field": "name"},
+        )
+
     return app
 
 
@@ -487,6 +494,23 @@ class TestPostRequestParsing:
 # ---------------------------------------------------------------------------
 # TOON-specific: token efficiency
 # ---------------------------------------------------------------------------
+
+
+class TestErrorResponseTranscoding:
+    """Error responses (4xx/5xx) are transcoded to the requested format."""
+
+    def test_error_transcoded_to_yaml(self, client: TestClient) -> None:
+        resp = client.get("/error", headers={"Accept": MIME_YAML})
+        assert resp.status_code == 422
+        data = yaml.safe_load(resp.text)
+        assert data["detail"] == "Validation error"
+        assert data["field"] == "name"
+
+    def test_error_transcoded_to_toon(self, client: TestClient) -> None:
+        resp = client.get("/error", headers={"Accept": MIME_TOON})
+        assert resp.status_code == 422
+        data = toon_decode(resp.text)
+        assert data["detail"] == "Validation error"
 
 
 class TestToonTokenEfficiency:
