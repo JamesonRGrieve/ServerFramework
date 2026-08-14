@@ -3489,13 +3489,14 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         # Assert that the 'detail' key exists in the response
         assert "detail" in response_data, "Response should contain a 'detail' key"
 
-        # Assert that the 'detail' value contains the expected error message
+        detail = response_data["detail"]
+        detail_str = detail["message"] if isinstance(detail, dict) else detail
         assert (
-            "Format mismatch: singular key" in response_data["detail"]
-        ), f"Expected error message about singular key format mismatch, got: {response_data['detail']}"
+            "Format mismatch: singular key" in detail_str
+        ), f"Expected error message about singular key format mismatch, got: {detail}"
         assert (
-            "cannot contain array data" in response_data["detail"]
-        ), f"Expected error message about array data, got: {response_data['detail']}"
+            "cannot contain array data" in detail_str
+        ), f"Expected error message about array data, got: {detail}"
 
     def _batch_update_data(self) -> Dict[str, Any]:
         """Create batch update data."""

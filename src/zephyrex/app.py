@@ -791,24 +791,29 @@ def build_app(model_registry: ModelRegistry):
 
     app.add_middleware(JSONParsingMiddleware)
 
+    from zephyrex.lib.Pydantic2FastAPI import _error_envelope
+
     @app.exception_handler(json.JSONDecodeError)
     async def json_decode_error_handler(request: Request, exc: json.JSONDecodeError):
         return JSONResponse(
-            status_code=400, content={"detail": "Invalid JSON syntax in request body"}
+            status_code=400,
+            content={"detail": _error_envelope("Invalid JSON syntax in request body", code="json_parse_error")},
         )
 
     @app.exception_handler(TypeError)
     async def type_error_handler(request: Request, exc: TypeError):
         logger.debug(f"TypeError in request handler: {exc}")
         return JSONResponse(
-            status_code=422, content={"detail": "Invalid request body format"}
+            status_code=422,
+            content={"detail": _error_envelope("Invalid request body format", code="invalid_body")},
         )
 
     @app.exception_handler(AttributeError)
     async def attribute_error_handler(request: Request, exc: AttributeError):
         logger.debug(f"AttributeError in request handler: {exc}")
         return JSONResponse(
-            status_code=422, content={"detail": "Invalid request body format"}
+            status_code=422,
+            content={"detail": _error_envelope("Invalid request body format", code="invalid_body")},
         )
 
     from zephyrex.lib.AdvisoryLock import LockTimeoutError
@@ -817,7 +822,7 @@ def build_app(model_registry: ModelRegistry):
     async def lock_timeout_handler(request: Request, exc: LockTimeoutError):
         return JSONResponse(
             status_code=423,
-            content={"detail": "Resource is locked"},
+            content={"detail": _error_envelope("Resource is locked", code="locked")},
             headers={"Retry-After": "5"},
         )
 
@@ -828,12 +833,10 @@ def build_app(model_registry: ModelRegistry):
         async def quota_exhausted_handler(request: Request, exc: QuotaExhaustedError):
             return JSONResponse(
                 status_code=507,
-                content={
-                    "detail": "Quota exceeded",
-                    "scope": exc.scope,
-                    "ability": exc.ability,
-                    "period": exc.period,
-                },
+                content={"detail": _error_envelope(
+                    "Quota exceeded", code="quota_exceeded",
+                    scope=exc.scope, ability=exc.ability, period=exc.period,
+                )},
             )
     except ImportError:
         pass
@@ -944,7 +947,7 @@ def build_app(model_registry: ModelRegistry):
             )
         return JSONResponse(
             status_code=500,
-            content={"detail": "Internal Server Error"},
+            content={"detail": _error_envelope("Internal Server Error", code="internal_error")},
         )
 
     # Add exception handler for request validation errors that might include JSON parsing issues
@@ -957,7 +960,7 @@ def build_app(model_registry: ModelRegistry):
             error_list = exc.errors()
         else:
             # For regular validation errors, return 422
-            return JSONResponse(status_code=422, content={"detail": "Validation error"})
+            return JSONResponse(status_code=422, content={"detail": _error_envelope("Validation error", code="validation_error")})
 
         # Check if any of the errors are specifically JSON parsing errors
         # Look at the actual error type and location from Pydantic

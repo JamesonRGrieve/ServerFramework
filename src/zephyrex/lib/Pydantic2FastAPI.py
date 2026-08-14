@@ -1829,6 +1829,26 @@ def create_manager_factory(
     return factory_function
 
 
+def _error_envelope(
+    message: str,
+    code: Optional[str] = None,
+    errors: Optional[List[Any]] = None,
+    **extra: Any,
+) -> Dict[str, Any]:
+    """Build a normalized error detail envelope.
+
+    Every error response uses ``{message, code, errors}`` so clients
+    can write a single error handler.
+    """
+    envelope: Dict[str, Any] = {"message": message}
+    if code is not None:
+        envelope["code"] = code
+    if errors:
+        envelope["errors"] = errors
+    envelope.update(extra)
+    return envelope
+
+
 def handle_resource_operation_error(err: Exception) -> None:
     """Handle resource operation errors and raise appropriate HTTP exceptions."""
     if isinstance(err, ValidationError):
@@ -1838,22 +1858,24 @@ def handle_resource_operation_error(err: Exception) -> None:
                 error.pop("input", None)
                 error.pop("ctx", None)
         except TypeError:
-            details = str(err)  # type: ignore[assignment]
+            details = [str(err)]  # type: ignore[assignment]
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail={"message": "Validation error", "details": details},
+            detail=_error_envelope("Validation error", code="validation_error", errors=details),
         )
     elif isinstance(err, ValueError):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail={"message": "Validation error"},
+            detail=_error_envelope("Validation error", code="validation_error"),
         )
     elif isinstance(err, HTTPException):
+        if isinstance(err.detail, str):
+            err.detail = _error_envelope(err.detail)
         raise err
     elif isinstance(err, (TypeError, AttributeError, KeyError)):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail={"message": "Invalid request body format"},
+            detail=_error_envelope("Invalid request body format", code="invalid_body"),
         )
 
     try:
@@ -1862,7 +1884,7 @@ def handle_resource_operation_error(err: Exception) -> None:
         if isinstance(err, TransientExternalError):
             raise HTTPException(
                 status_code=502,
-                detail={"message": "Upstream service temporarily unavailable"},
+                detail=_error_envelope("Upstream service temporarily unavailable", code="bad_gateway"),
             )
     except ImportError:
         pass
@@ -1871,7 +1893,7 @@ def handle_resource_operation_error(err: Exception) -> None:
         logger.exception(f"Unexpected error during operation: {err}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail={"message": "An unexpected error occurred"},
+            detail=_error_envelope("An unexpected error occurred", code="internal_error"),
         )
 
 
