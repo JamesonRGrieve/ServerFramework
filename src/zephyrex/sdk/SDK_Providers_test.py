@@ -16,8 +16,8 @@ from typing import Any, Dict, List
 
 import pytest
 
-from sdk.AbstractSDKTest import AbstractSDKTest
-from sdk.SDK_Providers import (
+from zephyrex.sdk.AbstractSDKTest import AbstractSDKTest
+from zephyrex.sdk.SDK_Providers import (
     ProviderInstanceSDK,
     ProviderSDK,
     ProvidersSDK,

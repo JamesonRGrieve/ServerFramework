@@ -22,7 +22,7 @@ import base64
 from logging import getLogger
 from typing import Any, Dict, List
 
-from sdk.AbstractSDKHandler import (
+from zephyrex.sdk.AbstractSDKHandler import (
     AbstractSDKHandler,
     AuthenticationError,
     ResourceConfig,

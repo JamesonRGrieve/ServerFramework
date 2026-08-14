@@ -222,7 +222,7 @@ def generate_sdk_handler_for(manager_cls: Type) -> str:
     imports = sorted(
         [
             "from typing import Any, Dict, List, Optional",
-            "from sdk.AbstractSDKHandler import AbstractSDKHandler, ResourceConfig",
+            "from zephyrex.sdk.AbstractSDKHandler import AbstractSDKHandler, ResourceConfig",
         ]
     )
 

@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from zephyrex.lib.Pydantic2FastAPI import RouterMixin
-from sdk.SDKGenerator import (
+from zephyrex.sdk.SDKGenerator import (
     generate_sdk_handler_for,
     generate_sdk_handlers,
 )

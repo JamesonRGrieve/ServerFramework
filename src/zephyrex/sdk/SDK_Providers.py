@@ -18,7 +18,7 @@ the improved abstraction patterns similar to endpoint patterns.
 
 from typing import Any, Dict, List
 
-from sdk.AbstractSDKHandler import AbstractSDKHandler, ResourceConfig
+from zephyrex.sdk.AbstractSDKHandler import AbstractSDKHandler, ResourceConfig
 
 # ===== Provider SDK =====
 

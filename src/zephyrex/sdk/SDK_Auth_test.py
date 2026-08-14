@@ -16,8 +16,8 @@ from typing import Any, Dict, List
 
 import pytest
 
-from sdk.AbstractSDKTest import AbstractSDKTest
-from sdk.SDK_Auth import (
+from zephyrex.sdk.AbstractSDKTest import AbstractSDKTest
+from zephyrex.sdk.SDK_Auth import (
     AuthSDK,
     RoleSDK,
     TeamSDK,

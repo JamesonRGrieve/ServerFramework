@@ -9,9 +9,9 @@ functionality.
 import logging
 from typing import Any, Dict, Optional
 
-from sdk.SDK_Auth import AuthSDK
-from sdk.SDK_Extensions import ExtensionsSDK
-from sdk.SDK_Providers import ProvidersSDK
+from zephyrex.sdk.SDK_Auth import AuthSDK
+from zephyrex.sdk.SDK_Extensions import ExtensionsSDK
+from zephyrex.sdk.SDK_Providers import ProvidersSDK
 
 
 class SDK:
