@@ -354,17 +354,19 @@ class DatabaseManager:
                 "max_overflow": 20,
             }
         else:
+            _pool_size = int(os.getenv("DATABASE_POOL_SIZE", "20"))
+            _pool_overflow = int(os.getenv("DATABASE_POOL_MAX_OVERFLOW", "30"))
             self.engine_config = {
                 "url": database_uri,
-                "pool_size": 20,
-                "max_overflow": 30,  # Increased for tests
+                "pool_size": _pool_size,
+                "max_overflow": _pool_overflow,
                 "pool_pre_ping": True,
                 "pool_recycle": 3600,
             }
             self.async_engine_config = {
                 "url": _sync_to_async_url(database_uri),
-                "pool_size": 20,
-                "max_overflow": 30,  # Increased for tests
+                "pool_size": _pool_size,
+                "max_overflow": _pool_overflow,
                 "pool_pre_ping": True,
                 "pool_recycle": 3600,
             }

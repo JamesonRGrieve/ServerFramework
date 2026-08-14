@@ -3052,14 +3052,9 @@ class AbstractBLLManager(ABC):
         # client-controllable.
         self._strip_server_controlled_fields(kwargs)
         self._enforce_caller_owned_fields(kwargs)
-        logger.debug(f"Updating entity with ID: {id} and kwargs: {kwargs}")
-        logger.debug(
-            f"Update model fields: {list(self.model_registry.apply(self.Model).Update.model_fields.keys())}"
-        )
-        logger.debug(inspect.signature(self.model_registry.apply(self.Model).Update))
+        logger.debug("Updating entity with ID: %s", id)
         try:
             args = self.model_registry.apply(self.Model).Update(**kwargs)
-            logger.debug(f"Parsed update arguments: {args}")
         except ValidationError as e:
             raise HTTPException(
                 status_code=422,

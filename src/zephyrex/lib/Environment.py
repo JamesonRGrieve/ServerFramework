@@ -136,6 +136,11 @@ class AppSettings(BaseModel):
                 "Set JWT_SECRET explicitly to suppress this warning.",
                 self.ENVIRONMENT,
             )
+            print(
+                "\n⚠️  DEVELOPMENT MODE: JWT_SECRET auto-generated.\n"
+                "   Tokens will NOT survive server restarts.\n"
+                "   Set JWT_SECRET in your environment to fix.\n"
+            )
         if (self.ROOT_API_KEY or "").strip() in ("", "n0ne"):
             generated = secrets.token_urlsafe(32)
             object.__setattr__(self, "ROOT_API_KEY", generated)

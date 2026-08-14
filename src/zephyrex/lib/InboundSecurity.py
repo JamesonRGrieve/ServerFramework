@@ -128,6 +128,7 @@ _DEFAULT_SECURITY_HEADERS: Dict[str, str] = {
     "X-Frame-Options": "DENY",
     "Referrer-Policy": "strict-origin-when-cross-origin",
     "Permissions-Policy": "interest-cohort=()",
+    "X-API-Version": "v1",
     "Content-Security-Policy": (
         "default-src 'none'; frame-ancestors 'none'; base-uri 'none'"
     ),
