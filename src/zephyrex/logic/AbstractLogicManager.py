@@ -374,9 +374,7 @@ def _sort_hooks_topologically(hooks: List[Dict[str, Any]]) -> List[Dict[str, Any
 
     if len(ordered_exts) != len(graph):
         # Cycle: name every extension still with non-zero in-degree.
-        offenders = sorted(
-            ext for ext, d in in_degree.items() if d > 0
-        )
+        offenders = sorted(ext for ext, d in in_degree.items() if d > 0)
         raise HookOrderingError(
             "Hook before/after constraints form a cycle among extensions: "
             f"{offenders}"
@@ -1433,11 +1431,48 @@ class _BoundModelDescriptor:
         return instance.model_registry.apply(model)
 
 
+_entity_cache = None
+
+
+def set_entity_cache(cache) -> None:
+    """Install the Valkey entity cache. Called by ``EXT_DatabaseMemory.wire_framework_backends()``."""
+    global _entity_cache
+    _entity_cache = cache
+
+
+def get_entity_cache():
+    """Return the active entity cache, or None."""
+    return _entity_cache
+
+
+def _cache_sync_run(coro):
+    """Drive an async cache coroutine from sync BLL code."""
+    import asyncio
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop is not None and loop.is_running():
+        import concurrent.futures
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(asyncio.run, coro).result(timeout=2)
+    return asyncio.run(coro)
+
+
 class AbstractBLLManager(ABC):
     _model = None
 
     # Human-readable label for 404 messages (defaults to class name if None)
     _entity_label: ClassVar[Optional[str]] = None
+
+    _cache_disabled: ClassVar[bool] = False
+    _cache_index_fields: ClassVar[Set[str]] = set()
+    _cache_ttl: ClassVar[Optional[int]] = None
+    _response_cache_ttl: ClassVar[Optional[int]] = None
+    _response_cache_vary_on_user: ClassVar[bool] = True
 
     # Search transformer functions
     search_transformers: Dict[str, Callable] = {}
@@ -1543,13 +1578,21 @@ class AbstractBLLManager(ABC):
                 f"model_registry is required to be defined and committed in {self.__class__.__name__}."
             )
 
-        # Use BLL models instead of direct DB imports
         from zephyrex.logic.BLL_Auth import TeamModel, UserModel
 
-        # Get SQLAlchemy models via .DB method with declarative base
+        cache = _entity_cache
+        if cache is not None:
+            try:
+                cached_user = _cache_sync_run(cache.get_by_id("user", requester_id))
+                if cached_user is not None:
+                    self.requester = UserModel.model_validate(cached_user)
+                    self._register_search_transformers()
+                    return
+            except Exception:
+                pass
+
         Team = TeamModel.DB(self.model_registry.DB.manager.Base)
         User = UserModel.DB(self.model_registry.DB.manager.Base)
-        # Handle anonymous operations (e.g., user registration)
 
         session = self.model_registry.DB.session()
         try:
@@ -1568,6 +1611,24 @@ class AbstractBLLManager(ABC):
                 status_code=404,
                 detail=f"Requesting user with id {requester_id} not found.",
             )
+
+        if cache is not None:
+            try:
+                dto_dict = (
+                    self.requester.model_dump(mode="json")
+                    if hasattr(self.requester, "model_dump")
+                    else obj_to_dict(self.requester)
+                )
+                _cache_sync_run(
+                    cache.put(
+                        "user",
+                        requester_id,
+                        dto_dict,
+                        {f: dto_dict.get(f) for f in ("email",) if dto_dict.get(f)},
+                    )
+                )
+            except Exception:
+                pass
         # Initialize any search transformers
         self._register_search_transformers()
 
@@ -1952,7 +2013,9 @@ class AbstractBLLManager(ABC):
                         try:
                             parsed_value = date.fromisoformat(value)
                         except ValueError as e:
-                            logger.warning(f"Unparseable date filter value {value!r}: {e}")
+                            logger.warning(
+                                f"Unparseable date filter value {value!r}: {e}"
+                            )
 
                 # Check if value is a datetime or date
                 if isinstance(parsed_value, datetime):
@@ -2575,7 +2638,6 @@ class AbstractBLLManager(ABC):
         if hasattr(self.DB, "user_id") and "user_id" not in kwargs:
             create_args["user_id"] = self.target_id
 
-        # Create the entity using ModelRegistry.DB for database access
         entity = self.DB.create(
             requester_id=self.requester.id,  # type: ignore[union-attr]
             model_registry=self.model_registry,
@@ -2583,6 +2645,29 @@ class AbstractBLLManager(ABC):
             override_dto=self.model_registry.apply(self.Model),
             **create_args,
         )
+
+        cache = _entity_cache
+        if cache is not None and not self._cache_disabled and entity is not None:
+            try:
+                dto_dict = (
+                    entity.model_dump(mode="json")
+                    if hasattr(entity, "model_dump")
+                    else obj_to_dict(entity)
+                )
+                eid = dto_dict.get("id")
+                if eid:
+                    index_vals = {
+                        f: dto_dict.get(f)
+                        for f in self._cache_index_fields
+                        if f in dto_dict and dto_dict.get(f)
+                    }
+                    _cache_sync_run(
+                        cache.put(
+                            self.DB.__tablename__, eid, dto_dict, index_vals or None
+                        )
+                    )
+            except Exception:
+                pass
 
         return entity
 
@@ -2615,12 +2700,29 @@ class AbstractBLLManager(ABC):
         """
         from fastapi import status
 
+        entity_id = kwargs.get("id")
+        cache = _entity_cache
+        if (
+            cache is not None
+            and not self._cache_disabled
+            and entity_id
+            and not include
+            and not fields
+        ):
+            try:
+                cached = _cache_sync_run(
+                    cache.get_by_id(self.DB.__tablename__, entity_id)
+                )
+                if cached is not None:
+                    return self.model_registry.apply(self.Model).model_validate(cached)
+            except Exception:
+                pass
+
         options = []
 
         fields_list = self.validate_fields(fields)
 
         if include:
-            # Parse includes - handle both CSV strings and lists
             include_list = self._parse_includes(include)
             if include_list:
                 options = self.generate_joins(self.DB, include_list)
@@ -2631,7 +2733,6 @@ class AbstractBLLManager(ABC):
             if columns:
                 options.append(load_only(*columns))
 
-        # Filter out hook-related parameters before passing to database
         db_kwargs = {k: v for k, v in kwargs.items() if k not in ["hook_processed"]}
 
         result = self.DB.get(
@@ -2645,13 +2746,39 @@ class AbstractBLLManager(ABC):
 
         if result is None:
             label = self._entity_label or self.__class__.__name__.replace("Manager", "")
-            entity_id = kwargs.get("id") or next(
+            eid = kwargs.get("id") or next(
                 (v for k, v in kwargs.items() if k.endswith("_id")), "unknown"
             )
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"{label} with ID '{entity_id}' not found",
+                detail=f"{label} with ID '{eid}' not found",
             )
+
+        if (
+            cache is not None
+            and not self._cache_disabled
+            and entity_id
+            and not include
+            and not fields
+        ):
+            try:
+                dto_dict = (
+                    result.model_dump(mode="json")
+                    if hasattr(result, "model_dump")
+                    else obj_to_dict(result)
+                )
+                index_vals = {
+                    f: dto_dict.get(f)
+                    for f in self._cache_index_fields
+                    if f in dto_dict and dto_dict.get(f)
+                }
+                _cache_sync_run(
+                    cache.put(
+                        self.DB.__tablename__, entity_id, dto_dict, index_vals or None
+                    )
+                )
+            except Exception:
+                pass
 
         return result
 
@@ -2882,8 +3009,18 @@ class AbstractBLLManager(ABC):
 
         return filter_condition
 
+    _require_etag: ClassVar[bool] = False
+
+    def _compute_entity_etag(self, entity) -> str:
+        """Compute a weak ETag from the entity's updated_at timestamp."""
+        import hashlib
+        ts = getattr(entity, "updated_at", None) or getattr(entity, "created_at", "")
+        return f'W/"{hashlib.sha256(str(ts).encode()).hexdigest()[:16]}"'
+
     def update(self, id: str, **kwargs):
         """Update an entity by ID."""
+        if_match = kwargs.pop("_if_match", None)
+
         # Drop audit/identity fields from the inbound payload. Server-managed
         # bookkeeping (updated_at, updated_by_user_id, etc.) must not be
         # client-controllable.
@@ -2909,7 +3046,13 @@ class AbstractBLLManager(ABC):
         # Get the entity before update (for after hooks)
         entity_before = self.get(id=id)
 
-        # Update the entity
+        if self._require_etag and not if_match:
+            raise HTTPException(status_code=428, detail="Precondition Required — If-Match header missing")
+        if if_match and entity_before:
+            current_etag = self._compute_entity_etag(entity_before)
+            if if_match.strip('"') not in current_etag:
+                raise HTTPException(status_code=412, detail="Precondition Failed — entity has been modified")
+
         updated_entity = self.DB.update(
             requester_id=self.requester.id,  # type: ignore[union-attr]
             model_registry=self.model_registry,
@@ -2918,6 +3061,35 @@ class AbstractBLLManager(ABC):
             new_properties=update_args,
             id=id,
         )
+
+        cache = _entity_cache
+        if cache is not None and not self._cache_disabled:
+            try:
+                table = self.DB.__tablename__
+                old_index_vals = {
+                    f: getattr(entity_before, f, None) for f in self._cache_index_fields
+                }
+                _cache_sync_run(
+                    cache.invalidate(
+                        table,
+                        id,
+                        {k: v for k, v in old_index_vals.items() if v} or None,
+                    )
+                )
+                if updated_entity is not None:
+                    dto_dict = (
+                        updated_entity.model_dump(mode="json")
+                        if hasattr(updated_entity, "model_dump")
+                        else obj_to_dict(updated_entity)
+                    )
+                    index_vals = {
+                        f: dto_dict.get(f)
+                        for f in self._cache_index_fields
+                        if f in dto_dict and dto_dict.get(f)
+                    }
+                    _cache_sync_run(cache.put(table, id, dto_dict, index_vals or None))
+            except Exception:
+                pass
 
         return updated_entity
 
@@ -2963,7 +3135,26 @@ class AbstractBLLManager(ABC):
 
     def delete(self, id: str):
         """Delete an entity by ID."""
-        # Delete the entity
+        cache = _entity_cache
+        if cache is not None and not self._cache_disabled:
+            try:
+                old = self.get(id=id)
+                old_index_vals = {
+                    f: getattr(old, f, None) for f in self._cache_index_fields
+                }
+                _cache_sync_run(
+                    cache.invalidate(
+                        self.DB.__tablename__,
+                        id,
+                        {k: v for k, v in old_index_vals.items() if v} or None,
+                    )
+                )
+            except Exception:
+                try:
+                    _cache_sync_run(cache.invalidate(self.DB.__tablename__, id))
+                except Exception:
+                    pass
+
         self.DB.delete(
             requester_id=self.requester.id,  # type: ignore[union-attr]
             model_registry=self.model_registry,

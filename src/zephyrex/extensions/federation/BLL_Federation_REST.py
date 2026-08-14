@@ -364,7 +364,18 @@ class RESTUpstreamTransport:
             kwargs["json"] = body
         method = op.method.lower()
         verb = getattr(self._http, method)
-        return await verb(url, **kwargs)
+        try:
+            return await verb(url, **kwargs)
+        except Exception as exc:
+            from zephyrex.extensions.ExternalErrors import AuthExternalError
+            if isinstance(exc, AuthExternalError):
+                from fastapi import HTTPException
+                raise HTTPException(
+                    status_code=407,
+                    detail="Proxy Authentication Required — upstream credential missing or expired",
+                    headers={"Proxy-Authenticate": "Bearer"},
+                )
+            raise
 
     def send_sync(
         self,
