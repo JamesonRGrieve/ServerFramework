@@ -2061,6 +2061,33 @@ def register_route(
     # managers that do not opt in.
     degradation_responses = _degradation_responses_annotation(manager_class)
 
+    _common_error_responses: Dict[Union[int, str], Dict[str, Any]] = {
+        304: {"description": "Not Modified — ETag matched, no body returned"},
+        401: {"description": "Unauthorized — missing or invalid authentication"},
+        403: {"description": "Forbidden — insufficient permissions"},
+        404: {"description": "Not Found — resource does not exist"},
+        410: {"description": "Gone — resource was deleted"},
+        415: {"description": "Unsupported Media Type — use application/json, toon, yaml, toml, or xml"},
+        418: {"description": "I'm a Teapot — you hit a honeypot (scanner probe detected)"},
+        422: {"description": "Unprocessable Entity — validation error"},
+        423: {"description": "Locked — resource is under an advisory lock, retry later"},
+        429: {"description": "Too Many Requests — rate limit exceeded"},
+        451: {"description": "Unavailable For Legal Reasons — GDPR erasure applied"},
+        500: {"description": "Internal Server Error"},
+        502: {"description": "Bad Gateway — upstream provider temporarily unavailable"},
+        503: {"description": "Service Unavailable — server is draining / shutting down"},
+        507: {"description": "Insufficient Storage — quota exceeded"},
+    }
+    _mutation_responses: Dict[Union[int, str], Dict[str, Any]] = {
+        **_common_error_responses,
+        412: {"description": "Precondition Failed — If-Match ETag mismatch (entity modified since last read)"},
+        428: {"description": "Precondition Required — If-Match header required for this resource"},
+    }
+    _list_responses: Dict[Union[int, str], Dict[str, Any]] = {
+        **_common_error_responses,
+        416: {"description": "Range Not Satisfiable — requested page/offset beyond available items"},
+    }
+
     if route_type == RouteType.GET:
         path = "/{id}" if not parent_param_name else "/{id}"
         summary = f"Get {resource_name}" + (
@@ -2071,7 +2098,8 @@ def register_route(
         # (typed with `Union[int, str]` keys to match APIRouter's
         # `responses` parameter, which also accepts "default" etc.)
         responses: Dict[Union[int, str], Dict[str, Any]] = {
-            200: {"content": _multiformat_response_content(examples.get("get"))}
+            200: {"content": _multiformat_response_content(examples.get("get"))},
+            **_common_error_responses,
         }
         responses.update(degradation_responses)
 
@@ -2306,7 +2334,8 @@ def register_route(
 
         # Prepare responses with examples — advertise all negotiable formats
         responses = {
-            200: {"content": _multiformat_response_content(examples.get("list"))}
+            200: {"content": _multiformat_response_content(examples.get("list"))},
+            **_list_responses,
         }
         responses.update(degradation_responses)
 
@@ -2431,7 +2460,13 @@ def register_route(
 
                 if page_param is not None and page_size_param is not None:
                     list_limit = page_size_param
-                    list_offset = (page_param - 1) * page_size_param
+                    if page_param < 0:
+                        total = actual_manager.count(**search_params)
+                        total_pages = max(1, -(-total // page_size_param))
+                        resolved_page = total_pages + 1 + page_param
+                        list_offset = max(0, (resolved_page - 1) * page_size_param)
+                    else:
+                        list_offset = (page_param - 1) * page_size_param
                 else:
                     list_limit = query_params.limit or 100
                     list_offset = query_params.offset or 0
@@ -2448,6 +2483,14 @@ def register_route(
 
                 if (resp := _render_degradation_sentinel(results)) is not None:
                     return resp
+
+                _result_count = len(results) if isinstance(results, list) else 0
+                if list_offset > 0 and _result_count == 0:
+                    return JSONResponse(
+                        status_code=416,
+                        content={"detail": "Requested range contains no items"},
+                        headers={"Content-Range": "items */*"},
+                    )
 
                 # Serialize list items before constructing response model
                 serialized_results = serialize_for_response(results)
@@ -2610,7 +2653,8 @@ def register_route(
 
         # Prepare responses with examples — advertise all negotiable formats
         responses = {
-            201: {"content": _multiformat_response_content(examples.get("create"))}
+            201: {"content": _multiformat_response_content(examples.get("create"))},
+            **_mutation_responses,
         }
         responses.update(degradation_responses)
 
@@ -2724,7 +2768,8 @@ def register_route(
 
         # Prepare responses with examples — advertise all negotiable formats
         responses = {
-            200: {"content": _multiformat_response_content(examples.get("update"))}
+            200: {"content": _multiformat_response_content(examples.get("update"))},
+            **_mutation_responses,
         }
         responses.update(degradation_responses)
 
@@ -3163,7 +3208,8 @@ def register_route(
 
         # Prepare responses with examples — advertise all negotiable formats
         responses = {
-            200: {"content": _multiformat_response_content(examples.get("search"))}
+            200: {"content": _multiformat_response_content(examples.get("search"))},
+            **_list_responses,
         }
 
         @router.post(
@@ -3356,7 +3402,8 @@ def register_route(
 
         # Prepare responses with examples — advertise all negotiable formats
         responses = {
-            200: {"content": _multiformat_response_content(examples.get("batch_update"))}
+            200: {"content": _multiformat_response_content(examples.get("batch_update"))},
+            **_mutation_responses,
         }
 
         @router.put(

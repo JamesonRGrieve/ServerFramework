@@ -2782,6 +2782,15 @@ class AbstractBLLManager(ABC):
 
         return result
 
+    def count(self, **kwargs) -> int:
+        """Count entities matching the given filters."""
+        kwargs.pop("hook_processed", None)
+        return self.DB.count(
+            requester_id=self.requester.id,
+            model_registry=self.model_registry,
+            **kwargs,
+        )
+
     def list(
         self,
         include: Optional[Union[List[str], str]] | None = None,
@@ -2796,11 +2805,20 @@ class AbstractBLLManager(ABC):
         return_type: str = "dto",
         **kwargs,
     ) -> List[Any]:
-        """List entities with optional included relationships."""
-        # Handle pagination - convert page/pageSize to limit/offset
+        """List entities with optional included relationships.
+
+        Pagination supports negative page numbers: page=-1 returns the
+        last page, page=-2 the second-to-last, etc.
+        """
         if page is not None and pageSize is not None:
             limit = pageSize
-            offset = (page - 1) * pageSize
+            if page < 0:
+                total = self.count(**kwargs)
+                total_pages = max(1, -(-total // pageSize))
+                resolved = total_pages + 1 + page
+                offset = max(0, (resolved - 1) * pageSize)
+            else:
+                offset = (page - 1) * pageSize
 
         options = []
         order_by = None
