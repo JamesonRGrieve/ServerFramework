@@ -365,6 +365,40 @@ def _discover_encryption_dependent(extension_names: set) -> set:
 settings = AppSettings.model_validate(os.environ)
 
 
+def _edit_distance(a: str, b: str) -> int:
+    """Levenshtein distance between two strings."""
+    if len(a) < len(b):
+        return _edit_distance(b, a)
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a):
+        curr = [i + 1]
+        for j, cb in enumerate(b):
+            curr.append(min(prev[j + 1] + 1, curr[j] + 1, prev[j] + (0 if ca == cb else 1)))
+        prev = curr
+    return prev[-1]
+
+
+def _warn_near_miss_env_vars() -> None:
+    """Log warnings for env vars that look like typos of known fields."""
+    known = set(AppSettings.model_fields.keys())
+    for var in os.environ:
+        if var in known or var.startswith("_"):
+            continue
+        for field_name in known:
+            if abs(len(var) - len(field_name)) > 3:
+                continue
+            if _edit_distance(var, field_name) <= 2:
+                _env_logger.warning(
+                    "Unrecognized env var %r is similar to %r — possible typo?",
+                    var,
+                    field_name,
+                )
+                break
+
+
+_warn_near_miss_env_vars()
+
+
 def refresh_settings() -> None:
     """Re-read os.environ into the cached settings singleton.
 

@@ -478,5 +478,23 @@ class TestEnvFunction:
         assert isinstance(result, str)
 
 
+class TestNearMissEnvVarWarning:
+    def test_typo_env_var_logs_warning(self, monkeypatch, caplog):
+        monkeypatch.setenv("DATABSE_TYPE", "sqlite")
+        import logging
+        with caplog.at_level(logging.WARNING, logger="zephyrex.environment"):
+            from zephyrex.lib.Environment import _warn_near_miss_env_vars
+            _warn_near_miss_env_vars()
+        assert any("DATABSE_TYPE" in r.message and "DATABASE_TYPE" in r.message for r in caplog.records)
+
+    def test_valid_env_var_no_warning(self, monkeypatch, caplog):
+        monkeypatch.setenv("DATABASE_TYPE", "sqlite")
+        import logging
+        with caplog.at_level(logging.WARNING, logger="zephyrex.environment"):
+            from zephyrex.lib.Environment import _warn_near_miss_env_vars
+            _warn_near_miss_env_vars()
+        assert not any("DATABASE_TYPE" in r.message and "possible typo" in r.message for r in caplog.records)
+
+
 if __name__ == "__main__":
     pytest.main([__file__])
