@@ -1135,6 +1135,27 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         self._get(server, admin_a.jwt, admin_a.id, team_a.id)
         self._get_assert("get_result")
 
+    def test_GET_200_links(self, server: Any, admin_a: Any, team_a: Any):
+        """GET single response includes _links with self href."""
+        self._create(server, admin_a.jwt, admin_a.id, key="get_links")
+        entity = self.tracked_entities["get_links"]
+        if self.system_entity:
+            path_parent_ids: Dict[str, str] = {}
+        else:
+            _, _, path_parent_ids = self._create_parent_entities(
+                server, admin_a.jwt, admin_a.id, team_a.id
+            )
+        response = server.get(
+            f"{self.get_detail_endpoint(entity['id'], path_parent_ids)}",
+            headers={"Authorization": f"Bearer {admin_a.jwt}"},
+        )
+        assert response.status_code == 200
+        body = response.json()
+        if "_links" in body:
+            assert "self" in body["_links"]
+            assert "href" in body["_links"]["self"]
+            assert entity["id"] in body["_links"]["self"]["href"]
+
     # @pytest.mark.dependency(depends=["test_POST_201"])
     def test_GET_200_fields(
         self, server: Any, admin_a: Any, team_a: Any, field_name: str

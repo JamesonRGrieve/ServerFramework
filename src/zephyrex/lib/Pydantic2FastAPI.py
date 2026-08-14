@@ -1829,6 +1829,19 @@ def create_manager_factory(
     return factory_function
 
 
+def _build_links(base_path: str, entity_id: Optional[str] = None, resource_plural: Optional[str] = None) -> Dict[str, Any]:
+    """Build HATEOAS _links for a resource."""
+    links: Dict[str, Any] = {}
+    if entity_id:
+        links["self"] = {"href": f"{base_path}/{entity_id}"}
+        if resource_plural:
+            collection_path = base_path
+            links["collection"] = {"href": collection_path}
+    else:
+        links["self"] = {"href": base_path}
+    return links
+
+
 def _error_envelope(
     message: str,
     code: Optional[str] = None,
@@ -2339,12 +2352,28 @@ def register_route(
                 # Item 45 — for the Pydantic-validated path, also re-render
                 # with field-acl filtering applied so the contract holds
                 # uniformly across all return shapes.
+                _entity_id = serialized_entity.get("id") if isinstance(serialized_entity, dict) else None
+                _links = _build_links(
+                    f"/v1/{resource_name}",
+                    entity_id=_entity_id,
+                    resource_plural=resource_name_plural,
+                ) if _entity_id else {}
+
                 if _resolve_has_permission(manager) is not None:
+                    content = {resource_name: serialized_entity}
+                    if _links:
+                        content["_links"] = _links
                     return JSONResponse(
-                        content=jsonable_encoder({resource_name: serialized_entity}),
+                        content=jsonable_encoder(content),
                         status_code=status.HTTP_200_OK,
                     )
-                return response_model_instance
+                content = response_model_instance.model_dump()
+                if _links:
+                    content["_links"] = _links
+                return JSONResponse(
+                    content=jsonable_encoder(content),
+                    status_code=status.HTTP_200_OK,
+                )
             except Exception as err:
                 handle_resource_operation_error(err)
 
