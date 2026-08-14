@@ -290,6 +290,18 @@ class ExtensionRegistry(AbstractRegistry):
             except Exception as e:
                 logger.error(f"Failed to load extension {extension_name}: {e}")
 
+        loaded_names = {ext.name for ext in self.extensions.values() if hasattr(ext, "name")}
+        requested_set = set(extension_names)
+        missing = requested_set - loaded_names
+        if missing:
+            logger.error(
+                "EXTENSION LOAD FAILURE: requested extensions not loaded: %s. "
+                "Check spelling in APP_EXTENSIONS and ensure each extension "
+                "directory exists with an EXT_*.py file containing a class "
+                "with a matching 'name' attribute.",
+                ", ".join(sorted(missing)),
+            )
+
     def _extensions_root(self) -> str:
         """Resolve the extensions root for this registry instance.
 
