@@ -174,7 +174,7 @@ class TestStripeProvider:
 
     @pytest.mark.asyncio
     async def test_create_payment_without_api_key(self):
-        """Test creating payment without API key."""
+        """Test creating payment without any API key (instance or class)."""
 
         class MockInstanceWithoutKey:
             id = "test_id"
@@ -182,7 +182,10 @@ class TestStripeProvider:
 
         instance = MockInstanceWithoutKey()
 
-        # Should fail gracefully without API key
+        saved = PaymentExtensionStripeProvider._stripe_available
+        saved_client = PaymentExtensionStripeProvider._stripe_client
+        PaymentExtensionStripeProvider._stripe_available = False
+        PaymentExtensionStripeProvider._stripe_client = None
         try:
             result = await PaymentExtensionStripeProvider.create_payment(
                 instance,
@@ -190,13 +193,14 @@ class TestStripeProvider:
                 currency="USD",
                 description="Test payment",
             )
-            # If it doesn't raise an exception, should return error info
             assert isinstance(result, dict)
             assert "error" in result or "failed" in str(result).lower()
         except Exception as e:
-            # Should handle the error gracefully
             error_msg = str(e).lower()
-            assert any(word in error_msg for word in ["api", "key", "stripe", "config"])
+            assert any(word in error_msg for word in ["api", "key", "stripe", "config", "not configured"])
+        finally:
+            PaymentExtensionStripeProvider._stripe_available = saved
+            PaymentExtensionStripeProvider._stripe_client = saved_client
 
     @pytest.mark.asyncio
     async def test_create_payment_with_real_api(self, provider_instance):

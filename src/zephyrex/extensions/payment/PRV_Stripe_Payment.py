@@ -733,12 +733,7 @@ class PaymentExtensionStripeProvider(AbstractPaymentProvider):
             return None
 
         try:
-            # Get API key from instance or fallback to environment
-            api_key = (
-                instance.api_key
-                if hasattr(instance, "api_key") and instance.api_key
-                else cls.get_secret_key()
-            )
+            api_key = getattr(instance, "api_key", None)
 
             if not api_key:
                 logger.error("No API key available for Stripe provider instance")
@@ -843,7 +838,7 @@ class PaymentExtensionStripeProvider(AbstractPaymentProvider):
 
     # Payment processing methods for rotation system
     @classmethod
-    def create_payment(
+    async def create_payment(
         cls,
         provider_instance: ProviderInstanceModel,
         amount: float,
@@ -854,7 +849,11 @@ class PaymentExtensionStripeProvider(AbstractPaymentProvider):
         metadata: Optional[Dict] = None,
     ) -> Dict:
         """Create a payment via Stripe."""
-        stripe_client = cls._get_stripe_client()
+        api_key = getattr(provider_instance, "api_key", None)
+        if api_key and stripe is not None:
+            stripe_client = stripe.StripeClient(api_key)
+        else:
+            stripe_client = cls._get_stripe_client()
         if not stripe_client:
             raise Exception("Stripe client not configured")
 
@@ -971,7 +970,7 @@ class PaymentExtensionStripeProvider(AbstractPaymentProvider):
             }
 
     @classmethod
-    def create_customer(
+    async def create_customer(
         cls,
         provider_instance: ProviderInstanceModel,
         email: str,
@@ -980,7 +979,11 @@ class PaymentExtensionStripeProvider(AbstractPaymentProvider):
         metadata: Optional[Dict] = None,
     ) -> Dict:
         """Create a customer in Stripe."""
-        stripe_client = cls._get_stripe_client()
+        api_key = getattr(provider_instance, "api_key", None)
+        if api_key and stripe is not None:
+            stripe_client = stripe.StripeClient(api_key)
+        else:
+            stripe_client = cls._get_stripe_client()
         if not stripe_client:
             raise Exception("Stripe client not configured")
 
