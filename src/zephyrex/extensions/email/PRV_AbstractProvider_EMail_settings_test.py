@@ -23,9 +23,9 @@ from zephyrex.extensions.email.EXT_EMail import (
 )
 from zephyrex.extensions.email.PRV_SendGrid_EMail import (
     SendgridProvider,
-    Smtp2goProvider,
     StalwartProvider,
 )
+from zephyrex.extensions.email.PRV_SMTP2Go_EMail import Smtp2goProvider
 
 
 class TestSendgridSettings:

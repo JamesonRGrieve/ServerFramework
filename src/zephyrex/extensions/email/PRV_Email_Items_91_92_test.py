@@ -21,9 +21,9 @@ from zephyrex.extensions.email.EmailErrors import EmailValidationError
 from zephyrex.extensions.email.EXT_EMail import EmailAddress, EmailMessage
 from zephyrex.extensions.email.PRV_SendGrid_EMail import (
     SendgridProvider,
-    Smtp2goProvider,
     StalwartProvider,
 )
+from zephyrex.extensions.email.PRV_SMTP2Go_EMail import Smtp2goProvider
 
 
 pytestmark = pytest.mark.unit
