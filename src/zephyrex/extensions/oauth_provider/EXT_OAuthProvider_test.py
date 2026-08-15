@@ -60,14 +60,21 @@ class TestCanonicalWiring:
 
 
 class TestHashing:
-    def test_hash_secret_is_salt_dependent(self):
-        assert _hash_secret("abc", "salt-1") != _hash_secret("abc", "salt-2")
+    def test_hash_secret_produces_bcrypt_hash(self):
+        import bcrypt
+        hashed = _hash_secret("abc", "salt-1")
+        assert hashed.startswith("$2b$")
+        assert bcrypt.checkpw(("salt-1" + "abc").encode("utf-8"), hashed.encode("utf-8"))
 
     def test_hash_secret_is_value_dependent(self):
-        assert _hash_secret("abc", "s") != _hash_secret("def", "s")
+        import bcrypt
+        h1 = _hash_secret("abc", "s")
+        assert not bcrypt.checkpw(("s" + "def").encode("utf-8"), h1.encode("utf-8"))
 
-    def test_hash_secret_stable(self):
-        assert _hash_secret("abc", "s") == _hash_secret("abc", "s")
+    def test_hash_secret_verifies_correctly(self):
+        import bcrypt
+        hashed = _hash_secret("abc", "s")
+        assert bcrypt.checkpw(("s" + "abc").encode("utf-8"), hashed.encode("utf-8"))
 
 
 class TestTokenFingerprint:

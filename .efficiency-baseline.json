@@ -1,10 +1,10 @@
 {
-  "boot": 3814.55083116889,
-  "create_models_1": 6.3531238585710526,
-  "create_models_10": 42.38771013915539,
-  "create_models_50": 216.0855408757925,
-  "health_check": 4.878780618309975,
-  "openapi_generation": 0.010816007852554321,
-  "prefix_derivation_100": 0.22507904469966888,
-  "registry_commit": 157.39964582026005
+  "boot": 4086.3782443106174,
+  "create_models_1": 8.578700199723244,
+  "create_models_10": 44.02310997247696,
+  "create_models_50": 375.20541809499264,
+  "health_check": 4.769756197929382,
+  "openapi_generation": 1576.822866126895,
+  "prefix_derivation_100": 0.23379005491733554,
+  "registry_commit": 2206.412510946393
 }

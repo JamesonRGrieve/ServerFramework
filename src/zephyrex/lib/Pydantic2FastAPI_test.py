@@ -442,15 +442,16 @@ class TestErrorHandling:
         with pytest.raises(HTTPException) as exc_info:
             handle_resource_operation_error(error)
         assert exc_info.value.status_code == 422
-        assert "Invalid input" in exc_info.value.detail["details"]
+        assert exc_info.value.detail["message"] == "Validation error"
+        assert exc_info.value.detail["code"] == "validation_error"
 
     def test_handle_http_exception(self):
-        """Test handling HTTPException (passthrough)."""
+        """Test handling HTTPException (passthrough) — string detail wrapped in envelope."""
         error = HTTPException(status_code=404, detail="Not found")
         with pytest.raises(HTTPException) as exc_info:
             handle_resource_operation_error(error)
         assert exc_info.value.status_code == 404
-        assert exc_info.value.detail == "Not found"
+        assert exc_info.value.detail["message"] == "Not found"
 
     def test_handle_generic_exception(self):
         """Test handling generic Exception."""
@@ -902,16 +903,18 @@ class TestQueryParameterInjection:
             items = response.json().get("tests") or next(iter(response.json().values()))
         else:
             body = response.json()
+            detail = body.get("detail", {})
             details = (
-                body.get("detail", {}).get("details")
-                or body.get("detail", {}).get("errors")
+                detail.get("details")
+                or detail.get("errors")
                 or []
+            ) if isinstance(detail, dict) else (
+                detail if isinstance(detail, list) else []
             )
             input_val = None
             if details and isinstance(details, list):
                 input_val = details[0].get("input")
             if isinstance(input_val, dict):
-                # For list responses, input may contain the plural key mapping to a list
                 first_val = next(iter(input_val.values()))
                 items = first_val if isinstance(first_val, list) else [first_val]
             else:

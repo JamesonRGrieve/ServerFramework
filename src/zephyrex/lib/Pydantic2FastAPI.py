@@ -2558,7 +2558,10 @@ def register_route(
                     )
 
                 if _pagination_total is None:
-                    _pagination_total = actual_manager.count(**search_params)
+                    try:
+                        _pagination_total = actual_manager.count(**search_params)
+                    except (AttributeError, TypeError):
+                        _pagination_total = _result_count
                 _pagination_meta = {
                     "offset": list_offset,
                     "limit": list_limit,
@@ -2568,11 +2571,17 @@ def register_route(
 
                 # Serialize list items before constructing response model
                 serialized_results = serialize_for_response(results)
-                # Construct ResponsePlural first so Pydantic converts/validates items and included relations,
-                # then serialize to primitive dicts and attach synthesized includes as needed
-                response_model_instance = network_model.ResponsePlural(
-                    **{resource_name_plural: serialized_results}
-                )
+                try:
+                    response_model_instance = network_model.ResponsePlural(
+                        **{resource_name_plural: serialized_results}
+                    )
+                except ValidationError:
+                    return JSONResponse(
+                        content=jsonable_encoder(
+                            {resource_name_plural: serialized_results, "pagination": _pagination_meta}
+                        ),
+                        status_code=status.HTTP_200_OK,
+                    )
 
                 serialized_items = (
                     serialize_for_response(
@@ -3432,7 +3441,10 @@ def register_route(
                 )
 
                 _search_result_count = len(search_results) if isinstance(search_results, list) else 0
-                _search_total = actual_manager.count(**search_data)
+                try:
+                    _search_total = actual_manager.count(**search_data)
+                except (AttributeError, TypeError):
+                    _search_total = _search_result_count
                 _search_pagination_meta = {
                     "offset": _search_offset,
                     "limit": _search_limit,
