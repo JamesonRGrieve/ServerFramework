@@ -1,10 +1,9 @@
 """xdist scheduler plugin: run Efficiency_test.py last on one quiet worker.
 
-Extends LoadFileScheduling. The serial scope is placed at the END of the
-workqueue so it's the last scope assigned. Because loadfile sends all
-tests from one file to one worker, the efficiency benchmarks land on a
-single worker after its parallel scopes complete — the other workers
-are idle by then.
+Extends LoadFileScheduling. Efficiency tests are held back from the
+workqueue until all parallel scopes have been fully distributed and
+completed. This ensures the benchmarks run on a truly quiet system,
+not merely on the first worker that finishes its scopes.
 """
 
 from __future__ import annotations
@@ -18,6 +17,11 @@ SERIAL_SCOPE = "__serial_last__"
 
 class SerialLastScheduler(LoadFileScheduling):
 
+    def __init__(self, config, log):
+        super().__init__(config, log)
+        self._serial_held: dict[str, bool] = {}
+        self._serial_released: bool = False
+
     def _split_scope(self, nodeid: str) -> str:
         if "Efficiency_test" in nodeid:
             return SERIAL_SCOPE
@@ -27,6 +31,7 @@ class SerialLastScheduler(LoadFileScheduling):
         assert self.collection_is_completed
 
         if self.collection is not None:
+            self._try_release_serial()
             for node in self.nodes:
                 self._reschedule(node)
             return
@@ -40,23 +45,33 @@ class SerialLastScheduler(LoadFileScheduling):
             return
 
         parallel: dict[str, dict[str, bool]] = {}
-        serial: dict[str, bool] = {}
 
         for nodeid in self.collection:
             scope = self._split_scope(nodeid)
             if scope == SERIAL_SCOPE:
-                serial[nodeid] = False
+                self._serial_held[nodeid] = False
             else:
                 parallel.setdefault(scope, {})[nodeid] = False
 
         for scope, nodeids in sorted(parallel.items(), key=lambda x: -len(x[1])):
             self.workqueue[scope] = nodeids
 
-        if serial:
-            self.workqueue[SERIAL_SCOPE] = serial
+        if not parallel and self._serial_held:
+            self.workqueue[SERIAL_SCOPE] = self._serial_held
+            self._serial_released = True
 
         for node in self.nodes:
             self._reschedule(node)
+
+    def _try_release_serial(self) -> None:
+        if self._serial_released or not self._serial_held:
+            return
+        if any(k != SERIAL_SCOPE for k in self.workqueue):
+            return
+        if any(node.pending for node in self.nodes):
+            return
+        self.workqueue[SERIAL_SCOPE] = self._serial_held
+        self._serial_released = True
 
 
 @pytest.hookimpl(trylast=True)
