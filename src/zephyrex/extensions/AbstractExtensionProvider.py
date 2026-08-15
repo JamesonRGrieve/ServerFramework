@@ -290,7 +290,7 @@ class ExtensionRegistry(AbstractRegistry):
             except Exception as e:
                 logger.error(f"Failed to load extension {extension_name}: {e}")
 
-        loaded_names = {ext.name for ext in self.extensions.values() if hasattr(ext, "name")}
+        loaded_names = {ext.name for ext in self.extensions if hasattr(ext, "name")}
         requested_set = set(extension_names)
         missing = requested_set - loaded_names
         if missing:

@@ -18,15 +18,10 @@ from zephyrex.logic.BLL_Auth import UserManager, UserModel
 
 @extension_model(UserModel)
 class Payment_UserModel(BaseModel):
-    """
-    Payment extension for User model with Stripe customer integration.
+    """Payment extension for User model with payment provider customer integration.
 
-    This automatically adds:
-    - external_payment_id: Optional[str] field
-    - stripe_customer: Optional[Stripe_CustomerModel] navigation property
-
-    The navigation property resolves automatically when accessed:
-    user.stripe_customer -> calls Stripe API to get customer details
+    Adds a provider-agnostic external_payment_id that links to the active
+    payment provider's customer record (Stripe, Square, or PayPal).
     """
 
     external_payment_id: Optional[str] = Field(
@@ -318,9 +313,6 @@ def get_user_subscription_status(
         # before they reach this layer).
         try:
             from zephyrex.extensions.payment.EXT_Payment import EXT_Payment
-            from zephyrex.extensions.payment.PRV_Stripe_Payment import (
-                Stripe_SubscriptionModel,
-            )
 
             rotation_manager = getattr(EXT_Payment, "root", None)
             if rotation_manager is None:
@@ -334,6 +326,13 @@ def get_user_subscription_status(
                     "status": "unknown",
                     "reason": "Payment rotation not configured",
                 }
+
+            # Resolve via whichever provider the rotation system selects.
+            # Each provider's SubscriptionModel exposes
+            # get_subscription_status_via_provider with an identical contract.
+            from zephyrex.extensions.payment.PRV_Stripe_Payment import (
+                Stripe_SubscriptionModel,
+            )
 
             return rotation_manager.rotate(  # type: ignore[no-any-return]
                 Stripe_SubscriptionModel.get_subscription_status_via_provider,
