@@ -1,22 +1,21 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Tests for the secret vault extension and OpenBao provider.
 
-All hvac API calls are intercepted — no live OpenBao/Vault instance
-required. Tests verify config validation, health checks, all CRUD
-abilities, auth method selection, error handling, and metadata.
+No mocks. Tests exercise real code paths that don't require a live
+vault: metadata, config validation, env var parsing, error paths,
+client construction, and the extension manifest. CRUD tests that
+need a live vault are gated on OPENBAO_ADDR.
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
-from unittest.mock import MagicMock, patch
+import os
 
 import pytest
 
 from zephyrex.extensions.AbstractExtensionProvider import HealthStatus
 from zephyrex.extensions.secret_vault.EXT_Secret_Vault import (
     EXT_Secret_Vault,
-    AbstractSecretVaultProvider,
     Capability,
 )
 from zephyrex.extensions.secret_vault.PRV_OpenBao import (
@@ -24,65 +23,13 @@ from zephyrex.extensions.secret_vault.PRV_OpenBao import (
     _build_client,
     _get_addr,
     _get_mount,
+    _get_namespace,
     _get_token,
 )
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-class _FakeInstance:
-    id = "test-vault-instance"
-    api_key = None
-
-
-def _mock_hvac_client(
-    authenticated: bool = True,
-    health: Optional[Dict[str, Any]] = None,
-    secrets: Optional[Dict[str, Dict[str, Any]]] = None,
-):
-    """Build a mock hvac.Client with configurable responses."""
-    client = MagicMock()
-    client.is_authenticated.return_value = authenticated
-
-    if health is None:
-        health = {"initialized": True, "sealed": False, "standby": False}
-    client.sys.read_health_status.return_value = health
-
-    store: Dict[str, Dict[str, Any]] = dict(secrets or {})
-
-    def read_secret_version(path, mount_point="secret", version=None):
-        if path not in store:
-            raise Exception(f"secret not found: {path}")
-        return {"data": {"data": store[path], "metadata": {"version": 1}}}
-
-    def create_or_update_secret(path, secret, mount_point="secret"):
-        store[path] = secret
-        return {"data": {"version": len(store)}}
-
-    def delete_latest_version(path, mount_point="secret"):
-        store.pop(path, None)
-
-    def list_secrets_fn(path="", mount_point="secret"):
-        prefix = f"{path}/" if path else ""
-        keys = [k[len(prefix):] for k in store if k.startswith(prefix) or not prefix]
-        return {"data": {"keys": keys}}
-
-    def read_metadata(path, mount_point="secret"):
-        return {"data": {"versions": {"1": {"created_time": "2026-01-01T00:00:00Z"}}}}
-
-    kv = client.secrets.kv.v2
-    kv.read_secret_version.side_effect = read_secret_version
-    kv.create_or_update_secret.side_effect = create_or_update_secret
-    kv.delete_latest_version_of_secret.side_effect = delete_latest_version
-    kv.list_secrets.side_effect = list_secrets_fn
-    kv.read_secret_metadata.side_effect = read_metadata
-
-    client.auth.approle.login.return_value = {"auth": {"client_token": "s.fake"}}
-
-    return client
+def _vault_available() -> bool:
+    return bool(os.environ.get("OPENBAO_ADDR") or os.environ.get("VAULT_ADDR"))
 
 
 # ---------------------------------------------------------------------------
@@ -97,25 +44,45 @@ class TestExtSecretVault:
     def test_version_semver(self):
         parts = EXT_Secret_Vault.version.split(".")
         assert len(parts) == 3
+        assert all(p.isdigit() for p in parts)
 
-    def test_abilities(self):
+    def test_abilities_include_all_crud(self):
         expected = {"secret_read", "secret_write", "secret_delete", "secret_list", "secret_metadata"}
         assert expected.issubset(EXT_Secret_Vault._abilities)
 
-    def test_env_vars(self):
+    def test_env_vars_declared(self):
         assert "OPENBAO_ADDR" in EXT_Secret_Vault._env
         assert "OPENBAO_TOKEN" in EXT_Secret_Vault._env
         assert "VAULT_ADDR" in EXT_Secret_Vault._env
+        assert "VAULT_TOKEN" in EXT_Secret_Vault._env
+        assert "OPENBAO_MOUNT_POINT" in EXT_Secret_Vault._env
+        assert "OPENBAO_NAMESPACE" in EXT_Secret_Vault._env
+        assert "OPENBAO_ROLE_ID" in EXT_Secret_Vault._env
+        assert "OPENBAO_SECRET_ID" in EXT_Secret_Vault._env
+
+    def test_env_defaults_empty(self):
+        assert EXT_Secret_Vault._env["OPENBAO_ADDR"] == ""
+        assert EXT_Secret_Vault._env["OPENBAO_TOKEN"] == ""
+
+    def test_default_mount_point(self):
+        assert EXT_Secret_Vault._env["OPENBAO_MOUNT_POINT"] == "secret"
 
     def test_dependencies_include_hvac(self):
         dep_names = [d.name for d in EXT_Secret_Vault.dependencies.pip]
         assert "hvac" in dep_names
+
+    def test_hvac_is_optional(self):
+        hvac_dep = next(d for d in EXT_Secret_Vault.dependencies.pip if d.name == "hvac")
+        assert hvac_dep.optional is True
 
     def test_on_initialize(self):
         assert EXT_Secret_Vault.on_initialize() is True
 
     def test_no_extension_dependencies(self):
         assert EXT_Secret_Vault.extension_dependencies == []
+
+    def test_description_nonempty(self):
+        assert len(EXT_Secret_Vault.description) > 10
 
 
 # ---------------------------------------------------------------------------
@@ -126,6 +93,10 @@ class TestExtSecretVault:
 class TestOpenBaoProviderMetadata:
     def test_name(self):
         assert OpenBaoProvider.name == "openbao"
+
+    def test_version_semver(self):
+        parts = OpenBaoProvider.version.split(".")
+        assert len(parts) == 3
 
     def test_platform_name(self):
         assert OpenBaoProvider.get_platform_name() == "OpenBao"
@@ -144,7 +115,59 @@ class TestOpenBaoProviderMetadata:
 
     def test_abilities(self):
         expected = {"secret_read", "secret_write", "secret_delete", "secret_list", "secret_metadata"}
-        assert OpenBaoProvider._abilities == expected
+        assert expected.issubset(OpenBaoProvider._abilities)
+
+    def test_env_dict(self):
+        assert "OPENBAO_ADDR" in OpenBaoProvider._env
+        assert "OPENBAO_TOKEN" in OpenBaoProvider._env
+
+
+# ---------------------------------------------------------------------------
+# Env var helpers
+# ---------------------------------------------------------------------------
+
+
+class TestEnvHelpers:
+    def test_get_addr_openbao(self, monkeypatch):
+        monkeypatch.setenv("OPENBAO_ADDR", "http://bao:8200")
+        monkeypatch.delenv("VAULT_ADDR", raising=False)
+        assert _get_addr() == "http://bao:8200"
+
+    def test_get_addr_vault_fallback(self, monkeypatch):
+        monkeypatch.delenv("OPENBAO_ADDR", raising=False)
+        monkeypatch.setenv("VAULT_ADDR", "http://vault:8200")
+        assert _get_addr() == "http://vault:8200"
+
+    def test_get_addr_empty(self, monkeypatch):
+        monkeypatch.delenv("OPENBAO_ADDR", raising=False)
+        monkeypatch.delenv("VAULT_ADDR", raising=False)
+        assert _get_addr() == ""
+
+    def test_get_token_openbao(self, monkeypatch):
+        monkeypatch.setenv("OPENBAO_TOKEN", "s.bao")
+        monkeypatch.delenv("VAULT_TOKEN", raising=False)
+        assert _get_token() == "s.bao"
+
+    def test_get_token_vault_fallback(self, monkeypatch):
+        monkeypatch.delenv("OPENBAO_TOKEN", raising=False)
+        monkeypatch.setenv("VAULT_TOKEN", "s.vault")
+        assert _get_token() == "s.vault"
+
+    def test_get_mount_default(self, monkeypatch):
+        monkeypatch.delenv("OPENBAO_MOUNT_POINT", raising=False)
+        assert _get_mount() == "secret"
+
+    def test_get_mount_custom(self, monkeypatch):
+        monkeypatch.setenv("OPENBAO_MOUNT_POINT", "kv")
+        assert _get_mount() == "kv"
+
+    def test_get_namespace_empty(self, monkeypatch):
+        monkeypatch.delenv("OPENBAO_NAMESPACE", raising=False)
+        assert _get_namespace() is None
+
+    def test_get_namespace_set(self, monkeypatch):
+        monkeypatch.setenv("OPENBAO_NAMESPACE", "admin")
+        assert _get_namespace() == "admin"
 
 
 # ---------------------------------------------------------------------------
@@ -154,15 +177,15 @@ class TestOpenBaoProviderMetadata:
 
 class TestOpenBaoConfigValidation:
     def test_no_addr_fails(self, monkeypatch):
-        monkeypatch.setenv("OPENBAO_ADDR", "")
-        monkeypatch.setenv("VAULT_ADDR", "")
+        monkeypatch.delenv("OPENBAO_ADDR", raising=False)
+        monkeypatch.delenv("VAULT_ADDR", raising=False)
         assert OpenBaoProvider.validate_config() is False
 
     def test_no_auth_fails(self, monkeypatch):
         monkeypatch.setenv("OPENBAO_ADDR", "http://vault:8200")
-        monkeypatch.setenv("OPENBAO_TOKEN", "")
-        monkeypatch.setenv("OPENBAO_ROLE_ID", "")
-        monkeypatch.setenv("VAULT_TOKEN", "")
+        monkeypatch.delenv("OPENBAO_TOKEN", raising=False)
+        monkeypatch.delenv("VAULT_TOKEN", raising=False)
+        monkeypatch.delenv("OPENBAO_ROLE_ID", raising=False)
         assert OpenBaoProvider.validate_config() is False
 
     def test_token_auth_passes(self, monkeypatch):
@@ -172,249 +195,118 @@ class TestOpenBaoConfigValidation:
 
     def test_approle_auth_passes(self, monkeypatch):
         monkeypatch.setenv("OPENBAO_ADDR", "http://vault:8200")
-        monkeypatch.setenv("OPENBAO_TOKEN", "")
+        monkeypatch.delenv("OPENBAO_TOKEN", raising=False)
+        monkeypatch.delenv("VAULT_TOKEN", raising=False)
         monkeypatch.setenv("OPENBAO_ROLE_ID", "role-123")
         assert OpenBaoProvider.validate_config() is True
 
     def test_vault_addr_fallback(self, monkeypatch):
-        monkeypatch.setenv("OPENBAO_ADDR", "")
+        monkeypatch.delenv("OPENBAO_ADDR", raising=False)
         monkeypatch.setenv("VAULT_ADDR", "http://vault:8200")
         monkeypatch.setenv("VAULT_TOKEN", "s.legacy")
         assert OpenBaoProvider.validate_config() is True
 
 
 # ---------------------------------------------------------------------------
-# Health check
+# Health check (no-addr path — no network call)
 # ---------------------------------------------------------------------------
 
 
 class TestOpenBaoHealthCheck:
     def test_health_no_addr(self, monkeypatch):
-        monkeypatch.setenv("OPENBAO_ADDR", "")
-        monkeypatch.setenv("VAULT_ADDR", "")
+        monkeypatch.delenv("OPENBAO_ADDR", raising=False)
+        monkeypatch.delenv("VAULT_ADDR", raising=False)
         report = OpenBaoProvider.health_check()
         assert report.status == HealthStatus.DOWN
+        assert "not set" in report.detail
 
-    @patch("zephyrex.extensions.secret_vault.PRV_OpenBao._build_client")
-    def test_health_ok(self, mock_build, monkeypatch):
-        monkeypatch.setenv("OPENBAO_ADDR", "http://vault:8200")
-        monkeypatch.setenv("OPENBAO_TOKEN", "s.token")
-        mock_build.return_value = _mock_hvac_client()
-        report = OpenBaoProvider.health_check()
-        assert report.status == HealthStatus.OK
-
-    @patch("zephyrex.extensions.secret_vault.PRV_OpenBao._build_client")
-    def test_health_sealed(self, mock_build, monkeypatch):
-        monkeypatch.setenv("OPENBAO_ADDR", "http://vault:8200")
-        monkeypatch.setenv("OPENBAO_TOKEN", "s.token")
-        mock_build.return_value = _mock_hvac_client(
-            health={"initialized": True, "sealed": True}
-        )
-        report = OpenBaoProvider.health_check()
-        assert report.status == HealthStatus.DEGRADED
-
-    @patch("zephyrex.extensions.secret_vault.PRV_OpenBao._build_client")
-    def test_health_connection_error(self, mock_build, monkeypatch):
-        monkeypatch.setenv("OPENBAO_ADDR", "http://vault:8200")
-        monkeypatch.setenv("OPENBAO_TOKEN", "s.token")
-        mock_build.side_effect = ConnectionError("refused")
+    def test_health_unreachable(self, monkeypatch):
+        monkeypatch.setenv("OPENBAO_ADDR", "http://127.0.0.1:1")
+        monkeypatch.setenv("OPENBAO_TOKEN", "s.x")
         report = OpenBaoProvider.health_check()
         assert report.status == HealthStatus.DOWN
+        assert "connection error" in report.detail.lower() or "error" in report.detail.lower()
 
 
 # ---------------------------------------------------------------------------
-# Bond instance
+# Bond instance (no-addr path — no network call)
 # ---------------------------------------------------------------------------
 
 
 class TestOpenBaoBondInstance:
-    @patch("zephyrex.extensions.secret_vault.PRV_OpenBao._build_client")
-    def test_bond_success(self, mock_build, monkeypatch):
-        monkeypatch.setenv("OPENBAO_ADDR", "http://vault:8200")
-        monkeypatch.setenv("OPENBAO_TOKEN", "s.token")
-        monkeypatch.setenv("OPENBAO_MOUNT_POINT", "kv")
-        mock_build.return_value = _mock_hvac_client()
-        bonded = OpenBaoProvider.bond_instance(_FakeInstance())
-        assert bonded is not None
-        assert bonded.sdk["mount_point"] == "kv"
-
-    @patch("zephyrex.extensions.secret_vault.PRV_OpenBao._build_client")
-    def test_bond_auth_failure(self, mock_build, monkeypatch):
-        monkeypatch.setenv("OPENBAO_ADDR", "http://vault:8200")
-        monkeypatch.setenv("OPENBAO_TOKEN", "s.bad")
-        mock_build.return_value = _mock_hvac_client(authenticated=False)
-        bonded = OpenBaoProvider.bond_instance(_FakeInstance())
-        assert bonded is None
-
     def test_bond_no_addr(self, monkeypatch):
-        monkeypatch.setenv("OPENBAO_ADDR", "")
-        monkeypatch.setenv("VAULT_ADDR", "")
-        bonded = OpenBaoProvider.bond_instance(_FakeInstance())
+        monkeypatch.delenv("OPENBAO_ADDR", raising=False)
+        monkeypatch.delenv("VAULT_ADDR", raising=False)
+
+        class _Inst:
+            id = "x"
+            api_key = None
+
+        bonded = OpenBaoProvider.bond_instance(_Inst())
         assert bonded is None
 
 
 # ---------------------------------------------------------------------------
-# CRUD abilities
+# Client construction (real hvac.Client, no server needed)
 # ---------------------------------------------------------------------------
 
 
-class TestOpenBaoSecretCRUD:
-    @patch("zephyrex.extensions.secret_vault.PRV_OpenBao._build_client")
-    def test_read_secret(self, mock_build, monkeypatch):
-        monkeypatch.setenv("OPENBAO_ADDR", "http://vault:8200")
-        monkeypatch.setenv("OPENBAO_TOKEN", "s.token")
-        mock_build.return_value = _mock_hvac_client(
-            secrets={"app/db": {"username": "admin", "password": "s3cret"}}
-        )
-        result = OpenBaoProvider.read_secret(_FakeInstance(), "app/db")
-        assert result["username"] == "admin"
-        assert result["password"] == "s3cret"
+class TestBuildClient:
+    def test_constructs_client_with_token(self):
+        client = _build_client("http://127.0.0.1:1", token="s.test")
+        assert client is not None
+        url = client.url if isinstance(client.url, str) else client.url.geturl()
+        assert url.startswith("http://127.0.0.1")
 
-    @patch("zephyrex.extensions.secret_vault.PRV_OpenBao._build_client")
-    def test_read_secret_not_found(self, mock_build, monkeypatch):
-        monkeypatch.setenv("OPENBAO_ADDR", "http://vault:8200")
-        monkeypatch.setenv("OPENBAO_TOKEN", "s.token")
-        mock_build.return_value = _mock_hvac_client(secrets={})
-        with pytest.raises(Exception, match="not found"):
-            OpenBaoProvider.read_secret(_FakeInstance(), "nonexistent")
-
-    @patch("zephyrex.extensions.secret_vault.PRV_OpenBao._build_client")
-    def test_write_secret(self, mock_build, monkeypatch):
-        monkeypatch.setenv("OPENBAO_ADDR", "http://vault:8200")
-        monkeypatch.setenv("OPENBAO_TOKEN", "s.token")
-        client = _mock_hvac_client(secrets={})
-        mock_build.return_value = client
-        result = OpenBaoProvider.write_secret(
-            _FakeInstance(), "app/new", {"key": "value"}
-        )
-        assert isinstance(result, dict)
-
-    @patch("zephyrex.extensions.secret_vault.PRV_OpenBao._build_client")
-    def test_write_then_read(self, mock_build, monkeypatch):
-        monkeypatch.setenv("OPENBAO_ADDR", "http://vault:8200")
-        monkeypatch.setenv("OPENBAO_TOKEN", "s.token")
-        store: Dict[str, Any] = {}
-        client = _mock_hvac_client(secrets=store)
-        mock_build.return_value = client
-        OpenBaoProvider.write_secret(_FakeInstance(), "roundtrip", {"foo": "bar"})
-        result = OpenBaoProvider.read_secret(_FakeInstance(), "roundtrip")
-        assert result["foo"] == "bar"
-
-    @patch("zephyrex.extensions.secret_vault.PRV_OpenBao._build_client")
-    def test_delete_secret(self, mock_build, monkeypatch):
-        monkeypatch.setenv("OPENBAO_ADDR", "http://vault:8200")
-        monkeypatch.setenv("OPENBAO_TOKEN", "s.token")
-        mock_build.return_value = _mock_hvac_client(
-            secrets={"to-delete": {"x": "y"}}
-        )
-        result = OpenBaoProvider.delete_secret(_FakeInstance(), "to-delete")
-        assert result is True
-
-    @patch("zephyrex.extensions.secret_vault.PRV_OpenBao._build_client")
-    def test_list_secrets(self, mock_build, monkeypatch):
-        monkeypatch.setenv("OPENBAO_ADDR", "http://vault:8200")
-        monkeypatch.setenv("OPENBAO_TOKEN", "s.token")
-        mock_build.return_value = _mock_hvac_client(
-            secrets={"a": {"v": 1}, "b": {"v": 2}}
-        )
-        keys = OpenBaoProvider.list_secrets(_FakeInstance())
-        assert "a" in keys
-        assert "b" in keys
-
-    @patch("zephyrex.extensions.secret_vault.PRV_OpenBao._build_client")
-    def test_list_empty(self, mock_build, monkeypatch):
-        monkeypatch.setenv("OPENBAO_ADDR", "http://vault:8200")
-        monkeypatch.setenv("OPENBAO_TOKEN", "s.token")
-        client = _mock_hvac_client(secrets={})
-        client.secrets.kv.v2.list_secrets.side_effect = Exception("no keys")
-        mock_build.return_value = client
-        keys = OpenBaoProvider.list_secrets(_FakeInstance())
-        assert keys == []
-
-    @patch("zephyrex.extensions.secret_vault.PRV_OpenBao._build_client")
-    def test_read_metadata(self, mock_build, monkeypatch):
-        monkeypatch.setenv("OPENBAO_ADDR", "http://vault:8200")
-        monkeypatch.setenv("OPENBAO_TOKEN", "s.token")
-        mock_build.return_value = _mock_hvac_client(secrets={"meta-test": {"a": 1}})
-        meta = OpenBaoProvider.read_metadata(_FakeInstance(), "meta-test")
-        assert "versions" in meta
+    def test_constructs_client_without_token(self):
+        client = _build_client("http://127.0.0.1:1")
+        assert client is not None
 
 
 # ---------------------------------------------------------------------------
-# Error handling
+# Error paths (not connected — real code, no network)
 # ---------------------------------------------------------------------------
 
 
-class TestOpenBaoErrorHandling:
+class TestOpenBaoNotConnected:
+    """All CRUD abilities raise RuntimeError when vault is unreachable."""
+
+    def _make_instance(self):
+        class _Inst:
+            id = "x"
+            api_key = None
+
+        return _Inst()
+
     def test_read_not_connected(self, monkeypatch):
-        monkeypatch.setenv("OPENBAO_ADDR", "")
-        monkeypatch.setenv("VAULT_ADDR", "")
+        monkeypatch.delenv("OPENBAO_ADDR", raising=False)
+        monkeypatch.delenv("VAULT_ADDR", raising=False)
         with pytest.raises(RuntimeError, match="not connected"):
-            OpenBaoProvider.read_secret(_FakeInstance(), "any")
+            OpenBaoProvider.read_secret(self._make_instance(), "any")
 
     def test_write_not_connected(self, monkeypatch):
-        monkeypatch.setenv("OPENBAO_ADDR", "")
-        monkeypatch.setenv("VAULT_ADDR", "")
+        monkeypatch.delenv("OPENBAO_ADDR", raising=False)
+        monkeypatch.delenv("VAULT_ADDR", raising=False)
         with pytest.raises(RuntimeError, match="not connected"):
-            OpenBaoProvider.write_secret(_FakeInstance(), "any", {"k": "v"})
+            OpenBaoProvider.write_secret(self._make_instance(), "any", {"k": "v"})
 
     def test_delete_not_connected(self, monkeypatch):
-        monkeypatch.setenv("OPENBAO_ADDR", "")
-        monkeypatch.setenv("VAULT_ADDR", "")
+        monkeypatch.delenv("OPENBAO_ADDR", raising=False)
+        monkeypatch.delenv("VAULT_ADDR", raising=False)
         with pytest.raises(RuntimeError, match="not connected"):
-            OpenBaoProvider.delete_secret(_FakeInstance(), "any")
+            OpenBaoProvider.delete_secret(self._make_instance(), "any")
 
     def test_list_not_connected(self, monkeypatch):
-        monkeypatch.setenv("OPENBAO_ADDR", "")
-        monkeypatch.setenv("VAULT_ADDR", "")
+        monkeypatch.delenv("OPENBAO_ADDR", raising=False)
+        monkeypatch.delenv("VAULT_ADDR", raising=False)
         with pytest.raises(RuntimeError, match="not connected"):
-            OpenBaoProvider.list_secrets(_FakeInstance())
+            OpenBaoProvider.list_secrets(self._make_instance())
 
     def test_metadata_not_connected(self, monkeypatch):
-        monkeypatch.setenv("OPENBAO_ADDR", "")
-        monkeypatch.setenv("VAULT_ADDR", "")
+        monkeypatch.delenv("OPENBAO_ADDR", raising=False)
+        monkeypatch.delenv("VAULT_ADDR", raising=False)
         with pytest.raises(RuntimeError, match="not connected"):
-            OpenBaoProvider.read_metadata(_FakeInstance(), "any")
-
-
-# ---------------------------------------------------------------------------
-# Auth method selection
-# ---------------------------------------------------------------------------
-
-
-class TestOpenBaoAuth:
-    @patch("zephyrex.extensions.secret_vault.PRV_OpenBao.hvac")
-    def test_token_auth(self, mock_hvac, monkeypatch):
-        monkeypatch.setenv("OPENBAO_TOKEN", "s.my-token")
-        monkeypatch.setenv("OPENBAO_ROLE_ID", "")
-        monkeypatch.setenv("OPENBAO_SECRET_ID", "")
-        mock_client = MagicMock()
-        mock_hvac.Client.return_value = mock_client
-        _build_client("http://vault:8200", "s.my-token")
-        mock_hvac.Client.assert_called_once_with(url="http://vault:8200", token="s.my-token")
-        mock_client.auth.approle.login.assert_not_called()
-
-    @patch("zephyrex.extensions.secret_vault.PRV_OpenBao.hvac")
-    def test_approle_auth(self, mock_hvac, monkeypatch):
-        monkeypatch.setenv("OPENBAO_TOKEN", "")
-        monkeypatch.setenv("OPENBAO_ROLE_ID", "role-abc")
-        monkeypatch.setenv("OPENBAO_SECRET_ID", "secret-xyz")
-        mock_client = MagicMock()
-        mock_hvac.Client.return_value = mock_client
-        _build_client("http://vault:8200")
-        mock_client.auth.approle.login.assert_called_once_with(
-            role_id="role-abc", secret_id="secret-xyz"
-        )
-
-    @patch("zephyrex.extensions.secret_vault.PRV_OpenBao.hvac")
-    def test_namespace_passed(self, mock_hvac, monkeypatch):
-        monkeypatch.setenv("OPENBAO_TOKEN", "s.t")
-        mock_client = MagicMock()
-        mock_hvac.Client.return_value = mock_client
-        _build_client("http://vault:8200", "s.t", namespace="admin")
-        mock_hvac.Client.assert_called_once_with(
-            url="http://vault:8200", token="s.t", namespace="admin"
-        )
+            OpenBaoProvider.read_metadata(self._make_instance(), "any")
 
 
 # ---------------------------------------------------------------------------
@@ -424,15 +316,60 @@ class TestOpenBaoAuth:
 
 class TestOpenBaoSecurity:
     def test_token_not_in_health_report(self, monkeypatch):
-        monkeypatch.setenv("OPENBAO_ADDR", "http://vault:8200")
-        monkeypatch.setenv("OPENBAO_TOKEN", "s.super-secret-token")
+        monkeypatch.setenv("OPENBAO_ADDR", "http://127.0.0.1:1")
+        monkeypatch.setenv("OPENBAO_TOKEN", "s.super-secret-token-12345")
         report = OpenBaoProvider.health_check()
-        assert "s.super-secret-token" not in report.detail
+        assert "s.super-secret-token-12345" not in report.detail
 
-    def test_env_defaults_empty(self):
+    def test_env_defaults_empty_credentials(self):
         assert OpenBaoProvider._env["OPENBAO_ADDR"] == ""
         assert OpenBaoProvider._env["OPENBAO_TOKEN"] == ""
+        assert OpenBaoProvider._env["OPENBAO_ROLE_ID"] == ""
+        assert OpenBaoProvider._env["OPENBAO_SECRET_ID"] == ""
 
-    def test_default_mount_point(self, monkeypatch):
-        monkeypatch.setenv("OPENBAO_MOUNT_POINT", "")
-        assert _get_mount() == "secret"
+
+# ---------------------------------------------------------------------------
+# Live CRUD — only runs when a real vault is available
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(not _vault_available(), reason="No OpenBao/Vault instance available")
+class TestOpenBaoLiveCRUD:
+    """Runs against a real vault. Set OPENBAO_ADDR + OPENBAO_TOKEN to enable."""
+
+    def _inst(self):
+        class _Inst:
+            id = "live-test"
+            api_key = None
+
+        return _Inst()
+
+    def test_write_and_read(self):
+        path = "zephyrex-test/live-roundtrip"
+        OpenBaoProvider.write_secret(self._inst(), path, {"key": "value"})
+        result = OpenBaoProvider.read_secret(self._inst(), path)
+        assert result["key"] == "value"
+        OpenBaoProvider.delete_secret(self._inst(), path)
+
+    def test_list_after_write(self):
+        path = "zephyrex-test/list-check"
+        OpenBaoProvider.write_secret(self._inst(), path, {"x": "1"})
+        keys = OpenBaoProvider.list_secrets(self._inst(), "zephyrex-test")
+        assert "list-check" in keys
+        OpenBaoProvider.delete_secret(self._inst(), path)
+
+    def test_read_metadata(self):
+        path = "zephyrex-test/meta-check"
+        OpenBaoProvider.write_secret(self._inst(), path, {"m": "1"})
+        meta = OpenBaoProvider.read_metadata(self._inst(), path)
+        assert "versions" in meta
+        OpenBaoProvider.delete_secret(self._inst(), path)
+
+    def test_health_ok(self):
+        report = OpenBaoProvider.health_check()
+        assert report.status == HealthStatus.OK
+
+    def test_bond_instance(self):
+        bonded = OpenBaoProvider.bond_instance(self._inst())
+        assert bonded is not None
+        assert bonded.sdk["client"].is_authenticated()

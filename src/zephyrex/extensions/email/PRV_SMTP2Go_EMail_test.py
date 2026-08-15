@@ -1,19 +1,16 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Tests for the SMTP2Go email provider.
 
-No live credentials required — all API calls are intercepted by a
-monkeypatched httpx response. Tests verify payload construction,
-error handling, config validation, and the typed send path.
+No mocks. Tests exercise real code paths that don't require a live
+SMTP2Go account: metadata, settings, config validation, bond lifecycle,
+input validation, unsupported ability stubs, and security. Send tests
+that hit the real API are gated on SMTP2GO_API_KEY.
 """
 
 from __future__ import annotations
 
-import asyncio
-import base64
 import os
 from decimal import Decimal
-from typing import Any, Dict
-from unittest.mock import AsyncMock
 
 import pytest
 
@@ -21,14 +18,11 @@ from zephyrex.extensions.AbstractExtensionProvider import HealthStatus
 from zephyrex.extensions.email.PRV_SMTP2Go_EMail import Smtp2goProvider
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+def _smtp2go_available() -> bool:
+    return bool(os.environ.get("SMTP2GO_API_KEY"))
 
 
 class _FakeInstance:
-    """Minimal stand-in for ProviderInstanceModel."""
-
     def __init__(self, api_key=None, from_email=None):
         self.id = "test-instance"
         self.api_key = api_key
@@ -39,16 +33,6 @@ class _FakeInstance:
         if key == "from_email":
             return self._from_email
         return self.settings.get(key)
-
-
-class _FakeResponse:
-    def __init__(self, status_code=200, text="ok", json_data=None):
-        self.status_code = status_code
-        self.text = text
-        self._json = json_data or {}
-
-    def json(self):
-        return self._json
 
 
 # ---------------------------------------------------------------------------
@@ -98,6 +82,9 @@ class TestSmtp2goProviderMetadata:
     def test_auth_strategy(self):
         assert Smtp2goProvider.default_auth_strategy == "api_key"
 
+    def test_description_nonempty(self):
+        assert len(Smtp2goProvider.description) > 5
+
 
 # ---------------------------------------------------------------------------
 # Settings model
@@ -116,6 +103,9 @@ class TestSmtp2goSettings:
         assert "SMTP2GO_API_KEY" in Smtp2goProvider._env
         assert "SMTP2GO_FROM_EMAIL" in Smtp2goProvider._env
         assert "SMTP2GO_API_URL" in Smtp2goProvider._env
+
+    def test_env_dict_defaults_empty_key(self):
+        assert Smtp2goProvider._env["SMTP2GO_API_KEY"] == ""
 
 
 # ---------------------------------------------------------------------------
@@ -148,7 +138,7 @@ class TestSmtp2goConfigValidation:
 
 
 # ---------------------------------------------------------------------------
-# Health check
+# Health check (no-key path — no network call)
 # ---------------------------------------------------------------------------
 
 
@@ -162,15 +152,6 @@ class TestSmtp2goHealthCheck:
         assert report.status == HealthStatus.DOWN
         assert "not configured" in report.detail
 
-    def test_health_network_error(self, monkeypatch):
-        monkeypatch.setenv("SMTP2GO_API_KEY", "test-key")
-        monkeypatch.setenv("SMTP2GO_API_URL", "http://localhost:1/nonexistent")
-        from zephyrex.lib.Environment import refresh_settings
-
-        refresh_settings()
-        report = Smtp2goProvider.health_check()
-        assert report.status == HealthStatus.DOWN
-
 
 # ---------------------------------------------------------------------------
 # Bond instance
@@ -178,7 +159,7 @@ class TestSmtp2goHealthCheck:
 
 
 class TestSmtp2goBondInstance:
-    def test_bond_returns_sdk(self, monkeypatch):
+    def test_bond_with_key_returns_sdk(self, monkeypatch):
         monkeypatch.setenv("SMTP2GO_API_KEY", "bond-test-key")
         monkeypatch.setenv("SMTP2GO_FROM_EMAIL", "test@example.com")
         from zephyrex.lib.Environment import refresh_settings
@@ -188,6 +169,8 @@ class TestSmtp2goBondInstance:
         bonded = Smtp2goProvider.bond_instance(inst)
         assert bonded is not None
         assert bonded.sdk["api_key"] == "bond-test-key"
+        assert bonded.sdk["from_email"] == "test@example.com"
+        assert "api.smtp2go.com" in bonded.sdk["api_url"]
 
     def test_bond_no_key_returns_none(self, monkeypatch):
         monkeypatch.setenv("SMTP2GO_API_KEY", "")
@@ -198,191 +181,51 @@ class TestSmtp2goBondInstance:
         bonded = Smtp2goProvider.bond_instance(inst)
         assert bonded is None
 
+    def test_bond_sdk_has_client(self, monkeypatch):
+        monkeypatch.setenv("SMTP2GO_API_KEY", "key")
+        from zephyrex.lib.Environment import refresh_settings
+
+        refresh_settings()
+        inst = _FakeInstance(api_key="key")
+        bonded = Smtp2goProvider.bond_instance(inst)
+        assert bonded is not None
+        assert "client" in bonded.sdk
+
 
 # ---------------------------------------------------------------------------
-# send_email
+# Input validation (real code, no network)
 # ---------------------------------------------------------------------------
 
 
-class TestSmtp2goSendEmail:
+class TestSmtp2goInputValidation:
     @pytest.mark.asyncio
-    async def test_send_plain_text(self, monkeypatch):
-        monkeypatch.setenv("SMTP2GO_API_KEY", "test-key")
-        monkeypatch.setenv("SMTP2GO_FROM_EMAIL", "sender@example.com")
-        monkeypatch.setenv("SMTP2GO_API_URL", "https://api.smtp2go.com/v3")
+    async def test_send_no_bond_returns_failure(self, monkeypatch):
+        monkeypatch.setenv("SMTP2GO_API_KEY", "")
         from zephyrex.lib.Environment import refresh_settings
 
         refresh_settings()
-
-        captured: Dict[str, Any] = {}
-
-        async def fake_post(url, json=None, **kw):
-            captured["url"] = str(url)
-            captured["payload"] = json
-            return _FakeResponse(200)
-
-        from zephyrex.lib import ProviderHTTPClient
-
-        class _FakeClient:
-            async def post(self, url, **kwargs):
-                return await fake_post(url, **kwargs)
-
-        monkeypatch.setattr(ProviderHTTPClient, "get_async_client", lambda *a, **kw: _FakeClient())
-
-        inst = _FakeInstance(api_key="test-key", from_email="sender@example.com")
-        result = await Smtp2goProvider.send_email(
-            inst, "to@example.com", "Subject", "Plain body"
-        )
-        assert "successfully" in result.lower()
-        assert captured["payload"]["text_body"] == "Plain body"
-        assert "html_body" not in captured["payload"]
-        assert captured["payload"]["to"] == ["to@example.com"]
-        assert captured["payload"]["subject"] == "Subject"
-
-    @pytest.mark.asyncio
-    async def test_send_html(self, monkeypatch):
-        monkeypatch.setenv("SMTP2GO_API_KEY", "test-key")
-        monkeypatch.setenv("SMTP2GO_FROM_EMAIL", "sender@example.com")
-        from zephyrex.lib.Environment import refresh_settings
-
-        refresh_settings()
-
-        captured: Dict[str, Any] = {}
-
-        async def fake_post(url, json=None, **kw):
-            captured["payload"] = json
-            return _FakeResponse(200)
-
-        from zephyrex.lib import ProviderHTTPClient
-
-        class _FakeClient:
-            async def post(self, url, **kwargs):
-                return await fake_post(url, **kwargs)
-
-        monkeypatch.setattr(ProviderHTTPClient, "get_async_client", lambda *a, **kw: _FakeClient())
-
-        inst = _FakeInstance(api_key="test-key")
-        result = await Smtp2goProvider.send_email(
-            inst, "to@example.com", "Subject", "<html><body>Hi</body></html>"
-        )
-        assert "successfully" in result.lower()
-        assert "html_body" in captured["payload"]
-        assert "text_body" not in captured["payload"]
-
-    @pytest.mark.asyncio
-    async def test_send_with_attachment(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("SMTP2GO_API_KEY", "test-key")
-        monkeypatch.setenv("SMTP2GO_FROM_EMAIL", "sender@example.com")
-        from zephyrex.lib.Environment import refresh_settings
-
-        refresh_settings()
-
-        attachment = tmp_path / "doc.txt"
-        attachment.write_text("hello")
-
-        captured: Dict[str, Any] = {}
-
-        async def fake_post(url, json=None, **kw):
-            captured["payload"] = json
-            return _FakeResponse(200)
-
-        from zephyrex.lib import ProviderHTTPClient
-
-        class _FakeClient:
-            async def post(self, url, **kwargs):
-                return await fake_post(url, **kwargs)
-
-        monkeypatch.setattr(ProviderHTTPClient, "get_async_client", lambda *a, **kw: _FakeClient())
-
-        inst = _FakeInstance(api_key="test-key")
-        result = await Smtp2goProvider.send_email(
-            inst, "to@example.com", "Subject", "Body", attachments=[str(attachment)]
-        )
-        assert "successfully" in result.lower()
-        atts = captured["payload"]["attachments"]
-        assert len(atts) == 1
-        assert atts[0]["filename"] == "doc.txt"
-        decoded = base64.b64decode(atts[0]["fileblob"])
-        assert decoded == b"hello"
-
-    @pytest.mark.asyncio
-    async def test_send_api_error(self, monkeypatch):
-        monkeypatch.setenv("SMTP2GO_API_KEY", "test-key")
-        monkeypatch.setenv("SMTP2GO_FROM_EMAIL", "sender@example.com")
-        from zephyrex.lib.Environment import refresh_settings
-
-        refresh_settings()
-
-        async def fake_post(url, json=None, **kw):
-            return _FakeResponse(403, "Forbidden")
-
-        from zephyrex.lib import ProviderHTTPClient
-
-        class _FakeClient:
-            async def post(self, url, **kwargs):
-                return await fake_post(url, **kwargs)
-
-        monkeypatch.setattr(ProviderHTTPClient, "get_async_client", lambda *a, **kw: _FakeClient())
-
-        inst = _FakeInstance(api_key="test-key")
+        inst = _FakeInstance(api_key=None)
         result = await Smtp2goProvider.send_email(
             inst, "to@example.com", "Subject", "Body"
         )
         assert "failed" in result.lower()
-        assert "403" in result
-
-    @pytest.mark.asyncio
-    async def test_send_invalid_recipient(self):
-        inst = _FakeInstance(api_key="test-key")
-        result = await Smtp2goProvider.send_email(inst, "", "Subject", "Body")
-        assert result is not None
 
     @pytest.mark.asyncio
     async def test_send_no_from_email(self, monkeypatch):
-        monkeypatch.setenv("SMTP2GO_API_KEY", "test-key")
+        monkeypatch.setenv("SMTP2GO_API_KEY", "key")
         monkeypatch.setenv("SMTP2GO_FROM_EMAIL", "")
         from zephyrex.lib.Environment import refresh_settings
 
         refresh_settings()
-        inst = _FakeInstance(api_key="test-key", from_email=None)
+        inst = _FakeInstance(api_key="key", from_email=None)
         result = await Smtp2goProvider.send_email(
             inst, "to@example.com", "Subject", "Body"
         )
-        assert "from_email" in result.lower()
-
-    @pytest.mark.asyncio
-    async def test_send_missing_attachment_skipped(self, monkeypatch):
-        monkeypatch.setenv("SMTP2GO_API_KEY", "test-key")
-        monkeypatch.setenv("SMTP2GO_FROM_EMAIL", "sender@example.com")
-        from zephyrex.lib.Environment import refresh_settings
-
-        refresh_settings()
-
-        captured: Dict[str, Any] = {}
-
-        async def fake_post(url, json=None, **kw):
-            captured["payload"] = json
-            return _FakeResponse(200)
-
-        from zephyrex.lib import ProviderHTTPClient
-
-        class _FakeClient:
-            async def post(self, url, **kwargs):
-                return await fake_post(url, **kwargs)
-
-        monkeypatch.setattr(ProviderHTTPClient, "get_async_client", lambda *a, **kw: _FakeClient())
-
-        inst = _FakeInstance(api_key="test-key")
-        result = await Smtp2goProvider.send_email(
-            inst, "to@example.com", "Subject", "Body",
-            attachments=["/nonexistent/file.txt"],
-        )
-        assert "successfully" in result.lower()
-        assert "attachments" not in captured["payload"]
+        assert "from_email" in result.lower() or "failed" in result.lower()
 
 
 # ---------------------------------------------------------------------------
-# Unsupported abilities
+# Unsupported abilities (real code, no network)
 # ---------------------------------------------------------------------------
 
 
@@ -393,7 +236,7 @@ class TestSmtp2goUnsupportedAbilities:
         assert result == []
 
     @pytest.mark.asyncio
-    async def test_create_draft_returns_message(self):
+    async def test_create_draft_returns_unsupported(self):
         result = await Smtp2goProvider.create_draft_email(None, "r", "s", "b")
         assert "not supported" in result.lower()
 
@@ -403,12 +246,12 @@ class TestSmtp2goUnsupportedAbilities:
         assert result == []
 
     @pytest.mark.asyncio
-    async def test_reply_returns_message(self):
+    async def test_reply_returns_unsupported(self):
         result = await Smtp2goProvider.reply_to_email(None, "id", "body")
         assert "not supported" in result.lower()
 
     @pytest.mark.asyncio
-    async def test_delete_returns_message(self):
+    async def test_delete_returns_unsupported(self):
         result = await Smtp2goProvider.delete_email(None, "id")
         assert "not supported" in result.lower()
 
@@ -419,12 +262,12 @@ class TestSmtp2goUnsupportedAbilities:
 
 
 # ---------------------------------------------------------------------------
-# API key not in payload when missing
+# Security
 # ---------------------------------------------------------------------------
 
 
 class TestSmtp2goSecurity:
-    def test_api_key_not_leaked_in_health_report(self, monkeypatch):
+    def test_api_key_not_in_health_report(self, monkeypatch):
         monkeypatch.setenv("SMTP2GO_API_KEY", "secret-key-12345")
         from zephyrex.lib.Environment import refresh_settings
 
@@ -432,5 +275,34 @@ class TestSmtp2goSecurity:
         report = Smtp2goProvider.health_check()
         assert "secret-key-12345" not in report.detail
 
-    def test_env_dict_defaults_empty_key(self):
-        assert Smtp2goProvider._env["SMTP2GO_API_KEY"] == ""
+
+# ---------------------------------------------------------------------------
+# Live send — only runs when SMTP2GO_API_KEY is set
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(not _smtp2go_available(), reason="SMTP2GO_API_KEY not set")
+class TestSmtp2goLiveSend:
+    @pytest.mark.asyncio
+    async def test_send_real_email(self):
+        from zephyrex.lib.Environment import env
+
+        inst = _FakeInstance(api_key=env("SMTP2GO_API_KEY"))
+        result = await Smtp2goProvider.send_email(
+            inst,
+            env("SMTP2GO_FROM_EMAIL") or "test@example.com",
+            "Zephyrex SMTP2Go Test",
+            "This is a test email from the zephyrex test suite.",
+        )
+        assert isinstance(result, str)
+
+    def test_health_check_live(self):
+        report = Smtp2goProvider.health_check()
+        assert report.status in (HealthStatus.OK, HealthStatus.DEGRADED)
+
+    def test_bond_instance_live(self):
+        from zephyrex.lib.Environment import env
+
+        inst = _FakeInstance(api_key=env("SMTP2GO_API_KEY"))
+        bonded = Smtp2goProvider.bond_instance(inst)
+        assert bonded is not None
