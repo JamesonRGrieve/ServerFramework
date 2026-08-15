@@ -3525,16 +3525,18 @@ def register_route(
                 items = [{"id": id, "data": update_data} for id in target_ids]
 
                 actual_manager: Any = get_manager(manager, manager_property)
-                batch_result = actual_manager.batch_update(items=items)
+                try:
+                    updated_items = actual_manager.batch_update(items=items)
+                except HTTPException as batch_err:
+                    if batch_err.status_code == 207:
+                        return JSONResponse(
+                            status_code=207,
+                            content=jsonable_encoder(batch_err.detail),
+                        )
+                    raise
 
-                if batch_result["errors"]:
-                    return JSONResponse(
-                        status_code=207,
-                        content=jsonable_encoder(batch_result),
-                    )
-                successful_items = [r["data"] for r in batch_result["results"] if "data" in r]
                 return network_model.ResponsePlural(
-                    **{resource_name_plural: serialize_for_response(successful_items)}
+                    **{resource_name_plural: serialize_for_response(updated_items)}
                 )
             except Exception as err:
                 handle_resource_operation_error(err)
@@ -3564,13 +3566,15 @@ def register_route(
                     )
 
                 actual_manager: Any = get_manager(manager, manager_property)
-                batch_result = actual_manager.batch_delete(ids=ids_list)
-
-                if batch_result["errors"]:
-                    return JSONResponse(
-                        status_code=207,
-                        content=jsonable_encoder(batch_result),
-                    )
+                try:
+                    actual_manager.batch_delete(ids=ids_list)
+                except HTTPException as batch_err:
+                    if batch_err.status_code == 207:
+                        return JSONResponse(
+                            status_code=207,
+                            content=jsonable_encoder(batch_err.detail),
+                        )
+                    raise
                 return Response(status_code=status.HTTP_204_NO_CONTENT)
             except Exception as err:
                 handle_resource_operation_error(err)

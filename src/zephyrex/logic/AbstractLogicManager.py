@@ -3127,13 +3127,13 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
 
         return updated_entity
 
-    def batch_update(self, items: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def batch_update(self, items: List[Dict[str, Any]]) -> List[Any]:
         """Update multiple entities in a batch.
 
-        Returns a dict with ``results`` (per-item outcomes) and
-        ``errors`` (failed items). When any item fails, the endpoint
-        layer returns HTTP 207 Multi-Status with all per-item results
-        preserved — successful mutations are never discarded.
+        Returns successfully updated entities. On partial failure,
+        collects per-item errors and raises HTTPException with both
+        successful and failed details so the endpoint layer can
+        return 207 Multi-Status.
         """
         results = []
         errors = []
@@ -3145,13 +3145,23 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
                     raise ValueError("Missing required 'id' field in batch update item")
                 update_data = item.get("data", {})
                 updated_entity = self.update(id=item["id"], **update_data)
-                results.append({"id": entity_id, "status": 200, "data": updated_entity})
+                results.append(updated_entity)
             except Exception as e:
-                status_code = getattr(e, "status_code", 400)
-                results.append({"id": entity_id, "status": status_code, "error": str(e)})
                 errors.append({"id": entity_id, "error": str(e)})
 
-        return {"results": results, "errors": errors}
+        if errors:
+            raise HTTPException(
+                status_code=207,
+                detail={
+                    "message": "Partial success",
+                    "successful_items": len(results),
+                    "errors": errors,
+                    "successful_updates": len(results),
+                    "failed_updates": len(errors),
+                },
+            )
+
+        return results
 
     def delete(self, id: str) -> None:
         """Delete an entity by ID."""
@@ -3181,26 +3191,32 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
             id=id,
         )
 
-    def batch_delete(self, ids: List[str]) -> Dict[str, Any]:
+    def batch_delete(self, ids: List[str]) -> None:
         """Delete multiple entities in a batch.
 
-        Returns a dict with ``results`` (per-item outcomes) and
-        ``errors``. Partial failures return HTTP 207 at the endpoint
-        layer — successful deletes are never discarded.
+        On partial failure, raises HTTPException 207 with per-item
+        results so the endpoint layer preserves successful deletes.
         """
-        results: List[Dict[str, Any]] = []
         errors: List[Dict[str, Any]] = []
+        successful = 0
 
         for entity_id in ids:
             try:
                 self.delete(id=entity_id)
-                results.append({"id": entity_id, "status": 204})
+                successful += 1
             except Exception as e:
-                status_code = getattr(e, "status_code", 400)
-                results.append({"id": entity_id, "status": status_code, "error": str(e)})
                 errors.append({"id": entity_id, "error": str(e)})
 
-        return {"results": results, "errors": errors}
+        if errors:
+            raise HTTPException(
+                status_code=207,
+                detail={
+                    "message": "Partial success",
+                    "errors": errors,
+                    "successful_deletes": successful,
+                    "failed_deletes": len(errors),
+                },
+            )
 
     # checks if parent exists by reference_id
     def parent_validation(self, args):
