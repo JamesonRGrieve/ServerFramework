@@ -11,9 +11,9 @@ from zephyrex.extensions.AbstractPRVTest import (
 )
 from zephyrex.extensions.email.PRV_SendGrid_EMail import (
     SendgridProvider,
-    Smtp2goProvider,
     StalwartProvider,
 )
+from zephyrex.extensions.email.PRV_SMTP2Go_EMail import Smtp2goProvider
 from zephyrex.lib.Dependencies import check_pip_dependencies, install_pip_dependencies
 from zephyrex.lib.Environment import env
 from zephyrex.logic.BLL_Providers import ProviderInstanceModel

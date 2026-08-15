@@ -23,9 +23,9 @@ from zephyrex.extensions.ExternalErrors import DegradationMode
 from zephyrex.extensions.RateLimit import RateLimit
 from zephyrex.extensions.email.PRV_SendGrid_EMail import (
     SendgridProvider,
-    Smtp2goProvider,
     StalwartProvider,
 )
+from zephyrex.extensions.email.PRV_SMTP2Go_EMail import Smtp2goProvider
 
 
 pytestmark = pytest.mark.unit
