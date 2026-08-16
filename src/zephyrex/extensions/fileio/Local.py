@@ -809,12 +809,19 @@ class LocalFileSystem(AbstractFileIOProvider):
             if arguments:
                 cmd.extend(arguments)
 
-            # Execute command
+            _EXEC_TIMEOUT = 30
             process = await asyncio.create_subprocess_exec(
                 *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
             )
 
-            stdout, stderr = await process.communicate()
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    process.communicate(), timeout=_EXEC_TIMEOUT
+                )
+            except asyncio.TimeoutError:
+                process.kill()
+                await process.wait()
+                return f"Execution timed out after {_EXEC_TIMEOUT}s"
 
             # Prepare result
             result = f"Return code: {process.returncode}\n\n"
