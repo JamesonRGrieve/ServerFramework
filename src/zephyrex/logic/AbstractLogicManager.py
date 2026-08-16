@@ -1929,13 +1929,23 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
             elif field_name in date_fields and isinstance(value, dict):
                 conditions = []
 
+                def _parse_date_value(v):
+                    if isinstance(v, (datetime, date)):
+                        return v
+                    if isinstance(v, str):
+                        for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%d"):
+                            try:
+                                return datetime.strptime(v, fmt)
+                            except ValueError:
+                                continue
+                    return v
+
                 if "before" in value and value["before"] is not None:
-                    conditions.append(field.__lt__(value["before"]))
+                    conditions.append(field.__lt__(_parse_date_value(value["before"])))
                 if "after" in value and value["after"] is not None:
-                    conditions.append(field.__gt__(value["after"]))
+                    conditions.append(field.__gt__(_parse_date_value(value["after"])))
                 if "eq" in value and value["eq"] is not None:
-                    # eq for dates should behave like "on" - match the entire day
-                    eq_value = value["eq"]
+                    eq_value = _parse_date_value(value["eq"])
                     if isinstance(eq_value, datetime):
                         start_of_day = eq_value.replace(
                             hour=0, minute=0, second=0, microsecond=0
