@@ -9,6 +9,8 @@ Rotation System.
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import uuid
 from typing import Any, ClassVar, Dict, List, Optional
@@ -571,10 +573,17 @@ class PaymentExtensionMonerisProvider(AbstractPaymentProvider):
     async def process_webhook(
         cls, provider_instance: ProviderInstanceModel, payload: str, signature: str
     ) -> Dict:
-        """Process a webhook from Moneris."""
+        """Process a webhook from Moneris with HMAC-SHA256 verification."""
         if not signature:
             raise Exception("Webhook signature missing — cannot verify authenticity")
+        secret = cls.get_store_id()
+        if not secret:
+            raise Exception("Webhook secret (store ID) not configured — cannot verify")
         try:
+            payload_bytes = payload.encode() if isinstance(payload, str) else payload
+            expected = hmac.new(secret.encode(), payload_bytes, hashlib.sha256).hexdigest()
+            if not hmac.compare_digest(signature, expected):
+                raise Exception("Webhook signature verification failed")
             payload_str = payload if isinstance(payload, str) else payload.decode()
             event = json.loads(payload_str)
             event_type = event.get("type") or event.get("event_type", "unknown")

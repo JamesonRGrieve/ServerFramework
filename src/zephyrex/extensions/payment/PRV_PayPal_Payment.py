@@ -496,14 +496,23 @@ class PaymentExtensionPayPalProvider(AbstractPaymentProvider):
     async def process_webhook(
         cls, provider_instance: ProviderInstanceModel, payload: str, signature: str
     ) -> Dict:
-        """Process a webhook from PayPal."""
+        """Process a webhook from PayPal with HMAC-SHA256 verification."""
         if not signature:
             raise Exception("Webhook signature missing — cannot verify authenticity")
         webhook_id = cls.get_webhook_id()
         if not webhook_id:
             return {"success": False, "error": "Webhook ID not configured"}
         try:
+            import hashlib
+            import hmac as _hmac
             import json
+
+            payload_bytes = payload.encode() if isinstance(payload, str) else payload
+            expected = _hmac.new(
+                webhook_id.encode(), payload_bytes, hashlib.sha256
+            ).hexdigest()
+            if not _hmac.compare_digest(signature, expected):
+                raise Exception("Webhook signature verification failed")
 
             event = json.loads(
                 payload if isinstance(payload, str) else payload.decode()

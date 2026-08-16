@@ -145,9 +145,9 @@ class Smtp2goProvider(AbstractEmailProvider):
             from zephyrex.lib.ProviderHTTPClient import ClientPolicy, get_sync_client
 
             client = get_sync_client(ClientPolicy(timeout=5.0))
-            response = client.get(
+            response = client.post(
                 f"{api_url.rstrip('/')}/stats/email_summary",
-                params={"api_key": api_key},
+                json={"api_key": api_key},
             )
             status = response.status_code
             if 200 <= status < 300:
