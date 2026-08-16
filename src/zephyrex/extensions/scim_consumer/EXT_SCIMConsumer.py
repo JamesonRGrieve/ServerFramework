@@ -52,6 +52,15 @@ class EXT_SCIMConsumer(AbstractStaticExtension):
 
     @classmethod
     def on_initialize(cls) -> bool:
+        from zephyrex.lib.Environment import env as _env
+
+        if not _env("SCIM_CONSUMER_BEARER_TOKEN"):
+            logger.error(
+                "SCIM_CONSUMER_BEARER_TOKEN is unset — refusing to load "
+                "SCIM endpoints without authentication"
+            )
+            return False
+
         from zephyrex.extensions.scim_consumer import (  # noqa: F401
             BLL_SCIMConsumer,
         )
