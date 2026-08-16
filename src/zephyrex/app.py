@@ -770,26 +770,6 @@ def build_app(model_registry: ModelRegistry):
     from starlette.requests import Request as StarletteRequest
     from starlette.responses import Response as StarletteResponse
 
-    class JSONParsingMiddleware(BaseHTTPMiddleware):
-        async def dispatch(self, request: StarletteRequest, call_next):
-            try:
-                # Let the request proceed normally
-                response = await call_next(request)
-                return response
-            except Exception as exc:
-                # Check if this is a JSON parsing error
-                if "json" in str(exc).lower() and (
-                    "decode" in str(exc).lower() or "syntax" in str(exc).lower()
-                ):
-                    return JSONResponse(
-                        status_code=400,
-                        content={"detail": "Invalid JSON syntax in request body"},
-                    )
-                # Re-raise if not a JSON error
-                raise
-
-    app.add_middleware(JSONParsingMiddleware)
-
     from zephyrex.lib.Pydantic2FastAPI import _error_envelope
 
     @app.exception_handler(json.JSONDecodeError)
