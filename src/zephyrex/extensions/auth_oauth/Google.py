@@ -52,7 +52,7 @@ class GoogleOAuthProvider(AbstractOAuthProvider):
                     "grant_type": "refresh_token",
                     "scope": self.scopes,
                 },
-            )
+            , timeout=10)
 
             if response.status_code != 200:
                 raise HTTPException(
@@ -74,14 +74,14 @@ class GoogleOAuthProvider(AbstractOAuthProvider):
             response = requests.get(
                 uri,
                 headers={"Authorization": f"Bearer {self.access_token}"},
-            )
+            , timeout=10)
 
             if response.status_code == 401 and self.refresh_token:
                 self.access_token = self.get_new_token()
                 response = requests.get(
                     uri,
                     headers={"Authorization": f"Bearer {self.access_token}"},
-                )
+                , timeout=10)
 
             if response.status_code != 200:
                 raise HTTPException(
@@ -115,7 +115,7 @@ class GoogleOAuthProvider(AbstractOAuthProvider):
                 "https://accounts.google.com/o/oauth2/token",
                 params={
                     "code": code,
-                    "client_id": env("GOOGLE_CLIENT_ID"),
+                    "client_id": env("GOOGLE_CLIENT_ID", timeout=10),
                     "client_secret": env("GOOGLE_CLIENT_SECRET"),
                     "redirect_uri": redirect_uri,
                     "grant_type": "authorization_code",

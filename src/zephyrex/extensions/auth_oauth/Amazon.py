@@ -48,7 +48,7 @@ class AmazonOAuthProvider(AbstractOAuthProvider):
                     "refresh_token": self.refresh_token,
                     "grant_type": "refresh_token",
                 },
-            )
+            , timeout=10)
 
             if response.status_code != 200:
                 raise HTTPException(
@@ -70,14 +70,14 @@ class AmazonOAuthProvider(AbstractOAuthProvider):
             response = requests.get(
                 uri,
                 headers={"Authorization": f"Bearer {self.access_token}"},
-            )
+            , timeout=10)
 
             if response.status_code == 401 and self.refresh_token:
                 self.access_token = self.get_new_token()
                 response = requests.get(
                     uri,
                     headers={"Authorization": f"Bearer {self.access_token}"},
-                )
+                , timeout=10)
 
             if response.status_code != 200:
                 raise HTTPException(
@@ -109,7 +109,7 @@ class AmazonOAuthProvider(AbstractOAuthProvider):
             response = requests.post(
                 f"https://{user_pool_id}.auth.{region}.amazoncognito.com/oauth2/token",
                 data={
-                    "client_id": env("AWS_CLIENT_ID"),
+                    "client_id": env("AWS_CLIENT_ID", timeout=10),
                     "client_secret": env("AWS_CLIENT_SECRET"),
                     "code": code,
                     "grant_type": "authorization_code",
