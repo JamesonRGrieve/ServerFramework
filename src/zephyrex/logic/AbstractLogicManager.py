@@ -32,6 +32,12 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy import and_
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
+
+
+def _escape_like(v: object) -> str:
+    """Escape LIKE/ILIKE wildcard characters (%, _) in user input."""
+    s = str(v) if not isinstance(v, str) else v
+    return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 from sqlalchemy.orm import Session, joinedload
 
 from zephyrex.lib.Logging import logger
@@ -1879,9 +1885,6 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
             if field_name in string_fields and isinstance(value, dict):
                 field_processed = False
 
-                def _escape_like(v: str) -> str:
-                    return v.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-
                 if "inc" in value and value["inc"] is not None:
                     filters.append(field.ilike(f"%{_escape_like(value['inc'])}%", escape="\\"))
                     field_processed = True
@@ -3035,11 +3038,9 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
                     else ~column.in_(value)
                 )
             if operator == "like":
-                escaped = value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-                return column.like(escaped, escape="\\")
+                return column.like(_escape_like(value), escape="\\")
             if operator == "ilike":
-                escaped = value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-                return column.ilike(escaped, escape="\\")
+                return column.ilike(_escape_like(value), escape="\\")
             if operator == "contains":
                 return column.contains(value)
             if operator == "startswith":
