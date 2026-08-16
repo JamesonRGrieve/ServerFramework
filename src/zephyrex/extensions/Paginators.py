@@ -67,8 +67,11 @@ def query_hash(query_params: Optional[Dict[str, Any]]) -> str:
 
 
 def _token_hmac_key() -> bytes:
-    import os
-    return (os.environ.get("JWT_SECRET") or "pagination-fallback-key").encode("utf-8")
+    from zephyrex.lib.Environment import env
+    secret = env("JWT_SECRET")
+    if not secret:
+        raise RuntimeError("JWT_SECRET must be set for pagination token signing")
+    return secret.encode("utf-8")
 
 
 def encode_token(provider_cursor: Any, page_size: Optional[int], q_hash: str) -> str:
