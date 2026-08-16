@@ -38,7 +38,7 @@ class OIDCProviderConfigModel(
     )
     client_id: str = Field(..., description="Client ID registered at the provider")
     client_secret: Optional[str] = Field(
-        None, description="Client secret (encrypted at rest; None for public clients)"
+        None, description="Client secret (plaintext; use CredentialRef for production; None for public clients)"
     )
     redirect_uri: str = Field(..., description="Redirect URI for the callback")
     scopes: str = Field(
