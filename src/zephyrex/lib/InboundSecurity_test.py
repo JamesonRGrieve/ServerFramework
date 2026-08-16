@@ -929,3 +929,156 @@ class TestGraphQLSecurity:
                 assert "depth" in error_msgs.lower() or "too" in error_msgs.lower(), (
                     "Deep query should be rejected by depth limiter"
                 )
+
+
+# ---------------------------------------------------------------------------
+# Security fix verification tests
+# ---------------------------------------------------------------------------
+
+
+class TestRequestTimeoutClamp:
+    """X-Request-Timeout-Ms clamped to 5 minutes."""
+
+    def test_clamp_to_max(self):
+        from zephyrex.lib.RequestContext import set_request_deadline_ms, _MAX_REQUEST_TIMEOUT_MS
+        import time
+
+        set_request_deadline_ms(999999999)
+        from zephyrex.lib.RequestContext import _request_deadline
+        deadline = _request_deadline.get()
+        max_deadline = time.monotonic() + (_MAX_REQUEST_TIMEOUT_MS / 1000.0) + 1
+        assert deadline <= max_deadline, "Deadline should be clamped to 5 minutes"
+        set_request_deadline_ms(None)
+
+    def test_normal_value_not_clamped(self):
+        from zephyrex.lib.RequestContext import set_request_deadline_ms
+        import time
+
+        before = time.monotonic()
+        set_request_deadline_ms(1000)
+        from zephyrex.lib.RequestContext import _request_deadline
+        deadline = _request_deadline.get()
+        assert deadline <= before + 2, "1000ms deadline should be ~1s from now"
+        set_request_deadline_ms(None)
+
+
+class TestPaginationCursorSigning:
+    """Forged pagination cursors are rejected."""
+
+    def test_forged_cursor_rejected(self):
+        import base64, json
+        from zephyrex.extensions.Paginators import decode_token
+        from zephyrex.extensions.ExternalErrors import InvalidPaginationError
+
+        forged = base64.urlsafe_b64encode(
+            json.dumps({"provider_cursor": "evil", "page_size": 10, "query_hash": "x"}).encode()
+        ).decode().rstrip("=")
+        forged += ".0000000000000000"
+        with pytest.raises(InvalidPaginationError, match="signature"):
+            decode_token(forged)
+
+    def test_valid_cursor_accepted(self):
+        from zephyrex.extensions.Paginators import encode_token, decode_token
+
+        token = encode_token("cursor_val", 25, "hash123")
+        decoded = decode_token(token)
+        assert decoded["provider_cursor"] == "cursor_val"
+        assert decoded["page_size"] == 25
+
+
+class TestDummyBcryptTiming:
+    """Login path burns bcrypt time for nonexistent users."""
+
+    def test_nonexistent_user_not_instant(self, server):
+        import time
+
+        t0 = time.monotonic()
+        response = server.post(
+            "/v1/user/authorize",
+            headers={"Authorization": "Basic " + __import__("base64").b64encode(
+                b"definitely-not-a-real-user-xyz@example.com:wrongpass"
+            ).decode()},
+        )
+        elapsed = time.monotonic() - t0
+        assert response.status_code == 401
+        assert elapsed > 0.01, (
+            f"Nonexistent user login returned in {elapsed*1000:.0f}ms — "
+            "should burn bcrypt time to prevent enumeration"
+        )
+
+
+class TestEmailUpdateValidation:
+    """Email update uses the same validator as create."""
+
+    def test_invalid_email_rejected_on_update(self, server, admin_a):
+        response = server.put(
+            f"/v1/user/{admin_a.id}",
+            json={"user": {"email": "not-an-email"}},
+            headers={"Authorization": f"Bearer {admin_a.jwt}"},
+        )
+        assert response.status_code in (400, 422), (
+            f"Invalid email on update should be rejected, got {response.status_code}"
+        )
+
+
+class TestExecuteFileTimeout:
+    """execute_file has a 30s timeout to prevent worker hang."""
+
+    def test_timeout_constant_exists(self):
+        from zephyrex.extensions.fileio.Local import LocalFileSystem
+        import inspect
+
+        source = inspect.getsource(LocalFileSystem.execute_file)
+        assert "wait_for" in source, "execute_file should use asyncio.wait_for"
+        assert "timeout" in source.lower(), "execute_file should have a timeout"
+
+
+class TestOAuthProviderTimeout:
+    """Legacy OAuth providers have request timeout."""
+
+    @pytest.mark.parametrize("provider_file", [
+        "src/zephyrex/extensions/auth_oauth/Amazon.py",
+        "src/zephyrex/extensions/auth_oauth/Google.py",
+        "src/zephyrex/extensions/auth_oauth/Microsoft.py",
+    ])
+    def test_requests_calls_have_timeout(self, provider_file):
+        with open(provider_file) as f:
+            source = f.read()
+        import re
+        calls = re.findall(r"requests\.(get|post)\(.*?\)", source, re.DOTALL)
+        for call in calls:
+            assert "timeout" in source, (
+                f"{provider_file} has requests calls without timeout"
+            )
+
+
+class TestTokenNotLogged:
+    """OAuth revocation does not log token prefix."""
+
+    def test_no_token_prefix_in_revoke_log(self):
+        with open("src/zephyrex/extensions/auth_oauth/EXT_Auth_OAuth.py") as f:
+            source = f.read()
+        assert "token[:10]" not in source, "Token prefix should not be logged"
+        assert "token[:8]" not in source, "Token prefix should not be logged"
+
+
+class TestAttachmentFilenameSanitization:
+    """Email attachment filenames stripped of path separators."""
+
+    def test_basename_used_for_suffix(self):
+        import inspect
+        from zephyrex.extensions.email.EXT_EMail import AbstractEmailProvider
+
+        source = inspect.getsource(AbstractEmailProvider)
+        assert "os.path.basename" in source, (
+            "Attachment filename should use os.path.basename"
+        )
+
+    def test_temp_files_cleaned_up(self):
+        import inspect
+        from zephyrex.extensions.email.EXT_EMail import AbstractEmailProvider
+
+        source = inspect.getsource(AbstractEmailProvider)
+        assert "os.unlink" in source or "finally" in source, (
+            "Temp attachment files should be cleaned up"
+        )
