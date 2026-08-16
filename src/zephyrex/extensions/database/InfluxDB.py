@@ -8,12 +8,11 @@ try:
     import influxdb
     from influxdb import InfluxDBClient
 except ImportError:
-    import subprocess
-    import sys
-
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "influxdb"])
-    import influxdb
-    from influxdb import InfluxDBClient
+    influxdb = None  # type: ignore[assignment]
+    InfluxDBClient = None  # type: ignore[assignment, misc]
+    logger.warning(
+        "influxdb package not installed. Install with: pip install influxdb"
+    )
 
 try:
     # For InfluxDB 2.x
