@@ -525,8 +525,14 @@ class UserModel(
 
         @model_validator(mode="after")
         def validate_email(self):
-            if self.email is not None and "@" not in self.email:
-                raise ValueError("Invalid email format")
+            if self.email is not None:
+                try:
+                    from email_validator import EmailNotValidError
+                    from email_validator import validate_email as _validate_email
+
+                    _validate_email(self.email, check_deliverability=False)
+                except EmailNotValidError as exc:
+                    raise ValueError(f"Invalid email format: {exc}") from exc
             return self
 
     class Search(ApplicationModel.Search, ImageMixinModel.Search):
