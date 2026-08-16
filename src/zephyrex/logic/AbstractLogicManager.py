@@ -1879,16 +1879,19 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
             if field_name in string_fields and isinstance(value, dict):
                 field_processed = False
 
+                def _escape_like(v: str) -> str:
+                    return v.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
                 if "inc" in value and value["inc"] is not None:
-                    filters.append(field.ilike(f"%{value['inc']}%"))
+                    filters.append(field.ilike(f"%{_escape_like(value['inc'])}%", escape="\\"))
                     field_processed = True
 
                 if "sw" in value and value["sw"] is not None:
-                    filters.append(field.ilike(f"{value['sw']}%"))
+                    filters.append(field.ilike(f"{_escape_like(value['sw'])}%", escape="\\"))
                     field_processed = True
 
                 if "ew" in value and value["ew"] is not None:
-                    filters.append(field.ilike(f"%{value['ew']}"))
+                    filters.append(field.ilike(f"%{_escape_like(value['ew'])}", escape="\\"))
                     field_processed = True
 
                 if "eq" in value and value["eq"] is not None:
@@ -3032,9 +3035,11 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
                     else ~column.in_(value)
                 )
             if operator == "like":
-                return column.like(value)
+                escaped = value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                return column.like(escaped, escape="\\")
             if operator == "ilike":
-                return column.ilike(value)
+                escaped = value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                return column.ilike(escaped, escape="\\")
             if operator == "contains":
                 return column.contains(value)
             if operator == "startswith":

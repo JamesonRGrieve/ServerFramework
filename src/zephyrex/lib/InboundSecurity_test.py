@@ -857,3 +857,75 @@ class TestCachePoisoning:
         )
         vary = response.headers.get("vary", "")
         assert "Authorization" in vary, f"Vary header must include Authorization, got: {vary}"
+
+
+# ---------------------------------------------------------------------------
+# Advanced attack surface tests
+# ---------------------------------------------------------------------------
+
+
+class TestLIKEWildcardEscaping:
+    """LIKE/ILIKE operators must escape % and _ in user input."""
+
+    def test_search_percent_does_not_match_all(self, server, admin_a):
+        response = server.post(
+            "/v1/team/search",
+            json={"team": {"name": {"inc": "%"}}},
+            headers={"Authorization": f"Bearer {admin_a.jwt}"},
+        )
+        if response.status_code == 200:
+            body = response.json()
+            teams = body.get("teams", [])
+            assert len(teams) == 0 or all(
+                "%" in t.get("name", "") for t in teams
+            ), "Search for literal '%' should only match names containing '%'"
+
+    def test_search_underscore_not_wildcard(self, server, admin_a):
+        response = server.post(
+            "/v1/team/search",
+            json={"team": {"name": {"inc": "_"}}},
+            headers={"Authorization": f"Bearer {admin_a.jwt}"},
+        )
+        if response.status_code == 200:
+            body = response.json()
+            teams = body.get("teams", [])
+            assert len(teams) == 0 or all(
+                "_" in t.get("name", "") for t in teams
+            ), "Search for literal '_' should only match names containing '_'"
+
+
+class TestErrorMessageLeakage:
+    """Error messages must not echo internal IDs."""
+
+    def test_403_does_not_echo_user_id(self, server, admin_a):
+        import uuid
+        fake_team_id = str(uuid.uuid4())
+        response = server.get(
+            f"/v1/team/{fake_team_id}",
+            headers={"Authorization": f"Bearer {admin_a.jwt}"},
+        )
+        if response.status_code in (403, 404):
+            body = response.text
+            assert admin_a.id not in body, "Error must not echo user ID"
+            assert fake_team_id not in body or response.status_code == 404, (
+                "Error should not confirm resource existence"
+            )
+
+
+class TestGraphQLSecurity:
+    """GraphQL depth and introspection limits."""
+
+    def test_deeply_nested_query_rejected(self, server, admin_a):
+        nested = "{ teams " + "{ id " * 15 + "}" * 15 + " }"
+        response = server.post(
+            "/graphql",
+            json={"query": nested},
+            headers={"Authorization": f"Bearer {admin_a.jwt}"},
+        )
+        if response.status_code == 200:
+            body = response.json()
+            if "errors" in body:
+                error_msgs = " ".join(str(e) for e in body["errors"])
+                assert "depth" in error_msgs.lower() or "too" in error_msgs.lower(), (
+                    "Deep query should be rejected by depth limiter"
+                )

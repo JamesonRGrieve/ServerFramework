@@ -743,14 +743,15 @@ class UserManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef]
         if not value:
             return []
 
-        search_value = f"%{value}%"
+        escaped = value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        search_value = f"%{escaped}%"
         db_model = self.DB
         return [
             or_(
-                db_model.first_name.ilike(search_value),
-                db_model.last_name.ilike(search_value),
-                db_model.display_name.ilike(search_value),
-                db_model.username.ilike(search_value),
+                db_model.first_name.ilike(search_value, escape="\\"),
+                db_model.last_name.ilike(search_value, escape="\\"),
+                db_model.display_name.ilike(search_value, escape="\\"),
+                db_model.username.ilike(search_value, escape="\\"),
             )
         ]
 
@@ -3514,7 +3515,7 @@ class RoleManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef]
         if len(user_teams) == 0:
             raise HTTPException(
                 status_code=403,
-                detail=f"User {user_id} is not a member of team {team_id}",
+                detail="Access denied",
             )
         elif len(user_teams) > 1:
             raise HTTPException(

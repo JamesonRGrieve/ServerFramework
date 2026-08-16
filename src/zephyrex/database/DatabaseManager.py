@@ -74,8 +74,23 @@ def setup_sqlite_for_regex(engine):
             return False
         try:
             reg = re.compile(expr)
-            return reg.search(item) is not None
-        except Exception:
+        except re.error:
+            return False
+        try:
+            import signal
+
+            def _timeout_handler(signum, frame):
+                raise TimeoutError
+
+            old = signal.signal(signal.SIGALRM, _timeout_handler)
+            signal.alarm(1)
+            try:
+                result = reg.search(item) is not None
+            finally:
+                signal.alarm(0)
+                signal.signal(signal.SIGALRM, old)
+            return result
+        except (TimeoutError, Exception):
             return False
 
     # Register the function will be done on individual connections
