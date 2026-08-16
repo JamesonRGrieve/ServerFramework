@@ -194,9 +194,9 @@ class ExtensionRegistry(AbstractRegistry):
             logger.debug("No extensions configured for registry")
             return
 
-        extension_names = [
-            name.strip() for name in extensions_csv.split(",") if name.strip()
-        ]
+        from zephyrex.app import parse_extension_csv
+
+        extension_names = parse_extension_csv(extensions_csv)
 
         if not extension_names:
             logger.debug("No valid extension names found")

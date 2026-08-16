@@ -461,9 +461,9 @@ def can_manage_permissions(
     # Also check extension BLL modules if APP_EXTENSIONS is set
     app_extensions_str = env("APP_EXTENSIONS")
     if app_extensions_str:
-        extension_names = [
-            name.strip() for name in app_extensions_str.split(",") if name.strip()
-        ]
+        from zephyrex.app import parse_extension_csv
+
+        extension_names = parse_extension_csv(app_extensions_str)
         for ext_name in extension_names:
             bll_modules.append(
                 f"zephyrex.extensions.{ext_name}.BLL_{stringcase.pascalcase(ext_name)}"

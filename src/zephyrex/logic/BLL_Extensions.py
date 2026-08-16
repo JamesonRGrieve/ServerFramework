@@ -196,9 +196,9 @@ class ExtensionManager(AbstractBLLManager, RouterMixin):
         # Get extensions from APP_EXTENSIONS environment variable
         app_extensions = env("APP_EXTENSIONS")
         if app_extensions:
-            extension_list = [
-                ext.strip() for ext in app_extensions.split(",") if ext.strip()
-            ]
+            from zephyrex.app import parse_extension_csv
+
+            extension_list = parse_extension_csv(app_extensions)
             if extension_list:
                 logger.debug(f"Using extensions from APP_EXTENSIONS: {extension_list}")
                 return extension_list
