@@ -117,6 +117,23 @@ __all__ = [
 ]
 
 
+async def _send_asgi_error(
+    send, status: int, detail: str, extra_headers: list | None = None
+) -> None:
+    """Send a JSON error response at the ASGI layer."""
+    import json as _json
+
+    body = _json.dumps({"detail": detail}).encode("utf-8")
+    headers = [
+        (b"content-type", b"application/json"),
+        (b"content-length", str(len(body)).encode("ascii")),
+    ]
+    if extra_headers:
+        headers.extend(extra_headers)
+    await send({"type": "http.response.start", "status": status, "headers": headers})
+    await send({"type": "http.response.body", "body": body})
+
+
 # H-4 — strict response-header defaults for an HTTP JSON API. Operators
 # override per deployment via the ``SECURITY_HEADERS_*`` env vars; defaults
 # are conservative because the alternative is shipping permissive values
@@ -274,22 +291,7 @@ class BodySizeLimitMiddleware:
 
     @staticmethod
     async def _send_413(send) -> None:
-        from json import dumps as _json_dumps
-
-        body = _json_dumps(
-            {"detail": "Request body exceeds maximum allowed size"}
-        ).encode("utf-8")
-        await send(
-            {
-                "type": "http.response.start",
-                "status": 413,
-                "headers": [
-                    (b"content-type", b"application/json"),
-                    (b"content-length", str(len(body)).encode("ascii")),
-                ],
-            }
-        )
-        await send({"type": "http.response.body", "body": body})
+        await _send_asgi_error(send, 413, "Request body exceeds maximum allowed size")
 
 
 MAX_JSON_DEPTH: int = 32
@@ -478,22 +480,7 @@ class PathSanitizationMiddleware:
 
     @staticmethod
     async def _send_400(send, path: str) -> None:
-        from json import dumps as _json_dumps
-
-        body = _json_dumps(
-            {"detail": "Invalid characters in request path"}
-        ).encode("utf-8")
-        await send(
-            {
-                "type": "http.response.start",
-                "status": 400,
-                "headers": [
-                    (b"content-type", b"application/json"),
-                    (b"content-length", str(len(body)).encode("ascii")),
-                ],
-            }
-        )
-        await send({"type": "http.response.body", "body": body})
+        await _send_asgi_error(send, 400, "Invalid characters in request path")
 
 
 class JSONDepthMiddleware:
@@ -559,22 +546,9 @@ class JSONDepthMiddleware:
 
     @staticmethod
     async def _send_400(send) -> None:
-        from json import dumps as _json_dumps
-
-        body = _json_dumps(
-            {"detail": f"Request body exceeds maximum JSON nesting depth ({MAX_JSON_DEPTH})"}
-        ).encode("utf-8")
-        await send(
-            {
-                "type": "http.response.start",
-                "status": 400,
-                "headers": [
-                    (b"content-type", b"application/json"),
-                    (b"content-length", str(len(body)).encode("ascii")),
-                ],
-            }
+        await _send_asgi_error(
+            send, 400, f"Request body exceeds maximum JSON nesting depth ({MAX_JSON_DEPTH})"
         )
-        await send({"type": "http.response.body", "body": body})
 
 
 import hmac as _hmac
