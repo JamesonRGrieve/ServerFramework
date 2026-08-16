@@ -246,7 +246,8 @@ class EXT_DatabaseMemory(AbstractStaticExtension):
         )
 
         if isinstance(get_event_bus(), InMemoryEventBus):
-            _stub = type("_FrameworkInstance", (), {"api_key": None})()
+            from zephyrex.extensions.database_memory.PRV_Valkey import ValkeyConnectionStub
+            _stub = ValkeyConnectionStub()
             transport = cls.get_root_instance().build_streams_transport(
                 _stub, consumer_group="zephyrex"
             )

@@ -31,6 +31,13 @@ from zephyrex.lib.Environment import env
 _logger = logging.getLogger(__name__)
 
 
+class ValkeyConnectionStub:
+    """Minimal stand-in for ProviderInstanceModel when connecting by URI."""
+
+    def __init__(self, api_key: str | None = None):
+        self.api_key = api_key
+
+
 class PRV_Valkey(AbstractDatabaseMemoryProvider):
     """Concrete Valkey/Redis-protocol provider.
 
