@@ -152,8 +152,8 @@ async def test_400_raises_invalid_input(monkeypatch):
 @pytest.mark.asyncio
 async def test_rate_limit_token_blocks(monkeypatch):
     _patch_client_with_handler(monkeypatch, lambda r: httpx.Response(200, json={}))
-    bucket = TokenBucket(RateLimit(rps=1, burst=1))
-    bucket.try_acquire()  # drain the only token
+    bucket = TokenBucket(RateLimit(rps=0.01, burst=1))
+    bucket.try_acquire()  # drain the only token — refill takes 100s
     c = ProviderHTTPClient(rate_limit=bucket, provider_name="test")
     with pytest.raises(RateLimitExternalError):
         await c.get("https://api.example/x", deadline_ms=10)
