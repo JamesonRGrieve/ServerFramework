@@ -164,11 +164,14 @@ class TestMonerisProvider:
         assert info["platform"] == "Moneris"
 
     @pytest.mark.asyncio
-    async def test_process_webhook_valid_json(self, provider_instance):
+    async def test_process_webhook_valid_json(self, provider_instance, monkeypatch):
+        import hmac as _hmac, hashlib
+
+        monkeypatch.setenv("MONERIS_STORE_ID", "test-store")
+        payload = '{"type": "RECURRING_PAYMENT_CONFIRMED", "id": "evt_123"}'
+        sig = _hmac.new(b"test-store", payload.encode(), hashlib.sha256).hexdigest()
         result = await PaymentExtensionMonerisProvider.process_webhook(
-            provider_instance,
-            '{"type": "RECURRING_PAYMENT_CONFIRMED", "id": "evt_123"}',
-            "sig",
+            provider_instance, payload, sig,
         )
         assert isinstance(result, dict)
         assert result["success"] is True

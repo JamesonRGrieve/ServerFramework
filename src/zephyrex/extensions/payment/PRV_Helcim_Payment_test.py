@@ -147,15 +147,19 @@ class TestHelcimProvider:
         assert "invoice" in result["error"].lower() or "subscription" in result["error"].lower()
 
     @pytest.mark.asyncio
-    async def test_process_webhook_valid_json(self):
+    async def test_process_webhook_valid_json(self, monkeypatch):
+        import hmac as _hmac, hashlib
+
+        monkeypatch.setenv("HELCIM_API_TOKEN", "test-secret")
+        payload = '{"eventName": "transaction.completed", "id": "evt_456"}'
+        sig = _hmac.new(b"test-secret", payload.encode(), hashlib.sha256).hexdigest()
+
         class FakeInstance:
             id = "test"
             api_key = "test"
 
         result = await PaymentExtensionHelcimProvider.process_webhook(
-            FakeInstance(),
-            '{"eventName": "transaction.completed", "id": "evt_456"}',
-            "sig",
+            FakeInstance(), payload, sig,
         )
         assert isinstance(result, dict)
         assert result["success"] is True
@@ -163,13 +167,19 @@ class TestHelcimProvider:
         assert result["event_id"] == "evt_456"
 
     @pytest.mark.asyncio
-    async def test_process_webhook_invalid_json(self):
+    async def test_process_webhook_invalid_json(self, monkeypatch):
+        import hmac as _hmac, hashlib
+
+        monkeypatch.setenv("HELCIM_API_TOKEN", "test-secret")
+        payload = "not json"
+        sig = _hmac.new(b"test-secret", payload.encode(), hashlib.sha256).hexdigest()
+
         class FakeInstance:
             id = "test"
             api_key = "test"
 
         result = await PaymentExtensionHelcimProvider.process_webhook(
-            FakeInstance(), "not json", "sig"
+            FakeInstance(), payload, sig
         )
         assert isinstance(result, dict)
         assert not result.get("success", True)

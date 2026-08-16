@@ -507,7 +507,7 @@ class PaymentExtensionHelcimProvider(AbstractPaymentProvider):
         """Process a webhook from Helcim with HMAC-SHA256 verification."""
         if not signature:
             raise Exception("Webhook signature missing — cannot verify authenticity")
-        secret = cls.get_secret_key()
+        secret = cls.get_api_token()
         if not secret:
             raise Exception("Webhook secret not configured — cannot verify")
         try:
