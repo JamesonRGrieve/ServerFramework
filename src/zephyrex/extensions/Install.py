@@ -111,10 +111,14 @@ def _download_to_tempfile(
         raise
 
 
+_MAX_EXTRACT_BYTES = 500 * 1024 * 1024
+
+
 def _safe_extract_tar(archive: Path, dest: Path) -> None:
     """Extract a tar archive, refusing entries that escape ``dest``."""
     dest_resolved = dest.resolve()
     with tarfile.open(archive, "r:*") as tf:
+        total_size = 0
         for member in tf.getmembers():
             if member.issym() or member.islnk():
                 raise InstallError(
@@ -123,18 +127,27 @@ def _safe_extract_tar(archive: Path, dest: Path) -> None:
             target = (dest / member.name).resolve()
             if not str(target).startswith(str(dest_resolved) + os.sep) and target != dest_resolved:
                 raise InstallError(f"archive entry escapes dest: {member.name!r}")
-        # Python 3.12 introduced data filter; we apply our own check above and
-        # use the standard extractall for broad compatibility.
+            total_size += member.size
+            if total_size > _MAX_EXTRACT_BYTES:
+                raise InstallError(
+                    f"archive extracted size exceeds {_MAX_EXTRACT_BYTES} bytes — possible decompression bomb"
+                )
         tf.extractall(dest)  # noqa: S202 -- members validated above
 
 
 def _safe_extract_zip(archive: Path, dest: Path) -> None:
     dest_resolved = dest.resolve()
     with zipfile.ZipFile(archive, "r") as zf:
-        for name in zf.namelist():
-            target = (dest / name).resolve()
+        total_size = 0
+        for info in zf.infolist():
+            target = (dest / info.filename).resolve()
             if not str(target).startswith(str(dest_resolved) + os.sep) and target != dest_resolved:
-                raise InstallError(f"archive entry escapes dest: {name!r}")
+                raise InstallError(f"archive entry escapes dest: {info.filename!r}")
+            total_size += info.file_size
+            if total_size > _MAX_EXTRACT_BYTES:
+                raise InstallError(
+                    f"archive extracted size exceeds {_MAX_EXTRACT_BYTES} bytes — possible decompression bomb"
+                )
         zf.extractall(dest)
 
 
