@@ -1187,15 +1187,10 @@ def build_app(model_registry: ModelRegistry):
         app.state.mcp = mount_mcp(app, name=env("APP_NAME"), mount_path=mcp_mount)
     valkey_uri = env("VALKEY_URI").strip()
     if valkey_uri:
-        _valkey_importable = True
         try:
             import redis.asyncio as _redis_check  # noqa: F401
+            _valkey_importable = True
         except ImportError:
-            logger.warning(
-                "VALKEY_URI is set but 'redis' package is not installed. "
-                "Install with: pip install zephyrex[cache]. "
-                "Falling back to in-memory backends."
-            )
             _valkey_importable = False
 
         if _valkey_importable:
