@@ -139,15 +139,22 @@ def _resolve_openbao(path: str, version: Optional[str]) -> Optional[str]:
     not installed or the server is unreachable.
     """
     try:
-        import hvac  # type: ignore
+        from zephyrex.extensions.secret_vault.PRV_OpenBao import _build_client, _get_addr, _get_token, _get_namespace
     except ImportError:
-        logging.getLogger(__name__).debug("hvac not installed; skipping OpenBao tier")
+        try:
+            import hvac  # type: ignore
+        except ImportError:
+            logging.getLogger(__name__).debug("hvac not installed; skipping OpenBao tier")
+            return None
+        _build_client = None  # type: ignore[assignment]
+    addr = _get_addr() if _build_client else (os.environ.get("OPENBAO_ADDR") or os.environ.get("VAULT_ADDR"))
+    if not addr:
         return None
     try:
-        client = hvac.Client(
-            url=os.environ.get("OPENBAO_ADDR") or os.environ.get("VAULT_ADDR"),
-            token=os.environ.get("OPENBAO_TOKEN") or os.environ.get("VAULT_TOKEN"),
-        )
+        if _build_client:
+            client = _build_client(addr, _get_token(), _get_namespace())
+        else:
+            client = hvac.Client(url=addr, token=os.environ.get("OPENBAO_TOKEN") or os.environ.get("VAULT_TOKEN"))
         if not client.is_authenticated():
             logging.getLogger(__name__).warning("OpenBao client not authenticated")
             return None
