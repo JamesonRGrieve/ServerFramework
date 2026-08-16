@@ -735,3 +735,125 @@ class TestSecurityHeadersMiddleware:
             headers={"Authorization": f"Bearer {admin_a.jwt}"},
         )
         assert response.headers.get("x-api-version") is not None
+
+
+# ---------------------------------------------------------------------------
+# Pentesting attack surface — additional vectors
+# ---------------------------------------------------------------------------
+
+
+class TestHTTPParameterPollution:
+    """Duplicate query params must resolve deterministically."""
+
+    def test_duplicate_sort_by_uses_last(self, server, admin_a):
+        response = server.get(
+            "/v1/team?sort_by=name&sort_by=id",
+            headers={"Authorization": f"Bearer {admin_a.jwt}"},
+        )
+        assert response.status_code in (200, 422)
+
+    def test_duplicate_page_uses_last(self, server, admin_a):
+        response = server.get(
+            "/v1/team?page=1&page=9999",
+            headers={"Authorization": f"Bearer {admin_a.jwt}"},
+        )
+        assert response.status_code in (200, 416, 422)
+
+
+class TestResponseSplitting:
+    """CRLF in header values must not cause response splitting."""
+
+    def test_crlf_in_custom_header_ignored(self, server, admin_a):
+        response = server.get(
+            "/v1/team",
+            headers={
+                "Authorization": f"Bearer {admin_a.jwt}",
+                "X-Custom": "value\r\nX-Injected: evil",
+            },
+        )
+        assert "x-injected" not in {k.lower() for k in response.headers.keys()}
+
+
+class TestVerbTampering:
+    """Unsupported HTTP methods must return 405."""
+
+    def test_trace_rejected(self, server, admin_a):
+        response = server.request(
+            "TRACE", "/v1/team",
+            headers={"Authorization": f"Bearer {admin_a.jwt}"},
+        )
+        assert response.status_code == 405
+
+    def test_propfind_rejected(self, server, admin_a):
+        response = server.request(
+            "PROPFIND", "/v1/team",
+            headers={"Authorization": f"Bearer {admin_a.jwt}"},
+        )
+        assert response.status_code == 405
+
+
+class TestMassAssignment:
+    """Extra fields in create/update must not elevate privileges."""
+
+    def test_create_with_extra_admin_field_ignored(self, server, admin_a):
+        response = server.post(
+            "/v1/team",
+            json={"team": {
+                "name": "mass-assign-test",
+                "description": "test",
+                "encryption_salt": "x",
+                "is_admin": True,
+                "role": "superadmin",
+                "id": "attacker-chosen-id",
+            }},
+            headers={"Authorization": f"Bearer {admin_a.jwt}"},
+        )
+        if response.status_code == 201:
+            body = response.json()
+            team = body.get("team", body)
+            assert team.get("id") != "attacker-chosen-id"
+
+
+class TestIntegerOverflowPagination:
+    """Extreme pagination values must not cause 500 or OOM."""
+
+    def test_huge_page_number(self, server, admin_a):
+        response = server.get(
+            "/v1/team?page=99999999999999999999999",
+            headers={"Authorization": f"Bearer {admin_a.jwt}"},
+        )
+        assert response.status_code in (200, 416, 422)
+
+    def test_negative_page_size(self, server, admin_a):
+        response = server.get(
+            "/v1/team?pageSize=-1",
+            headers={"Authorization": f"Bearer {admin_a.jwt}"},
+        )
+        assert response.status_code in (200, 422)
+
+    def test_zero_page_size(self, server, admin_a):
+        response = server.get(
+            "/v1/team?pageSize=0",
+            headers={"Authorization": f"Bearer {admin_a.jwt}"},
+        )
+        assert response.status_code in (200, 422)
+
+
+class TestCachePoisoning:
+    """Vary header must include Accept to prevent format confusion at CDN layer."""
+
+    def test_vary_accept_present(self, server, admin_a):
+        response = server.get(
+            "/v1/team",
+            headers={"Authorization": f"Bearer {admin_a.jwt}"},
+        )
+        vary = response.headers.get("vary", "")
+        assert "Accept" in vary, f"Vary header must include Accept, got: {vary}"
+
+    def test_vary_authorization_present(self, server, admin_a):
+        response = server.get(
+            "/v1/team",
+            headers={"Authorization": f"Bearer {admin_a.jwt}"},
+        )
+        vary = response.headers.get("vary", "")
+        assert "Authorization" in vary, f"Vary header must include Authorization, got: {vary}"

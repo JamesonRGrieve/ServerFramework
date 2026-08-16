@@ -74,6 +74,7 @@ from zephyrex.logic.AbstractLogicManager import (
 # installed bcrypt's default is, which has shifted across library versions
 # and is invisible to operators. Configurable via BCRYPT_ROUNDS (default 12).
 _BCRYPT_ROUNDS = int(env("BCRYPT_ROUNDS"))
+_DUMMY_BCRYPT_HASH = bcrypt.hashpw(b"timing-equalization-dummy", bcrypt.gensalt(rounds=_BCRYPT_ROUNDS))
 
 
 class InvalidGrantError(HTTPException):
@@ -1459,8 +1460,12 @@ class UserManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef]
                     headers={"Retry-After": str(int(remaining or 60))},
                 )
 
+            import unicodedata
+
             login_model = UserManager.UserLoginModel(**login_data)
-            normalized_identifier = login_model.email.lower().strip()
+            normalized_identifier = unicodedata.normalize(
+                "NFKC", login_model.email
+            ).lower().strip()
 
             # Try to find user by email or username
             user = UserModel.DB(model_registry.DB.manager.Base).list(
@@ -1477,15 +1482,14 @@ class UserManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef]
             )
             if len(user) != 1:
                 logger.warning("This should never have multiple users!")
-                # H-8 — failed lookup against an unknown email still counts
-                # toward the IP-keyed lockout so credential-stuffing leaves
-                # a fingerprint.
                 UserManager._lockout_tracker.record_failure(
                     lockout_key, "password_login"
                 )
-                # Use the exact same detail string as the wrong-password
-                # branch below — distinguishing them lets a remote attacker
-                # enumerate which emails are registered.
+                # Burn the same bcrypt time as a real password check to
+                # prevent timing-based username enumeration.
+                bcrypt.checkpw(
+                    (login_model.password or "x").encode(), _DUMMY_BCRYPT_HASH
+                )
                 raise HTTPException(status_code=401, detail="Invalid credentials")
 
             user = user[0]
@@ -1956,6 +1960,12 @@ class UserManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef]
         else:
             email = email_from_body  # type: ignore[assignment]
             password = password_from_body  # type: ignore[assignment]
+
+        import unicodedata
+
+        if email:
+            email = unicodedata.normalize("NFKC", email).lower().strip()
+            registration_data["email"] = email
 
         # Extract invitation fields
         invitation_code = registration_data.pop("invitation_code", None)
