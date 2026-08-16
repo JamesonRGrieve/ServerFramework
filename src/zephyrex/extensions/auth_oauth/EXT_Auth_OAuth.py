@@ -725,7 +725,7 @@ class EXT_Auth_OAuth(AbstractStaticExtension):
                         break
 
             if revoked:
-                logger.debug(f"Revoked token: {token[:10]}...")
+                logger.debug("Token revoked successfully")
                 return {"success": True, "message": "Token revoked successfully"}
             else:
                 return {"success": False, "message": "Token not found"}
