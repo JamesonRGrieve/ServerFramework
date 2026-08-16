@@ -496,7 +496,9 @@ class PaymentExtensionPayPalProvider(AbstractPaymentProvider):
     async def process_webhook(
         cls, provider_instance: ProviderInstanceModel, payload: str, signature: str
     ) -> Dict:
-        """Process a webhook from PayPal. Async to match the abstract interface."""
+        """Process a webhook from PayPal."""
+        if not signature:
+            raise Exception("Webhook signature missing — cannot verify authenticity")
         webhook_id = cls.get_webhook_id()
         if not webhook_id:
             return {"success": False, "error": "Webhook ID not configured"}

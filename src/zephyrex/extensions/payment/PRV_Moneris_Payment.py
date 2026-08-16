@@ -571,7 +571,9 @@ class PaymentExtensionMonerisProvider(AbstractPaymentProvider):
     async def process_webhook(
         cls, provider_instance: ProviderInstanceModel, payload: str, signature: str
     ) -> Dict:
-        """Process a webhook from Moneris. Async to match the abstract interface."""
+        """Process a webhook from Moneris."""
+        if not signature:
+            raise Exception("Webhook signature missing — cannot verify authenticity")
         try:
             payload_str = payload if isinstance(payload, str) else payload.decode()
             event = json.loads(payload_str)
