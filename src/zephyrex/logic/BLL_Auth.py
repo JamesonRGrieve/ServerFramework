@@ -1828,6 +1828,7 @@ class UserManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef]
         )
 
     @staticmethod
+    @rate_limit(DEFAULT_AUTH_RATE_LIMIT, scope="ip")
     @static_route("", method="POST", auth_type=AuthType.NONE, status_code=201)
     def register(
         registration_data: dict,
