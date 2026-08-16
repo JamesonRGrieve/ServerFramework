@@ -229,6 +229,8 @@ class PaymentExtensionHelcimProvider(AbstractPaymentProvider):
     name = "helcim"
     version = "1.0.0"
     description = "Helcim payment provider"
+    _currency_env_var: ClassVar[str] = "HELCIM_CURRENCY"
+    _default_currency: ClassVar[str] = "CAD"
 
     _client: ClassVar[Optional[Any]] = None
 
@@ -313,14 +315,6 @@ class PaymentExtensionHelcimProvider(AbstractPaymentProvider):
         return ["payment", "commerce"]
 
     @classmethod
-    def get_extension_info(cls) -> Dict[str, Any]:
-        return {
-            "name": "Payment",
-            "description": "Payment extension providing payment processing via Helcim",
-            "platform": cls.get_platform_name(),
-            "currency": cls.get_env_value("HELCIM_CURRENCY", "CAD"),
-        }
-
     # ----- Payment operations ------------------------------------------------
 
     @classmethod

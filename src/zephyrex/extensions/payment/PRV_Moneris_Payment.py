@@ -237,6 +237,8 @@ class PaymentExtensionMonerisProvider(AbstractPaymentProvider):
     name = "moneris"
     version = "1.0.0"
     description = "Moneris payment provider"
+    _currency_env_var: ClassVar[str] = "MONERIS_CURRENCY"
+    _default_currency: ClassVar[str] = "CAD"
 
     _client: ClassVar[Optional[Any]] = None
 
@@ -328,13 +330,6 @@ class PaymentExtensionMonerisProvider(AbstractPaymentProvider):
         return ["payment", "subscription", "commerce"]
 
     @classmethod
-    def get_extension_info(cls) -> Dict[str, Any]:
-        return {
-            "name": "Payment",
-            "description": "Payment extension providing payment processing via Moneris",
-            "platform": cls.get_platform_name(),
-            "currency": cls.get_env_value("MONERIS_CURRENCY", "CAD"),
-        }
 
     # ----- Payment operations ------------------------------------------------
 

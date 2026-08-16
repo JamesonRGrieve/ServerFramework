@@ -686,9 +686,11 @@ class PaymentExtensionStripeProvider(AbstractPaymentProvider):
     """
 
     # Static provider metadata - MUST have proper name for discovery
-    name = "stripe"  # This is critical for provider discovery
+    name = "stripe"
     version = "1.0.0"
     description = "Stripe payment provider"
+    _currency_env_var: ClassVar[str] = "STRIPE_CURRENCY"
+    _default_currency: ClassVar[str] = "USD"
 
     # Static client state
     _stripe_client = None
@@ -825,16 +827,6 @@ class PaymentExtensionStripeProvider(AbstractPaymentProvider):
     def services(cls) -> List[str]:
         """Return list of services provided."""
         return ["payment", "billing", "subscription", "commerce"]
-
-    @classmethod
-    def get_extension_info(cls) -> Dict[str, Any]:
-        """Get extension information."""
-        return {
-            "name": "Payment",
-            "description": "Payment extension providing payment processing via Stripe",
-            "platform": cls.get_platform_name(),
-            "currency": cls.get_env_value("STRIPE_CURRENCY", "USD"),
-        }
 
     # Payment processing methods for rotation system
     @classmethod

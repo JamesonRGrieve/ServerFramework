@@ -229,6 +229,8 @@ class PaymentExtensionSquareProvider(AbstractPaymentProvider):
     name = "square"
     version = "1.0.0"
     description = "Square payment provider"
+    _currency_env_var: ClassVar[str] = "SQUARE_CURRENCY"
+    _default_currency: ClassVar[str] = "USD"
 
     _square_client = None
     _square_available = False
@@ -336,13 +338,6 @@ class PaymentExtensionSquareProvider(AbstractPaymentProvider):
         return ["payment", "subscription", "commerce"]
 
     @classmethod
-    def get_extension_info(cls) -> Dict[str, Any]:
-        return {
-            "name": "Payment",
-            "description": "Payment extension providing payment processing via Square",
-            "platform": cls.get_platform_name(),
-            "currency": cls.get_env_value("SQUARE_CURRENCY", "USD"),
-        }
 
     @classmethod
     def create_payment(

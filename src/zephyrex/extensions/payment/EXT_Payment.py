@@ -26,25 +26,29 @@ class AbstractPaymentProvider(AbstractStaticProvider):
     """
 
     extension_type: ClassVar[str] = "payment"
+    _currency_env_var: ClassVar[str] = ""
+    _default_currency: ClassVar[str] = "USD"
 
     @classmethod
     @abstractmethod
     def services(cls) -> List[str]:
-        """Return a list of services provided by this provider."""
         pass
 
     @classmethod
     @abstractmethod
     def get_platform_name(cls) -> str:
-        """Get the name of the payment platform this provider interacts with."""
         pass
 
     @classmethod
     def get_extension_info(cls) -> Dict[str, Any]:
-        """Get information about the payment extension."""
+        currency = cls._default_currency
+        if cls._currency_env_var:
+            currency = cls.get_env_value(cls._currency_env_var, cls._default_currency)
         return {
             "name": "Payment",
-            "description": f"Payment extension for {cls.get_platform_name()}",
+            "description": f"Payment extension providing payment processing via {cls.get_platform_name()}",
+            "platform": cls.get_platform_name(),
+            "currency": currency,
         }
 
     @classmethod

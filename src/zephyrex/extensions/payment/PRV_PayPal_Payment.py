@@ -151,6 +151,8 @@ class PaymentExtensionPayPalProvider(AbstractPaymentProvider):
     name = "paypal"
     version = "1.0.0"
     description = "PayPal payment provider"
+    _currency_env_var: ClassVar[str] = "PAYPAL_CURRENCY"
+    _default_currency: ClassVar[str] = "USD"
 
     _paypal_configured = False
 
@@ -262,13 +264,6 @@ class PaymentExtensionPayPalProvider(AbstractPaymentProvider):
         return ["payment", "subscription", "commerce"]
 
     @classmethod
-    def get_extension_info(cls) -> Dict[str, Any]:
-        return {
-            "name": "Payment",
-            "description": "Payment extension providing payment processing via PayPal",
-            "platform": cls.get_platform_name(),
-            "currency": cls.get_env_value("PAYPAL_CURRENCY", "USD"),
-        }
 
     @classmethod
     def create_payment(
