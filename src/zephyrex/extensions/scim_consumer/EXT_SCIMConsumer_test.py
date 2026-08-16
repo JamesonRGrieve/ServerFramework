@@ -49,8 +49,13 @@ class TestModels:
 
 
 class TestLifecycle:
-    def test_on_initialize(self):
+    def test_on_initialize(self, monkeypatch):
+        monkeypatch.setenv("SCIM_CONSUMER_BEARER_TOKEN", "test-token")
         assert EXT_SCIMConsumer.on_initialize() is True
+
+    def test_on_initialize_rejects_without_token(self, monkeypatch):
+        monkeypatch.delenv("SCIM_CONSUMER_BEARER_TOKEN", raising=False)
+        assert EXT_SCIMConsumer.on_initialize() is False
 
     def test_on_start(self):
         assert EXT_SCIMConsumer.on_start() is True

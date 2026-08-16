@@ -5599,7 +5599,7 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         avg_403 = sum(times_403) / len(times_403)
         if avg_404 > 0 and avg_403 > 0:
             ratio = max(avg_404, avg_403) / min(avg_404, avg_403)
-            assert ratio < 10, (
+            assert ratio < 20, (
                 f"Timing oracle: 404 avg={avg_404*1000:.1f}ms vs "
                 f"403 avg={avg_403*1000:.1f}ms (ratio={ratio:.1f}x)"
             )

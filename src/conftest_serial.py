@@ -1,21 +1,21 @@
-"""xdist scheduler plugin: run Efficiency_test.py last on one quiet worker.
+"""xdist scheduler plugin: distribute by class scope, run efficiency last.
 
-Extends LoadFileScheduling. Efficiency tests are held back from the
-workqueue until all parallel scopes have been fully distributed and
-completed. This ensures the benchmarks run on a truly quiet system,
-not merely on the first worker that finishes its scopes.
+Uses LoadScopeScheduling (--dist loadscope) so each TestClass can land
+on a different worker — breaking up 2600-test files that bottleneck
+loadfile scheduling. Efficiency tests are held back until all other
+scopes complete.
 """
 
 from __future__ import annotations
 
 import pytest
-from xdist.scheduler.loadfile import LoadFileScheduling
+from xdist.scheduler.loadscope import LoadScopeScheduling
 
 
 SERIAL_SCOPE = "__serial_last__"
 
 
-class SerialLastScheduler(LoadFileScheduling):
+class SerialLastScheduler(LoadScopeScheduling):
 
     def __init__(self, config, log):
         super().__init__(config, log)
@@ -76,6 +76,4 @@ class SerialLastScheduler(LoadFileScheduling):
 
 @pytest.hookimpl(trylast=True)
 def pytest_xdist_make_scheduler(config, log):
-    if config.getvalue("dist") == "loadfile":
-        return SerialLastScheduler(config, log)
-    return None
+    return SerialLastScheduler(config, log)
