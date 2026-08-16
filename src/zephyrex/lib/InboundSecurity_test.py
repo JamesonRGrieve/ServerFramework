@@ -541,3 +541,197 @@ class TestProxyHeaderSanitization:
         scope = {"type": "websocket", "headers": [(b"x-original-url", b"/admin")]}
         await mw(scope, lambda: None, lambda x: None)
         assert called == [True]
+
+
+# ---------------------------------------------------------------------------
+# Header attack surface — additional vectors
+# ---------------------------------------------------------------------------
+
+
+class TestRequestSmugglingMiddleware:
+    """CL+TE conflict detection."""
+
+    @pytest.mark.asyncio
+    async def test_cl_te_conflict_rejected(self):
+        from zephyrex.lib.InboundSecurity import RequestSmugglingMiddleware
+
+        sent = []
+
+        async def send(msg):
+            sent.append(msg)
+
+        mw = RequestSmugglingMiddleware(lambda s, r, se: None)
+        scope = {
+            "type": "http",
+            "headers": [
+                (b"content-length", b"10"),
+                (b"transfer-encoding", b"chunked"),
+            ],
+        }
+        await mw(scope, lambda: None, send)
+        assert sent[0]["status"] == 400
+
+    @pytest.mark.asyncio
+    async def test_cl_only_passes(self):
+        from zephyrex.lib.InboundSecurity import RequestSmugglingMiddleware
+
+        called = []
+
+        async def app(scope, receive, send):
+            called.append(True)
+
+        mw = RequestSmugglingMiddleware(app)
+        scope = {
+            "type": "http",
+            "headers": [(b"content-length", b"10")],
+        }
+        await mw(scope, lambda: None, lambda x: None)
+        assert called == [True]
+
+
+class TestPathSanitizationMiddleware:
+    """Null bytes and path traversal."""
+
+    @pytest.mark.asyncio
+    async def test_null_byte_rejected(self):
+        from zephyrex.lib.InboundSecurity import PathSanitizationMiddleware
+
+        sent = []
+
+        async def send(msg):
+            sent.append(msg)
+
+        mw = PathSanitizationMiddleware(lambda s, r, se: None)
+        scope = {"type": "http", "path": "/v1/team/\x00malicious"}
+        await mw(scope, lambda: None, send)
+        assert sent[0]["status"] == 400
+
+    @pytest.mark.asyncio
+    async def test_percent_null_rejected(self):
+        from zephyrex.lib.InboundSecurity import PathSanitizationMiddleware
+
+        sent = []
+
+        async def send(msg):
+            sent.append(msg)
+
+        mw = PathSanitizationMiddleware(lambda s, r, se: None)
+        scope = {"type": "http", "path": "/v1/team/%00admin"}
+        await mw(scope, lambda: None, send)
+        assert sent[0]["status"] == 400
+
+    @pytest.mark.asyncio
+    async def test_path_traversal_rejected(self):
+        from zephyrex.lib.InboundSecurity import PathSanitizationMiddleware
+
+        sent = []
+
+        async def send(msg):
+            sent.append(msg)
+
+        mw = PathSanitizationMiddleware(lambda s, r, se: None)
+        scope = {"type": "http", "path": "/v1/../../etc/passwd"}
+        await mw(scope, lambda: None, send)
+        assert sent[0]["status"] == 400
+
+    @pytest.mark.asyncio
+    async def test_clean_path_passes(self):
+        from zephyrex.lib.InboundSecurity import PathSanitizationMiddleware
+
+        called = []
+
+        async def app(scope, receive, send):
+            called.append(True)
+
+        mw = PathSanitizationMiddleware(app)
+        scope = {"type": "http", "path": "/v1/team/abc-123"}
+        await mw(scope, lambda: None, lambda x: None)
+        assert called == [True]
+
+
+class TestProxyHeaderStrippingComprehensive:
+    """All stripped headers and edge cases."""
+
+    @pytest.mark.asyncio
+    async def test_case_insensitive_stripping(self):
+        from zephyrex.lib.InboundSecurity import ProxyHeaderSanitizationMiddleware
+
+        seen = []
+
+        async def app(scope, receive, send):
+            seen.extend(scope.get("headers", []))
+
+        mw = ProxyHeaderSanitizationMiddleware(app)
+        scope = {
+            "type": "http",
+            "headers": [
+                (b"X-Original-URL", b"/admin"),
+                (b"X-REWRITE-URL", b"/admin"),
+                (b"x-original-host", b"evil"),
+                (b"x-forwarded-server", b"evil"),
+                (b"authorization", b"Bearer tok"),
+            ],
+        }
+        await mw(scope, lambda: None, lambda x: None)
+        names = {h[0].lower() for h in seen}
+        assert b"x-original-url" not in names
+        assert b"x-rewrite-url" not in names
+        assert b"x-original-host" not in names
+        assert b"x-forwarded-server" not in names
+        assert b"authorization" in names
+
+    @pytest.mark.asyncio
+    async def test_does_not_mutate_original_scope(self):
+        from zephyrex.lib.InboundSecurity import ProxyHeaderSanitizationMiddleware
+
+        original_headers = [
+            (b"x-original-url", b"/admin"),
+            (b"host", b"ok.com"),
+        ]
+        original_scope = {"type": "http", "headers": list(original_headers)}
+
+        async def app(scope, receive, send):
+            pass
+
+        mw = ProxyHeaderSanitizationMiddleware(app)
+        await mw(original_scope, lambda: None, lambda x: None)
+        assert len(original_headers) == 2
+
+
+class TestXForwardedForTrust:
+    """X-Forwarded-For only honoured from trusted proxies."""
+
+    def test_xff_ignored_from_untrusted_peer(self):
+        from zephyrex.lib.InboundSecurity import resolve_client_ip
+
+        ip = resolve_client_ip(
+            {"X-Forwarded-For": "1.2.3.4, 5.6.7.8"},
+            peer_host="9.9.9.9",
+        )
+        assert ip == "9.9.9.9"
+
+    def test_direct_peer_used_when_no_xff(self):
+        from zephyrex.lib.InboundSecurity import resolve_client_ip
+
+        ip = resolve_client_ip({}, peer_host="10.0.0.1")
+        assert ip == "10.0.0.1"
+
+
+class TestSecurityHeadersMiddleware:
+    """Response security headers are set."""
+
+    def test_security_headers_present(self, server, admin_a):
+        response = server.get(
+            "/v1/team",
+            headers={"Authorization": f"Bearer {admin_a.jwt}"},
+        )
+        assert response.headers.get("x-content-type-options") == "nosniff"
+        assert response.headers.get("x-frame-options") == "DENY"
+        assert "interest-cohort" in response.headers.get("permissions-policy", "")
+
+    def test_x_api_version_header(self, server, admin_a):
+        response = server.get(
+            "/v1/team",
+            headers={"Authorization": f"Bearer {admin_a.jwt}"},
+        )
+        assert response.headers.get("x-api-version") is not None

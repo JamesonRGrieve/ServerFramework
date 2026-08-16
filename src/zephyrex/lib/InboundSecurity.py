@@ -419,6 +419,10 @@ _STRIPPED_HEADERS: frozenset = frozenset({
     b"x-rewrite-url",
     b"x-original-host",
     b"x-forwarded-server",
+    b"x-forwarded-prefix",
+    b"x-http-method-override",
+    b"x-method-override",
+    b"x-http-method",
 })
 
 
