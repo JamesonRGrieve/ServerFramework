@@ -68,13 +68,17 @@ def get_user_timezone() -> str:
     return "UTC"
 
 
+_MAX_REQUEST_TIMEOUT_MS = 300_000
+
 def set_request_deadline_ms(timeout_ms: Optional[int]) -> None:
     """Item 47 — set the per-request deadline from a relative
-    (gRPC-style) timeout in milliseconds. ``None`` clears the deadline."""
+    (gRPC-style) timeout in milliseconds. ``None`` clears the deadline.
+    Clamped to 5 minutes to prevent attacker-set absurd deadlines."""
     if timeout_ms is None or timeout_ms <= 0:
         _request_deadline.set(None)
         return
-    _request_deadline.set(time.monotonic() + (timeout_ms / 1000.0))
+    clamped = min(timeout_ms, _MAX_REQUEST_TIMEOUT_MS)
+    _request_deadline.set(time.monotonic() + (clamped / 1000.0))
 
 
 def get_request_deadline() -> Optional[float]:
