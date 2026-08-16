@@ -450,28 +450,25 @@ def register_extension_env_vars(env: Optional[Dict[str, Any]]) -> None:
         logger.error(f"Error updating global settings: {e}")
 
 
-def is_production() -> bool:
-    """Single source of truth for production gating (C-2).
+def resolve_environment() -> str:
+    """Canonical environment name from ENVIRONMENT or APP_ENV.
 
-    Reads ``os.environ`` directly so test-time monkeypatching of either
-    ``ENVIRONMENT`` or ``APP_ENV`` is honoured immediately. Both names
-    are accepted; ``ENVIRONMENT`` wins when both are set.
+    Reads ``os.environ`` directly so monkeypatching is honoured.
+    ENVIRONMENT wins when both are set. Returns lowercase.
     """
-    env_value = (
-        (os.environ.get("ENVIRONMENT") or os.environ.get("APP_ENV") or "")
+    return (
+        (os.environ.get("ENVIRONMENT") or os.environ.get("APP_ENV") or "development")
         .strip()
         .lower()
     )
-    return env_value == "production"
+
+
+def is_production() -> bool:
+    return resolve_environment() == "production"
 
 
 def is_staging() -> bool:
-    env_value = (
-        (os.environ.get("ENVIRONMENT") or os.environ.get("APP_ENV") or "")
-        .strip()
-        .lower()
-    )
-    return env_value == "staging"
+    return resolve_environment() == "staging"
 
 
 def env(var: str, default: Optional[str] = "") -> str:

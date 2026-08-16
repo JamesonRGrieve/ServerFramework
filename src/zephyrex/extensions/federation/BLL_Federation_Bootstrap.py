@@ -114,7 +114,8 @@ def validate_upstream_url(url: str, *, allow_private: Optional[bool] = None) -> 
         raise ValueError("upstream_url is empty")
     parsed = urlparse(url)
 
-    environment = (env("ENVIRONMENT") or "local").lower()
+    from zephyrex.lib.Environment import resolve_environment
+    environment = resolve_environment()
     is_dev_like = environment in ("local", "ci", "development")
 
     allow_http = (
