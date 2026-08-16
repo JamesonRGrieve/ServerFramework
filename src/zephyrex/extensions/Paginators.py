@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
 import json
 from abc import ABC, abstractmethod
 from typing import Any, ClassVar, Dict, List, Optional, Tuple
@@ -65,8 +66,13 @@ def query_hash(query_params: Optional[Dict[str, Any]]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
 
 
+def _token_hmac_key() -> bytes:
+    import os
+    return (os.environ.get("JWT_SECRET") or "pagination-fallback-key").encode("utf-8")
+
+
 def encode_token(provider_cursor: Any, page_size: Optional[int], q_hash: str) -> str:
-    """Encode an opaque cursor envelope as a base64 JSON string."""
+    """Encode an opaque cursor envelope as a signed base64 JSON string."""
 
     payload = {
         "provider_cursor": provider_cursor,
@@ -74,7 +80,9 @@ def encode_token(provider_cursor: Any, page_size: Optional[int], q_hash: str) ->
         "query_hash": q_hash,
     }
     raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
-    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+    encoded = base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+    sig = hmac.new(_token_hmac_key(), raw, "sha256").hexdigest()[:16]
+    return f"{encoded}.{sig}"
 
 
 def decode_token(token: str, expected_query_hash: Optional[str] = None) -> Dict[str, Any]:
@@ -87,10 +95,20 @@ def decode_token(token: str, expected_query_hash: Optional[str] = None) -> Dict[
     if not token:
         raise InvalidPaginationError("Empty pagination token")
     try:
-        # Re-pad the base64 string before decoding.
-        padded = token + "=" * (-len(token) % 4)
+        if "." in token:
+            encoded_part, sig = token.rsplit(".", 1)
+        else:
+            encoded_part = token
+            sig = None
+        padded = encoded_part + "=" * (-len(encoded_part) % 4)
         raw = base64.urlsafe_b64decode(padded.encode("ascii"))
+        if sig is not None:
+            expected_sig = hmac.new(_token_hmac_key(), raw, "sha256").hexdigest()[:16]
+            if not hmac.compare_digest(sig, expected_sig):
+                raise InvalidPaginationError("Pagination token signature invalid")
         payload = json.loads(raw)
+    except InvalidPaginationError:
+        raise
     except (ValueError, json.JSONDecodeError) as exc:
         raise InvalidPaginationError(f"Malformed pagination token: {exc}") from exc
 
