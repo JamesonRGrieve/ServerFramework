@@ -44,7 +44,7 @@ class ValkeyResponseCache:
 
     @staticmethod
     def etag_for(body: str) -> str:
-        return f'"{hashlib.md5(body.encode()).hexdigest()}"'
+        return f'"{hashlib.sha256(body.encode()).hexdigest()}"'
 
     async def get(self, key: str) -> dict | None:
         """Return cached response dict or None."""
