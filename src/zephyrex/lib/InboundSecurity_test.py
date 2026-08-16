@@ -436,3 +436,108 @@ class TestRateLimitMiddleware:
             }
             await mw(scope, receive, send)
             assert sent[0]["status"] == 200
+
+
+class TestProxyHeaderSanitization:
+    """X-Original-URL and X-Rewrite-URL are stripped before the app sees them."""
+
+    @pytest.mark.asyncio
+    async def test_strips_x_original_url(self):
+        from zephyrex.lib.InboundSecurity import ProxyHeaderSanitizationMiddleware
+
+        seen_headers = []
+
+        async def app(scope, receive, send):
+            seen_headers.extend(scope.get("headers", []))
+
+        mw = ProxyHeaderSanitizationMiddleware(app)
+        scope = {
+            "type": "http",
+            "headers": [
+                (b"authorization", b"Bearer tok"),
+                (b"x-original-url", b"/admin/secret"),
+                (b"accept", b"application/json"),
+            ],
+        }
+        await mw(scope, lambda: None, lambda x: None)
+        header_names = {h[0] for h in seen_headers}
+        assert b"x-original-url" not in header_names
+        assert b"authorization" in header_names
+        assert b"accept" in header_names
+
+    @pytest.mark.asyncio
+    async def test_strips_x_rewrite_url(self):
+        from zephyrex.lib.InboundSecurity import ProxyHeaderSanitizationMiddleware
+
+        seen_headers = []
+
+        async def app(scope, receive, send):
+            seen_headers.extend(scope.get("headers", []))
+
+        mw = ProxyHeaderSanitizationMiddleware(app)
+        scope = {
+            "type": "http",
+            "headers": [
+                (b"x-rewrite-url", b"/admin"),
+                (b"host", b"example.com"),
+            ],
+        }
+        await mw(scope, lambda: None, lambda x: None)
+        header_names = {h[0] for h in seen_headers}
+        assert b"x-rewrite-url" not in header_names
+        assert b"host" in header_names
+
+    @pytest.mark.asyncio
+    async def test_strips_x_original_host(self):
+        from zephyrex.lib.InboundSecurity import ProxyHeaderSanitizationMiddleware
+
+        seen_headers = []
+
+        async def app(scope, receive, send):
+            seen_headers.extend(scope.get("headers", []))
+
+        mw = ProxyHeaderSanitizationMiddleware(app)
+        scope = {
+            "type": "http",
+            "headers": [
+                (b"x-original-host", b"evil.com"),
+                (b"host", b"real.com"),
+            ],
+        }
+        await mw(scope, lambda: None, lambda x: None)
+        header_names = {h[0] for h in seen_headers}
+        assert b"x-original-host" not in header_names
+
+    @pytest.mark.asyncio
+    async def test_passthrough_when_no_dangerous_headers(self):
+        from zephyrex.lib.InboundSecurity import ProxyHeaderSanitizationMiddleware
+
+        seen_headers = []
+
+        async def app(scope, receive, send):
+            seen_headers.extend(scope.get("headers", []))
+
+        mw = ProxyHeaderSanitizationMiddleware(app)
+        scope = {
+            "type": "http",
+            "headers": [
+                (b"authorization", b"Bearer tok"),
+                (b"content-type", b"application/json"),
+            ],
+        }
+        await mw(scope, lambda: None, lambda x: None)
+        assert len(seen_headers) == 2
+
+    @pytest.mark.asyncio
+    async def test_non_http_passthrough(self):
+        from zephyrex.lib.InboundSecurity import ProxyHeaderSanitizationMiddleware
+
+        called = []
+
+        async def app(scope, receive, send):
+            called.append(True)
+
+        mw = ProxyHeaderSanitizationMiddleware(app)
+        scope = {"type": "websocket", "headers": [(b"x-original-url", b"/admin")]}
+        await mw(scope, lambda: None, lambda x: None)
+        assert called == [True]

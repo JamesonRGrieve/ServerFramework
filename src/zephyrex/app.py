@@ -566,6 +566,7 @@ def build_app(model_registry: ModelRegistry):
         ETagMiddleware,
         JSONDepthMiddleware,
         PathSanitizationMiddleware,
+        ProxyHeaderSanitizationMiddleware,
         RateLimitMiddleware,
         RequestSmugglingMiddleware,
         SecurityHeadersMiddleware,
@@ -580,6 +581,7 @@ def build_app(model_registry: ModelRegistry):
     app.add_middleware(BodySizeLimitMiddleware)
     app.add_middleware(RateLimitMiddleware)
     app.add_middleware(RequestSmugglingMiddleware)
+    app.add_middleware(ProxyHeaderSanitizationMiddleware)
     app.add_middleware(PathSanitizationMiddleware)
     app.add_middleware(JSONDepthMiddleware)
     app.add_middleware(ETagMiddleware)

@@ -414,6 +414,38 @@ class RequestSmugglingMiddleware:
         await self.app(scope, receive, send)
 
 
+_STRIPPED_HEADERS: frozenset = frozenset({
+    b"x-original-url",
+    b"x-rewrite-url",
+    b"x-original-host",
+    b"x-forwarded-server",
+})
+
+
+class ProxyHeaderSanitizationMiddleware:
+    """Strip headers that reverse proxies may use to override routing.
+
+    ``X-Original-URL`` and ``X-Rewrite-URL`` allow an attacker to
+    request a permitted path while directing the backend to process a
+    restricted one. Stripping at the ASGI layer ensures no downstream
+    middleware or handler sees them.
+    """
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") == "http":
+            raw_headers = scope.get("headers") or []
+            cleaned = [
+                (name, val) for name, val in raw_headers
+                if name.lower() not in _STRIPPED_HEADERS
+            ]
+            if len(cleaned) != len(raw_headers):
+                scope = {**scope, "headers": cleaned}
+        await self.app(scope, receive, send)
+
+
 class PathSanitizationMiddleware:
     """ASGI middleware that rejects request paths containing null bytes
     or path-traversal sequences (``..``).

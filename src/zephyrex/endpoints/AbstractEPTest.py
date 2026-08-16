@@ -4641,7 +4641,13 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
     def test_security_proxy_header_injection(
         self, server: Any, admin_a: Any, header_name: str, header_value: str
     ):
-        """Proxy headers must not override routing or auth decisions."""
+        """Proxy headers must not override routing or auth decisions.
+
+        X-Original-URL and X-Rewrite-URL are stripped by
+        ProxyHeaderSanitizationMiddleware before reaching the app.
+        The request must route to the originally-requested endpoint,
+        not the header's value.
+        """
         endpoint = self.get_list_endpoint({})
         response = server.get(
             endpoint,
