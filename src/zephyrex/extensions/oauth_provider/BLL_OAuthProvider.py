@@ -68,8 +68,9 @@ from zephyrex.logic.Permissions import PermissionRegistry, has_permission
 
 def _hash_secret(raw: str, salt: str) -> str:
     import bcrypt
+    from zephyrex.logic.BLL_Auth import _BCRYPT_ROUNDS
 
-    return bcrypt.hashpw((salt + raw).encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+    return bcrypt.hashpw((salt + raw).encode("utf-8"), bcrypt.gensalt(rounds=_BCRYPT_ROUNDS)).decode("utf-8")
 
 
 def _token_fingerprint(raw: str) -> str:
