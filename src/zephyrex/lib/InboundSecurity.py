@@ -168,7 +168,8 @@ class SecurityHeadersMiddleware:
     @staticmethod
     def _resolve_headers() -> Dict[str, str]:
         headers = dict(_DEFAULT_SECURITY_HEADERS)
-        if os.environ.get("APP_ENV", "").lower() != "production":
+        from zephyrex.lib.Environment import is_production as _is_prod
+        if not _is_prod():
             headers.pop("Strict-Transport-Security", None)
         for name in list(headers.keys()):
             override = os.environ.get(

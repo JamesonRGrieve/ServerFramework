@@ -178,12 +178,9 @@ def _env_suffix_for(app_env: Optional[str]) -> str:
     Either name is accepted (C-2: the legacy alias is still respected).
     """
     if app_env is None:
-        env_value = (
-            os.environ.get("ENVIRONMENT") or os.environ.get("APP_ENV") or "development"
-        )
-    else:
-        env_value = app_env
-    return "_LIVE" if (env_value or "").lower() == "production" else "_TEST"
+        from zephyrex.lib.Environment import is_production
+        return "_LIVE" if is_production() else "_TEST"
+    return "_LIVE" if (app_env or "").lower() == "production" else "_TEST"
 
 
 def _resolve_env(path: str, app_env: Optional[str]) -> Optional[str]:
