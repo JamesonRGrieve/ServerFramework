@@ -13,6 +13,13 @@ import stringcase
 from fastapi import HTTPException
 from pydantic import BaseModel, Field, model_validator
 
+
+def _validate_name_min_length(instance, entity_label: str = "Name"):
+    """Shared name-length validator for Create models."""
+    if instance.name and len(instance.name) < 2:
+        raise ValueError(f"{entity_label} must be at least 2 characters long")
+    return instance
+
 from zephyrex.database.DatabaseManager import DatabaseManager
 from zephyrex.lib.Environment import env
 from zephyrex.lib.Logging import logger
@@ -267,9 +274,7 @@ class ProviderModel(
 
         @model_validator(mode="after")
         def validate_name_length(self):
-            if self.name and len(self.name) < 2:
-                raise ValueError("Provider name must be at least 2 characters long")
-            return self
+            return _validate_name_min_length(self, "Provider name")
 
     class Update(BaseModel):
         name: Optional[str] | None = None
@@ -715,11 +720,7 @@ class ProviderInstanceModel(
 
         @model_validator(mode="after")
         def validate_name_length(self):
-            if self.name and len(self.name) < 2:
-                raise ValueError(
-                    "Provider instance name must be at least 2 characters long"
-                )
-            return self
+            return _validate_name_min_length(self, "Provider instance name")
 
     class Update(BaseModel):
         name: Optional[str] | None = None
@@ -1112,9 +1113,7 @@ class RotationModel(
 
         @model_validator(mode="after")
         def validate_name_length(self):
-            if self.name and len(self.name) < 2:
-                raise ValueError("Rotation name must be at least 2 characters long")
-            return self
+            return _validate_name_min_length(self, "Rotation name")
 
     class Update(BaseModel):
         name: Optional[str] | None = None
