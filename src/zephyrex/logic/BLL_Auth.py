@@ -743,7 +743,10 @@ class UserManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef]
         if not value:
             return []
 
-        escaped = value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        if isinstance(value, dict):
+            return None
+
+        escaped = str(value).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         search_value = f"%{escaped}%"
         db_model = self.DB
         return [
