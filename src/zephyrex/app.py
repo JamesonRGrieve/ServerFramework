@@ -648,22 +648,12 @@ def build_app(model_registry: ModelRegistry):
                 # weaker here lets a forged or cross-tenant token populate
                 # ``RequestContext.user`` for routes that consume it but
                 # do not also call ``verify_token`` themselves.
-                payload = jwt.decode(
-                    token,
-                    key=jwt_secret,
-                    algorithms=["HS256"],
-                    audience=env("JWT_AUDIENCE"),
-                    issuer=env("JWT_ISSUER"),
-                    leeway=30,
-                    options={
-                        "verify_signature": True,
-                        "require": ["exp", "nbf", "iat", "jti", "aud", "iss"],
-                    },
-                )
+                from zephyrex.logic.BLL_Auth import UserManager
+
+                payload = UserManager._decode_jwt(token)
 
                 model_registry = getattr(request.app.state, "model_registry", None)
                 if model_registry is not None:
-                    from zephyrex.logic.BLL_Auth import UserManager
 
                     UserManager._enforce_session_not_revoked(payload, model_registry)
 

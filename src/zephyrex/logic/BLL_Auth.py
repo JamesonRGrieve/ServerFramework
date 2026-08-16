@@ -1193,26 +1193,7 @@ class UserManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef]
                     )
 
                 try:
-                    jwt_secret = env("JWT_SECRET")
-                    if not jwt_secret:
-                        raise jwt.InvalidTokenError("JWT_SECRET unset")
-                    _auth_decode_kwargs = dict(
-                        algorithms=[env("JWT_ALGORITHM")],
-                        audience=env("JWT_AUDIENCE"),
-                        issuer=env("JWT_ISSUER"),
-                        leeway=timedelta(seconds=30),
-                        options={"require": ["exp", "jti", "aud", "iss"]},
-                        i=ip,
-                        s=server,
-                    )
-                    try:
-                        payload = jwt.decode(jwt=token, key=jwt_secret, **_auth_decode_kwargs)
-                    except jwt.InvalidSignatureError:
-                        previous = env("JWT_SECRET_PREVIOUS")
-                        if previous:
-                            payload = jwt.decode(jwt=token, key=previous, **_auth_decode_kwargs)
-                        else:
-                            raise
+                    payload = UserManager._decode_jwt(token)
 
                     # If the token carries a `jti`, the bound session must
                     # still be active. A revoked session invalidates every
