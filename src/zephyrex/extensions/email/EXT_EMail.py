@@ -813,20 +813,28 @@ class AbstractEmailProvider(AbstractStaticProvider):
 
             legacy_attachments = []
             for att in message.attachments:
+                safe_name = os.path.basename(att.filename).replace("..", "_")
                 tmp = tempfile.NamedTemporaryFile(
-                    delete=False, suffix="_" + att.filename
+                    delete=False, suffix="_" + safe_name
                 )
                 tmp.write(att.content)
                 tmp.close()
                 legacy_attachments.append(tmp.name)
-        return await cls.send_email(  # type: ignore[no-any-return]
-            provider_instance,
-            recipient=recipient,
-            subject=message.subject,
-            body=body,
-            attachments=legacy_attachments,
-            importance=message.importance.value,
-        )
+        try:
+            return await cls.send_email(  # type: ignore[no-any-return]
+                provider_instance,
+                recipient=recipient,
+                subject=message.subject,
+                body=body,
+                attachments=legacy_attachments,
+                importance=message.importance.value,
+            )
+        finally:
+            for tmp_path in legacy_attachments:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
 
     @classmethod
     async def update_email(
