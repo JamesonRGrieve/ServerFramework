@@ -473,10 +473,10 @@ def build_app(model_registry: ModelRegistry):
                 try:
                     from zephyrex.extensions.database_memory.PRV_Valkey import (
                         PRV_Valkey,
+                        ValkeyConnectionStub,
                     )
 
-                    from zephyrex.extensions.database_memory.PRV_Valkey import ValkeyConnectionStub
-                _stub = ValkeyConnectionStub(api_key=valkey_uri)
+                    _stub = ValkeyConnectionStub(api_key=valkey_uri)
                     await PRV_Valkey.close(_stub)
                 except Exception as exc:
                     logger.debug("Valkey close error: %s", exc)
