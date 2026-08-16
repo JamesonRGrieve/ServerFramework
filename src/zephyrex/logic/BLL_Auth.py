@@ -36,6 +36,14 @@ import bcrypt
 from fastapi import Header, HTTPException, Request, status
 
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
+
+
+def _validate_team_name(v):
+    if v is not None:
+        v = v.strip()
+        if not v:
+            raise ValueError("Team name cannot be empty")
+    return v
 from sqlalchemy import or_
 
 from zephyrex.database.StaticPermissions import can_manage_permissions
@@ -2802,11 +2810,7 @@ class TeamModel(
         @field_validator("name")
         @classmethod
         def validate_name(cls, v):
-            if v is not None:
-                v = v.strip()
-                if not v:
-                    raise ValueError("Team name cannot be empty")
-            return v
+            return _validate_team_name(v)
 
     class Update(
         BaseModel,
@@ -2821,11 +2825,7 @@ class TeamModel(
         @field_validator("name")
         @classmethod
         def validate_name(cls, v):
-            if v is not None:
-                v = v.strip()
-                if not v:
-                    raise ValueError("Team name cannot be empty")
-            return v
+            return _validate_team_name(v)
 
     class Search(
         ApplicationModel.Search,
