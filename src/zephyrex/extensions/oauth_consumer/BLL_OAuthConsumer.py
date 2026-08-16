@@ -194,6 +194,17 @@ class OAuthConsumerManager(AbstractBLLManager, RouterMixin):
     def _default_redirect_uri() -> str:
         return env("OAUTH_CONSUMER_REDIRECT_URI") or env("MAGIC_LINK_BASE_URL") or ""
 
+    @staticmethod
+    def _allowed_redirect_uris():
+        raw = env("OAUTH_CONSUMER_ALLOWED_REDIRECTS") if hasattr(env, "__call__") else ""
+        try:
+            raw = env("OAUTH_CONSUMER_ALLOWED_REDIRECTS")
+        except Exception:
+            raw = ""
+        if not raw:
+            return None
+        return [u.strip() for u in raw.split(",") if u.strip()]
+
     def _resolve_user_by_email(self, email: str) -> Optional[UserModel]:
         UserDB = UserModel.DB(self.model_registry.DB.manager.Base)
         users = UserDB.list(
@@ -239,6 +250,13 @@ class OAuthConsumerManager(AbstractBLLManager, RouterMixin):
         idp = idp_class()
         state = secrets.token_urlsafe(32)
         target_redirect = redirect_uri or self._default_redirect_uri()
+
+        allowed = self._allowed_redirect_uris()
+        if allowed and target_redirect not in allowed:
+            raise HTTPException(
+                status_code=400,
+                detail="redirect_uri not in allowlist",
+            )
 
         # Bind state to (provider, redirect_uri) so an attacker who somehow
         # observes the state cannot reuse it on a different IdP or to redirect
