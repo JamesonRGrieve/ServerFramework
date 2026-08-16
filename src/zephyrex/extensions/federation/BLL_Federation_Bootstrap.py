@@ -48,12 +48,24 @@ _DEFAULT_ALLOWED_SCHEMES = ("https",)
 
 
 def _is_private_or_local(host: str) -> bool:
-    """Return True if ``host`` resolves to a non-publicly-routable address."""
+    """Return True if ``host`` resolves to a non-publicly-routable address.
+
+    Delegates to ProviderHTTPClient's SSRF guard for consistency.
+    """
+    try:
+        from zephyrex.lib.ProviderHTTPClient import validate_outbound_url
+
+        validate_outbound_url(f"https://{host}/")
+        return False
+    except Exception:
+        return True
+
+
+def _is_private_or_local_fallback(host: str) -> bool:
+    """Stdlib fallback if ProviderHTTPClient is unavailable."""
     try:
         addrinfos = socket.getaddrinfo(host, None)
     except socket.gaierror:
-        # Unresolvable hostnames are rejected by the caller; treat as unsafe
-        # to keep the SSRF guard conservative.
         return True
     for info in addrinfos:
         sockaddr = info[4]
