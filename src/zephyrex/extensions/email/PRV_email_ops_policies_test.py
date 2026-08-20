@@ -21,12 +21,9 @@ from zephyrex.extensions.AbstractExtensionProvider import HealthReport, HealthSt
 from zephyrex.extensions.billing.BLL_CostModel import ConstantCostModel
 from zephyrex.extensions.ExternalErrors import DegradationMode
 from zephyrex.extensions.RateLimit import RateLimit
-from zephyrex.extensions.email.PRV_SendGrid_EMail import (
-    SendgridProvider,
-    StalwartProvider,
-)
+from zephyrex.extensions.email.PRV_SendGrid_EMail import SendgridProvider
 from zephyrex.extensions.email.PRV_SMTP2Go_EMail import Smtp2goProvider
-
+from zephyrex.extensions.email.PRV_Stalwart_EMail import StalwartProvider
 
 pytestmark = pytest.mark.unit
 
@@ -66,9 +63,7 @@ class TestOpsPolicyDeclarations:
     """Each of the three providers declares the four ClassVars."""
 
     @pytest.mark.parametrize("provider,rps,burst", PROVIDERS)
-    def test_rate_limit_declared_with_documented_defaults(
-        self, provider, rps, burst
-    ):
+    def test_rate_limit_declared_with_documented_defaults(self, provider, rps, burst):
         assert isinstance(provider.rate_limit, RateLimit)
         assert provider.rate_limit.rps == rps
         assert provider.rate_limit.burst == burst

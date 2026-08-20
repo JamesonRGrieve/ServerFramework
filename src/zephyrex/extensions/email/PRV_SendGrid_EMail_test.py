@@ -9,15 +9,12 @@ from zephyrex.extensions.AbstractPRVTest import (
     AbstractEmailProviderSecurityTests,
     AbstractPRVTest,
 )
-from zephyrex.extensions.email.PRV_SendGrid_EMail import (
-    SendgridProvider,
-    StalwartProvider,
-)
+from zephyrex.extensions.email.PRV_SendGrid_EMail import SendgridProvider
 from zephyrex.extensions.email.PRV_SMTP2Go_EMail import Smtp2goProvider
+from zephyrex.extensions.email.PRV_Stalwart_EMail import StalwartProvider
 from zephyrex.lib.Dependencies import check_pip_dependencies, install_pip_dependencies
 from zephyrex.lib.Environment import env
 from zephyrex.logic.BLL_Providers import ProviderInstanceModel
-
 
 # Provide lightweight placeholders for extension-level fixtures that are not available
 # in this focused test run; the provider tests will skip the heavy integration tests
@@ -42,7 +39,9 @@ class _MockProviderInstance:
     silently xfails on every CI run that lacks API keys.
     """
 
-    def __init__(self, api_key: str = "test-fake-key", from_email: str = "from@example.com"):
+    def __init__(
+        self, api_key: str = "test-fake-key", from_email: str = "from@example.com"
+    ):
         self.id = "mock-provider-instance"
         self.api_key = api_key
         self.provider_id = "mock"
@@ -108,7 +107,9 @@ class TestSendgridProvider(AbstractPRVTest, AbstractEmailProviderSecurityTests):
     )
 
     # Expected abilities and services
-    expected_abilities: list[str] = []  # SendGrid provider doesn't expose abilities directly  # type: ignore[var-annotated]
+    expected_abilities: list[str] = (
+        []
+    )  # SendGrid provider doesn't expose abilities directly  # type: ignore[var-annotated]
     expected_services = ["email", "messaging", "communication"]
 
     # Tests to skip

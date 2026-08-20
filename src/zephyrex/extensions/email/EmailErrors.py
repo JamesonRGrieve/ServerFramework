@@ -227,3 +227,17 @@ def map_upstream_status(
     if 500 <= status < 600:
         return TransientExternalError(message)
     return BaseExternalError(message)
+
+
+def extract_status_code(message: str):
+    """Pull the first 3-digit status code out of an error string, if any.
+
+    Lives here (a provider-neutral module) rather than in a specific provider
+    module so email providers can share it without importing each other — a
+    cross-provider import at module top let discovery observe a half-imported
+    provider and drop it from the cached provider set.
+    """
+    import re
+
+    m = re.search(r"\b(\d{3})\b", message)
+    return int(m.group(1)) if m else None

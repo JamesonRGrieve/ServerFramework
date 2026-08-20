@@ -1528,6 +1528,10 @@ class AbstractStaticExtension(
             from zephyrex.extensions.ExtensionLoader import load_extension_module
 
             providers = []
+            # Set when a PRV_ module is observed mid-import (its ``.providers``
+            # was read re-entrantly). The result is then returned but NOT cached
+            # so the next access recomputes it once every module has finished.
+            partial = False
 
             # Get extension directory through Paths so a global
             # ``set_extensions_root`` override is honored.
@@ -1549,6 +1553,17 @@ class AbstractStaticExtension(
                     module = load_extension_module(
                         extensions_root, cls.name, module_name
                     )
+
+                    # A module still mid-import (e.g. discovery was triggered
+                    # re-entrantly by an EXT_* module-level import evaluating
+                    # this classproperty) exposes only the classes defined above
+                    # its current import point — scanning it now would silently
+                    # drop the provider it defines lower down. Skip it and flag
+                    # the result incomplete so it is not cached.
+                    _spec = getattr(module, "__spec__", None)
+                    if _spec is not None and getattr(_spec, "_initializing", False):
+                        partial = True
+                        continue
 
                     # Find provider classes in the module
                     for name, obj in inspect.getmembers(module, inspect.isclass):
@@ -1579,6 +1594,9 @@ class AbstractStaticExtension(
                 except Exception as e:
                     logger.error(f"Failed to import provider module {module_name}: {e}")
 
+            if partial:
+                # Do not cache an incomplete scan; recompute on next access.
+                return providers
             cls._providers = providers
 
         return cls._providers

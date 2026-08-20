@@ -21,11 +21,9 @@ from zephyrex.extensions.email.EXT_EMail import (
     iter_configured_email_providers,
     validate_email_provider_settings_at_startup,
 )
-from zephyrex.extensions.email.PRV_SendGrid_EMail import (
-    SendgridProvider,
-    StalwartProvider,
-)
+from zephyrex.extensions.email.PRV_SendGrid_EMail import SendgridProvider
 from zephyrex.extensions.email.PRV_SMTP2Go_EMail import Smtp2goProvider
+from zephyrex.extensions.email.PRV_Stalwart_EMail import StalwartProvider
 
 
 class TestSendgridSettings:
@@ -47,9 +45,7 @@ class TestSendgridSettings:
         # `from_email` missing — the error row must name the field so a
         # startup admin can fix the env file rather than guess.
         with pytest.raises(ValidationError) as exc:
-            SendgridProvider.Settings.from_env(
-                {"SENDGRID_API_KEY": "sk_test_xxx"}
-            )
+            SendgridProvider.Settings.from_env({"SENDGRID_API_KEY": "sk_test_xxx"})
         rows = exc.value.errors()
         missing_fields = {tuple(r["loc"]) for r in rows}
         assert ("from_email",) in missing_fields
@@ -64,9 +60,7 @@ class TestSendgridSettings:
     def test_is_configured_false_when_required_missing(self):
         assert SendgridProvider.Settings.is_configured({}) is False
         assert (
-            SendgridProvider.Settings.is_configured(
-                {"SENDGRID_FROM_EMAIL": "x@y.z"}
-            )
+            SendgridProvider.Settings.is_configured({"SENDGRID_FROM_EMAIL": "x@y.z"})
             is False
         )
 
@@ -149,9 +143,7 @@ class TestDeprecationOfEnvDict:
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             _ = SendgridProvider._env["SENDGRID_API_KEY"]
-        deprecations = [
-            w for w in caught if issubclass(w.category, DeprecationWarning)
-        ]
+        deprecations = [w for w in caught if issubclass(w.category, DeprecationWarning)]
         assert deprecations, "expected DeprecationWarning on `_env` read"
         assert any("Settings.from_env" in str(w.message) for w in deprecations)
 
@@ -159,9 +151,7 @@ class TestDeprecationOfEnvDict:
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             list(StalwartProvider._env.keys())
-        deprecations = [
-            w for w in caught if issubclass(w.category, DeprecationWarning)
-        ]
+        deprecations = [w for w in caught if issubclass(w.category, DeprecationWarning)]
         assert deprecations
 
 

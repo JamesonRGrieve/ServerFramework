@@ -19,12 +19,9 @@ import pytest
 from zephyrex.extensions.AbstractExternalModel import is_idempotent
 from zephyrex.extensions.email.EmailErrors import EmailValidationError
 from zephyrex.extensions.email.EXT_EMail import EmailAddress, EmailMessage
-from zephyrex.extensions.email.PRV_SendGrid_EMail import (
-    SendgridProvider,
-    StalwartProvider,
-)
+from zephyrex.extensions.email.PRV_SendGrid_EMail import SendgridProvider
 from zephyrex.extensions.email.PRV_SMTP2Go_EMail import Smtp2goProvider
-
+from zephyrex.extensions.email.PRV_Stalwart_EMail import StalwartProvider
 
 pytestmark = pytest.mark.unit
 
@@ -66,9 +63,9 @@ class TestIdempotentMarker:
         [SendgridProvider, StalwartProvider, Smtp2goProvider],
     )
     def test_send_bulk_via_provider_is_idempotent(self, provider):
-        assert is_idempotent(provider.send_bulk_via_provider), (
-            f"{provider.__name__}.send_bulk_via_provider must be @idempotent"
-        )
+        assert is_idempotent(
+            provider.send_bulk_via_provider
+        ), f"{provider.__name__}.send_bulk_via_provider must be @idempotent"
 
 
 class TestSendBulkBatchCap:
@@ -128,6 +125,4 @@ class TestSendViaProviderValidation:
             body_text="ok",
         )
         with pytest.raises(EmailValidationError):
-            await provider.send_via_provider(
-                provider_instance=None, message=msg
-            )
+            await provider.send_via_provider(provider_instance=None, message=msg)

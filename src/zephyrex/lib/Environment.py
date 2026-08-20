@@ -374,7 +374,9 @@ def _edit_distance(a: str, b: str) -> int:
     for i, ca in enumerate(a):
         curr = [i + 1]
         for j, cb in enumerate(b):
-            curr.append(min(prev[j + 1] + 1, curr[j] + 1, prev[j] + (0 if ca == cb else 1)))
+            curr.append(
+                min(prev[j + 1] + 1, curr[j] + 1, prev[j] + (0 if ca == cb else 1))
+            )
         prev = curr
     return prev[-1]
 
