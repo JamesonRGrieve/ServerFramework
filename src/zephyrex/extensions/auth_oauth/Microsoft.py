@@ -50,7 +50,8 @@ class MicrosoftOAuthProvider(AbstractOAuthProvider):
                     "refresh_token": self.refresh_token,
                     "grant_type": "refresh_token",
                 },
-            , timeout=10)
+                timeout=10,
+            )
 
             if response.status_code != 200:
                 raise HTTPException(
@@ -72,14 +73,16 @@ class MicrosoftOAuthProvider(AbstractOAuthProvider):
             response = requests.get(
                 uri,
                 headers={"Authorization": f"Bearer {self.access_token}"},
-            , timeout=10)
+                timeout=10,
+            )
 
             if response.status_code == 401 and self.refresh_token:
                 self.access_token = self.get_new_token()
                 response = requests.get(
                     uri,
                     headers={"Authorization": f"Bearer {self.access_token}"},
-                , timeout=10)
+                    timeout=10,
+                )
 
             if response.status_code != 200:
                 raise HTTPException(
@@ -142,7 +145,8 @@ class MicrosoftOAuthProvider(AbstractOAuthProvider):
                     "Content-Type": "application/json",
                 },
                 json=email_data,  # type: ignore[arg-type]
-            , timeout=10)
+                timeout=10,
+            )
 
             if response.status_code == 401 and self.refresh_token:
                 self.access_token = self.get_new_token()
@@ -153,7 +157,8 @@ class MicrosoftOAuthProvider(AbstractOAuthProvider):
                         "Content-Type": "application/json",
                     },
                     json=email_data,  # type: ignore[arg-type]
-                , timeout=10)
+                    timeout=10,
+                )
 
             if response.status_code != 202:
                 raise HTTPException(
@@ -181,14 +186,16 @@ class MicrosoftOAuthProvider(AbstractOAuthProvider):
             response = requests.get(
                 uri,
                 headers={"Authorization": f"Bearer {self.access_token}"},
-            , timeout=10)
+                timeout=10,
+            )
 
             if response.status_code == 401 and self.refresh_token:
                 self.access_token = self.get_new_token()
                 response = requests.get(
                     uri,
                     headers={"Authorization": f"Bearer {self.access_token}"},
-                , timeout=10)
+                    timeout=10,
+                )
 
             if response.status_code != 200:
                 raise HTTPException(

@@ -48,7 +48,8 @@ class AmazonOAuthProvider(AbstractOAuthProvider):
                     "refresh_token": self.refresh_token,
                     "grant_type": "refresh_token",
                 },
-            , timeout=10)
+                timeout=10,
+            )
 
             if response.status_code != 200:
                 raise HTTPException(
@@ -70,14 +71,16 @@ class AmazonOAuthProvider(AbstractOAuthProvider):
             response = requests.get(
                 uri,
                 headers={"Authorization": f"Bearer {self.access_token}"},
-            , timeout=10)
+                timeout=10,
+            )
 
             if response.status_code == 401 and self.refresh_token:
                 self.access_token = self.get_new_token()
                 response = requests.get(
                     uri,
                     headers={"Authorization": f"Bearer {self.access_token}"},
-                , timeout=10)
+                    timeout=10,
+                )
 
             if response.status_code != 200:
                 raise HTTPException(
