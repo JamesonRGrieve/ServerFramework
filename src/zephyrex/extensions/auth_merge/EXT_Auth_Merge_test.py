@@ -195,6 +195,11 @@ class TestParticipatingExtensions:
 
     def test_oauth_consumer_registers(self):
         os.environ.setdefault("ALLOW_PLAINTEXT_SECRETS", "true")
+        # oauth_consumer now ships in the zephyrex-auth consumer project;
+        # skip when it isn't co-installed alongside the framework.
+        pytest.importorskip(
+            "zephyrex.extensions.oauth_consumer.EXT_OAuthConsumer"
+        )
         from zephyrex.extensions.oauth_consumer.EXT_OAuthConsumer import (
             EXT_OAuthConsumer,
         )

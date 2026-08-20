@@ -183,7 +183,7 @@ class AppSettings(BaseModel):
 
         The list of required secrets includes ``FRAMEWORK_FERNET_KEY``
         whenever an extension that depends on encrypted-at-rest secrets
-        (currently ``auth_mfa`` and ``oauth_consumer``) is loaded; the
+        (e.g. ``auth_mfa``) is loaded; the
         check is in :meth:`EXT_*.validate_config` for each, but we also
         enforce here so a misconfigured production deployment cannot
         boot a partially-initialised framework.
