@@ -1001,6 +1001,17 @@ class AbstractStaticExtensionSystemComponent(ABC):
     # Environment variables that this extension needs
     _env: Dict[str, Any] = {}
 
+    @classmethod
+    def get_env_value(cls, key: str, default: Any = None) -> Any:
+        """Look up an environment value (with fallback) for this component.
+
+        Consolidated onto the shared base so both extensions and providers
+        inherit it (several providers previously carried their own copy).
+        """
+        from zephyrex.lib.Environment import env
+
+        return env(key, default)
+
     # Item 37 — typed settings and env schema. Optional; when present the
     # framework prefers `Settings`/`EnvSchema` over the legacy `_env` dict.
     Settings: ClassVar[Optional[Type[BaseModel]]] = None
