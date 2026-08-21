@@ -13,11 +13,13 @@ Usage:
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
 
-BASELINE_FILE = Path(__file__).resolve().parent.parent / ".ratchet-baseline.json"
+REPO_ROOT = Path(__file__).resolve().parent.parent
+BASELINE_FILE = REPO_ROOT / ".ratchet-baseline.json"
 IGNORES = []
 
 
@@ -48,16 +50,23 @@ def _count_collected_tests() -> int:
 
 
 def _count_mypy_errors() -> int:
+    # Root mypy at ``src`` and target the package by name so intra-package
+    # imports resolve. Running ``mypy src/zephyrex/`` from the repo root maps
+    # the files to ``src.zephyrex.*`` while their imports say ``zephyrex.*``;
+    # with --ignore-missing-imports every cross-module reference then collapses
+    # to Any, hiding real errors and inventing spurious no-any-return ones.
     result = subprocess.run(
         [
             sys.executable, "-m", "mypy",
-            "src/zephyrex/",
+            "-p", "zephyrex",
             "--ignore-missing-imports",
             "--no-error-summary",
         ],
         capture_output=True,
         text=True,
-        timeout=120,
+        timeout=300,
+        cwd=str(REPO_ROOT),
+        env={**os.environ, "MYPYPATH": str(REPO_ROOT / "src")},
     )
     return sum(1 for line in result.stdout.splitlines() if "error:" in line)
 
