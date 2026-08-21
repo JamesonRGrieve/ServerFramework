@@ -21,61 +21,73 @@ Documentation can also be viewed directly in your text editor or GitHub, though 
 ## Documentation Directory
 
 ### Framework Overview
-- **[src/Framework.md](../src/Framework.md)** - Comprehensive framework architecture overview
-- **[src/Framework.Test.md](../src/Framework.Test.md)** - Testing philosophy and patterns
+- **[src/zephyrex/Framework.md](../src/zephyrex/Framework.md)** - Comprehensive framework architecture overview
+- **[src/zephyrex/Framework.Test.md](../src/zephyrex/Framework.Test.md)** - Testing philosophy and patterns
 
 ### Core Library Components
-- **[src/lib/LIB.Overview.md](../src/lib/LIB.Overview.md)** - Library components overview and integration
-- **[src/lib/LIB.Dependencies.md](../src/lib/LIB.Dependencies.md)** - System, Python, and extension dependency management
-- **[src/lib/LIB.Pydantic.md](../src/lib/LIB.Pydantic.md)** - Model utilities and registry management
-- **[src/lib/LIB.Pydantic2FastAPI.md](../src/lib/LIB.Pydantic2FastAPI.md)** - Automatic FastAPI router generation
-- **[src/lib/LIB.Logging.md](../src/lib/LIB.Logging.md)** - Centralized logging system
+- **[src/zephyrex/lib/LIB.Overview.md](../src/zephyrex/lib/LIB.Overview.md)** - Library components overview and integration
+- **[src/zephyrex/lib/LIB.Dependencies.md](../src/zephyrex/lib/LIB.Dependencies.md)** - System, Python, and extension dependency management
+- **[src/zephyrex/lib/LIB.Pydantic.md](../src/zephyrex/lib/LIB.Pydantic.md)** - Model utilities and registry management
+- **[src/zephyrex/lib/LIB.Pydantic2FastAPI.md](../src/zephyrex/lib/LIB.Pydantic2FastAPI.md)** - Automatic FastAPI router generation
+- **[src/zephyrex/lib/LIB.Logging.md](../src/zephyrex/lib/LIB.Logging.md)** - Centralized logging system
 
 ### Database Layer
-- **[src/database/DB.Management.md](../src/database/DB.Management.md)** - Database management and configuration
-- **[src/database/DB.Patterns.md](../src/database/DB.Patterns.md)** - Database design patterns and mixins
-- **[src/database/DB.Permissions.md](../src/database/DB.Permissions.md)** - Permission system architecture
-- **[src/database/DB.Seeding.md](../src/database/DB.Seeding.md)** - Data seeding and initialization
-- **[src/database/DB.Test.md](../src/database/DB.Test.md)** - Database testing patterns
+- **[src/zephyrex/database/DB.Management.md](../src/zephyrex/database/DB.Management.md)** - Database management and configuration
+- **[src/zephyrex/database/DB.Patterns.md](../src/zephyrex/database/DB.Patterns.md)** - Database design patterns and mixins
+- **[src/zephyrex/database/DB.Permissions.md](../src/zephyrex/database/DB.Permissions.md)** - Permission system architecture
+- **[src/zephyrex/database/DB.Seeding.md](../src/zephyrex/database/DB.Seeding.md)** - Data seeding and initialization
+- **[src/zephyrex/database/DB.Test.md](../src/zephyrex/database/DB.Test.md)** - Database testing patterns
 
 ### Business Logic Layer
-- **[src/logic/BLL.Patterns.md](../src/logic/BLL.Patterns.md)** - Business logic patterns and best practices
-- **[src/logic/BLL.Abstraction.md](../src/logic/BLL.Abstraction.md)** - Abstract BLL manager functionality
-- **[src/logic/BLL.Authentication.md](../src/logic/BLL.Authentication.md)** - Authentication system implementation
-- **[src/logic/BLL.Hooks.md](../src/logic/BLL.Hooks.md)** - Hook system architecture and usage
-- **[src/logic/BLL.Schema.md](../src/logic/BLL.Schema.md)** - Pydantic schema patterns
-- **[src/logic/BLL.Test.md](../src/logic/BLL.Test.md)** - Business logic testing patterns
-- **[src/logic/SVC.Patterns.md](../src/logic/SVC.Patterns.md)** - Background service patterns
-- **[src/logic/SVC.Test.md](../src/logic/SVC.Test.md)** - Service testing patterns
+- **[src/zephyrex/logic/BLL.Patterns.md](../src/zephyrex/logic/BLL.Patterns.md)** - Business logic patterns and best practices
+- **[src/zephyrex/logic/BLL.Abstraction.md](../src/zephyrex/logic/BLL.Abstraction.md)** - Abstract BLL manager functionality
+- **[src/zephyrex/logic/BLL.Authentication.md](../src/zephyrex/logic/BLL.Authentication.md)** - Authentication system implementation
+- **[src/zephyrex/logic/BLL.Hooks.md](../src/zephyrex/logic/BLL.Hooks.md)** - Hook system architecture and usage
+- **[src/zephyrex/logic/BLL.Schema.md](../src/zephyrex/logic/BLL.Schema.md)** - Pydantic schema patterns
+- **[src/zephyrex/logic/BLL.Test.md](../src/zephyrex/logic/BLL.Test.md)** - Business logic testing patterns
+- **[src/zephyrex/logic/SVC.Patterns.md](../src/zephyrex/logic/SVC.Patterns.md)** - Background service patterns
+- **[src/zephyrex/logic/SVC.Test.md](../src/zephyrex/logic/SVC.Test.md)** - Service testing patterns
 
 ### Endpoint Layer
-- **[src/endpoints/EP.Patterns.md](../src/endpoints/EP.Patterns.md)** - API endpoint patterns and usage
-- **[src/endpoints/EP.Abstraction.md](../src/endpoints/EP.Abstraction.md)** - Abstract endpoint router
-- **[src/endpoints/EP.GQL.md](../src/endpoints/EP.GQL.md)** - GraphQL integration
-- **[src/endpoints/EP.Schema.md](../src/endpoints/EP.Schema.md)** - API schema patterns
-- **[src/endpoints/EP.Test.md](../src/endpoints/EP.Test.md)** - Endpoint testing patterns
+- **[src/zephyrex/endpoints/EP.Patterns.md](../src/zephyrex/endpoints/EP.Patterns.md)** - API endpoint patterns and usage
+- **[src/zephyrex/endpoints/EP.Abstraction.md](../src/zephyrex/endpoints/EP.Abstraction.md)** - Abstract endpoint router
+- **[src/zephyrex/endpoints/EP.GQL.md](../src/zephyrex/endpoints/EP.GQL.md)** - GraphQL integration
+- **[src/zephyrex/endpoints/EP.Schema.md](../src/zephyrex/endpoints/EP.Schema.md)** - API schema patterns
+- **[src/zephyrex/endpoints/EP.Test.md](../src/zephyrex/endpoints/EP.Test.md)** - Endpoint testing patterns
 
 ### Extension System
-- **[src/extensions/EXT.Patterns.md](../src/extensions/EXT.Patterns.md)** - Extension system architecture
-- **[src/extensions/PRV.Patterns.md](../src/extensions/PRV.Patterns.md)** - Provider rotation system
+- **[src/zephyrex/extensions/EXT.Patterns.md](../src/zephyrex/extensions/EXT.Patterns.md)** - Extension system architecture
+- **[src/zephyrex/extensions/PRV.Patterns.md](../src/zephyrex/extensions/PRV.Patterns.md)** - Provider rotation system
 
 ### Migration System
-- **[src/database/migrations/DB.Migrations.md](../src/database/migrations/DB.Migrations.md)** - Database migration patterns
+- **[src/zephyrex/database/migrations/DB.Migrations.md](../src/zephyrex/database/migrations/DB.Migrations.md)** - Database migration patterns
 
 ## Quick Start
 
 ### Installation
+
+From PyPI:
 ```sh
-git clone git@github.com:JamesonRGrieve/ServerFramework.git
-cd ZephyrexFrameworkServer
+pip install zephyrex
 ```
 
-### Requirements
-- Python 3.10+
+From source (for framework development):
 ```sh
-pip install -r requirements.txt
-python3 src/app.py
+git clone git@github.com:JamesonRGrieve/ServerFramework.git
+cd ServerFramework
+pip install -e ".[dev]"
 ```
+
+Optional extras are available for specific providers: `email`, `mfa`, `payment`, `cache`, or `all` (e.g. `pip install "zephyrex[email,mfa]"`).
+
+### Requirements
+- Python 3.11+
+
+### Running the server
+```sh
+python -m zephyrex run   # or the console script: `zephyrex run`
+```
+The server boots on port 1996 by default.
 
 ### Basic Configuration
 ```
@@ -112,4 +124,4 @@ This framework provides:
 - **Extension Architecture**: Modular plugin system with isolated migrations
 - **Type Safety**: End-to-end type checking from API to database
 
-For a comprehensive overview, start with [Framework.md](../src/Framework.md)
+For a comprehensive overview, start with [Framework.md](../src/zephyrex/Framework.md)

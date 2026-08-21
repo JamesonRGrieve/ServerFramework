@@ -1960,6 +1960,19 @@ class ModelRegistry(AbstractRegistry):
         # Lock the registry before creating schema (required for schema generation)
         self._locked = True
 
+        # Deterministically resolve forward references on every registered
+        # Pydantic model before GraphQL schema generation. Relying on import-
+        # time model rebuilding is order-dependent and races under xdist: a
+        # worker that runs only a subset of tests can reach schema generation
+        # with a model still not fully defined, surfacing as a strawberry
+        # ``UnresolvedFieldTypeError`` -> ``StartupError``. Rebuilding here makes
+        # it deterministic regardless of which tests share the worker.
+        for _model in list(self.model_metadata):
+            try:
+                _model.model_rebuild(force=True)
+            except Exception:  # noqa: BLE001 - a model that cannot rebuild
+                pass  # here will surface its own error at schema generation
+
         from zephyrex.lib.Pydantic2Strawberry import GraphQLManager
 
         # Create schema using the new instance-based GraphQLManager

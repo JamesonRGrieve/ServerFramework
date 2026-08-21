@@ -1550,6 +1550,7 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         first_page = self._search(
             server,
             admin_a.jwt,
+            "",
             admin_a.id,
             team_a.id,
             page=1,
@@ -1562,6 +1563,7 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         second_page = self._search(
             server,
             admin_a.jwt,
+            "",
             admin_a.id,
             team_a.id,
             page=2,

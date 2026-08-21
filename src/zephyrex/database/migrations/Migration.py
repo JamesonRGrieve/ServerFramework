@@ -839,7 +839,7 @@ class MigrationManager:
         """
         from zephyrex.lib.Pydantic import ModelRegistry
 
-        ext_path = self.paths["extensions_dir"] / extension_name
+        ext_path = self._extension_source_dir(extension_name)
         if not ext_path.exists() or not list(ext_path.glob("BLL_*.py")):
             logger.warning(f"No BLL_*.py files found for extension {extension_name}")
             return False
@@ -971,6 +971,35 @@ class MigrationManager:
                 out.append((ext_dir.name, migrations_dir))
         return out
 
+    def _extension_source_dir(self, extension_name):
+        """Resolve an extension's on-disk source directory.
+
+        Prefers the configured extensions root (``self.paths["extensions_dir"]``),
+        but falls back to the installed-package location so that framework
+        built-in extensions are still discovered when a downstream consumer
+        project's own extensions root does not contain them.
+
+        A consumer loads the framework's core-companion extensions (e.g.
+        ``acl_rbac``, ``auth_session``) which physically live under the
+        installed ``zephyrex/extensions`` package, not the consumer's
+        extensions directory. Resolving only against the single configured
+        root would silently skip their migrations, leaving their tables
+        (``permissions``, ``sessions``, ...) uncreated. Resolving via the
+        namespace package mirrors how Python itself imports the extension.
+        """
+        primary = self.paths["extensions_dir"] / extension_name
+        if primary.exists():
+            return primary
+        try:
+            import importlib.util
+
+            spec = importlib.util.find_spec(f"zephyrex.extensions.{extension_name}")
+        except (ImportError, ValueError, ModuleNotFoundError, AttributeError):
+            spec = None
+        if spec is not None and spec.submodule_search_locations:
+            return Path(next(iter(spec.submodule_search_locations)))
+        return primary
+
     def _resolve_extension_versions_dir(self, extension_name):
         """Resolve the per-extension version_locations directory.
 
@@ -986,7 +1015,7 @@ class MigrationManager:
         """
         if self.test_mode and self._test_versions_root is not None:
             return self._test_versions_root / extension_name / "versions"
-        ext_migrations = self.paths["extensions_dir"] / extension_name / "migrations"
+        ext_migrations = self._extension_source_dir(extension_name) / "migrations"
         return ext_migrations / ("test_versions" if self.test_mode else "versions")
 
     def ensure_extension_versions_directory(self, extension_name):
@@ -996,7 +1025,7 @@ class MigrationManager:
         loads revision files by filesystem path, not via Python import, so
         these directories are not Python packages.
         """
-        ext_dir = self.paths["extensions_dir"] / extension_name
+        ext_dir = self._extension_source_dir(extension_name)
         if not ext_dir.exists():
             return False, None
 
@@ -1422,7 +1451,7 @@ class {class_name}(Base):
 
             # First, check which extensions actually have BLL models
             for ext_name in self.configured_extensions:
-                extension_dir = self.paths["extensions_dir"] / ext_name
+                extension_dir = self._extension_source_dir(ext_name)
                 db_model_files = list(extension_dir.glob("BLL_*.py"))
 
                 if not db_model_files:
@@ -1457,7 +1486,7 @@ class {class_name}(Base):
                 if not versions_dir.exists():
                     # No versions directory exists - need to create initial migration for upgrade
                     if command == "upgrade":
-                        extension_dir = self.paths["extensions_dir"] / extension_name
+                        extension_dir = self._extension_source_dir(extension_name)
                         db_model_files = list(extension_dir.glob("BLL_*.py"))
 
                         if db_model_files:

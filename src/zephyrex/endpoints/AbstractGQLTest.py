@@ -792,7 +792,13 @@ class AbstractGraphQLTest:
         # Build the mutation
         input_fields = []
         for key, value in input_data.items():
-            if isinstance(value, str):
+            if value is None:
+                # GraphQL uses `null`, not Python's `None` literal.
+                input_fields.append(f"{key}: null")
+            elif isinstance(value, bool):
+                # GraphQL booleans are lowercase `true`/`false`.
+                input_fields.append(f"{key}: {'true' if value else 'false'}")
+            elif isinstance(value, str):
                 input_fields.append(f'{key}: "{value}"')
             else:
                 input_fields.append(f"{key}: {value}")

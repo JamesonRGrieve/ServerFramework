@@ -100,7 +100,20 @@ class ExtensionServerMixin:
         # minimal registry override `server` directly.
         from conftest import CORE_COMPANION_EXTENSIONS
 
-        names = [extension_name] + [c for c in CORE_COMPANION_EXTENSIONS if c != extension_name]
+        # Also include the extension's declared dependency extensions so their
+        # endpoints/models exist in the test server -- EP tests for entities
+        # with cross-extension FK parents (e.g. an ai_agents context-prompt
+        # whose parent Prompt lives in ai_prompts) must be able to create
+        # those parents via their real routes.
+        dep_names = []
+        ext_deps = getattr(self.extension_class, "ext_dependencies", None)
+        for dep in ext_deps or []:
+            dep_name = getattr(dep, "name", None)
+            if dep_name and dep_name not in dep_names:
+                dep_names.append(dep_name)
+
+        ordered = [extension_name] + dep_names
+        names = ordered + [c for c in CORE_COMPANION_EXTENSIONS if c not in ordered]
         extension_list = ",".join(names)
         try:
             from zephyrex.app import instance
