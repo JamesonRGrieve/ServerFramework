@@ -137,7 +137,11 @@ def install_extension_dependencies_with_restart(extensions_str: str):
     if not extensions_str:
         return
 
-    if os.environ.get("INSTALL_EXTENSION_DEPS", "false").lower() not in ("true", "1", "yes"):
+    if os.environ.get("INSTALL_EXTENSION_DEPS", "false").lower() not in (
+        "true",
+        "1",
+        "yes",
+    ):
         return
 
     restart_flag = os.environ.get("_APP_DEPENDENCY_RESTART", "0")
@@ -155,7 +159,10 @@ def install_extension_dependencies_with_restart(extensions_str: str):
         if failed:
             logger.error(f"Failed to install extension dependencies: {failed}")
             from zephyrex import ExtensionLoadError
-            raise ExtensionLoadError(f"Failed to install extension dependencies: {failed}")
+
+            raise ExtensionLoadError(
+                f"Failed to install extension dependencies: {failed}"
+            )
 
         if successful:
             logger.info(f"Successfully installed extension dependencies: {successful}")
@@ -168,6 +175,7 @@ def install_extension_dependencies_with_restart(extensions_str: str):
     except Exception as e:
         logger.error(f"Error installing extension dependencies: {e}")
         from zephyrex import ExtensionLoadError
+
         raise ExtensionLoadError(f"Failed to setup extension dependencies: {e}")
 
 
@@ -303,6 +311,7 @@ def instance(
         except Exception as e:
             logger.error(f"Error booting {env('APP_NAME')} instance: {e}")
             from zephyrex import StartupError
+
             raise StartupError(f"Error booting {env('APP_NAME')} instance: {e}") from e
         return build_app(instance_model_registry)
 
@@ -339,7 +348,9 @@ def install_sighup_handler(app: FastAPI) -> None:
         from zephyrex.extensions.HotReload import rebuild_registry
         from zephyrex.lib.Logging import logger
 
-        logger.info("SIGHUP received -- draining, then computing extension registry diff")
+        logger.info(
+            "SIGHUP received -- draining, then computing extension registry diff"
+        )
         app.state.draining = True
         try:
             registry = getattr(app.state, "model_registry", None)
@@ -389,6 +400,57 @@ def install_sighup_handler(app: FastAPI) -> None:
         logger.debug(f"Could not install SIGHUP handler: {e}")
 
 
+def _start_background_services(app) -> list:
+    """Start opt-in background services for this worker.
+
+    Generic and extension-agnostic: every loaded extension that defines a
+    ``register_services(model_registry, requester_id)`` classmethod is asked for
+    its :class:`AbstractService` instances; each is registered in the
+    ``ServiceRegistry``, started, and given an ``asyncio`` task running its
+    service loop. Returns the created tasks so the caller can cancel them on
+    shutdown. Services run as a system driver (ROOT) identity.
+    """
+    import asyncio
+
+    from zephyrex.lib.Environment import env
+    from zephyrex.lib.Logging import logger
+    from zephyrex.logic.AbstractService import ServiceRegistry
+
+    model_registry = getattr(app.state, "model_registry", None)
+    if model_registry is None:
+        return []
+    extension_registry = getattr(model_registry, "extension_registry", None)
+    if extension_registry is None:
+        return []
+
+    requester_id = env("ROOT_ID")
+    tasks: list = []
+    for extension_class in getattr(extension_registry, "extensions", []) or []:
+        register = getattr(extension_class, "register_services", None)
+        if not callable(register):
+            continue
+        try:
+            services = register(
+                model_registry=model_registry, requester_id=requester_id
+            )
+        except Exception as exc:
+            logger.error(
+                f"Extension "
+                f"{getattr(extension_class, 'name', extension_class)} "
+                f"register_services failed: {exc}"
+            )
+            continue
+        for service in services or []:
+            ServiceRegistry.register(service.service_id, service)
+            service.start()
+            tasks.append(asyncio.create_task(service.run_service_loop()))
+            logger.info(
+                f"Started background service {service.__class__.__name__} "
+                f"({service.service_id})"
+            )
+    return tasks
+
+
 def build_app(model_registry: ModelRegistry):
     """
     FastAPI application factory function with ModelRegistry.
@@ -426,7 +488,10 @@ def build_app(model_registry: ModelRegistry):
             try:
                 from zephyrex.extensions.database_memory.PRV_Valkey import PRV_Valkey
 
-                from zephyrex.extensions.database_memory.PRV_Valkey import ValkeyConnectionStub
+                from zephyrex.extensions.database_memory.PRV_Valkey import (
+                    ValkeyConnectionStub,
+                )
+
                 _stub = ValkeyConnectionStub(api_key=valkey_uri)
                 valkey_client = PRV_Valkey.connect(_stub)
                 await valkey_client.ping()
@@ -466,9 +531,23 @@ def build_app(model_registry: ModelRegistry):
                     workers,
                 )
 
+        # Opt-in background services (Item: agent invocation monitor et al.).
+        # Off by default so existing deployments are unaffected; when
+        # RUN_BACKGROUND_SERVICES=true, each loaded extension that defines
+        # ``register_services(model_registry, requester_id)`` gets its services
+        # registered and their loops started for this worker.
+        background_tasks: list = []
+        if (env("RUN_BACKGROUND_SERVICES") or "").strip().lower() == "true":
+            try:
+                background_tasks = _start_background_services(app)
+            except Exception as exc:  # never let a service break worker startup
+                logger.error(f"Failed to start background services: {exc}")
+
         try:
             yield
         finally:
+            for task in background_tasks:
+                task.cancel()
             if valkey_client is not None:
                 try:
                     from zephyrex.extensions.database_memory.PRV_Valkey import (
@@ -596,16 +675,20 @@ def build_app(model_registry: ModelRegistry):
 
         async def __call__(self, scope, receive, send):
             if scope.get("type") == "http" and getattr(app.state, "draining", False):
-                body = json.dumps({"detail": "Service unavailable — shutting down"}).encode()
-                await send({
-                    "type": "http.response.start",
-                    "status": 503,
-                    "headers": [
-                        (b"content-type", b"application/json"),
-                        (b"retry-after", b"5"),
-                        (b"content-length", str(len(body)).encode()),
-                    ],
-                })
+                body = json.dumps(
+                    {"detail": "Service unavailable — shutting down"}
+                ).encode()
+                await send(
+                    {
+                        "type": "http.response.start",
+                        "status": 503,
+                        "headers": [
+                            (b"content-type", b"application/json"),
+                            (b"retry-after", b"5"),
+                            (b"content-length", str(len(body)).encode()),
+                        ],
+                    }
+                )
                 await send({"type": "http.response.body", "body": body})
                 return
             await self.app(scope, receive, send)
@@ -778,7 +861,11 @@ def build_app(model_registry: ModelRegistry):
     async def json_decode_error_handler(request: Request, exc: json.JSONDecodeError):
         return JSONResponse(
             status_code=400,
-            content={"detail": _error_envelope("Invalid JSON syntax in request body", code="json_parse_error")},
+            content={
+                "detail": _error_envelope(
+                    "Invalid JSON syntax in request body", code="json_parse_error"
+                )
+            },
         )
 
     @app.exception_handler(TypeError)
@@ -786,7 +873,11 @@ def build_app(model_registry: ModelRegistry):
         logger.debug(f"TypeError in request handler: {exc}")
         return JSONResponse(
             status_code=422,
-            content={"detail": _error_envelope("Invalid request body format", code="invalid_body")},
+            content={
+                "detail": _error_envelope(
+                    "Invalid request body format", code="invalid_body"
+                )
+            },
         )
 
     @app.exception_handler(AttributeError)
@@ -794,7 +885,11 @@ def build_app(model_registry: ModelRegistry):
         logger.debug(f"AttributeError in request handler: {exc}")
         return JSONResponse(
             status_code=422,
-            content={"detail": _error_envelope("Invalid request body format", code="invalid_body")},
+            content={
+                "detail": _error_envelope(
+                    "Invalid request body format", code="invalid_body"
+                )
+            },
         )
 
     from zephyrex.lib.AdvisoryLock import LockTimeoutError
@@ -814,11 +909,17 @@ def build_app(model_registry: ModelRegistry):
         async def quota_exhausted_handler(request: Request, exc: QuotaExhaustedError):
             return JSONResponse(
                 status_code=507,
-                content={"detail": _error_envelope(
-                    "Quota exceeded", code="quota_exceeded",
-                    scope=exc.scope, ability=exc.ability, period=exc.period,
-                )},
+                content={
+                    "detail": _error_envelope(
+                        "Quota exceeded",
+                        code="quota_exceeded",
+                        scope=exc.scope,
+                        ability=exc.ability,
+                        period=exc.period,
+                    )
+                },
             )
+
     except ImportError:
         pass
 
@@ -928,7 +1029,11 @@ def build_app(model_registry: ModelRegistry):
             )
         return JSONResponse(
             status_code=500,
-            content={"detail": _error_envelope("Internal Server Error", code="internal_error")},
+            content={
+                "detail": _error_envelope(
+                    "Internal Server Error", code="internal_error"
+                )
+            },
         )
 
     # Add exception handler for request validation errors that might include JSON parsing issues
@@ -941,7 +1046,14 @@ def build_app(model_registry: ModelRegistry):
             error_list = exc.errors()
         else:
             # For regular validation errors, return 422
-            return JSONResponse(status_code=422, content={"detail": _error_envelope("Validation error", code="validation_error")})
+            return JSONResponse(
+                status_code=422,
+                content={
+                    "detail": _error_envelope(
+                        "Validation error", code="validation_error"
+                    )
+                },
+            )
 
         # Check if any of the errors are specifically JSON parsing errors
         # Look at the actual error type and location from Pydantic
@@ -1191,6 +1303,7 @@ def build_app(model_registry: ModelRegistry):
     if valkey_uri:
         try:
             import redis.asyncio as _redis_check  # noqa: F401
+
             _valkey_importable = True
         except ImportError:
             _valkey_importable = False
@@ -1265,17 +1378,34 @@ def build_app(model_registry: ModelRegistry):
     # audit log can alert on 418s as a scanner-presence signal.
     # ------------------------------------------------------------------
     _HONEYPOT_PATHS = [
-        "/wp-admin", "/wp-login.php", "/wp-content",
-        "/administrator", "/admin.php", "/phpmyadmin",
-        "/.env", "/.git/config", "/.git/HEAD",
-        "/config.php", "/info.php", "/phpinfo.php",
-        "/server-status", "/server-info",
-        "/actuator", "/actuator/health", "/actuator/env",
-        "/console", "/debug/vars", "/debug/pprof",
-        "/elmah.axd", "/trace.axd",
-        "/api/v1/pods", "/api/v1/nodes",
-        "/_all_dbs", "/_config",
-        "/solr/admin", "/manager/html",
+        "/wp-admin",
+        "/wp-login.php",
+        "/wp-content",
+        "/administrator",
+        "/admin.php",
+        "/phpmyadmin",
+        "/.env",
+        "/.git/config",
+        "/.git/HEAD",
+        "/config.php",
+        "/info.php",
+        "/phpinfo.php",
+        "/server-status",
+        "/server-info",
+        "/actuator",
+        "/actuator/health",
+        "/actuator/env",
+        "/console",
+        "/debug/vars",
+        "/debug/pprof",
+        "/elmah.axd",
+        "/trace.axd",
+        "/api/v1/pods",
+        "/api/v1/nodes",
+        "/_all_dbs",
+        "/_config",
+        "/solr/admin",
+        "/manager/html",
     ]
 
     async def _honeypot_response(request: Request):
@@ -1285,12 +1415,15 @@ def build_app(model_registry: ModelRegistry):
             request.url.path,
             request.client.host if request.client else "unknown",
         )
-        return JSONResponse(status_code=418, content={
-            "detail": "I'm a teapot",
-            "brew": "short and stout",
-            "tip_me_over": "pour me out",
-            "documentation": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-        })
+        return JSONResponse(
+            status_code=418,
+            content={
+                "detail": "I'm a teapot",
+                "brew": "short and stout",
+                "tip_me_over": "pour me out",
+                "documentation": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+            },
+        )
 
     for _hp_path in _HONEYPOT_PATHS:
         app.add_api_route(
