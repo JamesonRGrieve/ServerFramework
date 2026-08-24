@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session, aliased
 from sqlalchemy.sql.expression import CTE
 
 # REMOVED: from database.DB_Auth import Permission, Role, Team, UserTeam # Assuming these are the correct locations
+from zephyrex.database.HookRegistries import _acl_hooks, _invitation_hooks
 from zephyrex.lib.Environment import env
 from zephyrex.lib.Logging import logger
 
@@ -687,8 +688,6 @@ def check_permission(
     Returns:
         tuple: (PermissionResult, error_message) indicating the result and any error message
     """
-    from zephyrex.logic.BLL_Auth import _acl_hooks
-
     try:
         # Validate inputs to prevent null dereference
         if user_id is None:
@@ -902,7 +901,6 @@ def _get_admin_accessible_team_ids_cte(
         TeamModel,
         UserModel,
         UserTeamModel,
-        _invitation_hooks,
     )
 
     # Get SQLAlchemy models using the declarative base
@@ -1130,7 +1128,7 @@ def _build_direct_permission_filter(
     """
     # Local imports to break cycle
     from zephyrex.database.DatabaseManager import DatabaseManager
-    from zephyrex.logic.BLL_Auth import UserTeamModel, _acl_hooks
+    from zephyrex.logic.BLL_Auth import UserTeamModel
 
     # The Permission row is owned by the ``acl_rbac`` extension. Without
     # it loaded, no direct/team/role permission rows exist — every branch
@@ -1522,8 +1520,6 @@ def generate_permission_filter(
         # this branch only runs when the resource table itself is
         # ``invitations``, which the extension creates — so the hook is
         # guaranteed to be registered before we reach this code.
-        from zephyrex.logic.BLL_Auth import _invitation_hooks
-
         invitee_db_class_hook = _invitation_hooks["invitee_db_class"]
         if invitee_db_class_hook is not None:
             Invitee_db_cls = invitee_db_class_hook(declarative_base)
@@ -1542,8 +1538,6 @@ def generate_permission_filter(
     if resource_db_cls.__tablename__ == "Invitees":
         # Invitation row is owned by ``auth_invitations``; resolved
         # through the hook so core never imports the extension directly.
-        from zephyrex.logic.BLL_Auth import _invitation_hooks
-
         invitation_db_class_hook = _invitation_hooks["invitation_db_class"]
         if invitation_db_class_hook is None:
             return false()
@@ -1573,8 +1567,6 @@ def generate_permission_filter(
     # so the framework restricts access to the creator-only / team-
     # membership / invitation-driven branches above. This is the
     # documented fail-closed default.
-    from zephyrex.logic.BLL_Auth import _acl_hooks
-
     permission_db_class_hook = _acl_hooks["permission_db_class"]
     if permission_db_class_hook is not None:
         direct_permissions = _build_direct_permission_filter(

@@ -226,7 +226,7 @@ class AbstractDBTest(AbstractTest):
         # is absent the test using this helper is logically meaningless
         # (no permission row to create) — surface that as a clean
         # ``RuntimeError`` rather than an opaque ``ImportError``.
-        from zephyrex.logic.BLL_Auth import _acl_hooks
+        from zephyrex.database.HookRegistries import _acl_hooks
 
         create_permission_hook = _acl_hooks["create_permission"]
         if create_permission_hook is None:

@@ -46,6 +46,12 @@ def _validate_team_name(v):
     return v
 from sqlalchemy import or_
 
+from zephyrex.database.HookRegistries import (
+    _acl_hooks as _acl_hooks,
+    _invitation_hooks as _invitation_hooks,
+    register_acl_hooks as register_acl_hooks,
+    register_invitation_hooks as register_invitation_hooks,
+)
 from zephyrex.database.StaticPermissions import can_manage_permissions
 from zephyrex.lib.Dependencies import jwt
 from zephyrex.lib.Environment import env, extract_base_domain
@@ -2598,64 +2604,12 @@ def register_metadata_hooks(
             _metadata_hooks[name] = fn
 
 
-# auth_invitations extension hooks — populated by `auth_invitations.on_load`
-# (Scope #4). Encapsulate every place core BLL_Auth used to reach into
-# InvitationModel / InviteeModel / InvitationManager / InviteeManager.
-_invitation_hooks: dict = {
-    "lookup_by_id": None,  # (invitation_id, model_registry) -> dict | None
-    "lookup_by_code": None,  # (code, model_registry) -> dict | None
-    "apply_to_user": None,  # (invitation_dict, user_id, model_registry) -> None
-    "invitation_manager_factory": None,  # (requester_id, target_team_id, model_registry, **kw) -> manager
-    "invitee_manager_factory": None,  # (requester_id, target_id, model_registry, **kw) -> manager
-    "list_invitees_for_user": None,  # (user_id, email, model_registry) -> List[dict]
-    "invitation_db_class": None,  # (declarative_base) -> SA model
-    "invitee_db_class": None,  # (declarative_base) -> SA model
-}
-
-
-def register_invitation_hooks(
-    *,
-    lookup_by_id=None,
-    lookup_by_code=None,
-    apply_to_user=None,
-    invitation_manager_factory=None,
-    invitee_manager_factory=None,
-    list_invitees_for_user=None,
-    invitation_db_class=None,
-    invitee_db_class=None,
-) -> None:
-    for name, fn in (
-        ("lookup_by_id", lookup_by_id),
-        ("lookup_by_code", lookup_by_code),
-        ("apply_to_user", apply_to_user),
-        ("invitation_manager_factory", invitation_manager_factory),
-        ("invitee_manager_factory", invitee_manager_factory),
-        ("list_invitees_for_user", list_invitees_for_user),
-        ("invitation_db_class", invitation_db_class),
-        ("invitee_db_class", invitee_db_class),
-    ):
-        if fn is not None:
-            _invitation_hooks[name] = fn
-
-
-# acl_rbac extension hooks — populated by `acl_rbac.on_load` (Scope #5).
-_acl_hooks: dict = {
-    "permission_db_class": None,  # (declarative_base) -> SA model
-    "create_permission": None,  # (resource_type, resource_id, user_id, can_*, model_registry, **kw) -> Any
-}
-
-
-def register_acl_hooks(
-    *,
-    permission_db_class=None,
-    create_permission=None,
-) -> None:
-    for name, fn in (
-        ("permission_db_class", permission_db_class),
-        ("create_permission", create_permission),
-    ):
-        if fn is not None:
-            _acl_hooks[name] = fn
+# The auth_invitations (``_invitation_hooks``) and acl_rbac (``_acl_hooks``)
+# hook registries — plus their ``register_*`` helpers — now live at the
+# database layer in ``database/HookRegistries.py``, at/below their
+# ``StaticPermissions`` consumer (issue #222). They are re-exported at the
+# top of this module for backward compatibility; extensions still register
+# into them, and this module still reads ``_invitation_hooks`` internally.
 
 
 # privacy extension hooks — populated by `privacy.on_load`. Core's
