@@ -1121,15 +1121,25 @@ def register_rate_limited_route(
 
 
 def reset_rate_limit_state() -> None:
-    """Test helper: clear the registry and the in-memory counter.
+    """Test helper: clear the registry, the in-memory counter, and any
+    installed counter backend override.
 
     Each test that exercises rate-limit enforcement should call this in
     setup so previous tests do not bleed counter state. The registry is
     also cleared so a `@rate_limit("1/min")` decorator stamped in one test
     does not gate the same path in the next.
+
+    The pluggable counter override (`set_rate_limit_counter`, e.g. the Valkey
+    backend wired by the database_memory extension's ``on_load``) is reverted
+    to ``None`` as well: otherwise resetting only ``_inmemory_counter`` leaves
+    a stale/foreign backend active, and enforcement counts bleed across tests
+    (an installed backend made ``test_429_after_limit`` under-count and return
+    200 instead of 429 under parallel load).
     """
+    global _rate_limit_counter
     _RATE_LIMIT_REGISTRY.clear()
     _inmemory_counter.reset()
+    _rate_limit_counter = None
 
 
 def _resolve_actor_key(scope: str, request: Any) -> Optional[str]:

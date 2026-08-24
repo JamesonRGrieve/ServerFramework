@@ -155,6 +155,23 @@ def _dict_to_xml(data: Any, root_tag: str = _XML_ROOT_TAG) -> str:
     return tostring(root, encoding="unicode", xml_declaration=True)
 
 
+# Characters that are illegal in XML 1.0. ElementTree does not reject them
+# — it writes them raw, producing output that then fails to re-parse ("not
+# well-formed"). Strip them so serialized XML is always well-formed regardless
+# of the underlying data (e.g. a record field holding a control character).
+# Valid: #x9 | #xA | #xD | [#x20-#xD7FF] | [#xE000-#xFFFD] | [#x10000-#x10FFFF].
+def _xml_safe(text: str) -> str:
+    """Remove XML-1.0-illegal characters so the result always re-parses."""
+    return "".join(
+        ch
+        for ch in text
+        if (o := ord(ch)) in (0x09, 0x0A, 0x0D)
+        or 0x20 <= o <= 0xD7FF
+        or 0xE000 <= o <= 0xFFFD
+        or 0x10000 <= o <= 0x10FFFF
+    )
+
+
 def _build_element(tag: str, value: Any) -> Element:
     """Recursively build an ``Element`` tree from *value*."""
     elem = Element(tag)
@@ -171,7 +188,7 @@ def _build_element(tag: str, value: Any) -> Element:
     elif isinstance(value, bool):
         elem.text = "true" if value else "false"
     else:
-        elem.text = str(value)
+        elem.text = _xml_safe(str(value))
     return elem
 
 
