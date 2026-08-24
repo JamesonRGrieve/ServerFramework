@@ -843,7 +843,10 @@ def build_request_dataloaders(
 ) -> Dict[str, RequestDataLoader]:
     """Build a fresh per-request DataLoader for every registered spec."""
     reg = registry or _GLOBAL_CONTRIBUTION_REGISTRY
-    return {name: RequestDataLoader(spec.batch_load_fn) for name, spec in reg.dataloaders().items()}
+    return {
+        name: RequestDataLoader(spec.batch_load_fn)
+        for name, spec in reg.dataloaders().items()
+    }
 
 
 class GraphQLManager(ErrorHandlerMixin):
@@ -1029,7 +1032,9 @@ class GraphQLManager(ErrorHandlerMixin):
         """
         resolver = contribution.resolver
         if contribution.kind == FieldKind.SUBSCRIPTION:
-            return strawberry.subscription(resolver, description=contribution.description)
+            return strawberry.subscription(
+                resolver, description=contribution.description
+            )
         return strawberry.field(resolver, description=contribution.description)
 
     def _on_contributions_changed(self) -> None:
@@ -1065,7 +1070,9 @@ class GraphQLManager(ErrorHandlerMixin):
         self._subscription_fields.clear()
         schema = self.create_schema()
         if previous is not None:
-            added, removed = _diff_signatures(previous, self._last_schema_signature or ())
+            added, removed = _diff_signatures(
+                previous, self._last_schema_signature or ()
+            )
             if added or removed:
                 logger.info(
                     f"GraphQL schema rebuilt -- added: {sorted(added)},"
@@ -1082,7 +1089,9 @@ class GraphQLManager(ErrorHandlerMixin):
             tuple(sorted(getattr(self, "_global_type_names", {}).keys())),
         )
 
-    def build_request_context(self, base_context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def build_request_context(
+        self, base_context: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
         """Build the per-request GraphQL context with DataLoaders attached.
 
         FastAPI/Strawberry callers pass the result as ``context_getter`` so
@@ -1751,7 +1760,10 @@ class GraphQLManager(ErrorHandlerMixin):
             if (
                 hasattr(python_type, "__module__")
                 and isinstance(python_type.__module__, str)
-                and (python_type.__module__.startswith("zephyrex.extensions.") or python_type.__module__.startswith("extensions."))
+                and (
+                    python_type.__module__.startswith("zephyrex.extensions.")
+                    or python_type.__module__.startswith("extensions.")
+                )
                 and python_type.__name__.endswith("Type")
             ):
                 return TYPE_MAPPING[str]
@@ -1865,9 +1877,7 @@ class GraphQLManager(ErrorHandlerMixin):
                     logger.error(f"Error in {field_name} resolver: {e}")
                     raise
 
-            self._query_fields[field_name] = _versioned_field(
-                resolver, manager_class
-            )
+            self._query_fields[field_name] = _versioned_field(resolver, manager_class)
 
     def _add_list_query_resolver(
         self,
@@ -1958,9 +1968,7 @@ class GraphQLManager(ErrorHandlerMixin):
                     logger.error(f"Error in {field_name} resolver: {e}")
                     raise
 
-            self._query_fields[field_name] = _versioned_field(
-                resolver, manager_class
-            )
+            self._query_fields[field_name] = _versioned_field(resolver, manager_class)
 
     def _add_create_mutation_resolver(
         self,
@@ -2021,9 +2029,7 @@ class GraphQLManager(ErrorHandlerMixin):
                 logger.error(f"Error in {field_name} resolver: {e}")
                 raise
 
-        self._mutation_fields[field_name] = _versioned_field(
-            resolver, manager_class
-        )
+        self._mutation_fields[field_name] = _versioned_field(resolver, manager_class)
 
     def _add_update_mutation_resolver(
         self,

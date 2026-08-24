@@ -43,32 +43,31 @@ class AbstractSecretVaultProvider(AbstractStaticProvider):
     @classmethod
     @abstractmethod
     @ability(name="secret_read")
-    def read_secret(cls, provider_instance, path: str, version: Optional[int] = None) -> Dict[str, Any]:
-        ...
+    def read_secret(
+        cls, provider_instance, path: str, version: Optional[int] = None
+    ) -> Dict[str, Any]: ...
 
     @classmethod
     @abstractmethod
     @ability(name="secret_write")
-    def write_secret(cls, provider_instance, path: str, data: Dict[str, Any]) -> Dict[str, Any]:
-        ...
+    def write_secret(
+        cls, provider_instance, path: str, data: Dict[str, Any]
+    ) -> Dict[str, Any]: ...
 
     @classmethod
     @abstractmethod
     @ability(name="secret_delete")
-    def delete_secret(cls, provider_instance, path: str) -> bool:
-        ...
+    def delete_secret(cls, provider_instance, path: str) -> bool: ...
 
     @classmethod
     @abstractmethod
     @ability(name="secret_list")
-    def list_secrets(cls, provider_instance, path: str = "") -> List[str]:
-        ...
+    def list_secrets(cls, provider_instance, path: str = "") -> List[str]: ...
 
     @classmethod
     @abstractmethod
     @ability(name="secret_metadata")
-    def read_metadata(cls, provider_instance, path: str) -> Dict[str, Any]:
-        ...
+    def read_metadata(cls, provider_instance, path: str) -> Dict[str, Any]: ...
 
 
 class EXT_Secret_Vault(AbstractStaticExtension):

@@ -144,7 +144,10 @@ class TestHelcimProvider:
             FakeInstance(), customer_id="c1", price_id="p1"
         )
         assert not result["success"]
-        assert "invoice" in result["error"].lower() or "subscription" in result["error"].lower()
+        assert (
+            "invoice" in result["error"].lower()
+            or "subscription" in result["error"].lower()
+        )
 
     @pytest.mark.asyncio
     async def test_process_webhook_valid_json(self, monkeypatch):
@@ -159,7 +162,9 @@ class TestHelcimProvider:
             api_key = "test"
 
         result = await PaymentExtensionHelcimProvider.process_webhook(
-            FakeInstance(), payload, sig,
+            FakeInstance(),
+            payload,
+            sig,
         )
         assert isinstance(result, dict)
         assert result["success"] is True

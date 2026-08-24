@@ -25,7 +25,6 @@ from zephyrex.lib.Pydantic2Strawberry import (
     render_degradation_sentinel_gql,
 )
 
-
 # ---------------------------------------------------------------------------
 # render_degradation_sentinel_gql converter
 # ---------------------------------------------------------------------------
@@ -122,9 +121,7 @@ def test_silent_dropped_propagates_through_graphql_resolver() -> None:
 
 def test_normal_payload_passes_through_graphql_resolver() -> None:
     schema = _build_schema(WidgetGQL(id="w1", name="widget"))
-    result = schema.execute_sync(
-        "{ send { __typename ... on WidgetGQL { id name } } }"
-    )
+    result = schema.execute_sync("{ send { __typename ... on WidgetGQL { id name } } }")
     assert result.errors is None, result.errors
     assert result.data == {
         "send": {"__typename": "WidgetGQL", "id": "w1", "name": "widget"}

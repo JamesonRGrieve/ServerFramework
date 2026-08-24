@@ -47,6 +47,6 @@ def sqlite_connect():
     def _connect(url: str):
         prefix = "sqlite:///"
         assert url.startswith(prefix), f"unexpected db url: {url}"
-        return sqlite3.connect(url[len(prefix):])
+        return sqlite3.connect(url[len(prefix) :])
 
     return _connect

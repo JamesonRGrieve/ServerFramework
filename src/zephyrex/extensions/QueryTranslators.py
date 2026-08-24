@@ -27,7 +27,6 @@ from pydantic import BaseModel
 
 from zephyrex.extensions.ExternalErrors import UnsupportedOperatorError
 
-
 # Canonical operator names used by the framework's search models.
 ALL_OPERATORS: Set[str] = {
     "exact",
@@ -68,7 +67,11 @@ def _normalize_field(value: Any) -> List[Tuple[str, Any]]:
     `("exact", value)`.
     """
 
-    if isinstance(value, dict) and value and all(k in ALL_OPERATORS for k in value.keys()):
+    if (
+        isinstance(value, dict)
+        and value
+        and all(k in ALL_OPERATORS for k in value.keys())
+    ):
         return list(value.items())
     return [("exact", value)]
 
@@ -207,7 +210,6 @@ class MongoStyleTranslator(AbstractQueryDSLTranslator):
 
 import re as _re
 
-
 # SOQL identifiers: ASCII letter, then ASCII letter/digit/underscore.
 # Salesforce field names allow ``__c``/``__r`` suffixes plus relationship
 # traversal via ``Account.Name``. We accept dot-separated segments where
@@ -216,9 +218,7 @@ import re as _re
 # blended into the field name (C-2). Allowlist is the only safe path —
 # Salesforce does not expose parameterized binds for ad-hoc ``WHERE``
 # clauses, so any unsanitized field interpolation is an injection.
-_SOQL_IDENT_PATTERN = _re.compile(
-    r"^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)*$"
-)
+_SOQL_IDENT_PATTERN = _re.compile(r"^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)*$")
 
 
 def _validate_soql_identifier(field: str) -> str:
@@ -295,17 +295,11 @@ class SOQLTranslator(AbstractQueryDSLTranslator):
             rendered = ", ".join(SOQLTranslator._render(x) for x in value)
             return f"{field} NOT IN ({rendered})"
         if op == "inc":
-            return (
-                f"{field} LIKE '%{SOQLTranslator._escape_like(value)}%'"
-            )
+            return f"{field} LIKE '%{SOQLTranslator._escape_like(value)}%'"
         if op == "starts_with":
-            return (
-                f"{field} LIKE '{SOQLTranslator._escape_like(value)}%'"
-            )
+            return f"{field} LIKE '{SOQLTranslator._escape_like(value)}%'"
         if op == "ends_with":
-            return (
-                f"{field} LIKE '%{SOQLTranslator._escape_like(value)}'"
-            )
+            return f"{field} LIKE '%{SOQLTranslator._escape_like(value)}'"
         if op == "is_null":
             return f"{field} = NULL" if value else f"{field} != NULL"
         raise AssertionError(f"unhandled SOQL operator {op!r}")  # defensive

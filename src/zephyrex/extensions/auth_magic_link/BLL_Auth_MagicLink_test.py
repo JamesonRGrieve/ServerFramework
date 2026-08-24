@@ -137,9 +137,7 @@ class TestMagicLink(ExtensionServerMixin):
     # verify: expired token rejected
     # ------------------------------------------------------------------
 
-    def test_verify_expired_token_fails(
-        self, model_registry, captured_emails, admin_a
-    ):
+    def test_verify_expired_token_fails(self, model_registry, captured_emails, admin_a):
         manager = self._manager(model_registry)
         manager.request_magic_link(email=admin_a.email)
         raw_token = captured_emails[-1]["raw_token"]
@@ -204,6 +202,4 @@ class TestMagicLink(ExtensionServerMixin):
         # Replay with one of the now-invalidated older tokens must also fail.
         for older in captured_emails[:-1]:
             with pytest.raises(InvalidGrantError):
-                manager.verify_magic_link(
-                    token=older["raw_token"], email=admin_a.email
-                )
+                manager.verify_magic_link(token=older["raw_token"], email=admin_a.email)

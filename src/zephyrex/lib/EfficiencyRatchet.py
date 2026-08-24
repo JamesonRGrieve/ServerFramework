@@ -54,7 +54,9 @@ def _save(data: dict[str, float]) -> None:
     BASELINE_FILE.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
 
 
-def _check(key: str, normalized: float, elapsed: float, mhz: float, tolerance: float) -> None:
+def _check(
+    key: str, normalized: float, elapsed: float, mhz: float, tolerance: float
+) -> None:
     baselines = _load()
     best = baselines.get(key)
 
@@ -71,7 +73,13 @@ def _check(key: str, normalized: float, elapsed: float, mhz: float, tolerance: f
     )
 
 
-def ratchet(key: str, fn: Callable[[], object], *, tolerance: float = DEFAULT_TOLERANCE, iterations: int = 1) -> None:
+def ratchet(
+    key: str,
+    fn: Callable[[], object],
+    *,
+    tolerance: float = DEFAULT_TOLERANCE,
+    iterations: int = 1,
+) -> None:
     """Time *fn*, normalize by base MHz, ratchet.
 
     For sub-millisecond operations, pass ``iterations`` > 1 to loop the
@@ -85,18 +93,26 @@ def ratchet(key: str, fn: Callable[[], object], *, tolerance: float = DEFAULT_TO
     _check(key, elapsed * mhz, elapsed, mhz, tolerance)
 
 
-def ratchet_subprocess(key: str, script: str, *, tolerance: float = DEFAULT_TOLERANCE, timeout: float = 30) -> None:
+def ratchet_subprocess(
+    key: str, script: str, *, tolerance: float = DEFAULT_TOLERANCE, timeout: float = 30
+) -> None:
     """Run *script* in a fresh Python process, ratchet the result."""
-    wrapper = textwrap.dedent("""\
+    wrapper = (
+        textwrap.dedent("""\
         import time, json
         from zephyrex.lib.EfficiencyRatchet import _read_mhz
-    """) + script + textwrap.dedent("""
+    """)
+        + script
+        + textwrap.dedent("""
         print(json.dumps({"elapsed": _elapsed, "mhz": _mhz}))
     """)
+    )
 
     result = subprocess.run(
         [sys.executable, "-c", wrapper],
-        capture_output=True, text=True, timeout=timeout,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
         cwd=str(Path(__file__).resolve().parents[3]),
     )
     if result.returncode != 0:

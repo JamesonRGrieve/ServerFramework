@@ -339,9 +339,7 @@ def get_user_subscription_status(
                 user_id=user_id,
             )
         except Exception as e:
-            logger.error(
-                f"Failed to fetch subscription status for user {user_id}: {e}"
-            )
+            logger.error(f"Failed to fetch subscription status for user {user_id}: {e}")
             return {
                 "subscription_id": None,
                 "status": "unknown",

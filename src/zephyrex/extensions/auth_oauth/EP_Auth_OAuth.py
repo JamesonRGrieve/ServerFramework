@@ -1,6 +1,10 @@
 from fastapi import Body, Depends, HTTPException, Path, Query, status
 
-from zephyrex.endpoints.AbstractEPRouter import AbstractEPRouter, ExampleGenerator, MessageModel
+from zephyrex.endpoints.AbstractEPRouter import (
+    AbstractEPRouter,
+    ExampleGenerator,
+    MessageModel,
+)
 from zephyrex.extensions.auth_oauth.BLL_Auth_OAuth import (
     OAuth2AuthCodeManager,
     OAuth2ClientManager,

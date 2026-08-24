@@ -126,9 +126,7 @@ def load_extension_module(
     return module
 
 
-def is_extension_module_loaded(
-    extension_name: str, file_stem: str
-) -> bool:
+def is_extension_module_loaded(extension_name: str, file_stem: str) -> bool:
     """Return True if the named extension module has already been loaded."""
     return (
         _synthesized_name(extension_name, file_stem) in sys.modules

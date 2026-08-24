@@ -72,8 +72,7 @@ CORE_COMPANION_EXTENSIONS = (
     "acl_rbac",
 )
 
-_CORE_TEST_EXTENSIONS = ",".join(CORE_COMPANION_EXTENSIONS
-)
+_CORE_TEST_EXTENSIONS = ",".join(CORE_COMPANION_EXTENSIONS)
 
 
 # =============================================================================
@@ -262,9 +261,8 @@ def pytest_collection_modifyitems(config, items):
         marker = item.get_closest_marker("external_api")
         if marker is None:
             continue
-        provider = (
-            marker.kwargs.get("provider")
-            or (marker.args[0] if marker.args else None)
+        provider = marker.kwargs.get("provider") or (
+            marker.args[0] if marker.args else None
         )
         if not provider:
             continue
@@ -821,7 +819,6 @@ def sandbox_credentials_for():
     return _get
 
 
-
 from conftest_factories import (  # noqa: F401
     UserWithJWT,
     add_user_to_team,
@@ -840,6 +837,7 @@ from conftest_factories import (  # noqa: F401
     make_team_b,
     make_user_b,
 )
+
 
 @pytest.fixture(scope="session")
 def admin_a(server):

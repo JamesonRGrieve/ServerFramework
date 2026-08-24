@@ -52,7 +52,6 @@ from typing import Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
-
 # ---------------------------------------------------------------------------
 # Models
 # ---------------------------------------------------------------------------
@@ -70,9 +69,7 @@ class OutboxEntry(BaseModel):
     deadline: Optional[datetime] = None
     retry_count: int = 0
     status: Literal["pending", "in_flight", "complete", "dlq"] = "pending"
-    created_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc)
-    )
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     last_attempted_at: Optional[datetime] = None
     last_error: Optional[str] = None
 
@@ -88,9 +85,7 @@ class DLQEntry(BaseModel):
     idempotency_key: str
     final_error: str
     operator_action: Literal["pending", "replay", "discard"] = "pending"
-    moved_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc)
-    )
+    moved_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 # ---------------------------------------------------------------------------
@@ -114,9 +109,7 @@ class OutboxStore(ABC):
         """Mark the entry as successfully delivered."""
 
     @abstractmethod
-    def mark_failed(
-        self, id: str, error: BaseException, max_retries: int = 5
-    ) -> None:
+    def mark_failed(self, id: str, error: BaseException, max_retries: int = 5) -> None:
         """Record a failure. Moves to DLQ once ``retry_count > max_retries``."""
 
     @abstractmethod
@@ -176,9 +169,7 @@ class InMemoryOutboxStore(OutboxStore):
                 return
             entry.status = "complete"
 
-    def mark_failed(
-        self, id: str, error: BaseException, max_retries: int = 5
-    ) -> None:
+    def mark_failed(self, id: str, error: BaseException, max_retries: int = 5) -> None:
         with self._lock:
             entry = self._entries.get(id)
             if entry is None:
@@ -210,9 +201,7 @@ class InMemoryOutboxStore(OutboxStore):
 
     def list_dlq(self, limit: int = 100) -> List[DLQEntry]:
         with self._lock:
-            ordered = sorted(
-                self._dlq.values(), key=lambda e: e.moved_at, reverse=True
-            )
+            ordered = sorted(self._dlq.values(), key=lambda e: e.moved_at, reverse=True)
             return ordered[:limit]
 
 

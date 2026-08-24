@@ -44,6 +44,8 @@ def _validate_team_name(v):
         if not v:
             raise ValueError("Team name cannot be empty")
     return v
+
+
 from sqlalchemy import or_
 
 from zephyrex.database.HookRegistries import (
@@ -88,7 +90,9 @@ from zephyrex.logic.AbstractLogicManager import (
 # installed bcrypt's default is, which has shifted across library versions
 # and is invisible to operators. Configurable via BCRYPT_ROUNDS (default 12).
 _BCRYPT_ROUNDS = int(env("BCRYPT_ROUNDS"))
-_DUMMY_BCRYPT_HASH = bcrypt.hashpw(b"timing-equalization-dummy", bcrypt.gensalt(rounds=_BCRYPT_ROUNDS))
+_DUMMY_BCRYPT_HASH = bcrypt.hashpw(
+    b"timing-equalization-dummy", bcrypt.gensalt(rounds=_BCRYPT_ROUNDS)
+)
 
 
 class InvalidGrantError(HTTPException):
@@ -766,7 +770,9 @@ class UserManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef]
         if isinstance(value, dict):
             return None
 
-        escaped = str(value).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        escaped = (
+            str(value).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        )
         search_value = f"%{escaped}%"
         db_model = self.DB
         return [
@@ -1468,9 +1474,9 @@ class UserManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef]
             import unicodedata
 
             login_model = UserManager.UserLoginModel(**login_data)
-            normalized_identifier = unicodedata.normalize(
-                "NFKC", login_model.email
-            ).lower().strip()
+            normalized_identifier = (
+                unicodedata.normalize("NFKC", login_model.email).lower().strip()
+            )
 
             # Try to find user by email or username
             user = UserModel.DB(model_registry.DB.manager.Base).list(

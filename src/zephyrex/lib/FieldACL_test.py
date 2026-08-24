@@ -173,12 +173,8 @@ def test_cache_memoizes_per_requester():
 
 def test_cache_distinguishes_requesters():
     cache = FieldACLCache()
-    a = cache.allowed_fields(
-        UserModel, requester_id=1, has_permission=lambda p: True
-    )
-    b = cache.allowed_fields(
-        UserModel, requester_id=2, has_permission=lambda p: False
-    )
+    a = cache.allowed_fields(UserModel, requester_id=1, has_permission=lambda p: True)
+    b = cache.allowed_fields(UserModel, requester_id=2, has_permission=lambda p: False)
     assert "ssn" in a
     assert "ssn" not in b
 
@@ -438,7 +434,9 @@ def test_apply_field_acl_to_payload_no_op_when_no_permission_function():
 def test_apply_field_acl_to_payload_respects_grant():
     from zephyrex.lib.Pydantic2FastAPI import apply_field_acl_to_payload
 
-    mgr = _FakeManager({"auth.user.read_ssn", "hr.compensation.read", "hr.employee.read"})
+    mgr = _FakeManager(
+        {"auth.user.read_ssn", "hr.compensation.read", "hr.employee.read"}
+    )
     user = UserModel(id=1, name="Alice", ssn="123", salary=1.0).model_dump()
     out = apply_field_acl_to_payload(user, mgr, UserModel)
     assert out["ssn"] == "123"

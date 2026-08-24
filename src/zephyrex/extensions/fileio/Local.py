@@ -10,10 +10,18 @@ from typing import Any, Dict, List, Optional, Set
 
 import psutil
 
-from zephyrex.extensions.fileio.PRV_FileIO import AbstractFileIOProvider, FileIOPermission
+from zephyrex.extensions.fileio.PRV_FileIO import (
+    AbstractFileIOProvider,
+    FileIOPermission,
+)
 
 
-def _safe_open(path: str, mode: str, encoding: Optional[str] | None = None, errors: Optional[str] | None = None):
+def _safe_open(
+    path: str,
+    mode: str,
+    encoding: Optional[str] | None = None,
+    errors: Optional[str] | None = None,
+):
     """Open ``path`` refusing to follow a symlink at the leaf component.
 
     Closes a TOCTOU window between ``Path.resolve()`` (which follows
@@ -435,7 +443,9 @@ class LocalFileSystem(AbstractFileIOProvider):
                 return f"Not a file: {file_path}"
 
             # Read file content
-            with _safe_open(str(resolved_path), "r", encoding="utf-8", errors="replace") as f:
+            with _safe_open(
+                str(resolved_path), "r", encoding="utf-8", errors="replace"
+            ) as f:
                 if offset > 0:
                     f.seek(offset)
 
@@ -778,7 +788,9 @@ class LocalFileSystem(AbstractFileIOProvider):
             logging.error(f"Error getting file info: {str(e)}")
             return {"error": f"Failed to get file info: {str(e)}"}
 
-    async def execute_file(self, file_path: str, arguments: List[str] | None = None) -> str:
+    async def execute_file(
+        self, file_path: str, arguments: List[str] | None = None
+    ) -> str:
         """
         Execute a file with given arguments.
 

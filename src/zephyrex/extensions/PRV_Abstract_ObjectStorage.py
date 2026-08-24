@@ -90,9 +90,7 @@ class AbstractObjectStorageProvider(AbstractStaticProvider):
     # ------------------------------------------------------------------
     @classmethod
     @abstractmethod
-    async def multipart_upload_init(
-        cls, provider_instance: Any, key: str
-    ) -> str:
+    async def multipart_upload_init(cls, provider_instance: Any, key: str) -> str:
         """Begin a multipart upload for `key`. Returns an `upload_id`
         the caller threads into subsequent `multipart_upload_part` and
         `multipart_upload_complete` calls.

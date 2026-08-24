@@ -13,7 +13,6 @@ from zephyrex.extensions.billing.BLL_CostSummaryService import (
     make_cost_summary_scheduled_service,
 )
 
-
 # ---------- _default_period_key -----------------------------------------
 
 

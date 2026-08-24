@@ -80,7 +80,9 @@ def _get_extension_name(pydantic_model) -> str:
     if module_name.startswith("extensions."):
         parts = module_name.split(".")
         if len(parts) >= 2:
-            return parts[1]  # e.g., "auth_mfa" from "zephyrex.extensions.auth_mfa.BLL_Auth_MFA"
+            return parts[
+                1
+            ]  # e.g., "auth_mfa" from "zephyrex.extensions.auth_mfa.BLL_Auth_MFA"
     return "unknown"
 
 

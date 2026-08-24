@@ -28,8 +28,7 @@ class _Bucket:
 
     def expired_query(self, cutoff: datetime) -> List[Dict[str, Any]]:
         return [
-            r for r in self._rows
-            if datetime.fromisoformat(r["created_at"]) < cutoff
+            r for r in self._rows if datetime.fromisoformat(r["created_at"]) < cutoff
         ]
 
     def archive(self, rows: Sequence[Dict[str, Any]], target: str) -> bool:
@@ -96,9 +95,7 @@ def test_run_pass_bypasses_legal_hold_when_released():
         clock=lambda: now,
     )
 
-    svc.release_legal_hold(
-        "audit_subpoena", reason="case closed", requester_id="ops"
-    )
+    svc.release_legal_hold("audit_subpoena", reason="case closed", requester_id="ops")
 
     [report] = svc.run_pass()
 
@@ -211,7 +208,5 @@ def test_make_retention_scheduled_service_exposes_inner():
 
     assert hasattr(scheduled, "retention_service")
     assert isinstance(scheduled.retention_service, RetentionService)
-    scheduled.retention_service.release_legal_hold(
-        "x", reason="r", requester_id="u"
-    )
+    scheduled.retention_service.release_legal_hold("x", reason="r", requester_id="u")
     assert scheduled.retention_service.is_released("x")

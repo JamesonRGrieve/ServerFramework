@@ -4,7 +4,12 @@ from typing import Any, Dict, List, Optional
 import pytest
 from faker import Faker
 
-from zephyrex.AbstractTest import CategoryOfTest, ClassOfTestsConfig, ParentEntity, SkipThisTest
+from zephyrex.AbstractTest import (
+    CategoryOfTest,
+    ClassOfTestsConfig,
+    ParentEntity,
+    SkipThisTest,
+)
 from zephyrex.endpoints.AbstractEPTest import AbstractEPTest
 from zephyrex.logic.BLL_Providers import (
     ProviderExtensionAbilityModel,
@@ -116,7 +121,8 @@ class TestProviderExtensionEndpoints(AbstractEPTest):
             system=True,
             path_level=1,
             test_class=lambda: __import__(
-                "zephyrex.endpoints.EP_Extensions_test", fromlist=["TestExtensionEndpoints"]
+                "zephyrex.endpoints.EP_Extensions_test",
+                fromlist=["TestExtensionEndpoints"],
             ).TestExtensionEndpoints,
         ),
     ]
@@ -835,7 +841,9 @@ class TestRotationProviderInstanceEndpoints(AbstractEPTest):
         "rotation_id": None,  # Will be populated in setup
         "provider_instance_id": None,  # Will be populated in setup
     }
-    update_fields: dict[str, str] = {}  # No updateable fields besides system  # type: ignore[var-annotated]
+    update_fields: dict[str, str] = (
+        {}
+    )  # No updateable fields besides system  # type: ignore[var-annotated]
     unique_fields: list[str] = []  # type: ignore[var-annotated]
 
     _skip_tests = [
@@ -936,7 +944,8 @@ class TestProviderExtensionAbilityEndpoints(AbstractEPTest):
             nullable=False,
             path_level=None,  # Top-level endpoint
             test_class=lambda: __import__(
-                "zephyrex.endpoints.EP_Extensions_test", fromlist=["TestAbilityEndpoints"]
+                "zephyrex.endpoints.EP_Extensions_test",
+                fromlist=["TestAbilityEndpoints"],
             ).TestAbilityEndpoints,
         ),
     ]
@@ -957,7 +966,9 @@ class TestProviderExtensionAbilityEndpoints(AbstractEPTest):
         "provider_extension_id": None,  # Will be populated in setup
         "ability_id": lambda: str(uuid.uuid4()),
     }
-    update_fields: dict[str, str] = {}  # No updateable fields besides system fields  # type: ignore[var-annotated]
+    update_fields: dict[str, str] = (
+        {}
+    )  # No updateable fields besides system fields  # type: ignore[var-annotated]
     unique_fields: list[str] = []  # type: ignore[var-annotated]
 
     # ProviderExtensionAbility is a high-volume system-seeded join table.
@@ -1033,7 +1044,9 @@ class TestProviderInstanceSettingsEndpoints(AbstractEPTest):
     update_fields = {
         "value": "updated-setting-value",
     }
-    unique_fields: list[str] = []  # No unique fields for settings  # type: ignore[var-annotated]
+    unique_fields: list[str] = (
+        []
+    )  # No unique fields for settings  # type: ignore[var-annotated]
 
     parent_entities = [
         ParentEntity(

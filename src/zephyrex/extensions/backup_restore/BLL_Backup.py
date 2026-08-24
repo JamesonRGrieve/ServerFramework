@@ -58,7 +58,6 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from zephyrex.lib.Logging import logger
 
-
 # ---------------------------------------------------------------------------
 # Backup classification
 # ---------------------------------------------------------------------------
@@ -435,9 +434,7 @@ class DrillReport:
     smoke_test_pass: bool
     error: Optional[str] = None
     restored_key: Optional[str] = None
-    started_at: datetime = field(
-        default_factory=lambda: datetime.now(timezone.utc)
-    )
+    started_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     def to_dict(self) -> Dict[str, Any]:
         return {

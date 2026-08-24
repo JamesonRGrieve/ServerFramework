@@ -38,6 +38,8 @@ def _escape_like(v: object) -> str:
     """Escape LIKE/ILIKE wildcard characters (%, _) in user input."""
     s = str(v) if not isinstance(v, str) else v
     return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 from sqlalchemy.orm import Session, joinedload
 
 from zephyrex.lib.Logging import logger
@@ -1886,15 +1888,21 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
                 field_processed = False
 
                 if "inc" in value and value["inc"] is not None:
-                    filters.append(field.ilike(f"%{_escape_like(value['inc'])}%", escape="\\"))
+                    filters.append(
+                        field.ilike(f"%{_escape_like(value['inc'])}%", escape="\\")
+                    )
                     field_processed = True
 
                 if "sw" in value and value["sw"] is not None:
-                    filters.append(field.ilike(f"{_escape_like(value['sw'])}%", escape="\\"))
+                    filters.append(
+                        field.ilike(f"{_escape_like(value['sw'])}%", escape="\\")
+                    )
                     field_processed = True
 
                 if "ew" in value and value["ew"] is not None:
-                    filters.append(field.ilike(f"%{_escape_like(value['ew'])}", escape="\\"))
+                    filters.append(
+                        field.ilike(f"%{_escape_like(value['ew'])}", escape="\\")
+                    )
                     field_processed = True
 
                 if "eq" in value and value["eq"] is not None:
@@ -1933,7 +1941,11 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
                     if isinstance(v, (datetime, date)):
                         return v
                     if isinstance(v, str):
-                        for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%d"):
+                        for fmt in (
+                            "%Y-%m-%dT%H:%M:%S",
+                            "%Y-%m-%dT%H:%M:%S.%f",
+                            "%Y-%m-%d",
+                        ):
                             try:
                                 return datetime.strptime(v, fmt)
                             except ValueError:
@@ -3069,6 +3081,7 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
     def _compute_entity_etag(self, entity) -> str:
         """Compute a weak ETag from the entity's updated_at timestamp."""
         import hashlib
+
         ts = getattr(entity, "updated_at", None) or getattr(entity, "created_at", "")
         return f'W/"{hashlib.sha256(str(ts).encode()).hexdigest()[:16]}"'
 
@@ -3097,11 +3110,17 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
         entity_before = self.get(id=id)
 
         if self._require_etag and not if_match:
-            raise HTTPException(status_code=428, detail="Precondition Required — If-Match header missing")
+            raise HTTPException(
+                status_code=428,
+                detail="Precondition Required — If-Match header missing",
+            )
         if if_match and entity_before:
             current_etag = self._compute_entity_etag(entity_before)
             if if_match.strip('"') not in current_etag:
-                raise HTTPException(status_code=412, detail="Precondition Failed — entity has been modified")
+                raise HTTPException(
+                    status_code=412,
+                    detail="Precondition Failed — entity has been modified",
+                )
 
         updated_entity = self.DB.update(
             requester_id=self.requester.id,  # type: ignore[union-attr]

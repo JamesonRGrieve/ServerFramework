@@ -9,6 +9,7 @@ compatible with the Provider Rotation System.
 Credentials (HELCIM_API_TOKEN) must be set in the environment before
 the provider becomes active.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -268,9 +269,7 @@ class PaymentExtensionHelcimProvider(AbstractPaymentProvider):
                 logger.error("No API token available for Helcim provider instance")
                 return None
             headers["api-token"] = api_token
-            client = httpx.Client(
-                base_url=_BASE_URL, headers=headers, timeout=30.0
-            )
+            client = httpx.Client(base_url=_BASE_URL, headers=headers, timeout=30.0)
             return AbstractProviderInstance_SDK(client)
         except Exception as e:
             logger.error("Failed to bond Helcim provider instance: %s", e)
@@ -285,9 +284,7 @@ class PaymentExtensionHelcimProvider(AbstractPaymentProvider):
         headers = _default_headers()
         if not headers.get("api-token"):
             return None
-        cls._client = httpx.Client(
-            base_url=_BASE_URL, headers=headers, timeout=30.0
-        )
+        cls._client = httpx.Client(base_url=_BASE_URL, headers=headers, timeout=30.0)
         return cls._client
 
     @classmethod
@@ -512,7 +509,9 @@ class PaymentExtensionHelcimProvider(AbstractPaymentProvider):
             raise Exception("Webhook secret not configured — cannot verify")
         try:
             payload_bytes = payload.encode() if isinstance(payload, str) else payload
-            expected = hmac.new(secret.encode(), payload_bytes, hashlib.sha256).hexdigest()
+            expected = hmac.new(
+                secret.encode(), payload_bytes, hashlib.sha256
+            ).hexdigest()
             if not hmac.compare_digest(signature, expected):
                 raise Exception("Webhook signature verification failed")
             payload_str = payload if isinstance(payload, str) else payload.decode()

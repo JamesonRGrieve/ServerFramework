@@ -34,7 +34,14 @@ class TestLabelEP(AbstractEPTest, ExtensionServerMixin):
     }
     unique_fields = ["name"]
 
-    def create_payload(self, name=None, parent_ids=None, team_id=None, minimal=False, invalid_data=False):
+    def create_payload(
+        self,
+        name=None,
+        parent_ids=None,
+        team_id=None,
+        minimal=False,
+        invalid_data=False,
+    ):
         if not name:
             name = f"Test Label {uuid.uuid4()}"
         if invalid_data:
@@ -60,7 +67,7 @@ class TestLabelEP(AbstractEPTest, ExtensionServerMixin):
         label_name = f"GQL Test {self.faker.word()} {uuid.uuid4()}"
         description = f"GQL Test {self.faker.word()}"
 
-        mutation = f'''
+        mutation = f"""
         mutation {{
             {mutation_name}(input: {{name: "{label_name}", description: "{description}"}}) {{
                 id
@@ -70,7 +77,7 @@ class TestLabelEP(AbstractEPTest, ExtensionServerMixin):
                 updatedAt
             }}
         }}
-        '''
+        """
 
         headers = self._get_appropriate_headers(admin_a.jwt)
         response = server.post("/graphql", json={"query": mutation}, headers=headers)
@@ -79,10 +86,14 @@ class TestLabelEP(AbstractEPTest, ExtensionServerMixin):
         data = response.json()
         assert "data" in data, f"No data in response: {json.dumps(data)}"
         if "errors" in data:
-            pytest.fail(f"GraphQL errors in create mutation: {json.dumps(data['errors'])}")
+            pytest.fail(
+                f"GraphQL errors in create mutation: {json.dumps(data['errors'])}"
+            )
 
         assert data["data"] is not None, f"Data is None in response: {json.dumps(data)}"
-        assert mutation_name in data["data"], f"Mutation {mutation_name} not in response"
+        assert (
+            mutation_name in data["data"]
+        ), f"Mutation {mutation_name} not in response"
 
         result = data["data"][mutation_name]
         assert result is not None, "Mutation result is None"
@@ -100,7 +111,9 @@ class TestLabelEP(AbstractEPTest, ExtensionServerMixin):
             "color": color,
         }
         response = server.post(
-            f"/v1/{self.base_endpoint}", json=payload, headers=self._get_appropriate_headers(admin_a.jwt)
+            f"/v1/{self.base_endpoint}",
+            json=payload,
+            headers=self._get_appropriate_headers(admin_a.jwt),
         )
         self._assert_response_status(
             response, 201, "POST with color", f"/v1/{self.base_endpoint}", payload
@@ -113,17 +126,23 @@ class TestLabelEP(AbstractEPTest, ExtensionServerMixin):
             f"Entity: {entity}"
         )
 
-    @pytest.mark.skip(reason="Requires prompts extension which is not loaded in meta_labels test suite")
+    @pytest.mark.skip(
+        reason="Requires prompts extension which is not loaded in meta_labels test suite"
+    )
     def test_POST_204_associate_with_prompt(self, server, admin_a, team_a):
         """Test associating a label with a prompt."""
         pass
 
-    @pytest.mark.skip(reason="Requires prompts extension which is not loaded in meta_labels test suite")
+    @pytest.mark.skip(
+        reason="Requires prompts extension which is not loaded in meta_labels test suite"
+    )
     def test_DELETE_204_remove_from_prompt(self, server, admin_a, team_a):
         """Test removing a label from a prompt."""
         pass
 
-    @pytest.mark.skip(reason="Requires prompts extension which is not loaded in meta_labels test suite")
+    @pytest.mark.skip(
+        reason="Requires prompts extension which is not loaded in meta_labels test suite"
+    )
     def test_GET_200_includes(self, server, admin_a, team_a, navigation_property):
         """Test GET label with included entities (e.g., prompts)."""
         pass

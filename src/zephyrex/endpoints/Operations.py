@@ -51,7 +51,6 @@ from zephyrex.lib.InboundSecurity import (
 )
 from zephyrex.lib.Logging import logger
 
-
 # ---------------------------------------------------------------------------
 # Process-level shutdown signal
 # ---------------------------------------------------------------------------
@@ -266,13 +265,13 @@ def _apply_dlq_filter(entries: List[Any], flt: DLQFilter) -> List[Any]:
         ability = _get_attr(e, "target_ability")
         error_str = str(_get_attr(e, "final_error", ""))
         moved_at = _get_attr(e, "moved_at")
-        if flt.extension and provider and flt.extension.lower() not in str(
-            provider
-        ).lower():
+        if (
+            flt.extension
+            and provider
+            and flt.extension.lower() not in str(provider).lower()
+        ):
             continue
-        if flt.ability and ability and flt.ability.lower() not in str(
-            ability
-        ).lower():
+        if flt.ability and ability and flt.ability.lower() not in str(ability).lower():
             continue
         if flt.error_class and flt.error_class not in error_str:
             continue
@@ -327,7 +326,9 @@ def _default_dlq_lister(**_kwargs: Any) -> List[Any]:
     endpoint can call this default the same way it calls a wired lister.
     """
     try:
-        from zephyrex.logic.Outbox import DLQEntry  # noqa: F401 - imported for type only
+        from zephyrex.logic.Outbox import (
+            DLQEntry,
+        )  # noqa: F401 - imported for type only
     except ImportError:
         return []
     return []

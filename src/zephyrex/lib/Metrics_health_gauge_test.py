@@ -1,4 +1,5 @@
 """Item 34 — tests for the per-provider health gauge emitter."""
+
 from __future__ import annotations
 
 from enum import Enum

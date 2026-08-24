@@ -12,7 +12,19 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any, Callable, ClassVar, Dict, List, Optional, Set, Tuple, Type, TypeVar, Union
+from typing import (
+    Any,
+    Callable,
+    ClassVar,
+    Dict,
+    List,
+    Optional,
+    Set,
+    Tuple,
+    Type,
+    TypeVar,
+    Union,
+)
 
 from fastapi import HTTPException
 from pydantic import BaseModel, Field
@@ -86,7 +98,10 @@ def _canonicalize(value: Any) -> Any:
     if isinstance(value, (datetime, date)):
         return value.isoformat()
     if isinstance(value, (set, frozenset)):
-        return sorted([_canonicalize(v) for v in value], key=lambda x: json.dumps(x, sort_keys=True))
+        return sorted(
+            [_canonicalize(v) for v in value],
+            key=lambda x: json.dumps(x, sort_keys=True),
+        )
     if isinstance(value, dict):
         return {k: _canonicalize(v) for k, v in value.items()}
     if isinstance(value, (list, tuple)):
@@ -186,7 +201,12 @@ def _strict_navigation_mode() -> bool:
     instead of falling back to lazy resolution.
     """
 
-    return os.environ.get("STRICT_NAVIGATION_INCLUDE", "").lower() in {"1", "true", "yes", "on"}
+    return os.environ.get("STRICT_NAVIGATION_INCLUDE", "").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
 class BatchedNavigationResolver:
@@ -235,9 +255,7 @@ class BatchedNavigationResolver:
         we delegate to. Items already cached are skipped.
         """
 
-        unresolved = [
-            i for i in external_ids if not self.has(external_model_class, i)
-        ]
+        unresolved = [i for i in external_ids if not self.has(external_model_class, i)]
         if not unresolved:
             return {i: self.get(external_model_class, i) for i in external_ids}
 
@@ -469,7 +487,9 @@ def external_navigation_property(
     )
 
 
-def _unwrap_provider_call(model_class: type, method_name: str, fn: Callable, *args, **kwargs) -> Any:
+def _unwrap_provider_call(
+    model_class: type, method_name: str, fn: Callable, *args, **kwargs
+) -> Any:
     """Invoke a `*_via_provider` method and return the unwrapped payload.
 
     Implements the back-compat shim from Item 1: providers may either
@@ -494,7 +514,10 @@ def _unwrap_provider_call(model_class: type, method_name: str, fn: Callable, *ar
         # escape. Otherwise re-raise as-is for legacy callers.
         if getattr(model_class, "raises_typed_errors", False):
             raise PermanentExternalError(
-                str(exc), provider=getattr(fn, "__qualname__", str(fn)), ability=method_name, cause=exc
+                str(exc),
+                provider=getattr(fn, "__qualname__", str(fn)),
+                ability=method_name,
+                cause=exc,
             ) from exc
         raise
 
@@ -702,7 +725,7 @@ class AbstractExternalAPIClient(ABC):
 
             # Convert external format to internal format
             items = []
-            for item_data in (payload or []):
+            for item_data in payload or []:
                 internal_data = self.model_class.from_external_format(item_data)
 
                 if return_type == "dto":
@@ -1276,7 +1299,9 @@ class AbstractExternalModel(BaseModel, ABC):
     # for the override via `hasattr(...) and method != AbstractExternalModel.method`.
 
     @staticmethod
-    def batch_create_via_provider(provider_instance, items: List[Dict[str, Any]]) -> List[Any]:
+    def batch_create_via_provider(
+        provider_instance, items: List[Dict[str, Any]]
+    ) -> List[Any]:
         """Optional bulk create. Default raises `NotImplementedError`.
 
         On success, return one payload per input item in the same order;
@@ -1297,7 +1322,9 @@ class AbstractExternalModel(BaseModel, ABC):
         raise NotImplementedError("batch_update_via_provider not implemented")
 
     @staticmethod
-    def batch_delete_via_provider(provider_instance, external_ids: List[str]) -> List[Any]:
+    def batch_delete_via_provider(
+        provider_instance, external_ids: List[str]
+    ) -> List[Any]:
         """Optional bulk delete."""
 
         raise NotImplementedError("batch_delete_via_provider not implemented")
@@ -1532,7 +1559,9 @@ class AbstractExternalManager(AbstractBLLManager):
     # Idempotency primitive (Item 4)
     # ------------------------------------------------------------------
 
-    def idempotency_key(self, operation: str, requester_id: str, args: Dict[str, Any]) -> str:
+    def idempotency_key(
+        self, operation: str, requester_id: str, args: Dict[str, Any]
+    ) -> str:
         """Return a deterministic idempotency key for an operation+args.
 
         Default implementation: SHA-256 over
@@ -1549,9 +1578,7 @@ class AbstractExternalManager(AbstractBLLManager):
         """
 
         canonical = _canonicalize(args)
-        material = (
-            f"{requester_id}|{operation}|{json.dumps(canonical, sort_keys=True, default=str)}"
-        )
+        material = f"{requester_id}|{operation}|{json.dumps(canonical, sort_keys=True, default=str)}"
         return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
     # ------------------------------------------------------------------
@@ -1585,22 +1612,37 @@ class AbstractExternalManager(AbstractBLLManager):
                 if isinstance(payload, BaseExternalError):
                     result.failures.append((idx, payload))
                 else:
-                    result.successes.append((idx, self.Model.from_external_format(payload or {})))
+                    result.successes.append(
+                        (idx, self.Model.from_external_format(payload or {}))
+                    )
             return result
 
         # Fallback loop.
         for idx, item in enumerate(items):
             try:
-                created = self.create(**item) if hasattr(self, "create") else self.DB.create(  # type: ignore[attr-defined]
-                    requester_id=self.requester_id, **item
+                created = (
+                    self.create(**item)
+                    if hasattr(self, "create")
+                    else self.DB.create(  # type: ignore[attr-defined]
+                        requester_id=self.requester_id, **item
+                    )
                 )
                 result.successes.append((idx, created))
             except BaseExternalError as exc:
                 result.failures.append((idx, exc))
             except HTTPException as exc:
-                result.failures.append((idx, PermanentExternalError(str(exc.detail), upstream_status=exc.status_code)))
+                result.failures.append(
+                    (
+                        idx,
+                        PermanentExternalError(
+                            str(exc.detail), upstream_status=exc.status_code
+                        ),
+                    )
+                )
             except Exception as exc:  # noqa: BLE001
-                result.failures.append((idx, PermanentExternalError(str(exc), cause=exc)))
+                result.failures.append(
+                    (idx, PermanentExternalError(str(exc), cause=exc))
+                )
         return result
 
     def batch_update(self, items: List[Dict[str, Any]]) -> "BatchResult":  # type: ignore[override]
@@ -1628,7 +1670,9 @@ class AbstractExternalManager(AbstractBLLManager):
                 if isinstance(payload, BaseExternalError):
                     result.failures.append((idx, payload))
                 else:
-                    result.successes.append((idx, self.Model.from_external_format(payload or {})))
+                    result.successes.append(
+                        (idx, self.Model.from_external_format(payload or {}))
+                    )
             return result
 
         for idx, item in enumerate(items):
@@ -1640,9 +1684,18 @@ class AbstractExternalManager(AbstractBLLManager):
             except BaseExternalError as exc:
                 result.failures.append((idx, exc))
             except HTTPException as exc:
-                result.failures.append((idx, PermanentExternalError(str(exc.detail), upstream_status=exc.status_code)))
+                result.failures.append(
+                    (
+                        idx,
+                        PermanentExternalError(
+                            str(exc.detail), upstream_status=exc.status_code
+                        ),
+                    )
+                )
             except Exception as exc:  # noqa: BLE001
-                result.failures.append((idx, PermanentExternalError(str(exc), cause=exc)))
+                result.failures.append(
+                    (idx, PermanentExternalError(str(exc), cause=exc))
+                )
         return result
 
     def batch_delete(self, ids: List[str]) -> "BatchResult":  # type: ignore[override]
@@ -1673,9 +1726,18 @@ class AbstractExternalManager(AbstractBLLManager):
             except BaseExternalError as exc:
                 result.failures.append((idx, exc))
             except HTTPException as exc:
-                result.failures.append((idx, PermanentExternalError(str(exc.detail), upstream_status=exc.status_code)))
+                result.failures.append(
+                    (
+                        idx,
+                        PermanentExternalError(
+                            str(exc.detail), upstream_status=exc.status_code
+                        ),
+                    )
+                )
             except Exception as exc:  # noqa: BLE001
-                result.failures.append((idx, PermanentExternalError(str(exc), cause=exc)))
+                result.failures.append(
+                    (idx, PermanentExternalError(str(exc), cause=exc))
+                )
         return result
 
     # All other methods (create, get, list, search, update, delete,

@@ -17,7 +17,6 @@ from zephyrex.extensions.billing.BLL_CostModel import (
     TokenBasedCostModel,
 )
 
-
 # ---------- ConstantCostModel ------------------------------------------------
 
 

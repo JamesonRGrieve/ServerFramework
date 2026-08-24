@@ -164,7 +164,9 @@ def test_fan_out_persists_cursor_via_state_store() -> None:
     def _h(ctx: StreamingMessageContext) -> None:
         return None
 
-    svc = _CapturingService(requester_id="r", service_id="s-cursor", state_store=state_store)
+    svc = _CapturingService(
+        requester_id="r", service_id="s-cursor", state_store=state_store
+    )
     asyncio.run(svc.fan_out(payload={}, event_name="e", cursor="c-42"))
     assert svc.cursor == "c-42"
     assert state["s-cursor"] == "c-42"
@@ -178,7 +180,9 @@ def test_state_store_loaded_on_init() -> None:
             state[svc_id] = value
         return state.get(svc_id)
 
-    svc = _CapturingService(requester_id="r", service_id="prev", state_store=state_store)
+    svc = _CapturingService(
+        requester_id="r", service_id="prev", state_store=state_store
+    )
     assert svc.cursor == "c-existing"
 
 
@@ -225,7 +229,12 @@ class _ClassifyingService(StreamingService):
     def classify(
         self, message: Any
     ) -> Tuple[Optional[str], Any, Optional[Dict[str, str]], Optional[str]]:
-        return message.get("event"), message.get("data"), {"src": "stream"}, message.get("cursor")
+        return (
+            message.get("event"),
+            message.get("data"),
+            {"src": "stream"},
+            message.get("cursor"),
+        )
 
 
 def test_default_on_message_classifies_and_dispatches() -> None:
@@ -308,8 +317,8 @@ def test_stop_and_drain_cancels_when_inflight_exceeds_deadline() -> None:
     async def scenario() -> _SlowStreamer:
         svc = _SlowStreamer(
             requester_id="r",
-            work_seconds=2.0,           # work takes 2s
-            drain_period_seconds=0.1,   # drain only allows 100ms
+            work_seconds=2.0,  # work takes 2s
+            drain_period_seconds=0.1,  # drain only allows 100ms
         )
         svc.start()
         loop_task = asyncio.create_task(svc.run_service_loop())

@@ -27,9 +27,7 @@ def _ensure_grant_registered():
         device_pairing_grant_validator,
     )
 
-    PasswordlessGrantRegistry.register(
-        "device_pairing", device_pairing_grant_validator
-    )
+    PasswordlessGrantRegistry.register("device_pairing", device_pairing_grant_validator)
     yield
 
 
@@ -126,9 +124,7 @@ class TestDevicePairing(ExtensionServerMixin):
     # Awaiting-approval session unusable until approved
     # ------------------------------------------------------------------
 
-    def test_awaiting_approval_no_session_until_approved(
-        self, model_registry, admin_a
-    ):
+    def test_awaiting_approval_no_session_until_approved(self, model_registry, admin_a):
         manager = self._manager(model_registry)
         result = manager.request_pairing(device_type="mobile")
 
@@ -160,9 +156,7 @@ class TestDevicePairing(ExtensionServerMixin):
 
         # Approve and check that the session now exists.
         raw_token = _extract_raw_token_from_payload(result.qr_payload)
-        approved = manager.approve_pairing(
-            token=raw_token, approver_user_id=admin_a.id
-        )
+        approved = manager.approve_pairing(token=raw_token, approver_user_id=admin_a.id)
 
         post_status = manager.get_status(result.pairing_id)
         assert post_status.state == "approved"
@@ -173,16 +167,12 @@ class TestDevicePairing(ExtensionServerMixin):
     # Polling status parity (status returns the same shape SSE emits)
     # ------------------------------------------------------------------
 
-    def test_polling_status_parity_with_approved_state(
-        self, model_registry, admin_a
-    ):
+    def test_polling_status_parity_with_approved_state(self, model_registry, admin_a):
         manager = self._manager(model_registry)
         result = manager.request_pairing(device_type="web")
         raw_token = _extract_raw_token_from_payload(result.qr_payload)
 
-        approved = manager.approve_pairing(
-            token=raw_token, approver_user_id=admin_a.id
-        )
+        approved = manager.approve_pairing(token=raw_token, approver_user_id=admin_a.id)
 
         polled = manager.get_status(result.pairing_id)
         assert polled.state == "approved"
@@ -193,9 +183,7 @@ class TestDevicePairing(ExtensionServerMixin):
     # Status: expired pairings report "expired"
     # ------------------------------------------------------------------
 
-    def test_status_reports_expired_for_lapsed_pairing(
-        self, model_registry
-    ):
+    def test_status_reports_expired_for_lapsed_pairing(self, model_registry):
         manager = self._manager(model_registry)
         result = manager.request_pairing(device_type="mobile")
         DB = DevicePairingRequestModel.DB(model_registry.DB.manager.Base)

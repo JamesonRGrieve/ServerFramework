@@ -22,16 +22,12 @@ def out_of_tree_extension(tmp_path: Path) -> Path:
     ext_dir = ext_root / "fakeext"
     ext_dir.mkdir(parents=True)
     (ext_dir / "__init__.py").write_text("")
-    (ext_dir / "BLL_Fake.py").write_text(
-        textwrap.dedent(
-            """
+    (ext_dir / "BLL_Fake.py").write_text(textwrap.dedent("""
             FAKE_EXPORT = "loaded"
 
             class FakeManager:
                 kind = "fake"
-            """
-        )
-    )
+            """))
     return ext_root
 
 

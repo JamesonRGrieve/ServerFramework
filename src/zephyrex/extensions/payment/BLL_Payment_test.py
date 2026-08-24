@@ -84,7 +84,9 @@ class TestPayment_UserManager(CoreUserManagerTests, ExtensionServerMixin):
         root_email = env("ROOT_EMAIL")
         if root_email:
             # Simulate login context for root user
-            from zephyrex.extensions.payment.BLL_Payment import validate_subscription_on_login
+            from zephyrex.extensions.payment.BLL_Payment import (
+                validate_subscription_on_login,
+            )
             from zephyrex.logic.AbstractLogicManager import HookContext, HookTiming
 
             # Build a real HookContext for the bypass scenario. The hook

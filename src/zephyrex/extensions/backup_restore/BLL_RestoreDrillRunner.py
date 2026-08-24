@@ -27,7 +27,6 @@ from zephyrex.extensions.backup_restore.BLL_Backup import (
     SqliteBackupCommand,
 )
 
-
 REPORT_PATH = "/tmp/restore_drill_report.json"
 
 

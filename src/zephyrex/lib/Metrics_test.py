@@ -6,6 +6,7 @@ emission, and the Prometheus / OpenTelemetry tests skip when the
 optional SDK is not installed (matching the no-mock pillar from
 AGENTS.md).
 """
+
 from __future__ import annotations
 
 import importlib.util
@@ -217,9 +218,7 @@ def test_prometheus_backend_import_or_skip():
     backend = PrometheusMetricsBackend()
     backend.counter("test_counter_total", labels={"provider": "stripe"})
     backend.gauge("test_gauge", 1.0, labels={"provider": "stripe"})
-    backend.histogram(
-        "test_histogram_ms", 12.5, labels={"provider": "stripe"}
-    )
+    backend.histogram("test_histogram_ms", 12.5, labels={"provider": "stripe"})
     with backend.span("op", provider="stripe"):
         pass
 

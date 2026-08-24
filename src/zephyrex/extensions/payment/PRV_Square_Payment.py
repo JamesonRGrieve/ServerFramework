@@ -5,6 +5,7 @@ Provides payment processing, customer management, and webhook handling
 through Square's API. Fully static implementation compatible with the
 Provider Rotation System.
 """
+
 from __future__ import annotations
 
 from datetime import datetime
@@ -35,7 +36,6 @@ from zephyrex.lib.Logging import logger
 from zephyrex.lib.Pydantic import BaseModel  # type: ignore[no-redef]
 from zephyrex.logic.AbstractLogicManager import ModelMeta
 from zephyrex.logic.BLL_Providers import ProviderInstanceModel
-
 
 # ============================================================================
 # Square Customer External Model
@@ -338,7 +338,6 @@ class PaymentExtensionSquareProvider(AbstractPaymentProvider):
         return ["payment", "subscription", "commerce"]
 
     @classmethod
-
     @classmethod
     def create_payment(
         cls,

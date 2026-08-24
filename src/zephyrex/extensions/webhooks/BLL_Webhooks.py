@@ -34,7 +34,6 @@ from pydantic import BaseModel, ConfigDict
 
 from zephyrex.lib.Logging import logger
 
-
 # ---------------------------------------------------------------------------
 # Registry + context model
 # ---------------------------------------------------------------------------

@@ -70,6 +70,7 @@ def get_user_timezone() -> str:
 
 _MAX_REQUEST_TIMEOUT_MS = 300_000
 
+
 def set_request_deadline_ms(timeout_ms: Optional[int]) -> None:
     """Item 47 — set the per-request deadline from a relative
     (gRPC-style) timeout in milliseconds. ``None`` clears the deadline.
@@ -111,7 +112,9 @@ def check_deadline_or_raise(layer: str = "unknown") -> None:
     if remaining is None:
         return
     if remaining <= 0:
-        raise DeadlineExceededError(elapsed_ms=-remaining if remaining < 0 else 0, layer=layer)
+        raise DeadlineExceededError(
+            elapsed_ms=-remaining if remaining < 0 else 0, layer=layer
+        )
 
 
 # ----- Item 85 — correlation id ---------------------------------------------

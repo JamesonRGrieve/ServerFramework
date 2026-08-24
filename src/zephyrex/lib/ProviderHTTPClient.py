@@ -64,7 +64,13 @@ except ImportError:  # pragma: no cover - safety net during phased rollout
         pass
 
     class RateLimitExternalError(BaseExternalError):  # type: ignore[no-redef]
-        def __init__(self, message: str = "", *, retry_after_seconds: Optional[float] = None, **kw: Any) -> None:
+        def __init__(
+            self,
+            message: str = "",
+            *,
+            retry_after_seconds: Optional[float] = None,
+            **kw: Any,
+        ) -> None:
             super().__init__(message, **kw)
             self.retry_after_seconds = retry_after_seconds
 
@@ -106,33 +112,33 @@ _SSRF_DEFAULT_DISABLED_ENV = "DISABLE_SSRF_GUARD"
 _BLOCKED_V4_NETWORKS: Tuple[ipaddress.IPv4Network, ...] = tuple(
     ipaddress.IPv4Network(net)
     for net in (
-        "0.0.0.0/8",        # current network / "this host"
-        "10.0.0.0/8",       # RFC1918
-        "127.0.0.0/8",      # loopback
-        "169.254.0.0/16",   # link-local (IMDS lives here)
-        "172.16.0.0/12",    # RFC1918
-        "192.0.0.0/24",     # IETF protocol assignments
-        "192.0.2.0/24",     # TEST-NET-1
-        "192.168.0.0/16",   # RFC1918
-        "198.18.0.0/15",    # benchmarking
+        "0.0.0.0/8",  # current network / "this host"
+        "10.0.0.0/8",  # RFC1918
+        "127.0.0.0/8",  # loopback
+        "169.254.0.0/16",  # link-local (IMDS lives here)
+        "172.16.0.0/12",  # RFC1918
+        "192.0.0.0/24",  # IETF protocol assignments
+        "192.0.2.0/24",  # TEST-NET-1
+        "192.168.0.0/16",  # RFC1918
+        "198.18.0.0/15",  # benchmarking
         "198.51.100.0/24",  # TEST-NET-2
-        "203.0.113.0/24",   # TEST-NET-3
-        "100.64.0.0/10",    # CGNAT
-        "224.0.0.0/4",      # multicast
-        "240.0.0.0/4",      # reserved
+        "203.0.113.0/24",  # TEST-NET-3
+        "100.64.0.0/10",  # CGNAT
+        "224.0.0.0/4",  # multicast
+        "240.0.0.0/4",  # reserved
         "255.255.255.255/32",  # broadcast
     )
 )
 _BLOCKED_V6_NETWORKS: Tuple[ipaddress.IPv6Network, ...] = tuple(
     ipaddress.IPv6Network(net)
     for net in (
-        "::1/128",          # loopback
-        "::/128",           # unspecified
-        "::ffff:0:0/96",    # IPv4-mapped (covers v4 blocks via mapping)
-        "fc00::/7",         # ULA
-        "fe80::/10",        # link-local
-        "ff00::/8",         # multicast
-        "100::/64",         # RFC 6666 discard prefix
+        "::1/128",  # loopback
+        "::/128",  # unspecified
+        "::ffff:0:0/96",  # IPv4-mapped (covers v4 blocks via mapping)
+        "fc00::/7",  # ULA
+        "fe80::/10",  # link-local
+        "ff00::/8",  # multicast
+        "100::/64",  # RFC 6666 discard prefix
     )
 )
 
@@ -501,9 +507,7 @@ class ProviderHTTPClient:
             params.update(extra_params)
         return params
 
-    def _maybe_modify_body(
-        self, body: Any, requester_id: Optional[str]
-    ) -> Any:
+    def _maybe_modify_body(self, body: Any, requester_id: Optional[str]) -> Any:
         if self.auth_strategy is None or body is None:
             return body
         return self.auth_strategy.body_modifier(requester_id, body)
@@ -534,9 +538,7 @@ class ProviderHTTPClient:
                 request_remaining = remaining_deadline_ms()
                 if request_remaining is not None:
                     if request_remaining <= 0:
-                        raise DeadlineExceededError(
-                            elapsed_ms=0, layer="provider_http"
-                        )
+                        raise DeadlineExceededError(elapsed_ms=0, layer="provider_http")
                     deadline_ms = request_remaining
             except ImportError:  # pragma: no cover - test isolation
                 pass
@@ -573,7 +575,9 @@ class ProviderHTTPClient:
         merged_headers = self._build_headers(headers, idempotency_key, requester_id)
         merged_params = self._build_params(params, requester_id)
         modified_json = self._maybe_modify_body(json, requester_id)
-        modified_data = self._maybe_modify_body(data, requester_id) if json is None else data
+        modified_data = (
+            self._maybe_modify_body(data, requester_id) if json is None else data
+        )
         self._acquire_rate_token(deadline_ms)
         client = get_async_client(self.policy)
         try:
@@ -684,7 +688,9 @@ class ProviderHTTPClientSync:
         merged_headers = self._build_headers(headers, idempotency_key, requester_id)
         merged_params = self._build_params(params, requester_id)
         modified_json = self._maybe_modify_body(json, requester_id)
-        modified_data = self._maybe_modify_body(data, requester_id) if json is None else data
+        modified_data = (
+            self._maybe_modify_body(data, requester_id) if json is None else data
+        )
         self._acquire_rate_token(deadline_ms)
         client = get_sync_client(self.policy)
         try:

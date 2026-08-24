@@ -1252,7 +1252,9 @@ def generate_permission_filter(
     """
     # Ensure PermissionType is imported and default is set
     # Local imports to break cycle
-    from zephyrex.database.StaticPermissions import PermissionType  # Local import if needed
+    from zephyrex.database.StaticPermissions import (
+        PermissionType,
+    )  # Local import if needed
     from zephyrex.logic.BLL_Auth import RoleModel, TeamModel, UserTeamModel
 
     if required_permission_level is None:
@@ -1692,7 +1694,13 @@ def user_can_edit(
 ):
     """Check if a user has edit permission for a record."""
     return user_has_permission(
-        user_id, record_cls, record_id, db, PermissionType.EDIT, declarative_base, db_manager
+        user_id,
+        record_cls,
+        record_id,
+        db,
+        PermissionType.EDIT,
+        declarative_base,
+        db_manager,
     )
 
 
@@ -1701,7 +1709,13 @@ def user_can_share(
 ):
     """Check if a user has share permission for a record."""
     return user_has_permission(
-        user_id, record_cls, record_id, db, PermissionType.SHARE, declarative_base, db_manager
+        user_id,
+        record_cls,
+        record_id,
+        db,
+        PermissionType.SHARE,
+        declarative_base,
+        db_manager,
     )
 
 

@@ -15,7 +15,6 @@ from zephyrex.logic.EventBus_SchemaCheck import (
     write_snapshot,
 )
 
-
 # ---------------------------------------------------------------------------
 # Test event classes (define inside module so the schema is reproducible)
 # ---------------------------------------------------------------------------
@@ -144,9 +143,7 @@ def test_write_and_read_snapshot_round_trip(tmp_path):
 
 
 def test_compatibility_finding_to_dict():
-    f = CompatibilityFinding(
-        event="mod._E", kind="field_removed", detail="x"
-    )
+    f = CompatibilityFinding(event="mod._E", kind="field_removed", detail="x")
     d = f.to_dict()
     assert d == {"event": "mod._E", "kind": "field_removed", "detail": "x"}
 

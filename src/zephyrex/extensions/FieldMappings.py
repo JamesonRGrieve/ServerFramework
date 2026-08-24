@@ -18,7 +18,6 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any, Callable, Dict, List, Optional, Sequence, Union
 
-
 # ---------------------------------------------------------------------------
 # Base contract
 # ---------------------------------------------------------------------------
@@ -275,7 +274,9 @@ class TimestampConvert(FieldMapping):
                 external[self.external] = None
                 return
             if isinstance(v, datetime):
-                external[self.external] = v.isoformat() if not self.format else v.strftime(self.format)
+                external[self.external] = (
+                    v.isoformat() if not self.format else v.strftime(self.format)
+                )
             else:
                 # Already a string; pass through.
                 external[self.external] = v

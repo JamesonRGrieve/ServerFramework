@@ -83,9 +83,7 @@ def register_email_provider_instances_hook():
                 continue
             settings = settings_cls.from_env(env_map)
         except Exception as exc:  # noqa: BLE001 — surfaced in startup banner
-            logger.debug(
-                f"Could not build Settings for {provider_cls.__name__}: {exc}"
-            )
+            logger.debug(f"Could not build Settings for {provider_cls.__name__}: {exc}")
             continue
 
         # Use SecretStr's get_secret_value when available; the legacy seed
@@ -96,7 +94,9 @@ def register_email_provider_instances_hook():
             if value is None:
                 continue
             secret = (
-                value.get_secret_value() if hasattr(value, "get_secret_value") else value
+                value.get_secret_value()
+                if hasattr(value, "get_secret_value")
+                else value
             )
             break
         if secret is None:

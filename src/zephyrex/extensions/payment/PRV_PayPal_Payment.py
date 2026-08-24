@@ -5,6 +5,7 @@ Provides payment processing, customer management, and webhook handling
 through PayPal's REST API. Fully static implementation compatible with
 the Provider Rotation System.
 """
+
 from __future__ import annotations
 
 from typing import Any, ClassVar, Dict, List, Optional
@@ -34,7 +35,6 @@ from zephyrex.lib.Logging import logger
 from zephyrex.lib.Pydantic import BaseModel  # type: ignore[no-redef]
 from zephyrex.logic.AbstractLogicManager import ModelMeta
 from zephyrex.logic.BLL_Providers import ProviderInstanceModel
-
 
 # ============================================================================
 # PayPal Customer External Model
@@ -264,7 +264,6 @@ class PaymentExtensionPayPalProvider(AbstractPaymentProvider):
         return ["payment", "subscription", "commerce"]
 
     @classmethod
-
     @classmethod
     def create_payment(
         cls,

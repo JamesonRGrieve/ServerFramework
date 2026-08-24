@@ -21,7 +21,6 @@ from zephyrex.logic.AbstractLogicManager import (
     non_critical_hook,
 )
 
-
 # ---------------------------------------------------------------------------
 # Item 21 -- topological sort + cycle detection
 # ---------------------------------------------------------------------------

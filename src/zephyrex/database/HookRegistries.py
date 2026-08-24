@@ -14,7 +14,6 @@ implementations at load time via ``register_acl_hooks`` /
 these names for backward compatibility.
 """
 
-
 # auth_invitations extension hooks — populated by `auth_invitations.on_load`
 # (Scope #4). Encapsulate every place core used to reach into
 # InvitationModel / InviteeModel / InvitationManager / InviteeManager.

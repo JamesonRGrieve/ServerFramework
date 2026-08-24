@@ -63,7 +63,9 @@ class TestCompose:
                 inverse_fn=lambda v: v.split(" ", 1),
             ),
         ]
-        ext = apply_to_external(mappings, {"first_name": "Ada", "last_name": "Lovelace"})
+        ext = apply_to_external(
+            mappings, {"first_name": "Ada", "last_name": "Lovelace"}
+        )
         assert ext == {"full_name": "Ada Lovelace"}
         back = apply_from_external(mappings, ext)
         assert back == {"first_name": "Ada", "last_name": "Lovelace"}
@@ -154,11 +156,17 @@ class TestCustom:
         mappings = [
             Custom(
                 fn_to=lambda d: {"x_doubled": d["x"] * 2} if "x" in d else {},
-                fn_from=lambda d: {"x": d["x_doubled"] // 2} if "x_doubled" in d else {},
+                fn_from=lambda d: (
+                    {"x": d["x_doubled"] // 2} if "x_doubled" in d else {}
+                ),
             ),
         ]
-        assert apply_to_external(mappings, {"x": 5}, pass_through_unmapped=False) == {"x_doubled": 10}
-        assert apply_from_external(mappings, {"x_doubled": 10}, pass_through_unmapped=False) == {"x": 5}
+        assert apply_to_external(mappings, {"x": 5}, pass_through_unmapped=False) == {
+            "x_doubled": 10
+        }
+        assert apply_from_external(
+            mappings, {"x_doubled": 10}, pass_through_unmapped=False
+        ) == {"x": 5}
 
 
 class TestPipelineComposition:

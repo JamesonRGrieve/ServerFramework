@@ -601,9 +601,7 @@ class TestSearchInputDeniesInjection:
             f"got {response.status_code}"
         )
 
-    def test_filter_value_with_quote_does_not_break_query(
-        self, server, fresh_user
-    ):
+    def test_filter_value_with_quote_does_not_break_query(self, server, fresh_user):
         """Filter value containing SQL syntax must be parameterized, not interpolated.
 
         If parameterization is broken, the request 500s; success is either
@@ -972,11 +970,13 @@ class TestAnalyzeModelDependencies:
         class ANetworkModel(PydanticBaseModel):
             id: str
 
-        result = _analyze_model_dependencies({
-            "AModel": AModel,
-            "AReferenceModel": AReferenceModel,
-            "ANetworkModel": ANetworkModel,
-        })
+        result = _analyze_model_dependencies(
+            {
+                "AModel": AModel,
+                "AReferenceModel": AReferenceModel,
+                "ANetworkModel": ANetworkModel,
+            }
+        )
         assert "AModel" in result
         assert "AReferenceModel" not in result
         assert "ANetworkModel" not in result
@@ -994,10 +994,12 @@ class TestAnalyzeModelDependencies:
                 class ID:
                     parent_id: str
 
-        result = _analyze_model_dependencies({
-            "ChildModel": ChildModel,
-            "ParentModel": ParentModel,
-        })
+        result = _analyze_model_dependencies(
+            {
+                "ChildModel": ChildModel,
+                "ParentModel": ParentModel,
+            }
+        )
         assert result.index("ParentModel") < result.index("ChildModel")
 
     def test_circular_deps_handled(self):
@@ -1017,10 +1019,12 @@ class TestAnalyzeModelDependencies:
                 class ID:
                     a_id: str
 
-        result = _analyze_model_dependencies({
-            "AModel": AModel,
-            "BModel": BModel,
-        })
+        result = _analyze_model_dependencies(
+            {
+                "AModel": AModel,
+                "BModel": BModel,
+            }
+        )
         assert len(result) == 2
 
 
@@ -1068,7 +1072,9 @@ class TestQueuePendingRelationship:
         from zephyrex.lib.Pydantic2SQLAlchemy import _queue_pending_relationship
 
         registry = MagicMock(spec=[])
-        _queue_pending_relationship(registry, "Source", "children", ["Child"], {"lazy": "select"})
+        _queue_pending_relationship(
+            registry, "Source", "children", ["Child"], {"lazy": "select"}
+        )
         pending = getattr(registry, "_pending_sqlalchemy_relationships")
         assert len(pending) == 1
         assert pending[0]["source_name"] == "Source"

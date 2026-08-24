@@ -91,9 +91,7 @@ class AbstractQueueProvider(AbstractStaticProvider):
 
     @classmethod
     @abstractmethod
-    async def status(
-        cls, provider_instance: Any, task_id: str
-    ) -> Dict[str, Any]:
+    async def status(cls, provider_instance: Any, task_id: str) -> Dict[str, Any]:
         """Return the current status of `task_id` — typically a dict
         with at least a `state` field (`"pending"`, `"running"`,
         `"succeeded"`, `"failed"`, or provider-specific). Implementations

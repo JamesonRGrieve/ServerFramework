@@ -80,6 +80,7 @@ def _peer_is_trusted_proxy(peer_host: Optional[str]) -> bool:
             return True
     return False
 
+
 try:
     from zephyrex.lib.Logging import logger
 except ImportError:  # pragma: no cover — fallback for very-early bootstrap
@@ -178,14 +179,13 @@ class SecurityHeadersMiddleware:
     def __init__(self, app: Any) -> None:
         self.app = app
         self._headers = self._resolve_headers()
-        self._strip_server = (
-            os.environ.get("SECURITY_STRIP_SERVER_HEADER", "1") != "0"
-        )
+        self._strip_server = os.environ.get("SECURITY_STRIP_SERVER_HEADER", "1") != "0"
 
     @staticmethod
     def _resolve_headers() -> Dict[str, str]:
         headers = dict(_DEFAULT_SECURITY_HEADERS)
         from zephyrex.lib.Environment import is_production as _is_prod
+
         if not _is_prod():
             headers.pop("Strict-Transport-Security", None)
         for name in list(headers.keys()):
@@ -212,13 +212,15 @@ class SecurityHeadersMiddleware:
                 raw = list(message.get("headers") or [])
                 existing_lower = {k.decode("latin-1").lower() for k, _ in raw}
                 if strip_server:
-                    raw = [(k, v) for k, v in raw if k.decode("latin-1").lower() != "server"]
+                    raw = [
+                        (k, v)
+                        for k, v in raw
+                        if k.decode("latin-1").lower() != "server"
+                    ]
                 for name, value in headers_to_add.items():
                     if name.lower() in existing_lower:
                         continue
-                    raw.append(
-                        (name.encode("latin-1"), value.encode("latin-1"))
-                    )
+                    raw.append((name.encode("latin-1"), value.encode("latin-1")))
                 message["headers"] = raw
             await send(message)
 
@@ -346,27 +348,36 @@ class ETagMiddleware:
                         etag = hashlib.sha256(full_body).hexdigest()[:16]
                         weak_etag = f'W/"{etag}"'
 
-                        if if_none_match and if_none_match in (etag, weak_etag, f'"{etag}"'):
-                            await send({
-                                "type": "http.response.start",
-                                "status": 304,
-                                "headers": [
-                                    (k, v) for k, v in headers
-                                    if k.decode("latin-1").lower() not in (
-                                        "content-length", "content-type"
-                                    )
-                                ] + [(b"etag", weak_etag.encode("latin-1"))],
-                            })
+                        if if_none_match and if_none_match in (
+                            etag,
+                            weak_etag,
+                            f'"{etag}"',
+                        ):
+                            await send(
+                                {
+                                    "type": "http.response.start",
+                                    "status": 304,
+                                    "headers": [
+                                        (k, v)
+                                        for k, v in headers
+                                        if k.decode("latin-1").lower()
+                                        not in ("content-length", "content-type")
+                                    ]
+                                    + [(b"etag", weak_etag.encode("latin-1"))],
+                                }
+                            )
                             await send({"type": "http.response.body", "body": b""})
                             return
 
                         headers.append((b"etag", weak_etag.encode("latin-1")))
 
-                    await send({
-                        "type": "http.response.start",
-                        "status": status,
-                        "headers": headers,
-                    })
+                    await send(
+                        {
+                            "type": "http.response.start",
+                            "status": status,
+                            "headers": headers,
+                        }
+                    )
                     await send({"type": "http.response.body", "body": full_body})
                 return
 
@@ -418,16 +429,18 @@ class RequestSmugglingMiddleware:
         await self.app(scope, receive, send)
 
 
-_STRIPPED_HEADERS: frozenset = frozenset({
-    b"x-original-url",
-    b"x-rewrite-url",
-    b"x-original-host",
-    b"x-forwarded-server",
-    b"x-forwarded-prefix",
-    b"x-http-method-override",
-    b"x-method-override",
-    b"x-http-method",
-})
+_STRIPPED_HEADERS: frozenset = frozenset(
+    {
+        b"x-original-url",
+        b"x-rewrite-url",
+        b"x-original-host",
+        b"x-forwarded-server",
+        b"x-forwarded-prefix",
+        b"x-http-method-override",
+        b"x-method-override",
+        b"x-http-method",
+    }
+)
 
 
 class ProxyHeaderSanitizationMiddleware:
@@ -446,7 +459,8 @@ class ProxyHeaderSanitizationMiddleware:
         if scope.get("type") == "http":
             raw_headers = scope.get("headers") or []
             cleaned = [
-                (name, val) for name, val in raw_headers
+                (name, val)
+                for name, val in raw_headers
                 if name.lower() not in _STRIPPED_HEADERS
             ]
             if len(cleaned) != len(raw_headers):
@@ -547,7 +561,9 @@ class JSONDepthMiddleware:
     @staticmethod
     async def _send_400(send) -> None:
         await _send_asgi_error(
-            send, 400, f"Request body exceeds maximum JSON nesting depth ({MAX_JSON_DEPTH})"
+            send,
+            400,
+            f"Request body exceeds maximum JSON nesting depth ({MAX_JSON_DEPTH})",
         )
 
 
@@ -590,7 +606,9 @@ def resolve_principal_from_api_key(api_key: Optional[str]) -> Optional[str]:
     return None
 
 
-def resolve_client_ip(request_or_headers, peer_host: Optional[str] | None = None) -> Optional[str]:
+def resolve_client_ip(
+    request_or_headers, peer_host: Optional[str] | None = None
+) -> Optional[str]:
     """Return the client IP, honouring `X-Forwarded-For` only when the
     immediate peer is a configured trusted proxy (H-7).
 
@@ -608,7 +626,9 @@ def resolve_client_ip(request_or_headers, peer_host: Optional[str] | None = None
         headers = request_or_headers.headers
         get_header = headers.get
     else:
-        get_header = lambda k, default=None: request_or_headers.get(k, default)  # noqa: E731
+        get_header = lambda k, default=None: request_or_headers.get(
+            k, default
+        )  # noqa: E731
 
     if _peer_is_trusted_proxy(peer_host):
         xff = get_header("X-Forwarded-For", "") or ""
@@ -1014,9 +1034,7 @@ class LockoutTracker:
                 return False
             return True
 
-    def remaining_lockout_seconds(
-        self, actor_key: str, flow: str
-    ) -> Optional[float]:
+    def remaining_lockout_seconds(self, actor_key: str, flow: str) -> Optional[float]:
         """Return seconds remaining on an active lockout, or None."""
         key = (actor_key, flow)
         now = time.monotonic()
@@ -1190,7 +1208,9 @@ class RateLimitMiddleware:
     def __init__(self, app: Any) -> None:
         self.app = app
 
-    async def __call__(self, scope_dict: Dict[str, Any], receive: Any, send: Any) -> None:
+    async def __call__(
+        self, scope_dict: Dict[str, Any], receive: Any, send: Any
+    ) -> None:
         if scope_dict.get("type") != "http":
             await self.app(scope_dict, receive, send)
             return
@@ -1248,9 +1268,7 @@ class RateLimitMiddleware:
             # than let header-crafting bypass the limit.
             from json import dumps as _json_dumps
 
-            body = _json_dumps(
-                {"detail": "Tenant scope unresolved"}
-            ).encode("utf-8")
+            body = _json_dumps({"detail": "Tenant scope unresolved"}).encode("utf-8")
             await send(
                 {
                     "type": "http.response.start",

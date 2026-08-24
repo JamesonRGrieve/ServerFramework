@@ -26,7 +26,6 @@ from zephyrex.extensions.privacy.BLL_PII import (
     redact_pii,
 )
 
-
 pytestmark = pytest.mark.unit
 
 

@@ -74,8 +74,8 @@ def Sensitive(  # noqa: N802 — naming mirrors typing.Annotated style
 def requires(*permissions: str):
     """Pydantic field metadata helper. Use as:
 
-        class Foo(BaseModel):
-            ssn: str = Field(..., json_schema_extra=requires("auth.user.read_ssn"))
+    class Foo(BaseModel):
+        ssn: str = Field(..., json_schema_extra=requires("auth.user.read_ssn"))
     """
     return {_REQUIRES_KEY: tuple(permissions)}
 
@@ -240,7 +240,9 @@ def _apply_to_value(
     if value is None:
         return value
     if isinstance(value, list):
-        return [_apply_to_value(item, model_cls, allowed, sentinel_mode) for item in value]
+        return [
+            _apply_to_value(item, model_cls, allowed, sentinel_mode) for item in value
+        ]
     if isinstance(value, dict):
         return _apply_to_dict(value, model_cls, allowed, sentinel_mode)
     if isinstance(value, BaseModel):

@@ -30,37 +30,28 @@ def _write_extension(
     ext_dir.mkdir(parents=True, exist_ok=True)
     deps_block = ""
     for dep in extension_dependencies or []:
-        deps_block += textwrap.dedent(
-            f"""
+        deps_block += textwrap.dedent(f"""
             [[extension_dependencies]]
             name = "{dep['name']}"
             optional = {str(dep.get('optional', False)).lower()}
-            """
-        )
+            """)
     (ext_dir / "manifest.toml").write_text(
-        textwrap.dedent(
-            f"""
+        textwrap.dedent(f"""
             name = "{name}"
             version = "{version}"
             entry_module = "EXT_{name.title()}"
             description = "fixture extension"
-            """
-        ).strip()
-        + "\n"
-        + deps_block,
+            """).strip() + "\n" + deps_block,
         encoding="utf-8",
     )
     # Minimal stub Python module so the extension dir is structurally valid.
     (ext_dir / f"EXT_{name.title()}.py").write_text(
-        textwrap.dedent(
-            f"""
+        textwrap.dedent(f"""
             # Test fixture extension {name}
             class EXT_{name.title()}:
                 name = "{name}"
                 version = "{version}"
-            """
-        ).strip()
-        + "\n",
+            """).strip() + "\n",
         encoding="utf-8",
     )
     return ext_dir
@@ -80,7 +71,9 @@ def isolated_extensions_root(tmp_path: Path):
 
 @pytest.fixture
 def empty_registry(isolated_extensions_root: Path) -> ExtensionRegistry:
-    return ExtensionRegistry(extensions_csv="", extensions_path=str(isolated_extensions_root))
+    return ExtensionRegistry(
+        extensions_csv="", extensions_path=str(isolated_extensions_root)
+    )
 
 
 def test_install_from_local_dir(
@@ -132,7 +125,9 @@ def test_install_overwrite_replaces(
     src.mkdir()
     _write_extension(src, "demo", version="2.0.0")
     (isolated_extensions_root / "demo").mkdir()
-    (isolated_extensions_root / "demo" / "stale.txt").write_text("old", encoding="utf-8")
+    (isolated_extensions_root / "demo" / "stale.txt").write_text(
+        "old", encoding="utf-8"
+    )
 
     result = install_from_manifest(
         src / "demo",
@@ -203,9 +198,7 @@ def test_install_from_file_url(
         tf.add(staging / "urlfetched", arcname="urlfetched")
 
     url = archive_path.resolve().as_uri()  # file:///...
-    result = install_from_manifest(
-        url, registry=empty_registry, run_migrations=False
-    )
+    result = install_from_manifest(url, registry=empty_registry, run_migrations=False)
     assert result.success, result.error_detail
     assert (isolated_extensions_root / "urlfetched" / "manifest.toml").exists()
 
@@ -220,9 +213,7 @@ def test_install_fails_without_manifest(
     src.mkdir()
     (src / "EXT_X.py").write_text("# stub\n", encoding="utf-8")
 
-    result = install_from_manifest(
-        src, registry=empty_registry, run_migrations=False
-    )
+    result = install_from_manifest(src, registry=empty_registry, run_migrations=False)
     assert not result.success
     assert "manifest.toml" in (result.error_detail or "")
 
@@ -316,6 +307,7 @@ def test_uninstall_via_directory_removal_drops_from_registry(
 
     # Operator removes the directory.
     import shutil
+
     shutil.rmtree(isolated_extensions_root / "removable")
 
     new_registry, diff = rebuild_registry(empty_registry, run_migrations=False)

@@ -732,9 +732,7 @@ class TestGraphQLDenyPaths:
     GQL_PATH = "/graphql"
 
     def _post(self, server, body, headers=None):
-        return server.post(
-            self.GQL_PATH, json={"query": body}, headers=headers or {}
-        )
+        return server.post(self.GQL_PATH, json={"query": body}, headers=headers or {})
 
     def test_unauthenticated_query_rejected(self, server):
         """A query without an Authorization header must not leak data.
@@ -749,9 +747,7 @@ class TestGraphQLDenyPaths:
             body = response.json()
             data = body.get("data") or {}
             # Any non-empty top-level value indicates a leak.
-            non_empty = [
-                k for k, v in data.items() if v not in (None, [], {}, "")
-            ]
+            non_empty = [k for k, v in data.items() if v not in (None, [], {}, "")]
             assert "errors" in body or not non_empty, (
                 f"Unauthenticated GraphQL query must not return data; "
                 f"got non-empty fields {non_empty}"
@@ -787,14 +783,12 @@ class TestGraphQLDenyPaths:
             errors = []
         if not errors:
             # Fall back to executing the query and asserting no schema data.
-            result = prod_schema.execute_sync(
-                "{ __schema { types { name } } }"
-            )
-            data = (result.data or {})
+            result = prod_schema.execute_sync("{ __schema { types { name } } }")
+            data = result.data or {}
             errors = result.errors or []
-            assert errors or "__schema" not in data, (
-                "GraphQL introspection must be disabled in production"
-            )
+            assert (
+                errors or "__schema" not in data
+            ), "GraphQL introspection must be disabled in production"
 
     def test_query_depth_limit_enforced(self, server, admin_a):
         """A maliciously-deep query must be rejected, not OOM the server.
@@ -824,7 +818,7 @@ class TestGraphQLDenyPaths:
         """A field named `password_hash` (or similar) must not be queryable."""
         response = self._post(
             server,
-            "{ user(id: \"%s\") { id passwordHash } }" % admin_a.id,
+            '{ user(id: "%s") { id passwordHash } }' % admin_a.id,
             headers={"Authorization": f"Bearer {admin_a.jwt}"},
         )
         # Either schema rejects the field outright (errors) or returns null.

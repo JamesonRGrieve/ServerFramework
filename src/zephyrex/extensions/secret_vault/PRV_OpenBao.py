@@ -28,6 +28,7 @@ from zephyrex.lib.Logging import logger
 def _env(key: str) -> str:
     return os.environ.get(key, "")
 
+
 try:
     import hvac
 
@@ -95,7 +96,13 @@ class OpenBaoProvider(AbstractSecretVaultProvider):
         "secret_metadata",
     }
     capabilities: ClassVar = frozenset(
-        {Capability.READ, Capability.WRITE, Capability.DELETE, Capability.LIST, Capability.METADATA}
+        {
+            Capability.READ,
+            Capability.WRITE,
+            Capability.DELETE,
+            Capability.LIST,
+            Capability.METADATA,
+        }
     )
 
     _env: ClassVar[Dict[str, Any]] = {
@@ -127,7 +134,9 @@ class OpenBaoProvider(AbstractSecretVaultProvider):
         token = _get_token()
         role_id = _env("OPENBAO_ROLE_ID")
         if not token and not role_id:
-            logger.error("No auth method configured (set OPENBAO_TOKEN or OPENBAO_ROLE_ID)")
+            logger.error(
+                "No auth method configured (set OPENBAO_TOKEN or OPENBAO_ROLE_ID)"
+            )
             return False
         return True
 
@@ -143,7 +152,9 @@ class OpenBaoProvider(AbstractSecretVaultProvider):
             health = client.sys.read_health_status(method="GET")
             if isinstance(health, dict):
                 if health.get("initialized") and not health.get("sealed"):
-                    return HealthReport(HealthStatus.OK, detail="vault unsealed and active")
+                    return HealthReport(
+                        HealthStatus.OK, detail="vault unsealed and active"
+                    )
                 return HealthReport(
                     HealthStatus.DEGRADED,
                     detail=f"initialized={health.get('initialized')} sealed={health.get('sealed')}",
@@ -237,9 +248,7 @@ class OpenBaoProvider(AbstractSecretVaultProvider):
         client = bonded.sdk["client"]
         mount = bonded.sdk["mount_point"]
         try:
-            response = client.secrets.kv.v2.list_secrets(
-                path=path, mount_point=mount
-            )
+            response = client.secrets.kv.v2.list_secrets(path=path, mount_point=mount)
             return response["data"]["keys"]
         except Exception:
             return []

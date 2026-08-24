@@ -48,7 +48,6 @@ from zephyrex.extensions.federation.BLL_Federation_GQL import (
     sdl_to_pydantic_models,
 )
 
-
 pytestmark = [pytest.mark.gql]
 
 
@@ -138,10 +137,7 @@ def test_build_query_document_supports_mutations():
 
 @pytest.mark.unit
 def test_schema_transformer_prefix_renames_types():
-    sdl = (
-        "type User { id: ID! }\n"
-        "type Query { user(id: ID!): User }\n"
-    )
+    sdl = "type User { id: ID! }\n" "type Query { user(id: ID!): User }\n"
     transformed = SchemaTransformer(prefix="Stripe_").transform(sdl)
     assert "type Stripe_User" in transformed
     # References to the renamed type are also rewritten.
@@ -154,9 +150,9 @@ def test_schema_transformer_prefix_renames_types():
 @pytest.mark.unit
 def test_schema_transformer_explicit_rename_takes_precedence():
     sdl = "type Customer { id: ID! }\ntype Query { customer(id: ID!): Customer }\n"
-    transformed = SchemaTransformer(
-        rename={"Customer": "Stripe_Customer"}
-    ).transform(sdl)
+    transformed = SchemaTransformer(rename={"Customer": "Stripe_Customer"}).transform(
+        sdl
+    )
     assert "type Stripe_Customer" in transformed
     assert "Stripe_Customer" in transformed
 
@@ -174,11 +170,7 @@ def test_schema_transformer_hides_fields():
 
 @pytest.mark.unit
 def test_schema_transformer_masks_arguments():
-    sdl = (
-        "type Query {\n"
-        "  user(id: ID!, secretToken: String): String\n"
-        "}\n"
-    )
+    sdl = "type Query {\n" "  user(id: ID!, secretToken: String): String\n" "}\n"
     transformed = SchemaTransformer(
         mask_arguments={"Query": {"user": {"secretToken"}}}
     ).transform(sdl)
@@ -263,8 +255,10 @@ def test_ingest_introspection_round_trips_via_client_schema():
     )
     query = GraphQLObjectType(
         "Query",
-        {"hello": GraphQLField(GraphQLString, resolve=lambda *a: "hi"),
-         "user": GraphQLField(user, resolve=lambda *a: {"id": "1", "name": "n"})},
+        {
+            "hello": GraphQLField(GraphQLString, resolve=lambda *a: "hi"),
+            "user": GraphQLField(user, resolve=lambda *a: {"id": "1", "name": "n"}),
+        },
     )
     schema = GraphQLSchema(query=query)
     response = execute_sync(schema, parse(INTROSPECTION_QUERY))
@@ -358,9 +352,7 @@ def test_registry_listener_fires_with_diff():
     reg.add_listener(lambda schema, diff: diffs.append(diff))
     reg.register(
         name="a",
-        ingested=ingest_apollo_sdl(
-            "type Foo { id: ID! }\ntype Query { foo: Foo }\n"
-        ),
+        ingested=ingest_apollo_sdl("type Foo { id: ID! }\ntype Query { foo: Foo }\n"),
         style="stitching",
     )
     reg.build()
@@ -573,7 +565,9 @@ def test_batched_resolver_contextvar_binding():
     resolver = BatchedFieldResolver()
     token = bind_batched_resolver(resolver)
     try:
-        from zephyrex.extensions.federation.BLL_Federation_GQL import get_batched_resolver
+        from zephyrex.extensions.federation.BLL_Federation_GQL import (
+            get_batched_resolver,
+        )
 
         assert get_batched_resolver() is resolver
     finally:
@@ -636,10 +630,7 @@ def test_sdl_to_pydantic_handles_enums():
 def test_sdl_to_pydantic_handles_lists():
     from typing import List, get_args, get_origin
 
-    sdl = (
-        "type User { id: ID! tags: [String!]! }\n"
-        "type Query { users: [User!]! }\n"
-    )
+    sdl = "type User { id: ID! tags: [String!]! }\n" "type Query { users: [User!]! }\n"
     result = sdl_to_pydantic_models(sdl)
     user = result.models["User"]
     tags_ann = user.model_fields["tags"].annotation

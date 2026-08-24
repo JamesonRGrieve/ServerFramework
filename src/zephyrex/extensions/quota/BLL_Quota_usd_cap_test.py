@@ -1,5 +1,6 @@
 """Item 84 — tests for the per-tenant USD-cap fields on ``Quota`` and
 the rotation-side pre-check / post-call true-up flow."""
+
 from __future__ import annotations
 
 from decimal import Decimal
@@ -43,9 +44,7 @@ def _make_rotation_manager_with_fake_instances(instances: List[Any]) -> Rotation
     rm.model_registry.DB.get_session.return_value.__enter__ = lambda self_: None
     rm.model_registry.DB.get_session.return_value.__exit__ = lambda *a: None
     _bll_mod.ProviderInstanceModel.DB = lambda base: _FakeDB()
-    rm._restore_db = lambda: setattr(
-        _bll_mod.ProviderInstanceModel, "DB", original_db
-    )
+    rm._restore_db = lambda: setattr(_bll_mod.ProviderInstanceModel, "DB", original_db)
     return rm
 
 

@@ -194,7 +194,9 @@ class MigrationManager:
         # appear in the input (or are referenced as dependencies of one).
         ext_dependencies: Dict[str, List[str]] = {n: [] for n in extensions}
         registry = self._model_registry
-        ext_registry = getattr(registry, "extension_registry", None) if registry else None
+        ext_registry = (
+            getattr(registry, "extension_registry", None) if registry else None
+        )
         if ext_registry is not None:
             from zephyrex.lib.Dependencies import EXT_Dependency
 
@@ -243,7 +245,11 @@ class MigrationManager:
         Returns True on success.
         """
         try:
-            from zephyrex.logic import BLL_Auth, BLL_Extensions, BLL_Providers  # noqa: F401
+            from zephyrex.logic import (
+                BLL_Auth,
+                BLL_Extensions,
+                BLL_Providers,
+            )  # noqa: F401
             from zephyrex.lib.Pydantic import ModelRegistry, Base
 
             ModelRegistry().commit(extensions=os.environ.get("APP_EXTENSIONS", ""))
@@ -301,9 +307,7 @@ class MigrationManager:
             return include
 
         include = owner is None
-        logger.debug(
-            f"Table {name}: owner={owner!r} -> include for core? {include}"
-        )
+        logger.debug(f"Table {name}: owner={owner!r} -> include for core? {include}")
         return include
 
     @staticmethod
@@ -525,9 +529,10 @@ class MigrationManager:
 
         # Back-compat: if a non-default extensions_dir_name was passed and
         # no override is active, fall back to the legacy in-src-dir form.
-        if instance_override is None and getattr(
-            self, "extensions_dir_name", "extensions"
-        ) != "extensions":
+        if (
+            instance_override is None
+            and getattr(self, "extensions_dir_name", "extensions") != "extensions"
+        ):
             extensions_dir = src_dir / self.extensions_dir_name
 
         for path in [str(root_dir), str(src_dir)]:
@@ -698,7 +703,6 @@ class MigrationManager:
             return False
         return True
 
-
     def _make_alembic_config(self, extension_name, versions_dir):
         """Build an Alembic Config in memory.
 
@@ -717,7 +721,11 @@ class MigrationManager:
         cfg.set_main_option("version_locations", str(versions_dir))
         cfg.set_main_option(
             "version_table",
-            "alembic_version" if not extension_name else f"alembic_version_{extension_name}",
+            (
+                "alembic_version"
+                if not extension_name
+                else f"alembic_version_{extension_name}"
+            ),
         )
         # %% escapes the % so ConfigParser doesn't try to interpolate %(rev)s
         # at read time — Alembic substitutes at template-render time instead.
@@ -817,7 +825,9 @@ class MigrationManager:
         from alembic.script import ScriptDirectory
 
         try:
-            return len(list(ScriptDirectory.from_config(cfg).get_revisions("base"))) == 0
+            return (
+                len(list(ScriptDirectory.from_config(cfg).get_revisions("base"))) == 0
+            )
         except Exception as e:
             logger.debug(f"_is_first_migration: defaulting to True due to {e}")
             return True
@@ -904,7 +914,9 @@ class MigrationManager:
         if command == "current":
             return self._dispatch_alembic(cfg, "current")
         if command == "revision":
-            return self._extension_revision(cfg, extension_name, message=None, auto=auto)
+            return self._extension_revision(
+                cfg, extension_name, message=None, auto=auto
+            )
 
         logger.error(f"Unsupported extension alembic command: {command}")
         return False
@@ -1059,7 +1071,9 @@ class MigrationManager:
                 except Exception as e:
                     logger.warning(f"Failed to delete database {db_path}: {e}")
             else:
-                logger.debug(f"Database file {db_path} does not exist, skipping deletion")
+                logger.debug(
+                    f"Database file {db_path} does not exist, skipping deletion"
+                )
         else:
             logger.debug("No db_info file_path set; skipping pre-regenerate DB delete")
 
@@ -1505,7 +1519,9 @@ class {class_name}(Base):
                                     if self._model_registry and hasattr(
                                         self._model_registry, "DB"
                                     ):
-                                        engine = self._model_registry.DB.manager._setup_engine
+                                        engine = (
+                                            self._model_registry.DB.manager._setup_engine
+                                        )
                                         if engine is not None:
                                             self._model_registry.DB.manager.Base.metadata.create_all(
                                                 bind=engine
@@ -1564,7 +1580,9 @@ class {class_name}(Base):
                                 if self._model_registry and hasattr(
                                     self._model_registry, "DB"
                                 ):
-                                    engine = self._model_registry.DB.manager._setup_engine
+                                    engine = (
+                                        self._model_registry.DB.manager._setup_engine
+                                    )
                                     if engine is not None:
                                         self._model_registry.DB.manager.Base.metadata.create_all(
                                             bind=engine
@@ -1640,6 +1658,7 @@ class {class_name}(Base):
         if not value or value.strip() == "":
             return default or []
         return [item.strip() for item in value.split(",") if item.strip()]
+
 
 def main():
     parser = argparse.ArgumentParser(description="Unified database migration tool")

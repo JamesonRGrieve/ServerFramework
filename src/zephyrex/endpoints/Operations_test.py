@@ -35,7 +35,6 @@ from zephyrex.endpoints.Operations import (
     signal_shutdown,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -247,9 +246,7 @@ def test_apply_dlq_filter_time_window():
     now = datetime.now(timezone.utc)
     old = _entry(id="old", moved_at=now - timedelta(hours=2))
     fresh = _entry(id="fresh", moved_at=now)
-    out = _apply_dlq_filter(
-        [old, fresh], DLQFilter(since=now - timedelta(minutes=30))
-    )
+    out = _apply_dlq_filter([old, fresh], DLQFilter(since=now - timedelta(minutes=30)))
     assert [e["id"] for e in out] == ["fresh"]
 
 
@@ -309,9 +306,7 @@ def test_dlq_replay_501_when_not_wired():
 @pytest.mark.unit
 def test_dlq_discard_invokes_handler():
     seen: List[str] = []
-    client = _build_client(
-        dlq_discard=lambda eid: (seen.append(eid) or True)
-    )
+    client = _build_client(dlq_discard=lambda eid: (seen.append(eid) or True))
     resp = client.post("/admin/dlq/xyz/discard")
     assert resp.status_code == 200
     assert resp.json() == {"status": "discarded", "id": "xyz"}
@@ -353,9 +348,7 @@ def test_list_failed_services_renders_identity_and_reason():
 @pytest.mark.unit
 def test_service_reset_calls_handler():
     seen: List[str] = []
-    client = _build_client(
-        service_reset=lambda name: (seen.append(name) or True)
-    )
+    client = _build_client(service_reset=lambda name: (seen.append(name) or True))
     resp = client.post("/admin/services/queue-drain/reset")
     assert resp.status_code == 200
     assert seen == ["queue-drain"]

@@ -814,9 +814,7 @@ class AbstractEmailProvider(AbstractStaticProvider):
             legacy_attachments = []
             for att in message.attachments:
                 safe_name = os.path.basename(att.filename).replace("..", "_")
-                tmp = tempfile.NamedTemporaryFile(
-                    delete=False, suffix="_" + safe_name
-                )
+                tmp = tempfile.NamedTemporaryFile(delete=False, suffix="_" + safe_name)
                 tmp.write(att.content)
                 tmp.close()
                 legacy_attachments.append(tmp.name)

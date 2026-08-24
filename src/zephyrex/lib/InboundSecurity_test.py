@@ -103,6 +103,7 @@ class TestRateLimitDecorator:
 
     def test_invalid_spec_rejected_at_decoration(self):
         with pytest.raises(ValueError):
+
             @rate_limit("bad", scope="ip")
             def handler():
                 pass
@@ -116,9 +117,7 @@ class TestLockoutPolicy:
         assert p.lockout_seconds == 1800
 
     def test_overrides(self):
-        p = LockoutPolicy(
-            failures_per_window=3, window_seconds=60, lockout_seconds=120
-        )
+        p = LockoutPolicy(failures_per_window=3, window_seconds=60, lockout_seconds=120)
         assert p.failures_per_window == 3
 
 
@@ -779,14 +778,16 @@ class TestVerbTampering:
 
     def test_trace_rejected(self, server, admin_a):
         response = server.request(
-            "TRACE", "/v1/team",
+            "TRACE",
+            "/v1/team",
             headers={"Authorization": f"Bearer {admin_a.jwt}"},
         )
         assert response.status_code == 405
 
     def test_propfind_rejected(self, server, admin_a):
         response = server.request(
-            "PROPFIND", "/v1/team",
+            "PROPFIND",
+            "/v1/team",
             headers={"Authorization": f"Bearer {admin_a.jwt}"},
         )
         assert response.status_code == 405
@@ -798,14 +799,16 @@ class TestMassAssignment:
     def test_create_with_extra_admin_field_ignored(self, server, admin_a):
         response = server.post(
             "/v1/team",
-            json={"team": {
-                "name": "mass-assign-test",
-                "description": "test",
-                "encryption_salt": "x",
-                "is_admin": True,
-                "role": "superadmin",
-                "id": "attacker-chosen-id",
-            }},
+            json={
+                "team": {
+                    "name": "mass-assign-test",
+                    "description": "test",
+                    "encryption_salt": "x",
+                    "is_admin": True,
+                    "role": "superadmin",
+                    "id": "attacker-chosen-id",
+                }
+            },
             headers={"Authorization": f"Bearer {admin_a.jwt}"},
         )
         if response.status_code == 201:
@@ -856,7 +859,9 @@ class TestCachePoisoning:
             headers={"Authorization": f"Bearer {admin_a.jwt}"},
         )
         vary = response.headers.get("vary", "")
-        assert "Authorization" in vary, f"Vary header must include Authorization, got: {vary}"
+        assert (
+            "Authorization" in vary
+        ), f"Vary header must include Authorization, got: {vary}"
 
 
 # ---------------------------------------------------------------------------
@@ -899,6 +904,7 @@ class TestErrorMessageLeakage:
 
     def test_403_does_not_echo_user_id(self, server, admin_a):
         import uuid
+
         fake_team_id = str(uuid.uuid4())
         response = server.get(
             f"/v1/team/{fake_team_id}",
@@ -907,9 +913,9 @@ class TestErrorMessageLeakage:
         if response.status_code in (403, 404):
             body = response.text
             assert admin_a.id not in body, "Error must not echo user ID"
-            assert fake_team_id not in body or response.status_code == 404, (
-                "Error should not confirm resource existence"
-            )
+            assert (
+                fake_team_id not in body or response.status_code == 404
+            ), "Error should not confirm resource existence"
 
 
 class TestGraphQLSecurity:
@@ -926,9 +932,9 @@ class TestGraphQLSecurity:
             body = response.json()
             if "errors" in body:
                 error_msgs = " ".join(str(e) for e in body["errors"])
-                assert "depth" in error_msgs.lower() or "too" in error_msgs.lower(), (
-                    "Deep query should be rejected by depth limiter"
-                )
+                assert (
+                    "depth" in error_msgs.lower() or "too" in error_msgs.lower()
+                ), "Deep query should be rejected by depth limiter"
 
 
 # ---------------------------------------------------------------------------
@@ -940,11 +946,15 @@ class TestRequestTimeoutClamp:
     """X-Request-Timeout-Ms clamped to 5 minutes."""
 
     def test_clamp_to_max(self):
-        from zephyrex.lib.RequestContext import set_request_deadline_ms, _MAX_REQUEST_TIMEOUT_MS
+        from zephyrex.lib.RequestContext import (
+            set_request_deadline_ms,
+            _MAX_REQUEST_TIMEOUT_MS,
+        )
         import time
 
         set_request_deadline_ms(999999999)
         from zephyrex.lib.RequestContext import _request_deadline
+
         deadline = _request_deadline.get()
         max_deadline = time.monotonic() + (_MAX_REQUEST_TIMEOUT_MS / 1000.0) + 1
         assert deadline <= max_deadline, "Deadline should be clamped to 5 minutes"
@@ -957,6 +967,7 @@ class TestRequestTimeoutClamp:
         before = time.monotonic()
         set_request_deadline_ms(1000)
         from zephyrex.lib.RequestContext import _request_deadline
+
         deadline = _request_deadline.get()
         assert deadline <= before + 2, "1000ms deadline should be ~1s from now"
         set_request_deadline_ms(None)
@@ -970,9 +981,15 @@ class TestPaginationCursorSigning:
         from zephyrex.extensions.Paginators import decode_token
         from zephyrex.extensions.ExternalErrors import InvalidPaginationError
 
-        forged = base64.urlsafe_b64encode(
-            json.dumps({"provider_cursor": "evil", "page_size": 10, "query_hash": "x"}).encode()
-        ).decode().rstrip("=")
+        forged = (
+            base64.urlsafe_b64encode(
+                json.dumps(
+                    {"provider_cursor": "evil", "page_size": 10, "query_hash": "x"}
+                ).encode()
+            )
+            .decode()
+            .rstrip("=")
+        )
         forged += ".0000000000000000"
         with pytest.raises(InvalidPaginationError, match="signature"):
             decode_token(forged)
@@ -995,9 +1012,12 @@ class TestDummyBcryptTiming:
         t0 = time.monotonic()
         response = server.post(
             "/v1/user/authorize",
-            headers={"Authorization": "Basic " + __import__("base64").b64encode(
-                b"definitely-not-a-real-user-xyz@example.com:wrongpass"
-            ).decode()},
+            headers={
+                "Authorization": "Basic "
+                + __import__("base64")
+                .b64encode(b"definitely-not-a-real-user-xyz@example.com:wrongpass")
+                .decode()
+            },
         )
         elapsed = time.monotonic() - t0
         assert response.status_code == 401
@@ -1016,9 +1036,10 @@ class TestEmailUpdateValidation:
             json={"user": {"email": "not-an-email"}},
             headers={"Authorization": f"Bearer {admin_a.jwt}"},
         )
-        assert response.status_code in (400, 422), (
-            f"Invalid email on update should be rejected, got {response.status_code}"
-        )
+        assert response.status_code in (
+            400,
+            422,
+        ), f"Invalid email on update should be rejected, got {response.status_code}"
 
 
 class TestExecuteFileTimeout:
@@ -1036,20 +1057,24 @@ class TestExecuteFileTimeout:
 class TestOAuthProviderTimeout:
     """Legacy OAuth providers have request timeout."""
 
-    @pytest.mark.parametrize("provider_file", [
-        "src/zephyrex/extensions/auth_oauth/Amazon.py",
-        "src/zephyrex/extensions/auth_oauth/Google.py",
-        "src/zephyrex/extensions/auth_oauth/Microsoft.py",
-    ])
+    @pytest.mark.parametrize(
+        "provider_file",
+        [
+            "src/zephyrex/extensions/auth_oauth/Amazon.py",
+            "src/zephyrex/extensions/auth_oauth/Google.py",
+            "src/zephyrex/extensions/auth_oauth/Microsoft.py",
+        ],
+    )
     def test_requests_calls_have_timeout(self, provider_file):
         with open(provider_file) as f:
             source = f.read()
         import re
+
         calls = re.findall(r"requests\.(get|post)\(.*?\)", source, re.DOTALL)
         for call in calls:
-            assert "timeout" in source, (
-                f"{provider_file} has requests calls without timeout"
-            )
+            assert (
+                "timeout" in source
+            ), f"{provider_file} has requests calls without timeout"
 
 
 class TestTokenNotLogged:
@@ -1070,15 +1095,15 @@ class TestAttachmentFilenameSanitization:
         from zephyrex.extensions.email.EXT_EMail import AbstractEmailProvider
 
         source = inspect.getsource(AbstractEmailProvider)
-        assert "os.path.basename" in source, (
-            "Attachment filename should use os.path.basename"
-        )
+        assert (
+            "os.path.basename" in source
+        ), "Attachment filename should use os.path.basename"
 
     def test_temp_files_cleaned_up(self):
         import inspect
         from zephyrex.extensions.email.EXT_EMail import AbstractEmailProvider
 
         source = inspect.getsource(AbstractEmailProvider)
-        assert "os.unlink" in source or "finally" in source, (
-            "Temp attachment files should be cleaned up"
-        )
+        assert (
+            "os.unlink" in source or "finally" in source
+        ), "Temp attachment files should be cleaned up"

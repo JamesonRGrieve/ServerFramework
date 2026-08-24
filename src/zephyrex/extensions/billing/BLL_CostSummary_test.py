@@ -12,7 +12,6 @@ from zephyrex.extensions.billing.BLL_CostSummary import (
     CostSummaryModel,
 )
 
-
 # ---------- CostSummaryModel ----------------------------------------------
 
 
@@ -147,7 +146,9 @@ def test_aggregator_separate_keys_are_independent():
     agg = CostRollupAggregator()
     agg.add(tenant_id="t1", provider="openai", ability="complete", cost=Decimal("0.10"))
     agg.add(tenant_id="t2", provider="openai", ability="complete", cost=Decimal("0.20"))
-    agg.add(tenant_id="t1", provider="anthropic", ability="complete", cost=Decimal("0.30"))
+    agg.add(
+        tenant_id="t1", provider="anthropic", ability="complete", cost=Decimal("0.30")
+    )
     agg.add(tenant_id="t1", provider="openai", ability="embed", cost=Decimal("0.40"))
     rows = agg.into_summaries(period="day", period_key="2026-04-30")
     assert len(rows) == 4

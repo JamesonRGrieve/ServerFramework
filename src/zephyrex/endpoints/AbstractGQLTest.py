@@ -1123,24 +1123,20 @@ class AbstractGraphQLTest:
         for nav_key, nav_prop in nav_props.items():
             if nav_key.startswith("parent_"):
                 # Add parent navigation (single object)
-                nav_fields.append(
-                    f"""
+                nav_fields.append(f"""
                 {nav_prop} {{
                     id
                     {"name" if nav_prop != "team" else "name"}
                     createdAt
-                }}"""
-                )
+                }}""")
             elif nav_key.startswith("children") or nav_key == "children":
                 # Add children navigation (list)
-                nav_fields.append(
-                    f"""
+                nav_fields.append(f"""
                 {nav_prop} {{
                     id
                     {"name" if self.string_field_to_update else "id"}
                     createdAt
-                }}"""
-                )
+                }}""")
 
         return nav_fields
 
@@ -1341,14 +1337,12 @@ class AbstractGraphQLTest:
 
             for nav_key, nav_prop in nav_props.items():
                 if nav_key.startswith("parent_"):
-                    nav_fields.append(
-                        f"""
+                    nav_fields.append(f"""
                     {nav_prop} {{
                         id
                         {"name" if nav_prop != "team" else "name"}
                         createdAt
-                    }}"""
-                    )
+                    }}""")
 
             fields_str = "\n                ".join(nav_fields)
 
@@ -1668,16 +1662,12 @@ class AbstractGraphQLTest:
 
             # Add navigation fields in response
             if self._has_self_referential_properties():
-                response_fields.extend(
-                    [
-                        """
+                response_fields.extend(["""
                     children {
                         id
                         name
                         createdAt
-                    }"""
-                    ]
-                )
+                    }"""])
 
             mutation = f"""
             mutation {{
@@ -2014,9 +2004,11 @@ class AbstractGraphQLTest:
         singular = self._gql_singular_name
         query = f'{{ {singular}(id: "00000000-0000-0000-0000-000000000000") {{ id }} }}'
         response = server.post("/graphql", json={"query": query})
-        assert response.status_code in (200, 401, 403), (
-            f"Unauthenticated GQL query got {response.status_code}"
-        )
+        assert response.status_code in (
+            200,
+            401,
+            403,
+        ), f"Unauthenticated GQL query got {response.status_code}"
         if response.status_code == 200:
             data = response.json()
             if "errors" not in data:
@@ -2042,7 +2034,7 @@ class AbstractGraphQLTest:
         nested = "{ id }"
         for _ in range(20):
             nested = f"{{ {singular} {nested} }}"
-        query = f"{{ {singular}(id: \"00000000-0000-0000-0000-000000000000\") {nested} }}"
+        query = f'{{ {singular}(id: "00000000-0000-0000-0000-000000000000") {nested} }}'
 
         headers = self._get_appropriate_headers(
             admin_a.jwt, api_key=env("ROOT_API_KEY") if self.system_entity else None
@@ -2070,15 +2062,19 @@ class AbstractGraphQLTest:
                 ]
                 for name in type_names:
                     low = name.lower()
-                    assert "password" not in low and "secret" not in low and "hash" not in low, (
-                        f"Introspection leaks sensitive type name: {name}"
-                    )
+                    assert (
+                        "password" not in low
+                        and "secret" not in low
+                        and "hash" not in low
+                    ), f"Introspection leaks sensitive type name: {name}"
 
     @pytest.mark.security
     def test_GQL_security_batch_query_limit(self, server: Any, admin_a: Any):
         """Batch of many queries in one request must not cause DoS or 500."""
         singular = self._gql_singular_name
-        single_query = f'{{ {singular}(id: "00000000-0000-0000-0000-000000000000") {{ id }} }}'
+        single_query = (
+            f'{{ {singular}(id: "00000000-0000-0000-0000-000000000000") {{ id }} }}'
+        )
         batch = [{"query": single_query} for _ in range(50)]
         headers = self._get_appropriate_headers(
             admin_a.jwt, api_key=env("ROOT_API_KEY") if self.system_entity else None
@@ -2117,9 +2113,9 @@ class AbstractGraphQLTest:
             admin_a.jwt, api_key=env("ROOT_API_KEY") if self.system_entity else None
         )
         response = server.post("/graphql", json={"query": query}, headers=headers)
-        assert response.status_code != 500, (
-            f"SQLi in GQL argument caused 500: {sqli_payload}"
-        )
+        assert (
+            response.status_code != 500
+        ), f"SQLi in GQL argument caused 500: {sqli_payload}"
 
     @pytest.mark.security
     def test_GQL_security_directive_injection(self, server: Any, admin_a: Any):
@@ -2137,7 +2133,7 @@ class AbstractGraphQLTest:
         """Circular fragment references must not cause infinite loop."""
         singular = self._gql_singular_name
         query = (
-            f"{{ {singular}(id: \"00000000-0000-0000-0000-000000000000\") {{ ...A }} }} "
+            f'{{ {singular}(id: "00000000-0000-0000-0000-000000000000") {{ ...A }} }} '
             f"fragment A on {stringcase.pascalcase(singular)} {{ ...B id }} "
             f"fragment B on {stringcase.pascalcase(singular)} {{ ...A id }}"
         )
@@ -2157,18 +2153,16 @@ class AbstractGraphQLTest:
         response = server.post("/graphql", json={"query": query}, headers=headers)
         body = response.text.lower()
         for marker in ("traceback", 'file "', "raise "):
-            assert marker not in body, (
-                f"GQL error leaks stack trace (found '{marker}')"
-            )
+            assert marker not in body, f"GQL error leaks stack trace (found '{marker}')"
 
     @pytest.mark.security
     def test_GQL_security_mutation_with_extra_fields(self, server: Any, admin_a: Any):
         """GQL mutation with unknown/forbidden fields must not cause 500."""
         singular = self._gql_singular_name
         mutation_name = f"create{stringcase.pascalcase(singular)}"
-        mutation = f'''mutation {{ {mutation_name}(input: {{
+        mutation = f"""mutation {{ {mutation_name}(input: {{
             name: "test", __proto__: "polluted", password_hash: "hacked"
-        }}) {{ id }} }}'''
+        }}) {{ id }} }}"""
         headers = self._get_appropriate_headers(
             admin_a.jwt, api_key=env("ROOT_API_KEY") if self.system_entity else None
         )
@@ -2176,12 +2170,10 @@ class AbstractGraphQLTest:
         assert response.status_code != 500, "GQL mutation with extra fields caused 500"
 
     @pytest.mark.security
-    def test_GQL_security_query_with_sqli_in_variable(
-        self, server: Any, admin_a: Any
-    ):
+    def test_GQL_security_query_with_sqli_in_variable(self, server: Any, admin_a: Any):
         """SQL injection in GQL variables must not execute."""
         singular = self._gql_singular_name
-        query = f'query($id: String!) {{ {singular}(id: $id) {{ id }} }}'
+        query = f"query($id: String!) {{ {singular}(id: $id) {{ id }} }}"
         headers = self._get_appropriate_headers(
             admin_a.jwt, api_key=env("ROOT_API_KEY") if self.system_entity else None
         )
@@ -2212,9 +2204,9 @@ class AbstractGraphQLTest:
         """XSS payloads in GQL mutation input must not render or cause 500."""
         singular = self._gql_singular_name
         mutation_name = f"create{stringcase.pascalcase(singular)}"
-        mutation = f'''mutation {{ {mutation_name}(input: {{
+        mutation = f"""mutation {{ {mutation_name}(input: {{
             name: "<script>alert(1)</script>"
-        }}) {{ id name }} }}'''
+        }}) {{ id name }} }}"""
         headers = self._get_appropriate_headers(
             admin_a.jwt, api_key=env("ROOT_API_KEY") if self.system_entity else None
         )
@@ -2231,7 +2223,7 @@ class AbstractGraphQLTest:
     def test_GQL_security_null_variable(self, server: Any, admin_a: Any):
         """Null values in GQL variables must not cause 500."""
         singular = self._gql_singular_name
-        query = f'query($id: String) {{ {singular}(id: $id) {{ id }} }}'
+        query = f"query($id: String) {{ {singular}(id: $id) {{ id }} }}"
         headers = self._get_appropriate_headers(
             admin_a.jwt, api_key=env("ROOT_API_KEY") if self.system_entity else None
         )
@@ -2262,14 +2254,13 @@ class AbstractGraphQLTest:
             content="not valid json {{{",
             headers={**headers, "Content-Type": "application/json"},
         )
-        assert response.status_code in (400, 422), (
-            f"Malformed JSON to /graphql got {response.status_code}"
-        )
+        assert response.status_code in (
+            400,
+            422,
+        ), f"Malformed JSON to /graphql got {response.status_code}"
 
     @pytest.mark.security
-    def test_GQL_security_response_does_not_leak_sql(
-        self, server: Any, admin_a: Any
-    ):
+    def test_GQL_security_response_does_not_leak_sql(self, server: Any, admin_a: Any):
         """GQL error responses must not contain SQL fragments."""
         singular = self._gql_singular_name
         query = f'{{ {singular}(id: "invalid\'; DROP TABLE--") {{ id }} }}'
@@ -2279,9 +2270,9 @@ class AbstractGraphQLTest:
         response = server.post("/graphql", json={"query": query}, headers=headers)
         body = response.text.lower()
         for marker in ("select ", "insert ", "from ", "where ", "drop "):
-            assert marker not in body or "graphql" in body, (
-                f"GQL error may leak SQL (found '{marker.strip()}')"
-            )
+            assert (
+                marker not in body or "graphql" in body
+            ), f"GQL error may leak SQL (found '{marker.strip()}')"
 
     # ------------------------------------------------------------------ #
     # GraphQL Security — Gap fills (corpus §12, §14, §15)
@@ -2292,18 +2283,18 @@ class AbstractGraphQLTest:
         """Mutations over GET must be rejected (prevents CSRF via img/link tags)."""
         singular = self._gql_singular_name
         mutation_name = f"create{stringcase.pascalcase(singular)}"
-        mutation = f'mutation {{ {mutation_name}(input: {{name: "via-get"}}) {{ id }} }}'
+        mutation = (
+            f'mutation {{ {mutation_name}(input: {{name: "via-get"}}) {{ id }} }}'
+        )
         headers = self._get_appropriate_headers(
             admin_a.jwt, api_key=env("ROOT_API_KEY") if self.system_entity else None
         )
-        response = server.get(
-            f"/graphql?query={mutation}", headers=headers
-        )
+        response = server.get(f"/graphql?query={mutation}", headers=headers)
         if response.status_code == 200:
             data = response.json()
-            assert "errors" in data or data.get("data", {}).get(mutation_name) is None, (
-                "Mutation executed over GET — CSRF risk"
-            )
+            assert (
+                "errors" in data or data.get("data", {}).get(mutation_name) is None
+            ), "Mutation executed over GET — CSRF risk"
 
     @pytest.mark.security
     def test_GQL_security_multiple_operations_without_name(
@@ -2319,14 +2310,12 @@ class AbstractGraphQLTest:
             admin_a.jwt, api_key=env("ROOT_API_KEY") if self.system_entity else None
         )
         response = server.post("/graphql", json={"query": query}, headers=headers)
-        assert response.status_code != 500, (
-            "Multiple GQL operations without operationName caused 500"
-        )
+        assert (
+            response.status_code != 500
+        ), "Multiple GQL operations without operationName caused 500"
 
     @pytest.mark.security
-    def test_GQL_security_duplicate_operation_names(
-        self, server: Any, admin_a: Any
-    ):
+    def test_GQL_security_duplicate_operation_names(self, server: Any, admin_a: Any):
         """Duplicate operation names must not cause 500."""
         singular = self._gql_singular_name
         query = (
@@ -2366,9 +2355,11 @@ class AbstractGraphQLTest:
                 for field in type_data["fields"]:
                     if field.get("isDeprecated"):
                         name = field.get("name", "").lower()
-                        assert "password" not in name and "secret" not in name and "hash" not in name, (
-                            f"Deprecated field exposes sensitive name: {field['name']}"
-                        )
+                        assert (
+                            "password" not in name
+                            and "secret" not in name
+                            and "hash" not in name
+                        ), f"Deprecated field exposes sensitive name: {field['name']}"
 
     @pytest.mark.security
     def test_GQL_security_graphiql_not_exposed(self, server: Any):
@@ -2377,9 +2368,9 @@ class AbstractGraphQLTest:
             response = server.get(path)
             if response.status_code == 200:
                 ct = response.headers.get("Content-Type", "")
-                assert "html" not in ct, (
-                    f"GraphiQL exposed at {path} (Content-Type: {ct})"
-                )
+                assert (
+                    "html" not in ct
+                ), f"GraphiQL exposed at {path} (Content-Type: {ct})"
 
     # ------------------------------------------------------------------ #
     # GraphQL Security — Gap fills batch 2 (corpus §26 advanced)
@@ -2402,8 +2393,10 @@ class AbstractGraphQLTest:
         """Deeply nested input objects must not cause stack overflow."""
         singular = self._gql_singular_name
         mutation_name = f"create{stringcase.pascalcase(singular)}"
-        nested_input = '{{name: "test"' + ', nested: ' * 20 + '{{name: "deep"}}' + '}' * 20
-        mutation = f'mutation {{ {mutation_name}(input: {nested_input}) {{ id }} }}'
+        nested_input = (
+            '{{name: "test"' + ", nested: " * 20 + '{{name: "deep"}}' + "}" * 20
+        )
+        mutation = f"mutation {{ {mutation_name}(input: {nested_input}) {{ id }} }}"
         headers = self._get_appropriate_headers(
             admin_a.jwt, api_key=env("ROOT_API_KEY") if self.system_entity else None
         )
@@ -2442,7 +2435,7 @@ class AbstractGraphQLTest:
         self, server: Any, admin_a: Any
     ):
         """Introspection results must not leak across authorization contexts."""
-        query = '{ __schema { queryType { name } } }'
+        query = "{ __schema { queryType { name } } }"
         headers = self._get_appropriate_headers(
             admin_a.jwt, api_key=env("ROOT_API_KEY") if self.system_entity else None
         )

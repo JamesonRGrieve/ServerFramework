@@ -59,8 +59,10 @@ class RegistryDiff:
             parts.append(f"removed={self.removed}")
         if self.changed_version:
             parts.append(
-                "changed_version=" +
-                ", ".join(f"{n}({old}->{new})" for n, old, new in self.changed_version)
+                "changed_version="
+                + ", ".join(
+                    f"{n}({old}->{new})" for n, old, new in self.changed_version
+                )
             )
         if not parts:
             return "no changes"
@@ -81,7 +83,11 @@ def discover_on_disk_versions(
     if not root.exists():
         return out
     for child in sorted(root.iterdir()):
-        if not child.is_dir() or child.name.startswith("__") or child.name.startswith("."):
+        if (
+            not child.is_dir()
+            or child.name.startswith("__")
+            or child.name.startswith(".")
+        ):
             continue
         # Only treat directories that LOOK like extensions: either contain
         # an EXT_*.py or a manifest.toml. This avoids picking up unrelated
@@ -201,6 +207,4 @@ def _run_migrations_for(diff: RegistryDiff) -> None:
         try:
             mgr.run_extension_migration(name, "upgrade", target="head")
         except Exception as e:
-            logger.warning(
-                f"Migration upgrade for {name} failed: {e}", exc_info=True
-            )
+            logger.warning(f"Migration upgrade for {name} failed: {e}", exc_info=True)

@@ -38,7 +38,6 @@ from zephyrex.extensions.ExternalErrors import (
 )
 from zephyrex.extensions.FieldMappings import CentsToDecimal, EnumRemap, Rename
 
-
 # ---------------------------------------------------------------------------
 # Minimal concrete model (must implement abstract *_via_provider methods)
 # ---------------------------------------------------------------------------
@@ -270,6 +269,7 @@ class TestBatchedNavigationResolver:
         token = bind_resolver(resolver)
         try:
             from zephyrex.extensions.AbstractExternalModel import get_resolver
+
             assert get_resolver() is resolver
         finally:
             reset_resolver(token)
@@ -328,19 +328,24 @@ class TestUnwrapProviderCall:
             raises_typed_errors: ClassVar[bool] = True
 
             @staticmethod
-            def create_via_provider(p, **kw): return None
+            def create_via_provider(p, **kw):
+                return None
 
             @staticmethod
-            def get_via_provider(p, eid): return None
+            def get_via_provider(p, eid):
+                return None
 
             @staticmethod
-            def list_via_provider(p, **kw): return []
+            def list_via_provider(p, **kw):
+                return []
 
             @staticmethod
-            def update_via_provider(p, eid, **kw): return None
+            def update_via_provider(p, eid, **kw):
+                return None
 
             @staticmethod
-            def delete_via_provider(p, eid): return None
+            def delete_via_provider(p, eid):
+                return None
 
         def fake_provider(provider_instance, **kwargs):
             raise RuntimeError("kaboom")
@@ -376,19 +381,24 @@ class TestBatchOperations:
     def test_supports_bulk_returns_true_when_overridden(self):
         class _BulkModel(AbstractExternalModel):
             @staticmethod
-            def create_via_provider(p, **kw): return {}
+            def create_via_provider(p, **kw):
+                return {}
 
             @staticmethod
-            def get_via_provider(p, eid): return {}
+            def get_via_provider(p, eid):
+                return {}
 
             @staticmethod
-            def list_via_provider(p, **kw): return []
+            def list_via_provider(p, **kw):
+                return []
 
             @staticmethod
-            def update_via_provider(p, eid, **kw): return {}
+            def update_via_provider(p, eid, **kw):
+                return {}
 
             @staticmethod
-            def delete_via_provider(p, eid): return None
+            def delete_via_provider(p, eid):
+                return None
 
             @staticmethod
             def batch_create_via_provider(p, items):
@@ -400,19 +410,24 @@ class TestBatchOperations:
     def test_batch_create_uses_bulk_slot_when_available(self):
         class _BulkModel(AbstractExternalModel):
             @staticmethod
-            def create_via_provider(p, **kw): return {"success": True, "data": kw}
+            def create_via_provider(p, **kw):
+                return {"success": True, "data": kw}
 
             @staticmethod
-            def get_via_provider(p, eid): return {"success": True, "data": {}}
+            def get_via_provider(p, eid):
+                return {"success": True, "data": {}}
 
             @staticmethod
-            def list_via_provider(p, **kw): return {"success": True, "data": []}
+            def list_via_provider(p, **kw):
+                return {"success": True, "data": []}
 
             @staticmethod
-            def update_via_provider(p, eid, **kw): return {"success": True, "data": {}}
+            def update_via_provider(p, eid, **kw):
+                return {"success": True, "data": {}}
 
             @staticmethod
-            def delete_via_provider(p, eid): return {"success": True, "data": None}
+            def delete_via_provider(p, eid):
+                return {"success": True, "data": None}
 
             @staticmethod
             def batch_create_via_provider(p, items):
@@ -435,19 +450,24 @@ class TestBatchOperations:
     def test_batch_create_per_item_failure_in_bulk_mode(self):
         class _BulkModel(AbstractExternalModel):
             @staticmethod
-            def create_via_provider(p, **kw): return {"success": True, "data": kw}
+            def create_via_provider(p, **kw):
+                return {"success": True, "data": kw}
 
             @staticmethod
-            def get_via_provider(p, eid): return {"success": True, "data": {}}
+            def get_via_provider(p, eid):
+                return {"success": True, "data": {}}
 
             @staticmethod
-            def list_via_provider(p, **kw): return {"success": True, "data": []}
+            def list_via_provider(p, **kw):
+                return {"success": True, "data": []}
 
             @staticmethod
-            def update_via_provider(p, eid, **kw): return {"success": True, "data": {}}
+            def update_via_provider(p, eid, **kw):
+                return {"success": True, "data": {}}
 
             @staticmethod
-            def delete_via_provider(p, eid): return {"success": True, "data": None}
+            def delete_via_provider(p, eid):
+                return {"success": True, "data": None}
 
             @staticmethod
             def batch_create_via_provider(p, items):
@@ -475,19 +495,24 @@ class TestBatchOperations:
     def test_batch_create_whole_batch_failure_in_bulk_mode(self):
         class _BulkModel(AbstractExternalModel):
             @staticmethod
-            def create_via_provider(p, **kw): return {"success": True, "data": kw}
+            def create_via_provider(p, **kw):
+                return {"success": True, "data": kw}
 
             @staticmethod
-            def get_via_provider(p, eid): return {"success": True, "data": {}}
+            def get_via_provider(p, eid):
+                return {"success": True, "data": {}}
 
             @staticmethod
-            def list_via_provider(p, **kw): return {"success": True, "data": []}
+            def list_via_provider(p, **kw):
+                return {"success": True, "data": []}
 
             @staticmethod
-            def update_via_provider(p, eid, **kw): return {"success": True, "data": {}}
+            def update_via_provider(p, eid, **kw):
+                return {"success": True, "data": {}}
 
             @staticmethod
-            def delete_via_provider(p, eid): return {"success": True, "data": None}
+            def delete_via_provider(p, eid):
+                return {"success": True, "data": None}
 
             @staticmethod
             def batch_create_via_provider(p, items):
@@ -572,7 +597,10 @@ class TestInitSubclassWarning:
                     return None
 
             suspect_warns = [
-                w for w in caught if "raises_typed_errors" not in str(w.message) and issubclass(w.category, UserWarning)
+                w
+                for w in caught
+                if "raises_typed_errors" not in str(w.message)
+                and issubclass(w.category, UserWarning)
             ]
             # At least one warning should have fired about `dict` return.
             assert any("dict" in str(w.message) for w in suspect_warns)

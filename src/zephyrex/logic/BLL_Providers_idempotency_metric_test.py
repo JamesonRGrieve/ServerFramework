@@ -1,4 +1,5 @@
 """Item 34 — tests for the idempotency-cache hit/miss counter."""
+
 from __future__ import annotations
 
 import pytest
@@ -79,6 +80,7 @@ def test_distinct_keys_each_register_a_miss():
 @pytest.mark.unit
 def test_safe_metric_swallows_telemetry_exceptions():
     """`_safe_metric` shields callers from telemetry-side raises."""
+
     def boom(*_a, **_k):
         raise RuntimeError("telemetry imploded")
 

@@ -61,9 +61,7 @@ class PRV_Fake_Database(AbstractDatabaseExtensionProvider):
 
     @classmethod
     async def get_schema(cls, **kwargs) -> str:
-        return (
-            "CREATE TABLE fake_table (id INTEGER PRIMARY KEY, value TEXT);"
-        )
+        return "CREATE TABLE fake_table (id INTEGER PRIMARY KEY, value TEXT);"
 
     @classmethod
     async def chat_with_db(cls, request: str, **kwargs) -> str:

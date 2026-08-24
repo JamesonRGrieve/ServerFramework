@@ -72,6 +72,7 @@ def test_custom_route_attaches_spec():
 
 def test_missing_output_model_raises():
     with pytest.raises(ValueError, match="output_model is required"):
+
         @custom_route(method="POST", path="/x", input_model=PromoteIn)
         def bad(self, body):
             return None
@@ -80,6 +81,7 @@ def test_missing_output_model_raises():
 @pytest.mark.parametrize("method", ["POST", "PUT", "PATCH"])
 def test_non_get_missing_input_model_raises(method):
     with pytest.raises(ValueError, match="requires an input_model"):
+
         @custom_route(method=method, path="/x", output_model=PromoteOut)
         def bad(self):
             return None
@@ -108,7 +110,9 @@ def test_delete_without_input_model_is_ok():
 
 
 def test_method_is_uppercased():
-    @custom_route(method="post", path="/x", input_model=PromoteIn, output_model=PromoteOut)
+    @custom_route(
+        method="post", path="/x", input_model=PromoteIn, output_model=PromoteOut
+    )
     def lower(self, body):
         return None
 

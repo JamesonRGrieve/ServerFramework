@@ -197,7 +197,10 @@ class TestStripeProvider:
             assert "error" in result or "failed" in str(result).lower()
         except Exception as e:
             error_msg = str(e).lower()
-            assert any(word in error_msg for word in ["api", "key", "stripe", "config", "not configured"])
+            assert any(
+                word in error_msg
+                for word in ["api", "key", "stripe", "config", "not configured"]
+            )
         finally:
             PaymentExtensionStripeProvider._stripe_available = saved
             PaymentExtensionStripeProvider._stripe_client = saved_client
@@ -364,13 +367,21 @@ class TestStripeProvider:
                 provider_instance, tampered, bogus_sig
             )
             assert isinstance(result, dict)
-            assert (
-                "error" in result or not result.get("success", True)
+            assert "error" in result or not result.get(
+                "success", True
             ), "Tampered body must surface as error"
         except Exception as e:
             err = str(e).lower()
             assert any(
-                t in err for t in ("signature", "webhook", "invalid", "verify", "not configured", "not available")
+                t in err
+                for t in (
+                    "signature",
+                    "webhook",
+                    "invalid",
+                    "verify",
+                    "not configured",
+                    "not available",
+                )
             ), f"Tampered body raised unexpected error: {e}"
             if "not configured" in err or "not available" in err:
                 pytest.skip("Stripe SDK not installed")
@@ -391,14 +402,21 @@ class TestStripeProvider:
                 provider_instance, body, old_sig
             )
             assert isinstance(result, dict)
-            assert (
-                "error" in result or not result.get("success", True)
+            assert "error" in result or not result.get(
+                "success", True
             ), "Old-timestamp webhook must be rejected"
         except Exception as e:
             err = str(e).lower()
             assert any(
                 t in err
-                for t in ("timestamp", "tolerance", "stale", "signature", "not configured", "not available")
+                for t in (
+                    "timestamp",
+                    "tolerance",
+                    "stale",
+                    "signature",
+                    "not configured",
+                    "not available",
+                )
             ), f"Old timestamp raised unexpected error: {e}"
             if "not configured" in err or "not available" in err:
                 pytest.skip("Stripe SDK not installed")

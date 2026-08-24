@@ -38,7 +38,6 @@ from zephyrex.lib.ContentNegotiation import (
     strip_format_suffix,
 )
 
-
 # ---------------------------------------------------------------------------
 # Fixtures -- tiny FastAPI app with the middleware wired in
 # ---------------------------------------------------------------------------
@@ -521,9 +520,19 @@ class TestToonTokenEfficiency:
         for structured data, which correlates with token count reduction."""
         data = {
             "users": [
-                {"id": 1, "name": "Alice", "email": "alice@example.com", "active": True},
+                {
+                    "id": 1,
+                    "name": "Alice",
+                    "email": "alice@example.com",
+                    "active": True,
+                },
                 {"id": 2, "name": "Bob", "email": "bob@example.com", "active": False},
-                {"id": 3, "name": "Charlie", "email": "charlie@example.com", "active": True},
+                {
+                    "id": 3,
+                    "name": "Charlie",
+                    "email": "charlie@example.com",
+                    "active": True,
+                },
             ]
         }
         json_str = json.dumps(data)
@@ -543,17 +552,27 @@ class TestToonTokenEfficiency:
 
         data = {
             "users": [
-                {"id": 1, "name": "Alice", "email": "alice@example.com", "active": True},
+                {
+                    "id": 1,
+                    "name": "Alice",
+                    "email": "alice@example.com",
+                    "active": True,
+                },
                 {"id": 2, "name": "Bob", "email": "bob@example.com", "active": False},
-                {"id": 3, "name": "Charlie", "email": "charlie@example.com", "active": True},
+                {
+                    "id": 3,
+                    "name": "Charlie",
+                    "email": "charlie@example.com",
+                    "active": True,
+                },
             ]
         }
         try:
             result = estimate_savings(data)
             # The savings should be positive (TOON uses fewer tokens).
-            assert result["savings_percent"] > 0, (
-                f"Expected positive token savings, got {result['savings_percent']}%"
-            )
+            assert (
+                result["savings_percent"] > 0
+            ), f"Expected positive token savings, got {result['savings_percent']}%"
         except RuntimeError:
             # tiktoken not installed -- skip the token-count assertion but
             # still verify the character-length reduction above.

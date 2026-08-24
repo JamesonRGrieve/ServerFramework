@@ -125,7 +125,10 @@ def _safe_extract_tar(archive: Path, dest: Path) -> None:
                     f"archive contains symlink/hardlink: {member.name!r} -> {member.linkname!r}"
                 )
             target = (dest / member.name).resolve()
-            if not str(target).startswith(str(dest_resolved) + os.sep) and target != dest_resolved:
+            if (
+                not str(target).startswith(str(dest_resolved) + os.sep)
+                and target != dest_resolved
+            ):
                 raise InstallError(f"archive entry escapes dest: {member.name!r}")
             total_size += member.size
             if total_size > _MAX_EXTRACT_BYTES:
@@ -141,7 +144,10 @@ def _safe_extract_zip(archive: Path, dest: Path) -> None:
         total_size = 0
         for info in zf.infolist():
             target = (dest / info.filename).resolve()
-            if not str(target).startswith(str(dest_resolved) + os.sep) and target != dest_resolved:
+            if (
+                not str(target).startswith(str(dest_resolved) + os.sep)
+                and target != dest_resolved
+            ):
                 raise InstallError(f"archive entry escapes dest: {info.filename!r}")
             total_size += info.file_size
             if total_size > _MAX_EXTRACT_BYTES:
@@ -226,9 +232,7 @@ def _resolved_source(
             yield unpacked
             return
 
-        raise InstallError(
-            f"source is not a directory or supported archive: {local}"
-        )
+        raise InstallError(f"source is not a directory or supported archive: {local}")
     finally:
         if tmp_archive is not None:
             tmp_archive.unlink(missing_ok=True)
@@ -244,7 +248,10 @@ def _validate_dependencies(
     for dep in manifest.extension_dependencies:
         if dep.optional:
             continue
-        if dep.name not in registry._extension_name_map and dep.name not in registry.loaded_extensions:
+        if (
+            dep.name not in registry._extension_name_map
+            and dep.name not in registry.loaded_extensions
+        ):
             raise InstallError(
                 f"required extension dependency {dep.name!r} not found in registry"
             )
@@ -312,7 +319,9 @@ def _verify_archive_digest(archive: Path, expected_sha256: Optional[str]) -> Non
         for chunk in iter(lambda: fh.read(64 * 1024), b""):
             h.update(chunk)
     actual = h.hexdigest()
-    if not _hmac.compare_digest(actual.encode("ascii"), expected_sha256.lower().encode("ascii")):
+    if not _hmac.compare_digest(
+        actual.encode("ascii"), expected_sha256.lower().encode("ascii")
+    ):
         raise InstallError(
             f"archive digest mismatch: expected {expected_sha256}, got {actual}"
         )

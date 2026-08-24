@@ -1517,9 +1517,7 @@ class AbstractBLLTest(AbstractTest):
             f"option in the combined matrix; captured: {holder!r}"
         )
 
-    def test_invalid_field_name_rejected(
-        self, admin_a, team_a, server, model_registry
-    ):
+    def test_invalid_field_name_rejected(self, admin_a, team_a, server, model_registry):
         """A field name not declared on the Pydantic model must be rejected
         — the validator should fail before the SQL is produced. Item 87."""
         self.server = server

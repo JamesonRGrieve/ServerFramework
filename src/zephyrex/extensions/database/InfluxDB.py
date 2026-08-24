@@ -10,9 +10,7 @@ try:
 except ImportError:
     influxdb = None  # type: ignore[assignment]
     InfluxDBClient = None  # type: ignore[assignment, misc]
-    logger.warning(
-        "influxdb package not installed. Install with: pip install influxdb"
-    )
+    logger.warning("influxdb package not installed. Install with: pip install influxdb")
 
 try:
     # For InfluxDB 2.x

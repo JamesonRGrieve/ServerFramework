@@ -90,9 +90,7 @@ def pii(klass: PIIClass) -> PIIAnnotation:
         ...     ]
     """
     if not isinstance(klass, PIIClass):
-        raise TypeError(
-            f"pii() expected a PIIClass member, got {type(klass).__name__}"
-        )
+        raise TypeError(f"pii() expected a PIIClass member, got {type(klass).__name__}")
     return PIIAnnotation(klass=klass)
 
 
@@ -343,7 +341,10 @@ class PIILogFilter(_logging.Filter):
 
     _PATTERNS = [
         (_re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"), "<email>"),
-        (_re.compile(r"Bearer\s+[A-Za-z0-9._\-]{8,}", _re.IGNORECASE), "Bearer <redacted>"),
+        (
+            _re.compile(r"Bearer\s+[A-Za-z0-9._\-]{8,}", _re.IGNORECASE),
+            "Bearer <redacted>",
+        ),
         (_re.compile(r"sk-[A-Za-z0-9]{20,}"), "<api_key>"),
         (_re.compile(r"AKIA[0-9A-Z]{16}"), "<aws_access_key>"),
     ]

@@ -505,7 +505,8 @@ class AbstractDBTest(AbstractTest):
         from unittest.mock import patch
 
         return patch(
-            "zephyrex.database.StaticPermissions.generate_permission_filter", return_value=True
+            "zephyrex.database.StaticPermissions.generate_permission_filter",
+            return_value=True,
         )
 
     def _create_assert(self, tracked_index: str):
@@ -608,7 +609,10 @@ class AbstractDBTest(AbstractTest):
         self._create_assert("CRUD_create_" + return_type)
 
     def _ORM_create(
-        self, user_id: str = env("ROOT_ID"), team_id: str | None = None, key="ORM_create"
+        self,
+        user_id: str = env("ROOT_ID"),
+        team_id: str | None = None,
+        key="ORM_create",
     ):
         # Try to get server from test context if available
         server = getattr(self, "_server", None)
@@ -720,7 +724,9 @@ class AbstractDBTest(AbstractTest):
         self._ORM_get(admin_a.id, team_a.id, "ORM_get", "ORM_create_for_get")
         self._get_assert("ORM_get")
 
-    def _list_assert(self, tracked_index: str, search_keys: Optional[List[str]] | None = None):
+    def _list_assert(
+        self, tracked_index: str, search_keys: Optional[List[str]] | None = None
+    ):
         """
         Assert that a list operation returned the expected entities.
 
@@ -1190,8 +1196,7 @@ class AbstractDBTest(AbstractTest):
             "in storage but is missing under include_deleted()"
         )
         assert row.deleted_at is not None, (
-            f"{self.sqlalchemy_model.__name__}: deleted_at not set after "
-            "soft-delete"
+            f"{self.sqlalchemy_model.__name__}: deleted_at not set after " "soft-delete"
         )
 
     def _ORM_delete(self, user_id: str = env("ROOT_ID"), team_id: str | None = None):

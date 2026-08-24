@@ -125,8 +125,13 @@ def test_redact_replaces_registered_secrets():
 def test_redacting_filter_scrubs_log_record():
     register_secret("topsecret")
     rec = logging.LogRecord(
-        name="x", level=logging.INFO, pathname="", lineno=0,
-        msg="leaking topsecret here", args=(), exc_info=None,
+        name="x",
+        level=logging.INFO,
+        pathname="",
+        lineno=0,
+        msg="leaking topsecret here",
+        args=(),
+        exc_info=None,
     )
     f = RedactingFilter()
     assert f.filter(rec)

@@ -40,7 +40,6 @@ from typing import (
 
 from pydantic import BaseModel, ConfigDict
 
-
 # ---------------------------------------------------------------------------
 # OpenAPI → Pydantic
 # ---------------------------------------------------------------------------
@@ -122,8 +121,10 @@ def openapi_to_pydantic_models(
     from enum import Enum
 
     for raw_name, schema in schemas.items():
-        if isinstance(schema, Mapping) and schema.get("enum") and (
-            schema.get("type") in (None, "string")
+        if (
+            isinstance(schema, Mapping)
+            and schema.get("enum")
+            and (schema.get("type") in (None, "string"))
         ):
             full = _full(raw_name)
             enums[full] = Enum(  # type: ignore[assignment]
@@ -195,7 +196,9 @@ def openapi_to_pydantic_models(
                 )
             responses = op.get("responses") or {}
             resp_schema_name: Optional[str] = None
-            ok = responses.get("200") or responses.get("201") or responses.get("default")
+            ok = (
+                responses.get("200") or responses.get("201") or responses.get("default")
+            )
             if isinstance(ok, Mapping):
                 content = ok.get("content") or {}
                 json_part = content.get("application/json") or {}
@@ -247,9 +250,7 @@ def _resolve_ref(
 _REF_RE = re.compile(r"#/components/schemas/(.+)$")
 
 
-def _ref_to_full(
-    ref: Optional[str], fullname: Callable[[str], str]
-) -> Optional[str]:
+def _ref_to_full(ref: Optional[str], fullname: Callable[[str], str]) -> Optional[str]:
     if not isinstance(ref, str):
         return None
     m = _REF_RE.match(ref)
@@ -302,7 +303,11 @@ def _synth_op_name(method: str, path: str) -> str:
 
     cleaned = re.sub(r"[{}]", "", path)
     parts = [p for p in cleaned.split("/") if p]
-    return f"{method.lower()}_" + "_".join(p.replace("-", "_") for p in parts) if parts else method.lower()
+    return (
+        f"{method.lower()}_" + "_".join(p.replace("-", "_") for p in parts)
+        if parts
+        else method.lower()
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -368,8 +373,10 @@ class RESTUpstreamTransport:
             return await verb(url, **kwargs)
         except Exception as exc:
             from zephyrex.extensions.ExternalErrors import AuthExternalError
+
             if isinstance(exc, AuthExternalError):
                 from fastapi import HTTPException
+
                 raise HTTPException(
                     status_code=407,
                     detail="Proxy Authentication Required — upstream credential missing or expired",
@@ -401,9 +408,7 @@ class RESTUpstreamTransport:
         verb = getattr(self._http, method)
         return verb(url, **kwargs)
 
-    def _render_path(
-        self, op: OperationSpec, path_args: Mapping[str, Any]
-    ) -> str:
+    def _render_path(self, op: OperationSpec, path_args: Mapping[str, Any]) -> str:
         rendered = op.path_template
         for k, v in path_args.items():
             rendered = rendered.replace("{" + k + "}", str(v))

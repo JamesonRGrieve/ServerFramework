@@ -33,7 +33,9 @@ _read_only_var: ContextVar[bool] = ContextVar("_read_only", default=False)
 # Per-request "we've already written to primary" sticky flag; once set,
 # subsequent reads in the same request bind primary regardless of
 # @read_only or RequestContext.read_only.
-_primary_write_seen_var: ContextVar[bool] = ContextVar("_primary_write_seen", default=False)
+_primary_write_seen_var: ContextVar[bool] = ContextVar(
+    "_primary_write_seen", default=False
+)
 
 
 def set_read_only(value: bool) -> None:
@@ -91,6 +93,7 @@ def read_only(fn: Callable) -> Callable:
             _read_only_var.reset(token)
 
     import asyncio
+
     if asyncio.iscoroutinefunction(fn):
         async_wrapper._read_only = True  # type: ignore[attr-defined]
         return async_wrapper

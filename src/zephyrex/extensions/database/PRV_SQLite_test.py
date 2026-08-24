@@ -240,15 +240,13 @@ class TestPRVSQLite:
 
         try:
             # Create test table
-            await PRV_SQLite.execute_sql(
-                """
+            await PRV_SQLite.execute_sql("""
                 CREATE TABLE users (
                     id INTEGER PRIMARY KEY,
                     name TEXT NOT NULL,
                     email TEXT UNIQUE
                 );
-            """
-            )
+            """)
 
             # Create index
             await PRV_SQLite.execute_sql(
@@ -276,25 +274,21 @@ class TestPRVSQLite:
             await PRV_SQLite.execute_sql("PRAGMA foreign_keys = ON;")
 
             # Create tables with foreign key relationship
-            await PRV_SQLite.execute_sql(
-                """
+            await PRV_SQLite.execute_sql("""
                 CREATE TABLE users (
                     id INTEGER PRIMARY KEY,
                     name TEXT
                 );
-            """
-            )
+            """)
 
-            await PRV_SQLite.execute_sql(
-                """
+            await PRV_SQLite.execute_sql("""
                 CREATE TABLE posts (
                     id INTEGER PRIMARY KEY,
                     user_id INTEGER,
                     title TEXT,
                     FOREIGN KEY (user_id) REFERENCES users (id)
                 );
-            """
-            )
+            """)
 
             result = await PRV_SQLite.get_schema()
 
@@ -384,9 +378,7 @@ class TestPRVSQLite:
         issues = PRV_SQLite.validate_config()
 
         assert len(issues) > 0
-        assert any(
-            "database file not provided" in issue.lower() for issue in issues
-        )
+        assert any("database file not provided" in issue.lower() for issue in issues)
 
     def test_validate_config_valid_file(self):
         """Test configuration validation with valid file"""

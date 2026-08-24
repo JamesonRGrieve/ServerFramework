@@ -137,7 +137,9 @@ class AbstractActionEndpoint:
     tags: Optional[List[str]] | None = None
 
 
-def register_custom_routes(router, manager_cls, manager_factory: Optional[Callable] | None = None) -> int:
+def register_custom_routes(
+    router, manager_cls, manager_factory: Optional[Callable] | None = None
+) -> int:
     """Walk ``manager_cls`` for ``@custom_route`` methods and add them to ``router``.
 
     Additive: each tagged method becomes a typed FastAPI route on the supplied
@@ -174,7 +176,9 @@ def register_custom_routes(router, manager_cls, manager_factory: Optional[Callab
                         try:
                             payload = _json.loads(raw)
                         except _json.JSONDecodeError:
-                            raise HTTPException(status_code=400, detail="Invalid JSON body")
+                            raise HTTPException(
+                                status_code=400, detail="Invalid JSON body"
+                            )
                         validated = _spec.input_model.model_validate(payload)
                         method_args["body"] = validated
 
@@ -182,7 +186,9 @@ def register_custom_routes(router, manager_cls, manager_factory: Optional[Callab
                     instance = manager_factory(request=request)
                     func = getattr(instance, _method_name)
                     sig = inspect.signature(func)
-                    accepted = {k: v for k, v in method_args.items() if k in sig.parameters}
+                    accepted = {
+                        k: v for k, v in method_args.items() if k in sig.parameters
+                    }
                     if "body" in method_args and "body" not in sig.parameters:
                         # Splat validated body fields into method kwargs, but
                         # ONLY for fields the input model declares — i.e. the
@@ -193,14 +199,18 @@ def register_custom_routes(router, manager_cls, manager_factory: Optional[Callab
                         # whose Pydantic input contained it.
                         body = method_args["body"]
                         if hasattr(body, "model_dump"):
-                            allowed = set(getattr(_spec.input_model, "model_fields", {}).keys())
+                            allowed = set(
+                                getattr(_spec.input_model, "model_fields", {}).keys()
+                            )
                             for k, v in body.model_dump().items():
                                 if k in sig.parameters and k in allowed:
                                     accepted[k] = v
                     result = func(**accepted)
                 else:
                     sig = inspect.signature(_bound_method)
-                    accepted = {k: v for k, v in method_args.items() if k in sig.parameters}
+                    accepted = {
+                        k: v for k, v in method_args.items() if k in sig.parameters
+                    }
                     result = _bound_method(**accepted)
 
                 if _spec.output_model is not None:
@@ -290,9 +300,12 @@ def _build_graphql_resolver(
         return accepted
 
     if spec.method in ("POST", "PUT", "PATCH") and spec.input_model is not None:
+
         async def resolver(info: Any, input: spec.input_model) -> spec.output_model:  # type: ignore[name-defined]
             instance = _instantiate_manager(info)
-            payload = input.model_dump() if hasattr(input, "model_dump") else dict(input)
+            payload = (
+                input.model_dump() if hasattr(input, "model_dump") else dict(input)
+            )
             target = (
                 getattr(instance, method_name) if instance is not None else bound_method
             )
@@ -300,18 +313,26 @@ def _build_graphql_resolver(
                 kwargs: Dict[str, Any] = {"body": input}
             else:
                 kwargs = _split_kwargs(payload)
-            result = target(**kwargs) if instance is not None else target(instance, **kwargs)
+            result = (
+                target(**kwargs) if instance is not None else target(instance, **kwargs)
+            )
             if inspect.isawaitable(result):
                 result = await result
             return _coerce_output(result, spec.output_model)
+
     else:
+
         async def resolver(info: Any, **kwargs: Any) -> spec.output_model:  # type: ignore[name-defined, misc]
             instance = _instantiate_manager(info)
             target = (
                 getattr(instance, method_name) if instance is not None else bound_method
             )
             accepted = _split_kwargs(kwargs)
-            result = target(**accepted) if instance is not None else target(instance, **accepted)
+            result = (
+                target(**accepted)
+                if instance is not None
+                else target(instance, **accepted)
+            )
             if inspect.isawaitable(result):
                 result = await result
             return _coerce_output(result, spec.output_model)
@@ -394,7 +415,9 @@ def register_custom_routes_to_graphql(
                 name=method_name,
                 resolver=resolver,
                 return_type=spec.output_model,
-                args={"input": spec.input_model} if spec.input_model is not None else {},
+                args=(
+                    {"input": spec.input_model} if spec.input_model is not None else {}
+                ),
                 description=spec.description or spec.summary,
                 namespace=False,
                 priority=50,
@@ -511,15 +534,23 @@ def generate_test_scaffold(
 
     lines: List[str] = []
     if include_header:
-        lines.append('"""Auto-generated baseline tests for ' + cls_name + ' custom routes (Item 40).')
+        lines.append(
+            '"""Auto-generated baseline tests for '
+            + cls_name
+            + " custom routes (Item 40)."
+        )
         lines.append("")
-        lines.append("Each route produced by ``@custom_route`` gets three baseline tests:")
+        lines.append(
+            "Each route produced by ``@custom_route`` gets three baseline tests:"
+        )
         lines.append("    - auth (unauthenticated → 401)")
         lines.append("    - validation (malformed body → 422; POST/PUT/PATCH only)")
         lines.append("    - happy path (typed input → typed output)")
         lines.append("")
         lines.append("Authors override these once the route ships real assertions; the")
-        lines.append("framework regenerates only routes lacking a corresponding test file.")
+        lines.append(
+            "framework regenerates only routes lacking a corresponding test file."
+        )
         lines.append('"""')
         lines.append("")
         lines.append("from __future__ import annotations")
@@ -532,10 +563,16 @@ def generate_test_scaffold(
         lines.append("")
         lines.append("@pytest.fixture(scope='module')")
         lines.append("def client():")
-        lines.append("    \"\"\"Build a FastAPI app exposing only this manager's custom routes.")
+        lines.append(
+            '    """Build a FastAPI app exposing only this manager\'s custom routes.'
+        )
         lines.append("")
-        lines.append("    The scaffold uses the framework's standard register_custom_routes")
-        lines.append("    helper so tests exercise the same routing path as production.\"\"\"")
+        lines.append(
+            "    The scaffold uses the framework's standard register_custom_routes"
+        )
+        lines.append(
+            '    helper so tests exercise the same routing path as production."""'
+        )
         lines.append("    from fastapi import FastAPI")
         lines.append("")
         lines.append("    from zephyrex.lib.CustomRoute import register_custom_routes")
@@ -556,15 +593,23 @@ def generate_test_scaffold(
         if "{" in url_path:
             import re
 
-            url_path = re.sub(r"\{([^}]+)\}", lambda m: f"scaffold-{m.group(1)}", url_path)
+            url_path = re.sub(
+                r"\{([^}]+)\}", lambda m: f"scaffold-{m.group(1)}", url_path
+            )
 
         # Auth test
         lines.append(f"def test_{method_name}_unauthenticated_returns_401(client):")
-        lines.append('    """Auth: an unauthenticated call should fail with 401 (or 403).')
+        lines.append(
+            '    """Auth: an unauthenticated call should fail with 401 (or 403).'
+        )
         lines.append("")
-        lines.append("    The framework rejects sessionless callers at the middleware layer;")
-        lines.append("    the scaffold asserts the negative path so a regression that opens")
-        lines.append("    the route to anonymous traffic is caught by CI.\"\"\"")
+        lines.append(
+            "    The framework rejects sessionless callers at the middleware layer;"
+        )
+        lines.append(
+            "    the scaffold asserts the negative path so a regression that opens"
+        )
+        lines.append('    the route to anonymous traffic is caught by CI."""')
         if spec.method in ("POST", "PUT", "PATCH"):
             lines.append(
                 f"    response = client.{verb_lower}({url_path!r}, json={body_repr})"
@@ -578,11 +623,17 @@ def generate_test_scaffold(
         # Validation test (only for routes with bodies)
         if spec.method in ("POST", "PUT", "PATCH") and spec.input_model is not None:
             lines.append(f"def test_{method_name}_invalid_body_returns_422(client):")
-            lines.append('    """Validation: a malformed request body fails Pydantic validation.')
+            lines.append(
+                '    """Validation: a malformed request body fails Pydantic validation.'
+            )
             lines.append("")
-            lines.append("    Sends a payload with a known-bad shape (a non-dict scalar). The")
-            lines.append("    framework's input-model coercion path returns 422 when the body")
-            lines.append("    cannot be validated against the spec's input_model.\"\"\"")
+            lines.append(
+                "    Sends a payload with a known-bad shape (a non-dict scalar). The"
+            )
+            lines.append(
+                "    framework's input-model coercion path returns 422 when the body"
+            )
+            lines.append('    cannot be validated against the spec\'s input_model."""')
             lines.append(
                 f"    response = client.{verb_lower}({url_path!r}, json='not-a-dict')"
             )
@@ -595,15 +646,21 @@ def generate_test_scaffold(
         lines.append('    """Happy path: typed input → typed output.')
         lines.append("")
         lines.append("    The scaffold values exercise the route end-to-end; authors")
-        lines.append("    override the assertions once the route ships real semantics.\"\"\"")
+        lines.append(
+            '    override the assertions once the route ships real semantics."""'
+        )
         if spec.method in ("POST", "PUT", "PATCH"):
             lines.append(
                 f"    response = client.{verb_lower}({url_path!r}, json={body_repr})"
             )
         else:
             lines.append(f"    response = client.{verb_lower}({url_path!r})")
-        lines.append("    # The scaffolded path may require auth; CI gates the positive")
-        lines.append("    # assertion behind a tested auth context. The default scaffold")
+        lines.append(
+            "    # The scaffolded path may require auth; CI gates the positive"
+        )
+        lines.append(
+            "    # assertion behind a tested auth context. The default scaffold"
+        )
         lines.append("    # asserts only that the framework reached the route handler")
         lines.append("    # rather than 404'd, leaving the response-shape assertion to")
         lines.append("    # the author.")
@@ -627,7 +684,9 @@ def has_existing_scaffold(manager_cls: type, scaffold_dir: str) -> bool:
     """
     import os
 
-    target = os.path.join(scaffold_dir, f"{manager_cls.__name__}_custom_routes_scaffold_test.py")
+    target = os.path.join(
+        scaffold_dir, f"{manager_cls.__name__}_custom_routes_scaffold_test.py"
+    )
     return os.path.exists(target)
 
 

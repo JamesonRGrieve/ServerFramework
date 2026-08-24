@@ -21,7 +21,6 @@ from zephyrex.lib.Pydantic2Strawberry import (
     _versioning_metadata_for,
 )
 
-
 # -- Manager fixtures ---------------------------------------------------------
 
 
@@ -69,9 +68,7 @@ def test_versioning_metadata_for_deprecated_only():
 
 
 def test_versioning_metadata_for_deprecated_and_sunset():
-    deprecated_in, sunset_in = _versioning_metadata_for(
-        _DeprecatedAndSunsetManager
-    )
+    deprecated_in, sunset_in = _versioning_metadata_for(_DeprecatedAndSunsetManager)
     assert deprecated_in == "2026-01-01"
     assert sunset_in == "2026-07-01"
 

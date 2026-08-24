@@ -96,9 +96,9 @@ def test_generate_sdk_handlers_is_byte_identical_across_runs(tmp_path: Path):
 
     assert [p.name for p in paths_a] == [p.name for p in paths_b]
     for pa, pb in zip(paths_a, paths_b):
-        assert pa.read_bytes() == pb.read_bytes(), (
-            f"non-deterministic output between {pa} and {pb}"
-        )
+        assert (
+            pa.read_bytes() == pb.read_bytes()
+        ), f"non-deterministic output between {pa} and {pb}"
 
     snapshot = {p.name: p.read_bytes() for p in paths_a}
     generate_sdk_handlers(_classes(), out_a)
@@ -146,9 +146,7 @@ def test_generate_sdk_handlers_filters_non_router_mixin_classes(tmp_path: Path):
     class NotARouterManager:
         prefix = "/v1/nope"
 
-    written = generate_sdk_handlers(
-        [GenTestFooManager, NotARouterManager], tmp_path
-    )
+    written = generate_sdk_handlers([GenTestFooManager, NotARouterManager], tmp_path)
     names = sorted(p.name for p in written)
     assert names == ["GenTestFooSDK_generated.py"]
 

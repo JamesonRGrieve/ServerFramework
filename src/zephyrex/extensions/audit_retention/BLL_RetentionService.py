@@ -36,7 +36,10 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
-from zephyrex.extensions.audit_retention.BLL_RetentionPolicy import RetentionPolicy, forever_default
+from zephyrex.extensions.audit_retention.BLL_RetentionPolicy import (
+    RetentionPolicy,
+    forever_default,
+)
 
 
 @dataclass(frozen=True)

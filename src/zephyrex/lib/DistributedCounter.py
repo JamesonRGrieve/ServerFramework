@@ -65,9 +65,7 @@ def _consume_quota_rows(rows: List[Any], amount: int = 1) -> bool:
                 if row.is_exhausted(additional=amount):
                     return False
             else:
-                if (getattr(row, "consumed", 0) + amount) > getattr(
-                    row, "limit", 0
-                ):
+                if (getattr(row, "consumed", 0) + amount) > getattr(row, "limit", 0):
                     return False
         for row in rows:
             row.consumed = getattr(row, "consumed", 0) + amount
@@ -289,7 +287,7 @@ class PostgresDistributedCounter(DistributedCounter):
         # Ensure row exists.
         session.execute(
             text(
-                "INSERT INTO distributed_counter (key, period_key, consumed, \"limit\")"
+                'INSERT INTO distributed_counter (key, period_key, consumed, "limit")'
                 " VALUES (:key, :period_key, 0, :limit)"
                 " ON CONFLICT (key) DO NOTHING"
             ),
@@ -299,7 +297,7 @@ class PostgresDistributedCounter(DistributedCounter):
             text(
                 "UPDATE distributed_counter SET consumed = consumed + :amount,"
                 " updated_at = now() WHERE key = :key"
-                " AND consumed + :amount <= \"limit\" RETURNING consumed"
+                ' AND consumed + :amount <= "limit" RETURNING consumed'
             ),
             {"amount": amount, "key": self.key},
         ).fetchone()

@@ -91,7 +91,9 @@ class ExtensionServerMixin:
         # would otherwise clash on inserts/migrations.
         worker_id = os.environ.get("PYTEST_XDIST_WORKER", "")
         test_db_prefix = (
-            f"test.{extension_name}.{worker_id}" if worker_id else f"test.{extension_name}"
+            f"test.{extension_name}.{worker_id}"
+            if worker_id
+            else f"test.{extension_name}"
         )
         # Always include the carved-out core-companion extensions so an
         # extension test that exercises invitation/permission/metadata
@@ -475,7 +477,9 @@ class AbstractEXTTest(AbstractTest, ExtensionServerMixin):
         extension_name = self.extension_class.name.lower()
         worker_id = os.environ.get("PYTEST_XDIST_WORKER", "")
         expected_db_prefix = (
-            f"test.{extension_name}.{worker_id}" if worker_id else f"test.{extension_name}"
+            f"test.{extension_name}.{worker_id}"
+            if worker_id
+            else f"test.{extension_name}"
         )
 
         db_manager = server.app.state.model_registry.database_manager
@@ -601,7 +605,9 @@ class AbstractEXTTest(AbstractTest, ExtensionServerMixin):
         )
 
     @classmethod
-    def full_config(cls, expected_abilities: Set[str] | None = None) -> ExtensionTestConfig:
+    def full_config(
+        cls, expected_abilities: Set[str] | None = None
+    ) -> ExtensionTestConfig:
         """Full test configuration for comprehensive testing."""
         return cls.create_config(
             test_types=set(ExtensionTestType),

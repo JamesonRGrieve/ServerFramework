@@ -51,8 +51,7 @@ class ExtensionDependencyDecl(BaseModel):
     def _validate_name(cls, v: str) -> str:
         if not _NAME_RE.match(v):
             raise ValueError(
-                f"extension dependency name {v!r} must match "
-                f"[A-Za-z_][A-Za-z0-9_]*"
+                f"extension dependency name {v!r} must match " f"[A-Za-z_][A-Za-z0-9_]*"
             )
         return v
 
@@ -74,9 +73,7 @@ class ExtensionManifest(BaseModel):
     @classmethod
     def _validate_name(cls, v: str) -> str:
         if not _NAME_RE.match(v):
-            raise ValueError(
-                f"extension name {v!r} must match [A-Za-z_][A-Za-z0-9_]*"
-            )
+            raise ValueError(f"extension name {v!r} must match [A-Za-z_][A-Za-z0-9_]*")
         return v
 
     @field_validator("version", "minimum_framework_version")
@@ -85,9 +82,7 @@ class ExtensionManifest(BaseModel):
         if v is None:
             return v
         if not _PEP440_RE.match(v):
-            raise ValueError(
-                f"version {v!r} is not a valid PEP 440 version string"
-            )
+            raise ValueError(f"version {v!r} is not a valid PEP 440 version string")
         return v
 
     @field_validator("entry_module")

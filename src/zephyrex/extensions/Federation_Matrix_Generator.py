@@ -41,7 +41,6 @@ from zephyrex.extensions.AbstractFederationMatrixTest import (
 )
 from zephyrex.lib.Logging import logger
 
-
 # ---------------------------------------------------------------------------
 # Discovery
 # ---------------------------------------------------------------------------

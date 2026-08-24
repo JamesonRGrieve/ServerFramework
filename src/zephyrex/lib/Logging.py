@@ -52,6 +52,7 @@ and missing it must never crash the framework). Use
 and call :func:`get_error_reporter` from exception handlers to route
 uncaught exceptions to the configured backend.
 """
+
 import re
 import sys
 from abc import ABC, abstractmethod
@@ -133,9 +134,7 @@ def _scrub_string(text):
     if not text:
         return text
     for pattern in _INLINE_PATTERNS:
-        text = pattern.sub(
-            lambda m: m.group(0).replace(m.group("v"), _REDACTED), text
-        )
+        text = pattern.sub(lambda m: m.group(0).replace(m.group("v"), _REDACTED), text)
     return text
 
 

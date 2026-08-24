@@ -1296,7 +1296,9 @@ class DependencyNode:
         self.version = version
         self.dependencies: Dict[str, str] = {}  # name -> version_constraint
 
-    def add_dependency(self, name: str, version_constraint: Optional[str] | None = None):
+    def add_dependency(
+        self, name: str, version_constraint: Optional[str] | None = None
+    ):
         """Add a dependency to this node."""
         self.dependencies[name] = version_constraint  # type: ignore[assignment]
 
@@ -1707,7 +1709,9 @@ class EXT_Dependency(Dependency):
                 # has a real signal that an optional dependency was
                 # silently skipped. Errors in the callback never block
                 # startup -- log and continue.
-                callback = self.on_optional_missing or _default_optional_missing_callback
+                callback = (
+                    self.on_optional_missing or _default_optional_missing_callback
+                )
                 try:
                     callback(self.name)
                 except Exception as err:  # pragma: no cover - defensive

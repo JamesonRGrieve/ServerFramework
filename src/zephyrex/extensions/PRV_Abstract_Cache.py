@@ -60,9 +60,7 @@ class AbstractCacheProvider(AbstractStaticProvider):
 
     @classmethod
     @abstractmethod
-    async def incr(
-        cls, provider_instance: Any, key: str, amount: int = 1
-    ) -> int:
+    async def incr(cls, provider_instance: Any, key: str, amount: int = 1) -> int:
         """Atomically increment the integer stored at `key` by
         `amount` (which may be negative). Creates the key at `amount`
         when absent. Returns the post-increment value.
@@ -86,9 +84,7 @@ class AbstractCacheProvider(AbstractStaticProvider):
 
     @classmethod
     @abstractmethod
-    async def mget(
-        cls, provider_instance: Any, keys: List[str]
-    ) -> Dict[str, bytes]:
+    async def mget(cls, provider_instance: Any, keys: List[str]) -> Dict[str, bytes]:
         """Multi-get. Returns a mapping of key → value for the keys
         that were present; absent or expired keys are simply omitted
         from the returned dict.

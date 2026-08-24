@@ -43,7 +43,10 @@ class TestSSRFProtection:
     )
     def test_ssrf_private_address_rejected(self, url):
         """validate_outbound_url must reject private/metadata/non-http URLs."""
-        from zephyrex.lib.ProviderHTTPClient import SSRFGuardError, validate_outbound_url
+        from zephyrex.lib.ProviderHTTPClient import (
+            SSRFGuardError,
+            validate_outbound_url,
+        )
 
         os.environ.pop("DISABLE_SSRF_GUARD", None)
         with pytest.raises(SSRFGuardError):
@@ -70,9 +73,9 @@ class TestThirdPartyAPIConsumption:
         from zephyrex.lib.ProviderHTTPClient import ClientPolicy
 
         policy = ClientPolicy()
-        assert policy.timeout is not None and policy.timeout > 0, (
-            f"ClientPolicy timeout must be positive, got {policy.timeout}"
-        )
+        assert (
+            policy.timeout is not None and policy.timeout > 0
+        ), f"ClientPolicy timeout must be positive, got {policy.timeout}"
 
 
 # ------------------------------------------------------------------ #
@@ -88,7 +91,10 @@ class TestRouteInventory:
         os.environ["DATABASE_NAME"] = f"inventory_{os.getpid()}"
         os.environ["DATABASE_PATH"] = str(tmp)
 
-        from zephyrex.lib.Pydantic2SQLAlchemy import clear_registry_cache, reset_extension_system
+        from zephyrex.lib.Pydantic2SQLAlchemy import (
+            clear_registry_cache,
+            reset_extension_system,
+        )
 
         clear_registry_cache()
         reset_extension_system()
@@ -173,7 +179,9 @@ class TestCryptographyGaps:
         avg1, avg2 = sum(t1) / len(t1), sum(t2) / len(t2)
         if avg1 > 0 and avg2 > 0:
             ratio = max(avg1, avg2) / min(avg1, avg2)
-            assert ratio < 5, f"Non-constant-time comparison suspected: ratio={ratio:.1f}x"
+            assert (
+                ratio < 5
+            ), f"Non-constant-time comparison suspected: ratio={ratio:.1f}x"
 
 
 # ------------------------------------------------------------------ #
@@ -274,7 +282,9 @@ class TestJWTSemantics:
 
         payload = {"sub": admin_a.id, "jti": str(uuid.uuid4())}
         token = pyjwt.encode(
-            payload, env("JWT_SECRET"), algorithm="HS256",
+            payload,
+            env("JWT_SECRET"),
+            algorithm="HS256",
             headers={"typ": "at+jwt"},
         )
         response = server.get("/v1/team", headers={"Authorization": f"Bearer {token}"})
@@ -288,7 +298,9 @@ class TestJWTSemantics:
 
         payload = {"sub": admin_a.id, "jti": str(uuid.uuid4())}
         token = pyjwt.encode(
-            payload, env("JWT_SECRET"), algorithm="HS256",
+            payload,
+            env("JWT_SECRET"),
+            algorithm="HS256",
             headers={"crit": ["exp"]},
         )
         response = server.get("/v1/team", headers={"Authorization": f"Bearer {token}"})
@@ -323,9 +335,10 @@ class TestFunctionLevelAuth:
             f"/v1/team/{team_a.id}",
             headers={"Authorization": f"Bearer {user_b.jwt}"},
         )
-        assert response.status_code in (403, 404), (
-            f"Non-admin accessed other team: {response.status_code}"
-        )
+        assert response.status_code in (
+            403,
+            404,
+        ), f"Non-admin accessed other team: {response.status_code}"
 
     @pytest.mark.security
     def test_non_admin_cannot_modify_other_team(self, server, user_b, team_a):
@@ -335,9 +348,10 @@ class TestFunctionLevelAuth:
             json={"team": {"name": "hacked"}},
             headers={"Authorization": f"Bearer {user_b.jwt}"},
         )
-        assert response.status_code in (403, 404), (
-            f"Non-admin modified other team: {response.status_code}"
-        )
+        assert response.status_code in (
+            403,
+            404,
+        ), f"Non-admin modified other team: {response.status_code}"
 
 
 # ------------------------------------------------------------------ #
@@ -430,9 +444,9 @@ class TestErrorHandlingAdvanced:
             headers={"Authorization": f"Bearer {admin_a.jwt}"},
         )
         body = response.text
-        assert "/home/" not in body and "/usr/" not in body and "/tmp/" not in body, (
-            "Error response contains filesystem path"
-        )
+        assert (
+            "/home/" not in body and "/usr/" not in body and "/tmp/" not in body
+        ), "Error response contains filesystem path"
 
     @pytest.mark.security
     def test_error_does_not_disclose_internal_hostnames(self, server, admin_a):
@@ -442,9 +456,9 @@ class TestErrorHandlingAdvanced:
             headers={"Authorization": f"Bearer {admin_a.jwt}"},
         )
         body = response.text.lower()
-        assert "localhost" not in body or "not found" in body, (
-            "Error response contains internal hostname"
-        )
+        assert (
+            "localhost" not in body or "not found" in body
+        ), "Error response contains internal hostname"
 
 
 # ------------------------------------------------------------------ #
@@ -488,9 +502,9 @@ class TestPropertyLevelAuth:
             body = response.json()
             team_data = body.get("team", body)
             if isinstance(team_data, dict) and "created_at" in team_data:
-                assert team_data["created_at"] != "2000-01-01T00:00:00Z", (
-                    "System-managed created_at was overwritten by client"
-                )
+                assert (
+                    team_data["created_at"] != "2000-01-01T00:00:00Z"
+                ), "System-managed created_at was overwritten by client"
 
     @pytest.mark.security
     def test_update_cannot_change_verified_status(self, server, admin_a, team_a):
@@ -617,6 +631,7 @@ class TestAuthHeaderParsing:
     def test_authorization_basic_scheme_not_treated_as_bearer(self, server, admin_a):
         """Basic scheme must not be accepted where Bearer is expected."""
         import base64
+
         creds = base64.b64encode(b"admin:password").decode()
         response = server.get(
             "/v1/team",
@@ -635,6 +650,7 @@ class TestSerializationSecurity:
     def test_pickle_like_payload_rejected(self, server, admin_a):
         """Pickle-like payloads must not be processed."""
         import pickle
+
         payload = pickle.dumps({"name": "test"})
         response = server.post(
             "/v1/team",
@@ -705,12 +721,14 @@ class TestUnicodeAdvanced:
         email = f"TestCase_{uuid.uuid4().hex[:6]}@Example.COM"
         r1 = server.post(
             "/v1/user",
-            json={"user": {
-                "email": email,
-                "password": "TestPass123!",
-                "first_name": "Test",
-                "last_name": "Case",
-            }},
+            json={
+                "user": {
+                    "email": email,
+                    "password": "TestPass123!",
+                    "first_name": "Test",
+                    "last_name": "Case",
+                }
+            },
         )
         if r1.status_code in (200, 201):
             r2 = server.post(
@@ -811,12 +829,14 @@ class TestBusinessFlows:
         for i in range(10):
             server.post(
                 "/v1/user",
-                json={"user": {
-                    "email": f"flood_{i}_{uuid.uuid4().hex[:4]}@test.com",
-                    "password": "TestPass123!",
-                    "first_name": "Flood",
-                    "last_name": "Test",
-                }},
+                json={
+                    "user": {
+                        "email": f"flood_{i}_{uuid.uuid4().hex[:4]}@test.com",
+                        "password": "TestPass123!",
+                        "first_name": "Flood",
+                        "last_name": "Test",
+                    }
+                },
             )
 
     @pytest.mark.security
@@ -826,10 +846,12 @@ class TestBusinessFlows:
         for i in range(5):
             server.post(
                 "/v1/invitation",
-                json={"invitation": {
-                    "email": f"invite_{i}_{uuid.uuid4().hex[:4]}@test.com",
-                    "team_id": team_a.id,
-                }},
+                json={
+                    "invitation": {
+                        "email": f"invite_{i}_{uuid.uuid4().hex[:4]}@test.com",
+                        "team_id": team_a.id,
+                    }
+                },
                 headers=headers,
             )
 
@@ -910,6 +932,7 @@ class TestProviderResponseSecurity:
     def test_provider_has_retry_limit(self):
         """ProviderHTTPClient must have bounded retries."""
         from zephyrex.lib.ProviderHTTPClient import ClientPolicy
+
         policy = ClientPolicy()
         assert hasattr(policy, "max_retries")
         assert policy.max_retries >= 0
@@ -919,6 +942,7 @@ class TestProviderResponseSecurity:
     def test_provider_has_tls_verification(self):
         """ProviderHTTPClient must verify TLS by default."""
         from zephyrex.lib.ProviderHTTPClient import ClientPolicy
+
         policy = ClientPolicy()
         assert hasattr(policy, "tls_verify")
         assert policy.tls_verify is True
@@ -943,7 +967,11 @@ class TestSSRFVariants:
     )
     def test_ssrf_obfuscated_loopback_rejected(self, url):
         """Obfuscated loopback addresses must be rejected."""
-        from zephyrex.lib.ProviderHTTPClient import SSRFGuardError, validate_outbound_url
+        from zephyrex.lib.ProviderHTTPClient import (
+            SSRFGuardError,
+            validate_outbound_url,
+        )
+
         os.environ.pop("DISABLE_SSRF_GUARD", None)
         try:
             validate_outbound_url(url)
@@ -954,7 +982,11 @@ class TestSSRFVariants:
     @pytest.mark.security
     def test_ssrf_non_http_scheme_rejected(self):
         """Non-HTTP schemes must be rejected."""
-        from zephyrex.lib.ProviderHTTPClient import SSRFGuardError, validate_outbound_url
+        from zephyrex.lib.ProviderHTTPClient import (
+            SSRFGuardError,
+            validate_outbound_url,
+        )
+
         os.environ.pop("DISABLE_SSRF_GUARD", None)
         for scheme in ["ftp://evil.com", "gopher://evil.com", "dict://evil.com"]:
             try:
@@ -992,9 +1024,9 @@ class TestErrorHandlingExtended:
         )
         body = response.text.lower()
         for dep in ("sqlalchemy", "pydantic", "fastapi", "uvicorn", "starlette"):
-            assert dep not in body or "not found" in body, (
-                f"Error response leaks dependency name: {dep}"
-            )
+            assert (
+                dep not in body or "not found" in body
+            ), f"Error response leaks dependency name: {dep}"
 
     @pytest.mark.security
     def test_error_does_not_echo_api_key(self, server):
@@ -1046,9 +1078,10 @@ class TestEndpointInventory:
             response = server.get(
                 path, headers={"Authorization": f"Bearer {admin_a.jwt}"}
             )
-            assert response.status_code in (404, 405), (
-                f"Deprecated endpoint reachable: {path} ({response.status_code})"
-            )
+            assert response.status_code in (
+                404,
+                405,
+            ), f"Deprecated endpoint reachable: {path} ({response.status_code})"
 
     @pytest.mark.security
     def test_health_endpoint_does_not_expose_sensitive_data(self, server):
@@ -1081,6 +1114,7 @@ class TestOpenAPISecurity:
         if response.status_code == 200:
             body = response.text
             from zephyrex.lib.Environment import env
+
             assert env("JWT_SECRET") not in body
 
 
@@ -1110,17 +1144,25 @@ class TestAccountEnumeration:
         email = f"enum_test_{uuid.uuid4().hex[:6]}@test.com"
         r1 = server.post(
             "/v1/user",
-            json={"user": {
-                "email": email, "password": "TestPass123!",
-                "first_name": "Test", "last_name": "Enum",
-            }},
+            json={
+                "user": {
+                    "email": email,
+                    "password": "TestPass123!",
+                    "first_name": "Test",
+                    "last_name": "Enum",
+                }
+            },
         )
         r2 = server.post(
             "/v1/user",
-            json={"user": {
-                "email": email, "password": "TestPass123!",
-                "first_name": "Test", "last_name": "Enum",
-            }},
+            json={
+                "user": {
+                    "email": email,
+                    "password": "TestPass123!",
+                    "first_name": "Test",
+                    "last_name": "Enum",
+                }
+            },
         )
         assert r2.status_code != 500
 
@@ -1163,8 +1205,16 @@ class TestDatabaseSecurity:
         """Unique constraint errors must be normalized (no raw SQL)."""
         name = f"uc_test_{uuid.uuid4().hex[:6]}"
         headers = {"Authorization": f"Bearer {admin_a.jwt}"}
-        server.post("/v1/team", json={"team": {"name": name, "encryption_salt": "x"}}, headers=headers)
-        r2 = server.post("/v1/team", json={"team": {"name": name, "encryption_salt": "x"}}, headers=headers)
+        server.post(
+            "/v1/team",
+            json={"team": {"name": name, "encryption_salt": "x"}},
+            headers=headers,
+        )
+        r2 = server.post(
+            "/v1/team",
+            json={"team": {"name": name, "encryption_salt": "x"}},
+            headers=headers,
+        )
         if r2.status_code >= 400:
             body = r2.text.lower()
             assert "integrityerror" not in body and "unique constraint" not in body
@@ -1216,6 +1266,7 @@ class TestConfigurationSecurity:
     def test_production_default_credentials_rejected(self):
         """Default credentials must be rejected in production."""
         from zephyrex.lib.Environment import env
+
         if os.environ.get("APP_ENV", "").lower() != "production":
             pytest.skip("Only enforced in production")
         assert env("JWT_SECRET") != "test-jwt-secret-32-bytes-or-more-aaaaaa"
@@ -1269,6 +1320,7 @@ class TestTimingSideChannels:
     def test_api_key_lookup_timing_not_revealing(self, server):
         """API key lookup timing must not reveal valid vs invalid keys."""
         import time
+
         times_invalid = []
         for _ in range(5):
             t0 = time.perf_counter()
@@ -1285,7 +1337,9 @@ class TestTimingSideChannels:
 
 class TestStateMachineSecurity:
     @pytest.mark.security
-    def test_state_machine_client_cannot_set_state_directly(self, server, admin_a, team_a):
+    def test_state_machine_client_cannot_set_state_directly(
+        self, server, admin_a, team_a
+    ):
         """Clients must not be able to set internal state fields directly."""
         response = server.put(
             f"/v1/team/{team_a.id}",
@@ -1334,9 +1388,9 @@ class TestSessionFixation:
             user_data = body.get("user", body)
             if isinstance(user_data, dict):
                 sid = user_data.get("session_id", "")
-                assert sid != "attacker-controlled-id", (
-                    "Client-supplied session_id was accepted"
-                )
+                assert (
+                    sid != "attacker-controlled-id"
+                ), "Client-supplied session_id was accepted"
 
 
 # ------------------------------------------------------------------ #
@@ -1346,9 +1400,7 @@ class TestSessionFixation:
 
 class TestTeamLifecycleAdvanced:
     @pytest.mark.security
-    def test_team_recreation_does_not_reuse_security_identity(
-        self, server, admin_a
-    ):
+    def test_team_recreation_does_not_reuse_security_identity(self, server, admin_a):
         """Recreated team must have a new ID, not reuse the old one."""
         headers = {"Authorization": f"Bearer {admin_a.jwt}"}
         name = f"lifecycle_{uuid.uuid4().hex[:6]}"
@@ -1368,9 +1420,9 @@ class TestTeamLifecycleAdvanced:
         )
         if r2.status_code in (200, 201):
             team2_id = r2.json().get("team", {}).get("id")
-            assert team1_id != team2_id, (
-                "Recreated team reuses deleted team's security identity"
-            )
+            assert (
+                team1_id != team2_id
+            ), "Recreated team reuses deleted team's security identity"
 
 
 # ------------------------------------------------------------------ #
@@ -1553,9 +1605,10 @@ class TestAPIVersioning:
             response = server.get(
                 path, headers={"Authorization": f"Bearer {admin_a.jwt}"}
             )
-            assert response.status_code in (404, 405), (
-                f"Old API version reachable: {path} ({response.status_code})"
-            )
+            assert response.status_code in (
+                404,
+                405,
+            ), f"Old API version reachable: {path} ({response.status_code})"
 
 
 # ------------------------------------------------------------------ #
@@ -1613,7 +1666,9 @@ class TestHTMLEmailSecurity:
     def test_html_email_template_escapes_user_input(self):
         """HTML email templates must escape user-provided values."""
         try:
-            from zephyrex.extensions.email.PRV_SendGrid_EMail import SendGridEmailProvider
+            from zephyrex.extensions.email.PRV_SendGrid_EMail import (
+                SendGridEmailProvider,
+            )
         except ImportError:
             pytest.skip("Email provider not available")
 
@@ -1627,7 +1682,11 @@ class TestWebhookSSRF:
     @pytest.mark.security
     def test_webhook_destination_private_address_rejected(self):
         """Webhook delivery to private addresses must be rejected."""
-        from zephyrex.lib.ProviderHTTPClient import SSRFGuardError, validate_outbound_url
+        from zephyrex.lib.ProviderHTTPClient import (
+            SSRFGuardError,
+            validate_outbound_url,
+        )
+
         os.environ.pop("DISABLE_SSRF_GUARD", None)
         for url in [
             "http://127.0.0.1/webhook",
@@ -1640,7 +1699,11 @@ class TestWebhookSSRF:
     @pytest.mark.security
     def test_webhook_destination_scheme_allowlist(self):
         """Webhook delivery must only use http/https."""
-        from zephyrex.lib.ProviderHTTPClient import SSRFGuardError, validate_outbound_url
+        from zephyrex.lib.ProviderHTTPClient import (
+            SSRFGuardError,
+            validate_outbound_url,
+        )
+
         os.environ.pop("DISABLE_SSRF_GUARD", None)
         for url in ["ftp://evil.com/webhook", "file:///etc/passwd"]:
             with pytest.raises(SSRFGuardError):
@@ -1662,9 +1725,10 @@ class TestRemainingCorpusGaps:
             "/v1/team",
             cookies={"Authorization": f"Bearer {admin_a.jwt}"},
         )
-        assert response.status_code in (401, 403), (
-            f"Token in cookie authenticated: {response.status_code}"
-        )
+        assert response.status_code in (
+            401,
+            403,
+        ), f"Token in cookie authenticated: {response.status_code}"
 
     @pytest.mark.security
     def test_billing_plan_change_authorization(self, server, admin_a, user_b):
@@ -1681,10 +1745,12 @@ class TestRemainingCorpusGaps:
         """Bulk operations must not allow mixing resources from different tenants."""
         response = server.post(
             "/v1/team",
-            json={"team": [
-                {"name": f"bulk_a_{uuid.uuid4().hex[:4]}", "encryption_salt": "x"},
-                {"name": f"bulk_b_{uuid.uuid4().hex[:4]}", "encryption_salt": "x"},
-            ]},
+            json={
+                "team": [
+                    {"name": f"bulk_a_{uuid.uuid4().hex[:4]}", "encryption_salt": "x"},
+                    {"name": f"bulk_b_{uuid.uuid4().hex[:4]}", "encryption_salt": "x"},
+                ]
+            },
             headers={"Authorization": f"Bearer {admin_a.jwt}"},
         )
         assert response.status_code != 500
@@ -1717,7 +1783,9 @@ class TestRemainingCorpusGaps:
         """GQL fragments must not bypass field-level authorization."""
         response = server.post(
             "/graphql",
-            json={"query": '{ team(id: "00000000-0000-0000-0000-000000000000") { ...F } } fragment F on Team { id name }'},
+            json={
+                "query": '{ team(id: "00000000-0000-0000-0000-000000000000") { ...F } } fragment F on Team { id name }'
+            },
             headers={"Authorization": f"Bearer {admin_a.jwt}"},
         )
         assert response.status_code != 500
@@ -1727,16 +1795,21 @@ class TestRemainingCorpusGaps:
         """JWT numeric claims replaced with strings must not expand privileges."""
         import jwt as pyjwt
         from zephyrex.lib.Environment import env
+
         payload = {"sub": admin_a.id, "jti": str(uuid.uuid4()), "exp": "never"}
         try:
             token = pyjwt.encode(payload, env("JWT_SECRET"), algorithm="HS256")
-            response = server.get("/v1/team", headers={"Authorization": f"Bearer {token}"})
+            response = server.get(
+                "/v1/team", headers={"Authorization": f"Bearer {token}"}
+            )
             assert response.status_code in (401, 403)
         except (TypeError, ValueError):
             pass
 
     @pytest.mark.security
-    def test_logout_all_sessions_revokes_concurrently_created_sessions(self, server, admin_a):
+    def test_logout_all_sessions_revokes_concurrently_created_sessions(
+        self, server, admin_a
+    ):
         """Logout-all must revoke sessions created during the logout window."""
         response = server.delete(
             "/v1/user/session",
@@ -1758,7 +1831,9 @@ class TestRemainingCorpusGaps:
         assert response.status_code != 500
 
     @pytest.mark.security
-    def test_mfa_recovery_cannot_be_combined_with_partial_auth_to_bypass_mfa(self, server):
+    def test_mfa_recovery_cannot_be_combined_with_partial_auth_to_bypass_mfa(
+        self, server
+    ):
         """MFA recovery codes must not bypass MFA when combined with partial auth."""
         response = server.post(
             "/v1/user/login",
@@ -1771,6 +1846,7 @@ class TestRemainingCorpusGaps:
         """OIDC tokens with wrong client_id/azp must be rejected."""
         import jwt as pyjwt
         from zephyrex.lib.Environment import env
+
         payload = {"sub": admin_a.id, "jti": str(uuid.uuid4()), "azp": "wrong-client"}
         token = pyjwt.encode(payload, env("JWT_SECRET"), algorithm="HS256")
         response = server.get("/v1/team", headers={"Authorization": f"Bearer {token}"})
@@ -1824,12 +1900,12 @@ class TestCodeAuditXXE:
     def test_xxe_billion_laughs_xml_bomb_rejected(self, server, admin_a):
         """XML bomb (billion laughs) must not cause OOM."""
         xml_bomb = '<?xml version="1.0"?>'
-        xml_bomb += '<!DOCTYPE bomb ['
+        xml_bomb += "<!DOCTYPE bomb ["
         xml_bomb += '<!ENTITY a "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa">'
         xml_bomb += '<!ENTITY b "&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;">'
         xml_bomb += '<!ENTITY c "&b;&b;&b;&b;&b;&b;&b;&b;&b;&b;">'
-        xml_bomb += ']>'
-        xml_bomb += '<root>&c;</root>'
+        xml_bomb += "]>"
+        xml_bomb += "<root>&c;</root>"
         response = server.post(
             "/v1/team",
             content=xml_bomb,
@@ -1838,9 +1914,11 @@ class TestCodeAuditXXE:
                 "Content-Type": "application/xml",
             },
         )
-        assert response.status_code in (400, 413, 422), (
-            f"XML bomb got {response.status_code}; expected rejection"
-        )
+        assert response.status_code in (
+            400,
+            413,
+            422,
+        ), f"XML bomb got {response.status_code}; expected rejection"
 
 
 class TestCodeAuditYAML:
@@ -1856,9 +1934,9 @@ class TestCodeAuditYAML:
         )
         if response.status_code == 200:
             body = response.text
-            assert "!!python" not in body, (
-                "YAML response contains Python type tags — use yaml.safe_dump"
-            )
+            assert (
+                "!!python" not in body
+            ), "YAML response contains Python type tags — use yaml.safe_dump"
 
 
 class TestCodeAuditOAuth2:
@@ -1866,12 +1944,17 @@ class TestCodeAuditOAuth2:
     def test_oauth2_client_secret_uses_slow_hash_not_sha256(self):
         """OAuth2 client secret hashing must not use fast SHA-256."""
         try:
-            from zephyrex.extensions.oauth_provider.BLL_OAuthProvider import _hash_secret
-            import inspect
-            source = inspect.getsource(_hash_secret)
-            assert "sha256" not in source.lower() or "bcrypt" in source.lower() or "argon" in source.lower(), (
-                "OAuth2 client secret uses SHA-256 (fast hash) — must use bcrypt/argon2"
+            from zephyrex.extensions.oauth_provider.BLL_OAuthProvider import (
+                _hash_secret,
             )
+            import inspect
+
+            source = inspect.getsource(_hash_secret)
+            assert (
+                "sha256" not in source.lower()
+                or "bcrypt" in source.lower()
+                or "argon" in source.lower()
+            ), "OAuth2 client secret uses SHA-256 (fast hash) — must use bcrypt/argon2"
         except ImportError:
             pytest.skip("OAuth provider not available")
 
@@ -1879,7 +1962,9 @@ class TestCodeAuditOAuth2:
     def test_oauth2_redirect_uri_rejects_non_https_schemes(self):
         """OAuth2 redirect URIs must reject javascript:/data: schemes."""
         try:
-            from zephyrex.extensions.oauth_provider.BLL_OAuthProvider import OAuthProviderManager
+            from zephyrex.extensions.oauth_provider.BLL_OAuthProvider import (
+                OAuthProviderManager,
+            )
         except ImportError:
             pytest.skip("OAuth provider not available")
 
@@ -1899,10 +1984,11 @@ class TestCodeAuditFileIO:
         try:
             from zephyrex.extensions.fileio.Local import LocalFileSystem
             import inspect
+
             source = inspect.getsource(LocalFileSystem.get_file_info)
-            assert "_safe_open" in source or "O_NOFOLLOW" in source, (
-                "get_file_info uses plain open() — TOCTOU symlink bypass"
-            )
+            assert (
+                "_safe_open" in source or "O_NOFOLLOW" in source
+            ), "get_file_info uses plain open() — TOCTOU symlink bypass"
         except (ImportError, TypeError):
             pytest.skip("FileIO not available")
 
@@ -1912,17 +1998,20 @@ class TestCodeAuditFileIO:
         try:
             from zephyrex.extensions.fileio.Local import LocalFileSystem
             import inspect
+
             source = inspect.getsource(LocalFileSystem.get_file_info)
-            assert "except:" not in source or "except Exception" in source, (
-                "get_file_info uses bare except: — swallows security errors"
-            )
+            assert (
+                "except:" not in source or "except Exception" in source
+            ), "get_file_info uses bare except: — swallows security errors"
         except (ImportError, TypeError):
             pytest.skip("FileIO not available")
 
 
 class TestCodeAuditGraphQLFederation:
     @pytest.mark.security
-    def test_graphql_federation_credentials_hash_is_actually_hashed(self, server, admin_a):
+    def test_graphql_federation_credentials_hash_is_actually_hashed(
+        self, server, admin_a
+    ):
         """Federation credentials hash must not be the raw credential."""
         response = server.post(
             "/graphql",
@@ -1937,11 +2026,12 @@ class TestCodeAuditExtensionInstall:
     def test_extension_install_restart_validates_extension_names(self):
         """Extension names must be validated before pip install."""
         from zephyrex.app import parse_extension_csv
+
         names = parse_extension_csv("valid_ext,another_ext")
         for name in names:
-            assert ".." not in name and "/" not in name and "\\" not in name, (
-                f"Extension name contains path traversal: {name}"
-            )
+            assert (
+                ".." not in name and "/" not in name and "\\" not in name
+            ), f"Extension name contains path traversal: {name}"
         dangerous = parse_extension_csv("../../etc/passwd,; rm -rf /")
         assert len(dangerous) == 0, f"Dangerous extension names accepted: {dangerous}"
 
@@ -1953,6 +2043,7 @@ class TestCodeAuditProductionConfig:
         if os.environ.get("APP_ENV", "").lower() != "production":
             pytest.skip("Only enforced in production")
         from zephyrex.lib.Environment import env
+
         sys_key = env("SYSTEM_API_KEY")
         assert len(sys_key) >= 32, f"SYSTEM_API_KEY too short: {len(sys_key)}"
 
@@ -1960,11 +2051,12 @@ class TestCodeAuditProductionConfig:
     def test_non_production_warns_on_default_database_password(self):
         """Default database password should be flagged."""
         from zephyrex.lib.Environment import env
+
         db_pass = env("DATABASE_PASSWORD")
         if db_pass:
-            assert db_pass != "Password1!", (
-                "Default database password 'Password1!' accepted"
-            )
+            assert (
+                db_pass != "Password1!"
+            ), "Default database password 'Password1!' accepted"
 
 
 class TestCodeAuditSQLiteRegex:
@@ -1996,7 +2088,9 @@ class TestCodeAuditSQLiteRegex:
 
 class TestCodeAuditWebhookReplay:
     @pytest.mark.security
-    def test_webhook_replay_rejection_does_not_leak_internal_timing(self, server, admin_a):
+    def test_webhook_replay_rejection_does_not_leak_internal_timing(
+        self, server, admin_a
+    ):
         """Webhook replay error must not include timing details."""
         response = server.post(
             "/v1/team",
@@ -2008,7 +2102,9 @@ class TestCodeAuditWebhookReplay:
 
 class TestCodeAuditDeadline:
     @pytest.mark.security
-    def test_deadline_exceeded_response_does_not_expose_internal_layer(self, server, admin_a):
+    def test_deadline_exceeded_response_does_not_expose_internal_layer(
+        self, server, admin_a
+    ):
         """504 timeout response must not reveal internal layer names."""
         response = server.get(
             "/v1/team",
@@ -2019,9 +2115,9 @@ class TestCodeAuditDeadline:
         )
         if response.status_code == 504:
             body = response.text.lower()
-            assert "bll" not in body and "provider" not in body and "database" not in body, (
-                "504 response exposes internal layer name"
-            )
+            assert (
+                "bll" not in body and "provider" not in body and "database" not in body
+            ), "504 response exposes internal layer name"
 
 
 class TestCodeAuditReplayCache:
@@ -2030,6 +2126,7 @@ class TestCodeAuditReplayCache:
         """ReplayCache.mark_if_unused must be atomic."""
         from zephyrex.lib.ReplayCache import InMemoryReplayCache
         import concurrent.futures
+
         cache = InMemoryReplayCache()
         nonce = f"test_nonce_{uuid.uuid4()}"
         results = []
@@ -2084,9 +2181,11 @@ class TestDeepAuditBodySizeBypass:
                 "Content-Type": "application/yaml",
             },
         )
-        assert response.status_code in (400, 413, 422), (
-            f"Oversized YAML body got {response.status_code}; expected 413"
-        )
+        assert response.status_code in (
+            400,
+            413,
+            422,
+        ), f"Oversized YAML body got {response.status_code}; expected 413"
 
 
 class TestDeepAuditTarTraversal:
@@ -2108,6 +2207,7 @@ class TestDeepAuditTarTraversal:
 
         try:
             from zephyrex.extensions.Install import _safe_extract_tar, InstallError
+
             with pytest.raises(InstallError):
                 _safe_extract_tar(Path(tar_path), Path(dest))
         except ImportError:
@@ -2124,11 +2224,14 @@ class TestDeepAuditOAuthTiming:
         try:
             from zephyrex.extensions.auth_oauth.EXT_Auth_OAuth import EXT_Auth_OAuth
             import inspect
+
             source = inspect.getsource(EXT_Auth_OAuth)
             lines = source.split("\n")
             for i, line in enumerate(lines):
                 stripped = line.strip()
-                if "client_secret" in stripped and ("!= client_secret" in stripped or "== client_secret" in stripped):
+                if "client_secret" in stripped and (
+                    "!= client_secret" in stripped or "== client_secret" in stripped
+                ):
                     if "compare_digest" not in stripped:
                         assert False, (
                             f"Line {i}: client_secret compared with ==/!= "
@@ -2144,29 +2247,41 @@ class TestDeepAuditPagination:
         self, server, admin_a
     ):
         """page=0 and huge pageSize must not cause 500."""
-        for params in ["page=0&pageSize=10", "page=-1&pageSize=10", "page=1&pageSize=999999999"]:
+        for params in [
+            "page=0&pageSize=10",
+            "page=-1&pageSize=10",
+            "page=1&pageSize=999999999",
+        ]:
             response = server.get(
                 f"/v1/team?{params}",
                 headers={"Authorization": f"Bearer {admin_a.jwt}"},
             )
-            assert response.status_code != 500, (
-                f"Pagination {params} caused 500"
-            )
+            assert response.status_code != 500, f"Pagination {params} caused 500"
 
 
 class TestHoneypotTrap:
     @pytest.mark.security
-    @pytest.mark.parametrize("path", [
-        "/wp-admin", "/wp-login.php", "/.env", "/.git/config",
-        "/phpmyadmin", "/actuator", "/actuator/env",
-        "/console", "/debug/vars", "/api/v1/pods",
-    ])
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/wp-admin",
+            "/wp-login.php",
+            "/.env",
+            "/.git/config",
+            "/phpmyadmin",
+            "/actuator",
+            "/actuator/env",
+            "/console",
+            "/debug/vars",
+            "/api/v1/pods",
+        ],
+    )
     def test_honeypot_returns_418(self, server, path):
         """Scanner-probe paths must return 418 I'm a Teapot."""
         response = server.get(path)
-        assert response.status_code == 418, (
-            f"Honeypot path {path} returned {response.status_code}; expected 418"
-        )
+        assert (
+            response.status_code == 418
+        ), f"Honeypot path {path} returned {response.status_code}; expected 418"
         body = response.json()
         assert body["detail"] == "I'm a teapot"
         assert "dQw4w9WgXcQ" in body.get("documentation", "")
@@ -2178,9 +2293,10 @@ class TestHoneypotTrap:
             f"/v1/nonexistent-{uuid.uuid4().hex}",
             headers={"Authorization": f"Bearer {admin_a.jwt}"},
         )
-        assert response.status_code in (404, 405), (
-            f"Real missing path got {response.status_code}; expected 404"
-        )
+        assert response.status_code in (
+            404,
+            405,
+        ), f"Real missing path got {response.status_code}; expected 404"
 
 
 class TestDeepAuditSortBy:
@@ -2192,9 +2308,7 @@ class TestDeepAuditSortBy:
                 f"/v1/team?sort_by={sort}",
                 headers={"Authorization": f"Bearer {admin_a.jwt}"},
             )
-            assert response.status_code != 500, (
-                f"sort_by={sort} caused 500"
-            )
+            assert response.status_code != 500, f"sort_by={sort} caused 500"
 
 
 # ================================================================== #
@@ -2211,15 +2325,19 @@ class TestFastAPIIncludeDepth:
             f"/v1/team?include={deep_include}",
             headers={"Authorization": f"Bearer {admin_a.jwt}"},
         )
-        assert response.status_code in (200, 400, 422), (
-            f"Deep include chain got {response.status_code}; expected rejection or safe response"
-        )
+        assert response.status_code in (
+            200,
+            400,
+            422,
+        ), f"Deep include chain got {response.status_code}; expected rejection or safe response"
         assert response.status_code != 500, "Deep include chain caused 500"
 
 
 class TestFastAPIChunkedBodyBypass:
     @pytest.mark.security
-    def test_content_negotiation_chunked_body_bypasses_size_limit(self, server, admin_a):
+    def test_content_negotiation_chunked_body_bypasses_size_limit(
+        self, server, admin_a
+    ):
         """Chunked non-JSON body must be size-limited even without Content-Length."""
         large_yaml = "name: " + "x" * (1024 * 1024)
         response = server.post(
@@ -2248,7 +2366,9 @@ class TestFastAPIExceptionHandlerMasking:
 
 class TestFastAPIOpenAPISideEffects:
     @pytest.mark.security
-    def test_openapi_generation_has_no_response_model_side_effects(self, server, admin_a):
+    def test_openapi_generation_has_no_response_model_side_effects(
+        self, server, admin_a
+    ):
         """OpenAPI schema generation must not trigger model side effects."""
         response = server.get("/openapi.json")
         if response.status_code == 200:

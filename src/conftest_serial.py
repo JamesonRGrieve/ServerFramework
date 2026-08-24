@@ -11,7 +11,6 @@ from __future__ import annotations
 import pytest
 from xdist.scheduler.loadscope import LoadScopeScheduling
 
-
 SERIAL_SCOPE = "__serial_last__"
 
 

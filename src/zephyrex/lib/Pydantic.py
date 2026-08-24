@@ -1204,9 +1204,7 @@ class ModelRegistry(AbstractRegistry):
         if model_name.endswith("Model"):
             model_name = model_name[:-5]  # Remove 'Model' suffix
         field_name = stringcase.snakecase(model_name)
-        logger.debug(
-            f"_generate_network_class: model={model}, field_name={field_name}"
-        )
+        logger.debug(f"_generate_network_class: model={model}, field_name={field_name}")
 
         # Create the Network class statically
         network_model_name = f"{model.__name__.replace('Model', '')}Network"
@@ -1408,9 +1406,7 @@ class ModelRegistry(AbstractRegistry):
         )
 
         # ResponseSingle class - wraps the base model
-        logger.debug(
-            f"ResponseSingle creation: field_name={field_name}, model={model}"
-        )
+        logger.debug(f"ResponseSingle creation: field_name={field_name}, model={model}")
         network_attrs["ResponseSingle"] = type(
             "ResponseSingle",
             (BaseModel,),
@@ -1835,9 +1831,8 @@ class ModelRegistry(AbstractRegistry):
         if federation_enabled and bootstrap is not None:
             try:
                 self._federation_report = bootstrap(model_registry=self)
-                if (
-                    self._federation_report is not None
-                    and getattr(self._federation_report, "models", None)
+                if self._federation_report is not None and getattr(
+                    self._federation_report, "models", None
                 ):
                     logger.info(
                         "Federation lifted %d external types: %s",
@@ -1898,7 +1893,11 @@ class ModelRegistry(AbstractRegistry):
 
         import os
 
-        run_migrations = os.environ.get("RUN_MIGRATIONS", "true").lower() in ("true", "1", "yes")
+        run_migrations = os.environ.get("RUN_MIGRATIONS", "true").lower() in (
+            "true",
+            "1",
+            "yes",
+        )
         if not run_migrations:
             logger.info("RUN_MIGRATIONS=false — skipping automatic migrations")
         else:
@@ -1906,14 +1905,18 @@ class ModelRegistry(AbstractRegistry):
                 "type": self.database_manager.DATABASE_TYPE,
                 "name": self.database_manager.DATABASE_NAME,
                 "url": self.database_manager.DATABASE_URI,
-                "file_path": getattr(self.database_manager, "_database_file_path", None),
+                "file_path": getattr(
+                    self.database_manager, "_database_file_path", None
+                ),
             }
             logger.info(f"Migration target database: {custom_db_info}")
 
             migration_manager = MigrationManager(
                 custom_db_info=custom_db_info, model_registry=self
             )
-            extensions_csv = self.extension_registry.csv if self.extension_registry else ""
+            extensions_csv = (
+                self.extension_registry.csv if self.extension_registry else ""
+            )
 
             result = migration_manager.run_all_migrations(
                 "upgrade",
@@ -1922,9 +1925,7 @@ class ModelRegistry(AbstractRegistry):
             )
             if not result:
                 worker_id = os.environ.get("PYTEST_XDIST_WORKER", "main")
-                db_info_str = (
-                    f"db_name={custom_db_info['name']}, db_type={custom_db_info['type']}"
-                )
+                db_info_str = f"db_name={custom_db_info['name']}, db_type={custom_db_info['type']}"
                 logger.error(
                     f"Failed to apply migrations. Worker={worker_id}, {db_info_str}, Result={result}"
                 )
@@ -2332,11 +2333,7 @@ class ModelRegistry(AbstractRegistry):
         def _ext_name(module_path: str) -> Optional[str]:
             parts = (module_path or "").split(".")
             # Canonical post-Item-60 form: ``zephyrex.extensions.<name>...``
-            if (
-                len(parts) >= 3
-                and parts[0] == "zephyrex"
-                and parts[1] == "extensions"
-            ):
+            if len(parts) >= 3 and parts[0] == "zephyrex" and parts[1] == "extensions":
                 return parts[2]
             # Legacy alias kept by ExtensionLoader: ``extensions.<name>...``
             if len(parts) >= 2 and parts[0] == "extensions":
@@ -2492,9 +2489,7 @@ class ModelRegistry(AbstractRegistry):
             scope_dir = os.path.join(src_dir, *scope_parts)
             if scope.startswith("extensions.") and not os.path.isdir(scope_dir):
                 ext_name = scope_parts[1] if len(scope_parts) > 1 else ""
-                consumer_dir = os.path.join(
-                    _resolve_extensions_dir(), ext_name
-                )
+                consumer_dir = os.path.join(_resolve_extensions_dir(), ext_name)
                 if os.path.isdir(consumer_dir):
                     scope_dir = consumer_dir
 
@@ -2546,7 +2541,11 @@ class ModelRegistry(AbstractRegistry):
             for scope, files in files_by_scope.items():
                 if file_path in files:
                     stem = os.path.basename(file_path)[:-3]
-                    canonical = f"zephyrex.{scope}.{stem}" if not scope.startswith("zephyrex.") else f"{scope}.{stem}"
+                    canonical = (
+                        f"zephyrex.{scope}.{stem}"
+                        if not scope.startswith("zephyrex.")
+                        else f"{scope}.{stem}"
+                    )
                     module_name = canonical
                     break
 
@@ -2566,10 +2565,15 @@ class ModelRegistry(AbstractRegistry):
                 logger.debug(f"Importing {module_name}")
 
                 # Check if core module is attempting to be re-imported
-                if "zephyrex.database.DB_" in module_name and module_name in sys.modules:
+                if (
+                    "zephyrex.database.DB_" in module_name
+                    and module_name in sys.modules
+                ):
                     logger.debug(f"Reusing already imported core module: {module_name}")
                     module = sys.modules[module_name]
-                elif (module_name.startswith("zephyrex.extensions.") or module_name.startswith("extensions.")):
+                elif module_name.startswith(
+                    "zephyrex.extensions."
+                ) or module_name.startswith("extensions."):
                     # Item 61: route extension imports through the
                     # canonical loader so they work for out-of-tree
                     # extension trees and register under both legacy
@@ -3191,9 +3195,7 @@ class ModelRegistry(AbstractRegistry):
                     )
 
                     file_stem = os.path.basename(file_path)[:-3]
-                    module = load_extension_module(
-                        extensions_root, ext_name, file_stem
-                    )
+                    module = load_extension_module(extensions_root, ext_name, file_stem)
                     imported_modules.append(module_name)
                     logger.debug(f"Successfully imported EP module: {module_name}")
                 except Exception as e:

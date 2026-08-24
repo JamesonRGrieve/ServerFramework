@@ -127,6 +127,7 @@ if TYPE_CHECKING:
         ResponseSingle: Type[BaseModel]
         ResponsePlural: Type[BaseModel]
 
+
 # ---------------------------------------------------------------------------
 # Multi-format OpenAPI helpers — content negotiation advertisement
 # ---------------------------------------------------------------------------
@@ -169,6 +170,8 @@ def _multiformat_request_body_extra() -> Dict[str, Any]:
             continue  # FastAPI generates this from Body(...)
         extra_content[mime] = {}
     return {"requestBody": {"content": extra_content}}
+
+
 from zephyrex.lib.Logging import logger
 
 if TYPE_CHECKING:
@@ -1215,7 +1218,9 @@ def _degradation_responses_annotation(
                 continue
             mode = getattr(policy, "mode", None)
             mode_value = getattr(mode, "value", mode)
-            if mode_value == getattr(DegradationMode.QUEUE_AND_RETRY, "value", "queue_and_retry"):
+            if mode_value == getattr(
+                DegradationMode.QUEUE_AND_RETRY, "value", "queue_and_retry"
+            ):
                 return {
                     202: {
                         "model": QueuedForRetryModel,
@@ -1829,7 +1834,11 @@ def create_manager_factory(
     return factory_function
 
 
-def _build_links(base_path: str, entity_id: Optional[str] = None, resource_plural: Optional[str] = None) -> Dict[str, Any]:
+def _build_links(
+    base_path: str,
+    entity_id: Optional[str] = None,
+    resource_plural: Optional[str] = None,
+) -> Dict[str, Any]:
     """Build HATEOAS _links for a resource."""
     links: Dict[str, Any] = {}
     if entity_id:
@@ -1874,7 +1883,9 @@ def handle_resource_operation_error(err: Exception) -> None:
             details = [str(err)]  # type: ignore[assignment]
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=_error_envelope("Validation error", code="validation_error", errors=details),
+            detail=_error_envelope(
+                "Validation error", code="validation_error", errors=details
+            ),
         )
     elif isinstance(err, ValueError):
         raise HTTPException(
@@ -1897,7 +1908,9 @@ def handle_resource_operation_error(err: Exception) -> None:
         if isinstance(err, TransientExternalError):
             raise HTTPException(
                 status_code=502,
-                detail=_error_envelope("Upstream service temporarily unavailable", code="bad_gateway"),
+                detail=_error_envelope(
+                    "Upstream service temporarily unavailable", code="bad_gateway"
+                ),
             )
     except ImportError:
         pass
@@ -1906,7 +1919,9 @@ def handle_resource_operation_error(err: Exception) -> None:
         logger.exception(f"Unexpected error during operation: {err}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=_error_envelope("An unexpected error occurred", code="internal_error"),
+            detail=_error_envelope(
+                "An unexpected error occurred", code="internal_error"
+            ),
         )
 
 
@@ -2102,25 +2117,39 @@ def register_route(
         403: {"description": "Forbidden — insufficient permissions"},
         404: {"description": "Not Found — resource does not exist"},
         410: {"description": "Gone — resource was deleted"},
-        415: {"description": "Unsupported Media Type — use application/json, toon, yaml, toml, or xml"},
-        418: {"description": "I'm a Teapot — you hit a honeypot (scanner probe detected)"},
+        415: {
+            "description": "Unsupported Media Type — use application/json, toon, yaml, toml, or xml"
+        },
+        418: {
+            "description": "I'm a Teapot — you hit a honeypot (scanner probe detected)"
+        },
         422: {"description": "Unprocessable Entity — validation error"},
-        423: {"description": "Locked — resource is under an advisory lock, retry later"},
+        423: {
+            "description": "Locked — resource is under an advisory lock, retry later"
+        },
         429: {"description": "Too Many Requests — rate limit exceeded"},
         451: {"description": "Unavailable For Legal Reasons — GDPR erasure applied"},
         500: {"description": "Internal Server Error"},
         502: {"description": "Bad Gateway — upstream provider temporarily unavailable"},
-        503: {"description": "Service Unavailable — server is draining / shutting down"},
+        503: {
+            "description": "Service Unavailable — server is draining / shutting down"
+        },
         507: {"description": "Insufficient Storage — quota exceeded"},
     }
     _mutation_responses: Dict[Union[int, str], Dict[str, Any]] = {
         **_common_error_responses,
-        412: {"description": "Precondition Failed — If-Match ETag mismatch (entity modified since last read)"},
-        428: {"description": "Precondition Required — If-Match header required for this resource"},
+        412: {
+            "description": "Precondition Failed — If-Match ETag mismatch (entity modified since last read)"
+        },
+        428: {
+            "description": "Precondition Required — If-Match header required for this resource"
+        },
     }
     _list_responses: Dict[Union[int, str], Dict[str, Any]] = {
         **_common_error_responses,
-        416: {"description": "Range Not Satisfiable — requested page/offset beyond available items"},
+        416: {
+            "description": "Range Not Satisfiable — requested page/offset beyond available items"
+        },
     }
 
     if route_type == RouteType.GET:
@@ -2352,12 +2381,20 @@ def register_route(
                 # Item 45 — for the Pydantic-validated path, also re-render
                 # with field-acl filtering applied so the contract holds
                 # uniformly across all return shapes.
-                _entity_id = serialized_entity.get("id") if isinstance(serialized_entity, dict) else None
-                _links = _build_links(
-                    f"/v1/{resource_name}",
-                    entity_id=_entity_id,
-                    resource_plural=resource_name_plural,
-                ) if _entity_id else {}
+                _entity_id = (
+                    serialized_entity.get("id")
+                    if isinstance(serialized_entity, dict)
+                    else None
+                )
+                _links = (
+                    _build_links(
+                        f"/v1/{resource_name}",
+                        entity_id=_entity_id,
+                        resource_plural=resource_name_plural,
+                    )
+                    if _entity_id
+                    else {}
+                )
 
                 if _resolve_has_permission(manager) is not None:
                     content = {resource_name: serialized_entity}
@@ -2425,14 +2462,29 @@ def register_route(
                     "sort_order",
                 }
 
-                _FILTER_OPS = {"eq", "neq", "lt", "gt", "lteq", "gteq", "inc", "sw", "ew", "before", "after", "on"}
+                _FILTER_OPS = {
+                    "eq",
+                    "neq",
+                    "lt",
+                    "gt",
+                    "lteq",
+                    "gteq",
+                    "inc",
+                    "sw",
+                    "ew",
+                    "before",
+                    "after",
+                    "on",
+                }
                 for field_name in type(query_params).model_fields.keys():
                     if field_name not in reserved_params:
                         field_value = getattr(query_params, field_name, None)
                         if field_value is not None:
                             search_params[field_name] = field_value
 
-                raw_qp = request.get("query_params", {}) if isinstance(request, dict) else {}
+                raw_qp = (
+                    request.get("query_params", {}) if isinstance(request, dict) else {}
+                )
                 for raw_key, raw_val in raw_qp.items():
                     if "__" not in raw_key:
                         continue
@@ -2520,7 +2572,9 @@ def register_route(
                     )
 
                 page_param = getattr(query_params, "page", None)
-                page_size_param = getattr(query_params, "page_size", None) or getattr(query_params, "pageSize", None)
+                page_size_param = getattr(query_params, "page_size", None) or getattr(
+                    query_params, "pageSize", None
+                )
                 _pagination_total: Optional[int] = None
 
                 if page_param is not None and page_size_param is not None:
@@ -2578,7 +2632,10 @@ def register_route(
                 except ValidationError:
                     return JSONResponse(
                         content=jsonable_encoder(
-                            {resource_name_plural: serialized_results, "pagination": _pagination_meta}
+                            {
+                                resource_name_plural: serialized_results,
+                                "pagination": _pagination_meta,
+                            }
                         ),
                         status_code=status.HTTP_200_OK,
                     )
@@ -2694,7 +2751,10 @@ def register_route(
                     ]
                     return JSONResponse(
                         content=jsonable_encoder(
-                            {resource_name_plural: projected_items, "pagination": _pagination_meta}
+                            {
+                                resource_name_plural: projected_items,
+                                "pagination": _pagination_meta,
+                            }
                         ),
                         status_code=status.HTTP_200_OK,
                     )
@@ -2712,7 +2772,10 @@ def register_route(
                         ]
                     return JSONResponse(
                         content=jsonable_encoder(
-                            {resource_name_plural: populated_items, "pagination": _pagination_meta}
+                            {
+                                resource_name_plural: populated_items,
+                                "pagination": _pagination_meta,
+                            }
                         ),
                         status_code=status.HTTP_200_OK,
                     )
@@ -2720,13 +2783,19 @@ def register_route(
                 if _resolve_has_permission(manager) is not None:
                     return JSONResponse(
                         content=jsonable_encoder(
-                            {resource_name_plural: serialized_items, "pagination": _pagination_meta}
+                            {
+                                resource_name_plural: serialized_items,
+                                "pagination": _pagination_meta,
+                            }
                         ),
                         status_code=status.HTTP_200_OK,
                     )
                 return JSONResponse(
                     content=jsonable_encoder(
-                        {**response_model_instance.model_dump(), "pagination": _pagination_meta}
+                        {
+                            **response_model_instance.model_dump(),
+                            "pagination": _pagination_meta,
+                        }
                     ),
                     status_code=status.HTTP_200_OK,
                 )
@@ -2802,11 +2871,11 @@ def register_route(
                     created_instance = get_manager(manager, manager_property).create(  # type: ignore[arg-type]
                         **item_data
                     )
-                    if (resp := _render_degradation_sentinel(created_instance)) is not None:
+                    if (
+                        resp := _render_degradation_sentinel(created_instance)
+                    ) is not None:
                         return resp
-                    logger.debug(
-                        f"Type of created_instance: {type(created_instance)}"
-                    )
+                    logger.debug(f"Type of created_instance: {type(created_instance)}")
                     logger.debug(
                         f"Created instance dict: {created_instance.model_dump() if hasattr(created_instance, 'model_dump') else created_instance}"
                     )
@@ -2828,9 +2897,7 @@ def register_route(
                     expected_fields = list(
                         network_model.ResponseSingle.model_fields.keys()
                     )
-                    logger.debug(
-                        f"ResponseSingle expects fields: {expected_fields}"
-                    )
+                    logger.debug(f"ResponseSingle expects fields: {expected_fields}")
 
                     # Try to construct the payload based on expected fields
                     if "base" in expected_fields:
@@ -3373,7 +3440,9 @@ def register_route(
                 actual_page_size = (
                     page_size
                     if page_size is not None
-                    else getattr(criteria, "page_size", getattr(criteria, "pageSize", None))
+                    else getattr(
+                        criteria, "page_size", getattr(criteria, "pageSize", None)
+                    )
                 )
 
                 actual_sort_by = (
@@ -3440,7 +3509,9 @@ def register_route(
                     **search_data,
                 )
 
-                _search_result_count = len(search_results) if isinstance(search_results, list) else 0
+                _search_result_count = (
+                    len(search_results) if isinstance(search_results, list) else 0
+                )
                 try:
                     _search_total = actual_manager.count(**search_data)
                 except (AttributeError, TypeError):
@@ -3473,7 +3544,10 @@ def register_route(
                     ]
                     return JSONResponse(
                         content=jsonable_encoder(
-                            {resource_name_plural: projected_items, "pagination": _search_pagination_meta}
+                            {
+                                resource_name_plural: projected_items,
+                                "pagination": _search_pagination_meta,
+                            }
                         ),
                         status_code=status.HTTP_200_OK,
                     )
@@ -3484,14 +3558,20 @@ def register_route(
                     )
                     return JSONResponse(
                         content=jsonable_encoder(
-                            {resource_name_plural: populated_items, "pagination": _search_pagination_meta}
+                            {
+                                resource_name_plural: populated_items,
+                                "pagination": _search_pagination_meta,
+                            }
                         ),
                         status_code=status.HTTP_200_OK,
                     )
 
                 return JSONResponse(
                     content=jsonable_encoder(
-                        {**response_model_instance.model_dump(), "pagination": _search_pagination_meta}
+                        {
+                            **response_model_instance.model_dump(),
+                            "pagination": _search_pagination_meta,
+                        }
                     ),
                     status_code=status.HTTP_200_OK,
                 )
@@ -3513,7 +3593,9 @@ def register_route(
 
         # Prepare responses with examples — advertise all negotiable formats
         responses = {
-            200: {"content": _multiformat_response_content(examples.get("batch_update"))},
+            200: {
+                "content": _multiformat_response_content(examples.get("batch_update"))
+            },
             **_mutation_responses,
         }
 
@@ -3652,7 +3734,9 @@ def register_custom_route(
                 from zephyrex.lib.Environment import env
 
                 trusted = [
-                    p.strip() for p in (env("TRUSTED_PROXIES") or "").split(",") if p.strip()
+                    p.strip()
+                    for p in (env("TRUSTED_PROXIES") or "").split(",")
+                    if p.strip()
                 ]
                 peer_host = request.client.host if request.client else None
                 if trusted and peer_host in trusted:
@@ -3676,9 +3760,7 @@ def register_custom_route(
                     try:
                         body = json.loads(raw_body)
                     except json.JSONDecodeError:
-                        raise HTTPException(
-                            status_code=400, detail="Invalid JSON body"
-                        )
+                        raise HTTPException(status_code=400, detail="Invalid JSON body")
 
                     # Map body to expected parameters
                     if "registration_data" in sig.parameters:
@@ -3731,9 +3813,7 @@ def register_custom_route(
                 if fields_raw:
                     # Handle comma-separated or repeated params
                     fields_list = [
-                        f.strip()
-                        for f in fields_raw.split(",")
-                        if f.strip()
+                        f.strip() for f in fields_raw.split(",") if f.strip()
                     ]
                     method_args["fields"] = fields_list if fields_list else None
 
@@ -3798,12 +3878,16 @@ def create_router_from_manager(
     # a non-default ``version`` and no explicit ``prefix``, derive the
     # prefix from the version token rather than the hard-coded "v1".
     version_token = getattr(manager_class, "version", None) or "v1"
-    prefix: str = getattr(manager_class, "prefix", None) or f"/{version_token}/{resource_name}"
+    prefix: str = (
+        getattr(manager_class, "prefix", None) or f"/{version_token}/{resource_name}"
+    )
     tags: List[str] = getattr(manager_class, "tags", None) or [
         f"{stringcase.titlecase(resource_name.replace('_', ' '))} Management"
     ]
     auth_type: AuthType = getattr(manager_class, "auth_type", AuthType.JWT)
-    routes_to_register: Optional[List[RouteType]] = getattr(manager_class, "routes_to_register", None)
+    routes_to_register: Optional[List[RouteType]] = getattr(
+        manager_class, "routes_to_register", None
+    )
     route_auth_overrides: Dict[RouteType, AuthType] = (
         getattr(manager_class, "route_auth_overrides", None) or {}
     )
@@ -3829,11 +3913,15 @@ def create_router_from_manager(
             if write_route not in route_auth_overrides:
                 route_auth_overrides[write_route] = AuthType.API_KEY
 
-    custom_routes: List[CustomRouteConfig] = getattr(manager_class, "custom_routes", None) or []
+    custom_routes: List[CustomRouteConfig] = (
+        getattr(manager_class, "custom_routes", None) or []
+    )
     nested_resources: Dict[str, NestedResourceConfig] = (
         getattr(manager_class, "nested_resources", None) or {}
     )
-    example_overrides: Dict[str, Dict[str, Any]] = getattr(manager_class, "example_overrides", None) or {}
+    example_overrides: Dict[str, Dict[str, Any]] = (
+        getattr(manager_class, "example_overrides", None) or {}
+    )
 
     # Default routes if not specified
     if routes_to_register is None:
@@ -3921,7 +4009,9 @@ def create_router_from_manager(
 
     # Item 40 hook — register typed @custom_route-decorated methods.
     try:
-        from zephyrex.lib.CustomRoute import register_custom_routes as _register_typed_custom_routes
+        from zephyrex.lib.CustomRoute import (
+            register_custom_routes as _register_typed_custom_routes,
+        )
 
         _register_typed_custom_routes(
             router,

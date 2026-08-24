@@ -97,7 +97,8 @@ class TestDependencies(unittest.TestCase):
 
         with patch("zephyrex.lib.Dependencies.get_os_type", return_value=OSType.UBUNTU):
             with patch(
-                "zephyrex.lib.Dependencies.APTPackageManager.is_available", return_value=True
+                "zephyrex.lib.Dependencies.APTPackageManager.is_available",
+                return_value=True,
             ):
                 with patch(
                     "zephyrex.lib.Dependencies.APTPackageManager.check_package_installed",
@@ -456,7 +457,8 @@ class TestDependencies(unittest.TestCase):
 
         # Simulate whole function behavior with direct mocking
         with patch(
-            "zephyrex.lib.Dependencies.check_system_dependencies", return_value=mock_check
+            "zephyrex.lib.Dependencies.check_system_dependencies",
+            return_value=mock_check,
         ):
             # Mock dependency resolution to return the same dependencies
             with patch(
@@ -470,7 +472,8 @@ class TestDependencies(unittest.TestCase):
                 ) as mock_apt:
                     # Also mock get_os_type to ensure OS detection works
                     with patch(
-                        "zephyrex.lib.Dependencies.get_os_type", return_value=OSType.UBUNTU
+                        "zephyrex.lib.Dependencies.get_os_type",
+                        return_value=OSType.UBUNTU,
                     ):
                         # And mock get_available_package_managers
                         mock_apt_manager = MagicMock()
@@ -878,7 +881,9 @@ class TestDependencies(unittest.TestCase):
             self.assertTrue(check_version_compatibility("1.0.0", "invalid-semver"))
 
         # Test with missing semver module
-        with patch("zephyrex.lib.Dependencies.check_version_compatibility") as mock_check:
+        with patch(
+            "zephyrex.lib.Dependencies.check_version_compatibility"
+        ) as mock_check:
             mock_check.return_value = True
             # Should return True when semver module is not available
             self.assertTrue(check_version_compatibility("1.0.0", ">=1.0.0"))
@@ -1014,7 +1019,8 @@ class TestDependencies(unittest.TestCase):
 
         # Test resolution error with mock
         with patch(
-            "zephyrex.lib.Dependencies.Resolver", side_effect=Exception("Resolution error")
+            "zephyrex.lib.Dependencies.Resolver",
+            side_effect=Exception("Resolution error"),
         ):
             with self.assertRaises(DependencyResolutionError):
                 resolve_dependencies(deps_dict)
@@ -1026,9 +1032,10 @@ class TestDependencies(unittest.TestCase):
         # Set up for Linux tests
         mock_system.return_value = "Linux"
 
-        with patch("zephyrex.lib.Dependencies.distro.id") as mock_id, patch(
-            "zephyrex.lib.Dependencies.distro.like"
-        ) as mock_like:
+        with (
+            patch("zephyrex.lib.Dependencies.distro.id") as mock_id,
+            patch("zephyrex.lib.Dependencies.distro.like") as mock_like,
+        ):
 
             # Test Ubuntu
             mock_id.return_value = "ubuntu"
@@ -1158,7 +1165,9 @@ class TestDependencies(unittest.TestCase):
         }
 
         # Test the resolution with proper mocking of resolvelib internals
-        with patch("zephyrex.lib.Dependencies.DependencyProvider", return_value=provider):
+        with patch(
+            "zephyrex.lib.Dependencies.DependencyProvider", return_value=provider
+        ):
             with patch("zephyrex.lib.Dependencies.Resolver") as mock_resolver_class:
                 # Create mock resolver and result
                 mock_resolver = MagicMock()
@@ -1207,7 +1216,9 @@ class TestExtDependencyOptionalMissing(unittest.TestCase):
     def test_default_callback_logs_warning_when_optional_missing(self):
         from zephyrex.lib.Dependencies import EXT_Dependency
 
-        dep = EXT_Dependency(name="missing_ext", friendly_name="Missing Ext", optional=True)
+        dep = EXT_Dependency(
+            name="missing_ext", friendly_name="Missing Ext", optional=True
+        )
         with patch("zephyrex.lib.Dependencies.logger") as mock_logger:
             assert dep.is_satisfied(loaded_extensions={}) is True
             assert mock_logger.warning.called
@@ -1267,7 +1278,9 @@ class TestExtDependencyOptionalMissing(unittest.TestCase):
     def test_disables_abilities_field_default_empty(self):
         from zephyrex.lib.Dependencies import EXT_Dependency
 
-        dep = EXT_Dependency(name="missing_ext", friendly_name="Missing Ext", optional=True)
+        dep = EXT_Dependency(
+            name="missing_ext", friendly_name="Missing Ext", optional=True
+        )
         assert dep.disables_abilities == []
 
     def test_disables_abilities_field_carries_list(self):

@@ -27,7 +27,6 @@ from zephyrex.extensions.federation.BLL_Federation_REST import (
     openapi_to_pydantic_models,
 )
 
-
 pytestmark = [pytest.mark.unit]
 
 
@@ -128,11 +127,7 @@ def test_openapi_imports_simple_model():
 
 
 def test_openapi_prefixes_models():
-    spec = {
-        "components": {
-            "schemas": {"User": {"type": "object", "properties": {}}}
-        }
-    }
+    spec = {"components": {"schemas": {"User": {"type": "object", "properties": {}}}}}
     result = openapi_to_pydantic_models(spec, prefix="Acme_")
     assert "Acme_User" in result.models
     assert "User" not in result.models
@@ -292,9 +287,7 @@ def test_openapi_synthesizes_operation_id_when_missing():
     }
     result = openapi_to_pydantic_models(spec)
     # No operationId → method+path slug
-    assert any(
-        name.startswith("get_") for name in result.operations.keys()
-    )
+    assert any(name.startswith("get_") for name in result.operations.keys())
 
 
 def test_openapi_handles_oneof_union():
@@ -364,7 +357,9 @@ def transport_with_ops() -> RESTUpstreamTransport:
         ),
     }
     http = _FakeHTTPClient(response={"id": "x"})
-    transport = RESTUpstreamTransport(http, base_url="https://api.example.com", operations=ops)
+    transport = RESTUpstreamTransport(
+        http, base_url="https://api.example.com", operations=ops
+    )
     transport._http_for_test = http  # convenience for assertions
     return transport
 
@@ -383,9 +378,7 @@ async def test_transport_query_args_for_get(transport_with_ops):
 
 
 async def test_transport_body_for_post(transport_with_ops):
-    await transport_with_ops.send(
-        operation="create_user", body={"name": "bob"}
-    )
+    await transport_with_ops.send(operation="create_user", body={"name": "bob"})
     call = transport_with_ops._http_for_test.calls[-1]
     assert call["json"] == {"name": "bob"}
     assert call["method"] == "POST"
@@ -427,7 +420,10 @@ def test_derive_external_models_creates_subclass_pairs():
         },
         "paths": {
             "/users/{id}": {
-                "get": {"operationId": "get_user", "parameters": [{"name": "id", "in": "path"}]}
+                "get": {
+                    "operationId": "get_user",
+                    "parameters": [{"name": "id", "in": "path"}],
+                }
             }
         },
     }
@@ -435,7 +431,9 @@ def test_derive_external_models_creates_subclass_pairs():
     # ``derive_external_models`` synthesizes ``*_via_provider`` static methods
     # that call ``transport.send_sync``; provide a sync HTTP fake.
     http = _SyncFakeHTTPClient(response={"id": "abc", "name": "alice"})
-    transport = RESTUpstreamTransport(http, "https://api.example.com", result.operations)
+    transport = RESTUpstreamTransport(
+        http, "https://api.example.com", result.operations
+    )
     derived = derive_external_models(pydantic_result=result, transport=transport)
     assert "User" in derived
     cls = derived["User"]
@@ -456,7 +454,9 @@ def test_derive_external_models_respects_crud_map():
     }
     result = openapi_to_pydantic_models(spec)
     http = _SyncFakeHTTPClient(response=[{"id": "z"}])
-    transport = RESTUpstreamTransport(http, "https://api.example.com", result.operations)
+    transport = RESTUpstreamTransport(
+        http, "https://api.example.com", result.operations
+    )
     derived = derive_external_models(
         pydantic_result=result,
         transport=transport,

@@ -34,13 +34,16 @@ def _reset_registry():
         clear_registry_cache,
         reset_extension_system,
     )
+
     clear_registry_cache()
     reset_extension_system()
 
 
 class TestBootPerformance:
     def test_instance_boot(self, tmp_path):
-        ratchet_subprocess("boot", f"""
+        ratchet_subprocess(
+            "boot",
+            f"""
 import os
 os.environ["JWT_SECRET"] = "test-jwt-secret-32-bytes-or-more-aaaaaa"
 os.environ["DATABASE_TYPE"] = "sqlite"
@@ -53,7 +56,9 @@ _t0 = time.perf_counter()
 instance(extensions="", db_prefix="bench.boot")
 _elapsed = time.perf_counter() - _t0
 _mhz = (_mhz_before + _read_mhz()) / 2.0
-""", tolerance=IO_TOLERANCE)
+""",
+            tolerance=IO_TOLERANCE,
+        )
 
 
 class TestModelRegistryPerformance:
@@ -78,14 +83,18 @@ class TestSQLAlchemyModelCreation:
     def test_create_models(self, count):
         from sqlalchemy.orm import DeclarativeBase
         from zephyrex.lib.Pydantic import ModelRegistry
-        from zephyrex.lib.Pydantic2SQLAlchemy import ApplicationModel, create_sqlalchemy_model
+        from zephyrex.lib.Pydantic2SQLAlchemy import (
+            ApplicationModel,
+            create_sqlalchemy_model,
+        )
 
         def create_all():
             base = type("BenchBase", (DeclarativeBase,), {})
             models = []
             for i in range(count):
                 model = type(
-                    f"BenchModel{i}", (ApplicationModel,),
+                    f"BenchModel{i}",
+                    (ApplicationModel,),
                     {
                         "__annotations__": {"name": str, "value": Optional[int]},
                         "name": Field(..., description=f"Name {i}"),
@@ -108,7 +117,9 @@ class TestRouteGenerationPerformance:
 
         managers = []
         for i in range(100):
-            model = type(f"PerfModel{i}", (ApplicationModel,), {"__annotations__": {"name": str}})
+            model = type(
+                f"PerfModel{i}", (ApplicationModel,), {"__annotations__": {"name": str}}
+            )
             mgr = type(f"PerfManager{i}", (AbstractBLLManager,), {"_model": model})
             managers.append(mgr)
 
@@ -116,7 +127,9 @@ class TestRouteGenerationPerformance:
             for mgr in managers:
                 stringcase.snakecase(mgr.__name__.replace("Manager", ""))
 
-        ratchet("prefix_derivation_100", derive, tolerance=CPU_TOLERANCE, iterations=100)
+        ratchet(
+            "prefix_derivation_100", derive, tolerance=CPU_TOLERANCE, iterations=100
+        )
 
 
 class TestRequestLatency:
@@ -130,11 +143,19 @@ class TestRequestLatency:
         _reset_registry()
         from starlette.testclient import TestClient
         from zephyrex.app import instance
+
         app = instance(extensions="", db_prefix=_worker_db_prefix("lat"))
         return TestClient(app)
 
     def test_openapi_generation(self, client):
-        ratchet("openapi_generation", lambda: client.app.openapi(), tolerance=IO_TOLERANCE)
+        ratchet(
+            "openapi_generation", lambda: client.app.openapi(), tolerance=IO_TOLERANCE
+        )
 
     def test_health_check(self, client):
-        ratchet("health_check", lambda: client.get("/"), tolerance=CPU_TOLERANCE, iterations=10)
+        ratchet(
+            "health_check",
+            lambda: client.get("/"),
+            tolerance=CPU_TOLERANCE,
+            iterations=10,
+        )

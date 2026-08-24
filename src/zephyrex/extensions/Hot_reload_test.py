@@ -29,25 +29,19 @@ def _write_manifest_extension(root: Path, name: str, version: str) -> Path:
     ext_dir = root / name
     ext_dir.mkdir(parents=True, exist_ok=True)
     (ext_dir / "manifest.toml").write_text(
-        textwrap.dedent(
-            f"""
+        textwrap.dedent(f"""
             name = "{name}"
             version = "{version}"
             entry_module = "EXT_{name.title()}"
-            """
-        ).strip()
-        + "\n",
+            """).strip() + "\n",
         encoding="utf-8",
     )
     (ext_dir / f"EXT_{name.title()}.py").write_text(
-        textwrap.dedent(
-            f"""
+        textwrap.dedent(f"""
             class EXT_{name.title()}:
                 name = "{name}"
                 version = "{version}"
-            """
-        ).strip()
-        + "\n",
+            """).strip() + "\n",
         encoding="utf-8",
     )
     return ext_dir
@@ -153,26 +147,20 @@ def test_rebuild_registry_version_change(isolated_extensions_root: Path) -> None
 
     # Rewrite manifest with a new version.
     (isolated_extensions_root / "bumpy" / "manifest.toml").write_text(
-        textwrap.dedent(
-            """
+        textwrap.dedent("""
             name = "bumpy"
             version = "2.0.0"
             entry_module = "EXT_Bumpy"
-            """
-        ).strip()
-        + "\n",
+            """).strip() + "\n",
         encoding="utf-8",
     )
     # Bump the legacy class-level version too so the registry reads the new one.
     (isolated_extensions_root / "bumpy" / "EXT_Bumpy.py").write_text(
-        textwrap.dedent(
-            """
+        textwrap.dedent("""
             class EXT_Bumpy:
                 name = "bumpy"
                 version = "2.0.0"
-            """
-        ).strip()
-        + "\n",
+            """).strip() + "\n",
         encoding="utf-8",
     )
 
@@ -248,9 +236,7 @@ def test_rebuild_registry_added_and_removed_combined(
     registry to release their hooks/routers/services)."""
     _write_manifest_extension(isolated_extensions_root, "stable", "1.0.0")
     _write_manifest_extension(isolated_extensions_root, "dropme", "0.1.0")
-    prev = ExtensionRegistry(
-        "", extensions_path=str(isolated_extensions_root)
-    )
+    prev = ExtensionRegistry("", extensions_path=str(isolated_extensions_root))
     # Seed the previous snapshot to reflect "before-SIGHUP" state.
     prev.loaded_extensions["stable"] = "1.0.0"
     prev.loaded_extensions["dropme"] = "0.1.0"

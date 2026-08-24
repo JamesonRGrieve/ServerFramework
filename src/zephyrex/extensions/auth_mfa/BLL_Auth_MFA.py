@@ -13,7 +13,6 @@ from zephyrex.lib.Logging import logger
 from zephyrex.lib.Pydantic import BaseModel  # type: ignore[no-redef]
 from zephyrex.lib.Pydantic2FastAPI import AuthType, RouterMixin, RouteType
 
-
 # Encryption-at-rest for ``totp_secret``. Implementation lives in the shared
 # helper so every extension that persists secrets uses the same envelope and
 # fail-fast policy. ``ALLOW_PLAINTEXT_SECRETS=true`` is the only path that
@@ -130,9 +129,7 @@ def mfa_rate_limiting_hook(context: HookContext) -> None:
     actor_key = str(manager.requester.id)
     flow = "mfa_verify"
     if _MFA_VERIFY_LOCKOUT.is_locked(actor_key, flow):
-        logger.warning(
-            f"Rate limit exceeded for MFA verification by user {actor_key}"
-        )
+        logger.warning(f"Rate limit exceeded for MFA verification by user {actor_key}")
         raise HTTPException(
             status_code=429,
             detail="Too many verification attempts. Please wait before trying again.",

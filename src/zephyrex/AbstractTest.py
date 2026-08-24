@@ -20,7 +20,9 @@ class ParentEntity(BaseModel):
 
     name: str
     foreign_key: str
-    path_level: Optional[int] | None = None  # 1 for first level nesting, 2 for second level
+    path_level: Optional[int] | None = (
+        None  # 1 for first level nesting, 2 for second level
+    )
     is_path: bool = False  # Whether this parent is used in URL paths
     test_class: Any
     nullable: bool = False

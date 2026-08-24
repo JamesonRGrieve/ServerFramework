@@ -47,12 +47,8 @@ class PermissionModel(
     can_execute: bool = Field(
         False, description="Whether user/team can execute the resource"
     )
-    can_copy: bool = Field(
-        False, description="Whether user/team can copy the resource"
-    )
-    can_edit: bool = Field(
-        False, description="Whether user/team can edit the resource"
-    )
+    can_copy: bool = Field(False, description="Whether user/team can copy the resource")
+    can_edit: bool = Field(False, description="Whether user/team can edit the resource")
     can_delete: bool = Field(
         False, description="Whether user/team can delete the resource"
     )
@@ -97,9 +93,7 @@ class PermissionModel(
             # the role itself is team-specific. Cannot validate the role
             # row here (no DB session); manager.create_validation enforces.
             if not self.user_id and not self.team_id and self.role_id:
-                raise ValueError(
-                    "Role must be team-specific when used without team_id"
-                )
+                raise ValueError("Role must be team-specific when used without team_id")
             if self.user_id and self.role_id:
                 raise ValueError("Cannot have both user_id and role_id")
             if self.user_id and self.team_id:
@@ -166,9 +160,7 @@ class PermissionManager(AbstractBLLManager, RouterMixin):
 
         if role and not entity.team_id and not entity.user_id:
             if not role.team_id:
-                raise ValueError(
-                    "Role must be team-specific when used without team_id"
-                )
+                raise ValueError("Role must be team-specific when used without team_id")
 
 
 PermissionModel.Manager = PermissionManager

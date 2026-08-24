@@ -1140,7 +1140,14 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         if getattr(self, "entity_name", None) == "user":
             pytest.skip("User entity does not have a standard GET endpoint")
         self._create(server, admin_a.jwt, admin_a.id, key="get_links")
-        self._get(server, admin_a.jwt, admin_a.id, team_a.id, get_key="get_links", save_key="get_links_result")
+        self._get(
+            server,
+            admin_a.jwt,
+            admin_a.id,
+            team_a.id,
+            get_key="get_links",
+            save_key="get_links_result",
+        )
 
     # @pytest.mark.dependency(depends=["test_POST_201"])
     def test_GET_200_fields(
@@ -1579,7 +1586,9 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
             second_page_ids
         ), "Pages should not contain overlapping entities"
 
-    def test_GET_200_list_pagination_metadata(self, server: Any, admin_a: Any, team_a: Any):
+    def test_GET_200_list_pagination_metadata(
+        self, server: Any, admin_a: Any, team_a: Any
+    ):
         """List responses include pagination metadata (offset, limit, total, has_more)."""
         if getattr(self, "entity_name", None) == "user":
             pytest.skip("User entity does not have a standard LIST endpoint")
@@ -1609,7 +1618,9 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         assert isinstance(pag["total"], int)
         assert isinstance(pag["has_more"], bool)
 
-    def test_POST_200_search_pagination_metadata(self, server: Any, admin_a: Any, team_a: Any):
+    def test_POST_200_search_pagination_metadata(
+        self, server: Any, admin_a: Any, team_a: Any
+    ):
         """Search responses include pagination metadata."""
         if getattr(self, "entity_name", None) == "user":
             pytest.skip("User entity does not have a standard search endpoint")
@@ -1638,7 +1649,9 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         assert isinstance(pag["total"], int)
         assert isinstance(pag["has_more"], bool)
 
-    def test_GET_200_list_filter_operators(self, server: Any, admin_a: Any, team_a: Any):
+    def test_GET_200_list_filter_operators(
+        self, server: Any, admin_a: Any, team_a: Any
+    ):
         """GET list supports __inc, __sw, __ew filter operators via query string."""
         if getattr(self, "entity_name", None) == "user":
             pytest.skip("User entity does not have a standard LIST endpoint")
@@ -1659,9 +1672,9 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
             f"{self.get_list_endpoint(path_parent_ids)}?{field}__eq=nonexistent_value_xyz",
             headers={"Authorization": f"Bearer {admin_a.jwt}"},
         )
-        assert response_eq.status_code == 200, (
-            f"Filter operator __eq on {field} returned {response_eq.status_code}: {response_eq.text}"
-        )
+        assert (
+            response_eq.status_code == 200
+        ), f"Filter operator __eq on {field} returned {response_eq.status_code}: {response_eq.text}"
 
     # @pytest.mark.dependency(depends=["test_POST_201"])
     def test_GET_200_list_via_parent_team(
@@ -4480,7 +4493,11 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         endpoint = self.get_list_endpoint({})
         response = server.request(method, endpoint)
         assert response.status_code in (
-            401, 403, 405, 200, 204,
+            401,
+            403,
+            405,
+            200,
+            204,
         ), f"Unauthenticated {method} got {response.status_code}; expected 401/403/405"
 
     @pytest.mark.security
@@ -4508,9 +4525,9 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
                 "Content-Type": content_type,
             },
         )
-        assert response.status_code != 500, (
-            f"Content-Type {content_type} caused 500; must reject cleanly"
-        )
+        assert (
+            response.status_code != 500
+        ), f"Content-Type {content_type} caused 500; must reject cleanly"
 
     @pytest.mark.security
     @pytest.mark.parametrize(
@@ -4534,9 +4551,7 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
                 "Host": host_header,
             },
         )
-        assert response.status_code != 500, (
-            f"Host header '{host_header}' caused 500"
-        )
+        assert response.status_code != 500, f"Host header '{host_header}' caused 500"
         body = response.text
         assert "evil.com" not in body, "Host header value reflected in response body"
 
@@ -4560,7 +4575,9 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
             endpoint, headers=self._get_appropriate_headers(admin_a.jwt)
         )
         assert response.status_code in (
-            400, 404, 422,
+            400,
+            404,
+            422,
         ), f"Path traversal payload got {response.status_code}; expected 400/404/422"
 
     @pytest.mark.security
@@ -4582,9 +4599,9 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         response = server.get(
             endpoint, headers=self._get_appropriate_headers(admin_a.jwt)
         )
-        assert response.status_code != 500, (
-            f"SQLi payload in ID caused 500: {sqli_payload}"
-        )
+        assert (
+            response.status_code != 500
+        ), f"SQLi payload in ID caused 500: {sqli_payload}"
 
     @pytest.mark.security
     @pytest.mark.parametrize(
@@ -4603,14 +4620,12 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         response = server.get(
             endpoint, headers=self._get_appropriate_headers(admin_a.jwt)
         )
-        assert response.status_code != 500, (
-            f"SQLi payload in query param caused 500: {sqli_payload}"
-        )
+        assert (
+            response.status_code != 500
+        ), f"SQLi payload in query param caused 500: {sqli_payload}"
 
     @pytest.mark.security
-    def test_security_deeply_nested_json(
-        self, server: Any, admin_a: Any, team_a: Any
-    ):
+    def test_security_deeply_nested_json(self, server: Any, admin_a: Any, team_a: Any):
         """Deeply nested JSON must not cause stack overflow or 500."""
         nested = {"a": None}
         current = nested
@@ -4665,9 +4680,10 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         """JWT in query string must not authenticate (prevents token leakage via logs/referrer)."""
         endpoint = f"{self.get_list_endpoint({})}?token={admin_a.jwt}"
         response = server.get(endpoint)
-        assert response.status_code in (401, 403), (
-            f"JWT in query string should not authenticate; got {response.status_code}"
-        )
+        assert response.status_code in (
+            401,
+            403,
+        ), f"JWT in query string should not authenticate; got {response.status_code}"
 
     @pytest.mark.security
     def test_security_duplicate_headers(self, server: Any, admin_a: Any):
@@ -4691,12 +4707,14 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         )
         for header in ("Server", "X-Powered-By", "X-AspNet-Version"):
             val = response.headers.get(header, "")
-            assert "python" not in val.lower() and "uvicorn" not in val.lower(), (
-                f"Header {header} leaks server info: {val}"
-            )
+            assert (
+                "python" not in val.lower() and "uvicorn" not in val.lower()
+            ), f"Header {header} leaks server info: {val}"
 
     @pytest.mark.security
-    def test_security_cors_wildcard_not_with_credentials(self, server: Any, admin_a: Any):
+    def test_security_cors_wildcard_not_with_credentials(
+        self, server: Any, admin_a: Any
+    ):
         """CORS must not combine Access-Control-Allow-Origin: * with credentials."""
         endpoint = self.get_list_endpoint({})
         response = server.options(
@@ -4715,19 +4733,17 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
             )
 
     @pytest.mark.security
-    def test_security_no_stacktrace_in_error_response(
-        self, server: Any, admin_a: Any
-    ):
+    def test_security_no_stacktrace_in_error_response(self, server: Any, admin_a: Any):
         """Error responses must not leak Python stack traces."""
         endpoint = f"{self.get_list_endpoint({})}/not-a-uuid-at-all!!!"
         response = server.get(
             endpoint, headers=self._get_appropriate_headers(admin_a.jwt)
         )
         body = response.text.lower()
-        for marker in ("traceback", "file \"", "line ", "raise ", "error("):
-            assert marker not in body, (
-                f"Error response leaks stack trace (found '{marker}')"
-            )
+        for marker in ("traceback", 'file "', "line ", "raise ", "error("):
+            assert (
+                marker not in body
+            ), f"Error response leaks stack trace (found '{marker}')"
 
     @pytest.mark.security
     def test_security_PUT_id_mismatch_rejected(
@@ -4780,9 +4796,7 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
                 "Accept-Encoding": encoding,
             },
         )
-        assert response.status_code != 500, (
-            f"Accept-Encoding '{encoding}' caused 500"
-        )
+        assert response.status_code != 500, f"Accept-Encoding '{encoding}' caused 500"
 
     @pytest.mark.security
     def test_security_cors_origin_not_reflected(self, server: Any, admin_a: Any):
@@ -4796,9 +4810,9 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
             },
         )
         acao = response.headers.get("Access-Control-Allow-Origin", "")
-        assert "evil-attacker.com" not in acao, (
-            f"CORS reflects arbitrary origin: {acao}"
-        )
+        assert (
+            "evil-attacker.com" not in acao
+        ), f"CORS reflects arbitrary origin: {acao}"
 
     @pytest.mark.security
     def test_security_cors_null_origin_rejected(self, server: Any, admin_a: Any):
@@ -4824,9 +4838,9 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         response = server.get(
             endpoint, headers=self._get_appropriate_headers(admin_a.jwt)
         )
-        assert response.status_code != 500, (
-            f"Duplicate query param '{dup_param}' caused 500"
-        )
+        assert (
+            response.status_code != 500
+        ), f"Duplicate query param '{dup_param}' caused 500"
 
     @pytest.mark.security
     def test_security_transfer_encoding_smuggling(self, server: Any, admin_a: Any):
@@ -4842,9 +4856,9 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
                 "Content-Length": "16",
             },
         )
-        assert response.status_code != 500, (
-            "Conflicting Transfer-Encoding + Content-Length caused 500"
-        )
+        assert (
+            response.status_code != 500
+        ), "Conflicting Transfer-Encoding + Content-Length caused 500"
 
     @pytest.mark.security
     @pytest.mark.parametrize(
@@ -4865,9 +4879,9 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         response = server.get(
             endpoint, headers=self._get_appropriate_headers(admin_a.jwt)
         )
-        assert response.status_code != 500, (
-            f"SSTI/XSS payload in query caused 500: {xss_payload}"
-        )
+        assert (
+            response.status_code != 500
+        ), f"SSTI/XSS payload in query caused 500: {xss_payload}"
         if response.status_code == 200:
             ct = response.headers.get("Content-Type", "")
             assert "html" not in ct, (
@@ -4886,9 +4900,9 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         )
         if response.status_code == 200:
             cc = response.headers.get("Cache-Control", "")
-            assert "no-store" in cc or "private" in cc or cc == "", (
-                f"Authenticated response missing no-store/private Cache-Control: '{cc}'"
-            )
+            assert (
+                "no-store" in cc or "private" in cc or cc == ""
+            ), f"Authenticated response missing no-store/private Cache-Control: '{cc}'"
 
     @pytest.mark.security
     def test_security_options_does_not_require_auth(self, server: Any):
@@ -4901,9 +4915,11 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
                 "Access-Control-Request-Method": "GET",
             },
         )
-        assert response.status_code in (200, 204, 405), (
-            f"OPTIONS without auth got {response.status_code}; expected 200/204/405"
-        )
+        assert response.status_code in (
+            200,
+            204,
+            405,
+        ), f"OPTIONS without auth got {response.status_code}; expected 200/204/405"
 
     @pytest.mark.security
     @pytest.mark.parametrize(
@@ -4920,9 +4936,7 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         self, server: Any, admin_a: Any, team_a: Any, unicode_payload: str
     ):
         """Unicode tricks in field values must not cause 500 or bypass validation."""
-        base_payload = self.create_payload(
-            name=unicode_payload, team_id=team_a.id
-        )
+        base_payload = self.create_payload(name=unicode_payload, team_id=team_a.id)
         payload = {self.entity_name: base_payload}
         endpoint = self.get_list_endpoint({})
         response = server.post(
@@ -4930,22 +4944,22 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
             json=payload,
             headers=self._get_appropriate_headers(admin_a.jwt),
         )
-        assert response.status_code != 500, (
-            f"Unicode payload caused 500: {repr(unicode_payload)}"
-        )
+        assert (
+            response.status_code != 500
+        ), f"Unicode payload caused 500: {repr(unicode_payload)}"
 
     @pytest.mark.security
-    def test_security_integer_overflow_in_pagination(
-        self, server: Any, admin_a: Any
-    ):
+    def test_security_integer_overflow_in_pagination(self, server: Any, admin_a: Any):
         """Extremely large pagination values must not cause 500."""
         endpoint = f"{self.get_list_endpoint({})}?limit=999999999999999999&offset=999999999999999999"
         response = server.get(
             endpoint, headers=self._get_appropriate_headers(admin_a.jwt)
         )
-        assert response.status_code in (200, 400, 422), (
-            f"Integer overflow in pagination got {response.status_code}"
-        )
+        assert response.status_code in (
+            200,
+            400,
+            422,
+        ), f"Integer overflow in pagination got {response.status_code}"
 
     @pytest.mark.security
     def test_security_negative_pagination(self, server: Any, admin_a: Any):
@@ -4954,9 +4968,11 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         response = server.get(
             endpoint, headers=self._get_appropriate_headers(admin_a.jwt)
         )
-        assert response.status_code in (200, 400, 422), (
-            f"Negative pagination got {response.status_code}"
-        )
+        assert response.status_code in (
+            200,
+            400,
+            422,
+        ), f"Negative pagination got {response.status_code}"
 
     @pytest.mark.security
     def test_security_empty_body_post(self, server: Any, admin_a: Any):
@@ -5006,22 +5022,19 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
             "Basic " + "A" * 10000,
         ],
     )
-    def test_security_malformed_auth_header(
-        self, server: Any, header_value: str
-    ):
+    def test_security_malformed_auth_header(self, server: Any, header_value: str):
         """Malformed auth headers must not cause 500."""
         endpoint = self.get_list_endpoint({})
-        response = server.get(
-            endpoint, headers={"Authorization": header_value}
-        )
-        assert response.status_code in (400, 401, 403, 422), (
-            f"Malformed auth header got {response.status_code}: {header_value[:50]}"
-        )
+        response = server.get(endpoint, headers={"Authorization": header_value})
+        assert response.status_code in (
+            400,
+            401,
+            403,
+            422,
+        ), f"Malformed auth header got {response.status_code}: {header_value[:50]}"
 
     @pytest.mark.security
-    def test_security_response_content_type_is_json(
-        self, server: Any, admin_a: Any
-    ):
+    def test_security_response_content_type_is_json(self, server: Any, admin_a: Any):
         """API responses must set Content-Type to application/json, not text/html."""
         endpoint = self.get_list_endpoint({})
         response = server.get(
@@ -5029,23 +5042,23 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         )
         if response.status_code == 200:
             ct = response.headers.get("Content-Type", "")
-            assert "json" in ct or "toml" in ct or "yaml" in ct or "xml" in ct or "toon" in ct, (
-                f"API response Content-Type is '{ct}'; expected a structured format, not text/html"
-            )
+            assert (
+                "json" in ct
+                or "toml" in ct
+                or "yaml" in ct
+                or "xml" in ct
+                or "toon" in ct
+            ), f"API response Content-Type is '{ct}'; expected a structured format, not text/html"
 
     @pytest.mark.security
-    def test_security_x_content_type_options_nosniff(
-        self, server: Any, admin_a: Any
-    ):
+    def test_security_x_content_type_options_nosniff(self, server: Any, admin_a: Any):
         """Response must include X-Content-Type-Options: nosniff."""
         endpoint = self.get_list_endpoint({})
         response = server.get(
             endpoint, headers=self._get_appropriate_headers(admin_a.jwt)
         )
         xcto = response.headers.get("X-Content-Type-Options", "")
-        assert xcto == "nosniff", (
-            f"Missing or wrong X-Content-Type-Options: '{xcto}'"
-        )
+        assert xcto == "nosniff", f"Missing or wrong X-Content-Type-Options: '{xcto}'"
 
     @pytest.mark.security
     def test_security_x_frame_options(self, server: Any, admin_a: Any):
@@ -5055,9 +5068,10 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
             endpoint, headers=self._get_appropriate_headers(admin_a.jwt)
         )
         xfo = response.headers.get("X-Frame-Options", "")
-        assert xfo.upper() in ("DENY", "SAMEORIGIN"), (
-            f"Missing or wrong X-Frame-Options: '{xfo}'"
-        )
+        assert xfo.upper() in (
+            "DENY",
+            "SAMEORIGIN",
+        ), f"Missing or wrong X-Frame-Options: '{xfo}'"
 
     @pytest.mark.security
     def test_security_referrer_policy(self, server: Any, admin_a: Any):
@@ -5093,6 +5107,7 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
     def test_security_hsts_in_production_mode(self, server: Any, admin_a: Any):
         """HSTS header should be present when APP_ENV=production."""
         import os
+
         if os.environ.get("APP_ENV", "").lower() != "production":
             pytest.skip("HSTS only enforced in production")
         endpoint = self.get_list_endpoint({})
@@ -5121,9 +5136,9 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
             json={self.entity_name: data},
             headers=self._get_appropriate_headers(admin_a.jwt),
         )
-        assert response.status_code != 500, (
-            f"Oversized field value ({len(payload)} chars) caused 500"
-        )
+        assert (
+            response.status_code != 500
+        ), f"Oversized field value ({len(payload)} chars) caused 500"
 
     @pytest.mark.security
     @pytest.mark.parametrize(
@@ -5146,14 +5161,12 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
             json={self.entity_name: {field_name: "polluted"}},
             headers=self._get_appropriate_headers(admin_a.jwt),
         )
-        assert response.status_code != 500, (
-            f"Prototype pollution field '{field_name}' caused 500"
-        )
+        assert (
+            response.status_code != 500
+        ), f"Prototype pollution field '{field_name}' caused 500"
 
     @pytest.mark.security
-    def test_security_json_key_with_dot_notation(
-        self, server: Any, admin_a: Any
-    ):
+    def test_security_json_key_with_dot_notation(self, server: Any, admin_a: Any):
         """Dot-notation keys must not cause ORM injection or 500."""
         endpoint = self.get_list_endpoint({})
         response = server.post(
@@ -5164,9 +5177,7 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         assert response.status_code != 500, "Dot-notation JSON key caused 500"
 
     @pytest.mark.security
-    def test_security_json_key_with_dollar_operator(
-        self, server: Any, admin_a: Any
-    ):
+    def test_security_json_key_with_dollar_operator(self, server: Any, admin_a: Any):
         """NoSQL-style operators must not cause injection or 500."""
         endpoint = self.get_list_endpoint({})
         response = server.post(
@@ -5196,9 +5207,7 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
             f"{endpoint}?name={regex_payload}",
             headers=self._get_appropriate_headers(admin_a.jwt),
         )
-        assert response.status_code != 500, (
-            f"ReDoS payload caused 500: {regex_payload}"
-        )
+        assert response.status_code != 500, f"ReDoS payload caused 500: {regex_payload}"
 
     @pytest.mark.security
     def test_security_concurrent_create_same_unique_field(
@@ -5215,14 +5224,12 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         r1 = server.post(endpoint, json={self.entity_name: data}, headers=headers)
         r2 = server.post(endpoint, json={self.entity_name: data}, headers=headers)
         assert r1.status_code != 500, "First create caused 500"
-        assert r2.status_code != 500, (
-            "Duplicate unique value caused 500 instead of 409/422"
-        )
+        assert (
+            r2.status_code != 500
+        ), "Duplicate unique value caused 500 instead of 409/422"
 
     @pytest.mark.security
-    def test_security_wildcard_search_not_unbounded(
-        self, server: Any, admin_a: Any
-    ):
+    def test_security_wildcard_search_not_unbounded(self, server: Any, admin_a: Any):
         """Wildcard search (name=*) must not return unbounded results or 500."""
         if not self.supports_search:
             pytest.skip("Entity does not support search")
@@ -5233,9 +5240,7 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         assert response.status_code != 500, "Wildcard search caused 500"
 
     @pytest.mark.security
-    def test_security_multipart_form_rejected(
-        self, server: Any, admin_a: Any
-    ):
+    def test_security_multipart_form_rejected(self, server: Any, admin_a: Any):
         """Multipart form data on a JSON API endpoint must not cause 500."""
         endpoint = self.get_list_endpoint({})
         response = server.post(
@@ -5252,9 +5257,12 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         response = server.get(
             endpoint, headers=self._get_appropriate_headers(admin_a.jwt)
         )
-        assert response.status_code in (200, 400, 414, 422), (
-            f"8000-char URL got {response.status_code}"
-        )
+        assert response.status_code in (
+            200,
+            400,
+            414,
+            422,
+        ), f"8000-char URL got {response.status_code}"
 
     @pytest.mark.security
     def test_security_newline_in_header_value(self, server: Any, admin_a: Any):
@@ -5273,11 +5281,10 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
             pass
 
     @pytest.mark.security
-    def test_security_expired_jwt_returns_401_not_500(
-        self, server: Any, admin_a: Any
-    ):
+    def test_security_expired_jwt_returns_401_not_500(self, server: Any, admin_a: Any):
         """An expired JWT must return 401, not 500."""
         import jwt as pyjwt
+
         expired_payload = {
             "sub": admin_a.id,
             "exp": 0,
@@ -5285,6 +5292,7 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
             "jti": str(uuid.uuid4()),
         }
         from zephyrex.lib.Environment import env
+
         expired_token = pyjwt.encode(
             expired_payload, env("JWT_SECRET"), algorithm="HS256"
         )
@@ -5292,14 +5300,16 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         response = server.get(
             endpoint, headers={"Authorization": f"Bearer {expired_token}"}
         )
-        assert response.status_code in (401, 403), (
-            f"Expired JWT got {response.status_code}; expected 401/403"
-        )
+        assert response.status_code in (
+            401,
+            403,
+        ), f"Expired JWT got {response.status_code}; expected 401/403"
 
     @pytest.mark.security
     def test_security_jwt_none_algorithm(self, server: Any, admin_a: Any):
         """JWT with alg:none must be rejected."""
         import jwt as pyjwt
+
         payload = {
             "sub": admin_a.id,
             "jti": str(uuid.uuid4()),
@@ -5309,14 +5319,13 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         response = server.get(
             endpoint, headers={"Authorization": f"Bearer {none_token}"}
         )
-        assert response.status_code in (401, 403), (
-            f"JWT alg:none got {response.status_code}; expected 401/403"
-        )
+        assert response.status_code in (
+            401,
+            403,
+        ), f"JWT alg:none got {response.status_code}; expected 401/403"
 
     @pytest.mark.security
-    def test_security_response_does_not_contain_sql(
-        self, server: Any, admin_a: Any
-    ):
+    def test_security_response_does_not_contain_sql(self, server: Any, admin_a: Any):
         """Error responses must not leak SQL queries."""
         endpoint = f"{self.get_list_endpoint({})}/not-a-valid-id"
         response = server.get(
@@ -5345,9 +5354,9 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         response = server.get(
             endpoint, headers=self._get_appropriate_headers(admin_a.jwt)
         )
-        assert response.status_code != 500, (
-            f"Sort injection caused 500: {sort_injection}"
-        )
+        assert (
+            response.status_code != 500
+        ), f"Sort injection caused 500: {sort_injection}"
 
     @pytest.mark.security
     def test_security_delete_returns_no_body_data(
@@ -5363,22 +5372,20 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
             endpoint, headers=self._get_appropriate_headers(admin_a.jwt)
         )
         if response.status_code == 204:
-            assert response.text == "" or response.text is None, (
-                "DELETE 204 returned body content"
-            )
+            assert (
+                response.text == "" or response.text is None
+            ), "DELETE 204 returned body content"
         elif response.status_code == 200:
             body = response.json()
             if isinstance(body, dict):
                 for v in body.values():
                     if isinstance(v, dict):
-                        assert "password" not in str(v).lower(), (
-                            "DELETE response leaked password field"
-                        )
+                        assert (
+                            "password" not in str(v).lower()
+                        ), "DELETE response leaked password field"
 
     @pytest.mark.security
-    def test_security_idempotent_delete(
-        self, server: Any, admin_a: Any, team_a: Any
-    ):
+    def test_security_idempotent_delete(self, server: Any, admin_a: Any, team_a: Any):
         """Double-DELETE must return 404 on second call, not 500."""
         entity = self._create(
             server, admin_a.jwt, admin_a.id, team_a.id, key="idempotent_del"
@@ -5390,9 +5397,11 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         if r1.status_code == 405:
             pytest.skip("Entity does not support DELETE")
         r2 = server.delete(endpoint, headers=headers)
-        assert r2.status_code in (204, 404, 410), (
-            f"Second DELETE got {r2.status_code}; expected 204/404/410"
-        )
+        assert r2.status_code in (
+            204,
+            404,
+            410,
+        ), f"Second DELETE got {r2.status_code}; expected 204/404/410"
 
     # ------------------------------------------------------------------ #
     # Security — Gap fills (corpus §1, §4, §20, §24, §34, §37, §38, §39, §41, §45)
@@ -5413,7 +5422,9 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         headers = self._get_appropriate_headers(admin_a.jwt)
         dr = server.delete(detail, headers=headers)
         if dr.status_code in (403, 405):
-            pytest.skip("Entity does not support DELETE or requires elevated permissions")
+            pytest.skip(
+                "Entity does not support DELETE or requires elevated permissions"
+            )
         if dr.status_code not in (200, 204):
             pytest.skip(f"DELETE returned {dr.status_code}")
         response = server.get(detail, headers=headers)
@@ -5426,30 +5437,32 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
                         returned_id = v.get("id")
                         break
             if returned_id == entity["id"]:
-                assert False, (
-                    "Deleted entity still accessible at same ID — soft-delete leak"
-                )
+                assert (
+                    False
+                ), "Deleted entity still accessible at same ID — soft-delete leak"
         else:
-            assert response.status_code in (404, 410), (
-                f"Deleted entity returned {response.status_code}; expected 404/410"
-            )
+            assert response.status_code in (
+                404,
+                410,
+            ), f"Deleted entity returned {response.status_code}; expected 404/410"
 
     @pytest.mark.security
     def test_security_bola_via_foreign_key(
         self, server: Any, admin_a: Any, admin_b: Any, team_a: Any, team_b: Any
     ):
         """Accessing entity via another user's foreign key must fail."""
-        entity = self._create(
-            server, admin_a.jwt, admin_a.id, team_a.id, key="bola_fk"
-        )
+        entity = self._create(server, admin_a.jwt, admin_a.id, team_a.id, key="bola_fk")
         path_parent_ids = self._extract_path_parent_ids(entity)
         detail = self.get_detail_endpoint(entity["id"], path_parent_ids)
         response = server.get(
             detail, headers=self._get_appropriate_headers(admin_b.jwt)
         )
-        assert response.status_code in (200, 403, 404, 405), (
-            f"Cross-user access via FK got {response.status_code}; expected 200/403/404/405"
-        )
+        assert response.status_code in (
+            200,
+            403,
+            404,
+            405,
+        ), f"Cross-user access via FK got {response.status_code}; expected 200/403/404/405"
         if response.status_code == 200:
             body = response.json()
             for v in (body.values() if isinstance(body, dict) else [body]):
@@ -5461,7 +5474,9 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         self, server: Any, admin_a: Any, admin_b: Any, team_a: Any
     ):
         """Client-supplied user_id in create body must not override the requester."""
-        data = self.create_payload(name=f"spoofed_{uuid.uuid4().hex[:8]}", team_id=team_a.id)
+        data = self.create_payload(
+            name=f"spoofed_{uuid.uuid4().hex[:8]}", team_id=team_a.id
+        )
         data["user_id"] = admin_b.id
         data["created_by_user_id"] = admin_b.id
         endpoint = self.get_list_endpoint({})
@@ -5476,9 +5491,9 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
                 if isinstance(v, dict):
                     owner = v.get("created_by_user_id") or v.get("user_id")
                     if owner:
-                        assert owner != admin_b.id, (
-                            "Client-supplied user_id was accepted — ownership spoofing"
-                        )
+                        assert (
+                            owner != admin_b.id
+                        ), "Client-supplied user_id was accepted — ownership spoofing"
 
     @pytest.mark.security
     @pytest.mark.parametrize(
@@ -5494,6 +5509,7 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
     ):
         """NaN/Infinity in numeric fields must not cause 500."""
         import math
+
         endpoint = self.get_list_endpoint({})
         try:
             response = server.post(
@@ -5504,16 +5520,12 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
                     "Content-Type": "application/json",
                 },
             )
-            assert response.status_code != 500, (
-                f"JSON {json_value} caused 500"
-            )
+            assert response.status_code != 500, f"JSON {json_value} caused 500"
         except (ValueError, OverflowError):
             pass
 
     @pytest.mark.security
-    def test_security_json_huge_integer(
-        self, server: Any, admin_a: Any
-    ):
+    def test_security_json_huge_integer(self, server: Any, admin_a: Any):
         """Integer exceeding 2^53 must not cause 500."""
         endpoint = self.get_list_endpoint({})
         response = server.post(
@@ -5546,14 +5558,10 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         elif r2.status_code in (403, 404):
             pass
         else:
-            assert r2.status_code != 500, (
-                f"Cross-user cache check got {r2.status_code}"
-            )
+            assert r2.status_code != 500, f"Cross-user cache check got {r2.status_code}"
 
     @pytest.mark.security
-    def test_security_error_does_not_disclose_scope(
-        self, server: Any, admin_a: Any
-    ):
+    def test_security_error_does_not_disclose_scope(self, server: Any, admin_a: Any):
         """403/404 error must not reveal what permissions exist."""
         endpoint = f"{self.get_list_endpoint({})}/{uuid.uuid4()}"
         response = server.get(
@@ -5565,9 +5573,9 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
             for keyword in ("permission", "scope", "privilege"):
                 if keyword in entity_low:
                     continue
-                assert keyword not in body or "not found" in body, (
-                    f"Error response discloses authorization scope (found '{keyword}')"
-                )
+                assert (
+                    keyword not in body or "not found" in body
+                ), f"Error response discloses authorization scope (found '{keyword}')"
 
     @pytest.mark.security
     def test_security_timing_404_vs_403(
@@ -5575,6 +5583,7 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
     ):
         """Nonexistent and forbidden resources should have similar response times."""
         import time
+
         headers_a = self._get_appropriate_headers(admin_a.jwt)
         headers_b = self._get_appropriate_headers(admin_b.jwt)
         nonexistent = f"{self.get_list_endpoint({})}/{uuid.uuid4()}"
@@ -5622,9 +5631,10 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         detail = self.get_detail_endpoint(entity["id"], path_parent_ids)
         get_r = server.get(detail, headers=self._get_appropriate_headers(admin_a.jwt))
         head_r = server.head(detail, headers=self._get_appropriate_headers(admin_a.jwt))
-        assert head_r.status_code == get_r.status_code or head_r.status_code in (200, 405), (
-            f"HEAD got {head_r.status_code} but GET got {get_r.status_code}"
-        )
+        assert head_r.status_code == get_r.status_code or head_r.status_code in (
+            200,
+            405,
+        ), f"HEAD got {head_r.status_code} but GET got {get_r.status_code}"
 
     @pytest.mark.security
     def test_security_TRACE_disabled(self, server: Any, admin_a: Any):
@@ -5633,27 +5643,28 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         response = server.request(
             "TRACE", endpoint, headers=self._get_appropriate_headers(admin_a.jwt)
         )
-        assert response.status_code in (405, 404), (
-            f"TRACE returned {response.status_code}; must be disabled (405)"
-        )
+        assert response.status_code in (
+            405,
+            404,
+        ), f"TRACE returned {response.status_code}; must be disabled (405)"
 
     @pytest.mark.security
-    def test_security_trailing_slash_same_auth(
-        self, server: Any, admin_a: Any
-    ):
+    def test_security_trailing_slash_same_auth(self, server: Any, admin_a: Any):
         """Trailing slash must not bypass authorization."""
         endpoint = self.get_list_endpoint({})
         r1 = server.get(endpoint, headers=self._get_appropriate_headers(admin_a.jwt))
-        r2 = server.get(endpoint + "/", headers=self._get_appropriate_headers(admin_a.jwt))
+        r2 = server.get(
+            endpoint + "/", headers=self._get_appropriate_headers(admin_a.jwt)
+        )
         if r1.status_code == 200:
-            assert r2.status_code in (200, 307, 404), (
-                f"Trailing slash got {r2.status_code} vs {r1.status_code}"
-            )
+            assert r2.status_code in (
+                200,
+                307,
+                404,
+            ), f"Trailing slash got {r2.status_code} vs {r1.status_code}"
 
     @pytest.mark.security
-    def test_security_double_slash_same_auth(
-        self, server: Any, admin_a: Any
-    ):
+    def test_security_double_slash_same_auth(self, server: Any, admin_a: Any):
         """Double slash must not bypass authorization."""
         endpoint = self.get_list_endpoint({}).replace("/v1/", "//v1//")
         response = server.get(
@@ -5678,22 +5689,27 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
                 override_header: "DELETE",
             },
         )
-        assert response.status_code in (200, 401, 403, 404, 405, 422), (
-            f"Method override via {override_header} caused {response.status_code}"
-        )
+        assert response.status_code in (
+            200,
+            401,
+            403,
+            404,
+            405,
+            422,
+        ), f"Method override via {override_header} caused {response.status_code}"
 
     @pytest.mark.security
-    def test_security_method_override_query_disabled(
-        self, server: Any, admin_a: Any
-    ):
+    def test_security_method_override_query_disabled(self, server: Any, admin_a: Any):
         """Method override via query parameter must not work."""
         endpoint = f"{self.get_list_endpoint({})}?_method=DELETE"
         response = server.get(
             endpoint, headers=self._get_appropriate_headers(admin_a.jwt)
         )
-        assert response.status_code in (200, 400, 422), (
-            f"Query method override caused {response.status_code}"
-        )
+        assert response.status_code in (
+            200,
+            400,
+            422,
+        ), f"Query method override caused {response.status_code}"
 
     @pytest.mark.security
     def test_security_include_cannot_bypass_auth(
@@ -5740,14 +5756,14 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         response = server.get(
             endpoint, headers=self._get_appropriate_headers(admin_a.jwt)
         )
-        assert response.status_code in (400, 404, 422), (
-            f"Double-encoded traversal got {response.status_code}"
-        )
+        assert response.status_code in (
+            400,
+            404,
+            422,
+        ), f"Double-encoded traversal got {response.status_code}"
 
     @pytest.mark.security
-    def test_security_error_does_not_echo_password(
-        self, server: Any, admin_a: Any
-    ):
+    def test_security_error_does_not_echo_password(self, server: Any, admin_a: Any):
         """Error responses must not echo back password fields."""
         endpoint = self.get_list_endpoint({})
         response = server.post(
@@ -5772,9 +5788,9 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         resolved = {k: v() if callable(v) else v for k, v in self.update_fields.items()}
         r1 = server.delete(detail, headers=headers)
         r2 = server.put(detail, json={self.entity_name: resolved}, headers=headers)
-        assert r1.status_code != 500 and r2.status_code != 500, (
-            f"Concurrent delete+update caused 500: delete={r1.status_code} update={r2.status_code}"
-        )
+        assert (
+            r1.status_code != 500 and r2.status_code != 500
+        ), f"Concurrent delete+update caused 500: delete={r1.status_code} update={r2.status_code}"
 
     # ------------------------------------------------------------------ #
     # Security — Corpus gap fills batch 3 (§6, §9, §24, §25, §75, §78, §92)
@@ -5802,9 +5818,9 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
             body = response.json()
             for v in body.values():
                 if isinstance(v, dict) and "created_at" in v:
-                    assert v["created_at"] != "2000-01-01T00:00:00Z", (
-                        "Server-managed created_at was overwritten"
-                    )
+                    assert (
+                        v["created_at"] != "2000-01-01T00:00:00Z"
+                    ), "Server-managed created_at was overwritten"
 
     @pytest.mark.security
     def test_security_bulk_create_per_record_auth(
@@ -5813,10 +5829,12 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         """Bulk create must apply authorization to each record."""
         items = []
         for i in range(3):
-            items.append(self.create_payload(
-                name=f"bulk_auth_{i}_{uuid.uuid4().hex[:4]}",
-                team_id=team_a.id,
-            ))
+            items.append(
+                self.create_payload(
+                    name=f"bulk_auth_{i}_{uuid.uuid4().hex[:4]}",
+                    team_id=team_a.id,
+                )
+            )
         endpoint = self.get_list_endpoint({})
         response = server.post(
             endpoint,
@@ -5832,9 +5850,7 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         """Unique constraint errors must not leak database internals."""
         if not self.unique_fields:
             pytest.skip("No unique fields")
-        entity = self._create(
-            server, admin_a.jwt, admin_a.id, team_a.id, key="uc_norm"
-        )
+        entity = self._create(server, admin_a.jwt, admin_a.id, team_a.id, key="uc_norm")
         duplicate = self.create_payload(
             name=entity.get("name", f"dup_{uuid.uuid4().hex[:4]}"),
             team_id=team_a.id,
@@ -5848,9 +5864,9 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         if response.status_code >= 400:
             body = response.text.lower()
             assert "integrityerror" not in body, "Unique constraint leaked raw error"
-            assert "sqlite" not in body and "postgresql" not in body, (
-                "Unique constraint leaked database type"
-            )
+            assert (
+                "sqlite" not in body and "postgresql" not in body
+            ), "Unique constraint leaked database type"
 
     @pytest.mark.security
     def test_security_state_field_not_client_settable(
@@ -5872,9 +5888,7 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         assert response.status_code != 500
 
     @pytest.mark.security
-    def test_security_log_injection_via_user_agent(
-        self, server: Any, admin_a: Any
-    ):
+    def test_security_log_injection_via_user_agent(self, server: Any, admin_a: Any):
         """User-Agent with newlines must not inject log entries."""
         endpoint = self.get_list_endpoint({})
         response = server.get(

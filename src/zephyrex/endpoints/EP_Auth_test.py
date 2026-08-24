@@ -876,9 +876,7 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
         model_registry = server.app.state.model_registry
         db_session = model_registry.DB.session()
         try:
-            db_model = FailedLoginAttemptModel.DB(
-                model_registry.DB.manager.Base
-            )
+            db_model = FailedLoginAttemptModel.DB(model_registry.DB.manager.Base)
             # Hard-delete (not the BLL soft-delete) so the BLL.count(...)
             # in UserManager.auth no longer sees these rows.
             with include_deleted(db_session):
@@ -888,9 +886,7 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
             db_session.commit()
         except Exception as exc:
             db_session.rollback()
-            logger.warning(
-                "test_POST_200_authorize_body cleanup failed: %s", exc
-            )
+            logger.warning("test_POST_200_authorize_body cleanup failed: %s", exc)
         finally:
             db_session.close()
 
@@ -1311,15 +1307,13 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
             "/v1/user",
             headers=self._get_appropriate_headers(admin_a.jwt),
         )
-        assert response.status_code == 200, (
-            f"Expected 200 reading current user; got {response.status_code}"
-        )
+        assert (
+            response.status_code == 200
+        ), f"Expected 200 reading current user; got {response.status_code}"
         leaked = self._walk_for_secret_fields(
             response.json(), self.SECRET_RESPONSE_FIELDS
         )
-        assert not leaked, (
-            f"User response leaked secret field(s) {leaked}"
-        )
+        assert not leaked, f"User response leaked secret field(s) {leaked}"
 
     # ------------------------------------------------------------------
     # Security: explicit-deny / negative-path auth tests.
@@ -1352,9 +1346,7 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
         forged = self._alg_none_jwt(
             {"sub": admin_a.id, "email": admin_a.email, "exp": 9999999999}
         )
-        response = server.get(
-            "/v1", headers={"Authorization": f"Bearer {forged}"}
-        )
+        response = server.get("/v1", headers={"Authorization": f"Bearer {forged}"})
         assert (
             response.status_code == 401
         ), f"alg:none JWT must be rejected; got {response.status_code}"
@@ -1368,9 +1360,7 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
             alg="HS256",
             key="attacker-controlled-secret",
         )
-        response = server.get(
-            "/v1", headers={"Authorization": f"Bearer {forged}"}
-        )
+        response = server.get("/v1", headers={"Authorization": f"Bearer {forged}"})
         assert (
             response.status_code == 401
         ), f"JWT signed with wrong secret must be rejected; got {response.status_code}"
@@ -1389,18 +1379,14 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
             alg="HS256",
             key=env("JWT_SECRET"),
         )
-        response = server.get(
-            "/v1", headers={"Authorization": f"Bearer {forged}"}
-        )
+        response = server.get("/v1", headers={"Authorization": f"Bearer {forged}"})
         assert (
             response.status_code == 401
         ), f"Expired JWT must be rejected; got {response.status_code}"
 
     @pytest.mark.security
     @pytest.mark.auth
-    def test_GET_401_jwt_modified_sub_claim(
-        self, server: Any, admin_a: Any
-    ) -> None:
+    def test_GET_401_jwt_modified_sub_claim(self, server: Any, admin_a: Any) -> None:
         """JWT whose body is rewritten without re-signing must be rejected."""
         import base64
         import json as _json
@@ -1413,15 +1399,11 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
         body = _json.loads(base64.urlsafe_b64decode(pad(parts[1])))
         body["sub"] = str(uuid.uuid4())  # impersonate a different user
         new_body = (
-            base64.urlsafe_b64encode(_json.dumps(body).encode())
-            .rstrip(b"=")
-            .decode()
+            base64.urlsafe_b64encode(_json.dumps(body).encode()).rstrip(b"=").decode()
         )
         tampered = f"{parts[0]}.{new_body}.{parts[2]}"
 
-        response = server.get(
-            "/v1", headers={"Authorization": f"Bearer {tampered}"}
-        )
+        response = server.get("/v1", headers={"Authorization": f"Bearer {tampered}"})
         assert (
             response.status_code == 401
         ), f"Tampered JWT body must invalidate signature; got {response.status_code}"
@@ -1447,10 +1429,14 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
             last_name="User",
         )
         # Pull the user's session and revoke it directly.
-        sessions = server.get(
-            "/v1/session",
-            headers=self._get_appropriate_headers(test_user.jwt),
-        ).json().get("sessions", [])
+        sessions = (
+            server.get(
+                "/v1/session",
+                headers=self._get_appropriate_headers(test_user.jwt),
+            )
+            .json()
+            .get("sessions", [])
+        )
         if not sessions:
             pytest.skip("No session created for test_user")
 
@@ -1472,9 +1458,7 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
 
     @pytest.mark.security
     @pytest.mark.auth
-    def test_POST_429_after_many_failed_logins(
-        self, server: Any, db: Any
-    ) -> None:
+    def test_POST_429_after_many_failed_logins(self, server: Any, db: Any) -> None:
         """Repeated wrong-password attempts must trigger account lockout (429)."""
         from conftest import create_user
 
@@ -1496,9 +1480,9 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
             if r.status_code == 429:
                 saw_lockout = True
                 break
-            assert r.status_code == 401, (
-                f"Wrong password should be 401 until lockout; got {r.status_code}"
-            )
+            assert (
+                r.status_code == 401
+            ), f"Wrong password should be 401 until lockout; got {r.status_code}"
 
         assert saw_lockout, (
             f"Account must lock after repeated failures (BLL_Auth.py:1058-1079); "
@@ -1528,15 +1512,13 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
         )
         if response.status_code == 200:
             payload = response.json()
-            assert "email" not in payload, (
-                "/v1/user/{id} returned a user record; this is an IDOR vector."
-            )
+            assert (
+                "email" not in payload
+            ), "/v1/user/{id} returned a user record; this is an IDOR vector."
 
     @pytest.mark.security
     @pytest.mark.auth
-    def test_POST_no_username_enumeration_in_error(
-        self, server: Any, db: Any
-    ) -> None:
+    def test_POST_no_username_enumeration_in_error(self, server: Any, db: Any) -> None:
         """Login error message must NOT distinguish 'no such user' from 'wrong password'."""
         from conftest import create_user
 
@@ -1558,12 +1540,8 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
                 "password": "wrong",
             },
         )
-        assert (
-            wrong_pw.status_code == no_user.status_code == 401
-        ), "Both should be 401"
-        assert (
-            wrong_pw.json().get("detail") == no_user.json().get("detail")
-        ), (
+        assert wrong_pw.status_code == no_user.status_code == 401, "Both should be 401"
+        assert wrong_pw.json().get("detail") == no_user.json().get("detail"), (
             "Error detail must be identical for nonexistent user vs wrong password "
             "(prevents username enumeration)."
         )
@@ -1638,9 +1616,7 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
 
     @pytest.mark.security
     @pytest.mark.auth
-    def test_DELETE_session_403_cross_user(
-        self, server: Any, db: Any
-    ) -> None:
+    def test_DELETE_session_403_cross_user(self, server: Any, db: Any) -> None:
         """A user must not be able to delete another user's session."""
         from conftest import create_user
 
@@ -1658,10 +1634,14 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
             first_name="SessY",
             last_name="User",
         )
-        x_sessions = server.get(
-            "/v1/session",
-            headers=self._get_appropriate_headers(user_x.jwt),
-        ).json().get("sessions", [])
+        x_sessions = (
+            server.get(
+                "/v1/session",
+                headers=self._get_appropriate_headers(user_x.jwt),
+            )
+            .json()
+            .get("sessions", [])
+        )
         if not x_sessions:
             pytest.skip("user_x has no session to target")
         target = x_sessions[0]["id"]
@@ -3000,7 +2980,9 @@ class TestInvitationEndpoints(AbstractEPTest):
 
         # Add the invitee using the invitation manager (we need to add endpoint for this in real implementation)
         # For now, simulate by having the invitee email added via BLL
-        from zephyrex.extensions.auth_invitations.BLL_Invitations import InvitationManager
+        from zephyrex.extensions.auth_invitations.BLL_Invitations import (
+            InvitationManager,
+        )
 
         inv_manager = InvitationManager(
             requester_id=admin_a.id,
@@ -3113,7 +3095,9 @@ class TestInvitationEndpoints(AbstractEPTest):
 
         # Add the invitee using the invitation manager (we need to add endpoint for this in real implementation)
         # For now, simulate by having the invitee email added via BLL
-        from zephyrex.extensions.auth_invitations.BLL_Invitations import InvitationManager
+        from zephyrex.extensions.auth_invitations.BLL_Invitations import (
+            InvitationManager,
+        )
 
         inv_manager = InvitationManager(
             requester_id=admin_a.id,
@@ -3215,7 +3199,9 @@ class TestInvitationEndpoints(AbstractEPTest):
         # Add the email as an invitee to the invitation
         from zephyrex.database.DatabaseManager import DatabaseManager
         from zephyrex.lib.Environment import env
-        from zephyrex.extensions.auth_invitations.BLL_Invitations import InvitationManager
+        from zephyrex.extensions.auth_invitations.BLL_Invitations import (
+            InvitationManager,
+        )
 
         inv_manager = InvitationManager(
             requester_id=admin_a.id,
@@ -3467,7 +3453,9 @@ class TestInvitationEndpoints(AbstractEPTest):
         user2_response = server.post("/v1/user", json=user2_payload)
         user2 = user2_response.json()
 
-        from zephyrex.extensions.auth_invitations.BLL_Invitations import InvitationManager
+        from zephyrex.extensions.auth_invitations.BLL_Invitations import (
+            InvitationManager,
+        )
 
         inv_manager = InvitationManager(
             requester_id=admin_a.id,
@@ -3729,9 +3717,9 @@ class TestInvitationEndpoints(AbstractEPTest):
             json=post_payload,
             headers=self._get_appropriate_headers(admin_a.jwt),
         )
-        assert post_resp.status_code == 201, (
-            f"Could not create max_uses=1 invitation; got {post_resp.status_code}"
-        )
+        assert (
+            post_resp.status_code == 201
+        ), f"Could not create max_uses=1 invitation; got {post_resp.status_code}"
         invitation = self._extract_invitation_from_response(post_resp)
         endpoint = f"/v1/invitation/{invitation['id']}"
         payload = {"invitation": {"invitation_code": invitation["code"]}}
@@ -3792,9 +3780,7 @@ class TestInvitationEndpoints(AbstractEPTest):
             403,
             404,
             422,
-        ), (
-            f"Made-up invitation code must be rejected; got {response.status_code}"
-        )
+        ), f"Made-up invitation code must be rejected; got {response.status_code}"
 
     @pytest.mark.security
     @pytest.mark.auth

@@ -44,7 +44,6 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, 
 
 from zephyrex.extensions.MigrationOwnership import env_is_table_owned_by_extension
 
-
 __all__ = [
     "MigrationOrderingError",
     "compute_migration_order",
@@ -77,8 +76,14 @@ class MigrationOrderingError(Exception):
         super().__init__(msg)
 
     def _format_message(self) -> str:
-        ext_chain = " -> ".join(self.cycle_extensions) if self.cycle_extensions else "<unknown>"
-        edges = "; ".join(self.edge_descriptions) if self.edge_descriptions else "<no edge detail>"
+        ext_chain = (
+            " -> ".join(self.cycle_extensions) if self.cycle_extensions else "<unknown>"
+        )
+        edges = (
+            "; ".join(self.edge_descriptions)
+            if self.edge_descriptions
+            else "<no edge detail>"
+        )
         tables = (
             "; ".join(
                 f"{s_t}.{s_c} -> {r_t}.{r_c}"
@@ -145,7 +150,9 @@ def compute_migration_order(
             nodes.add(owner)
             for fk in getattr(table, "foreign_keys", ()) or ():
                 ref_col = getattr(fk, "column", None)
-                ref_table = getattr(ref_col, "table", None) if ref_col is not None else None
+                ref_table = (
+                    getattr(ref_col, "table", None) if ref_col is not None else None
+                )
                 if ref_table is None:
                     # Unresolved FK target (table not yet added to
                     # metadata). Skip — caller passed pre-resolution
@@ -248,7 +255,9 @@ def _insort(seq: List[str], item: str) -> None:
     seq.append(item)
 
 
-def _trace_cycle(remaining: Sequence[str], successors: Mapping[str, Set[str]]) -> List[str]:
+def _trace_cycle(
+    remaining: Sequence[str], successors: Mapping[str, Set[str]]
+) -> List[str]:
     """Return one cycle through ``remaining`` (DFS-based extraction).
 
     ``remaining`` is the set of nodes Kahn's algorithm could not flatten
@@ -270,7 +279,7 @@ def _trace_cycle(remaining: Sequence[str], successors: Mapping[str, Set[str]]) -
             return path
         nxt = next_candidates[0]
         if nxt in seen:
-            return path[seen[nxt]:]
+            return path[seen[nxt] :]
         seen[nxt] = len(path)
         path.append(nxt)
         current = nxt

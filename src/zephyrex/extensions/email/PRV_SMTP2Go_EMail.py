@@ -284,19 +284,30 @@ class Smtp2goProvider(AbstractEmailProvider):
 
     @staticmethod
     @ability(name="email_get")
-    async def get_emails(provider_instance, folder_name="Inbox", max_emails=10, page_size=10):
+    async def get_emails(
+        provider_instance, folder_name="Inbox", max_emails=10, page_size=10
+    ):
         logger.warning("Getting emails is not supported by SMTP2go")
         return []
 
     @staticmethod
     @ability(name="email_draft")
-    async def create_draft_email(provider_instance, recipient, subject, body, attachments=None, importance="normal"):
+    async def create_draft_email(
+        provider_instance,
+        recipient,
+        subject,
+        body,
+        attachments=None,
+        importance="normal",
+    ):
         logger.warning("Creating drafts is not supported by SMTP2go")
         return "Creating draft emails is not supported by SMTP2go"
 
     @staticmethod
     @ability(name="email_search")
-    async def search_emails(provider_instance, query, folder_name="Inbox", max_emails=10, date_range=None):
+    async def search_emails(
+        provider_instance, query, folder_name="Inbox", max_emails=10, date_range=None
+    ):
         logger.warning("Searching emails is not supported by SMTP2go")
         return []
 
@@ -332,7 +343,9 @@ class Smtp2goProvider(AbstractEmailProvider):
             raise map_validation_error(validation_error)
 
         legacy_result = await cls.send(provider_instance, message)
-        if isinstance(legacy_result, str) and legacy_result.lower().startswith("failed"):
+        if isinstance(legacy_result, str) and legacy_result.lower().startswith(
+            "failed"
+        ):
             status = _extract_status_code(legacy_result)
             if status is not None:
                 raise map_upstream_status(status, legacy_result, provider="smtp2go")

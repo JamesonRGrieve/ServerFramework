@@ -35,6 +35,7 @@ Telemetry must NEVER fail a request. Callers are expected to wrap
 emission calls in ``try/except`` (the rotation manager does this); the
 backends themselves swallow internal errors as a defense in depth.
 """
+
 from __future__ import annotations
 
 import time
@@ -51,7 +52,6 @@ from typing import (
     Optional,
     Tuple,
 )
-
 
 # ---------------------------------------------------------------------------
 # Span nesting — module-level so every backend's ``span()`` shares the
@@ -209,9 +209,7 @@ class InMemoryMetricsBackend(MetricsBackend):
     def __init__(self) -> None:
         self.counters: Dict[Tuple[str, FrozenSet[Tuple[str, str]]], float] = {}
         self.gauges: Dict[Tuple[str, FrozenSet[Tuple[str, str]]], float] = {}
-        self.histograms: Dict[
-            Tuple[str, FrozenSet[Tuple[str, str]]], List[float]
-        ] = {}
+        self.histograms: Dict[Tuple[str, FrozenSet[Tuple[str, str]]], List[float]] = {}
         self.spans: List[Dict[str, Any]] = []
 
     # --- counters / gauges / histograms -----------------------------------
@@ -268,9 +266,7 @@ class InMemoryMetricsBackend(MetricsBackend):
             yield record
         finally:
             record["ended_at"] = time.monotonic()
-            record["duration_ms"] = (
-                record["ended_at"] - record["started_at"]
-            ) * 1000.0
+            record["duration_ms"] = (record["ended_at"] - record["started_at"]) * 1000.0
             self.spans.append(record)
             _current_span_id_var.reset(token)
 
@@ -401,7 +397,9 @@ class PrometheusMetricsBackend(MetricsBackend):
                 # Surface span timing as a histogram so dashboards can
                 # see attempt latency without a separate tracing pipe.
                 label_dict = {k: str(v) for k, v in record["tags"].items()}
-                self.histogram(f"{name}.duration_ms", duration_ms, labels=label_dict or None)
+                self.histogram(
+                    f"{name}.duration_ms", duration_ms, labels=label_dict or None
+                )
             except Exception:
                 pass
             _current_span_id_var.reset(token)
@@ -501,9 +499,7 @@ class OpenTelemetryMetricsBackend(MetricsBackend):
         labels: Optional[Dict[str, str]] = None,
     ) -> None:
         try:
-            self._get_histogram(name).record(
-                float(value), attributes=labels or {}
-            )
+            self._get_histogram(name).record(float(value), attributes=labels or {})
         except Exception:
             return None
 
@@ -541,9 +537,7 @@ class OpenTelemetryMetricsBackend(MetricsBackend):
             yield record
         finally:
             record["ended_at"] = time.monotonic()
-            record["duration_ms"] = (
-                record["ended_at"] - record["started_at"]
-            ) * 1000.0
+            record["duration_ms"] = (record["ended_at"] - record["started_at"]) * 1000.0
             _current_span_id_var.reset(token)
 
 

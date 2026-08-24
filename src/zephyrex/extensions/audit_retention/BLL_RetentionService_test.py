@@ -46,16 +46,12 @@ class _Bucket:
             if datetime.fromisoformat(row["created_at"]) < cutoff
         ]
 
-    def archive_ok(
-        self, rows: Sequence[Dict[str, Any]], target: str
-    ) -> bool:
+    def archive_ok(self, rows: Sequence[Dict[str, Any]], target: str) -> bool:
         self.archive_calls.extend(rows)
         self.archive_targets.append(target)
         return True
 
-    def archive_fail(
-        self, rows: Sequence[Dict[str, Any]], target: str
-    ) -> bool:
+    def archive_fail(self, rows: Sequence[Dict[str, Any]], target: str) -> bool:
         return False
 
     def delete(self, rows: Sequence[Dict[str, Any]]) -> int:

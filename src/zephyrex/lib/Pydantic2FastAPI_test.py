@@ -905,11 +905,9 @@ class TestQueryParameterInjection:
             body = response.json()
             detail = body.get("detail", {})
             details = (
-                detail.get("details")
-                or detail.get("errors")
-                or []
-            ) if isinstance(detail, dict) else (
-                detail if isinstance(detail, list) else []
+                (detail.get("details") or detail.get("errors") or [])
+                if isinstance(detail, dict)
+                else (detail if isinstance(detail, list) else [])
             )
             input_val = None
             if details and isinstance(details, list):
@@ -1452,9 +1450,7 @@ class TestAutoGenerationInvariants:
             # field set, so checking the entity is sufficient.
             for response_attr in ("Response", "Network", "Reference"):
                 response_cls = getattr(registered, response_attr, None)
-                if response_cls is None or not hasattr(
-                    response_cls, "model_fields"
-                ):
+                if response_cls is None or not hasattr(response_cls, "model_fields"):
                     continue
                 for banned in self.SECRET_FIELDS_BANNED_ON_OUTPUT:
                     if banned in response_cls.model_fields:

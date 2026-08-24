@@ -19,7 +19,6 @@ from zephyrex.extensions.SchemaDrift import (
     record_response_snapshot,
 )
 
-
 pytestmark = pytest.mark.unit
 
 
@@ -118,9 +117,7 @@ class TestDiffOpenAPI:
         result = diff_openapi(p, live)
         assert is_breaking(result)
         assert any(
-            e.kind == "breaking"
-            and "email" in e.path
-            and "removed" in e.detail
+            e.kind == "breaking" and "email" in e.path and "removed" in e.detail
             for e in result
         )
 
@@ -154,9 +151,7 @@ class TestDiffOpenAPI:
         result = diff_openapi(p, live)
         assert not is_breaking(result)
         assert any(
-            e.kind == "non_breaking"
-            and "name" in e.path
-            and "added" in e.detail
+            e.kind == "non_breaking" and "name" in e.path and "added" in e.detail
             for e in result
         )
 
@@ -170,9 +165,7 @@ class TestDiffOpenAPI:
         p = _write_spec(tmp_path, "spec.json", committed)
         result = diff_openapi(p, live)
         assert is_breaking(result)
-        assert any(
-            e.kind == "breaking" and "narrowed" in e.detail for e in result
-        )
+        assert any(e.kind == "breaking" and "narrowed" in e.detail for e in result)
 
     def test_widened_type_is_non_breaking(self, tmp_path: Path):
         committed = {
@@ -184,9 +177,7 @@ class TestDiffOpenAPI:
         p = _write_spec(tmp_path, "spec.json", committed)
         result = diff_openapi(p, live)
         assert not is_breaking(result)
-        assert any(
-            e.kind == "non_breaking" and "widened" in e.detail for e in result
-        )
+        assert any(e.kind == "non_breaking" and "widened" in e.detail for e in result)
 
     def test_removed_enum_value_is_breaking(self, tmp_path: Path):
         committed = {
@@ -201,27 +192,21 @@ class TestDiffOpenAPI:
         }
         live = {
             "components": {
-                "schemas": {
-                    "Status": {"type": "string", "enum": ["active", "closed"]}
-                }
+                "schemas": {"Status": {"type": "string", "enum": ["active", "closed"]}}
             },
         }
         p = _write_spec(tmp_path, "spec.json", committed)
         result = diff_openapi(p, live)
         assert is_breaking(result)
         assert any(
-            e.kind == "breaking"
-            and "pending" in e.detail
-            and "removed" in e.detail
+            e.kind == "breaking" and "pending" in e.detail and "removed" in e.detail
             for e in result
         )
 
     def test_added_enum_value_is_non_breaking(self, tmp_path: Path):
         committed = {
             "components": {
-                "schemas": {
-                    "Status": {"type": "string", "enum": ["active", "closed"]}
-                }
+                "schemas": {"Status": {"type": "string", "enum": ["active", "closed"]}}
             },
         }
         live = {

@@ -19,6 +19,7 @@ from typing import Any, Dict, List
 
 import httpx
 import pytest
+
 # Module-level import so PEP 563 string annotations on nested handlers resolve
 # against module globals when FastAPI calls ``get_type_hints``.
 from fastapi import FastAPI, Request
@@ -28,7 +29,6 @@ from zephyrex.extensions.federation.BLL_Federation_Bootstrap import (
     install_external_federation_sync,
     reset_federation_state,
 )
-
 
 pytestmark = [pytest.mark.gql]
 
@@ -78,10 +78,19 @@ def _build_strict_gql_upstream():
             )
 
             user_t = GraphQLObjectType(
-                "Foo", {"id": GraphQLField(GraphQLString), "name": GraphQLField(GraphQLString)}
+                "Foo",
+                {
+                    "id": GraphQLField(GraphQLString),
+                    "name": GraphQLField(GraphQLString),
+                },
             )
             query_t = GraphQLObjectType(
-                "Query", {"foo": GraphQLField(user_t, resolve=lambda *a, **kw: {"id": "1", "name": "n"})}
+                "Query",
+                {
+                    "foo": GraphQLField(
+                        user_t, resolve=lambda *a, **kw: {"id": "1", "name": "n"}
+                    )
+                },
             )
             schema = GraphQLSchema(query=query_t)
             result = execute_sync(schema, parse(q))
@@ -89,6 +98,7 @@ def _build_strict_gql_upstream():
         return {"data": {"__typename": "Query"}}
 
     from fastapi.testclient import TestClient
+
     return TestClient(app, base_url="http://upstream")
 
 
@@ -124,6 +134,7 @@ def test_sync_pipeline_registers_subgraph_and_lifts_models(monkeypatch):
             from zephyrex.extensions.AbstractExtensionProvider import (
                 AbstractProviderInstance,
             )
+
             return AbstractProviderInstance(instance)
 
     class _Shim:
@@ -181,6 +192,7 @@ def test_sync_pipeline_skips_providers_without_upstream():
             from zephyrex.extensions.AbstractExtensionProvider import (
                 AbstractProviderInstance,
             )
+
             return AbstractProviderInstance(instance)
 
     registry = _RecordingRegistry()
@@ -207,6 +219,7 @@ def test_sync_pipeline_isolates_failed_provider():
             from zephyrex.extensions.AbstractExtensionProvider import (
                 AbstractProviderInstance,
             )
+
             return AbstractProviderInstance(instance)
 
     registry = _RecordingRegistry()
@@ -240,7 +253,10 @@ def test_sync_pipeline_handles_rest_descriptors():
         },
         "paths": {
             "/orders/{id}": {
-                "get": {"operationId": "get_order", "parameters": [{"name": "id", "in": "path"}]}
+                "get": {
+                    "operationId": "get_order",
+                    "parameters": [{"name": "id", "in": "path"}],
+                }
             }
         },
     }
@@ -253,16 +269,27 @@ def test_sync_pipeline_handles_rest_descriptors():
             self.calls.append(url)
             return {"id": "x", "amount": 1}
 
-        def post(self, *_a, **_kw): return {}
-        def put(self, *_a, **_kw): return {}
-        def patch(self, *_a, **_kw): return {}
-        def delete(self, *_a, **_kw): return {}
+        def post(self, *_a, **_kw):
+            return {}
+
+        def put(self, *_a, **_kw):
+            return {}
+
+        def patch(self, *_a, **_kw):
+            return {}
+
+        def delete(self, *_a, **_kw):
+            return {}
 
     http = _SyncHTTP()
-    from zephyrex.extensions.federation.BLL_Federation_REST import openapi_to_pydantic_models
+    from zephyrex.extensions.federation.BLL_Federation_REST import (
+        openapi_to_pydantic_models,
+    )
 
     operations = openapi_to_pydantic_models(spec).operations
-    transport = RESTUpstreamTransport(http, base_url="http://upstream", operations=operations)
+    transport = RESTUpstreamTransport(
+        http, base_url="http://upstream", operations=operations
+    )
     descriptor = {
         "name": "test_rest",
         "spec": spec,

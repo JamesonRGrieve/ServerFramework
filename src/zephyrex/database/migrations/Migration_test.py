@@ -15,14 +15,13 @@ from pathlib import Path
 
 import pytest
 
-
 # ---------- helpers ------------------------------------------------------
 
 
 def _connect_url(url: str) -> sqlite3.Connection:
     prefix = "sqlite:///"
     assert url.startswith(prefix), f"unexpected db url: {url}"
-    return sqlite3.connect(url[len(prefix):])
+    return sqlite3.connect(url[len(prefix) :])
 
 
 def _table_columns(conn: sqlite3.Connection, table: str):
@@ -56,8 +55,11 @@ def booted_app(tmp_path, monkeypatch):
         monkeypatch.setenv("DATABASE_NAME", "database")
 
         from zephyrex.lib import Environment as _env_mod
+
         monkeypatch.setattr(_env_mod.settings, "DATABASE_TYPE", "sqlite", raising=False)
-        monkeypatch.setattr(_env_mod.settings, "DATABASE_NAME", "database", raising=False)
+        monkeypatch.setattr(
+            _env_mod.settings, "DATABASE_NAME", "database", raising=False
+        )
 
         from zephyrex.lib.Pydantic2SQLAlchemy import clear_registry_cache
 
@@ -91,9 +93,9 @@ def test_extension_owned_table_stamped_with_extension(booted_app):
         table = getattr(sa_model, "__table__", None)
         if table is not None and "extension" in table.info:
             found[table.name] = table.info["extension"]
-    assert found.get("multifactor_methods") == "auth_mfa", (
-        f"expected multifactor_methods stamped owner=auth_mfa; got {found}"
-    )
+    assert (
+        found.get("multifactor_methods") == "auth_mfa"
+    ), f"expected multifactor_methods stamped owner=auth_mfa; got {found}"
 
 
 @pytest.mark.migration
@@ -107,16 +109,17 @@ def test_core_table_extended_by_extension_stamped(booted_app):
     registry = app.state.model_registry
     users_sa = None
     for pyd, sa in registry.db_models.items():
-        if pyd.__name__ in ("UserModel", "User") or getattr(
-            sa.__table__, "name", ""
-        ) == "users":
+        if (
+            pyd.__name__ in ("UserModel", "User")
+            or getattr(sa.__table__, "name", "") == "users"
+        ):
             users_sa = sa
             break
     assert users_sa is not None, "could not find users SA model"
     extending = users_sa.__table__.info.get("extensions", set())
-    assert "payment" in extending, (
-        f"expected 'payment' in users.info['extensions']; got {extending}"
-    )
+    assert (
+        "payment" in extending
+    ), f"expected 'payment' in users.info['extensions']; got {extending}"
 
 
 # ---------- core upgrade -------------------------------------------------
@@ -209,7 +212,9 @@ def test_run_all_migrations_with_payment_extension_extends_user_table(booted_app
         cols = _table_columns(conn, "users")
     expected_extension_cols = {"external_payment_id"}
     missing = expected_extension_cols - cols
-    assert not missing, f"missing extension columns on users: {missing}; have {sorted(cols)}"
+    assert (
+        not missing
+    ), f"missing extension columns on users: {missing}; have {sorted(cols)}"
 
 
 # ---------- regenerate targets db_info["file_path"] ----------------------
@@ -263,9 +268,9 @@ def test_parse_csv_env_var_static_and_instance_agree(migration_manager):
     """There should be exactly one CSV-env parser."""
     from zephyrex.database.migrations.Migration import MigrationManager
 
-    assert not hasattr(MigrationManager, "env_parse_csv_env_var"), (
-        "duplicate parser still present"
-    )
+    assert not hasattr(
+        MigrationManager, "env_parse_csv_env_var"
+    ), "duplicate parser still present"
 
 
 # ---------- init/create dispatch identically -----------------------------
@@ -300,9 +305,9 @@ def test_create_cli_verb_dispatches_to_create_extension(capsys):
         env=sub_env,
     )
     assert res.returncode != 0, "init verb should have been removed in Phase 1"
-    assert "invalid choice" in (res.stderr or "").lower() or "init" in (res.stderr or ""), (
-        f"expected argparse rejection of 'init', got stderr: {res.stderr!r}"
-    )
+    assert "invalid choice" in (res.stderr or "").lower() or "init" in (
+        res.stderr or ""
+    ), f"expected argparse rejection of 'init', got stderr: {res.stderr!r}"
 
 
 # ---------- cleanup_test_artifacts (Phase 5) -----------------------------
@@ -387,9 +392,9 @@ def test_test_versions_root_routes_extension_revisions_outside_src(
 
     # In-tree test_versions should be unchanged from before this test ran.
     after_in_tree = set(in_tree.glob("*.py")) if in_tree.exists() else set()
-    assert after_in_tree == pre_in_tree, (
-        f"test_versions_root failed to redirect: new files appeared in {in_tree}"
-    )
+    assert (
+        after_in_tree == pre_in_tree
+    ), f"test_versions_root failed to redirect: new files appeared in {in_tree}"
 
 
 # ---------- Item 24: env_is_table_owned_by_extension API ----------------
@@ -488,8 +493,7 @@ def test_extension_folder_stays_clean_after_full_cycle(booted_app):
                 pollutants.append(str(entry.relative_to(src_path)))
 
     assert not pollutants, (
-        "extension folders polluted with non-revision files: "
-        f"{pollutants}"
+        "extension folders polluted with non-revision files: " f"{pollutants}"
     )
 
 
@@ -529,7 +533,9 @@ def test_compute_migration_order_respects_fk_edges(booted_app):
 
 
 @pytest.mark.migration
-def test_compute_migration_order_cycle_error_names_extensions(monkeypatch, migration_manager):
+def test_compute_migration_order_cycle_error_names_extensions(
+    monkeypatch, migration_manager
+):
     """A cycle in the dependency graph must raise a RuntimeError that
     names both extensions. Stub out the registry + metadata to inject a
     synthetic A<->B cycle without needing real model definitions."""
@@ -537,10 +543,18 @@ def test_compute_migration_order_cycle_error_names_extensions(monkeypatch, migra
     from zephyrex.database.migrations.Migration import MigrationManager
 
     md = MetaData()
-    a = Table("a_thing", md, Column("id", Integer, primary_key=True),
-              Column("b_id", Integer, ForeignKey("b_thing.id")))
-    b = Table("b_thing", md, Column("id", Integer, primary_key=True),
-              Column("a_id", Integer, ForeignKey("a_thing.id")))
+    a = Table(
+        "a_thing",
+        md,
+        Column("id", Integer, primary_key=True),
+        Column("b_id", Integer, ForeignKey("b_thing.id")),
+    )
+    b = Table(
+        "b_thing",
+        md,
+        Column("id", Integer, primary_key=True),
+        Column("a_id", Integer, ForeignKey("a_thing.id")),
+    )
     a.info["extension"] = "ext_a"
     b.info["extension"] = "ext_b"
 
@@ -576,9 +590,9 @@ def test_audit_ownership_cli_lists_tables():
     tests above already exercise."""
     from zephyrex.database.migrations import Migration as mig_mod
 
-    assert hasattr(mig_mod.MigrationManager, "audit_table_ownership"), (
-        "MigrationManager.audit_table_ownership method missing"
-    )
+    assert hasattr(
+        mig_mod.MigrationManager, "audit_table_ownership"
+    ), "MigrationManager.audit_table_ownership method missing"
 
     src_dir = Path(mig_mod.__file__).resolve().parent.parent.parent.parent
     import subprocess
@@ -596,9 +610,7 @@ def test_audit_ownership_cli_lists_tables():
         text=True,
         env=sub_env,
     )
-    assert res.returncode == 0, (
-        f"audit-ownership --help failed: stderr={res.stderr!r}"
-    )
+    assert res.returncode == 0, f"audit-ownership --help failed: stderr={res.stderr!r}"
     assert "audit" in (res.stdout + res.stderr).lower()
 
 
@@ -642,16 +654,14 @@ def test_item62_extensions_path_override_routes_through_paths(tmp_path):
     mgr.paths = mgr._setup_python_path()
 
     # The resolved extensions_dir must equal the override.
-    assert Path(mgr.paths["extensions_dir"]).resolve() == ext_root.resolve(), (
-        f"expected extensions_dir={ext_root.resolve()}, got {mgr.paths['extensions_dir']}"
-    )
+    assert (
+        Path(mgr.paths["extensions_dir"]).resolve() == ext_root.resolve()
+    ), f"expected extensions_dir={ext_root.resolve()}, got {mgr.paths['extensions_dir']}"
 
     # discover_extension_migration_dirs must find ``payment``.
     discovered = mgr.discover_extension_migration_dirs()
     names = [n for n, _ in discovered]
-    assert "payment" in names, (
-        f"discovery missed out-of-tree extension; got {names}"
-    )
+    assert "payment" in names, f"discovery missed out-of-tree extension; got {names}"
     discovered_dir = dict(discovered)["payment"]
     assert discovered_dir.resolve() == migrations_dir.resolve()
 
@@ -718,10 +728,12 @@ def test_run_migrations_env_false_skips_migrations(tmp_path, monkeypatch):
     monkeypatch.setenv("DATABASE_NAME", "database")
 
     from zephyrex.lib import Environment as _env_mod
+
     monkeypatch.setattr(_env_mod.settings, "DATABASE_TYPE", "sqlite", raising=False)
     monkeypatch.setattr(_env_mod.settings, "DATABASE_NAME", "database", raising=False)
 
     from zephyrex.lib.Pydantic2SQLAlchemy import clear_registry_cache
+
     clear_registry_cache()
 
     from zephyrex.app import instance
@@ -731,11 +743,12 @@ def test_run_migrations_env_false_skips_migrations(tmp_path, monkeypatch):
     db_file = tmp_path / f"test.nomig.{worker_id}.database.db"
     conn = sqlite3.connect(str(db_file))
     tables = {
-        r[0] for r in conn.execute(
+        r[0]
+        for r in conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'"
         ).fetchall()
     }
     conn.close()
-    assert "alembic_version" not in tables, (
-        "alembic_version should not exist when RUN_MIGRATIONS=false"
-    )
+    assert (
+        "alembic_version" not in tables
+    ), "alembic_version should not exist when RUN_MIGRATIONS=false"

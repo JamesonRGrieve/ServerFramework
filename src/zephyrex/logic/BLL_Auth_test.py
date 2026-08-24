@@ -327,9 +327,11 @@ class TestUserManager(AbstractBLLTest):
             "/v1/user/authorize",
             json={"email": email, "password": password},
         )
-        assert response.status_code in (401, 403, 404), (
-            f"Soft-deleted user must not authenticate; got {response.status_code}"
-        )
+        assert response.status_code in (
+            401,
+            403,
+            404,
+        ), f"Soft-deleted user must not authenticate; got {response.status_code}"
 
     @pytest.mark.security
     @pytest.mark.auth
@@ -359,9 +361,10 @@ class TestUserManager(AbstractBLLTest):
             "/v1/user/authorize",
             json={"email": email, "password": password},
         )
-        assert response.status_code in (401, 403), (
-            f"Inactive user must not authenticate; got {response.status_code}"
-        )
+        assert response.status_code in (
+            401,
+            403,
+        ), f"Inactive user must not authenticate; got {response.status_code}"
 
     @pytest.mark.security
     @pytest.mark.auth
@@ -378,9 +381,7 @@ class TestUserManager(AbstractBLLTest):
         result = UserManager.register(user_data, model_registry)
         # The server MUST issue a new id, not honour the caller-supplied one.
         if isinstance(result, dict):
-            assigned_id = result.get("id") or (
-                result.get("user", {}) or {}
-            ).get("id")
+            assigned_id = result.get("id") or (result.get("user", {}) or {}).get("id")
         else:
             assigned_id = getattr(result, "id", None)
         assert assigned_id, "register must return an id"
@@ -532,9 +533,7 @@ class TestRoleManager(AbstractBLLTest):
         role's parent_id rather than orphaning the assignments."""
         from zephyrex.logic.BLL_Auth import UserTeamManager
 
-        role_mgr = RoleManager(
-            requester_id=admin_a.id, model_registry=model_registry
-        )
+        role_mgr = RoleManager(requester_id=admin_a.id, model_registry=model_registry)
         child_role = role_mgr.create(
             name=f"reparent_child_{uuid.uuid4().hex[:8]}",
             friendly_name="Reparent Child",
@@ -569,9 +568,7 @@ class TestRoleManager(AbstractBLLTest):
         working but with no permissions."""
         from zephyrex.logic.BLL_Auth import UserTeamManager
 
-        role_mgr = RoleManager(
-            requester_id=admin_a.id, model_registry=model_registry
-        )
+        role_mgr = RoleManager(requester_id=admin_a.id, model_registry=model_registry)
         rootless = role_mgr.create(
             name=f"rootless_{uuid.uuid4().hex[:8]}",
             friendly_name="Rootless",
@@ -2010,7 +2007,9 @@ class TestInvitationManager(AbstractBLLTest):
             user = UserManager.register(user_data, self.model_registry)
 
             # Test unified decline via code
-            from zephyrex.extensions.auth_invitations.BLL_Invitations import InvitationModel
+            from zephyrex.extensions.auth_invitations.BLL_Invitations import (
+                InvitationModel,
+            )
 
             decline_data = InvitationModel.Patch(
                 invitation_code=invitation_code, action="decline"
@@ -2099,7 +2098,9 @@ class TestInvitationManager(AbstractBLLTest):
             target_team_id=test_team_id,
             model_registry=self.model_registry,
         ) as fresh_invitation_manager:
-            from zephyrex.extensions.auth_invitations.BLL_Invitations import InvitationModel
+            from zephyrex.extensions.auth_invitations.BLL_Invitations import (
+                InvitationModel,
+            )
 
             patch_data = InvitationModel.Patch(invitee_id=invitee_id, action="decline")
             result = fresh_invitation_manager.patch_invitation_unified(
@@ -2219,7 +2220,9 @@ class TestInviteeManager(AbstractBLLTest):
         elif model_registry is None and hasattr(self, "model_registry"):
             model_registry = self.model_registry
 
-        from zephyrex.extensions.auth_invitations.BLL_Invitations import InvitationManager
+        from zephyrex.extensions.auth_invitations.BLL_Invitations import (
+            InvitationManager,
+        )
         from zephyrex.logic.BLL_Auth import TeamManager, UserManager
 
         # Create a simple invitation manually to avoid complex parent entity dependencies
@@ -2295,7 +2298,9 @@ class TestInviteeManager(AbstractBLLTest):
         """Test accepting a valid invitation code."""
         self.server = server
         self.model_registry = model_registry
-        from zephyrex.extensions.auth_invitations.BLL_Invitations import InvitationManager
+        from zephyrex.extensions.auth_invitations.BLL_Invitations import (
+            InvitationManager,
+        )
         from zephyrex.logic.BLL_Auth import TeamManager, UserManager
 
         # Create our own test entities
@@ -2359,7 +2364,9 @@ class TestInviteeManager(AbstractBLLTest):
         self.model_registry = model_registry
         from datetime import datetime, timedelta, timezone
 
-        from zephyrex.extensions.auth_invitations.BLL_Invitations import InvitationManager
+        from zephyrex.extensions.auth_invitations.BLL_Invitations import (
+            InvitationManager,
+        )
         from zephyrex.logic.BLL_Auth import TeamManager, UserManager
 
         # Create our own test entities
@@ -2421,7 +2428,9 @@ class TestInviteeManager(AbstractBLLTest):
         """Test rejecting invitation when max uses exceeded."""
         self.server = server
         self.model_registry = model_registry
-        from zephyrex.extensions.auth_invitations.BLL_Invitations import InvitationManager
+        from zephyrex.extensions.auth_invitations.BLL_Invitations import (
+            InvitationManager,
+        )
         from zephyrex.logic.BLL_Auth import TeamManager, UserManager
 
         # Create our own test entities
@@ -2497,7 +2506,9 @@ class TestInviteeManager(AbstractBLLTest):
         """Test user accepting an invitation they were specifically invited to."""
         self.server = server
         self.model_registry = model_registry
-        from zephyrex.extensions.auth_invitations.BLL_Invitations import InvitationManager
+        from zephyrex.extensions.auth_invitations.BLL_Invitations import (
+            InvitationManager,
+        )
         from zephyrex.logic.BLL_Auth import TeamManager, UserManager
 
         # Create our own test entities using context managers to ensure proper session handling
@@ -2575,7 +2586,9 @@ class TestInviteeManager(AbstractBLLTest):
         """Test user declining a direct invitation (no code involved)."""
         self.server = server
         self.model_registry = model_registry
-        from zephyrex.extensions.auth_invitations.BLL_Invitations import InvitationManager
+        from zephyrex.extensions.auth_invitations.BLL_Invitations import (
+            InvitationManager,
+        )
         from zephyrex.logic.BLL_Auth import TeamManager, UserManager
 
         # Create our own test entities
@@ -3364,9 +3377,11 @@ class TestJWTDualKeyRotation:
         monkeypatch.setenv("JWT_SECRET", new_secret)
         monkeypatch.setenv("JWT_SECRET_PREVIOUS", old_secret)
         from zephyrex.lib.Environment import refresh_settings
+
         refresh_settings()
 
         from zephyrex.logic.BLL_Auth import UserManager
+
         decoded = UserManager._decode_jwt(old_token)
         assert decoded["sub"] == "test-user-id"
 
@@ -3385,13 +3400,17 @@ class TestJWTDualKeyRotation:
             "iss": env("JWT_ISSUER"),
             "jti": "test-session-key",
         }
-        bad_token = jwt.encode(payload, "completely-wrong-key-never-used!", algorithm="HS256")
+        bad_token = jwt.encode(
+            payload, "completely-wrong-key-never-used!", algorithm="HS256"
+        )
 
         monkeypatch.setenv("JWT_SECRET", "current-secret-key-32-bytes-ok!")
         monkeypatch.setenv("JWT_SECRET_PREVIOUS", "previous-secret-key-32-bytes-k!")
         from zephyrex.lib.Environment import refresh_settings
+
         refresh_settings()
 
         from zephyrex.logic.BLL_Auth import UserManager
+
         with pytest.raises(jwt.InvalidSignatureError):
             UserManager._decode_jwt(bad_token)

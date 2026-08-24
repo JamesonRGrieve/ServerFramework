@@ -180,8 +180,7 @@ def _method_version_suffix_for(version: str) -> str:
 def _sdk_class_name_for(resource_name: str, version: str = "v1") -> str:
     """Generated SDK class name (PascalCase + version suffix + ``SDK``)."""
     return (
-        f"{stringcase.pascalcase(resource_name)}"
-        f"{_version_suffix_for(version)}SDK"
+        f"{stringcase.pascalcase(resource_name)}" f"{_version_suffix_for(version)}SDK"
     )
 
 
@@ -205,9 +204,7 @@ def generate_sdk_handler_for(manager_cls: Type) -> str:
     a ``ResourceConfig`` block.
     """
     if not _is_router_mixin_manager(manager_cls):
-        raise TypeError(
-            f"{manager_cls!r} is not a RouterMixin-tagged manager class"
-        )
+        raise TypeError(f"{manager_cls!r} is not a RouterMixin-tagged manager class")
 
     resource_name = _resource_name_for(manager_cls)
     resource_name_plural = _resource_name_plural_for(resource_name)
@@ -265,7 +262,11 @@ def generate_sdk_handler_for(manager_cls: Type) -> str:
     if metadata_lines:
         # When deprecation/sunset are present without a version override,
         # still emit the version line so the comment block is self-describing.
-        if version == "v1" and metadata_lines and not metadata_lines[0].startswith("# version:"):
+        if (
+            version == "v1"
+            and metadata_lines
+            and not metadata_lines[0].startswith("# version:")
+        ):
             metadata_lines.insert(0, f"# version: {version}")
         for line in metadata_lines:
             lines.append(line)
@@ -302,9 +303,7 @@ def generate_sdk_handler_for(manager_cls: Type) -> str:
     lines.append('            params["next_token"] = next_token')
     lines.append("        if fields is not None:")
     lines.append('            params["fields"] = ",".join(fields)')
-    lines.append(
-        f"        return getattr(self, \"{manager_attr}\").list(**params)"
-    )
+    lines.append(f'        return getattr(self, "{manager_attr}").list(**params)')
     lines.append("")
     lines.append(
         f"    def get{method_suffix}("
@@ -314,15 +313,15 @@ def generate_sdk_handler_for(manager_cls: Type) -> str:
         "\n    ) -> Dict[str, Any]:"
     )
     lines.append(f'        """Get a single ``{resource_name}`` by id."""')
-    lines.append(f"        manager = getattr(self, \"{manager_attr}\")")
+    lines.append(f'        manager = getattr(self, "{manager_attr}")')
     lines.append("        if fields is None:")
     lines.append("            return manager.get(resource_id)")
     lines.append(
         "        return self._request("
-        "\n            \"GET\","
-        f"\n            f\"{endpoint}/{{resource_id}}\","
+        '\n            "GET",'
+        f'\n            f"{endpoint}/{{resource_id}}",'
         '\n            query_params={"fields": ",".join(fields)},'
-        f"\n            resource_name=\"{resource_name}\","
+        f'\n            resource_name="{resource_name}",'
         "\n        )"
     )
     lines.append("")
@@ -330,9 +329,7 @@ def generate_sdk_handler_for(manager_cls: Type) -> str:
         f"    def create{method_suffix}(self, data: Dict[str, Any]) -> Dict[str, Any]:"
     )
     lines.append(f'        """Create a new ``{resource_name}``."""')
-    lines.append(
-        f"        return getattr(self, \"{manager_attr}\").create(data)"
-    )
+    lines.append(f'        return getattr(self, "{manager_attr}").create(data)')
     lines.append("")
     lines.append(
         f"    def update{method_suffix}("
@@ -343,15 +340,13 @@ def generate_sdk_handler_for(manager_cls: Type) -> str:
     )
     lines.append(f'        """Update an existing ``{resource_name}``."""')
     lines.append(
-        f"        return getattr(self, \"{manager_attr}\").update("
+        f'        return getattr(self, "{manager_attr}").update('
         "resource_id, updates)"
     )
     lines.append("")
     lines.append(f"    def delete{method_suffix}(self, resource_id: str) -> None:")
     lines.append(f'        """Delete a ``{resource_name}`` by id."""')
-    lines.append(
-        f"        getattr(self, \"{manager_attr}\").delete(resource_id)"
-    )
+    lines.append(f'        getattr(self, "{manager_attr}").delete(resource_id)')
     lines.append("")
     lines.append(
         f"    def search{method_suffix}("
@@ -371,17 +366,15 @@ def generate_sdk_handler_for(manager_cls: Type) -> str:
     lines.append('            params["next_token"] = next_token')
     lines.append("        if fields is not None:")
     lines.append('            params["fields"] = ",".join(fields)')
-    lines.append(
-        f"        return getattr(self, \"{manager_attr}\").search(params)"
-    )
+    lines.append(f'        return getattr(self, "{manager_attr}").search(params)')
     lines.append("")
     lines.append(
         f"    def batch_create{method_suffix}(self, items: List[Dict[str, Any]]) -> Dict[str, Any]:"
     )
-    lines.append(f'        """Create multiple ``{resource_name_plural}`` in one call."""')
     lines.append(
-        f"        return getattr(self, \"{manager_attr}\").batch_create(items)"
+        f'        """Create multiple ``{resource_name_plural}`` in one call."""'
     )
+    lines.append(f'        return getattr(self, "{manager_attr}").batch_create(items)')
     lines.append("")
     lines.append(
         f"    def batch_update{method_suffix}("
@@ -390,18 +383,22 @@ def generate_sdk_handler_for(manager_cls: Type) -> str:
         "\n        resource_ids: List[str],"
         "\n    ) -> Dict[str, Any]:"
     )
-    lines.append(f'        """Update multiple ``{resource_name_plural}`` in one call."""')
     lines.append(
-        f"        return getattr(self, \"{manager_attr}\").batch_update("
+        f'        """Update multiple ``{resource_name_plural}`` in one call."""'
+    )
+    lines.append(
+        f'        return getattr(self, "{manager_attr}").batch_update('
         "updates, resource_ids)"
     )
     lines.append("")
     lines.append(
         f"    def batch_delete{method_suffix}(self, resource_ids: List[str]) -> Dict[str, Any]:"
     )
-    lines.append(f'        """Delete multiple ``{resource_name_plural}`` in one call."""')
     lines.append(
-        f"        return getattr(self, \"{manager_attr}\").batch_delete(resource_ids)"
+        f'        """Delete multiple ``{resource_name_plural}`` in one call."""'
+    )
+    lines.append(
+        f'        return getattr(self, "{manager_attr}").batch_delete(resource_ids)'
     )
     lines.append("")
 

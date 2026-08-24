@@ -45,7 +45,11 @@ def _build_tools_from_openapi(schema: dict) -> list[types.Tool]:
             description = "\n".join(desc_parts)
 
             input_props: dict[str, Any] = {
-                "method": {"type": "string", "const": method.upper(), "description": "HTTP method"},
+                "method": {
+                    "type": "string",
+                    "const": method.upper(),
+                    "description": "HTTP method",
+                },
                 "path": {"type": "string", "const": path, "description": "API path"},
             }
             required = ["method", "path"]
@@ -62,7 +66,9 @@ def _build_tools_from_openapi(schema: dict) -> list[types.Tool]:
             body = spec.get("requestBody", {})
             if body:
                 body_content = body.get("content", {})
-                json_schema = body_content.get("application/json", {}).get("schema", {"type": "object"})
+                json_schema = body_content.get("application/json", {}).get(
+                    "schema", {"type": "object"}
+                )
                 input_props["body"] = json_schema
 
             tools.append(
@@ -143,7 +149,11 @@ def mount_mcp(app: FastAPI, *, name: str, mount_path: str = "/mcp") -> Server:
 
     schema = app.openapi()
     tools = _build_tools_from_openapi(schema)
-    logger.info("MCP bridge: %d tools from %d OpenAPI paths", len(tools), len(schema.get("paths", {})))
+    logger.info(
+        "MCP bridge: %d tools from %d OpenAPI paths",
+        len(tools),
+        len(schema.get("paths", {})),
+    )
 
     async def on_list_tools(ctx, params):
         return types.ListToolsResult(tools=tools)

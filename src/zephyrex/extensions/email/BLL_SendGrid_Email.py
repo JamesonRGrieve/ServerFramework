@@ -16,7 +16,6 @@ from zephyrex.extensions.email.PRV_SendGrid_EMail import (
 )
 from zephyrex.lib.Logging import logger
 
-
 # ============================================================================
 # SendGrid Contact Manager
 # ============================================================================

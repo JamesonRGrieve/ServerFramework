@@ -1,7 +1,11 @@
 from faker import Faker
 
 from zephyrex.AbstractTest import ParentEntity
-from zephyrex.logic.AbstractBLLTest import AbstractBLLTest, CategoryOfTest, ClassOfTestsConfig
+from zephyrex.logic.AbstractBLLTest import (
+    AbstractBLLTest,
+    CategoryOfTest,
+    ClassOfTestsConfig,
+)
 from zephyrex.logic.BLL_Extensions import AbilityManager, ExtensionManager
 
 # Set default test configuration for all test classes

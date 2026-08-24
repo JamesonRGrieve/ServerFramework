@@ -46,7 +46,9 @@ class NameProcessor:
 
     @staticmethod
     @lru_cache(maxsize=1024)
-    def sanitize_name(name: str, reserved_names: Optional[frozenset] | None = None) -> str:
+    def sanitize_name(
+        name: str, reserved_names: Optional[frozenset] | None = None
+    ) -> str:
         if not name:
             return "UnnamedType"
 

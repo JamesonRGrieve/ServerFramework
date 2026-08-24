@@ -18,7 +18,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 from pydantic import BaseModel, Field
 
-
 # ---------------------------------------------------------------------------
 # Helpers: a minimal consumer extension defined in-memory
 # ---------------------------------------------------------------------------
@@ -31,8 +30,7 @@ def _make_consumer_extension(tmp_path: Path) -> Path:
 
     (ext_dir / "__init__.py").write_text("")
 
-    (ext_dir / "BLL_Widget.py").write_text(
-        textwrap.dedent("""\
+    (ext_dir / "BLL_Widget.py").write_text(textwrap.dedent("""\
         from typing import Optional
         from pydantic import BaseModel, Field
         from zephyrex.lib.Pydantic2SQLAlchemy import ApplicationModel, UpdateMixinModel
@@ -55,11 +53,9 @@ def _make_consumer_extension(tmp_path: Path) -> Path:
 
         class WidgetManager(AbstractBLLManager):
             _model = WidgetModel
-        """)
-    )
+        """))
 
-    (ext_dir / "EXT_Widget.py").write_text(
-        textwrap.dedent("""\
+    (ext_dir / "EXT_Widget.py").write_text(textwrap.dedent("""\
         from zephyrex.extensions.AbstractExtensionProvider import (
             AbstractStaticExtension,
             ExtensionType,
@@ -76,8 +72,7 @@ def _make_consumer_extension(tmp_path: Path) -> Path:
             @classmethod
             def get_default_env(cls):
                 return {}
-        """)
-    )
+        """))
 
     return tmp_path / "extensions"
 
@@ -390,9 +385,9 @@ class TestPipExtras:
         extras = pyproject["project"]["optional-dependencies"]
         assert extra in extras, f"Missing extra: {extra}"
         deps = [d.lower() for d in extras[extra]]
-        assert any(expected_dep in d for d in deps), (
-            f"Extra '{extra}' missing dep '{expected_dep}', got: {deps}"
-        )
+        assert any(
+            expected_dep in d for d in deps
+        ), f"Extra '{extra}' missing dep '{expected_dep}', got: {deps}"
 
     def test_all_extra_includes_others(self, pyproject):
         extras = pyproject["project"]["optional-dependencies"]

@@ -13,7 +13,9 @@ from zephyrex.logic.Outbox import InMemoryOutboxStore, OutboxEntry
 
 def _make_client(store) -> TestClient:
     app = FastAPI()
-    app.include_router(create_outbox_router(store_resolver=lambda: store, require_auth=False))
+    app.include_router(
+        create_outbox_router(store_resolver=lambda: store, require_auth=False)
+    )
     return TestClient(app)
 
 
@@ -77,7 +79,9 @@ def test_failed_entry_carries_error_in_body() -> None:
 
 def test_no_store_configured_returns_503() -> None:
     app = FastAPI()
-    app.include_router(create_outbox_router(store_resolver=lambda: None, require_auth=False))
+    app.include_router(
+        create_outbox_router(store_resolver=lambda: None, require_auth=False)
+    )
     client = TestClient(app)
 
     response = client.get("/v1/outbox/anything")

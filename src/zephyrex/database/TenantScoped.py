@@ -38,7 +38,6 @@ from contextvars import ContextVar
 from threading import RLock
 from typing import ClassVar, Dict, Optional, Set, Tuple, Type
 
-
 # M-2 — registry of every key name declared via TenantScopedMixin or
 # `with_keys`. The session binder validates each key against this set
 # before formatting it into `SET LOCAL app.current_<key>`. The value side
@@ -112,7 +111,9 @@ class TenantScopedMixin(_TenantScopedBase):
         return new_cls
 
 
-def rls_policy_sql(table: str, keys: Tuple[str, ...], policy_name: str | None = None) -> str:
+def rls_policy_sql(
+    table: str, keys: Tuple[str, ...], policy_name: str | None = None
+) -> str:
     """Generate the CREATE POLICY DDL for an RLS-enforced tenant
     isolation policy.
 
@@ -129,10 +130,7 @@ def rls_policy_sql(table: str, keys: Tuple[str, ...], policy_name: str | None = 
     if not keys:
         raise ValueError("at least one tenant key required")
     pname = policy_name or f"{table}_tenant_isolation"
-    clauses = [
-        f"{k} = current_setting('app.current_{k}', true)::uuid"
-        for k in keys
-    ]
+    clauses = [f"{k} = current_setting('app.current_{k}', true)::uuid" for k in keys]
     using_expr = " AND ".join(clauses)
     return (
         f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY;\n"
@@ -165,12 +163,8 @@ def set_tenant_guc(connection, key: str, value: str) -> None:
     from sqlalchemy import text
 
     if not is_registered_tenant_key(key):
-        raise ValueError(
-            f"Unregistered tenant key {key!r}; refusing to emit SET LOCAL"
-        )
-    connection.execute(
-        text(f"SET LOCAL app.current_{key} = :value"), {"value": value}
-    )
+        raise ValueError(f"Unregistered tenant key {key!r}; refusing to emit SET LOCAL")
+    connection.execute(text(f"SET LOCAL app.current_{key} = :value"), {"value": value})
 
 
 def clear_tenant_gucs(connection, keys: Tuple[str, ...]) -> None:
@@ -186,9 +180,7 @@ def clear_tenant_gucs(connection, keys: Tuple[str, ...]) -> None:
 
     for k in keys:
         if not is_registered_tenant_key(k):
-            raise ValueError(
-                f"Unregistered tenant key {k!r}; refusing to emit RESET"
-            )
+            raise ValueError(f"Unregistered tenant key {k!r}; refusing to emit RESET")
         connection.execute(text(f"RESET app.current_{k}"))
 
 

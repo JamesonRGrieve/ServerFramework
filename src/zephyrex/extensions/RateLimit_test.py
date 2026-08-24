@@ -68,7 +68,8 @@ def test_concurrency_limit_blocks_when_full():
     assert not c.acquire(timeout=0.05)
     c.release()
     assert c.acquire(timeout=0.1)
-    c.release(); c.release()
+    c.release()
+    c.release()
 
 
 @pytest.mark.unit

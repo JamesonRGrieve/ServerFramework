@@ -7,7 +7,9 @@ from zephyrex.endpoints.AbstractEPTest import AbstractEPTest
 
 
 @pytest.mark.auth
-@pytest.mark.skip(reason="BLL_Auth_OAuth and AbstractEPRouter modules do not exist yet; EP tests require the data model layer")
+@pytest.mark.skip(
+    reason="BLL_Auth_OAuth and AbstractEPRouter modules do not exist yet; EP tests require the data model layer"
+)
 class TestOAuthEP(AbstractEPTest):
     base_endpoint = "oauth"
     entity_name = "oauth_connection"  # This is what we expect in responses

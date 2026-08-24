@@ -154,7 +154,9 @@ class AuditLogManager(AbstractBLLManager):
     def _detect_database_extension(self):
         """Detect if the database extension with InfluxDB is available."""
         try:
-            from zephyrex.extensions.AbstractExtensionProvider import AbstractStaticExtension
+            from zephyrex.extensions.AbstractExtensionProvider import (
+                AbstractStaticExtension,
+            )
 
             self.database_extension = AbstractStaticExtension.get_extension_by_name(
                 "database"
@@ -392,7 +394,9 @@ class SystemLogManager(AbstractBLLManager):
     def _detect_database_extension(self):
         """Detect if the database extension with InfluxDB is available."""
         try:
-            from zephyrex.extensions.AbstractExtensionProvider import AbstractStaticExtension
+            from zephyrex.extensions.AbstractExtensionProvider import (
+                AbstractStaticExtension,
+            )
 
             self.database_extension = AbstractStaticExtension.get_extension_by_name(
                 "database"
@@ -505,7 +509,9 @@ class MetaLoggingManager(AbstractBLLManager):
     def failed_logins(self):
         """Get the failed login manager from logic.BLL_Auth"""
         if self._failed_logins is None:
-            from zephyrex.extensions.auth_lockout.BLL_Lockout import FailedLoginAttemptManager
+            from zephyrex.extensions.auth_lockout.BLL_Lockout import (
+                FailedLoginAttemptManager,
+            )
 
             self._failed_logins = FailedLoginAttemptManager(
                 requester_id=self.requester.id,
@@ -573,9 +579,7 @@ def meta_logging_audit_hook(context: HookContext) -> None:
                 result_count = len(context.result)
             except TypeError as e:
                 # `__len__` exists but is not callable / raises (rare).
-                logger.debug(
-                    "meta_logging audit: result.__len__() failed: %s", e
-                )
+                logger.debug("meta_logging audit: result.__len__() failed: %s", e)
 
         logger.debug(
             f"Meta logging completed: {method_name} by user {requester_id}, "

@@ -22,10 +22,19 @@ from typing import Any, Dict, List, Optional, Type
 import pytest
 from faker import Faker
 
-from zephyrex.AbstractTest import AbstractTest, CategoryOfTest, ClassOfTestsConfig, SkipThisTest
+from zephyrex.AbstractTest import (
+    AbstractTest,
+    CategoryOfTest,
+    ClassOfTestsConfig,
+    SkipThisTest,
+)
 from zephyrex.lib.Environment import env
 from zephyrex.lib.Logging import logger
-from zephyrex.sdk.AbstractSDKHandler import AbstractSDKHandler, ResourceConfig, SDKException
+from zephyrex.sdk.AbstractSDKHandler import (
+    AbstractSDKHandler,
+    ResourceConfig,
+    SDKException,
+)
 
 
 class TestVariant(str, Enum):

@@ -340,9 +340,7 @@ class TestProductionDefaultsAreFailClosed(TestMixin):
         with pytest.raises(Exception):
             AppSettings.model_validate(os.environ)
 
-    def test_jwt_secret_required_in_production(
-        self, clean_environment, monkeypatch
-    ):
+    def test_jwt_secret_required_in_production(self, clean_environment, monkeypatch):
         """JWT_SECRET unset/empty in production must fail validation.
 
         EXPECTED FAIL today — JWT_SECRET has no production-mode guard.
@@ -436,7 +434,9 @@ class TestAppSettingsValidators:
         with pytest.raises(ValueError, match="at least 32 characters"):
             AppSettings.model_validate(os.environ)
 
-    def test_production_rejects_default_db_password(self, clean_environment, monkeypatch):
+    def test_production_rejects_default_db_password(
+        self, clean_environment, monkeypatch
+    ):
         monkeypatch.setenv("ENVIRONMENT", "production")
         monkeypatch.setenv("JWT_SECRET", "a" * 32)
         monkeypatch.setenv("ROOT_API_KEY", "a" * 32)
@@ -482,18 +482,28 @@ class TestNearMissEnvVarWarning:
     def test_typo_env_var_logs_warning(self, monkeypatch, caplog):
         monkeypatch.setenv("DATABSE_TYPE", "sqlite")
         import logging
+
         with caplog.at_level(logging.WARNING, logger="zephyrex.environment"):
             from zephyrex.lib.Environment import _warn_near_miss_env_vars
+
             _warn_near_miss_env_vars()
-        assert any("DATABSE_TYPE" in r.message and "DATABASE_TYPE" in r.message for r in caplog.records)
+        assert any(
+            "DATABSE_TYPE" in r.message and "DATABASE_TYPE" in r.message
+            for r in caplog.records
+        )
 
     def test_valid_env_var_no_warning(self, monkeypatch, caplog):
         monkeypatch.setenv("DATABASE_TYPE", "sqlite")
         import logging
+
         with caplog.at_level(logging.WARNING, logger="zephyrex.environment"):
             from zephyrex.lib.Environment import _warn_near_miss_env_vars
+
             _warn_near_miss_env_vars()
-        assert not any("DATABASE_TYPE" in r.message and "possible typo" in r.message for r in caplog.records)
+        assert not any(
+            "DATABASE_TYPE" in r.message and "possible typo" in r.message
+            for r in caplog.records
+        )
 
 
 if __name__ == "__main__":

@@ -69,9 +69,7 @@ def test_archive_callback_no_compression_uses_jsonl_extension():
 
 def test_archive_callback_key_includes_registration_and_timestamp():
     storage = _FakeObjectStorage()
-    callback = make_object_storage_archive_callback(
-        storage, bucket_or_prefix="root"
-    )
+    callback = make_object_storage_archive_callback(storage, bucket_or_prefix="root")
 
     callback([{"x": 1}], "audit_class_x")
 
@@ -88,9 +86,7 @@ def test_archive_callback_key_includes_registration_and_timestamp():
 
 def test_archive_callback_returns_false_on_upload_failure():
     storage = _FakeObjectStorage(fail=True)
-    callback = make_object_storage_archive_callback(
-        storage, bucket_or_prefix="audit"
-    )
+    callback = make_object_storage_archive_callback(storage, bucket_or_prefix="audit")
 
     ok = callback([{"id": 1}], "audit_login")
 

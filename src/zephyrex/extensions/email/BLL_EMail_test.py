@@ -10,7 +10,6 @@ from zephyrex.lib.Environment import env
 
 from zephyrex.extensions.auth_invitations.BLL_Invitations import InvitationManager
 
-
 AbstractBLLTest.test_config = ClassOfTestsConfig(
     categories=[CategoryOfTest.LOGIC, CategoryOfTest.EXTENSION]
 )

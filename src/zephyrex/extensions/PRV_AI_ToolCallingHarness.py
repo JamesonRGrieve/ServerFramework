@@ -70,7 +70,6 @@ from zephyrex.extensions.PRV_Abstract_AI import (
     ToolResult,
 )
 
-
 # ---------------------------------------------------------------------------
 # Reference fake — provider authors use this as a known-good baseline.
 # ---------------------------------------------------------------------------
@@ -130,7 +129,11 @@ class FakeToolCallingProvider(AbstractAIProvider):
         if last.get("role") == "tool":
             return {
                 "content": f"acknowledged tool result: {last.get('content', '')!r}",
-                "usage": {"prompt_tokens": 5, "completion_tokens": 5, "total_tokens": 10},
+                "usage": {
+                    "prompt_tokens": 5,
+                    "completion_tokens": 5,
+                    "total_tokens": 10,
+                },
             }
 
         # Initial turn with tools available -> emit a tool call when the
@@ -144,15 +147,17 @@ class FakeToolCallingProvider(AbstractAIProvider):
                     ToolCall(name="get_weather", arguments={"location": "London"})
                 )
             elif "lookup" in content and "lookup_user" in tool_names:
-                tool_calls.append(
-                    ToolCall(name="lookup_user", arguments={"id": "u1"})
-                )
+                tool_calls.append(ToolCall(name="lookup_user", arguments={"id": "u1"}))
 
         if tool_calls:
             return {
                 "content": "",
                 "tool_calls": tool_calls,
-                "usage": {"prompt_tokens": 12, "completion_tokens": 8, "total_tokens": 20},
+                "usage": {
+                    "prompt_tokens": 12,
+                    "completion_tokens": 8,
+                    "total_tokens": 20,
+                },
             }
 
         return {
@@ -161,9 +166,7 @@ class FakeToolCallingProvider(AbstractAIProvider):
         }
 
     @classmethod
-    async def embed(
-        cls, provider_instance: Any, text: str, model: str
-    ) -> List[float]:
+    async def embed(cls, provider_instance: Any, text: str, model: str) -> List[float]:
         return [float(len(text)) / 100.0]
 
     @classmethod
@@ -191,17 +194,15 @@ class FakeToolCallingProvider(AbstractAIProvider):
         return b""
 
     @classmethod
-    def _pre_estimate_tokens(
-        cls, prompt: Any, max_tokens: Optional[int] = None
-    ) -> int:
+    def _pre_estimate_tokens(cls, prompt: Any, max_tokens: Optional[int] = None) -> int:
         # Simple input + max ceiling estimator (matches the abstract's
         # description). Concrete providers use a real tokenizer.
         if isinstance(prompt, str):
             return len(prompt.split()) + (max_tokens or 0)
         if isinstance(prompt, list):
-            return sum(
-                len(str(m.get("content", "")).split()) for m in prompt
-            ) + (max_tokens or 0)
+            return sum(len(str(m.get("content", "")).split()) for m in prompt) + (
+                max_tokens or 0
+            )
         return max_tokens or 0
 
     @classmethod
@@ -227,12 +228,12 @@ def validate_chat_response_shape(response: Any) -> None:
     contract level so the failure surfaces here rather than three layers
     deeper.
     """
-    assert isinstance(response, dict), (
-        f"chat() must return a dict, got {type(response).__name__}"
-    )
-    assert "content" in response, (
-        f"chat() response must include a 'content' key, got keys: {sorted(response.keys())}"
-    )
+    assert isinstance(
+        response, dict
+    ), f"chat() must return a dict, got {type(response).__name__}"
+    assert (
+        "content" in response
+    ), f"chat() response must include a 'content' key, got keys: {sorted(response.keys())}"
     if "tool_calls" in response:
         tc = response["tool_calls"]
         assert isinstance(tc, list), "tool_calls must be a list when present"
@@ -259,7 +260,9 @@ def validate_tool_call_payload(call: Any) -> ToolCall:
         raise AssertionError(
             f"tool_calls entries must be ToolCall or dict, got {type(call).__name__}"
         )
-    function_block = call.get("function") if isinstance(call.get("function"), dict) else {}
+    function_block = (
+        call.get("function") if isinstance(call.get("function"), dict) else {}
+    )
     name = call.get("name") or function_block.get("name")  # type: ignore[union-attr]
     args = (
         call.get("arguments")
@@ -271,9 +274,7 @@ def validate_tool_call_payload(call: Any) -> ToolCall:
 
         args = json.loads(args)
     if name is None or not isinstance(args, dict):
-        raise AssertionError(
-            f"Cannot extract name/arguments from tool call: {call!r}"
-        )
+        raise AssertionError(f"Cannot extract name/arguments from tool call: {call!r}")
     return ToolCall(name=name, arguments=args)
 
 
@@ -424,7 +425,9 @@ class AbstractToolCallingHarness:
         call = validate_tool_call_payload(first["tool_calls"][0])
 
         # Caller "executes" the tool and feeds back the result.
-        result = ToolResult(name=call.name, result={"temperature_c": 12, "conditions": "rain"})
+        result = ToolResult(
+            name=call.name, result={"temperature_c": 12, "conditions": "rain"}
+        )
         second = await provider.chat(
             instance,
             messages=[

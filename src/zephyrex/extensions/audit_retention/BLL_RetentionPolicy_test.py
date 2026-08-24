@@ -17,7 +17,6 @@ from zephyrex.extensions.audit_retention.BLL_RetentionPolicy import (
     sox_default,
 )
 
-
 # ---------- parse_window -----------------------------------------------------
 
 
@@ -188,9 +187,7 @@ def test_audit_class_can_attach_retention_classvar():
     surface — the runtime service is a separate landing."""
 
     class AuditLoginEvent:
-        retention = RetentionPolicy(
-            window="1y", archive_to="s3://bucket/audit/"
-        )
+        retention = RetentionPolicy(window="1y", archive_to="s3://bucket/audit/")
 
     assert AuditLoginEvent.retention.window == "1y"
     assert AuditLoginEvent.retention.archives()

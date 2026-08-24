@@ -79,9 +79,7 @@ class TestFormatNegotiation:
     """
 
     @pytest.mark.parametrize("fmt,mime", FORMATS)
-    def test_get_health_accept_header(
-        self, server: Any, fmt: str, mime: str
-    ) -> None:
+    def test_get_health_accept_header(self, server: Any, fmt: str, mime: str) -> None:
         """GET /health with each Accept header returns the correct format."""
         resp = server.get("/health", headers={"Accept": mime})
         assert resp.status_code == 200, (
@@ -100,9 +98,9 @@ class TestFormatNegotiation:
             )
             data = _parse_response(resp.text, fmt)
 
-        assert data["status"] == "UP", (
-            f"Parsed {fmt} body should contain status=UP, got {data}"
-        )
+        assert (
+            data["status"] == "UP"
+        ), f"Parsed {fmt} body should contain status=UP, got {data}"
 
     @pytest.mark.parametrize(
         "suffix,fmt,mime",
@@ -120,9 +118,9 @@ class TestFormatNegotiation:
         """URL suffix (.toon, .yaml, etc.) overrides Accept header."""
         headers = {"Accept": MIME_JSON}  # explicitly ask for JSON
         resp = server.get(f"/health{suffix}", headers=headers)
-        assert resp.status_code == 200, (
-            f"GET /health{suffix} returned {resp.status_code}: {resp.text}"
-        )
+        assert (
+            resp.status_code == 200
+        ), f"GET /health{suffix} returned {resp.status_code}: {resp.text}"
 
         if fmt != "json":
             assert resp.headers["content-type"] == mime, (
@@ -134,12 +132,9 @@ class TestFormatNegotiation:
 
     def test_unsupported_accept_406(self, server: Any) -> None:
         """Accept header with an unsupported type returns 406."""
-        resp = server.get(
-            "/health", headers={"Accept": "application/octet-stream"}
-        )
+        resp = server.get("/health", headers={"Accept": "application/octet-stream"})
         assert resp.status_code == 406, (
-            f"Expected 406 Not Acceptable, got {resp.status_code}: "
-            f"{resp.text}"
+            f"Expected 406 Not Acceptable, got {resp.status_code}: " f"{resp.text}"
         )
 
 
@@ -156,9 +151,7 @@ class TestFormatNegotiationCRUD:
         """Return auth headers for a user fixture."""
         return {"Authorization": f"Bearer {admin_a.jwt}"}
 
-    def _create_team_json(
-        self, server: Any, admin_a: Any, name: str
-    ) -> Dict[str, Any]:
+    def _create_team_json(self, server: Any, admin_a: Any, name: str) -> Dict[str, Any]:
         """Create a team via JSON POST and return the created entity dict."""
         payload = {
             "team": {
@@ -171,9 +164,9 @@ class TestFormatNegotiationCRUD:
             json=payload,
             headers=self._auth_headers(admin_a),
         )
-        assert resp.status_code == 201, (
-            f"JSON POST /v1/team failed: {resp.status_code} {resp.text}"
-        )
+        assert (
+            resp.status_code == 201
+        ), f"JSON POST /v1/team failed: {resp.status_code} {resp.text}"
         data = resp.json()
         return data.get("team", data)  # type: ignore[no-any-return]
 
@@ -214,9 +207,9 @@ class TestFormatNegotiationCRUD:
             f"Parsed {fmt} response should contain team with 'id', "
             f"got keys: {list(team_data.keys()) if isinstance(team_data, dict) else type(team_data)}"
         )
-        assert str(team_data["id"]) == str(team_id), (
-            f"Returned team ID should match created ID"
-        )
+        assert str(team_data["id"]) == str(
+            team_id
+        ), f"Returned team ID should match created ID"
 
     # -- GET list in each response format ----------------------------------
 
@@ -252,8 +245,7 @@ class TestFormatNegotiationCRUD:
             pass  # Bare list is acceptable
         else:
             pytest.fail(
-                f"Expected dict or list from {fmt} list response, "
-                f"got {type(data)}"
+                f"Expected dict or list from {fmt} list response, " f"got {type(data)}"
             )
 
     # -- POST with each Content-Type (request body format) -----------------
@@ -293,9 +285,9 @@ class TestFormatNegotiationCRUD:
         # Response is JSON by default since we did not set Accept.
         data = resp.json()
         team_data = data.get("team", data) if isinstance(data, dict) else data
-        assert "id" in team_data, (
-            f"Response should contain created team with 'id', got: {data}"
-        )
+        assert (
+            "id" in team_data
+        ), f"Response should contain created team with 'id', got: {data}"
 
     # -- POST create with response in each format -------------------------
 
@@ -320,9 +312,7 @@ class TestFormatNegotiationCRUD:
             "Content-Type": MIME_JSON,
             "Accept": mime,
         }
-        resp = server.post(
-            "/v1/team", content=json.dumps(payload), headers=headers
-        )
+        resp = server.post("/v1/team", content=json.dumps(payload), headers=headers)
 
         assert resp.status_code == 201, (
             f"POST /v1/team with Accept: {mime} returned "
@@ -339,9 +329,9 @@ class TestFormatNegotiationCRUD:
             data = _parse_response(resp.text, fmt)
 
         team_data = data.get("team", data) if isinstance(data, dict) else data
-        assert "id" in team_data, (
-            f"Response should contain created team with 'id', got: {data}"
-        )
+        assert (
+            "id" in team_data
+        ), f"Response should contain created team with 'id', got: {data}"
 
     # -- Combined: POST in one format, receive in another ------------------
 
@@ -386,8 +376,7 @@ class TestFormatNegotiationCRUD:
         resp = server.post("/v1/team", content=body, headers=headers)
 
         assert resp.status_code == 201, (
-            f"POST {req_fmt}->{resp_fmt} returned {resp.status_code}: "
-            f"{resp.text}"
+            f"POST {req_fmt}->{resp_fmt} returned {resp.status_code}: " f"{resp.text}"
         )
 
         if resp_fmt == "json":
@@ -417,6 +406,5 @@ class TestFormatNegotiationCRUD:
         }
         resp = server.get("/v1/team", headers=headers)
         assert resp.status_code == 406, (
-            f"Expected 406 Not Acceptable, got {resp.status_code}: "
-            f"{resp.text}"
+            f"Expected 406 Not Acceptable, got {resp.status_code}: " f"{resp.text}"
         )

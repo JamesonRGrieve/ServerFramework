@@ -57,8 +57,7 @@ class FieldCollisionError(Exception):
         self.field_name = field_name
         self.sources = sources
         rendered_sources = ", ".join(
-            f"{s.extension_name} ({s.source_file}:{s.source_line})"
-            for s in sources
+            f"{s.extension_name} ({s.source_file}:{s.source_line})" for s in sources
         )
         super().__init__(
             f"Extension field collision on {model_name}.{field_name}: "

@@ -47,7 +47,13 @@ class TestExtSecretVault:
         assert all(p.isdigit() for p in parts)
 
     def test_abilities_include_all_crud(self):
-        expected = {"secret_read", "secret_write", "secret_delete", "secret_list", "secret_metadata"}
+        expected = {
+            "secret_read",
+            "secret_write",
+            "secret_delete",
+            "secret_list",
+            "secret_metadata",
+        }
         assert expected.issubset(EXT_Secret_Vault._abilities)
 
     def test_env_vars_declared(self):
@@ -72,7 +78,9 @@ class TestExtSecretVault:
         assert "hvac" in dep_names
 
     def test_hvac_is_optional(self):
-        hvac_dep = next(d for d in EXT_Secret_Vault.dependencies.pip if d.name == "hvac")
+        hvac_dep = next(
+            d for d in EXT_Secret_Vault.dependencies.pip if d.name == "hvac"
+        )
         assert hvac_dep.optional is True
 
     def test_on_initialize(self):
@@ -114,7 +122,13 @@ class TestOpenBaoProviderMetadata:
         assert Capability.METADATA in OpenBaoProvider.capabilities
 
     def test_abilities(self):
-        expected = {"secret_read", "secret_write", "secret_delete", "secret_list", "secret_metadata"}
+        expected = {
+            "secret_read",
+            "secret_write",
+            "secret_delete",
+            "secret_list",
+            "secret_metadata",
+        }
         assert expected.issubset(OpenBaoProvider._abilities)
 
     def test_env_dict(self):
@@ -225,7 +239,10 @@ class TestOpenBaoHealthCheck:
         monkeypatch.setenv("OPENBAO_TOKEN", "s.x")
         report = OpenBaoProvider.health_check()
         assert report.status == HealthStatus.DOWN
-        assert "connection error" in report.detail.lower() or "error" in report.detail.lower()
+        assert (
+            "connection error" in report.detail.lower()
+            or "error" in report.detail.lower()
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -333,7 +350,9 @@ class TestOpenBaoSecurity:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(not _vault_available(), reason="No OpenBao/Vault instance available")
+@pytest.mark.skipif(
+    not _vault_available(), reason="No OpenBao/Vault instance available"
+)
 class TestOpenBaoLiveCRUD:
     """Runs against a real vault. Set OPENBAO_ADDR + OPENBAO_TOKEN to enable."""
 

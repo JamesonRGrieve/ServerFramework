@@ -79,9 +79,7 @@ class TestJurisdictionRegistry:
         assert JurisdictionRegistry.is_in_jurisdiction("us-east-1", "EU") is False
 
     def test_is_in_jurisdiction_false_for_unknown_jurisdiction(self):
-        assert (
-            JurisdictionRegistry.is_in_jurisdiction("eu-west-1", "UNKNOWN") is False
-        )
+        assert JurisdictionRegistry.is_in_jurisdiction("eu-west-1", "UNKNOWN") is False
 
     def test_regions_for_unknown_returns_empty_frozenset(self):
         result = JurisdictionRegistry.regions_for("UNKNOWN")
@@ -206,8 +204,10 @@ class TestTenantJurisdictionResolverRegistration:
 
 class TestFilterChainByJurisdiction:
     def test_no_resolver_returns_chain_unchanged(self):
-        chain = [_FakeRotationProviderInstance("eu-west-1"),
-                 _FakeRotationProviderInstance("us-east-1")]
+        chain = [
+            _FakeRotationProviderInstance("eu-west-1"),
+            _FakeRotationProviderInstance("us-east-1"),
+        ]
         out = filter_chain_by_jurisdiction(chain, _FakeRequester(), ability="x")
         assert out == chain
 

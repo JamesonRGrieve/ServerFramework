@@ -41,7 +41,6 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, List, Literal, Optional, Sequence, Tuple
 
-
 # ---------------------------------------------------------------------------
 # Phase enum + errors
 # ---------------------------------------------------------------------------
@@ -156,8 +155,7 @@ _RE_DROP_COLUMN = re.compile(
     r"['\"](?P<column>[^'\"]+)['\"]\s*\)"
 )
 _RE_CREATE_FK = re.compile(
-    r"op\.create_foreign_key\s*\("
-    r"(?P<rest>[^)]*)\)",
+    r"op\.create_foreign_key\s*\(" r"(?P<rest>[^)]*)\)",
     re.DOTALL,
 )
 
@@ -372,9 +370,9 @@ class MigrationGenerator:
             body=(
                 f'    """Expand: stop reading/writing {table}.{column}.'
                 "\n\n"
-                f'    The next-release contract migration drops the column.'
+                f"    The next-release contract migration drops the column."
                 f'\n    """\n'
-                f'    pass  # no structural change in expand'
+                f"    pass  # no structural change in expand"
             ),
         )
         return GeneratedMigration(migration_id=rev, phase="expand", source=source)

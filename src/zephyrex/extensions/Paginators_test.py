@@ -192,7 +192,12 @@ class TestLinkHeaderPaginator:
     def test_no_next_link(self):
         p = LinkHeaderPaginator()
         items, token = p.from_external_response(
-            {"data": [{"id": 1}], "headers": {"Link": '<https://api.example.com/items?page=1>; rel="prev"'}},
+            {
+                "data": [{"id": 1}],
+                "headers": {
+                    "Link": '<https://api.example.com/items?page=1>; rel="prev"'
+                },
+            },
             query_params={},
             page_size=1,
         )

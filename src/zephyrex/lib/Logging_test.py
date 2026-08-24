@@ -21,7 +21,6 @@ from loguru import logger as loguru_logger
 
 from zephyrex.lib.Logging import logger
 
-
 SENSITIVE_KEYS = (
     "password",
     "current_password",

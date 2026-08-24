@@ -206,6 +206,7 @@ def create_test_extension_server(extension_names):
 
 # ---- Shared fixture factory functions ----
 
+
 def make_admin_a(server):
     return create_user(server, email=generate_test_email("admin_a"), last_name="AdminA")
 
@@ -230,8 +231,11 @@ def make_user_b(server, team_b):
 
 def make_mod_b_role(server, admin_a, team_b):
     return create_role(
-        server, admin_a.id, team_b.id,
-        name="mod_b", friendly_name="Moderator B",
+        server,
+        admin_a.id,
+        team_b.id,
+        name="mod_b",
+        friendly_name="Moderator B",
         parent_id=env("USER_ROLE_ID"),
     )
 

@@ -52,7 +52,9 @@ class AbstractOAuthProvider(ABC):
 
     @classmethod
     @abstractmethod
-    def sso_handler(cls, code: str, redirect_uri: Optional[str] = None) -> Optional["AbstractOAuthProvider"]:
+    def sso_handler(
+        cls, code: str, redirect_uri: Optional[str] = None
+    ) -> Optional["AbstractOAuthProvider"]:
         """Handle the SSO callback: exchange *code* for tokens, return a configured instance."""
 
     # ------------------------------------------------------------------

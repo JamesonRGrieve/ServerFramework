@@ -32,7 +32,6 @@ from zephyrex.lib.InboundSecurity import (
 )
 from zephyrex.lib.Logging import logger
 
-
 # M-3 — webhook rate limiting is keyed on `(extension, provider)` rather than
 # the global per-IP scope `@rate_limit` produces. A single misbehaving
 # provider can no longer exhaust every other provider's budget. Per-provider
@@ -122,13 +121,9 @@ def create_webhook_router() -> APIRouter:
             logger.warning(
                 f"Signature verification raised for {extension}/{provider}: {e}"
             )
-            raise HTTPException(
-                status_code=401, detail="Signature verification failed"
-            )
+            raise HTTPException(status_code=401, detail="Signature verification failed")
         if not ok:
-            raise HTTPException(
-                status_code=401, detail="Signature verification failed"
-            )
+            raise HTTPException(status_code=401, detail="Signature verification failed")
         replay_reason = check_replay(
             extension, provider, provider_class, headers, body_bytes
         )

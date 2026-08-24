@@ -40,6 +40,7 @@ def test_file_path_inferred_from_module():
 def test_file_path_inferred_from_synthesized_name():
     """ExtensionLoader-loaded modules use the legacy
     ``extensions.<name>.<file>`` __name__, so the regex must match it."""
+
     class FakeModel:
         __module__ = "zephyrex.extensions.auth_mfa.BLL_AuthMFA"
 

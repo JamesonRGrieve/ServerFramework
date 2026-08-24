@@ -517,7 +517,9 @@ class TestCreatePermissionReference:
 
     def test_multiple_permission_references_without_create(self, mock_db):
         """Test that an error is raised when multiple permission_references exist without create_permission_reference."""
-        from zephyrex.database.StaticPermissions import user_can_create_referenced_entity
+        from zephyrex.database.StaticPermissions import (
+            user_can_create_referenced_entity,
+        )
 
         # Create a test class with multiple permission references but no create_permission_reference
         class MultiRefClass:
@@ -533,7 +535,9 @@ class TestCreatePermissionReference:
             assert error is None
 
         # Test with a regular user - should fail because multiple references with no create reference
-        with patch("zephyrex.database.StaticPermissions.is_root_id", return_value=False):
+        with patch(
+            "zephyrex.database.StaticPermissions.is_root_id", return_value=False
+        ):
             result, error = user_can_create_referenced_entity(
                 MultiRefClass, "user_id", mock_db
             )
@@ -543,7 +547,9 @@ class TestCreatePermissionReference:
 
     def test_explicit_create_permission_reference(self, mock_db):
         """Test that an explicit create_permission_reference is used correctly."""
-        from zephyrex.database.StaticPermissions import user_can_create_referenced_entity
+        from zephyrex.database.StaticPermissions import (
+            user_can_create_referenced_entity,
+        )
 
         # Create a test class with multiple permission references and explicit create_permission_reference
         class ExplicitRefClass:
@@ -562,10 +568,16 @@ class TestCreatePermissionReference:
         test_cls.parent_id = "parent_value"
 
         # Set up mocks for testing
-        with patch("zephyrex.database.StaticPermissions.is_root_id", return_value=False), patch(
-            "zephyrex.database.StaticPermissions.find_create_permission_reference_chain",
-            return_value=(ExplicitRefClass, None),
-        ), patch("zephyrex.database.StaticPermissions.user_can_edit", return_value=True):
+        with (
+            patch("zephyrex.database.StaticPermissions.is_root_id", return_value=False),
+            patch(
+                "zephyrex.database.StaticPermissions.find_create_permission_reference_chain",
+                return_value=(ExplicitRefClass, None),
+            ),
+            patch(
+                "zephyrex.database.StaticPermissions.user_can_edit", return_value=True
+            ),
+        ):
 
             # Test with the explicit ref
             result, error = user_can_create_referenced_entity(
@@ -577,7 +589,9 @@ class TestCreatePermissionReference:
 
     def test_find_create_permission_reference_chain(self, mock_db):
         """Test following a chain of create_permission_references."""
-        from zephyrex.database.StaticPermissions import find_create_permission_reference_chain
+        from zephyrex.database.StaticPermissions import (
+            find_create_permission_reference_chain,
+        )
 
         # Create a mock class hierarchy with proper property-like objects
         class GrandparentClass:
@@ -638,7 +652,9 @@ class TestCreatePermissionReference:
 
     def test_circular_create_permission_reference_handling(self, mock_db):
         """Test that user_can_create_referenced_entity gracefully handles circular references."""
-        from zephyrex.database.StaticPermissions import user_can_create_referenced_entity
+        from zephyrex.database.StaticPermissions import (
+            user_can_create_referenced_entity,
+        )
 
         # Create mock classes with circular create_permission_references
         class CircularClassA:
@@ -660,10 +676,13 @@ class TestCreatePermissionReference:
                 self.ref_a_id = "ref_a_id"
 
         # Set up the necessary patches to simulate a circular reference
-        with patch("zephyrex.database.StaticPermissions.is_root_id", return_value=False), patch(
-            "zephyrex.database.StaticPermissions.find_create_permission_reference_chain",
-            side_effect=ValueError(
-                "Circular create_permission_reference detected for CircularClassA"
+        with (
+            patch("zephyrex.database.StaticPermissions.is_root_id", return_value=False),
+            patch(
+                "zephyrex.database.StaticPermissions.find_create_permission_reference_chain",
+                side_effect=ValueError(
+                    "Circular create_permission_reference detected for CircularClassA"
+                ),
             ),
         ):
             # Test that the circular reference is handled gracefully
@@ -1073,7 +1092,9 @@ class TestRequiredReferences:
     def test_denies_missing_required_references(self, mock_db, test_records):
         """Test that check_access_to_all_referenced_entities denies when required references are missing."""
         # Import the check_access_to_all_referenced_entities function
-        from zephyrex.database.StaticPermissions import check_access_to_all_referenced_entities
+        from zephyrex.database.StaticPermissions import (
+            check_access_to_all_referenced_entities,
+        )
 
         ResourceWithPermissionReferences = test_records[
             "ResourceWithPermissionReferences"
@@ -1221,7 +1242,9 @@ class TestRecursiveReferenceProtection:
         MockClassB.ref_a.property.mapper.class_ = MockClassA
 
         # Test generate_permission_filter detects the circular reference
-        with patch("zephyrex.database.StaticPermissions.inspect", side_effect=mock_inspect):
+        with patch(
+            "zephyrex.database.StaticPermissions.inspect", side_effect=mock_inspect
+        ):
             # Should not raise an exception due to infinite recursion prevention
             result = generate_permission_filter("user_id", MockClassA, mock_db, Base)
             assert result is not None
@@ -1230,7 +1253,9 @@ class TestRecursiveReferenceProtection:
         self, mock_db
     ):
         """Test that find_create_permission_reference_chain detects circular references."""
-        from zephyrex.database.StaticPermissions import find_create_permission_reference_chain
+        from zephyrex.database.StaticPermissions import (
+            find_create_permission_reference_chain,
+        )
 
         # Create mock classes with circular create_permission_reference
         class MockClassA:
@@ -1309,7 +1334,9 @@ class TestTeamHierarchyDepth:
     def test_max_team_hierarchy_depth(self, mock_db):
         """Test that the CTE query for team hierarchy has a depth limit."""
         # Import the module directly to test functionality
-        from zephyrex.database.StaticPermissions import _get_admin_accessible_team_ids_cte
+        from zephyrex.database.StaticPermissions import (
+            _get_admin_accessible_team_ids_cte,
+        )
 
         # Create a modified test that doesn't rely on patching sqlalchemy functions
         # Instead, check that the max_depth parameter is used in the correct way
@@ -1329,7 +1356,9 @@ class TestTeamHierarchyDepth:
         """Test that _get_admin_accessible_team_ids_cte has a reasonable default max_depth."""
         import inspect
 
-        from zephyrex.database.StaticPermissions import _get_admin_accessible_team_ids_cte
+        from zephyrex.database.StaticPermissions import (
+            _get_admin_accessible_team_ids_cte,
+        )
 
         # Verify the function has the max_depth parameter with default=5
         sig = inspect.signature(_get_admin_accessible_team_ids_cte)
@@ -1338,7 +1367,9 @@ class TestTeamHierarchyDepth:
 
     def test_cte_recursion_logic(self, mock_db):
         """Test that the CTE query properly implements the recursive structure."""
-        from zephyrex.database.StaticPermissions import _get_admin_accessible_team_ids_cte
+        from zephyrex.database.StaticPermissions import (
+            _get_admin_accessible_team_ids_cte,
+        )
 
         # Instead of trying to analyze the CTE directly, test its structure indirectly
         # Create method that will be called by the CTE
@@ -1467,16 +1498,23 @@ class TestNullChecks:
         mock_db.query.return_value.exists.return_value.scalar.return_value = True
 
         # Use our check_permission_wrapper which we can patch more easily
-        with patch("zephyrex.database.StaticPermissions.is_root_id", return_value=False), patch(
-            "zephyrex.database.StaticPermissions.is_system_id", return_value=False
-        ), patch(
-            "zephyrex.database.StaticPermissions.exists",
-            return_value=mock_db.query.return_value.exists.return_value,
-        ), patch(
-            "zephyrex.database.StaticPermissions.generate_permission_filter", return_value=True
-        ), patch(
-            f"{__name__}.check_permission_wrapper",
-            return_value=(PermissionResult.GRANTED, None),
+        with (
+            patch("zephyrex.database.StaticPermissions.is_root_id", return_value=False),
+            patch(
+                "zephyrex.database.StaticPermissions.is_system_id", return_value=False
+            ),
+            patch(
+                "zephyrex.database.StaticPermissions.exists",
+                return_value=mock_db.query.return_value.exists.return_value,
+            ),
+            patch(
+                "zephyrex.database.StaticPermissions.generate_permission_filter",
+                return_value=True,
+            ),
+            patch(
+                f"{__name__}.check_permission_wrapper",
+                return_value=(PermissionResult.GRANTED, None),
+            ),
         ):
             result, _ = check_permission_wrapper(
                 regular_user_id, ResourceForTest, resource_id, mock_db
@@ -1502,16 +1540,23 @@ class TestNullChecks:
         mock_db.query.return_value.exists.return_value.scalar.return_value = True
 
         # Use our check_permission_wrapper which we can patch more easily
-        with patch("zephyrex.database.StaticPermissions.is_root_id", return_value=False), patch(
-            "zephyrex.database.StaticPermissions.is_system_id", return_value=False
-        ), patch(
-            "zephyrex.database.StaticPermissions.exists",
-            return_value=mock_db.query.return_value.exists.return_value,
-        ), patch(
-            "zephyrex.database.StaticPermissions.generate_permission_filter", return_value=True
-        ), patch(
-            f"{__name__}.check_permission_wrapper",
-            return_value=(PermissionResult.GRANTED, None),
+        with (
+            patch("zephyrex.database.StaticPermissions.is_root_id", return_value=False),
+            patch(
+                "zephyrex.database.StaticPermissions.is_system_id", return_value=False
+            ),
+            patch(
+                "zephyrex.database.StaticPermissions.exists",
+                return_value=mock_db.query.return_value.exists.return_value,
+            ),
+            patch(
+                "zephyrex.database.StaticPermissions.generate_permission_filter",
+                return_value=True,
+            ),
+            patch(
+                f"{__name__}.check_permission_wrapper",
+                return_value=(PermissionResult.GRANTED, None),
+            ),
         ):
             result, _ = check_permission_wrapper(
                 regular_user_id, ResourceForTest, resource_id, mock_db
@@ -1575,7 +1620,10 @@ class TestResourceTypeValidation:
 def test_invited_user_sees_child_and_parent_team(model_registry, use_invitee):
     """Ensure invitations expose both the child team and its parent in team listings."""
 
-    from zephyrex.extensions.auth_invitations.BLL_Invitations import InvitationModel, InviteeModel
+    from zephyrex.extensions.auth_invitations.BLL_Invitations import (
+        InvitationModel,
+        InviteeModel,
+    )
     from zephyrex.logic.BLL_Auth import TeamModel, UserModel
 
     db_manager = model_registry.database_manager
@@ -1712,9 +1760,7 @@ class TestPermissionSpoofingDenied:
         mock_record.user_id = None
         mock_record.team_id = None
         mock_record.created_by_user_id = None
-        mock_db.query.return_value.filter.return_value.first.return_value = (
-            mock_record
-        )
+        mock_db.query.return_value.filter.return_value.first.return_value = mock_record
 
         result, _ = check_permission(
             regular_user_id, ResourceForTest, resource_id, mock_db, Base

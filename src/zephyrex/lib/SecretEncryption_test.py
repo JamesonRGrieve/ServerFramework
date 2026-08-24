@@ -32,9 +32,7 @@ class TestPolicy:
             SecretEncryption.encrypt_secret("hello")
 
     def test_no_key_with_fallback_in_dev_returns_plaintext(self, monkeypatch):
-        _patch_env(
-            monkeypatch, ENVIRONMENT="local", ALLOW_PLAINTEXT_SECRETS="true"
-        )
+        _patch_env(monkeypatch, ENVIRONMENT="local", ALLOW_PLAINTEXT_SECRETS="true")
         assert SecretEncryption.encrypt_secret("hello") == "hello"
 
     def test_no_key_fallback_rejected_in_production(self, monkeypatch):
@@ -49,12 +47,8 @@ class TestPolicy:
         with pytest.raises(SecretEncryption.MissingFernetKeyError):
             SecretEncryption.assert_encryption_available()
 
-    def test_assert_encryption_available_passes_with_dev_fallback(
-        self, monkeypatch
-    ):
-        _patch_env(
-            monkeypatch, ENVIRONMENT="local", ALLOW_PLAINTEXT_SECRETS="true"
-        )
+    def test_assert_encryption_available_passes_with_dev_fallback(self, monkeypatch):
+        _patch_env(monkeypatch, ENVIRONMENT="local", ALLOW_PLAINTEXT_SECRETS="true")
         # Should NOT raise.
         SecretEncryption.assert_encryption_available()
 
@@ -64,9 +58,7 @@ class TestRoundTrip:
         from cryptography.fernet import Fernet
 
         key = Fernet.generate_key().decode()
-        _patch_env(
-            monkeypatch, FRAMEWORK_FERNET_KEY=key, ENVIRONMENT="production"
-        )
+        _patch_env(monkeypatch, FRAMEWORK_FERNET_KEY=key, ENVIRONMENT="production")
 
         ciphertext = SecretEncryption.encrypt_secret("super-secret")
         assert ciphertext.startswith(SecretEncryption.FERNET_PREFIX)
@@ -76,9 +68,7 @@ class TestRoundTrip:
         from cryptography.fernet import Fernet
 
         key = Fernet.generate_key().decode()
-        _patch_env(
-            monkeypatch, FRAMEWORK_FERNET_KEY=key, ENVIRONMENT="production"
-        )
+        _patch_env(monkeypatch, FRAMEWORK_FERNET_KEY=key, ENVIRONMENT="production")
         # Untagged values left over from before the rollout should pass through.
         assert SecretEncryption.decrypt_secret("legacy-plain") == "legacy-plain"
 
@@ -86,9 +76,7 @@ class TestRoundTrip:
         from cryptography.fernet import Fernet
 
         key = Fernet.generate_key().decode()
-        _patch_env(
-            monkeypatch, FRAMEWORK_FERNET_KEY=key, ENVIRONMENT="production"
-        )
+        _patch_env(monkeypatch, FRAMEWORK_FERNET_KEY=key, ENVIRONMENT="production")
 
         once = SecretEncryption.encrypt_secret("v")
         twice = SecretEncryption.encrypt_secret(once)

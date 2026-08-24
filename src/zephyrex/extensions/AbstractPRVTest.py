@@ -693,7 +693,9 @@ class AbstractPRVTest(AbstractTest):
 
     @classmethod
     def full_config(
-        cls, expected_abilities: Set[str] | None = None, expected_services: Set[str] | None = None
+        cls,
+        expected_abilities: Set[str] | None = None,
+        expected_services: Set[str] | None = None,
     ) -> ProviderTestConfig:
         """Full test configuration for comprehensive testing."""
         return cls.create_config(
@@ -891,13 +893,11 @@ class AbstractEmailProviderSecurityTests:
         }
         kwargs[field] = payload
 
-        result = await self.provider_class.send_email(
-            mock_provider_instance, **kwargs
-        )
+        result = await self.provider_class.send_email(mock_provider_instance, **kwargs)
 
-        assert isinstance(result, str), (
-            f"send_email must return a str even on rejection ({reason})"
-        )
+        assert isinstance(
+            result, str
+        ), f"send_email must return a str even on rejection ({reason})"
         lowered = result.lower()
         assert any(
             token in lowered for token in ("rejected", "invalid", "exceeds", "failed")
@@ -920,9 +920,9 @@ class AbstractEmailProviderSecurityTests:
             body_text="ok",
         )
         result = await self.provider_class.send(mock_provider_instance, msg)
-        assert "rejected" in result.lower() and "crlf" in result.lower(), (
-            f"{self.provider_class.__name__}.send accepted CRLF in to: {result!r}"
-        )
+        assert (
+            "rejected" in result.lower() and "crlf" in result.lower()
+        ), f"{self.provider_class.__name__}.send accepted CRLF in to: {result!r}"
 
     @pytest.mark.security
     @pytest.mark.asyncio

@@ -180,9 +180,7 @@ def test_database_manager_select_session_factory_returns_primary_when_no_replica
         set_read_only(False)
 
 
-def test_database_manager_select_session_factory_picks_replica(
-    monkeypatch, tmp_path
-):
+def test_database_manager_select_session_factory_picks_replica(monkeypatch, tmp_path):
     """With `DB_REPLICA_URLS` configured AND `@read_only` set,
     `_select_session_factory` returns a replica factory. The primary
     factory is the fallback when read-only is unset."""

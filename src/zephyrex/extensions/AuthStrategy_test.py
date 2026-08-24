@@ -61,7 +61,7 @@ def test_basic_auth_encoding():
     s = BasicAuth("alice", "pw")
     h = s.headers_for()["Authorization"]
     assert h.startswith("Basic ")
-    decoded = base64.b64decode(h[len("Basic "):]).decode()
+    decoded = base64.b64decode(h[len("Basic ") :]).decode()
     assert decoded == "alice:pw"
 
 
@@ -107,10 +107,13 @@ def test_registry_register_custom_strategy():
     class Custom(AuthStrategy):
         def headers_for(self, requester_id=None):
             return {"X-Custom": "1"}
+
         def params_for(self, requester_id=None):
             return {}
+
         def body_modifier(self, requester_id, body):
             return body
+
         def refresh_if_needed(self):
             return None
 

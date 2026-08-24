@@ -67,7 +67,6 @@ from zephyrex.extensions.Paginators import (
 )
 from zephyrex.extensions.QueryTranslators import KeyValueTranslator
 
-
 pytestmark = pytest.mark.unit
 
 
@@ -83,14 +82,31 @@ class _BareInstance(AbstractEmailProviderInstance):
 
     capabilities = frozenset()  # type: ignore[var-annotated]
 
-    async def send(self, message): raise NotImplementedError
-    async def send_bulk(self, messages): raise NotImplementedError
-    async def list_emails(self, *, folder=None, query=None, limit=10, cursor=None): return []
-    async def get_email(self, message_id): return {}
-    async def update_email(self, message_id, *, read=None, flagged=None, folder=None, deleted=False): return {}
-    async def reply(self, message_id, body, attachments=None): raise NotImplementedError
-    async def download_attachment(self, message_id, attachment_id): return b""
-    async def list_threads(self, folder=None, limit=10): return []
+    async def send(self, message):
+        raise NotImplementedError
+
+    async def send_bulk(self, messages):
+        raise NotImplementedError
+
+    async def list_emails(self, *, folder=None, query=None, limit=10, cursor=None):
+        return []
+
+    async def get_email(self, message_id):
+        return {}
+
+    async def update_email(
+        self, message_id, *, read=None, flagged=None, folder=None, deleted=False
+    ):
+        return {}
+
+    async def reply(self, message_id, body, attachments=None):
+        raise NotImplementedError
+
+    async def download_attachment(self, message_id, attachment_id):
+        return b""
+
+    async def list_threads(self, folder=None, limit=10):
+        return []
 
 
 def _run(coro):
@@ -185,7 +201,9 @@ def test_validate_address_returns_typed_result():
             )
         }
     )
-    inst = SendgridEmailInstance(api_key="sk_test", from_email="x@y.z", http_client=client)
+    inst = SendgridEmailInstance(
+        api_key="sk_test", from_email="x@y.z", http_client=client
+    )
     result = _run(inst.validate_address("a@b.c"))
     assert isinstance(result, EmailValidationResult)
     assert result.verdict == "valid"
@@ -234,7 +252,9 @@ def test_get_stats_aggregates_counters():
             )
         }
     )
-    inst = SendgridEmailInstance(api_key="sk_test", from_email="x@y.z", http_client=client)
+    inst = SendgridEmailInstance(
+        api_key="sk_test", from_email="x@y.z", http_client=client
+    )
     stats = _run(inst.get_stats())
     assert isinstance(stats, EmailStats)
     assert stats.delivered == 15
@@ -250,7 +270,12 @@ def test_list_messages_round_trips_cursor_through_next_token():
         200,
         {
             "messages": [
-                {"msg_id": "m1", "to_email": "a@b.c", "subject": "hi", "status": "delivered"},
+                {
+                    "msg_id": "m1",
+                    "to_email": "a@b.c",
+                    "subject": "hi",
+                    "status": "delivered",
+                },
             ],
             "next_page_token": "PROVIDER_TOKEN_42",
         },
@@ -261,7 +286,9 @@ def test_list_messages_round_trips_cursor_through_next_token():
             ("GET", "/v3/messages"): page1,
         }
     )
-    inst = SendgridEmailInstance(api_key="sk_test", from_email="x@y.z", http_client=client)
+    inst = SendgridEmailInstance(
+        api_key="sk_test", from_email="x@y.z", http_client=client
+    )
     page = _run(inst.list_messages(limit=1))
     assert isinstance(page, MessageListPage)
     assert page.next_token is not None
@@ -291,7 +318,9 @@ def test_list_suppressions_known_type():
             )
         }
     )
-    inst = SendgridEmailInstance(api_key="sk_test", from_email="x@y.z", http_client=client)
+    inst = SendgridEmailInstance(
+        api_key="sk_test", from_email="x@y.z", http_client=client
+    )
     page = _run(inst.list_suppressions("bounce", limit=2))
     assert isinstance(page, SuppressionListPage)
     assert len(page.items) == 2
@@ -319,7 +348,9 @@ def test_field_mapping_round_trip_preserves_email_message():
     assert payload["priority"] == "high"
     assert payload["from"] == {"email": "from@example.com", "name": "From Name"}
     assert payload["personalizations"][0]["to"] == [{"email": "a@b.c", "name": "Alice"}]
-    assert any(c["type"] == "text/plain" and c["value"] == "hello" for c in payload["content"])
+    assert any(
+        c["type"] == "text/plain" and c["value"] == "hello" for c in payload["content"]
+    )
 
     # Inverse: external -> internal kwargs reproduces the originating shape.
     kwargs = _sendgrid_payload_to_message_kwargs(payload)
@@ -393,7 +424,9 @@ def test_verify_signature_hmac_fallback_known_bad(monkeypatch):
     monkeypatch.setenv("SENDGRID_WEBHOOK_SECRET", "shh-shared")
     body = b'{"event":"delivered"}'
     headers = {
-        SendgridProvider.SENDGRID_SIGNATURE_HEADER: base64.b64encode(b"x" * 32).decode(),
+        SendgridProvider.SENDGRID_SIGNATURE_HEADER: base64.b64encode(
+            b"x" * 32
+        ).decode(),
         SendgridProvider.SENDGRID_TIMESTAMP_HEADER: _fresh_timestamp(),
     }
     assert SendgridProvider.verify_signature(headers, body) is False
@@ -524,7 +557,9 @@ def test_dispatch_sendgrid_events_normalises_payload():
 
 
 def test_coerce_sendgrid_event_handles_string_timestamp():
-    evt = _coerce_sendgrid_event({"email": "x@y.z", "timestamp": "1700000000.5"}, "open")
+    evt = _coerce_sendgrid_event(
+        {"email": "x@y.z", "timestamp": "1700000000.5"}, "open"
+    )
     assert evt.event_type == "open"
     assert evt.timestamp == 1700000000.5
     assert evt.provider == "sendgrid"
@@ -569,7 +604,9 @@ def test_webhook_e2e_signature_failure_returns_401(monkeypatch):
             "/webhook/email/sendgrid/delivered",
             json=[{"event": "delivered", "email": "a@b.c"}],
             headers={
-                SendgridProvider.SENDGRID_SIGNATURE_HEADER: base64.b64encode(b"x" * 32).decode(),
+                SendgridProvider.SENDGRID_SIGNATURE_HEADER: base64.b64encode(
+                    b"x" * 32
+                ).decode(),
                 SendgridProvider.SENDGRID_TIMESTAMP_HEADER: _fresh_timestamp(),
             },
         )
@@ -595,7 +632,12 @@ def test_webhook_e2e_valid_signature_dispatches_event(monkeypatch):
     subscribe_email_delivery(cb)
     try:
         body_obj = [
-            {"event": "bounce", "email": "a@b.c", "sg_message_id": "msg-1", "timestamp": 1700000000}
+            {
+                "event": "bounce",
+                "email": "a@b.c",
+                "sg_message_id": "msg-1",
+                "timestamp": 1700000000,
+            }
         ]
         body = json.dumps(body_obj).encode("utf-8")
         timestamp = _fresh_timestamp()

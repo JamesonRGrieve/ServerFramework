@@ -102,7 +102,10 @@ def serialize(data: Any, fmt: str) -> tuple[str, str]:
     if fmt == "toon":
         return toon_encode(data), MIME_TOON
     if fmt == "yaml":
-        return yaml.safe_dump(data, default_flow_style=False, allow_unicode=True), MIME_YAML
+        return (
+            yaml.safe_dump(data, default_flow_style=False, allow_unicode=True),
+            MIME_YAML,
+        )
     if fmt == "toml":
         # TOML requires a top-level table; wrap bare values.
         if not isinstance(data, dict):
@@ -361,17 +364,26 @@ class ContentNegotiationMiddleware:
         if req_fmt is None and method in ("POST", "PUT", "PATCH"):
             supported = ", ".join(sorted(set(_MEDIA_TYPE_MAP.values())))
             response = Response(
-                content=json.dumps({
-                    "detail": "Unsupported Media Type",
-                    "supported": [f"application/{f}" for f in sorted(set(_MEDIA_TYPE_MAP.values()))],
-                }),
+                content=json.dumps(
+                    {
+                        "detail": "Unsupported Media Type",
+                        "supported": [
+                            f"application/{f}"
+                            for f in sorted(set(_MEDIA_TYPE_MAP.values()))
+                        ],
+                    }
+                ),
                 status_code=415,
                 media_type=MIME_JSON,
             )
             await response(scope, receive, send)
             return
 
-        if req_fmt is not None and req_fmt != "json" and method in ("POST", "PUT", "PATCH"):
+        if (
+            req_fmt is not None
+            and req_fmt != "json"
+            and method in ("POST", "PUT", "PATCH")
+        ):
             # Consume the full body from the original ``receive``.
             body_parts: list[bytes] = []
             while True:

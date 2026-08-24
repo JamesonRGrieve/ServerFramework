@@ -38,7 +38,6 @@ from zephyrex.extensions.federation.BLL_Federation_GQL import (
 from zephyrex.lib.Environment import env
 from zephyrex.lib.Logging import logger
 
-
 # ---------------------------------------------------------------------------
 # Upstream URL validation (SSRF guard)
 # ---------------------------------------------------------------------------
@@ -115,12 +114,12 @@ def validate_upstream_url(url: str, *, allow_private: Optional[bool] = None) -> 
     parsed = urlparse(url)
 
     from zephyrex.lib.Environment import resolve_environment
+
     environment = resolve_environment()
     is_dev_like = environment in ("local", "ci", "development")
 
     allow_http = (
-        is_dev_like
-        or (env("FEDERATION_ALLOW_HTTP_UPSTREAMS") or "").lower() == "true"
+        is_dev_like or (env("FEDERATION_ALLOW_HTTP_UPSTREAMS") or "").lower() == "true"
     )
     if parsed.scheme not in _DEFAULT_ALLOWED_SCHEMES and not (
         allow_http and parsed.scheme == "http"
@@ -199,9 +198,7 @@ def _discover_rest_specs() -> List[Mapping[str, Any]]:
         try:
             descriptor = spec_provider()
         except Exception as exc:
-            logger.debug(
-                "OpenAPI spec_provider for %s raised: %s", ext.__name__, exc
-            )
+            logger.debug("OpenAPI spec_provider for %s raised: %s", ext.__name__, exc)
             continue
         if descriptor is None:
             continue
@@ -248,9 +245,7 @@ async def install_external_federation(
         try:
             validate_upstream_url(upstream)
         except ValueError as exc:
-            logger.warning(
-                "Federation rejected for %s: %s", provider_cls.__name__, exc
-            )
+            logger.warning("Federation rejected for %s: %s", provider_cls.__name__, exc)
             continue
         try:
             ingested = await provider_cls.register_with_registry(registry=target_registry)  # type: ignore[attr-defined]
@@ -548,9 +543,7 @@ def _synthesize_gql_external_model(
     return bound
 
 
-def _synthesize_external_manager(
-    *, type_name: str, external_model_cls: type
-) -> type:
+def _synthesize_external_manager(*, type_name: str, external_model_cls: type) -> type:
     """Build an :class:`AbstractExternalManager` subclass for a derived model."""
 
     from zephyrex.extensions.AbstractExternalModel import (
@@ -571,9 +564,8 @@ def _synthesize_external_manager(
 def _safe_bind(model_registry: Any, model_cls: type, name: str) -> None:
     """Bind a model to the registry, swallowing duplicates."""
 
-    bind = (
-        getattr(model_registry, "bind_model", None)
-        or getattr(model_registry, "register_model", None)
+    bind = getattr(model_registry, "bind_model", None) or getattr(
+        model_registry, "register_model", None
     )
     if bind is None:
         logger.warning(

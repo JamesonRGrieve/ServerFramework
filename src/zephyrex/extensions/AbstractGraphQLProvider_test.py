@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 import pytest
+
 # Module-level import so PEP 563 string annotations on nested handlers resolve
 # against module globals when FastAPI calls ``get_type_hints``.
 from fastapi import FastAPI, Request
@@ -29,7 +30,6 @@ from zephyrex.extensions.federation.BLL_Federation_GQL import (
     reset_global_registry,
 )
 from zephyrex.lib.ProviderHTTPClient import ClientPolicy
-
 
 pytestmark = [pytest.mark.gql]
 
@@ -87,7 +87,10 @@ def _make_stitching_app() -> "httpx.AsyncClient":
             )
             schema = GraphQLSchema(query=query_t)
             result = execute_sync(schema, parse(q))
-            return {"data": result.data, "errors": [str(e) for e in (result.errors or [])] or None}
+            return {
+                "data": result.data,
+                "errors": [str(e) for e in (result.errors or [])] or None,
+            }
         # Generic typename probe
         if "__typename" in q:
             return {"data": {"__typename": "Query"}}
@@ -144,6 +147,7 @@ class _Stub_GraphQLProvider(AbstractGraphQLProvider):
         from zephyrex.extensions.AbstractExtensionProvider import (
             AbstractProviderInstance,
         )
+
         return AbstractProviderInstance(instance)
 
 
@@ -160,6 +164,7 @@ class _StubApolloProvider(AbstractGraphQLProvider):
         from zephyrex.extensions.AbstractExtensionProvider import (
             AbstractProviderInstance,
         )
+
         return AbstractProviderInstance(instance)
 
 
@@ -233,7 +238,9 @@ async def test_stitching_introspection_round_trips(monkeypatch):
         # Patch http_client to return our shim — the rest of the pipeline
         # remains genuine production code.
         monkeypatch.setattr(
-            _Stub_GraphQLProvider, "http_client", classmethod(lambda cls, **_: _StubHTTP())
+            _Stub_GraphQLProvider,
+            "http_client",
+            classmethod(lambda cls, **_: _StubHTTP()),
         )
 
         ingested = await _Stub_GraphQLProvider.introspect()
@@ -248,17 +255,22 @@ async def test_stitching_introspection_round_trips(monkeypatch):
 async def test_register_with_registry_applies_transformer(monkeypatch):
     upstream = _make_stitching_app()
     try:
+
         class _StubHTTP:
             async def post(self, url: str, *, json: Any = None, **_: Any) -> Any:
                 response = await upstream.post(url, json=json)
                 return response.json()
 
         monkeypatch.setattr(
-            _Stub_GraphQLProvider, "http_client", classmethod(lambda cls, **_: _StubHTTP())
+            _Stub_GraphQLProvider,
+            "http_client",
+            classmethod(lambda cls, **_: _StubHTTP()),
         )
 
         registry = MergedSchemaRegistry()
-        rewritten = await _Stub_GraphQLProvider.register_with_registry(registry=registry)
+        rewritten = await _Stub_GraphQLProvider.register_with_registry(
+            registry=registry
+        )
         # Prefix from type_namespace was applied.
         assert "Stub_User" in rewritten.sdl
         # Subgraph is registered.
@@ -277,13 +289,16 @@ async def test_register_with_registry_applies_transformer(monkeypatch):
 async def test_apollo_v2_uses_service_sdl_probe(monkeypatch):
     upstream = _make_apollo_app()
     try:
+
         class _StubHTTP:
             async def post(self, url: str, *, json: Any = None, **_: Any) -> Any:
                 response = await upstream.post(url, json=json)
                 return response.json()
 
         monkeypatch.setattr(
-            _StubApolloProvider, "http_client", classmethod(lambda cls, **_: _StubHTTP())
+            _StubApolloProvider,
+            "http_client",
+            classmethod(lambda cls, **_: _StubHTTP()),
         )
 
         ingested = await _StubApolloProvider.introspect()
@@ -301,6 +316,7 @@ async def test_apollo_v2_falls_back_when_lenient(monkeypatch):
         require_apollo_v2_when_advertised = False
 
     try:
+
         class _StubHTTP:
             async def post(self, url: str, *, json: Any = None, **_: Any) -> Any:
                 response = await upstream.post(url, json=json)
@@ -321,13 +337,16 @@ async def test_apollo_v2_falls_back_when_lenient(monkeypatch):
 async def test_apollo_v2_strict_mode_raises_when_unsupported(monkeypatch):
     upstream = _make_stitching_app()
     try:
+
         class _StubHTTP:
             async def post(self, url: str, *, json: Any = None, **_: Any) -> Any:
                 response = await upstream.post(url, json=json)
                 return response.json()
 
         monkeypatch.setattr(
-            _StubApolloProvider, "http_client", classmethod(lambda cls, **_: _StubHTTP())
+            _StubApolloProvider,
+            "http_client",
+            classmethod(lambda cls, **_: _StubHTTP()),
         )
 
         with pytest.raises(RuntimeError, match="apollo_v2"):
@@ -343,7 +362,10 @@ async def test_apollo_v2_strict_mode_raises_when_unsupported(monkeypatch):
 
 @pytest.mark.unit
 def test_lift_to_pydantic_returns_models():
-    from zephyrex.extensions.federation.BLL_Federation_GQL import IngestedSchema, ingest_apollo_sdl
+    from zephyrex.extensions.federation.BLL_Federation_GQL import (
+        IngestedSchema,
+        ingest_apollo_sdl,
+    )
 
     sdl = "type User { id: ID! name: String }\ntype Query { user: User }\n"
     ingested = ingest_apollo_sdl(sdl)

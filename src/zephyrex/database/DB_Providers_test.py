@@ -32,7 +32,9 @@ class TestProvider(AbstractDBTest):
 class TestProviderExtension(AbstractDBTest):
     class_under_test = ProviderExtensionModel
     create_fields = {}  # type: ignore[var-annotated]
-    update_fields: dict[str, str] = {}  # No updateable fields besides system fields  # type: ignore[var-annotated]
+    update_fields: dict[str, str] = (
+        {}
+    )  # No updateable fields besides system fields  # type: ignore[var-annotated]
     parent_entities = [
         ParentEntity(
             name="extension",
@@ -79,7 +81,9 @@ class TestProviderExtensionAbility(AbstractDBTest):
         "provider_extension_id": None,  # Will be populated in setup
         "ability_id": None,  # Will be populated in setup
     }
-    update_fields: dict[str, str] = {}  # No updateable fields besides system fields  # type: ignore[var-annotated]
+    update_fields: dict[str, str] = (
+        {}
+    )  # No updateable fields besides system fields  # type: ignore[var-annotated]
     parent_entities = [
         ParentEntity(
             name="provider_extension",
@@ -175,7 +179,9 @@ class TestRotation(AbstractDBTest):
 class TestRotationProviderInstance(AbstractDBTest):
     class_under_test = RotationProviderInstanceModel
     create_fields = {}  # type: ignore[var-annotated]
-    update_fields: dict[str, str] = {}  # No updateable fields besides system fields  # type: ignore[var-annotated]
+    update_fields: dict[str, str] = (
+        {}
+    )  # No updateable fields besides system fields  # type: ignore[var-annotated]
     parent_entities = [
         ParentEntity(
             name="rotation", foreign_key="rotation_id", test_class=TestRotation

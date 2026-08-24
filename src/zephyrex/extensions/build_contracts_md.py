@@ -66,7 +66,11 @@ def _resolve(entry: Dict[str, Any]) -> Tuple[Optional[Any], bool]:
     try:
         module = importlib.import_module(module_name)
     except ModuleNotFoundError:
-        return (None, False) if not _ast_has_symbol(module_name, symbol_name) else (None, False)
+        return (
+            (None, False)
+            if not _ast_has_symbol(module_name, symbol_name)
+            else (None, False)
+        )
     symbol = getattr(module, symbol_name, None)
     if symbol is None:
         return (None, False)

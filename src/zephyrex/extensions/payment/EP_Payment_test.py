@@ -473,7 +473,9 @@ class TestPayment_UserAndSessionEndpoints(
         # Verify the hook function is wired into the BLL module — its
         # mere import + callability proves the extension's BLL_Payment
         # registered it without the test having to patch anything.
-        from zephyrex.extensions.payment.BLL_Payment import validate_subscription_on_login
+        from zephyrex.extensions.payment.BLL_Payment import (
+            validate_subscription_on_login,
+        )
 
         assert callable(validate_subscription_on_login), "Hook function should exist"
 

@@ -56,6 +56,7 @@ def run_venv_bootstrap() -> bool:
         from zephyrex.lib.Logging import logger  # type: ignore
     except Exception:  # pragma: no cover - bootstrap path
         from logging import getLogger
+
         logger = getLogger(__name__)
 
     current_file_path = Path(__file__).resolve()

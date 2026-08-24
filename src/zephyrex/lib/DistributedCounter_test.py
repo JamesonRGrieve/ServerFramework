@@ -109,6 +109,7 @@ def test_no_arg_counter_supports_quota_list_call_shape():
     Note: the list-shape is intentionally sync (returns bool, not coroutine)
     so callers like Quota.try_consume can use it without awaiting.
     """
+
     class _Row:
         def __init__(self, limit: int, consumed: int = 0) -> None:
             self.limit = limit

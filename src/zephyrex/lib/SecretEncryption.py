@@ -25,7 +25,6 @@ from typing import Optional
 from zephyrex.lib.Environment import env
 from zephyrex.lib.Logging import logger
 
-
 FERNET_PREFIX = "fernet:"
 
 
@@ -106,7 +105,7 @@ def decrypt_secret(stored: Optional[str]) -> Optional[str]:
         raise MissingFernetKeyError(
             "Encrypted secret encountered but FRAMEWORK_FERNET_KEY is unset"
         )
-    token = stored[len(FERNET_PREFIX):].encode("ascii")
+    token = stored[len(FERNET_PREFIX) :].encode("ascii")
     try:
         return f.decrypt(token).decode("utf-8")  # type: ignore[no-any-return]
     except Exception as exc:

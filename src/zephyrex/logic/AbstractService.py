@@ -9,7 +9,18 @@ from abc import ABC, abstractmethod
 from collections import deque
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Callable, ClassVar, Deque, Dict, List, Literal, Optional, Tuple, TypeVar
+from typing import (
+    Any,
+    Callable,
+    ClassVar,
+    Deque,
+    Dict,
+    List,
+    Literal,
+    Optional,
+    Tuple,
+    TypeVar,
+)
 
 from sqlalchemy.orm import Session
 
@@ -117,9 +128,7 @@ class AbstractService(ABC):
         self.drain_period_seconds: float = float(
             kwargs.get("drain_period_seconds", DEFAULT_DRAIN_PERIOD_SECONDS)
         )
-        self.restart_policy: RestartPolicy = kwargs.get(
-            "restart_policy", "on_failure"
-        )
+        self.restart_policy: RestartPolicy = kwargs.get("restart_policy", "on_failure")
         # ``failed`` is the terminal supervisor state per Item 28's acceptance
         # criteria; entered when the service exhausts ``max_failures`` and
         # cleared only by an explicit reset (admin action / tests).
@@ -504,7 +513,9 @@ class ScheduledService(AbstractService):
                 now = datetime.now(timezone.utc)
                 due = self._next_due(now)
                 if now < due:
-                    await asyncio.sleep(min(1.0, max(0.05, (due - now).total_seconds())))
+                    await asyncio.sleep(
+                        min(1.0, max(0.05, (due - now).total_seconds()))
+                    )
                     continue
                 await self.update()
                 self.last_run_at = now
@@ -534,20 +545,16 @@ class QueueSource(ABC):
     """Abstract pull-model queue source."""
 
     @abstractmethod
-    async def pull_one(self) -> Optional[dict]:
-        ...
+    async def pull_one(self) -> Optional[dict]: ...
 
     @abstractmethod
-    async def ack(self, item: dict) -> None:
-        ...
+    async def ack(self, item: dict) -> None: ...
 
     @abstractmethod
-    async def nack(self, item: dict) -> None:
-        ...
+    async def nack(self, item: dict) -> None: ...
 
     @abstractmethod
-    async def move_to_dlq(self, item: dict, reason: str) -> None:
-        ...
+    async def move_to_dlq(self, item: dict, reason: str) -> None: ...
 
     def tenant_key(self, item: Any) -> str:
         return "_default"
@@ -682,7 +689,9 @@ class FairQueueConsumerService(QueueConsumerService):
         self._partitions: Dict[JobPriority, Dict[str, Deque[Tuple[Any, float]]]] = {
             lane: {} for lane in self._LANE_ORDER
         }
-        self._lane_cursors: Dict[JobPriority, int] = {lane: 0 for lane in self._LANE_ORDER}
+        self._lane_cursors: Dict[JobPriority, int] = {
+            lane: 0 for lane in self._LANE_ORDER
+        }
 
     async def handler(self, item: Any) -> None:
         if self._handler is not None:
@@ -701,7 +710,9 @@ class FairQueueConsumerService(QueueConsumerService):
                 break
             lane = self.queue_source.priority(item)
             tenant = self.queue_source.tenant_key(item)
-            self._partitions[lane].setdefault(tenant, deque()).append((item, time.time()))
+            self._partitions[lane].setdefault(tenant, deque()).append(
+                (item, time.time())
+            )
 
     def _select_next(self) -> Optional[Tuple[JobPriority, str, Any, float]]:
         for lane in self._LANE_ORDER:

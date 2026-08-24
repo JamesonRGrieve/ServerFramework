@@ -906,9 +906,9 @@ class TestAbstractLogicManager:
         results = self.base_manager.search(name={"inc": "Search Test"})
         assert isinstance(results, list)
         names = [r.name for r in results]
-        assert {"Search Test 0", "Search Test 1", "Search Test 2"} <= set(names), (
-            f"`inc` filter must match the seeded rows; got {names}"
-        )
+        assert {"Search Test 0", "Search Test 1", "Search Test 2"} <= set(
+            names
+        ), f"`inc` filter must match the seeded rows; got {names}"
 
     def test_search_string(self):
         # Seed an exact-match row alongside a near-match so `eq` is forced
@@ -920,18 +920,18 @@ class TestAbstractLogicManager:
         results = self.base_manager.search(name={"eq": "UniqueExactMatch"})
         assert isinstance(results, list)
         names = [r.name for r in results]
-        assert names == ["UniqueExactMatch"], (
-            f"`eq` filter must return exactly the matching row; got {names}"
-        )
+        assert names == [
+            "UniqueExactMatch"
+        ], f"`eq` filter must return exactly the matching row; got {names}"
 
     def test_search_numerical(self):
         results = self.base_manager.search(count={"gt": 3})
         assert isinstance(results, list)
         # Every row in the result must satisfy the predicate.
         for row in results:
-            assert getattr(row, "count", 0) > 3, (
-                f"`gt: 3` filter returned row with count={row.count}"
-            )
+            assert (
+                getattr(row, "count", 0) > 3
+            ), f"`gt: 3` filter returned row with count={row.count}"
 
     def test_search_datetime(self):
         # Seed a row so both bounds have something to discriminate against
@@ -962,12 +962,12 @@ class TestAbstractLogicManager:
         mock_field.ilike.return_value = "mocked filter condition"
 
         # Patch the specific field access for the test
-        with patch.object(MockDBModel, "name", mock_field), patch.object(
-            MockDBModel, "description", mock_field
-        ), patch.object(MockDBModel, "count", 3), patch.object(
-            MockDBModel, "created_at", datetime.now()
-        ), patch.object(
-            MockDBModel, "updated_at", datetime.now()
+        with (
+            patch.object(MockDBModel, "name", mock_field),
+            patch.object(MockDBModel, "description", mock_field),
+            patch.object(MockDBModel, "count", 3),
+            patch.object(MockDBModel, "created_at", datetime.now()),
+            patch.object(MockDBModel, "updated_at", datetime.now()),
         ):
             with patch.object(self.base_manager, "get_field_types") as mock_get_types:
                 mock_get_types.return_value = (
@@ -1117,9 +1117,12 @@ class TestAbstractLogicManager:
             },
         )()
 
-        with patch.object(
-            BaseManagerForTest, "DB", new_callable=PropertyMock
-        ) as db_prop, patch.object(BaseManagerForTest, "Model", DummyModel):
+        with (
+            patch.object(
+                BaseManagerForTest, "DB", new_callable=PropertyMock
+            ) as db_prop,
+            patch.object(BaseManagerForTest, "Model", DummyModel),
+        ):
             db_prop.return_value = dummy_db
             columns = self.base_manager._resolve_load_only_columns(["optional"])
 

@@ -26,7 +26,6 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Type
 
 from pydantic import BaseModel
 
-
 # ---------------------------------------------------------------------------
 # Schema extraction
 # ---------------------------------------------------------------------------
@@ -234,9 +233,7 @@ def check_compatibility(
                     CompatibilityFinding(
                         event=key,
                         kind="now_required",
-                        detail=(
-                            f"Field '{fname}' was optional, is now required"
-                        ),
+                        detail=(f"Field '{fname}' was optional, is now required"),
                     )
                 )
 

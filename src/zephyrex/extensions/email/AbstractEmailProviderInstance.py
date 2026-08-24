@@ -32,7 +32,6 @@ from pydantic import BaseModel, Field
 from zephyrex.extensions.AbstractExtensionProvider import AbstractProviderInstance
 from zephyrex.extensions.email.EmailErrors import NotSupportedError
 
-
 __all__ = [
     "SentMessage",
     "AbstractEmailProviderInstance",
@@ -98,7 +97,8 @@ class SuppressionEntry(BaseModel):
 
     email: str
     suppression_type: str = Field(
-        ..., description="One of `bounce`, `block`, `spam_report`, `unsubscribe`, `invalid`."
+        ...,
+        description="One of `bounce`, `block`, `spam_report`, `unsubscribe`, `invalid`.",
     )
     reason: Optional[str] = None
     created_at: Optional[datetime] = None
@@ -237,9 +237,7 @@ class AbstractEmailProviderInstance(AbstractProviderInstance):
         """Reply to an existing message; returns the new `SentMessage`."""
 
     @abstractmethod
-    async def download_attachment(
-        self, message_id: str, attachment_id: str
-    ) -> bytes:
+    async def download_attachment(self, message_id: str, attachment_id: str) -> bytes:
         """Return the raw bytes of an attachment."""
 
     @abstractmethod
@@ -260,7 +258,10 @@ class AbstractEmailProviderInstance(AbstractProviderInstance):
     def _provider_name(self) -> str:
         """Return the bonded provider's short name for error messages."""
         owner = type(self).__name__
-        return owner.replace("ProviderInstance", "").replace("Provider", "").lower() or owner
+        return (
+            owner.replace("ProviderInstance", "").replace("Provider", "").lower()
+            or owner
+        )
 
     async def validate_address(self, email: str) -> EmailValidationResult:
         """Pre-flight an address against the upstream's validation API.
@@ -336,9 +337,7 @@ class AbstractEmailProviderInstance(AbstractProviderInstance):
 
         Default: raise `NotSupportedError`.
         """
-        raise NotSupportedError(
-            provider=self._provider_name(), capability="get_stats"
-        )
+        raise NotSupportedError(provider=self._provider_name(), capability="get_stats")
 
     async def list_messages(
         self,

@@ -96,7 +96,9 @@ class AbstractEventBus(ABC):
     async def publish(self, event: BaseModel) -> None: ...
 
     @abstractmethod
-    def subscribe(self, event_class: Type[BaseModel], handler: EventHandler) -> None: ...
+    def subscribe(
+        self, event_class: Type[BaseModel], handler: EventHandler
+    ) -> None: ...
 
     @abstractmethod
     async def close(self) -> None: ...
@@ -165,7 +167,9 @@ class BrokerTransport(ABC):
         """Publish ``payload`` to ``topic``."""
 
     @abstractmethod
-    async def subscribe(self, topic: str, handler: Callable[[bytes], Awaitable[None]]) -> None:
+    async def subscribe(
+        self, topic: str, handler: Callable[[bytes], Awaitable[None]]
+    ) -> None:
         """Register an async handler for messages on ``topic``."""
 
     @abstractmethod
@@ -179,7 +183,9 @@ class InMemoryBrokerTransport(BrokerTransport):
     invocation, swallowed handler errors logged but not raised."""
 
     def __init__(self) -> None:
-        self._subscribers: Dict[str, List[Callable[[bytes], Awaitable[None]]]] = defaultdict(list)
+        self._subscribers: Dict[str, List[Callable[[bytes], Awaitable[None]]]] = (
+            defaultdict(list)
+        )
         self._closed = False
 
     async def send(self, topic: str, payload: bytes) -> None:
@@ -197,7 +203,9 @@ class InMemoryBrokerTransport(BrokerTransport):
                     exc,
                 )
 
-    async def subscribe(self, topic: str, handler: Callable[[bytes], Awaitable[None]]) -> None:
+    async def subscribe(
+        self, topic: str, handler: Callable[[bytes], Awaitable[None]]
+    ) -> None:
         if self._closed:
             raise RuntimeError("Broker transport is closed; cannot subscribe")
         self._subscribers[topic].append(handler)
@@ -232,9 +240,7 @@ class _BrokerEventBus(AbstractEventBus):
         self._dlq_topic = dlq_topic
         # Map topic key → list of (event_class, handler) so dispatch can
         # decode the bytes back into the right Pydantic class on receive.
-        self._handlers: Dict[
-            str, List[tuple]
-        ] = defaultdict(list)
+        self._handlers: Dict[str, List[tuple]] = defaultdict(list)
         self._subscribed_topics: set = set()
 
     @staticmethod
@@ -274,9 +280,7 @@ class _BrokerEventBus(AbstractEventBus):
                 try:
                     event = event_class.model_validate_json(payload)
                 except Exception as exc:  # noqa: BLE001
-                    _logger.error(
-                        "Broker payload decode failed for %s: %s", topic, exc
-                    )
+                    _logger.error("Broker payload decode failed for %s: %s", topic, exc)
                     if self._dlq_topic:
                         await self._transport.send(self._dlq_topic, payload)
                     continue
@@ -285,9 +289,7 @@ class _BrokerEventBus(AbstractEventBus):
                     if hasattr(result, "__await__"):
                         await result
                 except Exception as exc:  # noqa: BLE001
-                    _logger.error(
-                        "Broker subscriber failed on %s: %s", topic, exc
-                    )
+                    _logger.error("Broker subscriber failed on %s: %s", topic, exc)
                     if self._dlq_topic:
                         try:
                             await self._transport.send(self._dlq_topic, payload)
@@ -295,6 +297,7 @@ class _BrokerEventBus(AbstractEventBus):
                             _logger.error(
                                 "DLQ forward failed for topic %s", self._dlq_topic
                             )
+
         return _dispatch
 
     async def close(self) -> None:
@@ -377,9 +380,11 @@ def on_event(event_class: Type[BaseModel]):
         async def send_welcome(event: UserCreated):
             await mailer.send(...)
     """
+
     def deco(fn: EventHandler) -> EventHandler:
         get_event_bus().subscribe(event_class, fn)
         return fn
+
     return deco
 
 

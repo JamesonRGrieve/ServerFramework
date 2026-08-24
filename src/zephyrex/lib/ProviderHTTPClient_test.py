@@ -39,17 +39,27 @@ def _clear_pool():
 
 def _patch_client_with_handler(monkeypatch, handler, sync: bool = False):
     """Replace pool builders so requests route through `httpx.MockTransport`."""
-    transport_factory = (
-        httpx.MockTransport if not sync else httpx.MockTransport
-    )
+    transport_factory = httpx.MockTransport if not sync else httpx.MockTransport
     if not sync:
+
         def _build_async(policy):
-            return httpx.AsyncClient(transport=transport_factory(handler), timeout=policy.timeout)
-        monkeypatch.setattr("zephyrex.lib.ProviderHTTPClient._build_async_client", _build_async)
+            return httpx.AsyncClient(
+                transport=transport_factory(handler), timeout=policy.timeout
+            )
+
+        monkeypatch.setattr(
+            "zephyrex.lib.ProviderHTTPClient._build_async_client", _build_async
+        )
     else:
+
         def _build_sync(policy):
-            return httpx.Client(transport=transport_factory(handler), timeout=policy.timeout)
-        monkeypatch.setattr("zephyrex.lib.ProviderHTTPClient._build_sync_client", _build_sync)
+            return httpx.Client(
+                transport=transport_factory(handler), timeout=policy.timeout
+            )
+
+        monkeypatch.setattr(
+            "zephyrex.lib.ProviderHTTPClient._build_sync_client", _build_sync
+        )
 
 
 @pytest.mark.unit
@@ -57,6 +67,7 @@ def _patch_client_with_handler(monkeypatch, handler, sync: bool = False):
 async def test_get_returns_json_dict(monkeypatch):
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"hello": "world"})
+
     _patch_client_with_handler(monkeypatch, handler)
     c = ProviderHTTPClient()
     out = await c.get("https://api.example/test")
@@ -67,9 +78,11 @@ async def test_get_returns_json_dict(monkeypatch):
 @pytest.mark.asyncio
 async def test_auth_strategy_headers_injected(monkeypatch):
     captured = {}
+
     def handler(request: httpx.Request) -> httpx.Response:
         captured["auth"] = request.headers.get("Authorization")
         return httpx.Response(200, json={})
+
     _patch_client_with_handler(monkeypatch, handler)
     c = ProviderHTTPClient(auth_strategy=APIKeyAuth("k123"))
     await c.get("https://api.example/test")
@@ -80,9 +93,11 @@ async def test_auth_strategy_headers_injected(monkeypatch):
 @pytest.mark.asyncio
 async def test_idempotency_header_injected(monkeypatch):
     captured = {}
+
     def handler(request: httpx.Request) -> httpx.Response:
         captured["idem"] = request.headers.get("Idempotency-Key")
         return httpx.Response(200, json={})
+
     _patch_client_with_handler(monkeypatch, handler)
     c = ProviderHTTPClient()
     await c.post("https://api.example/test", idempotency_key="key-abc")
@@ -93,9 +108,11 @@ async def test_idempotency_header_injected(monkeypatch):
 @pytest.mark.asyncio
 async def test_traceparent_propagated(monkeypatch):
     captured = {}
+
     def handler(request: httpx.Request) -> httpx.Response:
         captured["tp"] = request.headers.get("traceparent")
         return httpx.Response(200, json={})
+
     _patch_client_with_handler(monkeypatch, handler)
     token = set_traceparent("00-abc-def-01")
     try:
@@ -104,8 +121,10 @@ async def test_traceparent_propagated(monkeypatch):
         assert captured["tp"] == "00-abc-def-01"
     finally:
         import contextvars
+
         # Reset the contextvar
         from zephyrex.lib.ProviderHTTPClient import _traceparent
+
         _traceparent.reset(token)
 
 
@@ -123,6 +142,7 @@ async def test_5xx_raises_transient(monkeypatch):
 async def test_429_raises_rate_limit_with_retry_after(monkeypatch):
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(429, headers={"Retry-After": "12"}, text="slow down")
+
     _patch_client_with_handler(monkeypatch, handler)
     c = ProviderHTTPClient(provider_name="test")
     with pytest.raises(RateLimitExternalError) as ei:

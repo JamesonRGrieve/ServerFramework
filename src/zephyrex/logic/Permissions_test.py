@@ -192,13 +192,9 @@ def test_iter_extension_permissions_uses_get_permissions():
 
 def test_validate_uniqueness_no_op_when_clean():
     reg = PermissionRegistry()
-    reg.register(
-        [PermissionDef(name="p.r.a", description="d")], source="ext1"
-    )
+    reg.register([PermissionDef(name="p.r.a", description="d")], source="ext1")
     # Identical duplicate accepted -> validate_uniqueness must still pass.
-    reg.register(
-        [PermissionDef(name="p.r.a", description="d")], source="ext2"
-    )
+    reg.register([PermissionDef(name="p.r.a", description="d")], source="ext2")
     reg.validate_uniqueness()  # no raise
 
 
@@ -227,12 +223,17 @@ class TestHasPermissionWithImplies:
     @pytest.fixture
     def registry(self):
         reg = PermissionRegistry()
-        reg.register([
-            PermissionDef(name="admin", description="admin", implies=["read", "write"]),
-            PermissionDef(name="read", description="read"),
-            PermissionDef(name="write", description="write", implies=["read"]),
-            PermissionDef(name="delete", description="delete"),
-        ], source="core")
+        reg.register(
+            [
+                PermissionDef(
+                    name="admin", description="admin", implies=["read", "write"]
+                ),
+                PermissionDef(name="read", description="read"),
+                PermissionDef(name="write", description="write", implies=["read"]),
+                PermissionDef(name="delete", description="delete"),
+            ],
+            source="core",
+        )
         return reg
 
     @pytest.mark.parametrize(
@@ -246,8 +247,15 @@ class TestHasPermissionWithImplies:
             ("delete", {"delete"}, True),
             ("read", set(), False),
         ],
-        ids=["direct", "implied-by-admin", "write-implied-by-admin",
-             "read-implied-by-write", "delete-not-implied", "delete-direct", "empty-grants"],
+        ids=[
+            "direct",
+            "implied-by-admin",
+            "write-implied-by-admin",
+            "read-implied-by-write",
+            "delete-not-implied",
+            "delete-direct",
+            "empty-grants",
+        ],
     )
     def test_role_grant_expansion(self, registry, perm, grants, expected):
         assert has_permission(perm, grants, registry=registry) == expected
@@ -260,10 +268,18 @@ class TestHasPermissionWithImplies:
             ("read", {"admin"}, {"delete"}, False),
             ("write", {"admin"}, {"read"}, False),
         ],
-        ids=["scope-intersect-yes", "scope-implies-read", "scope-no-intersect", "scope-narrows"],
+        ids=[
+            "scope-intersect-yes",
+            "scope-implies-read",
+            "scope-no-intersect",
+            "scope-narrows",
+        ],
     )
     def test_token_scope_intersection(self, registry, perm, grants, scopes, expected):
-        assert has_permission(perm, grants, token_scopes=scopes, registry=registry) == expected
+        assert (
+            has_permission(perm, grants, token_scopes=scopes, registry=registry)
+            == expected
+        )
 
     def test_no_registry_direct_membership(self):
         assert has_permission("x", {"x", "y"}) is True
@@ -278,14 +294,23 @@ class TestExpandWildcard:
     @pytest.fixture
     def registry(self):
         reg = PermissionRegistry()
-        reg.register([
-            PermissionDef(name="pay.sub", description="base"),
-            PermissionDef(name="pay.sub.read", description="read"),
-            PermissionDef(name="pay.sub.write", description="write"),
-            PermissionDef(name="pay.other", description="other"),
-            PermissionDef(name="pay.sub.admin", description="admin", system_only=True),
-            PermissionDef(name="pay.sub.internal", description="not grantable", user_grantable=False),
-        ], source="ext")
+        reg.register(
+            [
+                PermissionDef(name="pay.sub", description="base"),
+                PermissionDef(name="pay.sub.read", description="read"),
+                PermissionDef(name="pay.sub.write", description="write"),
+                PermissionDef(name="pay.other", description="other"),
+                PermissionDef(
+                    name="pay.sub.admin", description="admin", system_only=True
+                ),
+                PermissionDef(
+                    name="pay.sub.internal",
+                    description="not grantable",
+                    user_grantable=False,
+                ),
+            ],
+            source="ext",
+        )
         return reg
 
     def test_wildcard_expands_prefix(self, registry):

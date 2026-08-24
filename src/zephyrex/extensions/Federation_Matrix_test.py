@@ -25,6 +25,7 @@ import os
 from typing import Any, Dict, List
 
 import pytest
+
 # Module-level import so PEP 563 string annotations on nested handlers resolve
 # against module globals when FastAPI calls ``get_type_hints``.
 from fastapi import FastAPI, Request
@@ -40,7 +41,6 @@ from zephyrex.extensions.federation.BLL_Federation_REST import (
     RESTUpstreamTransport,
     openapi_to_pydantic_models,
 )
-
 
 pytestmark = [pytest.mark.gql]
 
@@ -273,7 +273,10 @@ class TestFederationMatrix_GQLUpstream(AbstractFederationMatrixTest):
             sample_id="1",
             type_name="Widget",
             sdl_or_spec=_GQL_UPSTREAM_SDL,
-            operations_supported=["get", "list"],  # minimal SDL doesn't define mutations
+            operations_supported=[
+                "get",
+                "list",
+            ],  # minimal SDL doesn't define mutations
             crud_map=None,
         )
 

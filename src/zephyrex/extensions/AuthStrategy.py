@@ -22,7 +22,6 @@ from datetime import datetime, timezone
 from threading import RLock
 from typing import Any, Callable, ClassVar, Dict, Optional
 
-
 # ----- ABC + concrete strategies -------------------------------------------
 
 
@@ -250,7 +249,9 @@ class AuthStrategyRegistry:
     _lock: ClassVar[RLock] = RLock()
 
     @classmethod
-    def register(cls, name: str, factory: Callable[[Dict[str, Any]], AuthStrategy]) -> None:
+    def register(
+        cls, name: str, factory: Callable[[Dict[str, Any]], AuthStrategy]
+    ) -> None:
         with cls._lock:
             cls._factories[name] = factory
 

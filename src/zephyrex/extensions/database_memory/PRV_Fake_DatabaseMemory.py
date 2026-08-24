@@ -80,9 +80,9 @@ class _FakeClient:
     def __init__(self) -> None:
         self.kv: Dict[bytes, bytes] = {}
         self.streams: Dict[str, List[bytes]] = defaultdict(list)
-        self.subscribers: Dict[
-            str, List[Callable[[bytes], Awaitable[None]]]
-        ] = defaultdict(list)
+        self.subscribers: Dict[str, List[Callable[[bytes], Awaitable[None]]]] = (
+            defaultdict(list)
+        )
 
 
 class _FakeDatabaseMemoryStreamsTransport:
@@ -107,9 +107,7 @@ class _FakeDatabaseMemoryStreamsTransport:
             try:
                 await handler(payload)
             except Exception as exc:  # noqa: BLE001
-                _logger.error(
-                    "Fake DatabaseMemory handler error on %s: %s", topic, exc
-                )
+                _logger.error("Fake DatabaseMemory handler error on %s: %s", topic, exc)
 
     async def subscribe(
         self, topic: str, handler: Callable[[bytes], Awaitable[None]]

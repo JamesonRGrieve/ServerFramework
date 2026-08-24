@@ -108,7 +108,9 @@ class TestEvaluateScaling:
             MeasurementSample(n=n, metric=ScalingMetric.QUERY_COUNT, value=float(n + 1))
             for n in (10, 50, 100, 500)
         ]
-        result = evaluate_scaling(samples, DEFAULT_THRESHOLDS[ScalingMetric.QUERY_COUNT])
+        result = evaluate_scaling(
+            samples, DEFAULT_THRESHOLDS[ScalingMetric.QUERY_COUNT]
+        )
         assert not result.passed
         assert result.fit.exponent > 0.4
 
@@ -117,7 +119,9 @@ class TestEvaluateScaling:
             MeasurementSample(n=n, metric=ScalingMetric.QUERY_COUNT, value=2.0)
             for n in (10, 50, 100, 500)
         ]
-        result = evaluate_scaling(samples, DEFAULT_THRESHOLDS[ScalingMetric.QUERY_COUNT])
+        result = evaluate_scaling(
+            samples, DEFAULT_THRESHOLDS[ScalingMetric.QUERY_COUNT]
+        )
         assert result.passed
 
     def test_metric_mismatch_raises(self):
@@ -361,6 +365,7 @@ class TestProfile:
 
     def test_threshold_falls_back_to_default(self):
         profile = ScalabilityProfile(n_values=[10, 20], metrics=[ScalingMetric.TIME])
-        assert profile.threshold_for(ScalingMetric.MEMORY) is DEFAULT_THRESHOLDS[
-            ScalingMetric.MEMORY
-        ]
+        assert (
+            profile.threshold_for(ScalingMetric.MEMORY)
+            is DEFAULT_THRESHOLDS[ScalingMetric.MEMORY]
+        )

@@ -37,8 +37,7 @@ def _module_with_upgrade_source(
     mod = types.ModuleType(f"_synth_migration_{revision}")
     mod.revision = revision  # type: ignore[attr-defined]
     mod.down_revision = down_revision  # type: ignore[attr-defined]
-    full = textwrap.dedent(
-        f"""
+    full = textwrap.dedent(f"""
         from alembic import op
         import sqlalchemy as sa
 
@@ -47,8 +46,7 @@ def _module_with_upgrade_source(
 
         def downgrade():
             pass
-        """
-    )
+        """)
     # Compile and execute into the module's namespace; record the source on
     # the module so analyze_migration's getsource fallback finds it.
     code = compile(full, f"<synth-{revision}>", "exec")
@@ -291,9 +289,7 @@ def test_generator_emit_expand_only():
 @pytest.mark.unit
 def test_generator_emit_contract_only_with_explicit_expand_id():
     gen = MigrationGenerator()
-    contract = gen.emit_contract_for_drop(
-        "xyz", "t", "c", expand_revision="my_expand"
-    )
+    contract = gen.emit_contract_for_drop("xyz", "t", "c", expand_revision="my_expand")
     assert "down_revision = 'my_expand'" in contract.source
     assert 'op.drop_column("t", "c")' in contract.source
 
@@ -306,9 +302,7 @@ def test_generator_emit_contract_only_with_explicit_expand_id():
 @pytest.mark.unit
 def test_emitted_contract_passes_validator_when_expand_in_history():
     gen = MigrationGenerator()
-    expand, contract = gen.emit_pair_for_drop(
-        base_id="abc", table="t", column="c"
-    )
+    expand, contract = gen.emit_pair_for_drop(base_id="abc", table="t", column="c")
     # Build a module whose ``upgrade`` matches the contract's drop_column.
     mod = _module_with_upgrade_source(
         """

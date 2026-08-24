@@ -18,30 +18,45 @@ def _build_parser() -> argparse.ArgumentParser:
     run_p = sub.add_parser("run", help="Boot the framework with uvicorn.")
     run_p.add_argument("--extensions", default=None, help="CSV of extensions to load.")
     run_p.add_argument(
-        "--extensions-path", default=None, help="Filesystem path to discover extensions."
+        "--extensions-path",
+        default=None,
+        help="Filesystem path to discover extensions.",
     )
     run_p.add_argument("--host", default=None, help="Bind host.")
     run_p.add_argument("--port", type=int, default=None, help="Bind port.")
     run_p.add_argument("--workers", type=int, default=None, help="Worker count.")
     reload_grp = run_p.add_mutually_exclusive_group()
     reload_grp.add_argument(
-        "--reload", dest="reload", action="store_true", default=None,
-        help="Enable uvicorn auto-reload."
+        "--reload",
+        dest="reload",
+        action="store_true",
+        default=None,
+        help="Enable uvicorn auto-reload.",
     )
     reload_grp.add_argument(
-        "--no-reload", dest="reload", action="store_false", default=None,
-        help="Disable uvicorn auto-reload."
+        "--no-reload",
+        dest="reload",
+        action="store_false",
+        default=None,
+        help="Disable uvicorn auto-reload.",
     )
     run_p.add_argument("--log-level", default=None, help="Log level.")
     run_p.add_argument(
-        "--no-proxy-headers", dest="proxy_headers", action="store_false", default=True,
-        help="Disable proxy header trust."
+        "--no-proxy-headers",
+        dest="proxy_headers",
+        action="store_false",
+        default=True,
+        help="Disable proxy header trust.",
     )
 
     migrate_p = sub.add_parser("migrate", help="Run database migrations (pre-deploy).")
-    migrate_p.add_argument("--extensions", default=None, help="CSV of extensions to migrate.")
     migrate_p.add_argument(
-        "--extensions-path", default=None, help="Filesystem path to discover extensions."
+        "--extensions", default=None, help="CSV of extensions to migrate."
+    )
+    migrate_p.add_argument(
+        "--extensions-path",
+        default=None,
+        help="Filesystem path to discover extensions.",
     )
 
     sub.add_parser("bootstrap", help="Run the venv + dependency bootstrap.")
@@ -76,7 +91,9 @@ def _cmd_bootstrap(_args: argparse.Namespace) -> int:
         import subprocess
         from pathlib import Path
 
-        bootstrap_path = Path(__file__).resolve().parent.parent / "zephyrex.bootstrap.py"
+        bootstrap_path = (
+            Path(__file__).resolve().parent.parent / "zephyrex.bootstrap.py"
+        )
         completed = subprocess.run([sys.executable, str(bootstrap_path)])
         return completed.returncode
     return 0 if run_venv_bootstrap() else 1
@@ -133,7 +150,8 @@ def _cmd_migrate(args: argparse.Namespace) -> int:
     mgr = MigrationManager(custom_db_info=db_info, model_registry=registry)
     ext_csv = registry.extension_registry.csv if registry.extension_registry else ""
     success = mgr.run_all_migrations(
-        "upgrade", "head",
+        "upgrade",
+        "head",
         extensions=ext_csv.split(",") if ext_csv else [],
     )
     if success:
@@ -175,5 +193,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
             logger.exception(f"zephyrex-server: command '{args.command}' failed: {exc}")
         except Exception:
-            print(f"zephyrex-server: command '{args.command}' failed: {exc}", file=sys.stderr)
+            print(
+                f"zephyrex-server: command '{args.command}' failed: {exc}",
+                file=sys.stderr,
+            )
         return 1

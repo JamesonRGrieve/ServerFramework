@@ -140,9 +140,8 @@ def _register_hook(manager_cls: type, spec: MirrorSpec) -> None:
         # Detect outbox availability lazily: if the manager has an
         # `outbox_table_handle` attribute (provided by Batch C), use
         # OUTBOX semantics; otherwise warn and fall back to SAGA.
-        if (
-            spec.policy == MirrorPolicy.OUTBOX
-            and not getattr(context.manager, "outbox_table_handle", None)
+        if spec.policy == MirrorPolicy.OUTBOX and not getattr(
+            context.manager, "outbox_table_handle", None
         ):
             logger.warning(
                 "Mirror spec on %s requested OUTBOX but no outbox_table_handle "

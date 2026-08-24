@@ -13,7 +13,6 @@ from zephyrex.database.DatabaseManager import DatabaseManager
 from zephyrex.lib.Environment import env
 from zephyrex.lib.Logging import logger
 
-
 # Helper lookup functions
 
 
@@ -56,21 +55,27 @@ def get_provider_by_name(session, provider_name, db_manager: DatabaseManager):
     """Helper function to look up a provider by name."""
     from zephyrex.logic.BLL_Providers import ProviderModel
 
-    return _get_entity_by_name(session, provider_name, ProviderModel, "provider", db_manager)
+    return _get_entity_by_name(
+        session, provider_name, ProviderModel, "provider", db_manager
+    )
 
 
 def get_extension_by_name(session, extension_name, db_manager: DatabaseManager):
     """Helper function to look up an extension by name."""
     from zephyrex.logic.BLL_Extensions import ExtensionModel
 
-    return _get_entity_by_name(session, extension_name, ExtensionModel, "extension", db_manager)
+    return _get_entity_by_name(
+        session, extension_name, ExtensionModel, "extension", db_manager
+    )
 
 
 def get_rotation_by_name(session, rotation_name, db_manager: DatabaseManager):
     """Helper function to look up a rotation by name."""
     from zephyrex.logic.BLL_Providers import RotationModel
 
-    return _get_entity_by_name(session, rotation_name, RotationModel, "rotation", db_manager)
+    return _get_entity_by_name(
+        session, rotation_name, RotationModel, "rotation", db_manager
+    )
 
 
 def get_provider_instance_by_name(session, instance_name, db_manager: DatabaseManager):
@@ -168,7 +173,9 @@ def seed_model(model_class, session, db_manager, model_registry=None):
 
     # Trigger before_seed_model hook to allow extensions to prepare or modify the model
     try:
-        from zephyrex.extensions.AbstractExtensionProvider import AbstractStaticExtension
+        from zephyrex.extensions.AbstractExtensionProvider import (
+            AbstractStaticExtension,
+        )
 
         AbstractStaticExtension.trigger_hook(
             "DB",
@@ -268,7 +275,9 @@ def seed_model(model_class, session, db_manager, model_registry=None):
 
     # Trigger before_seed_list hook to allow extensions to inject seed data
     try:
-        from zephyrex.extensions.AbstractExtensionProvider import AbstractStaticExtension
+        from zephyrex.extensions.AbstractExtensionProvider import (
+            AbstractStaticExtension,
+        )
 
         hook_results = AbstractStaticExtension.trigger_hook(
             "DB",
@@ -410,7 +419,9 @@ def seed_model(model_class, session, db_manager, model_registry=None):
 
     # Trigger after_seed_model hook to allow extensions to perform post-seeding actions
     try:
-        from zephyrex.extensions.AbstractExtensionProvider import AbstractStaticExtension
+        from zephyrex.extensions.AbstractExtensionProvider import (
+            AbstractStaticExtension,
+        )
 
         AbstractStaticExtension.trigger_hook(
             "DB",

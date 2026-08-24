@@ -58,12 +58,20 @@ def test_conflict_raises_with_both_sources():
     info1 = _info(default=None, description="A", annotation=str)
     info2 = _info(default=None, description="B", annotation=int)
     register_extension_field(
-        "payment", "UserModel", "external_payment_id", info1,
-        "src/extensions/payment/BLL_Payment.py", 42,
+        "payment",
+        "UserModel",
+        "external_payment_id",
+        info1,
+        "src/extensions/payment/BLL_Payment.py",
+        42,
     )
     register_extension_field(
-        "legacy_billing", "UserModel", "external_payment_id", info2,
-        "src/extensions/legacy_billing/BLL_LegacyBilling.py", 99,
+        "legacy_billing",
+        "UserModel",
+        "external_payment_id",
+        info2,
+        "src/extensions/legacy_billing/BLL_LegacyBilling.py",
+        99,
     )
     with pytest.raises(FieldCollisionError) as exc:
         detect_extension_field_collisions()
@@ -95,9 +103,7 @@ def test_legacy_origins_single_source_no_error():
 
 
 def test_get_registered_fields_returns_copy():
-    register_extension_field(
-        "payment", "UserModel", "field1", _info(), "a.py", 1
-    )
+    register_extension_field("payment", "UserModel", "field1", _info(), "a.py", 1)
     snapshot = get_registered_fields()
     assert ("UserModel", "field1") in snapshot
     snapshot.clear()

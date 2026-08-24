@@ -11,7 +11,6 @@ from zephyrex.lib.CycleGuard import (
     would_create_tree_cycle,
 )
 
-
 # ---------------------------------------------------------------------------
 # Tree cycles (single-parent / parent_id chains)
 # ---------------------------------------------------------------------------
@@ -21,27 +20,17 @@ class TestTreeCycle:
     def test_no_parent_never_creates_cycle(self):
         # Clearing the parent (None) never creates a cycle.
         assert (
-            would_create_tree_cycle(
-                "leaf", None, get_parent_id=lambda _: None
-            )
-            is False
+            would_create_tree_cycle("leaf", None, get_parent_id=lambda _: None) is False
         )
 
     def test_self_parent_is_cycle(self):
-        assert (
-            would_create_tree_cycle(
-                "x", "x", get_parent_id=lambda _: None
-            )
-            is True
-        )
+        assert would_create_tree_cycle("x", "x", get_parent_id=lambda _: None) is True
 
     def test_unrelated_chain_is_not_a_cycle(self):
         # candidate parent is in a separate chain that terminates.
         parents = {"b": "a", "a": None}
         assert (
-            would_create_tree_cycle(
-                "leaf", "b", get_parent_id=lambda x: parents.get(x)
-            )
+            would_create_tree_cycle("leaf", "b", get_parent_id=lambda x: parents.get(x))
             is False
         )
 
@@ -50,9 +39,7 @@ class TestTreeCycle:
         # close a cycle.
         parents = {"y": "x", "z": "y"}
         assert (
-            would_create_tree_cycle(
-                "x", "z", get_parent_id=lambda i: parents.get(i)
-            )
+            would_create_tree_cycle("x", "z", get_parent_id=lambda i: parents.get(i))
             is True
         )
 
@@ -61,9 +48,7 @@ class TestTreeCycle:
         # is just a flatter tree — not a cycle.
         parents = {"y": "z"}
         assert (
-            would_create_tree_cycle(
-                "x", "z", get_parent_id=lambda i: parents.get(i)
-            )
+            would_create_tree_cycle("x", "z", get_parent_id=lambda i: parents.get(i))
             is False
         )
 
@@ -72,9 +57,7 @@ class TestTreeCycle:
         # The guard should refuse rather than spin.
         parents = {"a": "b", "b": "a"}
         with pytest.raises(CycleGuardError, match="pre-existing cycle"):
-            would_create_tree_cycle(
-                "leaf", "a", get_parent_id=lambda i: parents.get(i)
-            )
+            would_create_tree_cycle("leaf", "a", get_parent_id=lambda i: parents.get(i))
 
     def test_max_iterations_caps_runaway_walks(self):
         # An infinite synthetic chain bounded by max_iterations.
@@ -104,27 +87,19 @@ class TestTreeCycle:
 
 class TestDAGCycle:
     def test_self_loop_is_cycle(self):
-        assert (
-            would_create_dag_cycle("h", "h", get_parents=lambda _: [])
-            is True
-        )
+        assert would_create_dag_cycle("h", "h", get_parents=lambda _: []) is True
 
     def test_disconnected_nodes_no_cycle(self):
         # No existing edges; new edge can't close a cycle.
         assert (
-            would_create_dag_cycle(
-                "parent", "child", get_parents=lambda _: []
-            )
-            is False
+            would_create_dag_cycle("parent", "child", get_parents=lambda _: []) is False
         )
 
     def test_simple_chain_no_cycle(self):
         # Existing: A → B. Adding B → C is fine.
         parents = {"b": ["a"]}
         assert (
-            would_create_dag_cycle(
-                "b", "c", get_parents=lambda i: parents.get(i, [])
-            )
+            would_create_dag_cycle("b", "c", get_parents=lambda i: parents.get(i, []))
             is False
         )
 
@@ -134,9 +109,7 @@ class TestDAGCycle:
         # We hit A which is the new_child_id → cycle.
         parents = {"c": ["b"], "b": ["a"]}
         assert (
-            would_create_dag_cycle(
-                "c", "a", get_parents=lambda i: parents.get(i, [])
-            )
+            would_create_dag_cycle("c", "a", get_parents=lambda i: parents.get(i, []))
             is True
         )
 
@@ -149,9 +122,7 @@ class TestDAGCycle:
             "d": ["b", "c"],
         }
         assert (
-            would_create_dag_cycle(
-                "d", "e", get_parents=lambda i: parents.get(i, [])
-            )
+            would_create_dag_cycle("d", "e", get_parents=lambda i: parents.get(i, []))
             is False
         )
 
@@ -164,9 +135,7 @@ class TestDAGCycle:
             "c": ["b"],
         }
         assert (
-            would_create_dag_cycle(
-                "c", "a", get_parents=lambda i: parents.get(i, [])
-            )
+            would_create_dag_cycle("c", "a", get_parents=lambda i: parents.get(i, []))
             is True
         )
 
@@ -193,26 +162,20 @@ class TestDetectExisting:
     def test_clean_chain_no_cycle(self):
         parents = {"b": "a", "a": None}
         assert (
-            detect_existing_tree_cycle(
-                "b", get_parent_id=lambda i: parents.get(i)
-            )
+            detect_existing_tree_cycle("b", get_parent_id=lambda i: parents.get(i))
             is False
         )
 
     def test_corrupted_self_loop(self):
         parents = {"a": "a"}
         assert (
-            detect_existing_tree_cycle(
-                "a", get_parent_id=lambda i: parents.get(i)
-            )
+            detect_existing_tree_cycle("a", get_parent_id=lambda i: parents.get(i))
             is True
         )
 
     def test_corrupted_two_node_loop(self):
         parents = {"a": "b", "b": "a"}
         assert (
-            detect_existing_tree_cycle(
-                "a", get_parent_id=lambda i: parents.get(i)
-            )
+            detect_existing_tree_cycle("a", get_parent_id=lambda i: parents.get(i))
             is True
         )

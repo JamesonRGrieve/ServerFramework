@@ -508,7 +508,9 @@ class EXT_Auth_OAuth(AbstractStaticExtension):
         try:
             # Validate client credentials
             client = self.registered_clients.get(client_id)
-            if not client or not hmac.compare_digest(str(client.get("client_secret", "")), str(client_secret)):
+            if not client or not hmac.compare_digest(
+                str(client.get("client_secret", "")), str(client_secret)
+            ):
                 return {"success": False, "message": "Invalid client credentials"}
 
             # Get authorization code
@@ -643,14 +645,18 @@ class EXT_Auth_OAuth(AbstractStaticExtension):
         try:
             # Validate client credentials
             client = self.registered_clients.get(client_id)
-            if not client or not hmac.compare_digest(str(client.get("client_secret", "")), str(client_secret)):
+            if not client or not hmac.compare_digest(
+                str(client.get("client_secret", "")), str(client_secret)
+            ):
                 return {"success": False, "message": "Invalid client credentials"}
 
             # Find token by refresh token
             token_data = None
             access_token_key = None
             for key, data in self.active_tokens.items():
-                if hmac.compare_digest(str(data.get("refresh_token", "")), str(refresh_token)):
+                if hmac.compare_digest(
+                    str(data.get("refresh_token", "")), str(refresh_token)
+                ):
                     token_data = data
                     access_token_key = key
                     break
@@ -719,7 +725,9 @@ class EXT_Auth_OAuth(AbstractStaticExtension):
             ):
                 # Try to revoke as refresh token
                 for key, data in list(self.active_tokens.items()):
-                    if hmac.compare_digest(str(data.get("refresh_token", "")), str(token)):
+                    if hmac.compare_digest(
+                        str(data.get("refresh_token", "")), str(token)
+                    ):
                         del self.active_tokens[key]
                         revoked = True
                         break

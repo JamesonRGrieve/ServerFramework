@@ -27,7 +27,10 @@ def mcp_app(tmp_path_factory):
     os.environ["MCP"] = "true"
 
     from zephyrex.lib.Environment import refresh_settings
-    from zephyrex.lib.Pydantic2SQLAlchemy import clear_registry_cache, reset_extension_system
+    from zephyrex.lib.Pydantic2SQLAlchemy import (
+        clear_registry_cache,
+        reset_extension_system,
+    )
 
     refresh_settings()
     clear_registry_cache()
@@ -64,16 +67,16 @@ class TestMCPBridgeToolGeneration:
         import re
 
         for tool in mcp_tools:
-            assert re.match(r"^[a-zA-Z0-9_-]+$", tool.name), (
-                f"Tool name contains unsafe characters: {tool.name}"
-            )
+            assert re.match(
+                r"^[a-zA-Z0-9_-]+$", tool.name
+            ), f"Tool name contains unsafe characters: {tool.name}"
 
     def test_tool_descriptions_do_not_leak_internal_paths(self, mcp_tools):
         for tool in mcp_tools:
             desc = (tool.description or "").lower()
-            assert "/home/" not in desc and "/usr/" not in desc and "/etc/" not in desc, (
-                f"Tool description leaks filesystem path: {tool.description}"
-            )
+            assert (
+                "/home/" not in desc and "/usr/" not in desc and "/etc/" not in desc
+            ), f"Tool description leaks filesystem path: {tool.description}"
 
     def test_tool_schemas_have_required_fields(self, mcp_tools):
         for tool in mcp_tools:
@@ -126,9 +129,7 @@ class TestMCPBridgeToolExecution:
     async def test_tool_output_does_not_leak_stacktrace(self, mcp_app, mcp_tools):
         from zephyrex.lib.MCPBridge import _call_tool_via_app
 
-        result = await _call_tool_via_app(
-            mcp_app, "nonexistent", {}, mcp_tools, {}
-        )
+        result = await _call_tool_via_app(mcp_app, "nonexistent", {}, mcp_tools, {})
         for content in result.content:
             if hasattr(content, "text"):
                 assert "traceback" not in content.text.lower()
@@ -141,9 +142,7 @@ class TestMCPBridgeToolExecution:
         if not mcp_tools:
             pytest.skip("No tools available")
         tool = mcp_tools[0]
-        result = await _call_tool_via_app(
-            mcp_app, tool.name, {}, mcp_tools, {}
-        )
+        result = await _call_tool_via_app(mcp_app, tool.name, {}, mcp_tools, {})
         for content in result.content:
             if hasattr(content, "text"):
                 text = content.text.lower()
@@ -158,7 +157,10 @@ class TestMCPBridgeToolExecution:
             pytest.skip("No tools available")
         tool = mcp_tools[0]
         result = await _call_tool_via_app(
-            mcp_app, tool.name, {}, mcp_tools,
+            mcp_app,
+            tool.name,
+            {},
+            mcp_tools,
             {"authorization": "Bearer fake-token"},
         )
         assert result is not None
@@ -171,7 +173,10 @@ class TestMCPBridgeToolExecution:
             pytest.skip("No tools available")
         tool = mcp_tools[0]
         result = await _call_tool_via_app(
-            mcp_app, tool.name, {}, mcp_tools,
+            mcp_app,
+            tool.name,
+            {},
+            mcp_tools,
             {"accept": "application/toon"},
         )
         assert result is not None
@@ -188,6 +193,7 @@ class TestMCPHTTPTransport:
         """The bridge proxies tool calls through the full FastAPI app
         (including security middleware), not directly to handlers."""
         from zephyrex.lib.MCPBridge import _call_tool_via_app
+
         assert _call_tool_via_app is not None
 
 
@@ -196,17 +202,19 @@ class TestMCPToolIsolation:
     def test_tool_names_do_not_expose_admin_operations(self, mcp_tools):
         for tool in mcp_tools:
             low = tool.name.lower()
-            assert "debug" not in low and "internal" not in low, (
-                f"Tool name exposes internal operation: {tool.name}"
-            )
+            assert (
+                "debug" not in low and "internal" not in low
+            ), f"Tool name exposes internal operation: {tool.name}"
 
     def test_tool_count_matches_openapi_operations(self, mcp_app, mcp_tools):
         schema = mcp_app.openapi()
         op_count = sum(
-            1 for methods in schema.get("paths", {}).values()
-            for m in methods if m.lower() in ("get", "post", "put", "patch", "delete")
+            1
+            for methods in schema.get("paths", {}).values()
+            for m in methods
+            if m.lower() in ("get", "post", "put", "patch", "delete")
             and methods[m].get("operationId")
         )
-        assert len(mcp_tools) == op_count, (
-            f"Tool count ({len(mcp_tools)}) doesn't match OpenAPI operations ({op_count})"
-        )
+        assert (
+            len(mcp_tools) == op_count
+        ), f"Tool count ({len(mcp_tools)}) doesn't match OpenAPI operations ({op_count})"

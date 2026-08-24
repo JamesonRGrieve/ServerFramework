@@ -53,7 +53,6 @@ from graphql import (
 )
 from graphql.language import ast as gql_ast
 
-
 # ---------------------------------------------------------------------------
 # Standard introspection query (cached)
 # ---------------------------------------------------------------------------
@@ -155,9 +154,7 @@ def _format_argument_value(value: Any) -> str:
     if isinstance(value, (list, tuple)):
         return "[" + ", ".join(_format_argument_value(v) for v in value) + "]"
     if isinstance(value, Mapping):
-        body = ", ".join(
-            f"{k}: {_format_argument_value(v)}" for k, v in value.items()
-        )
+        body = ", ".join(f"{k}: {_format_argument_value(v)}" for k, v in value.items())
         return "{" + body + "}"
     return json.dumps(str(value))
 
@@ -253,7 +250,9 @@ def _split_fields(body: str) -> List[str]:
                     j = i + 1
                     while j < n and body[j] in " \t\n\r":
                         j += 1
-                    if j < n and _re.match(r"[A-Za-z_][A-Za-z0-9_]*[ \t]*[(:]", body[j:]):
+                    if j < n and _re.match(
+                        r"[A-Za-z_][A-Za-z0-9_]*[ \t]*[(:]", body[j:]
+                    ):
                         break
                 i += 1
         out.append(body[start:i].strip().rstrip(","))
@@ -350,7 +349,11 @@ class SchemaTransformer:
                     continue
                 # Skip GraphQL builtins.
                 if name in {
-                    "String", "Int", "Float", "Boolean", "ID",
+                    "String",
+                    "Int",
+                    "Float",
+                    "Boolean",
+                    "ID",
                 }:
                     continue
                 out[name] = f"{self.prefix}{name}"
@@ -366,14 +369,17 @@ class SchemaTransformer:
         # patterns so the function works regardless of whether the source
         # SDL is on one line or many.
         pattern = _re.compile(
-            r"(\b(?:type|interface|input)\s+" + _re.escape(type_name) + r"\b[^{]*\{)([\s\S]*?)(\})",
+            r"(\b(?:type|interface|input)\s+"
+            + _re.escape(type_name)
+            + r"\b[^{]*\{)([\s\S]*?)(\})",
         )
 
         def _rewrite(m: "_re.Match[str]") -> str:
             head, body, tail = m.group(1), m.group(2), m.group(3)
             fields = _split_fields(body)
             kept = [
-                f for f in fields
+                f
+                for f in fields
                 if not (
                     (name_match := _re.match(r"\s*([A-Za-z_][A-Za-z0-9_]*)", f))
                     and name_match.group(1) in hidden
@@ -401,9 +407,7 @@ class SchemaTransformer:
 
         def _rewrite_body(m: "_re.Match[str]") -> str:
             head, body, tail = m.group(1), m.group(2), m.group(3)
-            field_pat = _re.compile(
-                r"(\b" + _re.escape(field_name) + r"\b)\(([^)]*)\)"
-            )
+            field_pat = _re.compile(r"(\b" + _re.escape(field_name) + r"\b)\(([^)]*)\)")
 
             def _rewrite_field(fm: "_re.Match[str]") -> str:
                 args = fm.group(2)
@@ -795,9 +799,7 @@ class BatchedFieldResolver:
             value = keyed.get(key)
             if cache is not None:
                 inline_query = build_query_document(
-                    operation=(
-                        f"{operation}(id: {_format_argument_value(key)})"
-                    ),
+                    operation=(f"{operation}(id: {_format_argument_value(key)})"),
                     selection_body=bucket.selection_body,
                 )
                 cache.set(
@@ -1097,9 +1099,7 @@ class MergedSchemaRegistry:
                 seen_types.add(name)
         rendered = list(type_blocks)
         if query_fields:
-            rendered.append(
-                "type Query {\n  " + "\n  ".join(query_fields) + "\n}"
-            )
+            rendered.append("type Query {\n  " + "\n  ".join(query_fields) + "\n}")
         if mutation_fields:
             rendered.append(
                 "type Mutation {\n  " + "\n  ".join(mutation_fields) + "\n}"
@@ -1298,9 +1298,7 @@ def sdl_to_pydantic_models(
                 return models[annotation]
             if annotation in union_members:
                 # Render unions as ``Union[member1, member2, ...]``
-                resolved = tuple(
-                    models.get(m, str) for m in union_members[annotation]
-                )
+                resolved = tuple(models.get(m, str) for m in union_members[annotation])
                 return _Union[resolved] if len(resolved) > 1 else resolved[0]
             return annotation  # forward reference; rebuild later
         return annotation
@@ -1414,9 +1412,7 @@ class GQLUpstreamTransport:
         body: Dict[str, Any] = {"query": query}
         if variables is not None:
             body["variables"] = dict(variables)
-        return await self._http.post(
-            self._url, json=body, requester_id=requester_id
-        )
+        return await self._http.post(self._url, json=body, requester_id=requester_id)
 
     def send_sync(
         self,
@@ -1454,9 +1450,7 @@ def build_proxy_resolver(
     """
 
     async def _resolver(info: Any, **arguments: Any) -> Any:
-        selection_body = reconstruct_selection_set(
-            getattr(info, "selected_fields", ())
-        )
+        selection_body = reconstruct_selection_set(getattr(info, "selected_fields", ()))
         formatted_args = _format_args(arguments)
         document = build_query_document(
             operation=f"{operation}{formatted_args}",
@@ -1535,9 +1529,13 @@ def project_gql_as_rest(
     schema = subgraph.schema
     for op_type in operation_types:
         root = (
-            schema.query_type if op_type == "query" else schema.mutation_type
-            if op_type == "mutation"
-            else schema.subscription_type
+            schema.query_type
+            if op_type == "query"
+            else (
+                schema.mutation_type
+                if op_type == "mutation"
+                else schema.subscription_type
+            )
         )
         if root is None:
             continue
@@ -1611,7 +1609,9 @@ def _mount_gql_to_rest_route(
         for k, v in request.query_params.multi_items():
             if k not in params:
                 params[k] = v
-        rendered_args = _format_args({k: v for k, v in params.items() if k in arg_names})
+        rendered_args = _format_args(
+            {k: v for k, v in params.items() if k in arg_names}
+        )
         document = build_query_document(
             operation=f"{operation}{rendered_args}",
             selection_body=selection_body,

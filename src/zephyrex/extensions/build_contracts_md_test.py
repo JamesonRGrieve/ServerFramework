@@ -11,7 +11,6 @@ import pytest
 
 from zephyrex.extensions import build_contracts_md as gen
 
-
 MANIFEST = json.loads(gen.MANIFEST_PATH.read_text())
 
 

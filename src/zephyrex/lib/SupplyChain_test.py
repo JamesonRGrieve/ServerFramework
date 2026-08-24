@@ -21,7 +21,6 @@ from zephyrex.lib.SupplyChain import (
     verify_sigstore_signature,
 )
 
-
 pytestmark = pytest.mark.unit
 
 

@@ -62,7 +62,6 @@ from zephyrex.lib.ProviderHTTPClient import (
 )
 from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 
-
 FederationStyle = Literal["apollo_v2", "stitching", "namespaced"]
 
 
@@ -109,9 +108,7 @@ class AbstractGraphQLProvider(AbstractStaticProvider):
 
     @classmethod
     @abstractmethod
-    def bond_instance(
-        cls, instance: ProviderInstanceModel
-    ) -> AbstractProviderInstance:
+    def bond_instance(cls, instance: ProviderInstanceModel) -> AbstractProviderInstance:
         """Bond a provider instance and (re-)register the upstream subgraph.
 
         Concrete providers typically override this to bind their auth payload
@@ -313,9 +310,7 @@ class AbstractGraphQLProvider(AbstractStaticProvider):
                     cls.__name__,
                     exc,
                 )
-        response = client.post(
-            cls.upstream_url, json={"query": INTROSPECTION_QUERY}
-        )
+        response = client.post(cls.upstream_url, json={"query": INTROSPECTION_QUERY})
         if not isinstance(response, dict) or "data" not in response:
             raise RuntimeError(
                 f"{cls.__name__}: introspection returned unexpected envelope: {response!r}"

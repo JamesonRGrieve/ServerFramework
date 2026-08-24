@@ -23,7 +23,6 @@ from zephyrex.logic.AbstractLogicManager import (
     _register_hook_on_class,
 )
 
-
 # ---------------------------------------------------------------------------
 # Minimal concrete manager for testing
 # ---------------------------------------------------------------------------
@@ -94,7 +93,13 @@ def test_blocking_before_hook_propagates_exception():
         raise PermissionError("access denied")
 
     _register_hook_on_class(
-        HookTestManager, "create", "before", deny, priority=10, condition=None, blocking=True,
+        HookTestManager,
+        "create",
+        "before",
+        deny,
+        priority=10,
+        condition=None,
+        blocking=True,
     )
     mgr = HookTestManager()
     with pytest.raises(PermissionError, match="access denied"):
@@ -113,7 +118,13 @@ def test_non_blocking_before_hook_swallows_exception():
         raise RuntimeError("transient failure")
 
     _register_hook_on_class(
-        HookTestManager, "create", "before", flaky_validator, priority=10, condition=None, blocking=False,
+        HookTestManager,
+        "create",
+        "before",
+        flaky_validator,
+        priority=10,
+        condition=None,
+        blocking=False,
     )
     mgr = HookTestManager()
     result = mgr.create(name="y")
@@ -133,7 +144,13 @@ def test_blocking_after_hook_propagates_exception():
         raise ValueError("audit check failed")
 
     _register_hook_on_class(
-        HookTestManager, "create", "after", post_audit, priority=10, condition=None, blocking=True,
+        HookTestManager,
+        "create",
+        "after",
+        post_audit,
+        priority=10,
+        condition=None,
+        blocking=True,
     )
     mgr = HookTestManager()
     with pytest.raises(ValueError, match="audit check failed"):
@@ -152,7 +169,13 @@ def test_non_blocking_after_hook_swallows_exception():
         raise ConnectionError("notification service down")
 
     _register_hook_on_class(
-        HookTestManager, "create", "after", broken_notifier, priority=10, condition=None, blocking=False,
+        HookTestManager,
+        "create",
+        "after",
+        broken_notifier,
+        priority=10,
+        condition=None,
+        blocking=False,
     )
     mgr = HookTestManager()
     result = mgr.create(name="ok")
@@ -171,7 +194,12 @@ def test_before_hook_defaults_to_blocking():
         raise RuntimeError("boom")
 
     _register_hook_on_class(
-        HookTestManager, "update", "before", exploding, priority=10, condition=None,
+        HookTestManager,
+        "update",
+        "before",
+        exploding,
+        priority=10,
+        condition=None,
     )
     mgr = HookTestManager()
     with pytest.raises(RuntimeError, match="boom"):
@@ -185,7 +213,12 @@ def test_after_hook_defaults_to_non_blocking():
         raise RuntimeError("boom")
 
     _register_hook_on_class(
-        HookTestManager, "update", "after", exploding, priority=10, condition=None,
+        HookTestManager,
+        "update",
+        "after",
+        exploding,
+        priority=10,
+        condition=None,
     )
     mgr = HookTestManager()
     result = mgr.update(id="1")
@@ -204,7 +237,13 @@ def test_non_critical_hook_is_non_blocking():
         raise RuntimeError("should be swallowed")
 
     _register_hook_on_class(
-        HookTestManager, "delete", "after", crashy, priority=10, condition=None, blocking=False,
+        HookTestManager,
+        "delete",
+        "after",
+        crashy,
+        priority=10,
+        condition=None,
+        blocking=False,
     )
     mgr = HookTestManager()
     result = mgr.delete(id="1")
@@ -224,7 +263,12 @@ def test_before_hook_skip_method():
         ctx.set_result({"cached": True})
 
     _register_hook_on_class(
-        HookTestManager, "get", "before", cache_hit, priority=10, condition=None,
+        HookTestManager,
+        "get",
+        "before",
+        cache_hit,
+        priority=10,
+        condition=None,
     )
     mgr = HookTestManager()
     result = mgr.get(id="123")
@@ -243,7 +287,12 @@ def test_before_hook_modifies_arguments():
         ctx.kwargs["audited_by"] = "system"
 
     _register_hook_on_class(
-        HookTestManager, "create", "before", inject_audit_field, priority=10, condition=None,
+        HookTestManager,
+        "create",
+        "before",
+        inject_audit_field,
+        priority=10,
+        condition=None,
     )
     mgr = HookTestManager()
     result = mgr.create(name="test")
@@ -262,7 +311,12 @@ def test_after_hook_modifies_result():
         ctx.set_result({**ctx.result, "enriched": True})
 
     _register_hook_on_class(
-        HookTestManager, "get", "after", enrich_result, priority=10, condition=None,
+        HookTestManager,
+        "get",
+        "after",
+        enrich_result,
+        priority=10,
+        condition=None,
     )
     mgr = HookTestManager()
     result = mgr.get(id="1")
@@ -286,7 +340,12 @@ def test_conditional_hook_skipped_when_false():
         return ctx.method_name == "delete"  # type: ignore[no-any-return]
 
     _register_hook_on_class(
-        HookTestManager, "create", "before", guarded_hook, priority=10, condition=only_deletes,
+        HookTestManager,
+        "create",
+        "before",
+        guarded_hook,
+        priority=10,
+        condition=only_deletes,
     )
     mgr = HookTestManager()
     mgr.create(name="test")
@@ -304,7 +363,12 @@ def test_conditional_hook_runs_when_true():
         return True
 
     _register_hook_on_class(
-        HookTestManager, "create", "before", guarded_hook, priority=10, condition=always,
+        HookTestManager,
+        "create",
+        "before",
+        guarded_hook,
+        priority=10,
+        condition=always,
     )
     mgr = HookTestManager()
     mgr.create(name="test")
@@ -330,13 +394,28 @@ def test_hooks_execute_in_priority_order():
         execution_order.append("c")
 
     _register_hook_on_class(
-        HookTestManager, "create", "before", hook_c, priority=30, condition=None,
+        HookTestManager,
+        "create",
+        "before",
+        hook_c,
+        priority=30,
+        condition=None,
     )
     _register_hook_on_class(
-        HookTestManager, "create", "before", hook_a, priority=10, condition=None,
+        HookTestManager,
+        "create",
+        "before",
+        hook_a,
+        priority=10,
+        condition=None,
     )
     _register_hook_on_class(
-        HookTestManager, "create", "before", hook_b, priority=20, condition=None,
+        HookTestManager,
+        "create",
+        "before",
+        hook_b,
+        priority=20,
+        condition=None,
     )
     mgr = HookTestManager()
     mgr.create(name="test")
@@ -356,7 +435,12 @@ def test_child_inherits_parent_hooks():
         call_tracker()
 
     _register_hook_on_class(
-        HookTestManager, "create", "before", parent_hook, priority=10, condition=None,
+        HookTestManager,
+        "create",
+        "before",
+        parent_hook,
+        priority=10,
+        condition=None,
     )
     mgr = ChildHookTestManager()
     mgr.create(name="from-child")
@@ -374,10 +458,20 @@ def test_child_can_add_own_hooks():
         execution_order.append("child")
 
     _register_hook_on_class(
-        HookTestManager, "create", "before", parent_hook, priority=10, condition=None,
+        HookTestManager,
+        "create",
+        "before",
+        parent_hook,
+        priority=10,
+        condition=None,
     )
     _register_hook_on_class(
-        ChildHookTestManager, "create", "before", child_hook, priority=20, condition=None,
+        ChildHookTestManager,
+        "create",
+        "before",
+        child_hook,
+        priority=20,
+        condition=None,
     )
     mgr = ChildHookTestManager()
     mgr.create(name="test")
@@ -396,7 +490,13 @@ def test_metric_counter_increments_on_each_swallowed_failure():
         raise RuntimeError("counted")
 
     _register_hook_on_class(
-        HookTestManager, "create", "after", bad_hook, priority=10, condition=None, blocking=False,
+        HookTestManager,
+        "create",
+        "after",
+        bad_hook,
+        priority=10,
+        condition=None,
+        blocking=False,
     )
     mgr = HookTestManager()
     mgr.create(name="first")
@@ -423,10 +523,22 @@ def test_blocking_before_hook_stops_subsequent_hooks():
         execution_order.append("second")
 
     _register_hook_on_class(
-        HookTestManager, "create", "before", first, priority=10, condition=None, blocking=True,
+        HookTestManager,
+        "create",
+        "before",
+        first,
+        priority=10,
+        condition=None,
+        blocking=True,
     )
     _register_hook_on_class(
-        HookTestManager, "create", "before", second, priority=20, condition=None, blocking=True,
+        HookTestManager,
+        "create",
+        "before",
+        second,
+        priority=20,
+        condition=None,
+        blocking=True,
     )
     mgr = HookTestManager()
     with pytest.raises(PermissionError):
@@ -447,10 +559,22 @@ def test_non_blocking_before_hook_continues_to_next():
         execution_order.append("second")
 
     _register_hook_on_class(
-        HookTestManager, "create", "before", first, priority=10, condition=None, blocking=False,
+        HookTestManager,
+        "create",
+        "before",
+        first,
+        priority=10,
+        condition=None,
+        blocking=False,
     )
     _register_hook_on_class(
-        HookTestManager, "create", "before", second, priority=20, condition=None, blocking=True,
+        HookTestManager,
+        "create",
+        "before",
+        second,
+        priority=20,
+        condition=None,
+        blocking=True,
     )
     mgr = HookTestManager()
     result = mgr.create(name="test")
@@ -476,10 +600,22 @@ def test_mixed_blocking_non_blocking_before_hooks():
         execution_order.append("auth")
 
     _register_hook_on_class(
-        HookTestManager, "create", "before", non_blocking_logger, priority=10, condition=None, blocking=False,
+        HookTestManager,
+        "create",
+        "before",
+        non_blocking_logger,
+        priority=10,
+        condition=None,
+        blocking=False,
     )
     _register_hook_on_class(
-        HookTestManager, "create", "before", blocking_auth, priority=20, condition=None, blocking=True,
+        HookTestManager,
+        "create",
+        "before",
+        blocking_auth,
+        priority=20,
+        condition=None,
+        blocking=True,
     )
     mgr = HookTestManager()
     result = mgr.create(name="test")
@@ -501,10 +637,22 @@ def test_mixed_blocking_non_blocking_after_hooks():
         execution_order.append("cache")
 
     _register_hook_on_class(
-        HookTestManager, "update", "after", non_blocking_analytics, priority=10, condition=None, blocking=False,
+        HookTestManager,
+        "update",
+        "after",
+        non_blocking_analytics,
+        priority=10,
+        condition=None,
+        blocking=False,
     )
     _register_hook_on_class(
-        HookTestManager, "update", "after", blocking_cache_invalidation, priority=20, condition=None, blocking=True,
+        HookTestManager,
+        "update",
+        "after",
+        blocking_cache_invalidation,
+        priority=20,
+        condition=None,
+        blocking=True,
     )
     mgr = HookTestManager()
     result = mgr.update(id="1")
@@ -528,10 +676,20 @@ def test_before_and_after_hooks_both_execute():
         execution_order.append("after")
 
     _register_hook_on_class(
-        HookTestManager, "create", "before", before_validate, priority=10, condition=None,
+        HookTestManager,
+        "create",
+        "before",
+        before_validate,
+        priority=10,
+        condition=None,
     )
     _register_hook_on_class(
-        HookTestManager, "create", "after", after_notify, priority=10, condition=None,
+        HookTestManager,
+        "create",
+        "after",
+        after_notify,
+        priority=10,
+        condition=None,
     )
     mgr = HookTestManager()
     result = mgr.create(name="test")
@@ -552,10 +710,20 @@ def test_hook_context_reports_correct_timing():
         observed_timings.append(ctx.timing.value)
 
     _register_hook_on_class(
-        HookTestManager, "get", "before", observer, priority=10, condition=None,
+        HookTestManager,
+        "get",
+        "before",
+        observer,
+        priority=10,
+        condition=None,
     )
     _register_hook_on_class(
-        HookTestManager, "get", "after", observer, priority=10, condition=None,
+        HookTestManager,
+        "get",
+        "after",
+        observer,
+        priority=10,
+        condition=None,
     )
     mgr = HookTestManager()
     mgr.get(id="1")

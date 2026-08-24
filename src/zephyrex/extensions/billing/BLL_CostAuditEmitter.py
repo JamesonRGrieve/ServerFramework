@@ -156,9 +156,7 @@ def make_cost_audit_emitter(
                                 inner,
                             )
             except Exception as inner:  # noqa: BLE001
-                logger.warning(
-                    "cost_audit_emitter: log_audit_event failed: %s", inner
-                )
+                logger.warning("cost_audit_emitter: log_audit_event failed: %s", inner)
         except Exception as outer:  # noqa: BLE001
             logger.warning("cost_audit_emitter: emission failed: %s", outer)
 

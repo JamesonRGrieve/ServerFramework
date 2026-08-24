@@ -10,7 +10,6 @@ from zephyrex.AbstractTest import ParentEntity
 from zephyrex.database.AbstractDBTest import AbstractDBTest
 from zephyrex.lib.Environment import env
 
-
 # Import BLL models which will be converted to SQLAlchemy models via .DB()
 from zephyrex.logic.BLL_Auth import (
     SessionModel,
@@ -266,8 +265,7 @@ class TestUser(AbstractDBTest):
             "in storage but is missing under include_deleted()"
         )
         assert row.deleted_at is not None, (
-            f"{self.sqlalchemy_model.__name__}: deleted_at not set after "
-            "soft-delete"
+            f"{self.sqlalchemy_model.__name__}: deleted_at not set after " "soft-delete"
         )
 
 

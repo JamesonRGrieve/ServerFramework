@@ -171,7 +171,9 @@ class TestMonerisProvider:
         payload = '{"type": "RECURRING_PAYMENT_CONFIRMED", "id": "evt_123"}'
         sig = _hmac.new(b"test-store", payload.encode(), hashlib.sha256).hexdigest()
         result = await PaymentExtensionMonerisProvider.process_webhook(
-            provider_instance, payload, sig,
+            provider_instance,
+            payload,
+            sig,
         )
         assert isinstance(result, dict)
         assert result["success"] is True

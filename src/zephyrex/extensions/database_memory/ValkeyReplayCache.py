@@ -75,5 +75,7 @@ class ValkeyReplayCache(ReplayCache):
         try:
             return _sync_run(self._async_mark_if_unused(key, ttl_seconds))
         except Exception as exc:
-            _logger.warning("ValkeyReplayCache.mark_if_unused failed (fail-closed): %s", exc)
+            _logger.warning(
+                "ValkeyReplayCache.mark_if_unused failed (fail-closed): %s", exc
+            )
             return False

@@ -115,7 +115,9 @@ def test_missing_verify_signature_returns_503():
         class PRV_Stripe:
             pass
 
-    @webhook_handler(_ExtensionWithoutVerify, provider="stripe", event="customer.updated")
+    @webhook_handler(
+        _ExtensionWithoutVerify, provider="stripe", event="customer.updated"
+    )
     def handle(ctx: WebhookContext) -> None:
         raise AssertionError("must not be called when signature isn't configured")
 
@@ -198,7 +200,11 @@ def test_replay_protection_rejects_nonce_reuse():
     client = _client()
     fresh_ts = int(time.time())
     headers = {"X-Ts": str(fresh_ts), "X-Nonce": "same-nonce"}
-    r1 = client.post("/webhook/replay_ext2/stripe/evt", json={"id": "x"}, headers=headers)
+    r1 = client.post(
+        "/webhook/replay_ext2/stripe/evt", json={"id": "x"}, headers=headers
+    )
     assert r1.status_code == 200
-    r2 = client.post("/webhook/replay_ext2/stripe/evt", json={"id": "x"}, headers=headers)
+    r2 = client.post(
+        "/webhook/replay_ext2/stripe/evt", json={"id": "x"}, headers=headers
+    )
     assert r2.status_code == 401

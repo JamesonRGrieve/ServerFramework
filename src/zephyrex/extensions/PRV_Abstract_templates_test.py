@@ -303,9 +303,7 @@ def test_abstract_cannot_be_instantiated(abstract_cls, expected_category, _concr
     ABSTRACTS,
     ids=[a[1] for a in ABSTRACTS],
 )
-def test_concrete_subclass_instantiates(
-    abstract_cls, _expected_category, concrete_cls
-):
+def test_concrete_subclass_instantiates(abstract_cls, _expected_category, concrete_cls):
     # The static-provider model never actually instantiates providers,
     # but Python's ABCMeta still requires every abstractmethod be
     # implemented before `__abstractmethods__` is empty. That is what
@@ -407,9 +405,7 @@ async def test_stub_object_storage_round_trip():
 
 async def test_stub_queue_round_trip():
     assert await _StubQueue.enqueue(None, "task", {}) == "task-1"
-    assert (
-        await _StubQueue.schedule(None, "task", {}, datetime(2030, 1, 1)) == "task-2"
-    )
+    assert await _StubQueue.schedule(None, "task", {}, datetime(2030, 1, 1)) == "task-2"
     assert await _StubQueue.cron(None, "task", {}, "* * * * *") == "schedule-1"
     assert await _StubQueue.dlq_list(None) == []
     assert (await _StubQueue.status(None, "task-1"))["state"] == "pending"

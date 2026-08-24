@@ -12,9 +12,7 @@ from __future__ import annotations
 def test_redact_db_uri_strips_postgres_password():
     from zephyrex.database.DatabaseManager import _redact_db_uri
 
-    redacted = _redact_db_uri(
-        "postgresql+asyncpg://app:s3cret@db.example:5432/app"
-    )
+    redacted = _redact_db_uri("postgresql+asyncpg://app:s3cret@db.example:5432/app")
     assert "s3cret" not in redacted
     assert "app:" in redacted  # username is fine to log
     assert "***" in redacted
@@ -25,9 +23,7 @@ def test_redact_db_uri_passthrough_sqlite():
     from zephyrex.database.DatabaseManager import _redact_db_uri
 
     # SQLite URIs carry no secret; pass through unchanged.
-    assert (
-        _redact_db_uri("sqlite:///./test.db") == "sqlite:///./test.db"
-    )
+    assert _redact_db_uri("sqlite:///./test.db") == "sqlite:///./test.db"
     assert _redact_db_uri("sqlite:///:memory:") == "sqlite:///:memory:"
 
 

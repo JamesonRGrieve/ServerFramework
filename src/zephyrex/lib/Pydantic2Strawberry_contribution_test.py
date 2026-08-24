@@ -35,7 +35,6 @@ from zephyrex.lib.Pydantic2Strawberry import (
     reset_gql_contribution_registry,
 )
 
-
 # ---------------------------------------------------------------------------
 # Registry: three-stage collision rule
 # ---------------------------------------------------------------------------
@@ -186,11 +185,21 @@ def test_invalid_federation_directive_rejected_at_registration() -> None:
 
 def test_supported_federation_directives_accepted() -> None:
     reg = GraphQLContributionRegistry()
-    for directive in ("key", "external", "requires", "provides", "shareable",
-                      "inaccessible", "override", "tag"):
+    for directive in (
+        "key",
+        "external",
+        "requires",
+        "provides",
+        "shareable",
+        "inaccessible",
+        "override",
+        "tag",
+    ):
+
         @strawberry.type
         class _T:
             id: str
+
         reg.register_type(
             TypeContribution(
                 "ext_a",
@@ -225,7 +234,11 @@ def test_dataloader_batches_parallel_loads() -> None:
     results = asyncio.run(run())
     assert len(call_log) == 1
     assert call_log[0] == [1, 2, 3]
-    assert results == [{"id": 1, "value": 2}, {"id": 2, "value": 4}, {"id": 3, "value": 6}]
+    assert results == [
+        {"id": 1, "value": 2},
+        {"id": 2, "value": 4},
+        {"id": 3, "value": 6},
+    ]
 
 
 def test_dataloader_async_batch_fn_supported() -> None:

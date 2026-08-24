@@ -1,7 +1,11 @@
 from faker import Faker
 
 from zephyrex.AbstractTest import ParentEntity
-from zephyrex.logic.AbstractBLLTest import AbstractBLLTest, CategoryOfTest, ClassOfTestsConfig
+from zephyrex.logic.AbstractBLLTest import (
+    AbstractBLLTest,
+    CategoryOfTest,
+    ClassOfTestsConfig,
+)
 from zephyrex.logic.BLL_Providers import (
     ProviderExtensionAbilityManager,
     ProviderExtensionManager,
@@ -41,8 +45,12 @@ class TestProviderExtensionManager(AbstractBLLTest):
         "provider_id": None,  # Will be set by parent entity
         "extension_id": None,  # Will be set by parent entity
     }
-    update_fields: dict[str, str] = {}  # No meaningful updates for this relationship  # type: ignore[var-annotated]
-    unique_fields: list[str] = []  # No unique fields for this junction table  # type: ignore[var-annotated]
+    update_fields: dict[str, str] = (
+        {}
+    )  # No meaningful updates for this relationship  # type: ignore[var-annotated]
+    unique_fields: list[str] = (
+        []
+    )  # No unique fields for this junction table  # type: ignore[var-annotated]
     parent_entities = [
         ParentEntity(
             name="provider",
@@ -65,8 +73,12 @@ class TestProviderExtensionAbilityManager(AbstractBLLTest):
         "provider_extension_id": None,  # Will be set by parent entity
         "ability_id": None,  # Will be set by parent entity
     }
-    update_fields: dict[str, str] = {}  # No meaningful updates for this relationship  # type: ignore[var-annotated]
-    unique_fields: list[str] = []  # No unique fields for this junction table  # type: ignore[var-annotated]
+    update_fields: dict[str, str] = (
+        {}
+    )  # No meaningful updates for this relationship  # type: ignore[var-annotated]
+    unique_fields: list[str] = (
+        []
+    )  # No unique fields for this junction table  # type: ignore[var-annotated]
     parent_entities = [
         ParentEntity(
             name="provider_extension",
@@ -159,7 +171,9 @@ class TestProviderInstanceExtensionAbilityManager(AbstractBLLTest):
         "state": False,
         "forced": True,
     }
-    unique_fields: list[str] = []  # No unique fields for this junction table  # type: ignore[var-annotated]
+    unique_fields: list[str] = (
+        []
+    )  # No unique fields for this junction table  # type: ignore[var-annotated]
     parent_entities = [
         ParentEntity(
             name="provider_instance",

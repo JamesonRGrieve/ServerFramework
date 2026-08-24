@@ -28,7 +28,17 @@ import os
 import re
 from datetime import datetime, timezone
 from threading import RLock
-from typing import Any, Callable, ClassVar, Dict, Generic, List, Literal, Optional, TypeVar
+from typing import (
+    Any,
+    Callable,
+    ClassVar,
+    Dict,
+    Generic,
+    List,
+    Literal,
+    Optional,
+    TypeVar,
+)
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
@@ -154,7 +164,9 @@ def _resolve_openbao(path: str, version: Optional[str]) -> Optional[str]:
         try:
             import hvac  # type: ignore
         except ImportError:
-            logging.getLogger(__name__).debug("hvac not installed; skipping OpenBao tier")
+            logging.getLogger(__name__).debug(
+                "hvac not installed; skipping OpenBao tier"
+            )
             return None
         addr = os.environ.get("OPENBAO_ADDR") or os.environ.get("VAULT_ADDR")
         if not addr:
@@ -180,7 +192,9 @@ def _resolve_openbao(path: str, version: Optional[str]) -> Optional[str]:
             return str(data[leaf])
         return None
     except Exception as exc:
-        logging.getLogger(__name__).debug("OpenBao resolve failed for %s: %s", path, exc)
+        logging.getLogger(__name__).debug(
+            "OpenBao resolve failed for %s: %s", path, exc
+        )
         return None
 
 
@@ -195,6 +209,7 @@ def _env_suffix_for(app_env: Optional[str]) -> str:
     """
     if app_env is None:
         from zephyrex.lib.Environment import resolve_environment
+
         env_value = resolve_environment()
     else:
         env_value = app_env
@@ -232,12 +247,14 @@ def _resolve_encrypted_db(path: str) -> Optional[str]:
     try:
         from cryptography.fernet import Fernet, InvalidToken
     except ImportError:
-        logging.getLogger(__name__).debug("cryptography not installed; skipping encrypted-db tier")
+        logging.getLogger(__name__).debug(
+            "cryptography not installed; skipping encrypted-db tier"
+        )
         return None
     if path.startswith("inline:"):
-        ciphertext = path[len("inline:"):]
+        ciphertext = path[len("inline:") :]
     elif path.startswith("env:"):
-        ciphertext = os.environ.get(path[len("env:"):], "")
+        ciphertext = os.environ.get(path[len("env:") :], "")
         if not ciphertext:
             return None
     else:
@@ -245,7 +262,9 @@ def _resolve_encrypted_db(path: str) -> Optional[str]:
     try:
         return Fernet(key).decrypt(ciphertext.encode("utf-8")).decode("utf-8")
     except (InvalidToken, ValueError) as exc:
-        logging.getLogger(__name__).warning("Fernet decrypt failed for %s: %s", path, exc)
+        logging.getLogger(__name__).warning(
+            "Fernet decrypt failed for %s: %s", path, exc
+        )
         return None
 
 
@@ -264,7 +283,12 @@ class CredentialRef(BaseModel):
     version: Optional[str] = None
 
     def _cache_key(self, env: Optional[str]) -> tuple:
-        return (self.tier, self.path, self.version, _env_suffix_for(env) if self.tier == "env" else "")
+        return (
+            self.tier,
+            self.path,
+            self.version,
+            _env_suffix_for(env) if self.tier == "env" else "",
+        )
 
     def resolve(self, env: Optional[str] = None) -> str:
         """Resolve the secret. Returns the cleartext string.
@@ -276,7 +300,9 @@ class CredentialRef(BaseModel):
         """
         key = self._cache_key(env)
         if _CACHE.is_marked_bad(key):
-            raise RuntimeError(f"Credential {self.path} marked bad; rotate before reuse")
+            raise RuntimeError(
+                f"Credential {self.path} marked bad; rotate before reuse"
+            )
         cached = _CACHE.get(key)
         if cached is not None:
             return cached
@@ -320,9 +346,7 @@ def clear_bad(ref: CredentialRef, env: Optional[str] = None) -> None:
     _CACHE.clear_bad(ref._cache_key(env))
 
 
-def cache_bust_on_auth_rejection(
-    ref: CredentialRef, env: Optional[str] = None
-) -> str:
+def cache_bust_on_auth_rejection(ref: CredentialRef, env: Optional[str] = None) -> str:
     """Item 32 — credential cache-bust on upstream auth rejection.
 
     Invalidates the cached value and re-resolves from the source tier.

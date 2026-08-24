@@ -48,6 +48,7 @@ class _InMemoryValkeyClient:
 
     def _match(self, key, pattern):
         import fnmatch
+
         if isinstance(key, bytes):
             key = key.decode()
         return fnmatch.fnmatch(key, pattern)
@@ -57,16 +58,23 @@ class _InMemoryValkeyClient:
 class TestValkeyEntityCacheSecurity:
     def test_valkey_entity_cache_key_injection_rejected(self):
         """Entity cache key must not allow colon-injection to read other entities."""
-        from zephyrex.extensions.database_memory.ValkeyEntityCache import ValkeyEntityCache
+        from zephyrex.extensions.database_memory.ValkeyEntityCache import (
+            ValkeyEntityCache,
+        )
 
         key = ValkeyEntityCache._entity_key("users", "legit-id")
         assert key == "entity:users:legit-id"
         injected_key = ValkeyEntityCache._entity_key("users", "id:entity:admin:root")
-        assert "entity:admin:root" not in injected_key.split(":", 2)[2] or ":" in injected_key
+        assert (
+            "entity:admin:root" not in injected_key.split(":", 2)[2]
+            or ":" in injected_key
+        )
 
     def test_valkey_entity_cache_tenant_isolation(self):
         """Entity cache keys must be scoped so cross-tenant collisions are impossible."""
-        from zephyrex.extensions.database_memory.ValkeyEntityCache import ValkeyEntityCache
+        from zephyrex.extensions.database_memory.ValkeyEntityCache import (
+            ValkeyEntityCache,
+        )
 
         k1 = ValkeyEntityCache._entity_key("users", "same-uuid")
         k2 = ValkeyEntityCache._entity_key("users", "same-uuid")
@@ -74,7 +82,10 @@ class TestValkeyEntityCacheSecurity:
 
     def test_valkey_entity_cache_handles_corrupted_data(self):
         """Entity cache must handle corrupted/non-JSON data gracefully."""
-        from zephyrex.extensions.database_memory.ValkeyEntityCache import ValkeyEntityCache
+        from zephyrex.extensions.database_memory.ValkeyEntityCache import (
+            ValkeyEntityCache,
+        )
+
         pass  # using _InMemoryValkeyClient defined above
 
         client = _InMemoryValkeyClient()
@@ -94,7 +105,9 @@ class TestValkeyEntityCacheSecurity:
 class TestValkeyResponseCacheSecurity:
     def test_valkey_response_cache_cross_user_isolation(self):
         """Response cache keys must differ per requester_id."""
-        from zephyrex.extensions.database_memory.ValkeyResponseCache import ValkeyResponseCache
+        from zephyrex.extensions.database_memory.ValkeyResponseCache import (
+            ValkeyResponseCache,
+        )
 
         k1 = ValkeyResponseCache.cache_key("GET", "/v1/team", "", "user-a")
         k2 = ValkeyResponseCache.cache_key("GET", "/v1/team", "", "user-b")
@@ -102,7 +115,9 @@ class TestValkeyResponseCacheSecurity:
 
     def test_valkey_response_cache_invalidation_pattern_safe(self):
         """Invalidation pattern must not allow glob injection."""
-        from zephyrex.extensions.database_memory.ValkeyResponseCache import ValkeyResponseCache
+        from zephyrex.extensions.database_memory.ValkeyResponseCache import (
+            ValkeyResponseCache,
+        )
 
         key = ValkeyResponseCache.cache_key("GET", "/v1/team/*", "q=*", "user-a")
         assert "*" not in key.split(":")[-1], "Glob chars leaked into cache key hash"
@@ -112,7 +127,10 @@ class TestValkeyResponseCacheSecurity:
 class TestValkeyRateLimitSecurity:
     def test_valkey_rate_limit_key_namespace_safe(self):
         """Rate limit keys must not contain Valkey command separators."""
-        from zephyrex.extensions.database_memory.ValkeyRateLimitCounter import ValkeyRateLimitCounter
+        from zephyrex.extensions.database_memory.ValkeyRateLimitCounter import (
+            ValkeyRateLimitCounter,
+        )
+
         pass  # using _InMemoryValkeyClient defined above
 
         client = _InMemoryValkeyClient()
@@ -125,7 +143,9 @@ class TestValkeyRateLimitSecurity:
 class TestValkeyReplayCacheSecurity:
     def test_valkey_replay_cache_fails_closed_on_connection_error(self):
         """Replay cache must fail closed (reject) when Valkey is unreachable."""
-        from zephyrex.extensions.database_memory.ValkeyReplayCache import ValkeyReplayCache
+        from zephyrex.extensions.database_memory.ValkeyReplayCache import (
+            ValkeyReplayCache,
+        )
 
         class BrokenClient:
             async def set(self, *args, **kwargs):
@@ -136,16 +156,18 @@ class TestValkeyReplayCacheSecurity:
 
         cache = ValkeyReplayCache(BrokenClient())
         result = cache.mark_if_unused("test-nonce", 60)
-        assert result is False, (
-            "Replay cache failed OPEN on connection error — must fail CLOSED"
-        )
+        assert (
+            result is False
+        ), "Replay cache failed OPEN on connection error — must fail CLOSED"
 
 
 @pytest.mark.security
 class TestValkeyStreamsSecurity:
     def test_valkey_streams_payload_validated_before_handler(self):
         """Stream payloads must be bytes, not deserialized objects."""
-        from zephyrex.extensions.database_memory.PRV_Valkey import _ValkeyStreamsTransport
+        from zephyrex.extensions.database_memory.PRV_Valkey import (
+            _ValkeyStreamsTransport,
+        )
 
         assert hasattr(_ValkeyStreamsTransport, "send")
         assert hasattr(_ValkeyStreamsTransport, "subscribe")
@@ -155,7 +177,10 @@ class TestValkeyStreamsSecurity:
 class TestValkeyDistributedCounterSecurity:
     def test_valkey_distributed_counter_rejects_negative_amount(self):
         """Distributed counter must not accept negative amounts."""
-        from zephyrex.extensions.database_memory.ValkeyDistributedCounter import ValkeyDistributedCounter
+        from zephyrex.extensions.database_memory.ValkeyDistributedCounter import (
+            ValkeyDistributedCounter,
+        )
+
         pass  # using _InMemoryValkeyClient defined above
 
         client = _InMemoryValkeyClient()
@@ -249,7 +274,9 @@ class TestValkeySSRF:
 class TestValkeyGlobInjection:
     def test_valkey_response_invalidate_prefix_strips_glob_metachars(self):
         """invalidate_prefix must strip Redis glob metachars from the pattern."""
-        from zephyrex.extensions.database_memory.ValkeyResponseCache import ValkeyResponseCache
+        from zephyrex.extensions.database_memory.ValkeyResponseCache import (
+            ValkeyResponseCache,
+        )
 
         cache = ValkeyResponseCache(_InMemoryValkeyClient())
         import asyncio
@@ -266,7 +293,9 @@ class TestValkeyGlobInjection:
 class TestValkeyKeyCardinality:
     def test_valkey_response_cache_key_cardinality_bounded(self):
         """Response cache must not create unbounded keys from varying query strings."""
-        from zephyrex.extensions.database_memory.ValkeyResponseCache import ValkeyResponseCache
+        from zephyrex.extensions.database_memory.ValkeyResponseCache import (
+            ValkeyResponseCache,
+        )
 
         keys = set()
         for i in range(100):
@@ -279,19 +308,23 @@ class TestValkeyKeyCardinality:
 class TestValkeyEntityPoisoning:
     def test_valkey_entity_cache_rejects_forged_privileged_dto(self):
         """Entity cache must not serve forged DTOs with elevated privileges."""
-        from zephyrex.extensions.database_memory.ValkeyEntityCache import ValkeyEntityCache
+        from zephyrex.extensions.database_memory.ValkeyEntityCache import (
+            ValkeyEntityCache,
+        )
         import asyncio
 
         client = _InMemoryValkeyClient()
         cache = ValkeyEntityCache(client)
 
         async def _test():
-            forged = json.dumps({
-                "id": "victim-id",
-                "email": "admin@example.com",
-                "role": "superadmin",
-                "is_admin": True,
-            })
+            forged = json.dumps(
+                {
+                    "id": "victim-id",
+                    "email": "admin@example.com",
+                    "role": "superadmin",
+                    "is_admin": True,
+                }
+            )
             await client.set("entity:users:victim-id", forged.encode())
             result = await cache.get_by_id("users", "victim-id")
             assert result is not None
@@ -304,10 +337,14 @@ class TestValkeyEntityPoisoning:
 class TestValkeyIndexCollision:
     def test_valkey_entity_cache_index_key_collision_rejected(self):
         """Index keys with colons in user values must not collide."""
-        from zephyrex.extensions.database_memory.ValkeyEntityCache import ValkeyEntityCache
+        from zephyrex.extensions.database_memory.ValkeyEntityCache import (
+            ValkeyEntityCache,
+        )
 
         k1 = ValkeyEntityCache._index_key("users", "email", "normal@example.com")
-        k2 = ValkeyEntityCache._index_key("users", "email", "evil:idx:users:email:admin@example.com")
+        k2 = ValkeyEntityCache._index_key(
+            "users", "email", "evil:idx:users:email:admin@example.com"
+        )
         assert k1 != k2
 
 
@@ -315,8 +352,11 @@ class TestValkeyIndexCollision:
 class TestValkeyAtomicity:
     def test_valkey_entity_cache_put_atomic_or_index_consistent(self):
         """Entity cache put should use transactional pipeline."""
-        from zephyrex.extensions.database_memory.ValkeyEntityCache import ValkeyEntityCache
+        from zephyrex.extensions.database_memory.ValkeyEntityCache import (
+            ValkeyEntityCache,
+        )
         import inspect
+
         source = inspect.getsource(ValkeyEntityCache.put)
         assert "pipeline" in source
 
@@ -325,8 +365,11 @@ class TestValkeyAtomicity:
 class TestValkeyInvalidationFailOpen:
     def test_valkey_entity_cache_invalidation_failure_surfaced(self):
         """Entity cache invalidation failures must be detectable, not silently swallowed."""
-        from zephyrex.extensions.database_memory.ValkeyEntityCache import ValkeyEntityCache
+        from zephyrex.extensions.database_memory.ValkeyEntityCache import (
+            ValkeyEntityCache,
+        )
         import inspect
+
         source = inspect.getsource(ValkeyEntityCache.invalidate)
         assert "except" in source
 
@@ -335,7 +378,9 @@ class TestValkeyInvalidationFailOpen:
 class TestValkeyOversizedValue:
     def test_valkey_response_cache_rejects_oversized_body(self):
         """Response cache should not store extremely large values."""
-        from zephyrex.extensions.database_memory.ValkeyResponseCache import ValkeyResponseCache
+        from zephyrex.extensions.database_memory.ValkeyResponseCache import (
+            ValkeyResponseCache,
+        )
         import asyncio
 
         client = _InMemoryValkeyClient()
@@ -353,6 +398,7 @@ class TestValkeyPoolBounded:
     def test_valkey_pool_bounded_and_loop_safe(self):
         """Valkey connection pool must have bounded max_connections."""
         from zephyrex.extensions.database_memory.PRV_Valkey import PRV_Valkey
+
         assert hasattr(PRV_Valkey, "connect")
 
 
@@ -366,7 +412,9 @@ class TestValkeyLuaInjection:
     def test_valkey_lua_scripts_are_static_constants(self):
         """Lua scripts must be static strings, not built from user input."""
         from zephyrex.extensions.database_memory.ValkeyRateLimitCounter import _LUA_INCR
-        from zephyrex.extensions.database_memory.ValkeyDistributedCounter import _LUA_TRY_CONSUME
+        from zephyrex.extensions.database_memory.ValkeyDistributedCounter import (
+            _LUA_TRY_CONSUME,
+        )
 
         assert isinstance(_LUA_INCR, str) and "KEYS[1]" in _LUA_INCR
         assert isinstance(_LUA_TRY_CONSUME, str) and "KEYS[1]" in _LUA_TRY_CONSUME
@@ -376,9 +424,16 @@ class TestValkeyLuaInjection:
     def test_valkey_lua_user_input_only_via_argv(self):
         """User input must reach Lua scripts only through ARGV, never interpolated."""
         import inspect
-        from zephyrex.extensions.database_memory.ValkeyRateLimitCounter import ValkeyRateLimitCounter
+        from zephyrex.extensions.database_memory.ValkeyRateLimitCounter import (
+            ValkeyRateLimitCounter,
+        )
+
         source = inspect.getsource(ValkeyRateLimitCounter._async_incr)
-        assert "eval" in source.lower() or "evalsha" in source.lower() or "script" in source.lower()
+        assert (
+            "eval" in source.lower()
+            or "evalsha" in source.lower()
+            or "script" in source.lower()
+        )
 
 
 @pytest.mark.security
@@ -388,6 +443,7 @@ class TestValkeyStreamInjection:
         try:
             from zephyrex.logic.EventBus import EventBus
             import inspect
+
             source = inspect.getsource(EventBus)
             assert "topic" in source.lower() or "stream" in source.lower()
         except ImportError:
@@ -398,6 +454,7 @@ class TestValkeyStreamInjection:
         try:
             from zephyrex.logic.EventBus import EventBus
             import inspect
+
             source = inspect.getsource(EventBus)
             assert "model_validate" in source or "json.loads" in source
         except ImportError:

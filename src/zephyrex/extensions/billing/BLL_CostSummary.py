@@ -23,7 +23,6 @@ from zephyrex.logic.AbstractLogicManager import (
     UpdateMixinModel,
 )
 
-
 PeriodLiteral = Literal["day", "week", "month", "year"]
 
 

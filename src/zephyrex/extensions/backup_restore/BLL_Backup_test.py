@@ -31,7 +31,6 @@ from zephyrex.extensions.backup_restore.BLL_Backup import (
     register_backup_class,
 )
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------

@@ -145,9 +145,7 @@ def _get_db_manager_from_context() -> Optional[Any]:
                 return task._db_manager
         except RuntimeError as e:
             # current_task() raises RuntimeError outside an event loop.
-            logger.debug(
-                "DatabaseManager lookup: no current asyncio task: %s", e
-            )
+            logger.debug("DatabaseManager lookup: no current asyncio task: %s", e)
 
         # 2. Try to get from thread-local storage (not recommended but for compatibility)
         try:
@@ -157,9 +155,7 @@ def _get_db_manager_from_context() -> Optional[Any]:
             if hasattr(local, "_db_manager"):
                 return local._db_manager
         except (AttributeError, RuntimeError) as e:
-            logger.debug(
-                "DatabaseManager lookup: thread-local probe failed: %s", e
-            )
+            logger.debug("DatabaseManager lookup: thread-local probe failed: %s", e)
 
         # 3. Try to get from global app state (last resort)
         try:
@@ -171,9 +167,7 @@ def _get_db_manager_from_context() -> Optional[Any]:
                     if hasattr(module.app.state, "DB"):
                         return module.app.state.model_registry.database_manager
         except (AttributeError, RuntimeError, ImportError) as e:
-            logger.debug(
-                "DatabaseManager lookup: app-state probe failed: %s", e
-            )
+            logger.debug("DatabaseManager lookup: app-state probe failed: %s", e)
 
         return None
 

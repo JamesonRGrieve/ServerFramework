@@ -41,6 +41,7 @@ from zephyrex.logic.Outbox import InMemoryOutboxStore
 # so our own contract tests don't get false-failed by an unrelated bug.
 try:
     from zephyrex.logic import BLL_Providers as _bll_mod  # canonical reference for the
+
     # OLD module — `_scoped_import` from `lib/Pydantic_test.py` may
     # replace `sys.modules["zephyrex.logic.BLL_Providers"]` with a fresh module
     # at runtime, leaving this test file's `RotationManager` symbol
@@ -141,7 +142,9 @@ def _make_rotation_manager_with_fake_instances(instances: List[Any]) -> Rotation
     rm.requester = MagicMock(id="r1")
 
     # Replace the loader with a stub that yields fake RPIs.
-    fake_rpis = [MagicMock(provider_instance_id=f"pi-{i}") for i in range(len(instances))]
+    fake_rpis = [
+        MagicMock(provider_instance_id=f"pi-{i}") for i in range(len(instances))
+    ]
     rm._get_ordered_rotation_provider_instances = lambda: fake_rpis  # type: ignore
 
     # Map pi-id -> instance so the fake lookup returns the right instance
@@ -237,7 +240,16 @@ def test_transient_error_retries_then_advances():
     a = MagicMock()
     a.name = "prov-A"
     a.provider_class = type(
-        "P", (), {"rotation_policy": RotationPolicy(transient_max_retries=2, transient_base_ms=1, transient_max_ms=1, transient_jitter=0.0)},
+        "P",
+        (),
+        {
+            "rotation_policy": RotationPolicy(
+                transient_max_retries=2,
+                transient_base_ms=1,
+                transient_max_ms=1,
+                transient_jitter=0.0,
+            )
+        },
     )
     b = MagicMock()
     b.name = "prov-B"
@@ -279,7 +291,9 @@ def test_rate_limit_error_does_not_advance(monkeypatch):
     a = MagicMock()
     a.name = "prov-A"
     a.provider_class = type(
-        "P", (), {"rotation_policy": RotationPolicy(rate_limit_base_ms=1, rate_limit_max_ms=2)},
+        "P",
+        (),
+        {"rotation_policy": RotationPolicy(rate_limit_base_ms=1, rate_limit_max_ms=2)},
     )
     b = MagicMock()
     b.name = "prov-B"
@@ -380,7 +394,9 @@ def test_sticky_pin_set_on_first_success():
     a.name = "prov-A"
     rm = _make_rotation_manager_with_fake_instances([a])
     try:
-        result = rm.rotate(lambda inst: "ok", routing_hint=RoutingHint(stickiness_key="conv-1"))
+        result = rm.rotate(
+            lambda inst: "ok", routing_hint=RoutingHint(stickiness_key="conv-1")
+        )
         assert result == "ok"
         assert _bll_mod._sticky_get("conv-1", None) == "pi-0"
     finally:
@@ -400,7 +416,9 @@ def test_sticky_pin_reused_on_subsequent_rotate():
     # pinned-attempt path.
     rm1 = _make_rotation_manager_with_fake_instances([a, b])
     try:
-        rm1.rotate(lambda inst: "ok-1", routing_hint=RoutingHint(stickiness_key="conv-2"))
+        rm1.rotate(
+            lambda inst: "ok-1", routing_hint=RoutingHint(stickiness_key="conv-2")
+        )
     finally:
         rm1._restore_db()
 
@@ -520,7 +538,10 @@ def test_exhausted_chain_fail_fast_raises_http_500():
         raise TransientExternalError("503")
 
     a.provider_class.rotation_policy = RotationPolicy(
-        transient_max_retries=0, transient_base_ms=1, transient_max_ms=1, transient_jitter=0.0
+        transient_max_retries=0,
+        transient_base_ms=1,
+        transient_max_ms=1,
+        transient_jitter=0.0,
     )
     try:
         from fastapi import HTTPException
@@ -741,7 +762,8 @@ def test_rotation_emits_attempt_spans_and_metrics_for_multi_provider_chain():
         assert backend.counters[a_fail_key] == 1.0
         assert backend.counters[b_fail_key] == 1.0
         total_failures = sum(
-            v for (n, _), v in backend.counters.items()
+            v
+            for (n, _), v in backend.counters.items()
             if n == "rotation.attempt.failure"
         )
         assert total_failures == 2.0
@@ -749,9 +771,7 @@ def test_rotation_emits_attempt_spans_and_metrics_for_multi_provider_chain():
         # Success counter: 1 for prov-C.
         c_success_key = (
             "rotation.attempt.success",
-            frozenset(
-                {("provider", "prov-C"), ("ability", "charge.create")}
-            ),
+            frozenset({("provider", "prov-C"), ("ability", "charge.create")}),
         )
         assert backend.counters[c_success_key] == 1.0
 
@@ -763,9 +783,7 @@ def test_rotation_emits_attempt_spans_and_metrics_for_multi_provider_chain():
         assert backend.counters[success_total_key] == 1.0
 
         # No exhaustion counter — chain succeeded on the 3rd provider.
-        assert not any(
-            n == "rotation.exhausted_total" for (n, _) in backend.counters
-        )
+        assert not any(n == "rotation.exhausted_total" for (n, _) in backend.counters)
     finally:
         reset_metrics_backend()
 

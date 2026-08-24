@@ -14,7 +14,6 @@ import pytest
 
 from zephyrex.lib.Environment import AppSettings
 
-
 # ---------------------------------------------------------------------------
 # JWT_SECRET auto-generation
 # ---------------------------------------------------------------------------
@@ -44,39 +43,45 @@ class TestJWTSecretAutoGeneration:
 
     def test_production_rejects_empty_jwt_secret(self):
         with pytest.raises(ValueError, match="JWT_SECRET"):
-            AppSettings.model_validate({
-                "ENVIRONMENT": "production",
-                "JWT_SECRET": "",
-                "ROOT_API_KEY": "x" * 32,
-                "ALLOWED_DOMAINS": "example.com",
-                "DATABASE_PASSWORD": "secure",
-                "DATABASE_SSL": "require",
-                "APP_EXTENSIONS": "",
-            })
+            AppSettings.model_validate(
+                {
+                    "ENVIRONMENT": "production",
+                    "JWT_SECRET": "",
+                    "ROOT_API_KEY": "x" * 32,
+                    "ALLOWED_DOMAINS": "example.com",
+                    "DATABASE_PASSWORD": "secure",
+                    "DATABASE_SSL": "require",
+                    "APP_EXTENSIONS": "",
+                }
+            )
 
     def test_staging_rejects_empty_jwt_secret(self):
         with pytest.raises(ValueError, match="JWT_SECRET"):
-            AppSettings.model_validate({
-                "ENVIRONMENT": "staging",
-                "JWT_SECRET": "",
-                "ROOT_API_KEY": "x" * 32,
-                "ALLOWED_DOMAINS": "example.com",
-                "DATABASE_PASSWORD": "secure",
-                "DATABASE_SSL": "require",
-                "APP_EXTENSIONS": "",
-            })
+            AppSettings.model_validate(
+                {
+                    "ENVIRONMENT": "staging",
+                    "JWT_SECRET": "",
+                    "ROOT_API_KEY": "x" * 32,
+                    "ALLOWED_DOMAINS": "example.com",
+                    "DATABASE_PASSWORD": "secure",
+                    "DATABASE_SSL": "require",
+                    "APP_EXTENSIONS": "",
+                }
+            )
 
     def test_production_rejects_short_jwt_secret(self):
         with pytest.raises(ValueError, match="at least 32 characters"):
-            AppSettings.model_validate({
-                "ENVIRONMENT": "production",
-                "JWT_SECRET": "tooshort",
-                "ROOT_API_KEY": "x" * 32,
-                "ALLOWED_DOMAINS": "example.com",
-                "DATABASE_PASSWORD": "secure",
-                "DATABASE_SSL": "require",
-                "APP_EXTENSIONS": "",
-            })
+            AppSettings.model_validate(
+                {
+                    "ENVIRONMENT": "production",
+                    "JWT_SECRET": "tooshort",
+                    "ROOT_API_KEY": "x" * 32,
+                    "ALLOWED_DOMAINS": "example.com",
+                    "DATABASE_PASSWORD": "secure",
+                    "DATABASE_SSL": "require",
+                    "APP_EXTENSIONS": "",
+                }
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -104,27 +109,31 @@ class TestRootAPIKeyAutoGeneration:
 
     def test_production_rejects_default_n0ne(self):
         with pytest.raises(ValueError, match="ROOT_API_KEY"):
-            AppSettings.model_validate({
-                "ENVIRONMENT": "production",
-                "ROOT_API_KEY": "n0ne",
-                "JWT_SECRET": "x" * 32,
-                "ALLOWED_DOMAINS": "example.com",
-                "DATABASE_PASSWORD": "secure",
-                "DATABASE_SSL": "require",
-                "APP_EXTENSIONS": "",
-            })
+            AppSettings.model_validate(
+                {
+                    "ENVIRONMENT": "production",
+                    "ROOT_API_KEY": "n0ne",
+                    "JWT_SECRET": "x" * 32,
+                    "ALLOWED_DOMAINS": "example.com",
+                    "DATABASE_PASSWORD": "secure",
+                    "DATABASE_SSL": "require",
+                    "APP_EXTENSIONS": "",
+                }
+            )
 
     def test_production_rejects_empty_root_api_key(self):
         with pytest.raises(ValueError, match="ROOT_API_KEY"):
-            AppSettings.model_validate({
-                "ENVIRONMENT": "production",
-                "ROOT_API_KEY": "",
-                "JWT_SECRET": "x" * 32,
-                "ALLOWED_DOMAINS": "example.com",
-                "DATABASE_PASSWORD": "secure",
-                "DATABASE_SSL": "require",
-                "APP_EXTENSIONS": "",
-            })
+            AppSettings.model_validate(
+                {
+                    "ENVIRONMENT": "production",
+                    "ROOT_API_KEY": "",
+                    "JWT_SECRET": "x" * 32,
+                    "ALLOWED_DOMAINS": "example.com",
+                    "DATABASE_PASSWORD": "secure",
+                    "DATABASE_SSL": "require",
+                    "APP_EXTENSIONS": "",
+                }
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -141,38 +150,44 @@ class TestCORSDefaultEmpty:
 
     def test_production_rejects_wildcard(self):
         with pytest.raises(ValueError, match="ALLOWED_DOMAINS"):
-            AppSettings.model_validate({
-                "ENVIRONMENT": "production",
-                "ALLOWED_DOMAINS": "*",
-                "JWT_SECRET": "x" * 32,
-                "ROOT_API_KEY": "x" * 32,
-                "DATABASE_PASSWORD": "secure",
-                "DATABASE_SSL": "require",
-                "APP_EXTENSIONS": "",
-            })
+            AppSettings.model_validate(
+                {
+                    "ENVIRONMENT": "production",
+                    "ALLOWED_DOMAINS": "*",
+                    "JWT_SECRET": "x" * 32,
+                    "ROOT_API_KEY": "x" * 32,
+                    "DATABASE_PASSWORD": "secure",
+                    "DATABASE_SSL": "require",
+                    "APP_EXTENSIONS": "",
+                }
+            )
 
     def test_production_rejects_empty_domains(self):
         with pytest.raises(ValueError, match="ALLOWED_DOMAINS"):
-            AppSettings.model_validate({
+            AppSettings.model_validate(
+                {
+                    "ENVIRONMENT": "production",
+                    "ALLOWED_DOMAINS": "",
+                    "JWT_SECRET": "x" * 32,
+                    "ROOT_API_KEY": "x" * 32,
+                    "DATABASE_PASSWORD": "secure",
+                    "DATABASE_SSL": "require",
+                    "APP_EXTENSIONS": "",
+                }
+            )
+
+    def test_production_accepts_explicit_domain(self):
+        s = AppSettings.model_validate(
+            {
                 "ENVIRONMENT": "production",
-                "ALLOWED_DOMAINS": "",
+                "ALLOWED_DOMAINS": "myapp.example.com",
                 "JWT_SECRET": "x" * 32,
                 "ROOT_API_KEY": "x" * 32,
                 "DATABASE_PASSWORD": "secure",
                 "DATABASE_SSL": "require",
                 "APP_EXTENSIONS": "",
-            })
-
-    def test_production_accepts_explicit_domain(self):
-        s = AppSettings.model_validate({
-            "ENVIRONMENT": "production",
-            "ALLOWED_DOMAINS": "myapp.example.com",
-            "JWT_SECRET": "x" * 32,
-            "ROOT_API_KEY": "x" * 32,
-            "DATABASE_PASSWORD": "secure",
-            "DATABASE_SSL": "require",
-            "APP_EXTENSIONS": "",
-        })
+            }
+        )
         assert s.ALLOWED_DOMAINS == "myapp.example.com"
 
 
@@ -194,26 +209,30 @@ class TestDatabaseSSLDefault:
     )
     def test_production_rejects_unsafe_ssl_modes(self, unsafe_mode):
         with pytest.raises(ValueError, match="DATABASE_SSL"):
-            AppSettings.model_validate({
+            AppSettings.model_validate(
+                {
+                    "ENVIRONMENT": "production",
+                    "DATABASE_SSL": unsafe_mode,
+                    "JWT_SECRET": "x" * 32,
+                    "ROOT_API_KEY": "x" * 32,
+                    "ALLOWED_DOMAINS": "example.com",
+                    "DATABASE_PASSWORD": "secure",
+                    "APP_EXTENSIONS": "",
+                }
+            )
+
+    def test_production_accepts_verify_full(self):
+        s = AppSettings.model_validate(
+            {
                 "ENVIRONMENT": "production",
-                "DATABASE_SSL": unsafe_mode,
+                "DATABASE_SSL": "verify-full",
                 "JWT_SECRET": "x" * 32,
                 "ROOT_API_KEY": "x" * 32,
                 "ALLOWED_DOMAINS": "example.com",
                 "DATABASE_PASSWORD": "secure",
                 "APP_EXTENSIONS": "",
-            })
-
-    def test_production_accepts_verify_full(self):
-        s = AppSettings.model_validate({
-            "ENVIRONMENT": "production",
-            "DATABASE_SSL": "verify-full",
-            "JWT_SECRET": "x" * 32,
-            "ROOT_API_KEY": "x" * 32,
-            "ALLOWED_DOMAINS": "example.com",
-            "DATABASE_PASSWORD": "secure",
-            "APP_EXTENSIONS": "",
-        })
+            }
+        )
         assert s.DATABASE_SSL == "verify-full"
 
 
@@ -266,27 +285,31 @@ class TestDatabasePasswordProduction:
 
     def test_production_rejects_empty_password(self):
         with pytest.raises(ValueError, match="DATABASE_PASSWORD"):
-            AppSettings.model_validate({
-                "ENVIRONMENT": "production",
-                "DATABASE_PASSWORD": "",
-                "JWT_SECRET": "x" * 32,
-                "ROOT_API_KEY": "x" * 32,
-                "ALLOWED_DOMAINS": "example.com",
-                "DATABASE_SSL": "require",
-                "APP_EXTENSIONS": "",
-            })
+            AppSettings.model_validate(
+                {
+                    "ENVIRONMENT": "production",
+                    "DATABASE_PASSWORD": "",
+                    "JWT_SECRET": "x" * 32,
+                    "ROOT_API_KEY": "x" * 32,
+                    "ALLOWED_DOMAINS": "example.com",
+                    "DATABASE_SSL": "require",
+                    "APP_EXTENSIONS": "",
+                }
+            )
 
     def test_production_rejects_default_password(self):
         with pytest.raises(ValueError, match="DATABASE_PASSWORD"):
-            AppSettings.model_validate({
-                "ENVIRONMENT": "production",
-                "DATABASE_PASSWORD": "Password1!",
-                "JWT_SECRET": "x" * 32,
-                "ROOT_API_KEY": "x" * 32,
-                "ALLOWED_DOMAINS": "example.com",
-                "DATABASE_SSL": "require",
-                "APP_EXTENSIONS": "",
-            })
+            AppSettings.model_validate(
+                {
+                    "ENVIRONMENT": "production",
+                    "DATABASE_PASSWORD": "Password1!",
+                    "JWT_SECRET": "x" * 32,
+                    "ROOT_API_KEY": "x" * 32,
+                    "ALLOWED_DOMAINS": "example.com",
+                    "DATABASE_SSL": "require",
+                    "APP_EXTENSIONS": "",
+                }
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -300,15 +323,17 @@ class TestSSRFGuardProduction:
     def test_production_rejects_ssrf_guard_disabled(self, monkeypatch):
         monkeypatch.setenv("DISABLE_SSRF_GUARD", "true")
         with pytest.raises(ValueError, match="SSRF"):
-            AppSettings.model_validate({
-                "ENVIRONMENT": "production",
-                "JWT_SECRET": "x" * 32,
-                "ROOT_API_KEY": "x" * 32,
-                "ALLOWED_DOMAINS": "example.com",
-                "DATABASE_PASSWORD": "secure",
-                "DATABASE_SSL": "require",
-                "APP_EXTENSIONS": "",
-            })
+            AppSettings.model_validate(
+                {
+                    "ENVIRONMENT": "production",
+                    "JWT_SECRET": "x" * 32,
+                    "ROOT_API_KEY": "x" * 32,
+                    "ALLOWED_DOMAINS": "example.com",
+                    "DATABASE_PASSWORD": "secure",
+                    "DATABASE_SSL": "require",
+                    "APP_EXTENSIONS": "",
+                }
+            )
 
     def test_nonproduction_allows_ssrf_guard_disabled(self, monkeypatch):
         monkeypatch.setenv("DISABLE_SSRF_GUARD", "true")
@@ -325,15 +350,17 @@ class TestProductionValidConfig:
     """A fully-configured production deployment boots without error."""
 
     def test_all_required_fields_present(self):
-        s = AppSettings.model_validate({
-            "ENVIRONMENT": "production",
-            "JWT_SECRET": "a" * 32,
-            "ROOT_API_KEY": "a" * 32,
-            "ALLOWED_DOMAINS": "example.com",
-            "DATABASE_PASSWORD": "securepass123",
-            "DATABASE_SSL": "require",
-            "APP_EXTENSIONS": "",
-        })
+        s = AppSettings.model_validate(
+            {
+                "ENVIRONMENT": "production",
+                "JWT_SECRET": "a" * 32,
+                "ROOT_API_KEY": "a" * 32,
+                "ALLOWED_DOMAINS": "example.com",
+                "DATABASE_PASSWORD": "securepass123",
+                "DATABASE_SSL": "require",
+                "APP_EXTENSIONS": "",
+            }
+        )
         assert s.ENVIRONMENT == "production"
         assert s.JWT_SECRET == "a" * 32
         assert s.ROOT_API_KEY == "a" * 32
@@ -352,6 +379,7 @@ class TestPasswordHistoryNoLeak:
     BLL_Auth to remove date information from password-change-related
     rejection messages.
     """
+
     # Full auth-flow tests live in the auth extension test suite.
     # This class is a placeholder confirming the security requirement
     # is tracked. Tests that exercise the error-message content belong
@@ -371,4 +399,5 @@ class TestTokenVerificationNoLeak:
     endpoints must not contain stack traces, internal module paths,
     or cryptographic details.
     """
+
     # Full endpoint-level tests live in the auth extension test suite.

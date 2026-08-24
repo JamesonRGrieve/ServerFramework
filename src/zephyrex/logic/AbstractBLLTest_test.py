@@ -20,10 +20,15 @@ from typing import List
 
 import pytest
 from sqlalchemy import Column, ForeignKey, Integer, String
-from sqlalchemy.orm import declarative_base, joinedload, load_only, relationship, selectinload
+from sqlalchemy.orm import (
+    declarative_base,
+    joinedload,
+    load_only,
+    relationship,
+    selectinload,
+)
 
 from zephyrex.logic.AbstractBLLTest import AbstractBLLTest
-
 
 Base = declarative_base()
 
@@ -111,23 +116,17 @@ def test_captured_includes_evidence_options_none():
 
 def test_captured_load_only_evidence_detects_load_only_option():
     holder = {"options": [load_only(_Author.name)], "fields": None}
-    assert (
-        AbstractBLLTest._captured_load_only_evidence(holder, ["name"]) is True
-    )
+    assert AbstractBLLTest._captured_load_only_evidence(holder, ["name"]) is True
 
 
 def test_captured_load_only_evidence_detects_fields_kwarg_path():
     holder = {"options": [], "fields": ["name", "id"]}
-    assert (
-        AbstractBLLTest._captured_load_only_evidence(holder, ["name"]) is True
-    )
+    assert AbstractBLLTest._captured_load_only_evidence(holder, ["name"]) is True
 
 
 def test_captured_load_only_evidence_no_evidence_when_neither_present():
     holder = {"options": [], "fields": None}
-    assert (
-        AbstractBLLTest._captured_load_only_evidence(holder, ["name"]) is False
-    )
+    assert AbstractBLLTest._captured_load_only_evidence(holder, ["name"]) is False
 
 
 def test_captured_load_only_evidence_options_with_unrelated_load():
@@ -138,9 +137,7 @@ def test_captured_load_only_evidence_options_with_unrelated_load():
     # column-projection Load option specifically". The fields-kwarg
     # path catches the column-projection case for managers that route
     # field selection through the kwarg.
-    assert (
-        AbstractBLLTest._captured_load_only_evidence(holder, ["name"]) is True
-    )
+    assert AbstractBLLTest._captured_load_only_evidence(holder, ["name"]) is True
 
 
 # ---------------------------------------------------------------------------

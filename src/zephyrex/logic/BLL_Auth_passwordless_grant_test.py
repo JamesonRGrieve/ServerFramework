@@ -21,7 +21,6 @@ from zephyrex.logic.BLL_Auth import (
     UserModel,
 )
 
-
 # ---------------------------------------------------------------------------
 # OneTimeTokenMixin
 # ---------------------------------------------------------------------------
@@ -172,7 +171,9 @@ class TestSessionModelNewFields:
 
 
 class TestPendingSessionEnforcement:
-    def test_awaiting_approval_session_cannot_bond(self, admin_a, server, model_registry):
+    def test_awaiting_approval_session_cannot_bond(
+        self, admin_a, server, model_registry
+    ):
         """A session in ``awaiting_approval`` must be refused by
         ``_enforce_session_not_revoked`` with a typed
         ``PendingSessionError``."""
@@ -225,9 +226,7 @@ class TestPendingSessionEnforcement:
         )
 
         # Should not raise.
-        UserManager._enforce_session_not_revoked(
-            {"jti": session_key}, model_registry
-        )
+        UserManager._enforce_session_not_revoked({"jti": session_key}, model_registry)
 
 
 # ---------------------------------------------------------------------------

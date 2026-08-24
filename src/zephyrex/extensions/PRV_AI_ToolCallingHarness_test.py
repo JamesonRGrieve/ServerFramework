@@ -36,7 +36,6 @@ from zephyrex.extensions.PRV_AI_ToolCallingHarness import (
     validate_tool_call_payload,
 )
 
-
 # ---------------------------------------------------------------------------
 # validate_chat_response_shape — accept / reject contract
 # ---------------------------------------------------------------------------
@@ -79,16 +78,12 @@ def test_validate_chat_response_rejects_missing_content():
 
 def test_validate_chat_response_rejects_non_list_tool_calls():
     with pytest.raises(AssertionError, match="must be a list"):
-        validate_chat_response_shape(
-            {"content": "", "tool_calls": "not a list"}
-        )
+        validate_chat_response_shape({"content": "", "tool_calls": "not a list"})
 
 
 def test_validate_chat_response_rejects_invalid_tool_call_entry():
     with pytest.raises(AssertionError, match="must be a ToolCall"):
-        validate_chat_response_shape(
-            {"content": "", "tool_calls": ["not-a-toolcall"]}
-        )
+        validate_chat_response_shape({"content": "", "tool_calls": ["not-a-toolcall"]})
 
 
 # ---------------------------------------------------------------------------
@@ -182,7 +177,10 @@ async def test_fake_provider_acknowledges_tool_role_message():
         None,
         messages=[
             {"role": "user", "content": "lookup"},
-            {"role": "assistant", "tool_calls": [{"name": "lookup_user", "arguments": {"id": "u1"}}]},
+            {
+                "role": "assistant",
+                "tool_calls": [{"name": "lookup_user", "arguments": {"id": "u1"}}],
+            },
             {"role": "tool", "name": "lookup_user", "content": "{'id': 'u1'}"},
         ],
         model="m",
@@ -192,7 +190,9 @@ async def test_fake_provider_acknowledges_tool_role_message():
 
 
 def test_fake_provider_pre_estimate_handles_string():
-    est = FakeToolCallingProvider._pre_estimate_tokens("hello world there", max_tokens=10)
+    est = FakeToolCallingProvider._pre_estimate_tokens(
+        "hello world there", max_tokens=10
+    )
     assert est == 3 + 10  # 3 words + max ceiling
 
 

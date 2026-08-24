@@ -20,6 +20,7 @@ def _validate_name_min_length(instance, entity_label: str = "Name"):
         raise ValueError(f"{entity_label} must be at least 2 characters long")
     return instance
 
+
 from zephyrex.database.DatabaseManager import DatabaseManager
 from zephyrex.lib.Environment import env
 from zephyrex.lib.Logging import logger
@@ -144,9 +145,7 @@ def reset_sticky_sessions() -> None:
     _STICKY_SESSIONS.clear()
 
 
-def _sticky_get(
-    stickiness_key: str, ability: Optional[str]
-) -> Optional[str]:
+def _sticky_get(stickiness_key: str, ability: Optional[str]) -> Optional[str]:
     """Return the pinned provider_instance_id for `(stickiness_key, ability)`
     if present and not expired; otherwise None. Expired entries are evicted."""
     key = (stickiness_key, ability)
@@ -1272,6 +1271,7 @@ class RotationManager(AbstractBLLManager, RouterMixin):
         """
         try:
             from zephyrex.extensions import ExternalErrors  # type: ignore
+
             return ExternalErrors
         except ImportError:
             return None
@@ -1370,7 +1370,9 @@ class RotationManager(AbstractBLLManager, RouterMixin):
             return str(user_id)
         return "unknown"
 
-    def _backoff_sleep(self, base_ms: int, max_ms: int, jitter: float, attempt: int) -> None:
+    def _backoff_sleep(
+        self, base_ms: int, max_ms: int, jitter: float, attempt: int
+    ) -> None:
         """Exponential backoff with jitter; honors `max_ms` ceiling."""
         delay_ms = min(max_ms, base_ms * (2 ** max(0, attempt - 1)))
         if jitter > 0:
@@ -1420,7 +1422,11 @@ class RotationManager(AbstractBLLManager, RouterMixin):
             if policy_mod is not None:
                 InvalidInput = getattr(policy_mod, "InvalidInputExternalError", None)
                 Permanent = getattr(policy_mod, "PermanentExternalError", None)
-                if InvalidInput and Permanent and isinstance(exc, (InvalidInput, Permanent)):
+                if (
+                    InvalidInput
+                    and Permanent
+                    and isinstance(exc, (InvalidInput, Permanent))
+                ):
                     raise
             return None, False
 
@@ -1697,7 +1703,9 @@ class RotationManager(AbstractBLLManager, RouterMixin):
                     )
                     attempt_span_cm.__enter__()
                 except Exception as _exc:  # noqa: BLE001
-                    logger.debug(f"telemetry attempt-span enter failed (ignored): {_exc}")
+                    logger.debug(
+                        f"telemetry attempt-span enter failed (ignored): {_exc}"
+                    )
                     attempt_span_cm = None
                 attempt_started_at = time.monotonic()
                 try:
@@ -1736,7 +1744,9 @@ class RotationManager(AbstractBLLManager, RouterMixin):
                         "rotation.attempt.latency_ms",
                         elapsed_ms,
                         labels={
-                            "provider": str(getattr(provider_instance, "name", "unknown")),
+                            "provider": str(
+                                getattr(provider_instance, "name", "unknown")
+                            ),
                             "ability": str(ability or "unknown"),
                         },
                     )
@@ -1744,7 +1754,9 @@ class RotationManager(AbstractBLLManager, RouterMixin):
                         metrics.counter,
                         "rotation.attempt.success",
                         labels={
-                            "provider": str(getattr(provider_instance, "name", "unknown")),
+                            "provider": str(
+                                getattr(provider_instance, "name", "unknown")
+                            ),
                             "ability": str(ability or "unknown"),
                         },
                     )
@@ -1774,7 +1786,9 @@ class RotationManager(AbstractBLLManager, RouterMixin):
                                 str(getattr(provider_instance, "name", "unknown")),
                                 str(ability or "unknown"),
                             )
-                            current = RotationManager._cost_counter.get(key, Decimal("0"))
+                            current = RotationManager._cost_counter.get(
+                                key, Decimal("0")
+                            )
                             RotationManager._cost_counter[key] = current + cost_dec
                             # Item 84 — emit cost into the audit log when an
                             # emitter is registered. Source-of-truth for
@@ -1801,9 +1815,10 @@ class RotationManager(AbstractBLLManager, RouterMixin):
                             # Item 84 — true-up the per-tenant USD cap with
                             # the actual cost. Atomic via the Quota module's
                             # fallback lock so concurrent rotations agree.
-                            if usd_quota is not None and getattr(
-                                usd_quota, "limit_usd", None
-                            ) is not None:
+                            if (
+                                usd_quota is not None
+                                and getattr(usd_quota, "limit_usd", None) is not None
+                            ):
                                 from zephyrex.extensions.quota.BLL_Quota import (
                                     _FALLBACK_LOCK,
                                 )
@@ -1821,9 +1836,7 @@ class RotationManager(AbstractBLLManager, RouterMixin):
                     # Item 51 — on a successful default-rotation attempt with a
                     # stickiness key, the winning provider becomes the new pin.
                     if sticky_key:
-                        _sticky_set(
-                            sticky_key, ability, str(rpi.provider_instance_id)
-                        )
+                        _sticky_set(sticky_key, ability, str(rpi.provider_instance_id))
                     return result
                 except Exception as exc:
                     # Item 84 — USD-cap pre-check refusal must surface
@@ -1862,8 +1875,16 @@ class RotationManager(AbstractBLLManager, RouterMixin):
 
                         if isinstance(exc, RateLimit):
                             rate_limit_attempt += 1
-                            base = getattr(policy, "rate_limit_base_ms", 1000) if policy else 1000
-                            mx = getattr(policy, "rate_limit_max_ms", 60000) if policy else 60000
+                            base = (
+                                getattr(policy, "rate_limit_base_ms", 1000)
+                                if policy
+                                else 1000
+                            )
+                            mx = (
+                                getattr(policy, "rate_limit_max_ms", 60000)
+                                if policy
+                                else 60000
+                            )
                             wait = getattr(exc, "retry_after_seconds", None)
                             if wait is not None:
                                 time.sleep(float(wait))
@@ -1875,13 +1896,18 @@ class RotationManager(AbstractBLLManager, RouterMixin):
 
                         if isinstance(exc, Auth):
                             # Mark unhealthy via cooldown; advance.
-                            cooldown = getattr(policy, "auth_cooldown_seconds", 300) if policy else 300
+                            cooldown = (
+                                getattr(policy, "auth_cooldown_seconds", 300)
+                                if policy
+                                else 300
+                            )
                             _AUTH_COOLDOWNS[str(rpi.provider_instance_id)] = (
                                 time.monotonic() + float(cooldown)
                             )
                             logger.warning(
                                 "Auth failure on %s; advancing (cooldown=%ss)",
-                                provider_instance.name, cooldown,
+                                provider_instance.name,
+                                cooldown,
                             )
                             attempted_providers.append(
                                 {
@@ -1894,7 +1920,9 @@ class RotationManager(AbstractBLLManager, RouterMixin):
                                 metrics.counter,
                                 "rotation.attempt.failure",
                                 labels={
-                                    "provider": str(getattr(provider_instance, "name", "unknown")),
+                                    "provider": str(
+                                        getattr(provider_instance, "name", "unknown")
+                                    ),
                                     "ability": str(ability or "unknown"),
                                     "error_class": type(exc).__name__,
                                 },
@@ -1906,11 +1934,27 @@ class RotationManager(AbstractBLLManager, RouterMixin):
 
                         if isinstance(exc, Transient):
                             transient_attempt += 1
-                            mr = getattr(policy, "transient_max_retries", 3) if policy else 3
+                            mr = (
+                                getattr(policy, "transient_max_retries", 3)
+                                if policy
+                                else 3
+                            )
                             if transient_attempt <= mr:
-                                base = getattr(policy, "transient_base_ms", 100) if policy else 100
-                                mx = getattr(policy, "transient_max_ms", 5000) if policy else 5000
-                                jit = getattr(policy, "transient_jitter", 0.1) if policy else 0.1
+                                base = (
+                                    getattr(policy, "transient_base_ms", 100)
+                                    if policy
+                                    else 100
+                                )
+                                mx = (
+                                    getattr(policy, "transient_max_ms", 5000)
+                                    if policy
+                                    else 5000
+                                )
+                                jit = (
+                                    getattr(policy, "transient_jitter", 0.1)
+                                    if policy
+                                    else 0.1
+                                )
                                 self._backoff_sleep(base, mx, jit, transient_attempt)
                                 last_exception = exc
                                 continue
@@ -1925,7 +1969,9 @@ class RotationManager(AbstractBLLManager, RouterMixin):
                                 metrics.counter,
                                 "rotation.attempt.failure",
                                 labels={
-                                    "provider": str(getattr(provider_instance, "name", "unknown")),
+                                    "provider": str(
+                                        getattr(provider_instance, "name", "unknown")
+                                    ),
                                     "ability": str(ability or "unknown"),
                                     "error_class": type(exc).__name__,
                                 },
@@ -1951,7 +1997,9 @@ class RotationManager(AbstractBLLManager, RouterMixin):
                             metrics.counter,
                             "rotation.attempt.failure",
                             labels={
-                                "provider": str(getattr(provider_instance, "name", "unknown")),
+                                "provider": str(
+                                    getattr(provider_instance, "name", "unknown")
+                                ),
                                 "ability": str(ability or "unknown"),
                                 "error_class": type(exc).__name__,
                             },
@@ -2006,7 +2054,9 @@ class RotationManager(AbstractBLLManager, RouterMixin):
                 (pi for pi in attempted_provider_instances if pi is not None),
                 None,
             )
-            target_provider = str(getattr(first_pi, "name", "unknown")) if first_pi else "unknown"
+            target_provider = (
+                str(getattr(first_pi, "name", "unknown")) if first_pi else "unknown"
+            )
             entry = OutboxEntry(
                 operation_type="rotation_call",
                 target_provider=target_provider,
@@ -2014,8 +2064,7 @@ class RotationManager(AbstractBLLManager, RouterMixin):
                 payload={
                     "rotation_id": str(self.target_id),
                     "attempted_providers": [
-                        str(p.get("provider_instance_id"))
-                        for p in attempted_providers
+                        str(p.get("provider_instance_id")) for p in attempted_providers
                     ],
                 },
                 idempotency_key=f"rotation:{self.target_id}:{uuid.uuid4()}",

@@ -37,7 +37,6 @@ from zephyrex.testing.factories import (
     make_user_b,
 )
 
-
 CORE_COMPANION_EXTENSIONS = (
     "metadata",
     "auth_lockout",
@@ -47,8 +46,7 @@ CORE_COMPANION_EXTENSIONS = (
     "acl_rbac",
 )
 
-_CORE_TEST_EXTENSIONS = ",".join(CORE_COMPANION_EXTENSIONS
-)
+_CORE_TEST_EXTENSIONS = ",".join(CORE_COMPANION_EXTENSIONS)
 
 
 # =============================================================================
@@ -308,8 +306,6 @@ def isolated_extension_server():
         return TestClient(instance(db_prefix=db_prefix, extensions=extensions))
 
     return _create_server
-
-
 
 
 @pytest.fixture(scope="session")

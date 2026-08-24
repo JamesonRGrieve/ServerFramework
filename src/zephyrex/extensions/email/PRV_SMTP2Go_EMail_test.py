@@ -97,7 +97,9 @@ class TestSmtp2goSettings:
         assert set(Smtp2goProvider.Settings._env_field_map.keys()) == expected
 
     def test_default_api_url(self):
-        assert "smtp2go.com" in str(Smtp2goProvider.Settings.model_fields["api_url"].default)
+        assert "smtp2go.com" in str(
+            Smtp2goProvider.Settings.model_fields["api_url"].default
+        )
 
     def test_env_dict_keys(self):
         assert "SMTP2GO_API_KEY" in Smtp2goProvider._env

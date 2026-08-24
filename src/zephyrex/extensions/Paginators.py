@@ -22,7 +22,6 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from zephyrex.extensions.ExternalErrors import InvalidPaginationError
 
-
 # ---------------------------------------------------------------------------
 # Pagination model
 # ---------------------------------------------------------------------------
@@ -38,12 +37,26 @@ class Pagination(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    offset: Optional[int] = Field(default=None, description="Logical offset; meaningful only on offset-style providers.")
+    offset: Optional[int] = Field(
+        default=None,
+        description="Logical offset; meaningful only on offset-style providers.",
+    )
     limit: Optional[int] = Field(default=None, description="Page size requested.")
-    next_token: Optional[str] = Field(default=None, description="Opaque cursor for the next page, or None on the last page.")
-    total: Optional[int] = Field(default=None, description="Total result count if the upstream reports it; None otherwise.")
-    has_more: bool = Field(default=False, description="True if at least one more page exists.")
-    supports_random_access: bool = Field(default=False, description="True for offset-style upstreams; False for cursor / page-token / link-header.")
+    next_token: Optional[str] = Field(
+        default=None,
+        description="Opaque cursor for the next page, or None on the last page.",
+    )
+    total: Optional[int] = Field(
+        default=None,
+        description="Total result count if the upstream reports it; None otherwise.",
+    )
+    has_more: bool = Field(
+        default=False, description="True if at least one more page exists."
+    )
+    supports_random_access: bool = Field(
+        default=False,
+        description="True for offset-style upstreams; False for cursor / page-token / link-header.",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -68,6 +81,7 @@ def query_hash(query_params: Optional[Dict[str, Any]]) -> str:
 
 def _token_hmac_key() -> bytes:
     from zephyrex.lib.Environment import env
+
     secret = env("JWT_SECRET")
     if not secret:
         raise RuntimeError("JWT_SECRET must be set for pagination token signing")
@@ -88,7 +102,9 @@ def encode_token(provider_cursor: Any, page_size: Optional[int], q_hash: str) ->
     return f"{encoded}.{sig}"
 
 
-def decode_token(token: str, expected_query_hash: Optional[str] = None) -> Dict[str, Any]:
+def decode_token(
+    token: str, expected_query_hash: Optional[str] = None
+) -> Dict[str, Any]:
     """Decode a token produced by `encode_token`.
 
     When `expected_query_hash` is provided, raises
@@ -293,10 +309,19 @@ class CursorPaginator(AbstractPaginator):
     ) -> Tuple[List[Any], Optional[str]]:
         if isinstance(response, list):
             items = response
-            has_more = bool(items) and (page_size is not None and len(items) >= page_size)
+            has_more = bool(items) and (
+                page_size is not None and len(items) >= page_size
+            )
         else:
             items = response.get("data") or response.get("items") or []
-            has_more = bool(response.get(self.has_more_field, len(items) > 0 and page_size is not None and len(items) >= page_size))
+            has_more = bool(
+                response.get(
+                    self.has_more_field,
+                    len(items) > 0
+                    and page_size is not None
+                    and len(items) >= page_size,
+                )
+            )
 
         if not items or not has_more:
             return list(items), None

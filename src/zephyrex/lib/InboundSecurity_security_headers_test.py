@@ -21,7 +21,6 @@ from zephyrex.lib.InboundSecurity import (
     SecurityHeadersMiddleware,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -172,9 +171,7 @@ async def test_body_size_limit_rejects_oversize_content_length():
     await mw(scope, _make_receive([b""]), captured.send)
     assert captured.status == 413
     body_chunks = [
-        m["body"]
-        for m in captured.messages
-        if m.get("type") == "http.response.body"
+        m["body"] for m in captured.messages if m.get("type") == "http.response.body"
     ]
     assert b"exceeds maximum" in body_chunks[0]
 
@@ -227,9 +224,7 @@ async def test_body_size_limit_streams_running_total():
         "path": "/x",
         "headers": [],  # no content-length → streamed body path
     }
-    await mw(
-        scope, _make_receive([b"abcdef", b"ghijkl"]), captured.send
-    )
+    await mw(scope, _make_receive([b"abcdef", b"ghijkl"]), captured.send)
     assert captured.status == 413
 
 

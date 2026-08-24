@@ -27,7 +27,9 @@ def _default_admin_check() -> None:
 def create_retention_admin_router(
     *,
     retention_service: Optional[RetentionService] = None,
-    retention_service_resolver: Optional[Callable[[], Optional[RetentionService]]] = None,
+    retention_service_resolver: Optional[
+        Callable[[], Optional[RetentionService]]
+    ] = None,
     admin_check: Optional[Callable[..., Any]] = None,
     requester_resolver: Optional[Callable[..., str]] = None,
 ) -> APIRouter:

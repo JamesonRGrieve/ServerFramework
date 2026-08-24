@@ -22,7 +22,6 @@ from zephyrex.extensions.AbstractExtensionProvider import (
     HealthStatus,
 )
 
-
 # ----- Item 26 -------------------------------------------------------------
 
 

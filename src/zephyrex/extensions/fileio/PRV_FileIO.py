@@ -286,7 +286,9 @@ class AbstractFileIOProvider(AbstractProvider):
         pass
 
     @abstractmethod
-    async def execute_file(self, file_path: str, arguments: List[str] | None = None) -> str:
+    async def execute_file(
+        self, file_path: str, arguments: List[str] | None = None
+    ) -> str:
         """
         Execute a file with given arguments.
 

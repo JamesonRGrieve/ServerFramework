@@ -396,9 +396,7 @@ class DatabaseManager:
         # DATABASE_URI; per-replica engine/session-factory pairs are built
         # in init_worker().
         replica_env = os.getenv("DB_REPLICA_URLS") or env("DB_REPLICA_URLS") or ""
-        self.replica_urls = [
-            u.strip() for u in replica_env.split(",") if u.strip()
-        ]
+        self.replica_urls = [u.strip() for u in replica_env.split(",") if u.strip()]
 
         # Create setup engine for parent process initialization
         self._setup_engine = create_engine(**self.engine_config)
@@ -527,9 +525,7 @@ class DatabaseManager:
                     autoflush=False,
                 )
             except Exception as exc:
-                logger.warning(
-                    f"Item 54 replica engine init failed for {url}: {exc}"
-                )
+                logger.warning(f"Item 54 replica engine init failed for {url}: {exc}")
 
         # Build the replica pool now that we know which URLs were created.
         from zephyrex.database.ReadReplica import ReplicaPool
