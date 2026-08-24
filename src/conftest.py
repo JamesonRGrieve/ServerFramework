@@ -373,6 +373,29 @@ from zephyrex.lib.Pydantic import BaseModel as FrameworkBaseModel
 from zephyrex.lib.Pydantic2SQLAlchemy import prepare_test_registry
 
 prepare_test_registry()
+
+
+@pytest.fixture(autouse=True)
+def _reset_gql_contribution_registry_between_tests():
+    """Every test starts and ends with a clean process-wide GraphQL contribution
+    registry.
+
+    ``_GLOBAL_CONTRIBUTION_REGISTRY`` accumulates field/type/dataloader
+    contributions as schemas are built (server fixtures, ``ModelRegistry.commit``,
+    ``GraphQLManager.create_schema``). Under xdist a leftover contribution from a
+    prior test on the worker poisons a later schema build — UnresolvedFieldTypeError
+    / schema-conversion failures that surface intermittently in whichever test
+    happens to build a schema next (Pydantic_test, Pydantic2Strawberry_test,
+    MCP_security_test, ...). Reset per test so every schema build owns its state —
+    the established per-test-isolation pattern.
+    """
+    from zephyrex.lib.Pydantic2Strawberry import reset_gql_contribution_registry
+
+    reset_gql_contribution_registry()
+    yield
+    reset_gql_contribution_registry()
+
+
 # Import all required functions from Server directly
 from zephyrex.app import setup_python_path
 
