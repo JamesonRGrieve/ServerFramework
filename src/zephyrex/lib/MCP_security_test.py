@@ -35,6 +35,9 @@ def mcp_app(tmp_path_factory):
     refresh_settings()
     clear_registry_cache()
     reset_extension_system()
+    from zephyrex.lib.Pydantic2Strawberry import reset_gql_contribution_registry
+
+    reset_gql_contribution_registry()
 
     from zephyrex.app import instance
 

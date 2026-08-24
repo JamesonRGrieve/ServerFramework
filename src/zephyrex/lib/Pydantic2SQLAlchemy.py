@@ -2166,3 +2166,10 @@ def prepare_test_registry() -> None:
     """
     clear_registry_cache()
     reset_extension_system()
+    # Also clear the process-wide GraphQL contribution registry: it accumulates
+    # field/type/dataloader contributions as schemas are built, and a leftover
+    # contribution from a prior test (e.g. an extension route like ``issue_route``)
+    # poisons a later schema build with UnresolvedFieldTypeError under xdist.
+    from zephyrex.lib.Pydantic2Strawberry import reset_gql_contribution_registry
+
+    reset_gql_contribution_registry()
