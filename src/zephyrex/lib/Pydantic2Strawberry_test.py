@@ -22,7 +22,23 @@ from zephyrex.lib.Pydantic2Strawberry import (
     ModelInfo,
     enum_serializer,
     convert_field_name,
+    reset_gql_contribution_registry,
 )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_gql_contribution_registry():
+    """Give each test its own clean process-wide GraphQL contribution registry.
+
+    ``_GLOBAL_CONTRIBUTION_REGISTRY`` accumulates field/type/dataloader
+    contributions as schemas are built. Under xdist a prior test on the worker
+    can leave contributions behind, so a schema built here sees foreign state
+    and intermittently fails. Reset before and after each test so every test
+    owns its state — the established per-test-isolation pattern.
+    """
+    reset_gql_contribution_registry()
+    yield
+    reset_gql_contribution_registry()
 
 
 # Test models that are referenced throughout the tests
