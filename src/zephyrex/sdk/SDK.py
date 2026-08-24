@@ -7,7 +7,7 @@ functionality.
 """
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, cast
 
 from zephyrex.sdk.SDK_Auth import AuthSDK
 from zephyrex.sdk.SDK_Extensions import ExtensionsSDK
@@ -153,7 +153,7 @@ class SDK:
         if "token" in response:
             self.set_token(response["token"])
 
-        return response
+        return cast(Dict[str, Any], response)
 
     def logout(self):
         """Convenience method for user logout.
@@ -183,7 +183,7 @@ class SDK:
         Returns:
             True if authentication is valid, False otherwise
         """
-        return self.auth.verify_token()
+        return cast(bool, self.auth.verify_token())
 
     def get_current_user(self) -> Dict[str, Any]:
         """Get the current authenticated user.
@@ -191,7 +191,7 @@ class SDK:
         Returns:
             Current user information
         """
-        return self.auth.get_current_user()
+        return cast(Dict[str, Any], self.auth.get_current_user())
 
     def health_check(self) -> Dict[str, Any]:
         """Perform a health check on the API.
@@ -223,7 +223,9 @@ class SDK:
             API information including version, features, etc.
         """
         try:
-            return self.auth.get("/v1/info", resource_name="api_info")
+            return cast(
+                Dict[str, Any], self.auth.get("/v1/info", resource_name="api_info")
+            )
         except Exception as e:
             self.logger.error(f"Failed to get API info: {e}")
             return {"error": str(e), "base_url": self.base_url, "sdk_version": "1.0.0"}

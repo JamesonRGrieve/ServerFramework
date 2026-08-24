@@ -17,7 +17,7 @@ import sys
 import textwrap
 import time
 from pathlib import Path
-from typing import Callable
+from typing import Callable, cast
 
 BASELINE_FILE = Path(__file__).resolve().parents[3] / ".efficiency-baseline.json"
 DEFAULT_TOLERANCE = 0.15
@@ -46,7 +46,7 @@ def _read_mhz() -> float:
 
 def _load() -> dict[str, float]:
     if BASELINE_FILE.exists():
-        return json.loads(BASELINE_FILE.read_text())
+        return cast("dict[str, float]", json.loads(BASELINE_FILE.read_text()))
     return {}
 
 

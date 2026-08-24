@@ -12,7 +12,7 @@ Following the framework's testing philosophy from AGENTS.md:
 """
 
 import uuid
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import pytest
 
@@ -58,7 +58,7 @@ class TestProviderSDK(AbstractSDKTest):
         self,
         response: Dict[str, Any],
         expected_keys: List[str],
-        resource_key: str = None,
+        resource_key: Optional[str] = None,
     ):
         """Assert that a response has the expected structure."""
         if resource_key:
@@ -116,7 +116,7 @@ class TestProviderInstanceSDK(AbstractSDKTest):
         self,
         response: Dict[str, Any],
         expected_keys: List[str],
-        resource_key: str = None,
+        resource_key: Optional[str] = None,
     ):
         """Assert that a response has the expected structure."""
         if resource_key:
@@ -170,7 +170,7 @@ class TestRotationSDK(AbstractSDKTest):
         self,
         response: Dict[str, Any],
         expected_keys: List[str],
-        resource_key: str = None,
+        resource_key: Optional[str] = None,
     ):
         """Assert that a response has the expected structure."""
         if resource_key:
@@ -198,8 +198,8 @@ class TestProvidersSDK(AbstractSDKTest):
 
     sdk_class = ProvidersSDK
     resource_name = "providers"
-    sample_data = {}
-    update_data = {}
+    sample_data: Dict[str, Any] = {}
+    update_data: Dict[str, Any] = {}
 
     def create_test_data(
         self, resource_type: str, count: int = 1
@@ -211,7 +211,7 @@ class TestProvidersSDK(AbstractSDKTest):
         self,
         response: Dict[str, Any],
         expected_keys: List[str],
-        resource_key: str = None,
+        resource_key: Optional[str] = None,
     ):
         """Assert that a response has the expected structure."""
         if resource_key:

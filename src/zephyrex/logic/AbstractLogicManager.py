@@ -9,6 +9,7 @@ from typing import (
     Annotated,
     Any,
     Callable,
+    cast,
     ClassVar,
     Dict,
     Generic,
@@ -43,7 +44,7 @@ def _escape_like(v: object) -> str:
 from sqlalchemy.orm import Session, joinedload
 
 from zephyrex.lib.Logging import logger
-from zephyrex.lib.Pydantic import BaseNetworkModel, classproperty
+from zephyrex.lib.Pydantic import BaseNetworkModel, classproperty, obj_to_dict
 from zephyrex.lib.Pydantic2FastAPI import AuthType
 from zephyrex.lib.Pydantic2SQLAlchemy import DatabaseMixin
 
@@ -1409,9 +1410,7 @@ class TemplateNetworkModel(BaseModel):
         templates: List[TemplateModel]
 
 
-T = TypeVar("T")  # type: ignore[misc]
 DtoT = TypeVar("DtoT")
-ModelT = TypeVar("ModelT")
 
 
 class BatchUpdateItem(BaseModel):
@@ -1577,7 +1576,7 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
         self.target_team_id: Optional[str] = target_team_id
         self._target_user = None
         self._target_team = None
-        self._target = None
+        self._target: Optional[Any] = None
         self._target_loaded = False
         self._parent = parent
         self.requester = None
@@ -2562,19 +2561,19 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
         """Override this method to add validation logic for entity search."""
         pass
 
-    def create(self, **kwargs) -> ModelT:
+    def create(self, **kwargs) -> Union[ModelT, List[ModelT]]:
         """Create one or more entities."""
         # Handle single entity or list of entities
         if "entities" in kwargs and isinstance(kwargs["entities"], list):
             entities = kwargs.pop("entities")
-            results = []
+            results: List[ModelT] = []
             for entity_data in entities:
                 # Merge entity data with remaining kwargs
                 entity_kwargs = {**kwargs, **entity_data}
                 results.append(self._create_single_entity(**entity_kwargs))
             return results
         else:
-            return self._create_single_entity(**kwargs)
+            return cast(ModelT, self._create_single_entity(**kwargs))
 
     # Fields a client must never be able to set on Create/Update bodies.
     # The server is the sole authority on identity and audit timestamps —
@@ -2754,7 +2753,10 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
                     cache.get_by_id(self.DB.__tablename__, entity_id)
                 )
                 if cached is not None:
-                    return self.model_registry.apply(self.Model).model_validate(cached)
+                    return cast(
+                        ModelT,
+                        self.model_registry.apply(self.Model).model_validate(cached),
+                    )
             except Exception:
                 pass
 
@@ -2820,7 +2822,7 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
             except Exception:
                 pass
 
-        return result
+        return cast(ModelT, result)
 
     def count(self, **kwargs) -> int:
         """Count entities matching the given filters."""
@@ -2828,11 +2830,14 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
         simple = {k: v for k, v in kwargs.items() if not isinstance(v, dict)}
         complex_params = {k: v for k, v in kwargs.items() if isinstance(v, dict)}
         filters = self.build_search_filters(complex_params) if complex_params else []
-        return self.DB.count(
-            requester_id=self.requester.id,
-            model_registry=self.model_registry,
-            filters=filters,
-            **simple,
+        return cast(
+            int,
+            self.DB.count(
+                requester_id=self.requester.id,  # type: ignore[union-attr]
+                model_registry=self.model_registry,
+                filters=filters,
+                **simple,
+            ),
         )
 
     def list(
@@ -3160,7 +3165,7 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
             except Exception:
                 pass
 
-        return updated_entity
+        return cast(ModelT, updated_entity)
 
     def batch_update(self, items: List[Dict[str, Any]]) -> List[Any]:
         """Update multiple entities in a batch.

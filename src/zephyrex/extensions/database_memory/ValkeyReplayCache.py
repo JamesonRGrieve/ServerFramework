@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
+from typing import Any, cast
 
 from zephyrex.lib.ReplayCache import ReplayCache
 
@@ -64,7 +64,7 @@ class ValkeyReplayCache(ReplayCache):
         _sync_run(self._async_mark_used(key, ttl_seconds))
 
     def is_used(self, key: str) -> bool:
-        return _sync_run(self._async_is_used(key))
+        return cast(bool, _sync_run(self._async_is_used(key)))
 
     def mark_if_unused(self, key: str, ttl_seconds: int) -> bool:
         """Atomic CAS via ``SET NX EX`` — safe across processes (H-7).
@@ -73,7 +73,7 @@ class ValkeyReplayCache(ReplayCache):
         so a Valkey outage cannot be exploited for replay attacks.
         """
         try:
-            return _sync_run(self._async_mark_if_unused(key, ttl_seconds))
+            return cast(bool, _sync_run(self._async_mark_if_unused(key, ttl_seconds)))
         except Exception as exc:
             _logger.warning(
                 "ValkeyReplayCache.mark_if_unused failed (fail-closed): %s", exc

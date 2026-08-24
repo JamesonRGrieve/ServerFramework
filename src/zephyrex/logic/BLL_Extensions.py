@@ -1,4 +1,4 @@
-from typing import Any, ClassVar, Dict, List, Optional
+from typing import Any, ClassVar, Dict, List, Optional, cast
 
 import stringcase
 from fastapi import HTTPException
@@ -201,7 +201,7 @@ class ExtensionManager(AbstractBLLManager, RouterMixin):
             extension_list = parse_extension_csv(app_extensions)
             if extension_list:
                 logger.debug(f"Using extensions from APP_EXTENSIONS: {extension_list}")
-                return extension_list
+                return cast(List[str], extension_list)
 
         # Fallback to finding EXT_*.py files
         try:

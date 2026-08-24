@@ -20,7 +20,7 @@ the improved abstraction patterns similar to endpoint patterns.
 
 import base64
 from logging import getLogger
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, cast
 
 from zephyrex.sdk.AbstractSDKHandler import (
     AbstractSDKHandler,
@@ -68,7 +68,7 @@ class UserSDK(AbstractSDKHandler):
             )
             if "token" in response:
                 self.token = response["token"]
-            return response
+            return cast(Dict[str, Any], response)
         except Exception as e:
             raise AuthenticationError(f"Login failed: {str(e)}")
 
@@ -96,7 +96,7 @@ class UserSDK(AbstractSDKHandler):
         password: str,
         first_name: str,
         last_name: str,
-        display_name: str = None,
+        display_name: Optional[str] = None,
         **kwargs,
     ) -> Dict[str, Any]:
         """Register a new user account."""
@@ -109,7 +109,7 @@ class UserSDK(AbstractSDKHandler):
         if display_name:
             user_data["display_name"] = display_name
         user_data.update(kwargs)
-        return self.users.create(user_data)
+        return cast(Dict[str, Any], self.users.create(user_data))
 
     def change_password(
         self, current_password: str, new_password: str
@@ -119,16 +119,16 @@ class UserSDK(AbstractSDKHandler):
             "current_password": current_password,
             "new_password": new_password,
         }
-        return self._request("PATCH", "/v1/user", data=data)
+        return cast(Dict[str, Any], self._request("PATCH", "/v1/user", data=data))
 
     def get_current_user(self) -> Dict[str, Any]:
         """Get the current authenticated user's information."""
-        return self._request("GET", "/v1/user")
+        return cast(Dict[str, Any], self._request("GET", "/v1/user"))
 
     def update_current_user(self, **updates) -> Dict[str, Any]:
         """Update the current user's profile."""
         data = {"user": updates}
-        return self._request("PUT", "/v1/user", data=data)
+        return cast(Dict[str, Any], self._request("PUT", "/v1/user", data=data))
 
     def list_users(
         self, team_id: str, offset: int = 0, limit: int = 100, **filters
@@ -136,15 +136,18 @@ class UserSDK(AbstractSDKHandler):
         """List users in a team."""
         params = {"offset": offset, "limit": limit}
         params.update(filters)
-        return self._request("GET", f"/v1/team/{team_id}/user", query_params=params)
+        return cast(
+            Dict[str, Any],
+            self._request("GET", f"/v1/team/{team_id}/user", query_params=params),
+        )
 
     def get_user(self, user_id: str) -> Dict[str, Any]:
         """Get a user by ID."""
-        return self.users.get(user_id)
+        return cast(Dict[str, Any], self.users.get(user_id))
 
     def update_user(self, user_id: str, **updates) -> Dict[str, Any]:
         """Update a user."""
-        return self.users.update(user_id, updates)
+        return cast(Dict[str, Any], self.users.update(user_id, updates))
 
     def delete_user(self, user_id: str) -> None:
         """Delete a user."""
@@ -155,23 +158,30 @@ class UserSDK(AbstractSDKHandler):
         criteria: Dict[str, Any],
         offset: int = 0,
         limit: int = 100,
-        sort_by: str = None,
+        sort_by: Optional[str] = None,
         sort_order: str = "asc",
     ) -> Dict[str, Any]:
         """Search users."""
-        return self.users.search(
-            criteria, offset=offset, limit=limit, sort_by=sort_by, sort_order=sort_order
+        return cast(
+            Dict[str, Any],
+            self.users.search(
+                criteria,
+                offset=offset,
+                limit=limit,
+                sort_by=sort_by,
+                sort_order=sort_order,
+            ),
         )
 
     def batch_update_users(
         self, updates: Dict[str, Any], user_ids: List[str]
     ) -> Dict[str, Any]:
         """Batch update users."""
-        return self.users.batch_update(updates, user_ids)
+        return cast(Dict[str, Any], self.users.batch_update(updates, user_ids))
 
     def batch_delete_users(self, user_ids: List[str]) -> Dict[str, Any]:
         """Batch delete users."""
-        return self.users.batch_delete(user_ids)
+        return cast(Dict[str, Any], self.users.batch_delete(user_ids))
 
 
 # ===== Team SDK =====
@@ -200,9 +210,9 @@ class TeamSDK(AbstractSDKHandler):
     def create_team(
         self,
         name: str,
-        description: str = None,
-        image_url: str = None,
-        parent_id: str = None,
+        description: Optional[str] = None,
+        image_url: Optional[str] = None,
+        parent_id: Optional[str] = None,
         **kwargs,
     ) -> Dict[str, Any]:
         """Create a new team."""
@@ -214,21 +224,23 @@ class TeamSDK(AbstractSDKHandler):
         if parent_id:
             team_data["parent_id"] = parent_id
         team_data.update(kwargs)
-        return self.teams.create(team_data)
+        return cast(Dict[str, Any], self.teams.create(team_data))
 
     def get_team(self, team_id: str) -> Dict[str, Any]:
         """Get a team by ID."""
-        return self.teams.get(team_id)
+        return cast(Dict[str, Any], self.teams.get(team_id))
 
     def list_teams(
         self, offset: int = 0, limit: int = 100, **filters
     ) -> Dict[str, Any]:
         """List teams."""
-        return self.teams.list(offset=offset, limit=limit, **filters)
+        return cast(
+            Dict[str, Any], self.teams.list(offset=offset, limit=limit, **filters)
+        )
 
     def update_team(self, team_id: str, **updates) -> Dict[str, Any]:
         """Update a team."""
-        return self.teams.update(team_id, updates)
+        return cast(Dict[str, Any], self.teams.update(team_id, updates))
 
     def delete_team(self, team_id: str) -> None:
         """Delete a team."""
@@ -239,7 +251,10 @@ class TeamSDK(AbstractSDKHandler):
     ) -> Dict[str, Any]:
         """Get users in a team."""
         params = {"offset": offset, "limit": limit}
-        return self._request("GET", f"/v1/team/{team_id}/user", query_params=params)
+        return cast(
+            Dict[str, Any],
+            self._request("GET", f"/v1/team/{team_id}/user", query_params=params),
+        )
 
     def add_user_to_team(
         self, team_id: str, user_id: str, role_id: str
@@ -252,7 +267,9 @@ class TeamSDK(AbstractSDKHandler):
                 "role_id": role_id,
             }
         }
-        return self._request("POST", f"/v1/team/{team_id}/user", data=data)
+        return cast(
+            Dict[str, Any], self._request("POST", f"/v1/team/{team_id}/user", data=data)
+        )
 
     def remove_user_from_team(self, team_id: str, user_id: str) -> None:
         """Remove a user from a team."""
@@ -263,30 +280,40 @@ class TeamSDK(AbstractSDKHandler):
     ) -> Dict[str, Any]:
         """Update a user's role in a team."""
         data = {"user_team": {"role_id": role_id}}
-        return self._request("PUT", f"/v1/team/{team_id}/user/{user_id}", data=data)
+        return cast(
+            Dict[str, Any],
+            self._request("PUT", f"/v1/team/{team_id}/user/{user_id}", data=data),
+        )
 
     def search_teams(
         self,
         criteria: Dict[str, Any],
         offset: int = 0,
         limit: int = 100,
-        sort_by: str = None,
+        sort_by: Optional[str] = None,
         sort_order: str = "asc",
     ) -> Dict[str, Any]:
         """Search teams."""
-        return self.teams.search(
-            criteria, offset=offset, limit=limit, sort_by=sort_by, sort_order=sort_order
+        return cast(
+            Dict[str, Any],
+            self.teams.search(
+                criteria,
+                offset=offset,
+                limit=limit,
+                sort_by=sort_by,
+                sort_order=sort_order,
+            ),
         )
 
     def batch_update_teams(
         self, updates: Dict[str, Any], team_ids: List[str]
     ) -> Dict[str, Any]:
         """Batch update teams."""
-        return self.teams.batch_update(updates, team_ids)
+        return cast(Dict[str, Any], self.teams.batch_update(updates, team_ids))
 
     def batch_delete_teams(self, team_ids: List[str]) -> Dict[str, Any]:
         """Batch delete teams."""
-        return self.teams.batch_delete(team_ids)
+        return cast(Dict[str, Any], self.teams.batch_delete(team_ids))
 
 
 # ===== Role SDK =====
@@ -317,8 +344,8 @@ class RoleSDK(AbstractSDKHandler):
         self,
         name: str,
         team_id: str,
-        friendly_name: str = None,
-        parent_id: str = None,
+        friendly_name: Optional[str] = None,
+        parent_id: Optional[str] = None,
         **kwargs,
     ) -> Dict[str, Any]:
         """Create a new role."""
@@ -331,17 +358,19 @@ class RoleSDK(AbstractSDKHandler):
         if parent_id:
             role_data["parent_id"] = parent_id
         role_data.update(kwargs)
-        return self.roles.create(role_data)
+        return cast(Dict[str, Any], self.roles.create(role_data))
 
     def get_role(self, role_id: str) -> Dict[str, Any]:
         """Get a role by ID."""
-        return self.roles.get(role_id)
+        return cast(Dict[str, Any], self.roles.get(role_id))
 
     def list_roles(
         self, offset: int = 0, limit: int = 100, **filters
     ) -> Dict[str, Any]:
         """List roles."""
-        return self.roles.list(offset=offset, limit=limit, **filters)
+        return cast(
+            Dict[str, Any], self.roles.list(offset=offset, limit=limit, **filters)
+        )
 
     def list_team_roles(
         self, team_id: str, offset: int = 0, limit: int = 100, **filters
@@ -349,11 +378,13 @@ class RoleSDK(AbstractSDKHandler):
         """List roles for a specific team."""
         params = {"offset": offset, "limit": limit, "team_id": team_id}
         params.update(filters)
-        return self._request("GET", "/v1/role", query_params=params)
+        return cast(
+            Dict[str, Any], self._request("GET", "/v1/role", query_params=params)
+        )
 
     def update_role(self, role_id: str, **updates) -> Dict[str, Any]:
         """Update a role."""
-        return self.roles.update(role_id, updates)
+        return cast(Dict[str, Any], self.roles.update(role_id, updates))
 
     def delete_role(self, role_id: str) -> None:
         """Delete a role."""
@@ -362,33 +393,36 @@ class RoleSDK(AbstractSDKHandler):
     def search_roles(
         self,
         criteria: Dict[str, Any],
-        team_id: str = None,
+        team_id: Optional[str] = None,
         offset: int = 0,
         limit: int = 100,
-        sort_by: str = None,
+        sort_by: Optional[str] = None,
         sort_order: str = "asc",
     ) -> Dict[str, Any]:
         """Search roles."""
         search_criteria = criteria.copy()
         if team_id:
             search_criteria["team_id"] = team_id
-        return self.roles.search(
-            search_criteria,
-            offset=offset,
-            limit=limit,
-            sort_by=sort_by,
-            sort_order=sort_order,
+        return cast(
+            Dict[str, Any],
+            self.roles.search(
+                search_criteria,
+                offset=offset,
+                limit=limit,
+                sort_by=sort_by,
+                sort_order=sort_order,
+            ),
         )
 
     def batch_update_roles(
         self, updates: Dict[str, Any], role_ids: List[str]
     ) -> Dict[str, Any]:
         """Batch update roles."""
-        return self.roles.batch_update(updates, role_ids)
+        return cast(Dict[str, Any], self.roles.batch_update(updates, role_ids))
 
     def batch_delete_roles(self, role_ids: List[str]) -> Dict[str, Any]:
         """Batch delete roles."""
-        return self.roles.batch_delete(role_ids)
+        return cast(Dict[str, Any], self.roles.batch_delete(role_ids))
 
 
 # ===== User Team SDK =====
@@ -423,21 +457,23 @@ class UserTeamSDK(AbstractSDKHandler):
             "role_id": role_id,
         }
         user_team_data.update(kwargs)
-        return self.user_teams.create(user_team_data)
+        return cast(Dict[str, Any], self.user_teams.create(user_team_data))
 
     def get_user_team(self, user_team_id: str) -> Dict[str, Any]:
         """Get a user-team relationship by ID."""
-        return self.user_teams.get(user_team_id)
+        return cast(Dict[str, Any], self.user_teams.get(user_team_id))
 
     def list_user_teams(
         self, offset: int = 0, limit: int = 100, **filters
     ) -> Dict[str, Any]:
         """List user-team relationships."""
-        return self.user_teams.list(offset=offset, limit=limit, **filters)
+        return cast(
+            Dict[str, Any], self.user_teams.list(offset=offset, limit=limit, **filters)
+        )
 
     def update_user_team(self, user_team_id: str, **updates) -> Dict[str, Any]:
         """Update a user-team relationship."""
-        return self.user_teams.update(user_team_id, updates)
+        return cast(Dict[str, Any], self.user_teams.update(user_team_id, updates))
 
     def delete_user_team(self, user_team_id: str) -> None:
         """Delete a user-team relationship."""
@@ -468,7 +504,12 @@ class InvitationSDK(AbstractSDKHandler):
         }
 
     def create_invitation(
-        self, team_id: str, role_id: str, email: str = None, max_uses: int = 1, **kwargs
+        self,
+        team_id: str,
+        role_id: str,
+        email: Optional[str] = None,
+        max_uses: int = 1,
+        **kwargs,
     ) -> Dict[str, Any]:
         """Create a new invitation."""
         invitation_data = {
@@ -479,24 +520,31 @@ class InvitationSDK(AbstractSDKHandler):
         if email:
             invitation_data["email"] = email
         invitation_data.update(kwargs)
-        return self.invitations.create(invitation_data)
+        return cast(Dict[str, Any], self.invitations.create(invitation_data))
 
     def get_invitation(self, invitation_id: str) -> Dict[str, Any]:
         """Get an invitation by ID."""
-        return self.invitations.get(invitation_id)
+        return cast(Dict[str, Any], self.invitations.get(invitation_id))
 
     def list_invitations(
-        self, team_id: str = None, offset: int = 0, limit: int = 100, **filters
+        self,
+        team_id: Optional[str] = None,
+        offset: int = 0,
+        limit: int = 100,
+        **filters,
     ) -> Dict[str, Any]:
         """List invitations."""
         list_filters = filters.copy()
         if team_id:
             list_filters["team_id"] = team_id
-        return self.invitations.list(offset=offset, limit=limit, **list_filters)
+        return cast(
+            Dict[str, Any],
+            self.invitations.list(offset=offset, limit=limit, **list_filters),
+        )
 
     def update_invitation(self, invitation_id: str, **updates) -> Dict[str, Any]:
         """Update an invitation."""
-        return self.invitations.update(invitation_id, updates)
+        return cast(Dict[str, Any], self.invitations.update(invitation_id, updates))
 
     def delete_invitation(self, invitation_id: str) -> None:
         """Delete an invitation."""
@@ -507,7 +555,10 @@ class InvitationSDK(AbstractSDKHandler):
         self._request("DELETE", f"/v1/team/{team_id}/invitation")
 
     def accept_invitation(
-        self, invitation_id: str, invitation_code: str = None, invitee_id: str = None
+        self,
+        invitation_id: str,
+        invitation_code: Optional[str] = None,
+        invitee_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Accept an invitation."""
         data = {}
@@ -515,19 +566,22 @@ class InvitationSDK(AbstractSDKHandler):
             data["invitation_code"] = invitation_code
         if invitee_id:
             data["invitee_id"] = invitee_id
-        return self._request(
-            "POST", f"/v1/invitation/{invitation_id}/accept", data=data
+        return cast(
+            Dict[str, Any],
+            self._request("POST", f"/v1/invitation/{invitation_id}/accept", data=data),
         )
 
     def batch_update_invitations(
         self, updates: Dict[str, Any], invitation_ids: List[str]
     ) -> Dict[str, Any]:
         """Batch update invitations."""
-        return self.invitations.batch_update(updates, invitation_ids)
+        return cast(
+            Dict[str, Any], self.invitations.batch_update(updates, invitation_ids)
+        )
 
     def batch_delete_invitations(self, invitation_ids: List[str]) -> Dict[str, Any]:
         """Batch delete invitations."""
-        return self.invitations.batch_delete(invitation_ids)
+        return cast(Dict[str, Any], self.invitations.batch_delete(invitation_ids))
 
 
 # ===== Session SDK =====
@@ -555,11 +609,13 @@ class SessionSDK(AbstractSDKHandler):
         self, offset: int = 0, limit: int = 100, **filters
     ) -> Dict[str, Any]:
         """Get current user's sessions."""
-        return self.sessions.list(offset=offset, limit=limit, **filters)
+        return cast(
+            Dict[str, Any], self.sessions.list(offset=offset, limit=limit, **filters)
+        )
 
     def get_session(self, session_id: str) -> Dict[str, Any]:
         """Get a session by ID."""
-        return self.sessions.get(session_id)
+        return cast(Dict[str, Any], self.sessions.get(session_id))
 
     def delete_session(self, session_id: str) -> None:
         """Delete a session."""
@@ -575,11 +631,17 @@ class SessionSDK(AbstractSDKHandler):
         """List sessions for a specific user."""
         params = {"offset": offset, "limit": limit}
         params.update(filters)
-        return self._request("GET", f"/v1/user/{user_id}/session", query_params=params)
+        return cast(
+            Dict[str, Any],
+            self._request("GET", f"/v1/user/{user_id}/session", query_params=params),
+        )
 
     def get_user_session(self, user_id: str, session_id: str) -> Dict[str, Any]:
         """Get a specific user's session."""
-        return self._request("GET", f"/v1/user/{user_id}/session/{session_id}")
+        return cast(
+            Dict[str, Any],
+            self._request("GET", f"/v1/user/{user_id}/session/{session_id}"),
+        )
 
     def revoke_all_user_sessions(self, user_id: str) -> None:
         """Revoke all sessions for a specific user."""
@@ -611,19 +673,25 @@ class NotificationSDK(AbstractSDKHandler):
         self, offset: int = 0, limit: int = 100, **filters
     ) -> Dict[str, Any]:
         """Get current user's notifications."""
-        return self.notifications.list(offset=offset, limit=limit, **filters)
+        return cast(
+            Dict[str, Any],
+            self.notifications.list(offset=offset, limit=limit, **filters),
+        )
 
     def get_notification(self, notification_id: str) -> Dict[str, Any]:
         """Get a notification by ID."""
-        return self.notifications.get(notification_id)
+        return cast(Dict[str, Any], self.notifications.get(notification_id))
 
     def mark_notification_read(self, notification_id: str) -> Dict[str, Any]:
         """Mark a notification as read."""
-        return self._request("PATCH", f"/v1/notification/{notification_id}/read")
+        return cast(
+            Dict[str, Any],
+            self._request("PATCH", f"/v1/notification/{notification_id}/read"),
+        )
 
     def mark_all_notifications_read(self) -> Dict[str, Any]:
         """Mark all notifications as read."""
-        return self._request("PATCH", "/v1/notification/read")
+        return cast(Dict[str, Any], self._request("PATCH", "/v1/notification/read"))
 
     def delete_notification(self, notification_id: str) -> None:
         """Delete a notification."""
@@ -653,28 +721,30 @@ class ApiKeySDK(AbstractSDKHandler):
         }
 
     def create_api_key(
-        self, name: str, description: str = None, **kwargs
+        self, name: str, description: Optional[str] = None, **kwargs
     ) -> Dict[str, Any]:
         """Create a new API key."""
         api_key_data = {"name": name}
         if description:
             api_key_data["description"] = description
         api_key_data.update(kwargs)
-        return self.api_keys.create(api_key_data)
+        return cast(Dict[str, Any], self.api_keys.create(api_key_data))
 
     def get_api_key(self, api_key_id: str) -> Dict[str, Any]:
         """Get an API key by ID."""
-        return self.api_keys.get(api_key_id)
+        return cast(Dict[str, Any], self.api_keys.get(api_key_id))
 
     def list_api_keys(
         self, offset: int = 0, limit: int = 100, **filters
     ) -> Dict[str, Any]:
         """List API keys."""
-        return self.api_keys.list(offset=offset, limit=limit, **filters)
+        return cast(
+            Dict[str, Any], self.api_keys.list(offset=offset, limit=limit, **filters)
+        )
 
     def update_api_key(self, api_key_id: str, **updates) -> Dict[str, Any]:
         """Update an API key."""
-        return self.api_keys.update(api_key_id, updates)
+        return cast(Dict[str, Any], self.api_keys.update(api_key_id, updates))
 
     def delete_api_key(self, api_key_id: str) -> None:
         """Delete an API key."""
@@ -682,7 +752,10 @@ class ApiKeySDK(AbstractSDKHandler):
 
     def regenerate_api_key(self, api_key_id: str) -> Dict[str, Any]:
         """Regenerate an API key."""
-        return self._request("POST", f"/v1/api_key/{api_key_id}/regenerate")
+        return cast(
+            Dict[str, Any],
+            self._request("POST", f"/v1/api_key/{api_key_id}/regenerate"),
+        )
 
 
 # ===== User Metadata SDK =====
@@ -718,24 +791,31 @@ class UserMetadataSDK(AbstractSDKHandler):
             "value": value,
         }
         metadata_data.update(kwargs)
-        return self.user_metadata.create(metadata_data)
+        return cast(Dict[str, Any], self.user_metadata.create(metadata_data))
 
     def get_user_metadata(self, metadata_id: str) -> Dict[str, Any]:
         """Get user metadata by ID."""
-        return self.user_metadata.get(metadata_id)
+        return cast(Dict[str, Any], self.user_metadata.get(metadata_id))
 
     def list_user_metadata(
-        self, user_id: str = None, offset: int = 0, limit: int = 100, **filters
+        self,
+        user_id: Optional[str] = None,
+        offset: int = 0,
+        limit: int = 100,
+        **filters,
     ) -> Dict[str, Any]:
         """List user metadata."""
         list_filters = filters.copy()
         if user_id:
             list_filters["user_id"] = user_id
-        return self.user_metadata.list(offset=offset, limit=limit, **list_filters)
+        return cast(
+            Dict[str, Any],
+            self.user_metadata.list(offset=offset, limit=limit, **list_filters),
+        )
 
     def update_user_metadata(self, metadata_id: str, **updates) -> Dict[str, Any]:
         """Update user metadata."""
-        return self.user_metadata.update(metadata_id, updates)
+        return cast(Dict[str, Any], self.user_metadata.update(metadata_id, updates))
 
     def delete_user_metadata(self, metadata_id: str) -> None:
         """Delete user metadata."""
@@ -775,24 +855,31 @@ class TeamMetadataSDK(AbstractSDKHandler):
             "value": value,
         }
         metadata_data.update(kwargs)
-        return self.team_metadata.create(metadata_data)
+        return cast(Dict[str, Any], self.team_metadata.create(metadata_data))
 
     def get_team_metadata(self, metadata_id: str) -> Dict[str, Any]:
         """Get team metadata by ID."""
-        return self.team_metadata.get(metadata_id)
+        return cast(Dict[str, Any], self.team_metadata.get(metadata_id))
 
     def list_team_metadata(
-        self, team_id: str = None, offset: int = 0, limit: int = 100, **filters
+        self,
+        team_id: Optional[str] = None,
+        offset: int = 0,
+        limit: int = 100,
+        **filters,
     ) -> Dict[str, Any]:
         """List team metadata."""
         list_filters = filters.copy()
         if team_id:
             list_filters["team_id"] = team_id
-        return self.team_metadata.list(offset=offset, limit=limit, **list_filters)
+        return cast(
+            Dict[str, Any],
+            self.team_metadata.list(offset=offset, limit=limit, **list_filters),
+        )
 
     def update_team_metadata(self, metadata_id: str, **updates) -> Dict[str, Any]:
         """Update team metadata."""
-        return self.team_metadata.update(metadata_id, updates)
+        return cast(Dict[str, Any], self.team_metadata.update(metadata_id, updates))
 
     def delete_team_metadata(self, metadata_id: str) -> None:
         """Delete team metadata."""
@@ -832,24 +919,33 @@ class UserCredentialSDK(AbstractSDKHandler):
             "credential_data": credential_data,
         }
         credential_data_dict.update(kwargs)
-        return self.user_credentials.create(credential_data_dict)
+        return cast(Dict[str, Any], self.user_credentials.create(credential_data_dict))
 
     def get_user_credential(self, credential_id: str) -> Dict[str, Any]:
         """Get user credential by ID."""
-        return self.user_credentials.get(credential_id)
+        return cast(Dict[str, Any], self.user_credentials.get(credential_id))
 
     def list_user_credentials(
-        self, user_id: str = None, offset: int = 0, limit: int = 100, **filters
+        self,
+        user_id: Optional[str] = None,
+        offset: int = 0,
+        limit: int = 100,
+        **filters,
     ) -> Dict[str, Any]:
         """List user credentials."""
         list_filters = filters.copy()
         if user_id:
             list_filters["user_id"] = user_id
-        return self.user_credentials.list(offset=offset, limit=limit, **list_filters)
+        return cast(
+            Dict[str, Any],
+            self.user_credentials.list(offset=offset, limit=limit, **list_filters),
+        )
 
     def update_user_credential(self, credential_id: str, **updates) -> Dict[str, Any]:
         """Update user credential."""
-        return self.user_credentials.update(credential_id, updates)
+        return cast(
+            Dict[str, Any], self.user_credentials.update(credential_id, updates)
+        )
 
     def delete_user_credential(self, credential_id: str) -> None:
         """Delete user credential."""
@@ -889,24 +985,33 @@ class RecoveryQuestionSDK(AbstractSDKHandler):
             "answer_hash": answer_hash,
         }
         question_data.update(kwargs)
-        return self.recovery_questions.create(question_data)
+        return cast(Dict[str, Any], self.recovery_questions.create(question_data))
 
     def get_recovery_question(self, question_id: str) -> Dict[str, Any]:
         """Get recovery question by ID."""
-        return self.recovery_questions.get(question_id)
+        return cast(Dict[str, Any], self.recovery_questions.get(question_id))
 
     def list_recovery_questions(
-        self, user_id: str = None, offset: int = 0, limit: int = 100, **filters
+        self,
+        user_id: Optional[str] = None,
+        offset: int = 0,
+        limit: int = 100,
+        **filters,
     ) -> Dict[str, Any]:
         """List recovery questions."""
         list_filters = filters.copy()
         if user_id:
             list_filters["user_id"] = user_id
-        return self.recovery_questions.list(offset=offset, limit=limit, **list_filters)
+        return cast(
+            Dict[str, Any],
+            self.recovery_questions.list(offset=offset, limit=limit, **list_filters),
+        )
 
     def update_recovery_question(self, question_id: str, **updates) -> Dict[str, Any]:
         """Update recovery question."""
-        return self.recovery_questions.update(question_id, updates)
+        return cast(
+            Dict[str, Any], self.recovery_questions.update(question_id, updates)
+        )
 
     def delete_recovery_question(self, question_id: str) -> None:
         """Delete recovery question."""
@@ -937,7 +1042,7 @@ class FailedLoginSDK(AbstractSDKHandler):
         }
 
     def create_failed_login(
-        self, user_id: str, ip_address: str, user_agent: str = None, **kwargs
+        self, user_id: str, ip_address: str, user_agent: Optional[str] = None, **kwargs
     ) -> Dict[str, Any]:
         """Create failed login record."""
         failed_login_data = {
@@ -947,20 +1052,27 @@ class FailedLoginSDK(AbstractSDKHandler):
         if user_agent:
             failed_login_data["user_agent"] = user_agent
         failed_login_data.update(kwargs)
-        return self.failed_logins.create(failed_login_data)
+        return cast(Dict[str, Any], self.failed_logins.create(failed_login_data))
 
     def get_failed_login(self, failed_login_id: str) -> Dict[str, Any]:
         """Get failed login by ID."""
-        return self.failed_logins.get(failed_login_id)
+        return cast(Dict[str, Any], self.failed_logins.get(failed_login_id))
 
     def list_failed_logins(
-        self, user_id: str = None, offset: int = 0, limit: int = 100, **filters
+        self,
+        user_id: Optional[str] = None,
+        offset: int = 0,
+        limit: int = 100,
+        **filters,
     ) -> Dict[str, Any]:
         """List failed logins."""
         list_filters = filters.copy()
         if user_id:
             list_filters["user_id"] = user_id
-        return self.failed_logins.list(offset=offset, limit=limit, **list_filters)
+        return cast(
+            Dict[str, Any],
+            self.failed_logins.list(offset=offset, limit=limit, **list_filters),
+        )
 
     def delete_failed_login(self, failed_login_id: str) -> None:
         """Delete failed login record."""
@@ -991,28 +1103,30 @@ class PermissionSDK(AbstractSDKHandler):
         }
 
     def create_permission(
-        self, name: str, description: str = None, **kwargs
+        self, name: str, description: Optional[str] = None, **kwargs
     ) -> Dict[str, Any]:
         """Create a new permission."""
         permission_data = {"name": name}
         if description:
             permission_data["description"] = description
         permission_data.update(kwargs)
-        return self.permissions.create(permission_data)
+        return cast(Dict[str, Any], self.permissions.create(permission_data))
 
     def get_permission(self, permission_id: str) -> Dict[str, Any]:
         """Get a permission by ID."""
-        return self.permissions.get(permission_id)
+        return cast(Dict[str, Any], self.permissions.get(permission_id))
 
     def list_permissions(
         self, offset: int = 0, limit: int = 100, **filters
     ) -> Dict[str, Any]:
         """List permissions."""
-        return self.permissions.list(offset=offset, limit=limit, **filters)
+        return cast(
+            Dict[str, Any], self.permissions.list(offset=offset, limit=limit, **filters)
+        )
 
     def update_permission(self, permission_id: str, **updates) -> Dict[str, Any]:
         """Update a permission."""
-        return self.permissions.update(permission_id, updates)
+        return cast(Dict[str, Any], self.permissions.update(permission_id, updates))
 
     def delete_permission(self, permission_id: str) -> None:
         """Delete a permission."""
@@ -1023,12 +1137,19 @@ class PermissionSDK(AbstractSDKHandler):
         criteria: Dict[str, Any],
         offset: int = 0,
         limit: int = 100,
-        sort_by: str = None,
+        sort_by: Optional[str] = None,
         sort_order: str = "asc",
     ) -> Dict[str, Any]:
         """Search permissions."""
-        return self.permissions.search(
-            criteria, offset=offset, limit=limit, sort_by=sort_by, sort_order=sort_order
+        return cast(
+            Dict[str, Any],
+            self.permissions.search(
+                criteria,
+                offset=offset,
+                limit=limit,
+                sort_by=sort_by,
+                sort_order=sort_order,
+            ),
         )
 
 
@@ -1183,7 +1304,7 @@ class AuthSDK(AbstractSDKHandler):
             )
             if "token" in response:
                 self.token = response["token"]
-            return response
+            return cast(Dict[str, Any], response)
         except Exception as e:
             raise AuthenticationError(f"Login failed: {str(e)}")
 
@@ -1211,7 +1332,7 @@ class AuthSDK(AbstractSDKHandler):
         password: str,
         first_name: str,
         last_name: str,
-        display_name: str = None,
+        display_name: Optional[str] = None,
         **kwargs,
     ) -> Dict[str, Any]:
         """Register a new user account."""
@@ -1224,7 +1345,7 @@ class AuthSDK(AbstractSDKHandler):
         if display_name:
             user_data["display_name"] = display_name
         user_data.update(kwargs)
-        return self.users.create(user_data)
+        return cast(Dict[str, Any], self.users.create(user_data))
 
     def change_password(
         self, current_password: str, new_password: str
@@ -1234,16 +1355,16 @@ class AuthSDK(AbstractSDKHandler):
             "current_password": current_password,
             "new_password": new_password,
         }
-        return self._request("PATCH", "/v1/user", data=data)
+        return cast(Dict[str, Any], self._request("PATCH", "/v1/user", data=data))
 
     def get_current_user(self) -> Dict[str, Any]:
         """Get the current authenticated user's information."""
-        return self._request("GET", "/v1/user")
+        return cast(Dict[str, Any], self._request("GET", "/v1/user"))
 
     def update_current_user(self, **updates) -> Dict[str, Any]:
         """Update the current user's profile."""
         data = {"user": updates}
-        return self._request("PUT", "/v1/user", data=data)
+        return cast(Dict[str, Any], self._request("PUT", "/v1/user", data=data))
 
     def __getattr__(self, name):
         """Delegate attribute access to individual SDK instances for backward compatibility."""

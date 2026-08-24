@@ -10,7 +10,7 @@ This module now uses configuration-driven resource management following
 the improved abstraction patterns similar to endpoint patterns.
 """
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, cast
 
 from zephyrex.sdk.AbstractSDKHandler import AbstractSDKHandler, ResourceConfig
 
@@ -41,7 +41,7 @@ class ExtensionSDK(AbstractSDKHandler):
     def create_extension(
         self,
         name: str,
-        description: str = None,
+        description: Optional[str] = None,
         **kwargs,
     ) -> Dict[str, Any]:
         """Create a new extension.
@@ -58,21 +58,23 @@ class ExtensionSDK(AbstractSDKHandler):
         if description:
             extension_data["description"] = description
         extension_data.update(kwargs)
-        return self.extensions.create(extension_data)
+        return cast(Dict[str, Any], self.extensions.create(extension_data))
 
     def get_extension(self, extension_id: str) -> Dict[str, Any]:
         """Get an extension by ID."""
-        return self.extensions.get(extension_id)
+        return cast(Dict[str, Any], self.extensions.get(extension_id))
 
     def list_extensions(
         self, offset: int = 0, limit: int = 100, **filters
     ) -> Dict[str, Any]:
         """List extensions."""
-        return self.extensions.list(offset=offset, limit=limit, **filters)
+        return cast(
+            Dict[str, Any], self.extensions.list(offset=offset, limit=limit, **filters)
+        )
 
     def update_extension(self, extension_id: str, **updates) -> Dict[str, Any]:
         """Update an extension."""
-        return self.extensions.update(extension_id, updates)
+        return cast(Dict[str, Any], self.extensions.update(extension_id, updates))
 
     def delete_extension(self, extension_id: str) -> None:
         """Delete an extension."""
@@ -83,23 +85,32 @@ class ExtensionSDK(AbstractSDKHandler):
         criteria: Dict[str, Any],
         offset: int = 0,
         limit: int = 100,
-        sort_by: str = None,
+        sort_by: Optional[str] = None,
         sort_order: str = "asc",
     ) -> Dict[str, Any]:
         """Search extensions."""
-        return self.extensions.search(
-            criteria, offset=offset, limit=limit, sort_by=sort_by, sort_order=sort_order
+        return cast(
+            Dict[str, Any],
+            self.extensions.search(
+                criteria,
+                offset=offset,
+                limit=limit,
+                sort_by=sort_by,
+                sort_order=sort_order,
+            ),
         )
 
     def batch_update_extensions(
         self, updates: Dict[str, Any], extension_ids: List[str]
     ) -> Dict[str, Any]:
         """Batch update extensions."""
-        return self.extensions.batch_update(updates, extension_ids)
+        return cast(
+            Dict[str, Any], self.extensions.batch_update(updates, extension_ids)
+        )
 
     def batch_delete_extensions(self, extension_ids: List[str]) -> Dict[str, Any]:
         """Batch delete extensions."""
-        return self.extensions.batch_delete(extension_ids)
+        return cast(Dict[str, Any], self.extensions.batch_delete(extension_ids))
 
 
 # ===== Ability SDK =====
@@ -148,21 +159,23 @@ class AbilitySDK(AbstractSDKHandler):
             "extension_id": extension_id,
         }
         ability_data.update(kwargs)
-        return self.abilities.create(ability_data)
+        return cast(Dict[str, Any], self.abilities.create(ability_data))
 
     def get_ability(self, ability_id: str) -> Dict[str, Any]:
         """Get an ability by ID."""
-        return self.abilities.get(ability_id)
+        return cast(Dict[str, Any], self.abilities.get(ability_id))
 
     def list_abilities(
         self, offset: int = 0, limit: int = 100, **filters
     ) -> Dict[str, Any]:
         """List abilities."""
-        return self.abilities.list(offset=offset, limit=limit, **filters)
+        return cast(
+            Dict[str, Any], self.abilities.list(offset=offset, limit=limit, **filters)
+        )
 
     def update_ability(self, ability_id: str, **updates) -> Dict[str, Any]:
         """Update an ability."""
-        return self.abilities.update(ability_id, updates)
+        return cast(Dict[str, Any], self.abilities.update(ability_id, updates))
 
     def delete_ability(self, ability_id: str) -> None:
         """Delete an ability."""
@@ -173,23 +186,30 @@ class AbilitySDK(AbstractSDKHandler):
         criteria: Dict[str, Any],
         offset: int = 0,
         limit: int = 100,
-        sort_by: str = None,
+        sort_by: Optional[str] = None,
         sort_order: str = "asc",
     ) -> Dict[str, Any]:
         """Search abilities."""
-        return self.abilities.search(
-            criteria, offset=offset, limit=limit, sort_by=sort_by, sort_order=sort_order
+        return cast(
+            Dict[str, Any],
+            self.abilities.search(
+                criteria,
+                offset=offset,
+                limit=limit,
+                sort_by=sort_by,
+                sort_order=sort_order,
+            ),
         )
 
     def batch_update_abilities(
         self, updates: Dict[str, Any], ability_ids: List[str]
     ) -> Dict[str, Any]:
         """Batch update abilities."""
-        return self.abilities.batch_update(updates, ability_ids)
+        return cast(Dict[str, Any], self.abilities.batch_update(updates, ability_ids))
 
     def batch_delete_abilities(self, ability_ids: List[str]) -> Dict[str, Any]:
         """Batch delete abilities."""
-        return self.abilities.batch_delete(ability_ids)
+        return cast(Dict[str, Any], self.abilities.batch_delete(ability_ids))
 
 
 # ===== Main Extensions SDK (Composite) =====
@@ -230,7 +250,7 @@ class ExtensionsSDK(AbstractSDKHandler):
     def create_extension(
         self,
         name: str,
-        description: str = None,
+        description: Optional[str] = None,
         **kwargs,
     ) -> Dict[str, Any]:
         """Create a new extension."""
@@ -238,21 +258,23 @@ class ExtensionsSDK(AbstractSDKHandler):
         if description:
             extension_data["description"] = description
         extension_data.update(kwargs)
-        return self.extensions.create(extension_data)
+        return cast(Dict[str, Any], self.extensions.create(extension_data))
 
     def get_extension(self, extension_id: str) -> Dict[str, Any]:
         """Get an extension by ID."""
-        return self.extensions.get(extension_id)
+        return cast(Dict[str, Any], self.extensions.get(extension_id))
 
     def list_extensions(
         self, offset: int = 0, limit: int = 100, **filters
     ) -> Dict[str, Any]:
         """List extensions."""
-        return self.extensions.list(offset=offset, limit=limit, **filters)
+        return cast(
+            Dict[str, Any], self.extensions.list(offset=offset, limit=limit, **filters)
+        )
 
     def update_extension(self, extension_id: str, **updates) -> Dict[str, Any]:
         """Update an extension."""
-        return self.extensions.update(extension_id, updates)
+        return cast(Dict[str, Any], self.extensions.update(extension_id, updates))
 
     def delete_extension(self, extension_id: str) -> None:
         """Delete an extension."""
@@ -263,12 +285,19 @@ class ExtensionsSDK(AbstractSDKHandler):
         criteria: Dict[str, Any],
         offset: int = 0,
         limit: int = 100,
-        sort_by: str = None,
+        sort_by: Optional[str] = None,
         sort_order: str = "asc",
     ) -> Dict[str, Any]:
         """Search extensions."""
-        return self.extensions.search(
-            criteria, offset=offset, limit=limit, sort_by=sort_by, sort_order=sort_order
+        return cast(
+            Dict[str, Any],
+            self.extensions.search(
+                criteria,
+                offset=offset,
+                limit=limit,
+                sort_by=sort_by,
+                sort_order=sort_order,
+            ),
         )
 
     # Ability convenience methods
@@ -284,21 +313,23 @@ class ExtensionsSDK(AbstractSDKHandler):
             "extension_id": extension_id,
         }
         ability_data.update(kwargs)
-        return self.abilities.create(ability_data)
+        return cast(Dict[str, Any], self.abilities.create(ability_data))
 
     def get_ability(self, ability_id: str) -> Dict[str, Any]:
         """Get an ability by ID."""
-        return self.abilities.get(ability_id)
+        return cast(Dict[str, Any], self.abilities.get(ability_id))
 
     def list_abilities(
         self, offset: int = 0, limit: int = 100, **filters
     ) -> Dict[str, Any]:
         """List abilities."""
-        return self.abilities.list(offset=offset, limit=limit, **filters)
+        return cast(
+            Dict[str, Any], self.abilities.list(offset=offset, limit=limit, **filters)
+        )
 
     def update_ability(self, ability_id: str, **updates) -> Dict[str, Any]:
         """Update an ability."""
-        return self.abilities.update(ability_id, updates)
+        return cast(Dict[str, Any], self.abilities.update(ability_id, updates))
 
     def delete_ability(self, ability_id: str) -> None:
         """Delete an ability."""
@@ -309,12 +340,19 @@ class ExtensionsSDK(AbstractSDKHandler):
         criteria: Dict[str, Any],
         offset: int = 0,
         limit: int = 100,
-        sort_by: str = None,
+        sort_by: Optional[str] = None,
         sort_order: str = "asc",
     ) -> Dict[str, Any]:
         """Search abilities."""
-        return self.abilities.search(
-            criteria, offset=offset, limit=limit, sort_by=sort_by, sort_order=sort_order
+        return cast(
+            Dict[str, Any],
+            self.abilities.search(
+                criteria,
+                offset=offset,
+                limit=limit,
+                sort_by=sort_by,
+                sort_order=sort_order,
+            ),
         )
 
     # Batch operations
@@ -322,18 +360,20 @@ class ExtensionsSDK(AbstractSDKHandler):
         self, updates: Dict[str, Any], extension_ids: List[str]
     ) -> Dict[str, Any]:
         """Batch update extensions."""
-        return self.extensions.batch_update(updates, extension_ids)
+        return cast(
+            Dict[str, Any], self.extensions.batch_update(updates, extension_ids)
+        )
 
     def batch_delete_extensions(self, extension_ids: List[str]) -> Dict[str, Any]:
         """Batch delete extensions."""
-        return self.extensions.batch_delete(extension_ids)
+        return cast(Dict[str, Any], self.extensions.batch_delete(extension_ids))
 
     def batch_update_abilities(
         self, updates: Dict[str, Any], ability_ids: List[str]
     ) -> Dict[str, Any]:
         """Batch update abilities."""
-        return self.abilities.batch_update(updates, ability_ids)
+        return cast(Dict[str, Any], self.abilities.batch_update(updates, ability_ids))
 
     def batch_delete_abilities(self, ability_ids: List[str]) -> Dict[str, Any]:
         """Batch delete abilities."""
-        return self.abilities.batch_delete(ability_ids)
+        return cast(Dict[str, Any], self.abilities.batch_delete(ability_ids))

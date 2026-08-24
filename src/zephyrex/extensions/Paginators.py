@@ -16,7 +16,7 @@ import hashlib
 import hmac
 import json
 from abc import ABC, abstractmethod
-from typing import Any, ClassVar, Dict, List, Optional, Tuple
+from typing import Any, ClassVar, Dict, List, Optional, Tuple, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 

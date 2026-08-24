@@ -17,7 +17,7 @@ Key principles (from AGENTS.md):
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Dict, List, Optional, Type
+from typing import Any, Dict, List, Optional, Type, cast
 
 import pytest
 from faker import Faker
@@ -77,12 +77,12 @@ class SDKTestConfig:
     test_authentication: bool = True
 
     # Test data configuration
-    create_data_variants: List[TestVariant] = None
-    update_data_variants: List[TestVariant] = None
+    create_data_variants: Optional[List[TestVariant]] = None
+    update_data_variants: Optional[List[TestVariant]] = None
 
     # Resource-specific configuration
-    primary_resource: str = None  # Primary resource to test
-    test_resources: List[str] = None  # List of resources to test
+    primary_resource: Optional[str] = None  # Primary resource to test
+    test_resources: Optional[List[str]] = None  # List of resources to test
 
     def __post_init__(self):
         if self.create_data_variants is None:
@@ -120,14 +120,14 @@ class AbstractSDKTest(AbstractTest, ABC):
     """
 
     # Required overrides that child classes must provide
-    sdk_class: Type[AbstractSDKHandler] = None
-    resource_name: str = None
-    sample_data: Dict[str, Any] = None
-    update_data: Dict[str, Any] = None
+    sdk_class: Optional[Type[AbstractSDKHandler]] = None
+    resource_name: Optional[str] = None
+    sample_data: Optional[Dict[str, Any]] = None
+    update_data: Optional[Dict[str, Any]] = None
 
     # Optional overrides
     sdk_test_config: SDKTestConfig = SDKTestConfig()
-    resource_configs: Dict[str, ResourceConfig] = None
+    resource_configs: Optional[Dict[str, ResourceConfig]] = None
 
     # Test configuration - use SDK category
     test_config: ClassOfTestsConfig = ClassOfTestsConfig(
@@ -499,7 +499,7 @@ class AbstractSDKTest(AbstractTest, ABC):
                 ), f"Pagination key '{key}' should be an integer"
 
     def assert_entity_created(
-        self, response: Dict[str, Any], resource_key: str = None
+        self, response: Dict[str, Any], resource_key: Optional[str] = None
     ) -> Dict[str, Any]:
         """Assert that an entity was created successfully.
 
@@ -516,13 +516,13 @@ class AbstractSDKTest(AbstractTest, ABC):
         entity = response[key]
         assert "id" in entity, "Created entity missing 'id' field"
 
-        return entity
+        return cast(Dict[str, Any], entity)
 
     def assert_entity_updated(
         self,
         response: Dict[str, Any],
         expected_updates: Dict[str, Any],
-        resource_key: str = None,
+        resource_key: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Assert that an entity was updated successfully.
 
@@ -545,4 +545,4 @@ class AbstractSDKTest(AbstractTest, ABC):
                 f"Expected {expected_value}, got {entity[field]}"
             )
 
-        return entity
+        return cast(Dict[str, Any], entity)

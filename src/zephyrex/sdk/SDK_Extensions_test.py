@@ -12,7 +12,7 @@ Following the framework's testing philosophy from AGENTS.md:
 """
 
 import uuid
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import pytest
 
@@ -53,7 +53,7 @@ class TestExtensionSDK(AbstractSDKTest):
         self,
         response: Dict[str, Any],
         expected_keys: List[str],
-        resource_key: str = None,
+        resource_key: Optional[str] = None,
     ):
         """Assert that a response has the expected structure."""
         if resource_key:
@@ -111,7 +111,7 @@ class TestAbilitySDK(AbstractSDKTest):
         self,
         response: Dict[str, Any],
         expected_keys: List[str],
-        resource_key: str = None,
+        resource_key: Optional[str] = None,
     ):
         """Assert that a response has the expected structure."""
         if resource_key:
@@ -139,8 +139,8 @@ class TestExtensionsSDK(AbstractSDKTest):
 
     sdk_class = ExtensionsSDK
     resource_name = "extensions"
-    sample_data = {}
-    update_data = {}
+    sample_data: Dict[str, Any] = {}
+    update_data: Dict[str, Any] = {}
 
     def create_test_data(
         self, resource_type: str, count: int = 1
@@ -152,7 +152,7 @@ class TestExtensionsSDK(AbstractSDKTest):
         self,
         response: Dict[str, Any],
         expected_keys: List[str],
-        resource_key: str = None,
+        resource_key: Optional[str] = None,
     ):
         """Assert that a response has the expected structure."""
         if resource_key:

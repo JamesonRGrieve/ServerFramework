@@ -43,7 +43,7 @@ inference here.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Iterable, List, Optional, Tuple, Type
+from typing import Any, Iterable, List, Optional, Tuple, Type, cast
 
 import inflect
 import stringcase
@@ -115,7 +115,7 @@ def _resource_name_for(manager_cls: Type) -> str:
     name = name.lstrip("_")
     if name.endswith("Manager"):
         name = name[: -len("Manager")]
-    return stringcase.snakecase(name)
+    return cast(str, stringcase.snakecase(name))
 
 
 def _resource_name_plural_for(resource_name: str) -> str:
@@ -133,7 +133,7 @@ def _endpoint_for(manager_cls: Type, resource_name: str) -> str:
     """
     prefix = getattr(manager_cls, "prefix", None)
     if prefix:
-        return prefix.rstrip("/")
+        return cast(str, prefix.rstrip("/"))
     version = getattr(manager_cls, "version", "v1") or "v1"
     return f"/{version}/{resource_name}"
 

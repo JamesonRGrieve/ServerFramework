@@ -14,6 +14,7 @@ from typing import (
     Optional,
     Tuple,
     Type,
+    cast,
 )
 
 if TYPE_CHECKING:
@@ -1052,11 +1053,11 @@ class UserManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef]
             options={"require": ["exp", "nbf", "iat", "jti", "aud", "iss"]},
         )
         try:
-            return jwt.decode(token, env("JWT_SECRET"), **decode_kwargs)
+            return cast(Dict[str, Any], jwt.decode(token, env("JWT_SECRET"), **decode_kwargs))
         except jwt.InvalidSignatureError:
             previous = env("JWT_SECRET_PREVIOUS")
             if previous:
-                return jwt.decode(token, previous, **decode_kwargs)
+                return cast(Dict[str, Any], jwt.decode(token, previous, **decode_kwargs))
             raise
 
     @staticmethod

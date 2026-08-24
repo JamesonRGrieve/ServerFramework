@@ -15,7 +15,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from typing import Any, Optional
+from typing import Any, Optional, cast
 
 _logger = logging.getLogger(__name__)
 
@@ -52,7 +52,7 @@ class ValkeyResponseCache:
             raw = await self._client.get(key)
             if raw is None:
                 return None
-            return json.loads(raw)
+            return cast(dict, json.loads(raw))
         except Exception as exc:
             _logger.debug("ValkeyResponseCache.get error: %s", exc)
             return None

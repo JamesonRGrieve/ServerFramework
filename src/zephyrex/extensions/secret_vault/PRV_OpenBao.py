@@ -8,7 +8,7 @@ library for the Vault HTTP API.
 
 from __future__ import annotations
 
-from typing import Any, ClassVar, Dict, List, Optional, Set
+from typing import Any, ClassVar, Dict, List, Optional, Set, cast
 
 from zephyrex.extensions.AbstractExtensionProvider import (
     AbstractProviderInstance_SDK,
@@ -206,7 +206,7 @@ class OpenBaoProvider(AbstractSecretVaultProvider):
         if version is not None:
             kwargs["version"] = version
         response = client.secrets.kv.v2.read_secret_version(**kwargs)
-        return response["data"]["data"]
+        return cast(Dict[str, Any], response["data"]["data"])
 
     @classmethod
     @ability(name="secret_write")
@@ -249,7 +249,7 @@ class OpenBaoProvider(AbstractSecretVaultProvider):
         mount = bonded.sdk["mount_point"]
         try:
             response = client.secrets.kv.v2.list_secrets(path=path, mount_point=mount)
-            return response["data"]["keys"]
+            return cast(List[str], response["data"]["keys"])
         except Exception:
             return []
 

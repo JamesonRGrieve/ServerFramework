@@ -23,7 +23,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from typing import Any, Optional
+from typing import Any, Optional, cast
 
 _logger = logging.getLogger(__name__)
 
@@ -74,7 +74,7 @@ class ValkeyEntityCache:
             raw = await self._client.get(self._entity_key(table, entity_id))
             if raw is None:
                 return None
-            return json.loads(raw)
+            return cast(dict, json.loads(raw))
         except Exception as exc:
             _logger.debug("ValkeyEntityCache.get_by_id miss/error: %s", exc)
             return None

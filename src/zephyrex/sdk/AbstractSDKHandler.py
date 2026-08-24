@@ -14,7 +14,7 @@ import logging
 import urllib.parse
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 
 import httpx
 
@@ -23,7 +23,10 @@ class SDKException(Exception):
     """Base exception for SDK-related errors."""
 
     def __init__(
-        self, message: str, status_code: int = None, details: Dict[str, Any] = None
+        self,
+        message: str,
+        status_code: Optional[int] = None,
+        details: Optional[Dict[str, Any]] = None,
     ):
         self.message = message
         self.status_code = status_code
@@ -35,7 +38,9 @@ class AuthenticationError(SDKException):
     """Exception raised when authentication fails."""
 
     def __init__(
-        self, message: str = "Authentication failed", details: Dict[str, Any] = None
+        self,
+        message: str = "Authentication failed",
+        details: Optional[Dict[str, Any]] = None,
     ):
         super().__init__(message, 401, details)
 
@@ -44,7 +49,10 @@ class ResourceNotFoundError(SDKException):
     """Exception raised when a requested resource is not found."""
 
     def __init__(
-        self, resource_name: str, resource_id: str, details: Dict[str, Any] = None
+        self,
+        resource_name: str,
+        resource_id: str,
+        details: Optional[Dict[str, Any]] = None,
     ):
         message = f"{resource_name} with ID '{resource_id}' not found"
         super().__init__(message, 404, details)
@@ -54,7 +62,9 @@ class ValidationError(SDKException):
     """Exception raised when request validation fails."""
 
     def __init__(
-        self, message: str = "Validation failed", details: Dict[str, Any] = None
+        self,
+        message: str = "Validation failed",
+        details: Optional[Dict[str, Any]] = None,
     ):
         super().__init__(message, 422, details)
 
@@ -63,7 +73,10 @@ class ResourceConflictError(SDKException):
     """Exception raised when a resource conflict occurs."""
 
     def __init__(
-        self, resource_name: str, conflict_type: str, details: Dict[str, Any] = None
+        self,
+        resource_name: str,
+        conflict_type: str,
+        details: Optional[Dict[str, Any]] = None,
     ):
         message = f"{resource_name} conflict: {conflict_type}"
         super().__init__(message, 409, details)
@@ -78,8 +91,8 @@ class ResourceConfig:
     endpoint: str  # Base endpoint (e.g., "/v1/user")
     supports_search: bool = True
     supports_batch: bool = True
-    required_fields: List[str] = None
-    unique_fields: List[str] = None
+    required_fields: Optional[List[str]] = None
+    unique_fields: Optional[List[str]] = None
     parent_resource: Optional[str] = None
     nested_under: Optional[str] = None
 
@@ -114,7 +127,7 @@ class ResourceManager:
         self,
         offset: int = 0,
         limit: int = 100,
-        sort_by: str = None,
+        sort_by: Optional[str] = None,
         sort_order: str = "asc",
         **filters,
     ) -> Dict[str, Any]:
@@ -154,7 +167,7 @@ class ResourceManager:
         criteria: Dict[str, Any],
         offset: int = 0,
         limit: int = 100,
-        sort_by: str = None,
+        sort_by: Optional[str] = None,
         sort_order: str = "asc",
     ) -> Dict[str, Any]:
         """Search resources."""
@@ -303,7 +316,7 @@ class AbstractSDKHandler(ABC):
     def get_resource_manager(self, resource_name: str) -> ResourceManager:
         """Get a resource manager by name."""
         if hasattr(self, resource_name):
-            return getattr(self, resource_name)
+            return cast(ResourceManager, getattr(self, resource_name))
         raise ValueError(f"Resource manager '{resource_name}' not found")
 
     def create_resource_manager(self, config: ResourceConfig) -> ResourceManager:
@@ -335,7 +348,9 @@ class AbstractSDKHandler(ABC):
 
         return headers
 
-    def _build_url(self, endpoint: str, query_params: Dict[str, Any] = None) -> str:
+    def _build_url(
+        self, endpoint: str, query_params: Optional[Dict[str, Any]] = None
+    ) -> str:
         """Build complete URL from endpoint and query parameters.
 
         Args:
@@ -373,9 +388,9 @@ class AbstractSDKHandler(ABC):
         """
         try:
             if hasattr(response, "json"):
-                return response.json()
+                return cast(Dict[str, Any], response.json())
             elif hasattr(response, "text"):
-                return json.loads(response.text)
+                return cast(Dict[str, Any], json.loads(response.text))
             else:
                 return {}
         except (json.JSONDecodeError, ValueError):
@@ -431,8 +446,8 @@ class AbstractSDKHandler(ABC):
         method: str,
         endpoint: str,
         data: Any = None,
-        params: Dict[str, Any] = None,
-        headers: Dict[str, str] = None,
+        params: Optional[Dict[str, Any]] = None,
+        headers: Optional[Dict[str, str]] = None,
         client: Any = None,
     ) -> Dict[str, Any]:
         """Make an HTTP request, optionally using a caller-supplied *client*.
@@ -511,8 +526,8 @@ class AbstractSDKHandler(ABC):
         method: str,
         endpoint: str,
         data: Any = None,
-        query_params: Dict[str, Any] = None,
-        headers: Dict[str, str] = None,
+        query_params: Optional[Dict[str, Any]] = None,
+        headers: Optional[Dict[str, str]] = None,
         resource_name: str = "resource",
     ) -> Dict[str, Any]:
         """Make an HTTP request to the API.
@@ -542,8 +557,8 @@ class AbstractSDKHandler(ABC):
     def get(
         self,
         endpoint: str,
-        params: Dict[str, Any] = None,
-        headers: Dict[str, str] = None,
+        params: Optional[Dict[str, Any]] = None,
+        headers: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         """Make a GET request."""
         return self._request("GET", endpoint, query_params=params, headers=headers)
@@ -552,8 +567,8 @@ class AbstractSDKHandler(ABC):
         self,
         endpoint: str,
         data: Any = None,
-        params: Dict[str, Any] = None,
-        headers: Dict[str, str] = None,
+        params: Optional[Dict[str, Any]] = None,
+        headers: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         """Make a POST request."""
         return self._request(
@@ -564,8 +579,8 @@ class AbstractSDKHandler(ABC):
         self,
         endpoint: str,
         data: Any = None,
-        params: Dict[str, Any] = None,
-        headers: Dict[str, str] = None,
+        params: Optional[Dict[str, Any]] = None,
+        headers: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         """Make a PUT request."""
         return self._request(
@@ -576,8 +591,8 @@ class AbstractSDKHandler(ABC):
         self,
         endpoint: str,
         data: Any = None,
-        params: Dict[str, Any] = None,
-        headers: Dict[str, str] = None,
+        params: Optional[Dict[str, Any]] = None,
+        headers: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         """Make a PATCH request."""
         return self._request(
@@ -587,8 +602,8 @@ class AbstractSDKHandler(ABC):
     def delete(
         self,
         endpoint: str,
-        params: Dict[str, Any] = None,
-        headers: Dict[str, str] = None,
+        params: Optional[Dict[str, Any]] = None,
+        headers: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         """Make a DELETE request."""
         return self._request("DELETE", endpoint, query_params=params, headers=headers)
