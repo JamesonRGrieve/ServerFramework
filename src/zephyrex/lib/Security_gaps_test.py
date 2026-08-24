@@ -361,18 +361,40 @@ class TestFunctionLevelAuth:
 
 class TestMultiTenantIsolation:
     @pytest.mark.security
-    def test_cross_tenant_error_does_not_reveal_existence(
-        self, server, admin_a, admin_b, team_a
-    ):
-        """Error when accessing cross-tenant resource must not confirm existence."""
-        r_nonexistent = server.get(
-            f"/v1/team/{uuid.uuid4()}",
-            headers={"Authorization": f"Bearer {admin_b.jwt}"},
+    def test_cross_tenant_error_does_not_reveal_existence(self, server):
+        """Error when accessing cross-tenant resource must not confirm existence.
+
+        Uses a freshly-created team owned by an unrelated user and a hermetic
+        outsider, rather than the session-scoped ``admin_b``/``team_a`` fixtures:
+        those are shared across the whole xdist worker, so a prior test that
+        granted cross-tenant access would make the "exists" request return 200
+        and the two status codes diverge (an order-dependent flake). A hermetic
+        outsider provably has no access to a team created within this test, so
+        the existent and non-existent lookups must return the same status.
+        """
+        from conftest import create_team, create_user
+
+        owner = create_user(
+            server,
+            email=f"xte_owner_{uuid.uuid4().hex[:8]}@example.com",
+            password="testpassword",
+            first_name="XteOwner",
+            last_name="Test",
         )
-        r_exists = server.get(
-            f"/v1/team/{team_a.id}",
-            headers={"Authorization": f"Bearer {admin_b.jwt}"},
+        other_team = create_team(
+            server, owner.id, name=f"XTE Team {uuid.uuid4().hex[:8]}"
         )
+        outsider = create_user(
+            server,
+            email=f"xte_out_{uuid.uuid4().hex[:8]}@example.com",
+            password="testpassword",
+            first_name="XteOut",
+            last_name="Test",
+        )
+        hdr = {"Authorization": f"Bearer {outsider.jwt}"}
+
+        r_nonexistent = server.get(f"/v1/team/{uuid.uuid4()}", headers=hdr)
+        r_exists = server.get(f"/v1/team/{other_team.id}", headers=hdr)
         assert r_nonexistent.status_code == r_exists.status_code, (
             f"Cross-tenant error reveals existence: nonexistent={r_nonexistent.status_code} "
             f"vs exists={r_exists.status_code}"
