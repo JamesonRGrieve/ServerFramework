@@ -10,7 +10,7 @@ from typing import Any, ClassVar, Dict, List, Optional
 try:
     import stripe
 except ImportError:
-    stripe = None
+    stripe = None  # type: ignore[assignment]
     import warnings
 
     warnings.warn(
@@ -764,7 +764,7 @@ class PaymentExtensionStripeProvider(AbstractPaymentProvider):
             api_key = cls.get_secret_key()
             if api_key:
                 cls._stripe_client = stripe
-                cls._stripe_client.api_key = api_key
+                cls._stripe_client.api_key = api_key  # type: ignore[attr-defined]
                 cls._stripe_available = True
                 logger.debug("Stripe client configured successfully")
             else:
@@ -870,7 +870,7 @@ class PaymentExtensionStripeProvider(AbstractPaymentProvider):
                 intent_data["metadata"] = metadata
 
             # Create payment intent
-            intent = stripe_client.PaymentIntent.create(**intent_data)
+            intent = stripe_client.PaymentIntent.create(**intent_data)  # type: ignore[attr-defined]
 
             return {
                 "success": True,
@@ -989,7 +989,7 @@ class PaymentExtensionStripeProvider(AbstractPaymentProvider):
             if metadata:
                 customer_data["metadata"] = metadata  # type: ignore[assignment]
 
-            customer = stripe_client.Customer.create(**customer_data)
+            customer = stripe_client.Customer.create(**customer_data)  # type: ignore[attr-defined]
 
             return {
                 "success": True,

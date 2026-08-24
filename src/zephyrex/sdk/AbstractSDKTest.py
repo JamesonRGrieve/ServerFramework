@@ -122,8 +122,8 @@ class AbstractSDKTest(AbstractTest, ABC):
     # Required overrides that child classes must provide
     sdk_class: Optional[Type[AbstractSDKHandler]] = None
     resource_name: Optional[str] = None
-    sample_data: Optional[Dict[str, Any]] = None
-    update_data: Optional[Dict[str, Any]] = None
+    sample_data: Dict[str, Any] = {}
+    update_data: Dict[str, Any] = {}
 
     # Optional overrides
     sdk_test_config: SDKTestConfig = SDKTestConfig()
@@ -224,6 +224,7 @@ class AbstractSDKTest(AbstractTest, ABC):
 
         # Create SDK with the test server's HTTP client
         # The SDK will make real HTTP requests through the TestClient
+        assert self.sdk_class is not None, "sdk_class must be set by the subclass"
         sdk = self.sdk_class(
             base_url=base_url,
             token=token,

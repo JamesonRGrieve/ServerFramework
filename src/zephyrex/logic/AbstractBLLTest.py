@@ -1554,7 +1554,7 @@ class AbstractBLLTest(AbstractTest):
     # Big-O scaling assertion for manager.list(). Runs automatically on
     # every entity; subclasses may override with a custom profile.
 
-    scalability_profile: Optional[ScalabilityProfile] = ScalabilityProfile.default(
+    scalability_profile: ScalabilityProfile = ScalabilityProfile.default(
         n_values=[3, 8, 20], repetitions=2
     )
 

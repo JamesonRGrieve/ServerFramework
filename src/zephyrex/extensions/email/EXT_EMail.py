@@ -828,7 +828,7 @@ class AbstractEmailProvider(AbstractStaticProvider):
                 importance=message.importance.value,
             )
         finally:
-            for tmp_path in legacy_attachments:
+            for tmp_path in legacy_attachments or []:
                 try:
                     os.unlink(tmp_path)
                 except OSError:

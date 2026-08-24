@@ -1227,7 +1227,7 @@ class AbstractDBTest(AbstractTest):
     # Big-O scaling assertion for sqlalchemy_model.list(). Runs automatically;
     # subclasses may override with a custom profile.
 
-    scalability_profile: Optional[ScalabilityProfile] = ScalabilityProfile.default(
+    scalability_profile: ScalabilityProfile = ScalabilityProfile.default(
         n_values=[3, 8, 20], repetitions=2
     )
 

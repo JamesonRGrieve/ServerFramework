@@ -1633,7 +1633,7 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
                 server, admin_a.jwt, admin_a.id, team_a.id
             )
 
-        search_body = {self.entity_name: {}}
+        search_body: Dict[str, Any] = {self.entity_name: {}}
         response = server.post(
             f"{self.get_list_endpoint(path_parent_ids_s)}/search?page=1&pageSize=2",
             json=search_body,
@@ -4627,8 +4627,8 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
     @pytest.mark.security
     def test_security_deeply_nested_json(self, server: Any, admin_a: Any, team_a: Any):
         """Deeply nested JSON must not cause stack overflow or 500."""
-        nested = {"a": None}
-        current = nested
+        nested: Dict[str, Any] = {"a": None}
+        current: Dict[str, Any] = nested
         for _ in range(100):
             current["a"] = {"a": None}
             current = current["a"]
@@ -5906,7 +5906,7 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
     # Big-O scaling assertion for GET-list endpoints. Runs automatically;
     # subclasses may override with a custom profile.
 
-    scalability_profile: Optional[ScalabilityProfile] = ScalabilityProfile.default(
+    scalability_profile: ScalabilityProfile = ScalabilityProfile.default(
         n_values=[3, 8, 20], repetitions=2
     )
 

@@ -48,8 +48,8 @@ try:
 
     _google_available = True
 except ImportError:  # pragma: no cover - optional driver
-    _GoogleCredentials = None  # type: ignore[assignment]
-    _google_build = None  # type: ignore[assignment]
+    _GoogleCredentials = None  # type: ignore[assignment,misc]
+    _google_build = None  # type: ignore[assignment,misc]
     _google_available = False
 
 

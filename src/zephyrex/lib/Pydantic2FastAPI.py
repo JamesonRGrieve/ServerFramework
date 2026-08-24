@@ -1875,12 +1875,12 @@ def handle_resource_operation_error(err: Exception) -> None:
     """Handle resource operation errors and raise appropriate HTTP exceptions."""
     if isinstance(err, ValidationError):
         try:
-            details = err.errors()
+            details: Any = err.errors()
             for error in details if isinstance(details, list) else []:
                 error.pop("input", None)
                 error.pop("ctx", None)
         except TypeError:
-            details = [str(err)]  # type: ignore[assignment]
+            details = [str(err)]
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=_error_envelope(
@@ -1894,7 +1894,7 @@ def handle_resource_operation_error(err: Exception) -> None:
         )
     elif isinstance(err, HTTPException):
         if isinstance(err.detail, str):
-            err.detail = _error_envelope(err.detail)
+            err.detail = _error_envelope(err.detail)  # type: ignore[assignment]
         raise err
     elif isinstance(err, (TypeError, AttributeError, KeyError)):
         raise HTTPException(
@@ -3506,14 +3506,16 @@ def register_route(
                     sort_order=actual_sort_order,
                     page=actual_page,
                     pageSize=actual_page_size,
-                    **search_data,
+                    **(search_data if isinstance(search_data, dict) else {}),
                 )
 
                 _search_result_count = (
                     len(search_results) if isinstance(search_results, list) else 0
                 )
                 try:
-                    _search_total = actual_manager.count(**search_data)
+                    _search_total = actual_manager.count(
+                        **(search_data if isinstance(search_data, dict) else {})
+                    )
                 except (AttributeError, TypeError):
                     _search_total = _search_result_count
                 _search_pagination_meta = {

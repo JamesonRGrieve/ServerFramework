@@ -509,6 +509,7 @@ class TestErrorResponseTranscoding:
         resp = client.get("/error", headers={"Accept": MIME_TOON})
         assert resp.status_code == 422
         data = toon_decode(resp.text)
+        assert isinstance(data, dict)
         assert data["detail"] == "Validation error"
 
 
