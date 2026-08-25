@@ -126,6 +126,21 @@ def setup_sqlite_for_concurrency(engine):
         finally:
             cursor.close()
 
+    @event.listens_for(engine, "checkout")
+    def _fresh_read_snapshot(dbapi_connection, connection_record, connection_proxy):
+        # WAL readers see a snapshot fixed at the start of their read
+        # transaction. A pooled connection can carry a read transaction — and
+        # thus a stale snapshot — from prior use, so a security-critical read
+        # (e.g. session-revocation enforcement) can intermittently miss a
+        # just-committed write: a read-your-writes violation that surfaces as an
+        # xdist flake. Roll back on checkout so the next read opens a fresh
+        # transaction against the latest committed WAL state. SQLite-only
+        # (production is Postgres/MVCC, unaffected).
+        try:
+            dbapi_connection.rollback()
+        except Exception:
+            pass
+
 
 def get_database_info(db_prefix: str = ""):
     """Get database configuration information.
