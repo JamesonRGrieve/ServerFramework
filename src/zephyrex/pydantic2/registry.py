@@ -2404,14 +2404,11 @@ class ModelRegistry(AbstractRegistry):
         Returns:
             tuple: (imported_modules, import_errors)
         """
-        import ast
         import glob
         import importlib
         import os
         import sys
-        from functools import lru_cache
 
-        import networkx as nx
         from sqlalchemy.orm import configure_mappers
 
         from zephyrex.lib.Environment import env
@@ -2516,6 +2513,19 @@ class ModelRegistry(AbstractRegistry):
             # Get all matching files
             all_files = glob.glob(files_pattern)
 
+            # Also discover package-form modules: a ``{file_type}_*`` directory
+            # that is a Python package (has an ``__init__.py``). A decomposed
+            # module (e.g. ``logic/BLL_Auth/``) is a directory, so the flat file
+            # glob above no longer sees it; importing its ``__init__`` — which
+            # re-exports the package's models/managers — makes discovery bind
+            # them exactly as it did for the single-file form.
+            all_files += [
+                os.path.join(entry, "__init__.py")
+                for entry in glob.glob(os.path.join(scope_dir, f"{file_type}_*"))
+                if os.path.isdir(entry)
+                and os.path.isfile(os.path.join(entry, "__init__.py"))
+            ]
+
             # Filter out test files
             matching_files = [
                 f for f in all_files if not os.path.basename(f).endswith("_test.py")
@@ -2557,7 +2567,12 @@ class ModelRegistry(AbstractRegistry):
             module_name = None
             for scope, files in files_by_scope.items():
                 if file_path in files:
-                    stem = os.path.basename(file_path)[:-3]
+                    # A package-form module is matched via its ``__init__.py``;
+                    # its module name is the package directory, not "__init__".
+                    if os.path.basename(file_path) == "__init__.py":
+                        stem = os.path.basename(os.path.dirname(file_path))
+                    else:
+                        stem = os.path.basename(file_path)[:-3]
                     canonical = (
                         f"zephyrex.{scope}.{stem}"
                         if not scope.startswith("zephyrex.")
@@ -2633,6 +2648,13 @@ class ModelRegistry(AbstractRegistry):
                     if module_name in sys.modules:
                         logger.debug(f"Reusing already imported module: {module_name}")
                         module = sys.modules[module_name]
+                    elif os.path.basename(file_path) == "__init__.py":
+                        # Package-form BLL module (e.g. ``logic/BLL_Auth/``):
+                        # import through normal package machinery so the
+                        # package ``__path__`` and its submodule imports resolve
+                        # — ``spec_from_file_location`` on an ``__init__`` would
+                        # not set up the package search path.
+                        module = importlib.import_module(module_name)
                     else:
                         spec = importlib.util.spec_from_file_location(
                             module_name, file_path
@@ -2706,7 +2728,6 @@ class ModelRegistry(AbstractRegistry):
         Returns:
             tuple: (ordered_files, module_graph, module_to_file)
         """
-        import ast
 
         import networkx as nx
 
@@ -2814,10 +2835,14 @@ class ModelRegistry(AbstractRegistry):
         Returns:
             tuple: (module_name, dependencies, defined_classes, imports)
         """
-        import ast
         import os
 
-        current_module = f"{scope}.{os.path.basename(file_path)[:-3]}"
+        if os.path.basename(file_path) == "__init__.py":
+            # Package-form module: name it after the package dir, not "__init__"
+            # (otherwise every ``{TYPE}_*/__init__.py`` collides on one key).
+            current_module = f"{scope}.{os.path.basename(os.path.dirname(file_path))}"
+        else:
+            current_module = f"{scope}.{os.path.basename(file_path)[:-3]}"
 
         try:
             # Use AST to parse the file
@@ -3230,7 +3255,6 @@ class ModelRegistry(AbstractRegistry):
     def _load_extension_ep_files(self, extension_names):
         """Load EP (endpoint) files for specified extensions."""
         import glob
-        import importlib.util
         import os
         import sys
 
