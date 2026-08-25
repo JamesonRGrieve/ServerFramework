@@ -1144,6 +1144,23 @@ def build_app(model_registry: ModelRegistry):
         ops_router = create_operations_router(db_check=_db_health_check)
         app.include_router(ops_router)
 
+        # Dev-only Mermaid ERD of every entity (issue #224). Gated exactly like
+        # /openapi.json — absent in production unless EXPOSE_DOCS=true — so it
+        # never exposes the schema surface on a live deployment. The builder
+        # lives in the metadata extension; the route reads the committed model
+        # registry metadata (tables, columns, FKs, comments).
+        if docs_enabled:
+            from fastapi.responses import PlainTextResponse
+
+            @app.get("/erd", tags=["Meta"], response_class=PlainTextResponse)
+            async def entity_erd() -> str:
+                from zephyrex.extensions.metadata.MermaidERD import (
+                    build_mermaid_erd,
+                )
+
+                erd: str = build_mermaid_erd(model_registry)
+                return erd
+
         @app.get("/v1", tags=["Authentication"], status_code=204)
         async def verify_jwt(request: Request):
             """Verify JWT token and return 204 if valid, 401 if invalid"""
