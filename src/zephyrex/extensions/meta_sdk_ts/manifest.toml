@@ -1,0 +1,12 @@
+name = "meta_sdk_ts"
+version = "1.0.0"
+description = "Opt-in generation of a typed TypeScript client SDK from the committed registry"
+author = "ZephyrexTechnologies"
+entry_module = "EXT_MetaSDKTs"
+minimum_framework_version = "0.0.0"
+
+pip_dependencies = []
+system_dependencies = []
+
+# Renders the same REST surface as meta_sdk_py / meta_sdk_rs from the shared
+# sdk/SDKModel.py IR, so all three language SDKs stay in lock-step.

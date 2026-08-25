@@ -1989,6 +1989,23 @@ class ModelRegistry(AbstractRegistry):
         else:
             logger.info(f"Skipping seeding because SEED_DATA='{seed_db_value}'")
 
+        # SDK generation is opt-in and owned by the ``meta_sdk_<lang>``
+        # extensions, each of which registers a language generator on
+        # ``_registry_hooks["generate_sdk"]`` at on_load. Every registered
+        # generator emits a typed client SDK (py/ts/rs) for this registry's
+        # RouterMixin-tagged managers; each self-gates on its configured output
+        # target, so enabling an extension without a destination is a no-op.
+        # Core never imports a generator — this mirrors ``bootstrap_federation``.
+        from zephyrex.lib.Hooks import _registry_hooks as _sdk_reg_hooks
+
+        for _sdk_language, _generate_sdk in _sdk_reg_hooks["generate_sdk"].items():
+            try:
+                _generate_sdk(model_registry=self)
+            except Exception as exc:  # noqa: BLE001 - never block boot on SDK gen
+                logger.warning(
+                    f"SDK generation ({_sdk_language}) failed during " f"commit: {exc}"
+                )
+
         logger.debug("Registry committed successfully")
         return self  # type: ignore[return-value]
 
@@ -2965,6 +2982,67 @@ class ModelRegistry(AbstractRegistry):
             f"Built {len(routers)} total routers (including nested) using RouterMixin approach"
         )
         return routers
+
+    def router_managers(self) -> list:
+        """Return the RouterMixin-tagged manager classes for this registry.
+
+        Read-only discovery: scoped-imports the BLL modules for the loaded
+        scopes and collects every ``*Manager`` class that subclasses
+        ``RouterMixin``, is defined in its own module, and carries both a
+        ``Router`` and a ``BaseModel`` — the exact predicate
+        ``build_all_routers_from_managers`` uses to decide what gets a router,
+        minus the router instantiation and its side effects.
+
+        The opt-in SDK emitters (``meta_sdk_py`` / ``meta_sdk_ts`` /
+        ``meta_sdk_rs``) consume this via ``sdk.SDKModel.extract_resources``
+        (``sdk.SDKGenerator._iter_manager_classes`` auto-detects the
+        ``router_managers`` accessor), so a generated client covers precisely
+        the mounted routes and cannot drift from them. Kept deliberately
+        separate from the builder: the builder re-raises on any
+        router-construction failure, which a read-only enumeration must never
+        do. Only invoked when SDK generation is actually requested (the emitters
+        self-gate on their output directory before calling this), so a normal
+        boot never pays for the scan.
+        """
+        import sys
+
+        from zephyrex.lib.Pydantic2FastAPI import RouterMixin
+
+        managers: list = []
+        seen: set = set()
+        try:
+            imported_modules, _ = self._scoped_import(
+                file_type="BLL", scopes=["logic", "extensions"]
+            )
+        except Exception as exc:  # noqa: BLE001 - discovery must not break callers
+            logger.debug(f"router_managers discovery import failed: {exc}")
+            return managers
+
+        for module_name in imported_modules:
+            if ".BLL_" not in module_name:
+                continue
+            module = sys.modules.get(module_name)
+            if not module:
+                continue
+            for attr_name in dir(module):
+                if not attr_name.endswith("Manager"):
+                    continue
+                attr = getattr(module, attr_name, None)
+                if (
+                    inspect.isclass(attr)
+                    and issubclass(attr, RouterMixin)
+                    and attr is not RouterMixin
+                    and hasattr(attr, "Router")
+                    and attr.__module__ == module_name
+                    and getattr(attr, "BaseModel", None) is not None
+                ):
+                    key = (attr.__module__, attr.__qualname__)
+                    if key not in seen:
+                        seen.add(key)
+                        managers.append(attr)
+
+        managers.sort(key=lambda c: (c.__module__, c.__qualname__))
+        return managers
 
     def build_all_routers_from_managers(self):
         """

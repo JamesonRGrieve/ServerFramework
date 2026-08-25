@@ -1,0 +1,13 @@
+name = "meta_sdk_rs"
+version = "1.0.0"
+description = "Opt-in generation of a typed Rust client SDK from the committed registry"
+author = "ZephyrexTechnologies"
+entry_module = "EXT_MetaSDKRs"
+minimum_framework_version = "0.0.0"
+
+pip_dependencies = []
+system_dependencies = []
+
+# Renders the same REST surface as meta_sdk_py / meta_sdk_ts from the shared
+# sdk/SDKModel.py IR. Generated Rust depends on reqwest + serde_json in the
+# consumer's own Cargo project (not a Python dependency of this extension).

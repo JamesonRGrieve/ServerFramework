@@ -1,0 +1,12 @@
+name = "meta_sdk_py"
+version = "1.0.0"
+description = "Opt-in generation of the typed Python client SDK from the committed registry"
+author = "ZephyrexTechnologies"
+entry_module = "EXT_MetaSDKPy"
+minimum_framework_version = "0.0.0"
+
+pip_dependencies = []
+system_dependencies = []
+
+# Sibling language SDKs are separate opt-in extensions (meta_sdk_ts, meta_sdk_rs)
+# that emit the same REST surface from the shared sdk/SDKModel.py IR.
