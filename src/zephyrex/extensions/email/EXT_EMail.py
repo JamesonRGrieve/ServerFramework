@@ -305,6 +305,15 @@ class EmailMessage(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+# Item 97 — persistent per-class transport for the send path. Cached BY PROVIDER
+# CLASS so the TokenBucket survives across send() calls: a bucket (or wrapper)
+# rebuilt per call would reset its burst allowance every time and throttle
+# nothing. Keyed by the concrete provider class so each provider gets its own
+# rate limit.
+_SEND_HTTP_CLIENTS: Dict[type, Any] = {}
+_SEND_RATE_BUCKETS: Dict[type, Any] = {}
+
+
 class AbstractEmailProvider(AbstractStaticProvider):
     """Abstract base class for email service providers."""
 
@@ -315,6 +324,49 @@ class AbstractEmailProvider(AbstractStaticProvider):
     # actually implement. Callers branch on ``Capability.X in cls.capabilities``
     # rather than catching ``NotImplementedError`` at the call site.
     capabilities: ClassVar[FrozenSet["Capability"]] = frozenset()
+
+    @classmethod
+    def _send_rate_bucket(cls) -> Any:
+        """Persistent per-class ``TokenBucket`` built once from the declared
+        ``rate_limit`` (``None`` when the provider declares none).
+
+        Caching the bucket across ``send`` calls is what lets it actually
+        throttle a 429 burst — a bucket rebuilt per call would reset its
+        allowance every time. Used directly by SMTP send paths (Stalwart) and
+        as the wrapper's limiter for HTTP send paths.
+        """
+        if cls not in _SEND_RATE_BUCKETS:
+            from zephyrex.extensions.RateLimit import RateLimit, TokenBucket
+
+            rl = getattr(cls, "rate_limit", None)
+            _SEND_RATE_BUCKETS[cls] = (
+                TokenBucket(rl) if isinstance(rl, RateLimit) else None
+            )
+        return _SEND_RATE_BUCKETS[cls]
+
+    @classmethod
+    def _send_http_client(cls) -> Any:
+        """Persistent per-class ``ProviderHTTPClient`` for HTTP send paths.
+
+        Gives ``send`` the shared client's SSRF guard, TLS/timeout policy and
+        connection pooling, plus trace propagation, log redaction, Retry-After
+        retry, and — via the persistent :meth:`_send_rate_bucket` — real
+        rate-limit throttling. Per-request auth is passed as an explicit header
+        at the call site, so the cached client holds no credential.
+        """
+        if cls not in _SEND_HTTP_CLIENTS:
+            from zephyrex.lib.ProviderHTTPClient import (
+                ClientPolicy,
+                ProviderHTTPClient,
+            )
+
+            _SEND_HTTP_CLIENTS[cls] = ProviderHTTPClient(
+                policy=ClientPolicy(timeout=30.0),
+                rate_limit=cls._send_rate_bucket(),
+                provider_name=getattr(cls, "name", cls.__name__),
+                provider=cls,
+            )
+        return _SEND_HTTP_CLIENTS[cls]
 
     # Item 90 — typed Settings model. Subclasses extend with provider-specific
     # required fields (api_key/host/etc.) and an `_env_field_map` that maps

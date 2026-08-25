@@ -318,8 +318,6 @@ class TestSendgridProvider(AbstractPRVTest, AbstractEmailProviderSecurityTests):
         if SendgridProvider.bond_instance(_MockProviderInstance()) is None:
             pytest.skip("sendgrid package not available to bond a client")
 
-        import zephyrex.lib.ProviderHTTPClient as php
-
         monkeypatch.setenv("SENDGRID_API_KEY", "SG.routing-test-key")
         monkeypatch.setenv("SENDGRID_FROM_EMAIL", "from@example.com")
 
@@ -336,7 +334,9 @@ class TestSendgridProvider(AbstractPRVTest, AbstractEmailProviderSecurityTests):
                 captured["json"] = kwargs.get("json")
                 return _Resp()
 
-        monkeypatch.setattr(php, "get_async_client", lambda policy: _FakeClient())
+        monkeypatch.setattr(
+            SendgridProvider, "_send_http_client", lambda: _FakeClient()
+        )
 
         instance = _MockProviderInstance(
             api_key="SG.routing-test-key", from_email="from@example.com"
@@ -352,6 +352,28 @@ class TestSendgridProvider(AbstractPRVTest, AbstractEmailProviderSecurityTests):
         # Mail.get() carries the sender + recipient in the v3 shape.
         assert captured["json"]["from"]["email"] == "from@example.com"
         assert "to@example.com" in str(captured["json"])
+
+    def test_send_http_client_is_persistent_and_throttled(self):
+        """#220: the send transport is a PERSISTENT ProviderHTTPClient carrying a
+        TokenBucket from the declared rate_limit, so 429 throttling survives
+        across calls (a fresh client/bucket per call would reset the allowance)."""
+        from zephyrex.extensions.RateLimit import TokenBucket
+        from zephyrex.lib.ProviderHTTPClient import ProviderHTTPClient
+
+        client1 = SendgridProvider._send_http_client()
+        client2 = SendgridProvider._send_http_client()
+        assert client1 is client2  # cached / persistent
+        assert isinstance(client1, ProviderHTTPClient)
+        assert isinstance(client1.rate_limit, TokenBucket)
+
+    def test_send_rate_bucket_is_persistent_and_per_provider(self):
+        """Each provider gets its own persistent bucket from its own rate_limit."""
+        from zephyrex.extensions.RateLimit import TokenBucket
+
+        sg = SendgridProvider._send_rate_bucket()
+        assert isinstance(sg, TokenBucket)
+        assert sg is SendgridProvider._send_rate_bucket()  # same instance
+        assert Smtp2goProvider._send_rate_bucket() is not sg  # per-provider
 
     @pytest.mark.asyncio
     async def test_get_emails_not_supported(self, provider_instance):

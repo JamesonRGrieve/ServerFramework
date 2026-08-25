@@ -342,10 +342,13 @@ class Smtp2goProvider(AbstractEmailProvider):
                 payload["attachments"] = payload_attachments
 
         try:
-            from zephyrex.lib.ProviderHTTPClient import ClientPolicy, get_async_client
-
-            shared = get_async_client(ClientPolicy(timeout=30.0))
-            response = await shared.post(
+            # Item 97 — route send through the provider's persistent
+            # ProviderHTTPClient (AbstractEmailProvider._send_http_client): the
+            # SSRF guard, TLS/timeout policy, pooling, trace, log redaction,
+            # Retry-After retry, and a persistent TokenBucket from the declared
+            # rate_limit so a 429 is throttled across calls. SMTP2go carries its
+            # api_key in the JSON body, so no auth header is needed.
+            response = await cls._send_http_client().post(
                 f"{config['api_url'].rstrip('/')}/email/send", json=payload
             )
             if 200 <= response.status_code < 300:

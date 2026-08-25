@@ -395,6 +395,14 @@ class StalwartProvider(AbstractEmailProvider):
                     )
 
             logger.debug(f"Sending Stalwart email to {recipient} from {from_email}")
+            # Item 97 — Stalwart submits over SMTP (aiosmtplib), not HTTP, so the
+            # ProviderHTTPClient wrapper does not apply. Acquire from the
+            # persistent per-class TokenBucket for the same rate-limit throttling
+            # the HTTP providers get on send (parity with the shared client's
+            # limiter).
+            bucket = cls._send_rate_bucket()
+            if bucket is not None:
+                bucket.acquire_blocking(timeout=30.0)
             await aiosmtplib.send(
                 message,
                 hostname=config["host"],

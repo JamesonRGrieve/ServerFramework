@@ -638,22 +638,19 @@ class SendgridProvider(AbstractEmailProvider):
                         message.attachment = attachment
 
             logger.debug(f"Sending email to {recipient} from {from_email}")
-            # Item 97 — route send through the shared ``ProviderHTTPClient``,
-            # the same async path SMTP2go's send uses (PRV_SMTP2Go_EMail), so it
-            # gets the SSRF guard, TLS/timeout policy, connection pooling, and
-            # trace/redaction hooks instead of the SendGrid SDK's direct urllib
-            # ``.send()``. ``Mail.get()`` produces the exact v3 ``/mail/send``
-            # payload the SDK would have posted. The API key is resolved
-            # per-request, so a rotated ``SENDGRID_API_KEY`` takes effect on the
-            # next send without a framework restart.
-            from zephyrex.lib.ProviderHTTPClient import (
-                ClientPolicy,
-                get_async_client,
-            )
-
+            # Item 97 — route send through the provider's persistent
+            # ``ProviderHTTPClient`` (AbstractEmailProvider._send_http_client),
+            # instead of the SendGrid SDK's direct urllib ``.send()``. The
+            # persistent client carries the SSRF guard, TLS/timeout policy,
+            # connection pooling, trace propagation, log redaction, Retry-After
+            # retry, AND a persistent TokenBucket from the declared ``rate_limit``
+            # so a 429 is actually throttled across calls. ``Mail.get()`` produces
+            # the exact v3 ``/mail/send`` payload. The API key is resolved
+            # per-request (passed as an explicit header, never cached on the
+            # client), so a rotated ``SENDGRID_API_KEY`` takes effect on the next
+            # send without a framework restart.
             api_key = provider_instance.api_key or env("SENDGRID_API_KEY")
-            shared = get_async_client(ClientPolicy(timeout=30.0))
-            response = await shared.post(
+            response = await cls._send_http_client().post(
                 "https://api.sendgrid.com/v3/mail/send",
                 headers={
                     "Authorization": f"Bearer {api_key}",
