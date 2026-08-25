@@ -13,7 +13,7 @@ import mimetypes
 import os
 from datetime import datetime
 from decimal import Decimal
-from typing import Any, ClassVar, Dict, List, Optional, Set
+from typing import Any, ClassVar, Dict, List, Optional, Set, Type
 
 from pydantic import EmailStr, SecretStr
 
@@ -38,6 +38,11 @@ from zephyrex.extensions.email.EXT_EMail import (
     _DeprecatedEnvDict,
 )
 from zephyrex.extensions.ExternalErrors import DegradationPolicy, fail_fast
+from zephyrex.extensions.Paginators import AbstractPaginator, PageTokenPaginator
+from zephyrex.extensions.QueryTranslators import (
+    AbstractQueryDSLTranslator,
+    IMAPSearchTranslator,
+)
 from zephyrex.extensions.RateLimit import RateLimit
 from zephyrex.lib.Dependencies import Dependencies, PIP_Dependency
 from zephyrex.lib.Environment import env
@@ -96,6 +101,11 @@ class StalwartProvider(AbstractEmailProvider):
     cost_model: ClassVar[ConstantCostModel] = ConstantCostModel(
         per_call_usd=Decimal("0.0001")
     )
+
+    # Item 93 — federation surface. Stalwart's message search is IMAP
+    # ``SEARCH`` (RFC 3501); results page via an opaque next-token cursor.
+    paginator: ClassVar[Type[AbstractPaginator]] = PageTokenPaginator
+    query_translator: ClassVar[Type[AbstractQueryDSLTranslator]] = IMAPSearchTranslator
 
     dependencies: ClassVar[Dependencies] = Dependencies(
         [

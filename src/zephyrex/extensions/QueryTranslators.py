@@ -382,6 +382,117 @@ class GraphQLFilterTranslator(AbstractQueryDSLTranslator):
         return out
 
 
+class IMAPSearchTranslator(AbstractQueryDSLTranslator):
+    """Canonical search model -> IMAP ``SEARCH`` criteria (RFC 3501 §6.4.4).
+
+    Maps message fields to their IMAP keys (``FROM``/``TO``/``SUBJECT``/
+    ``BODY``/``TEXT``/``CC``/``BCC``); any other field becomes a
+    ``HEADER <name> <value>`` criterion. Date fields translate to
+    ``SINCE``/``BEFORE``/``ON`` and size fields to ``LARGER``/``SMALLER``.
+    IMAP search matches substrings, so ``exact`` and ``inc`` (contains) both
+    emit the plain key; ``neq`` wraps the criterion in ``NOT``. Multiple
+    criteria are ANDed by juxtaposition, per the IMAP grammar.
+
+    Example: ``{"from": "alice"}`` -> ``FROM alice``.
+    """
+
+    supported_operators: ClassVar[Set[str]] = {
+        "exact",
+        "inc",
+        "neq",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+    }
+
+    _FIELD_KEYS: ClassVar[Dict[str, str]] = {
+        "from": "FROM",
+        "from_": "FROM",
+        "sender": "FROM",
+        "to": "TO",
+        "recipient": "TO",
+        "subject": "SUBJECT",
+        "body": "BODY",
+        "text": "TEXT",
+        "cc": "CC",
+        "bcc": "BCC",
+    }
+    _DATE_FIELDS: ClassVar[Set[str]] = {
+        "date",
+        "sent",
+        "received",
+        "since",
+        "before",
+        "on",
+    }
+    _SIZE_FIELDS: ClassVar[Set[str]] = {"size", "bytes"}
+
+    def _translate(self, flat: Dict[str, Any]) -> str:
+        criteria: List[str] = []
+        for field_name, value in flat.items():
+            for op, v in _normalize_field(value):
+                criterion = self._format_criterion(field_name, op, v)
+                if criterion:
+                    criteria.append(criterion)
+        return " ".join(criteria)
+
+    @classmethod
+    def _format_criterion(cls, field: str, op: str, value: Any) -> str:
+        key = field.lower()
+        if key in cls._DATE_FIELDS:
+            return cls._date_criterion(op, value)
+        if key in cls._SIZE_FIELDS:
+            return cls._size_criterion(op, value)
+        imap_key = cls._FIELD_KEYS.get(key)
+        rendered = cls._render_astring(value)
+        criterion = (
+            f"{imap_key} {rendered}"
+            if imap_key is not None
+            else f"HEADER {field} {rendered}"
+        )
+        return f"NOT {criterion}" if op == "neq" else criterion
+
+    @staticmethod
+    def _render_astring(value: Any) -> str:
+        """Render a value as an IMAP astring, quoting when it is empty or
+        carries characters that would break the bare-atom form."""
+        text = str(value)
+        if text == "" or any(ch in text for ch in ' ("){%*\\'):
+            escaped = text.replace("\\", "\\\\").replace('"', '\\"')
+            return f'"{escaped}"'
+        return text
+
+    @classmethod
+    def _date_criterion(cls, op: str, value: Any) -> str:
+        rendered = cls._render_date(value)
+        if op in ("gt", "gte"):
+            return f"SINCE {rendered}"
+        if op in ("lt", "lte"):
+            return f"BEFORE {rendered}"
+        return f"NOT ON {rendered}" if op == "neq" else f"ON {rendered}"
+
+    @staticmethod
+    def _render_date(value: Any) -> str:
+        from datetime import date as _date
+        from datetime import datetime as _datetime
+
+        if isinstance(value, (_date, _datetime)):
+            # IMAP date-text is ``dd-Mon-yyyy`` with a non-zero-padded day.
+            return f"{value.day}-{value.strftime('%b-%Y')}"
+        return str(value)
+
+    @classmethod
+    def _size_criterion(cls, op: str, value: Any) -> str:
+        n = int(value)
+        if op in ("gt", "gte"):
+            return f"LARGER {n}"
+        if op in ("lt", "lte"):
+            return f"SMALLER {n}"
+        # IMAP has no size-equality criterion; bound it tightly instead.
+        return f"LARGER {n - 1} SMALLER {n + 1}"
+
+
 __all__ = [
     "AbstractQueryDSLTranslator",
     "StripeSearchTranslator",
@@ -389,5 +500,6 @@ __all__ = [
     "MongoStyleTranslator",
     "SOQLTranslator",
     "GraphQLFilterTranslator",
+    "IMAPSearchTranslator",
     "ALL_OPERATORS",
 ]

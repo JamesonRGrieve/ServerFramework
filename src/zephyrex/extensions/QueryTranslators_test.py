@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from zephyrex.extensions.ExternalErrors import UnsupportedOperatorError
 from zephyrex.extensions.QueryTranslators import (
     GraphQLFilterTranslator,
+    IMAPSearchTranslator,
     KeyValueTranslator,
     MongoStyleTranslator,
     SOQLTranslator,
@@ -111,3 +112,51 @@ class TestPydanticIntegration:
         m = _SearchModel(name="Premium", is_active=True)
         out = t.translate(m)
         assert out == {"name": "Premium", "is_active": True}
+
+
+class TestIMAPSearchTranslator:
+    def test_from_maps_to_imap_search(self):
+        # The acceptance example: {"from": "alice"} -> SEARCH FROM alice.
+        assert IMAPSearchTranslator().translate({"from": "alice"}) == "FROM alice"
+
+    def test_multiple_fields_are_anded_by_juxtaposition(self):
+        out = IMAPSearchTranslator().translate({"from": "alice", "subject": "hello"})
+        assert out == "FROM alice SUBJECT hello"
+
+    def test_value_with_space_is_quoted(self):
+        out = IMAPSearchTranslator().translate({"subject": "quarterly report"})
+        assert out == 'SUBJECT "quarterly report"'
+
+    def test_contains_and_exact_both_emit_plain_key(self):
+        t = IMAPSearchTranslator()
+        assert t.translate({"subject": {"inc": "invoice"}}) == "SUBJECT invoice"
+        assert t.translate({"subject": "invoice"}) == "SUBJECT invoice"
+
+    def test_neq_wraps_criterion_in_not(self):
+        assert (
+            IMAPSearchTranslator().translate({"from": {"neq": "bob"}}) == "NOT FROM bob"
+        )
+
+    def test_unknown_field_becomes_header_criterion(self):
+        assert (
+            IMAPSearchTranslator().translate({"x-priority": "1"})
+            == "HEADER x-priority 1"
+        )
+
+    def test_date_operators_map_to_since_before_on(self):
+        from datetime import datetime
+
+        t = IMAPSearchTranslator()
+        d = datetime(2020, 1, 5)
+        assert t.translate({"date": {"gte": d}}) == "SINCE 5-Jan-2020"
+        assert t.translate({"date": {"lt": d}}) == "BEFORE 5-Jan-2020"
+        assert t.translate({"date": d}) == "ON 5-Jan-2020"
+
+    def test_size_operators_map_to_larger_smaller(self):
+        t = IMAPSearchTranslator()
+        assert t.translate({"size": {"gt": 1024}}) == "LARGER 1024"
+        assert t.translate({"size": {"lte": 2048}}) == "SMALLER 2048"
+
+    def test_unsupported_operator_raises(self):
+        with pytest.raises(UnsupportedOperatorError):
+            IMAPSearchTranslator().translate({"from": {"starts_with": "a"}})
