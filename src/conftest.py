@@ -389,7 +389,7 @@ def _reset_gql_contribution_registry_between_tests():
     MCP_security_test, ...). Reset per test so every schema build owns its state —
     the established per-test-isolation pattern.
     """
-    from zephyrex.lib.Pydantic2Strawberry import reset_gql_contribution_registry
+    from zephyrex.pydantic2.strawberry import reset_gql_contribution_registry
 
     reset_gql_contribution_registry()
     yield

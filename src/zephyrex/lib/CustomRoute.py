@@ -378,7 +378,7 @@ def register_custom_routes_to_graphql(
     Returns the number of fields registered (or skipped because the route is
     GraphQL-excluded).
     """
-    from zephyrex.lib.Pydantic2Strawberry import (
+    from zephyrex.pydantic2.strawberry import (
         FieldContribution,
         FieldKind,
         gql_contribution_registry,

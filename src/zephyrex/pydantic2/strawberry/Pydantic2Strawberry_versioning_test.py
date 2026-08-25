@@ -14,7 +14,7 @@ from __future__ import annotations
 import strawberry
 
 from zephyrex.lib.Pydantic2FastAPI import RouterMixin
-from zephyrex.lib.Pydantic2Strawberry import (
+from zephyrex.pydantic2.strawberry import (
     Sunset,
     _build_field_kwargs,
     _versioned_field,

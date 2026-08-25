@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field, create_model
 # Tests now use GraphQLManager and SchemaManager instances
 from zephyrex.lib.AbstractPydantic2Test import AbstractPydanticTestMixin
 from zephyrex.lib.Pydantic import ModelRegistry
-from zephyrex.lib.Pydantic2Strawberry import (
+from zephyrex.pydantic2.strawberry import (
     ANY_SCALAR,
     DICT_SCALAR,
     LIST_SCALAR,
@@ -320,14 +320,14 @@ class TestSchemaManager(AbstractPydanticTestMixin):
         first_model = create_model(
             "DuplicateGraphQLModel",
             __base__=BaseModel,
-            __module__="zephyrex.lib.Pydantic2Strawberry_test",
+            __module__="zephyrex.pydantic2.strawberry_test",
             id=(str, Field(..., description="Primary identifier")),
         )
 
         second_model = create_model(
             "DuplicateGraphQLModel",
             __base__=BaseModel,
-            __module__="zephyrex.lib.Pydantic2Strawberry_test",
+            __module__="zephyrex.pydantic2.strawberry_test",
             id=(str, Field(..., description="Replacement identifier")),
         )
 

@@ -2170,6 +2170,6 @@ def prepare_test_registry() -> None:
     # field/type/dataloader contributions as schemas are built, and a leftover
     # contribution from a prior test (e.g. an extension route like ``issue_route``)
     # poisons a later schema build with UnresolvedFieldTypeError under xdist.
-    from zephyrex.lib.Pydantic2Strawberry import reset_gql_contribution_registry
+    from zephyrex.pydantic2.strawberry import reset_gql_contribution_registry
 
     reset_gql_contribution_registry()

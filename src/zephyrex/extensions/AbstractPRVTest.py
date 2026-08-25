@@ -15,7 +15,7 @@ from zephyrex.extensions.AbstractExtensionProvider import AbstractStaticProvider
 from zephyrex.lib.Dependencies import Dependencies
 from zephyrex.lib.Environment import inflection
 from zephyrex.lib.Logging import logger
-from zephyrex.lib.Pydantic2Strawberry import convert_field_name
+from zephyrex.pydantic2.strawberry import convert_field_name
 
 T = TypeVar("T", bound=AbstractStaticProvider)
 

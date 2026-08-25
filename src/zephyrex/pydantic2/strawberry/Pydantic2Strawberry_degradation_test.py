@@ -18,7 +18,7 @@ from zephyrex.extensions.ExternalErrors import (
     QueuedForRetry,
     SilentDropped,
 )
-from zephyrex.lib.Pydantic2Strawberry import (
+from zephyrex.pydantic2.strawberry import (
     QueuedForRetryGQL,
     SilentDroppedGQL,
     degradation_aware,

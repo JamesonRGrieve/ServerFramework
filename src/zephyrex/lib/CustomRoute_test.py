@@ -22,7 +22,7 @@ from zephyrex.lib.CustomRoute import (
     reset_graphql_registrations,
     write_test_scaffold,
 )
-from zephyrex.lib.Pydantic2Strawberry import (
+from zephyrex.pydantic2.strawberry import (
     FieldKind,
     GraphQLContributionRegistry,
 )

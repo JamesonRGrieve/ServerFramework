@@ -80,7 +80,7 @@ def _make_manager(granted: set[str], cls=_FakeManagerWithBaseModel):
 def _make_graphql_manager() -> Any:
     """Build a GraphQLManager with a stub model registry — only the
     helper method is exercised so the registry contents do not matter."""
-    from zephyrex.lib.Pydantic2Strawberry import GraphQLManager
+    from zephyrex.pydantic2.strawberry import GraphQLManager
 
     registry = MagicMock()
     registry.model_relationships = []
@@ -265,7 +265,7 @@ def test_helper_called_in_query_resolver_source():
     Item 45 contract."""
     import inspect
 
-    from zephyrex.lib.Pydantic2Strawberry import GraphQLManager
+    from zephyrex.pydantic2.strawberry import GraphQLManager
 
     src = inspect.getsource(GraphQLManager._add_query_resolver)
     assert src.count("self._apply_field_acl") >= 2  # user + non-user branches
@@ -274,7 +274,7 @@ def test_helper_called_in_query_resolver_source():
 def test_helper_called_in_list_resolver_source():
     import inspect
 
-    from zephyrex.lib.Pydantic2Strawberry import GraphQLManager
+    from zephyrex.pydantic2.strawberry import GraphQLManager
 
     src = inspect.getsource(GraphQLManager._add_list_query_resolver)
     assert "self._apply_field_acl" in src
@@ -283,7 +283,7 @@ def test_helper_called_in_list_resolver_source():
 def test_helper_called_in_create_resolver_source():
     import inspect
 
-    from zephyrex.lib.Pydantic2Strawberry import GraphQLManager
+    from zephyrex.pydantic2.strawberry import GraphQLManager
 
     src = inspect.getsource(GraphQLManager._add_create_mutation_resolver)
     assert "self._apply_field_acl" in src
@@ -292,7 +292,7 @@ def test_helper_called_in_create_resolver_source():
 def test_helper_called_in_update_resolver_source():
     import inspect
 
-    from zephyrex.lib.Pydantic2Strawberry import GraphQLManager
+    from zephyrex.pydantic2.strawberry import GraphQLManager
 
     src = inspect.getsource(GraphQLManager._add_update_mutation_resolver)
     assert "self._apply_field_acl" in src

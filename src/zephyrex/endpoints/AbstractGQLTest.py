@@ -6,7 +6,7 @@ import stringcase
 
 from zephyrex.lib.Environment import env, inflection
 from zephyrex.lib.Logging import logger
-from zephyrex.lib.Pydantic2Strawberry import convert_field_name
+from zephyrex.pydantic2.strawberry import convert_field_name
 
 if TYPE_CHECKING:
     from faker import Faker

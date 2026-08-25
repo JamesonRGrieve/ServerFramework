@@ -11,7 +11,7 @@ from zephyrex.AbstractTest import ParentEntity, SkipThisTest
 from zephyrex.endpoints.AbstractEPTest import AbstractEPTest, HttpMethod, StatusCode
 from zephyrex.lib.Environment import env
 from zephyrex.lib.Logging import logger
-from zephyrex.lib.Pydantic2Strawberry import convert_field_name
+from zephyrex.pydantic2.strawberry import convert_field_name
 
 from zephyrex.extensions.auth_invitations.BLL_Invitations import InvitationModel
 from zephyrex.logic.BLL_Auth import RoleModel, TeamModel, UserModel

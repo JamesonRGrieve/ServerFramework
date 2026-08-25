@@ -15,7 +15,7 @@ from typing import Any, List, Optional
 import pytest
 import strawberry
 
-from zephyrex.lib.Pydantic2Strawberry import (
+from zephyrex.pydantic2.strawberry import (
     DataLoaderSpec,
     FederationDirective,
     FieldContribution,

@@ -1974,7 +1974,7 @@ class ModelRegistry(AbstractRegistry):
             except Exception:  # noqa: BLE001 - a model that cannot rebuild
                 pass  # here will surface its own error at schema generation
 
-        from zephyrex.lib.Pydantic2Strawberry import GraphQLManager
+        from zephyrex.pydantic2.strawberry import GraphQLManager
 
         # Create schema using the new instance-based GraphQLManager
         self.graphql_manager = GraphQLManager(self)

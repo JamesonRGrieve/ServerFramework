@@ -12,7 +12,7 @@ from zephyrex.endpoints.EP_Auth_test import (
 from zephyrex.extensions.AbstractEXTTest import ExtensionServerMixin
 from zephyrex.extensions.payment.EXT_Payment import EXT_Payment
 from zephyrex.lib.Environment import env
-from zephyrex.lib.Pydantic2Strawberry import convert_field_name
+from zephyrex.pydantic2.strawberry import convert_field_name
 from zephyrex.lib.Logging import logger
 
 
