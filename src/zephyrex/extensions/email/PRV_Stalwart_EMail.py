@@ -9,12 +9,14 @@ depends only on ``aiosmtplib`` + the standard-library ``email`` package.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import mimetypes
 import os
 from datetime import datetime
 from decimal import Decimal
 from email.utils import formataddr, parseaddr
-from typing import Any, ClassVar, Dict, List, Optional, Set, Type
+from typing import Any, ClassVar, Dict, List, Mapping, Optional, Set, Type
 
 from pydantic import EmailStr, SecretStr
 
@@ -35,8 +37,10 @@ from zephyrex.extensions.email.EmailErrors import (
 from zephyrex.extensions.email.EXT_EMail import (
     AbstractEmailProvider,
     Capability,
+    EmailDeliveryEvent,
     EmailMessage,
     Importance,
+    dispatch_email_delivery_event,
     _DeprecatedEnvDict,
 )
 from zephyrex.extensions.ExternalErrors import DegradationPolicy, fail_fast
@@ -292,6 +296,40 @@ class StalwartProvider(AbstractEmailProvider):
             logger.error(f"Failed to bond Stalwart instance: {e}")
             return None
 
+    # Item 94 — inbound webhook (inbound-mail) verification. Stalwart signs each
+    # callback with HMAC-SHA256 over the raw body.
+    STALWART_WEBHOOK_SECRET_ENV: ClassVar[str] = "STALWART_WEBHOOK_SECRET"
+    STALWART_SIGNATURE_HEADER: ClassVar[str] = "x-stalwart-signature"
+
+    @classmethod
+    def verify_signature(cls, headers: Mapping[str, str], body: bytes) -> bool:
+        """Verify a Stalwart webhook via HMAC-SHA256 over the raw body.
+
+        Stalwart signs each callback with HMAC-SHA256 of the raw request body
+        keyed by ``STALWART_WEBHOOK_SECRET``, presented hex-encoded in the
+        ``X-Stalwart-Signature`` header (an optional ``sha256=`` prefix is
+        tolerated). Compared in constant time. Returns False on missing
+        secret/header or mismatch; never raises.
+        """
+        secret = env(cls.STALWART_WEBHOOK_SECRET_ENV)
+        if not secret:
+            logger.warning(
+                f"Stalwart webhook verification: {cls.STALWART_WEBHOOK_SECRET_ENV} "
+                "not set; rejecting."
+            )
+            return False
+        normalized = {k.lower(): v for k, v in (headers or {}).items()}
+        provided = normalized.get(cls.STALWART_SIGNATURE_HEADER, "") or ""
+        if not provided:
+            logger.debug("Stalwart webhook missing signature header; rejecting.")
+            return False
+        if provided.lower().startswith("sha256="):
+            provided = provided[7:]
+        expected = hmac.new(
+            secret.encode("utf-8"), body or b"", hashlib.sha256
+        ).hexdigest()
+        return hmac.compare_digest(expected, provided)
+
     @classmethod
     @ability(name="email_send")
     async def send_email(
@@ -488,3 +526,83 @@ class StalwartProvider(AbstractEmailProvider):
                 )
                 failed += 1
         return {"results": results, "succeeded": succeeded, "failed": failed}
+
+
+# ============================================================================
+# Item 94 — inbound webhook handlers (Stalwart inbound-mail + delivery events).
+# On dispatch the handler normalises the payload into a canonical
+# `EmailDeliveryEvent` and fans it through `dispatch_email_delivery_event`.
+# ============================================================================
+
+
+def _ts_to_float(value: Any) -> Optional[float]:
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+class _EmailExtensionStub:
+    """Pass-through stub for ``webhook_handler``'s ``extension_class``; pins the
+    extension name to ``"email"`` so registration doesn't depend on
+    ``EXT_EMail``'s module-load order (mirrors ``PRV_SendGrid_EMail``)."""
+
+    extension_name = "email"
+
+
+def _coerce_stalwart_event(raw: Dict[str, Any], event_type: str) -> EmailDeliveryEvent:
+    """Translate one Stalwart hook row into an ``EmailDeliveryEvent``."""
+    return EmailDeliveryEvent(
+        message_id=str(
+            raw.get("message-id", "")
+            or raw.get("message_id", "")
+            or raw.get("queue-id", "")
+            or ""
+        ),
+        provider="stalwart",
+        event_type=event_type,
+        recipient=raw.get("rcpt", "") or raw.get("to", "") or "",
+        timestamp=_ts_to_float(raw.get("ts") or raw.get("timestamp")),
+        raw=raw,
+    )
+
+
+async def _dispatch_stalwart_events(payload: Any, fallback_event: str) -> None:
+    """Fan a Stalwart webhook payload (list, single dict, or ``{"events": [...]}``
+    envelope) through the canonical hook bus."""
+    rows: List[Dict[str, Any]]
+    if isinstance(payload, list):
+        rows = payload
+    elif isinstance(payload, dict):
+        rows = (
+            payload["events"] if isinstance(payload.get("events"), list) else [payload]
+        )
+    else:
+        return
+    for row in rows:
+        event_type = row.get("event") or row.get("type") or fallback_event
+        await dispatch_email_delivery_event(_coerce_stalwart_event(row, event_type))
+
+
+def _register_stalwart_webhook_handlers() -> None:
+    """Register Stalwart inbound-mail + delivery webhook handlers + wire the
+    verifier. Idempotent; a no-op if the optional ``webhooks`` extension isn't
+    loaded."""
+    try:
+        from zephyrex.extensions.webhooks import WebhookContext, webhook_handler
+        from zephyrex.extensions.webhooks.BLL_Webhooks import _PROVIDER_CLASSES
+    except ImportError:
+        return
+
+    for event_name in ("inbound", "delivered", "bounce"):
+
+        @webhook_handler(_EmailExtensionStub, provider="stalwart", event=event_name)
+        async def _handler(ctx: "WebhookContext", _evt: str = event_name) -> None:
+            await _dispatch_stalwart_events(ctx.payload, _evt)
+
+    # Wire Stalwart as the verifier for `(email, stalwart)` so the webhook router
+    # calls `StalwartProvider.verify_signature` at dispatch time.
+    _PROVIDER_CLASSES[("email", "stalwart")] = StalwartProvider
+
+
+_register_stalwart_webhook_handlers()

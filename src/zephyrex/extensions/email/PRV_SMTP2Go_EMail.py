@@ -4,12 +4,13 @@
 from __future__ import annotations
 
 import base64
+import hmac
 import mimetypes
 import os
 from datetime import datetime
 from decimal import Decimal
 from email.utils import formataddr, parseaddr
-from typing import Any, ClassVar, Dict, List, Optional, Set, Type
+from typing import Any, ClassVar, Dict, List, Mapping, Optional, Set, Type
 
 from pydantic import EmailStr, HttpUrl, SecretStr
 
@@ -29,8 +30,10 @@ from zephyrex.extensions.email.EmailErrors import (
 from zephyrex.extensions.email.EXT_EMail import (
     AbstractEmailProvider,
     Capability,
+    EmailDeliveryEvent,
     EmailMessage,
     Importance,
+    dispatch_email_delivery_event,
     _DeprecatedEnvDict,
 )
 from zephyrex.extensions.ExternalErrors import DegradationPolicy, fail_fast
@@ -242,6 +245,34 @@ class Smtp2goProvider(AbstractEmailProvider):
             logger.error(f"Failed to bond SMTP2go instance: {e}")
             return None
 
+    # Item 94 — inbound webhook (bounce-activity) verification. SMTP2go
+    # authenticates its callbacks with a bearer token.
+    SMTP2GO_WEBHOOK_SECRET_ENV: ClassVar[str] = "SMTP2GO_WEBHOOK_SECRET"
+
+    @classmethod
+    def verify_signature(cls, headers: Mapping[str, str], body: bytes) -> bool:
+        """Verify an SMTP2go webhook via a bearer-token check.
+
+        SMTP2go authenticates its webhook callbacks with a bearer token in the
+        ``Authorization`` header; we compare it in constant time against
+        ``SMTP2GO_WEBHOOK_SECRET``. Returns False on missing secret/header or
+        mismatch; never raises.
+        """
+        secret = env(cls.SMTP2GO_WEBHOOK_SECRET_ENV)
+        if not secret:
+            logger.warning(
+                f"SMTP2go webhook verification: {cls.SMTP2GO_WEBHOOK_SECRET_ENV} "
+                "not set; rejecting."
+            )
+            return False
+        normalized = {k.lower(): v for k, v in (headers or {}).items()}
+        auth = normalized.get("authorization", "") or ""
+        token = auth[7:] if auth.lower().startswith("bearer ") else auth
+        if not token:
+            logger.debug("SMTP2go webhook missing bearer token; rejecting.")
+            return False
+        return hmac.compare_digest(token, secret)
+
     @classmethod
     @ability(name="email_send")
     async def send_email(
@@ -446,3 +477,78 @@ class Smtp2goProvider(AbstractEmailProvider):
                 )
                 failed += 1
         return {"results": results, "succeeded": succeeded, "failed": failed}
+
+
+# ============================================================================
+# Item 94 — inbound webhook handlers (SMTP2go bounce activity).
+# Each event type registers via `@webhook_handler(..., provider="smtp2go", ...)`;
+# on dispatch the handler normalises the payload into a canonical
+# `EmailDeliveryEvent` and fans it through `dispatch_email_delivery_event`.
+# ============================================================================
+
+
+def _ts_to_float(value: Any) -> Optional[float]:
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+class _EmailExtensionStub:
+    """Pass-through stub for ``webhook_handler``'s ``extension_class``; pins the
+    extension name to ``"email"`` so registration doesn't depend on
+    ``EXT_EMail``'s module-load order (mirrors ``PRV_SendGrid_EMail``)."""
+
+    extension_name = "email"
+
+
+def _coerce_smtp2go_event(raw: Dict[str, Any], event_type: str) -> EmailDeliveryEvent:
+    """Translate one SMTP2go bounce-activity row into an ``EmailDeliveryEvent``."""
+    return EmailDeliveryEvent(
+        message_id=str(raw.get("message-id", "") or raw.get("message_id", "") or ""),
+        provider="smtp2go",
+        event_type=event_type,
+        recipient=raw.get("rcpt", "") or raw.get("email", "") or "",
+        timestamp=_ts_to_float(raw.get("ts") or raw.get("timestamp")),
+        raw=raw,
+    )
+
+
+async def _dispatch_smtp2go_events(payload: Any, fallback_event: str) -> None:
+    """Fan an SMTP2go webhook payload (list, single dict, or ``{"data": [...]}``
+    envelope) through the canonical hook bus."""
+    rows: List[Dict[str, Any]]
+    if isinstance(payload, list):
+        rows = payload
+    elif isinstance(payload, dict):
+        rows = payload["data"] if isinstance(payload.get("data"), list) else [payload]
+    else:
+        return
+    for row in rows:
+        event_type = row.get("event") or row.get("type") or fallback_event
+        await dispatch_email_delivery_event(_coerce_smtp2go_event(row, event_type))
+
+
+def _register_smtp2go_webhook_handlers() -> None:
+    """Register SMTP2go bounce-activity webhook handlers + wire the verifier.
+
+    Idempotent; a no-op if the optional ``webhooks`` extension isn't loaded.
+    """
+    try:
+        from zephyrex.extensions.webhooks import WebhookContext, webhook_handler
+        from zephyrex.extensions.webhooks.BLL_Webhooks import _PROVIDER_CLASSES
+    except ImportError:
+        return
+
+    for event_name in ("bounce", "spam", "unsubscribe"):
+
+        @webhook_handler(_EmailExtensionStub, provider="smtp2go", event=event_name)
+        async def _handler(ctx: "WebhookContext", _evt: str = event_name) -> None:
+            await _dispatch_smtp2go_events(ctx.payload, _evt)
+
+    # Wire SMTP2go as the verifier for `(email, smtp2go)` so the webhook router
+    # calls `Smtp2goProvider.verify_signature` at dispatch time.
+    _PROVIDER_CLASSES[("email", "smtp2go")] = Smtp2goProvider
+
+
+_register_smtp2go_webhook_handlers()

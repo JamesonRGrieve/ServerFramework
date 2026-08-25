@@ -729,3 +729,102 @@ def test_validate_address_against_sendgrid_sandbox():
     )
     result = _run(inst.validate_address("contact@sendgrid.com"))
     assert isinstance(result, EmailValidationResult)
+
+
+# ---------------------------------------------------------------------------
+# Item 94 — SMTP2go & Stalwart inbound webhook handlers (mirror the SendGrid
+# webhook tests: signature verify + canonical-event dispatch).
+# ---------------------------------------------------------------------------
+
+
+def test_smtp2go_verify_signature_bearer(monkeypatch):
+    monkeypatch.setenv("SMTP2GO_WEBHOOK_SECRET", "sekret")
+    assert (
+        Smtp2goProvider.verify_signature({"Authorization": "Bearer sekret"}, b"{}")
+        is True
+    )
+    assert (
+        Smtp2goProvider.verify_signature({"Authorization": "Bearer nope"}, b"{}")
+        is False
+    )
+    assert Smtp2goProvider.verify_signature({}, b"{}") is False
+
+
+def test_smtp2go_verify_signature_no_secret_rejects(monkeypatch):
+    monkeypatch.delenv("SMTP2GO_WEBHOOK_SECRET", raising=False)
+    assert (
+        Smtp2goProvider.verify_signature({"Authorization": "Bearer x"}, b"{}") is False
+    )
+
+
+def test_dispatch_smtp2go_events_normalises_payload():
+    from zephyrex.extensions.email.PRV_SMTP2Go_EMail import _dispatch_smtp2go_events
+
+    captured = []
+
+    async def cb(evt):
+        captured.append(evt)
+
+    subscribe_email_delivery(cb)
+    try:
+        payload = {"data": [{"event": "bounce", "rcpt": "a@b.c", "message-id": "m-1"}]}
+        _run(_dispatch_smtp2go_events(payload, "bounce"))
+        assert len(captured) == 1
+        e = captured[0]
+        assert e.provider == "smtp2go"
+        assert e.event_type == "bounce"
+        assert e.recipient == "a@b.c"
+        assert e.message_id == "m-1"
+    finally:
+        unsubscribe_email_delivery(cb)
+
+
+def test_stalwart_verify_signature_hmac(monkeypatch):
+    monkeypatch.setenv("STALWART_WEBHOOK_SECRET", "hmackey")
+    body = b'{"event":"inbound"}'
+    sig = hmac.new(b"hmackey", body, hashlib.sha256).hexdigest()
+    assert (
+        StalwartProvider.verify_signature({"X-Stalwart-Signature": sig}, body) is True
+    )
+    assert (
+        StalwartProvider.verify_signature(
+            {"X-Stalwart-Signature": "sha256=" + sig}, body
+        )
+        is True
+    )
+    assert (
+        StalwartProvider.verify_signature({"X-Stalwart-Signature": "bad"}, body)
+        is False
+    )
+    assert StalwartProvider.verify_signature({}, body) is False
+
+
+def test_stalwart_verify_signature_no_secret_rejects(monkeypatch):
+    monkeypatch.delenv("STALWART_WEBHOOK_SECRET", raising=False)
+    assert (
+        StalwartProvider.verify_signature({"X-Stalwart-Signature": "x"}, b"{}") is False
+    )
+
+
+def test_dispatch_stalwart_events_normalises_payload():
+    from zephyrex.extensions.email.PRV_Stalwart_EMail import _dispatch_stalwart_events
+
+    captured = []
+
+    async def cb(evt):
+        captured.append(evt)
+
+    subscribe_email_delivery(cb)
+    try:
+        payload = {
+            "events": [{"event": "inbound", "rcpt": "in@b.c", "message-id": "s-1"}]
+        }
+        _run(_dispatch_stalwart_events(payload, "inbound"))
+        assert len(captured) == 1
+        e = captured[0]
+        assert e.provider == "stalwart"
+        assert e.event_type == "inbound"
+        assert e.recipient == "in@b.c"
+        assert e.message_id == "s-1"
+    finally:
+        unsubscribe_email_delivery(cb)
