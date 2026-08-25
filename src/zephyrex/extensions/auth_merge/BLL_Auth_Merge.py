@@ -27,7 +27,7 @@ from zephyrex.lib.CustomRoute import custom_route
 from zephyrex.lib.Environment import env
 from zephyrex.lib.InboundSecurity import DEFAULT_AUTH_RATE_LIMIT, rate_limit
 from zephyrex.lib.Logging import logger
-from zephyrex.lib.Pydantic2FastAPI import AuthType, RouteType, RouterMixin
+from zephyrex.pydantic2.fastapi import AuthType, RouteType, RouterMixin
 from zephyrex.lib.ReplayCache import get_replay_cache
 from zephyrex.logic.AbstractLogicManager import (
     AbstractBLLManager,

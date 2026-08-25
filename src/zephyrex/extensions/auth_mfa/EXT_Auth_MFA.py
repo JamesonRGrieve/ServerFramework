@@ -13,7 +13,7 @@ from zephyrex.extensions.auth_mfa.BLL_Auth_MFA import (
 )
 from zephyrex.lib.Dependencies import Dependencies, PIP_Dependency
 from zephyrex.lib.Logging import logger
-from zephyrex.lib.Pydantic2FastAPI import AuthType, static_route
+from zephyrex.pydantic2.fastapi import AuthType, static_route
 from zephyrex.logic.BLL_Auth import UserManager
 
 

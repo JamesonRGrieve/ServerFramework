@@ -855,7 +855,7 @@ def build_app(model_registry: ModelRegistry):
     from starlette.requests import Request as StarletteRequest
     from starlette.responses import Response as StarletteResponse
 
-    from zephyrex.lib.Pydantic2FastAPI import _error_envelope
+    from zephyrex.pydantic2.fastapi import _error_envelope
 
     @app.exception_handler(json.JSONDecodeError)
     async def json_decode_error_handler(request: Request, exc: json.JSONDecodeError):

@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 from zephyrex.lib.Environment import env
 from zephyrex.lib.Logging import logger
 from zephyrex.lib.Pydantic import BaseModel  # type: ignore[no-redef]
-from zephyrex.lib.Pydantic2FastAPI import AuthType, RouterMixin
+from zephyrex.pydantic2.fastapi import AuthType, RouterMixin
 from zephyrex.logic.AbstractLogicManager import (
     AbstractBLLManager,
     ApplicationModel,

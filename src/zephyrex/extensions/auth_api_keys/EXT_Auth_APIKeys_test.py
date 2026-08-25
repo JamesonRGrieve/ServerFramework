@@ -23,7 +23,7 @@ from zephyrex.extensions.auth_api_keys.BLL_Auth_APIKeys import (
 from zephyrex.extensions.auth_api_keys.EXT_Auth_APIKeys import (
     EXT_Auth_APIKeys,
 )
-from zephyrex.lib.Pydantic2FastAPI import RouteType
+from zephyrex.pydantic2.fastapi import RouteType
 
 
 class TestCanonicalWiring:

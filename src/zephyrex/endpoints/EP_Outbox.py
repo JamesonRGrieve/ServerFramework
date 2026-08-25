@@ -14,7 +14,7 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from zephyrex.lib.Logging import logger
-from zephyrex.lib.Pydantic2FastAPI import AuthType, get_auth_dependency
+from zephyrex.pydantic2.fastapi import AuthType, get_auth_dependency
 
 
 def _resolve_default_store() -> Optional[Any]:

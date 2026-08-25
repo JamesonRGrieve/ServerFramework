@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Tests for the language-agnostic SDK IR (sdk/SDKModel.py, issue #217)."""
 
-from zephyrex.lib.Pydantic2FastAPI import RouterMixin
+from zephyrex.pydantic2.fastapi import RouterMixin
 from zephyrex.sdk.SDKModel import (
     STANDARD_OPERATIONS,
     ResourceDescriptor,

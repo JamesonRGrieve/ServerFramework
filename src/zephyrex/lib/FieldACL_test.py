@@ -380,7 +380,7 @@ class _FakeManager:
 
 
 def test_resolve_has_permission_no_requester():
-    from zephyrex.lib.Pydantic2FastAPI import _resolve_has_permission
+    from zephyrex.pydantic2.fastapi import _resolve_has_permission
 
     class M:
         requester = None
@@ -389,7 +389,7 @@ def test_resolve_has_permission_no_requester():
 
 
 def test_resolve_has_permission_no_method():
-    from zephyrex.lib.Pydantic2FastAPI import _resolve_has_permission
+    from zephyrex.pydantic2.fastapi import _resolve_has_permission
 
     class R:
         id = "r1"
@@ -401,7 +401,7 @@ def test_resolve_has_permission_no_method():
 
 
 def test_resolve_has_permission_returns_callable():
-    from zephyrex.lib.Pydantic2FastAPI import _resolve_has_permission
+    from zephyrex.pydantic2.fastapi import _resolve_has_permission
 
     mgr = _FakeManager({"auth.user.read_ssn"})
     fn = _resolve_has_permission(mgr)
@@ -411,7 +411,7 @@ def test_resolve_has_permission_returns_callable():
 
 
 def test_apply_field_acl_to_payload_filters_dict():
-    from zephyrex.lib.Pydantic2FastAPI import apply_field_acl_to_payload
+    from zephyrex.pydantic2.fastapi import apply_field_acl_to_payload
 
     mgr = _FakeManager(set())
     user = UserModel(id=1, name="Alice", ssn="123", salary=1.0).model_dump()
@@ -421,7 +421,7 @@ def test_apply_field_acl_to_payload_filters_dict():
 
 
 def test_apply_field_acl_to_payload_no_op_when_no_permission_function():
-    from zephyrex.lib.Pydantic2FastAPI import apply_field_acl_to_payload
+    from zephyrex.pydantic2.fastapi import apply_field_acl_to_payload
 
     class M:
         requester = None
@@ -432,7 +432,7 @@ def test_apply_field_acl_to_payload_no_op_when_no_permission_function():
 
 
 def test_apply_field_acl_to_payload_respects_grant():
-    from zephyrex.lib.Pydantic2FastAPI import apply_field_acl_to_payload
+    from zephyrex.pydantic2.fastapi import apply_field_acl_to_payload
 
     mgr = _FakeManager(
         {"auth.user.read_ssn", "hr.compensation.read", "hr.employee.read"}
@@ -446,7 +446,7 @@ def test_apply_field_acl_to_payload_respects_grant():
 def test_validate_field_acl_query_raises_on_restricted_sort():
     from fastapi import HTTPException
 
-    from zephyrex.lib.Pydantic2FastAPI import validate_field_acl_query
+    from zephyrex.pydantic2.fastapi import validate_field_acl_query
 
     mgr = _FakeManager(set())
     with pytest.raises(HTTPException) as exc:
@@ -456,14 +456,14 @@ def test_validate_field_acl_query_raises_on_restricted_sort():
 
 
 def test_validate_field_acl_query_passes_when_grant_held():
-    from zephyrex.lib.Pydantic2FastAPI import validate_field_acl_query
+    from zephyrex.pydantic2.fastapi import validate_field_acl_query
 
     mgr = _FakeManager({"auth.user.read_ssn"})
     validate_field_acl_query(mgr, UserModel, ["ssn"], "sort_by")  # no raise
 
 
 def test_validate_field_acl_query_no_op_without_resolver():
-    from zephyrex.lib.Pydantic2FastAPI import validate_field_acl_query
+    from zephyrex.pydantic2.fastapi import validate_field_acl_query
 
     class M:
         requester = None

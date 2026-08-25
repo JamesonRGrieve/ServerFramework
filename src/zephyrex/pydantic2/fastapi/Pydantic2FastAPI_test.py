@@ -5,7 +5,7 @@ from fastapi import APIRouter, FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from pydantic import BaseModel, ValidationError
 
-from zephyrex.lib.Pydantic2FastAPI import (
+from zephyrex.pydantic2.fastapi import (
     AuthType,
     CustomRouteConfig,
     ExampleGenerator,

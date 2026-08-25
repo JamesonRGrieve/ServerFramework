@@ -6,7 +6,7 @@ from zephyrex.extensions.meta_sdk_ts.TypeScriptSDKEmitter import (
     SDK_TS_OUTPUT_DIR_ENV,
     generate_typescript_sdk,
 )
-from zephyrex.lib.Pydantic2FastAPI import RouterMixin
+from zephyrex.pydantic2.fastapi import RouterMixin
 
 
 class MetaSdkTsWidgetManager(RouterMixin):

@@ -11,7 +11,7 @@ from zephyrex.lib.Environment import env
 from zephyrex.lib.InboundSecurity import LockoutPolicy, LockoutTracker
 from zephyrex.lib.Logging import logger
 from zephyrex.lib.Pydantic import BaseModel  # type: ignore[no-redef]
-from zephyrex.lib.Pydantic2FastAPI import AuthType, RouterMixin, RouteType
+from zephyrex.pydantic2.fastapi import AuthType, RouterMixin, RouteType
 
 # Encryption-at-rest for ``totp_secret``. Implementation lives in the shared
 # helper so every extension that persists secrets uses the same envelope and

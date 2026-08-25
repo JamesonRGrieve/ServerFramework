@@ -6,7 +6,7 @@ from zephyrex.extensions.meta_sdk_rs.RustSDKEmitter import (
     SDK_RS_OUTPUT_DIR_ENV,
     generate_rust_sdk,
 )
-from zephyrex.lib.Pydantic2FastAPI import RouterMixin
+from zephyrex.pydantic2.fastapi import RouterMixin
 
 
 class MetaSdkRsWidgetManager(RouterMixin):

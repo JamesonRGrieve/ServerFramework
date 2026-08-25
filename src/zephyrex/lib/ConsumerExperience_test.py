@@ -204,7 +204,7 @@ class TestRouterAutoGeneration:
     def test_prefix_derived_from_manager_name(self):
         """create_router_from_manager derives /v1/<resource> from the manager name."""
         import stringcase
-        from zephyrex.lib.Pydantic2FastAPI import create_router_from_manager
+        from zephyrex.pydantic2.fastapi import create_router_from_manager
         from zephyrex.pydantic2.sqlalchemy import ApplicationModel
         from zephyrex.logic.AbstractLogicManager import AbstractBLLManager
 

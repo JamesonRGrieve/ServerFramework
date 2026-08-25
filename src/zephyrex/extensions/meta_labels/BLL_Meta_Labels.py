@@ -24,7 +24,7 @@ from pydantic import BaseModel, Field
 
 from zephyrex.lib.CustomRoute import ExposeIn, custom_route
 from zephyrex.lib.Environment import env
-from zephyrex.lib.Pydantic2FastAPI import AuthType, RouterMixin
+from zephyrex.pydantic2.fastapi import AuthType, RouterMixin
 from zephyrex.logic.AbstractLogicManager import (
     AbstractBLLManager,
     ApplicationModel,

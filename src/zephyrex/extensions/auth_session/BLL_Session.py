@@ -24,7 +24,7 @@ from pydantic import Field
 
 from zephyrex.lib.Environment import env
 from zephyrex.lib.Pydantic import BaseModel
-from zephyrex.lib.Pydantic2FastAPI import (
+from zephyrex.pydantic2.fastapi import (
     AuthType,
     RouteType,
     RouterMixin,

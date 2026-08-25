@@ -22,7 +22,7 @@ from typing import ClassVar, List, Optional, Type
 from fastapi import HTTPException
 from pydantic import BaseModel, Field, model_validator
 
-from zephyrex.lib.Pydantic2FastAPI import AuthType, RouteType, RouterMixin
+from zephyrex.pydantic2.fastapi import AuthType, RouteType, RouterMixin
 from zephyrex.logic.AbstractLogicManager import (
     AbstractBLLManager,
     ApplicationModel,

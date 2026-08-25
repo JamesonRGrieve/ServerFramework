@@ -9,7 +9,7 @@ from zephyrex.extensions.meta_sdk_py.PythonSDKEmitter import (
     SDK_PY_OUTPUT_DIR_ENV,
     generate_python_sdk,
 )
-from zephyrex.lib.Pydantic2FastAPI import RouterMixin
+from zephyrex.pydantic2.fastapi import RouterMixin
 
 
 class MetaSdkPyFooManager(RouterMixin):

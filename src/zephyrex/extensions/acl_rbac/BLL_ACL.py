@@ -17,7 +17,7 @@ from fastapi import HTTPException
 from pydantic import Field, model_validator
 
 from zephyrex.lib.Pydantic import BaseModel
-from zephyrex.lib.Pydantic2FastAPI import AuthType, RouterMixin
+from zephyrex.pydantic2.fastapi import AuthType, RouterMixin
 from zephyrex.logic.AbstractLogicManager import (
     AbstractBLLManager,
     ApplicationModel,

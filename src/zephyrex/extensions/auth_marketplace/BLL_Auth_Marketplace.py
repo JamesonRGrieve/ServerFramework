@@ -13,7 +13,7 @@ from typing import ClassVar, List, Optional, Type
 
 from pydantic import BaseModel, Field
 
-from zephyrex.lib.Pydantic2FastAPI import AuthType, RouterMixin
+from zephyrex.pydantic2.fastapi import AuthType, RouterMixin
 from zephyrex.logic.AbstractLogicManager import (
     AbstractBLLManager,
     ApplicationModel,

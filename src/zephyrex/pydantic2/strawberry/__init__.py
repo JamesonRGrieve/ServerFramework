@@ -1800,7 +1800,7 @@ class GraphQLManager(ErrorHandlerMixin):
             return result
         try:
             from zephyrex.lib.FieldACL import apply_field_acl_to_response
-            from zephyrex.lib.Pydantic2FastAPI import _resolve_has_permission
+            from zephyrex.pydantic2.fastapi import _resolve_has_permission
         except Exception:
             return result
 

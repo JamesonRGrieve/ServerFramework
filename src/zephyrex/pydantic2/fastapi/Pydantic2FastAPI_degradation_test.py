@@ -12,7 +12,7 @@ from zephyrex.extensions.ExternalErrors import (
     QueuedForRetry,
     SilentDropped,
 )
-from zephyrex.lib.Pydantic2FastAPI import (
+from zephyrex.pydantic2.fastapi import (
     _degradation_responses_annotation,
     _render_degradation_sentinel,
 )

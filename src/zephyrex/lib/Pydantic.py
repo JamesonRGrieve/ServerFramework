@@ -15,7 +15,7 @@ from typing import (
     get_origin,
 )
 
-from zephyrex.lib.Pydantic2FastAPI import generate_routers_from_model_registry
+from zephyrex.pydantic2.fastapi import generate_routers_from_model_registry
 
 try:
     from zoneinfo import ZoneInfo
@@ -3006,7 +3006,7 @@ class ModelRegistry(AbstractRegistry):
         """
         import sys
 
-        from zephyrex.lib.Pydantic2FastAPI import RouterMixin
+        from zephyrex.pydantic2.fastapi import RouterMixin
 
         managers: list = []
         seen: set = set()
@@ -3067,7 +3067,7 @@ class ModelRegistry(AbstractRegistry):
 
             import sys
 
-            from zephyrex.lib.Pydantic2FastAPI import RouterMixin
+            from zephyrex.pydantic2.fastapi import RouterMixin
 
             # Find all BLL manager classes with RouterMixin
             for module_name in imported_modules:

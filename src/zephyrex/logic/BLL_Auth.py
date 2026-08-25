@@ -66,7 +66,7 @@ from zephyrex.lib.InboundSecurity import (
 )
 from zephyrex.lib.Logging import logger
 from zephyrex.lib.Pydantic import BaseModel  # type: ignore[no-redef]
-from zephyrex.lib.Pydantic2FastAPI import (
+from zephyrex.pydantic2.fastapi import (
     AuthType,
     RequestInfo,
     RouterMixin,
