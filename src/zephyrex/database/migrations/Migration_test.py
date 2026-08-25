@@ -61,7 +61,7 @@ def booted_app(tmp_path, monkeypatch):
             _env_mod.settings, "DATABASE_NAME", "database", raising=False
         )
 
-        from zephyrex.lib.Pydantic2SQLAlchemy import clear_registry_cache
+        from zephyrex.pydantic2.sqlalchemy import clear_registry_cache
 
         clear_registry_cache()
 
@@ -732,7 +732,7 @@ def test_run_migrations_env_false_skips_migrations(tmp_path, monkeypatch):
     monkeypatch.setattr(_env_mod.settings, "DATABASE_TYPE", "sqlite", raising=False)
     monkeypatch.setattr(_env_mod.settings, "DATABASE_NAME", "database", raising=False)
 
-    from zephyrex.lib.Pydantic2SQLAlchemy import clear_registry_cache
+    from zephyrex.pydantic2.sqlalchemy import clear_registry_cache
 
     clear_registry_cache()
 

@@ -24,7 +24,7 @@ from sqlalchemy.orm import sessionmaker
 
 from zephyrex.lib.Logging import logger
 from zephyrex.lib.Pydantic import BaseNetworkModel
-from zephyrex.lib.Pydantic2SQLAlchemy import (
+from zephyrex.pydantic2.sqlalchemy import (
     ApplicationModel,
     ImageMixinModel,
     ParentMixinModel,

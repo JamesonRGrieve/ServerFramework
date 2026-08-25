@@ -30,7 +30,7 @@ def _worker_db_prefix(label: str) -> str:
 
 
 def _reset_registry():
-    from zephyrex.lib.Pydantic2SQLAlchemy import (
+    from zephyrex.pydantic2.sqlalchemy import (
         clear_registry_cache,
         reset_extension_system,
     )
@@ -83,7 +83,7 @@ class TestSQLAlchemyModelCreation:
     def test_create_models(self, count):
         from sqlalchemy.orm import DeclarativeBase
         from zephyrex.lib.Pydantic import ModelRegistry
-        from zephyrex.lib.Pydantic2SQLAlchemy import (
+        from zephyrex.pydantic2.sqlalchemy import (
             ApplicationModel,
             create_sqlalchemy_model,
         )
@@ -112,7 +112,7 @@ class TestSQLAlchemyModelCreation:
 class TestRouteGenerationPerformance:
     def test_prefix_derivation(self):
         import stringcase
-        from zephyrex.lib.Pydantic2SQLAlchemy import ApplicationModel
+        from zephyrex.pydantic2.sqlalchemy import ApplicationModel
         from zephyrex.logic.AbstractLogicManager import AbstractBLLManager
 
         managers = []

@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from zephyrex.lib.Logging import logger
 from zephyrex.lib.Pydantic import ModelRegistry, PydanticUtility, obj_to_dict
-from zephyrex.lib.Pydantic2SQLAlchemy import DatabaseMixin
+from zephyrex.pydantic2.sqlalchemy import DatabaseMixin
 
 # Access the utility functions from PydanticUtility
 # Instead of importing functions directly that might not exist as standalone functions
@@ -1153,7 +1153,7 @@ class TestModelRegistry:
 
     def test_model_registry_commit_process(self):
         """Test the complete ModelRegistry commit process."""
-        from zephyrex.lib.Pydantic2SQLAlchemy import DatabaseMixin
+        from zephyrex.pydantic2.sqlalchemy import DatabaseMixin
 
         registry = ModelRegistry()
 
@@ -1189,7 +1189,7 @@ class TestModelRegistry:
 
     def test_model_registry_isolation(self):
         """Test that ModelRegistry instances are properly isolated."""
-        from zephyrex.lib.Pydantic2SQLAlchemy import DatabaseMixin
+        from zephyrex.pydantic2.sqlalchemy import DatabaseMixin
 
         registry1 = ModelRegistry()
         registry2 = ModelRegistry()
@@ -1228,7 +1228,7 @@ class TestModelRegistry:
         """Test that DatabaseMixin properly handles error states."""
         from sqlalchemy.orm import declarative_base
 
-        from zephyrex.lib.Pydantic2SQLAlchemy import DatabaseMixin
+        from zephyrex.pydantic2.sqlalchemy import DatabaseMixin
 
         class UnboundModel(BaseModel, DatabaseMixin):
             name: str = Field(..., description="Test name")
@@ -1245,7 +1245,7 @@ class TestModelRegistry:
 
     def test_model_registry_with_extensions(self):
         """Test ModelRegistry with extension models."""
-        from zephyrex.lib.Pydantic2SQLAlchemy import DatabaseMixin, extension_model
+        from zephyrex.pydantic2.sqlalchemy import DatabaseMixin, extension_model
 
         registry = ModelRegistry()
 
@@ -1266,7 +1266,7 @@ class TestModelRegistry:
 
     def test_model_registry_clear_functionality(self):
         """Test that ModelRegistry.clear() works correctly."""
-        from zephyrex.lib.Pydantic2SQLAlchemy import DatabaseMixin
+        from zephyrex.pydantic2.sqlalchemy import DatabaseMixin
 
         registry = ModelRegistry()
 
@@ -1342,7 +1342,7 @@ class TestModelRegistry:
 
         from sqlalchemy.orm import declarative_base
 
-        from zephyrex.lib.Pydantic2SQLAlchemy import DatabaseMixin
+        from zephyrex.pydantic2.sqlalchemy import DatabaseMixin
 
         results = []
 

@@ -21,7 +21,7 @@ from fastapi.testclient import TestClient
 from zephyrex.bootstrap import setup_python_path
 from zephyrex.lib.Environment import refresh_settings
 from zephyrex.lib.Logging import logger
-from zephyrex.lib.Pydantic2SQLAlchemy import prepare_test_registry
+from zephyrex.pydantic2.sqlalchemy import prepare_test_registry
 from zephyrex.testing.factories import (
     add_user_to_team,
     authorize_user,

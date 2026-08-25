@@ -11,7 +11,7 @@ from zephyrex.extensions.payment.PRV_Stripe_Payment import (
     Stripe_CustomerModel,
 )
 from zephyrex.lib.Logging import logger
-from zephyrex.lib.Pydantic2SQLAlchemy import extension_model
+from zephyrex.pydantic2.sqlalchemy import extension_model
 from zephyrex.logic.AbstractLogicManager import HookContext, hook_bll
 from zephyrex.logic.BLL_Auth import UserManager, UserModel
 

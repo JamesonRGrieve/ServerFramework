@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from zephyrex.extensions.database.EXT_Database import EXT_Database
 from zephyrex.lib.Environment import env
 from zephyrex.lib.Logging import logger
-from zephyrex.lib.Pydantic2SQLAlchemy import extension_model
+from zephyrex.pydantic2.sqlalchemy import extension_model
 from zephyrex.logic.AbstractLogicManager import (
     AbstractBLLManager,
     HookContext,

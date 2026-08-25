@@ -2012,7 +2012,7 @@ class ModelRegistry(AbstractRegistry):
     def _process_extensions(self) -> None:
         """Process all registered model extensions."""
         from zephyrex.lib.Logging import logger
-        from zephyrex.lib.Pydantic2SQLAlchemy import _apply_model_extension
+        from zephyrex.pydantic2.sqlalchemy import _apply_model_extension
 
         logger.debug(
             f"_process_extensions called with extension_registry: {self.extension_registry}"
@@ -2299,7 +2299,7 @@ class ModelRegistry(AbstractRegistry):
                         )
                 else:
                     try:
-                        from zephyrex.lib.Pydantic2SQLAlchemy import (
+                        from zephyrex.pydantic2.sqlalchemy import (
                             create_sqlalchemy_model,
                         )
 

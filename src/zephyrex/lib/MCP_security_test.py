@@ -27,7 +27,7 @@ def mcp_app(tmp_path_factory):
     os.environ["MCP"] = "true"
 
     from zephyrex.lib.Environment import refresh_settings
-    from zephyrex.lib.Pydantic2SQLAlchemy import (
+    from zephyrex.pydantic2.sqlalchemy import (
         clear_registry_cache,
         reset_extension_system,
     )

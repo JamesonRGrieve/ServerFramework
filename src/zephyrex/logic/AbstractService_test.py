@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from zephyrex.database.StaticPermissions import ROOT_ID
 from zephyrex.lib.Logging import logger
-from zephyrex.lib.Pydantic2SQLAlchemy import DatabaseMixin
+from zephyrex.pydantic2.sqlalchemy import DatabaseMixin
 
 # Import shared test entities from AbstractLogicManager_test.py
 from zephyrex.logic.AbstractLogicManager import ApplicationModel, UpdateMixinModel

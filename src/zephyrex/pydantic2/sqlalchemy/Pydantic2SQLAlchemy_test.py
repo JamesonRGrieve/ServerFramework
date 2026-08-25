@@ -12,7 +12,7 @@ from zephyrex.logic.BLL_Auth import RoleModel, TeamModel
 from zephyrex.database.DatabaseManager import DatabaseManager
 from zephyrex.lib.Logging import logger
 from zephyrex.lib.Pydantic import ModelRegistry
-from zephyrex.lib.Pydantic2SQLAlchemy import (
+from zephyrex.pydantic2.sqlalchemy import (
     ApplicationModel,
     DatabaseMixin,
     ImageMixinModel,
@@ -634,7 +634,7 @@ from pydantic import BaseModel as PydanticBaseModel
 from sqlalchemy import Boolean, Column, DateTime, Float, Integer, JSON, String
 from sqlalchemy.orm import declared_attr
 
-from zephyrex.lib.Pydantic2SQLAlchemy import (
+from zephyrex.pydantic2.sqlalchemy import (
     RemoveField,
     _apply_model_extension,
     _create_column_from_field,
@@ -760,13 +760,13 @@ class TestExtractMixinClasses:
     """Parameterized tests for _extract_mixin_classes."""
 
     def test_application_model_gives_base_mixin(self):
-        from zephyrex.lib.Pydantic2SQLAlchemy import BaseMixin
+        from zephyrex.pydantic2.sqlalchemy import BaseMixin
 
         result = _extract_mixin_classes(ApplicationModel)
         assert BaseMixin in result
 
     def test_update_mixin(self):
-        from zephyrex.lib.Pydantic2SQLAlchemy import UpdateMixin
+        from zephyrex.pydantic2.sqlalchemy import UpdateMixin
 
         class M(ApplicationModel, UpdateMixinModel):
             pass
@@ -775,7 +775,7 @@ class TestExtractMixinClasses:
         assert UpdateMixin in result
 
     def test_image_mixin(self):
-        from zephyrex.lib.Pydantic2SQLAlchemy import ImageMixin
+        from zephyrex.pydantic2.sqlalchemy import ImageMixin
 
         class M(ApplicationModel, ImageMixinModel):
             pass
@@ -784,7 +784,7 @@ class TestExtractMixinClasses:
         assert ImageMixin in result
 
     def test_parent_mixin(self):
-        from zephyrex.lib.Pydantic2SQLAlchemy import ParentRelationshipMixin
+        from zephyrex.pydantic2.sqlalchemy import ParentRelationshipMixin
 
         class M(ApplicationModel, ParentMixinModel):
             pass
@@ -945,12 +945,12 @@ class TestAnalyzeModelDependencies:
     """Tests for _analyze_model_dependencies topological sort."""
 
     def test_empty_input(self):
-        from zephyrex.lib.Pydantic2SQLAlchemy import _analyze_model_dependencies
+        from zephyrex.pydantic2.sqlalchemy import _analyze_model_dependencies
 
         assert _analyze_model_dependencies({}) == []
 
     def test_single_model_no_deps(self):
-        from zephyrex.lib.Pydantic2SQLAlchemy import _analyze_model_dependencies
+        from zephyrex.pydantic2.sqlalchemy import _analyze_model_dependencies
 
         class SimpleModel(PydanticBaseModel):
             name: str
@@ -959,7 +959,7 @@ class TestAnalyzeModelDependencies:
         assert result == ["SimpleModel"]
 
     def test_skips_reference_and_network_models(self):
-        from zephyrex.lib.Pydantic2SQLAlchemy import _analyze_model_dependencies
+        from zephyrex.pydantic2.sqlalchemy import _analyze_model_dependencies
 
         class AModel(PydanticBaseModel):
             name: str
@@ -982,7 +982,7 @@ class TestAnalyzeModelDependencies:
         assert "ANetworkModel" not in result
 
     def test_dependency_ordering(self):
-        from zephyrex.lib.Pydantic2SQLAlchemy import _analyze_model_dependencies
+        from zephyrex.pydantic2.sqlalchemy import _analyze_model_dependencies
 
         class ParentModel(PydanticBaseModel):
             name: str
@@ -1003,7 +1003,7 @@ class TestAnalyzeModelDependencies:
         assert result.index("ParentModel") < result.index("ChildModel")
 
     def test_circular_deps_handled(self):
-        from zephyrex.lib.Pydantic2SQLAlchemy import _analyze_model_dependencies
+        from zephyrex.pydantic2.sqlalchemy import _analyze_model_dependencies
 
         class AModel(PydanticBaseModel):
             name: str
@@ -1032,12 +1032,12 @@ class TestResolveSqlalchemyModel:
     """Tests for _resolve_sqlalchemy_model."""
 
     def test_none_registry_returns_none(self):
-        from zephyrex.lib.Pydantic2SQLAlchemy import _resolve_sqlalchemy_model
+        from zephyrex.pydantic2.sqlalchemy import _resolve_sqlalchemy_model
 
         assert _resolve_sqlalchemy_model(None, ["User"]) is None
 
     def test_finds_exact_match(self):
-        from zephyrex.lib.Pydantic2SQLAlchemy import _resolve_sqlalchemy_model
+        from zephyrex.pydantic2.sqlalchemy import _resolve_sqlalchemy_model
 
         mock_model = type("User", (), {})
         registry = MagicMock()
@@ -1045,7 +1045,7 @@ class TestResolveSqlalchemyModel:
         assert _resolve_sqlalchemy_model(registry, ["User"]) is mock_model
 
     def test_case_insensitive_match(self):
-        from zephyrex.lib.Pydantic2SQLAlchemy import _resolve_sqlalchemy_model
+        from zephyrex.pydantic2.sqlalchemy import _resolve_sqlalchemy_model
 
         mock_model = type("UserModel", (), {})
         registry = MagicMock()
@@ -1053,7 +1053,7 @@ class TestResolveSqlalchemyModel:
         assert _resolve_sqlalchemy_model(registry, ["usermodel"]) is mock_model
 
     def test_no_match_returns_none(self):
-        from zephyrex.lib.Pydantic2SQLAlchemy import _resolve_sqlalchemy_model
+        from zephyrex.pydantic2.sqlalchemy import _resolve_sqlalchemy_model
 
         registry = MagicMock()
         registry.db_models = {}
@@ -1064,12 +1064,12 @@ class TestQueuePendingRelationship:
     """Tests for _queue_pending_relationship."""
 
     def test_none_registry_is_noop(self):
-        from zephyrex.lib.Pydantic2SQLAlchemy import _queue_pending_relationship
+        from zephyrex.pydantic2.sqlalchemy import _queue_pending_relationship
 
         _queue_pending_relationship(None, "Source", "rel", ["Target"], {})
 
     def test_creates_pending_list_and_appends(self):
-        from zephyrex.lib.Pydantic2SQLAlchemy import _queue_pending_relationship
+        from zephyrex.pydantic2.sqlalchemy import _queue_pending_relationship
 
         registry = MagicMock(spec=[])
         _queue_pending_relationship(
@@ -1085,7 +1085,7 @@ class TestApplyNestedModelExtensions:
     """Tests for _apply_nested_model_extensions."""
 
     def test_adds_field_to_nested_create(self):
-        from zephyrex.lib.Pydantic2SQLAlchemy import _apply_nested_model_extensions
+        from zephyrex.pydantic2.sqlalchemy import _apply_nested_model_extensions
 
         class Target(PydanticBaseModel):
             name: str
@@ -1102,7 +1102,7 @@ class TestApplyNestedModelExtensions:
         assert "bonus" in Target.Create.__annotations__
 
     def test_creates_missing_nested_class(self):
-        from zephyrex.lib.Pydantic2SQLAlchemy import _apply_nested_model_extensions
+        from zephyrex.pydantic2.sqlalchemy import _apply_nested_model_extensions
 
         class Target(PydanticBaseModel):
             name: str
@@ -1117,7 +1117,7 @@ class TestApplyNestedModelExtensions:
         assert "extra" in Target.Update.__annotations__
 
     def test_removes_field_from_nested(self):
-        from zephyrex.lib.Pydantic2SQLAlchemy import (
+        from zephyrex.pydantic2.sqlalchemy import (
             RemoveField,
             _apply_nested_model_extensions,
         )
@@ -1174,7 +1174,7 @@ class TestFixNullTypeColumns:
     """Tests for _fix_null_type_columns."""
 
     def test_no_table_is_noop(self):
-        from zephyrex.lib.Pydantic2SQLAlchemy import _fix_null_type_columns
+        from zephyrex.pydantic2.sqlalchemy import _fix_null_type_columns
 
         class NoTable:
             pass
@@ -1185,7 +1185,7 @@ class TestFixNullTypeColumns:
         from sqlalchemy import Column, MetaData, Table
         from sqlalchemy.sql.sqltypes import NullType
 
-        from zephyrex.lib.Pydantic2SQLAlchemy import _fix_null_type_columns
+        from zephyrex.pydantic2.sqlalchemy import _fix_null_type_columns
 
         metadata = MetaData()
         table = Table("test", metadata, Column("user_id", NullType()))
@@ -1200,7 +1200,7 @@ class TestFixNullTypeColumns:
         from sqlalchemy import Column, DateTime, MetaData, Table
         from sqlalchemy.sql.sqltypes import NullType
 
-        from zephyrex.lib.Pydantic2SQLAlchemy import _fix_null_type_columns
+        from zephyrex.pydantic2.sqlalchemy import _fix_null_type_columns
 
         metadata = MetaData()
         table = Table("test", metadata, Column("created_at", NullType()))
@@ -1215,7 +1215,7 @@ class TestFixNullTypeColumns:
         from sqlalchemy import Column, MetaData, Table
         from sqlalchemy.sql.sqltypes import NullType
 
-        from zephyrex.lib.Pydantic2SQLAlchemy import _fix_null_type_columns
+        from zephyrex.pydantic2.sqlalchemy import _fix_null_type_columns
 
         metadata = MetaData()
         table = Table("test", metadata, Column("mystery", NullType()))
@@ -1231,14 +1231,14 @@ class TestFindPydanticModelByName:
     """Tests for _find_pydantic_model_by_name."""
 
     def test_none_registry_returns_none(self):
-        from zephyrex.lib.Pydantic2SQLAlchemy import (
+        from zephyrex.pydantic2.sqlalchemy import (
             _find_pydantic_model_by_name,
         )
 
         assert _find_pydantic_model_by_name(None, ["User"]) is None
 
     def test_finds_match_in_bound_models(self):
-        from zephyrex.lib.Pydantic2SQLAlchemy import (
+        from zephyrex.pydantic2.sqlalchemy import (
             _find_pydantic_model_by_name,
         )
 
@@ -1250,7 +1250,7 @@ class TestFindPydanticModelByName:
         assert _find_pydantic_model_by_name(registry, ["UserModel"]) is UserModel
 
     def test_case_insensitive_match(self):
-        from zephyrex.lib.Pydantic2SQLAlchemy import (
+        from zephyrex.pydantic2.sqlalchemy import (
             _find_pydantic_model_by_name,
         )
 
@@ -1262,7 +1262,7 @@ class TestFindPydanticModelByName:
         assert _find_pydantic_model_by_name(registry, ["mymodel"]) is MyModel
 
     def test_no_match_returns_none(self):
-        from zephyrex.lib.Pydantic2SQLAlchemy import (
+        from zephyrex.pydantic2.sqlalchemy import (
             _find_pydantic_model_by_name,
         )
 
@@ -1282,7 +1282,7 @@ class TestSanitizeFieldName:
         ],
     )
     def test_reserved_names_are_sanitized(self, input_name, should_be_different):
-        from zephyrex.lib.Pydantic2SQLAlchemy import _sanitize_field_name
+        from zephyrex.pydantic2.sqlalchemy import _sanitize_field_name
 
         result = _sanitize_field_name(input_name)
         if should_be_different:

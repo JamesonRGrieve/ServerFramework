@@ -77,7 +77,7 @@ class ExtensionServerMixin:
         if not self.extension_class:
             pytest.skip("extension_class not defined, test cannot run")
 
-        from zephyrex.lib.Pydantic2SQLAlchemy import prepare_test_registry
+        from zephyrex.pydantic2.sqlalchemy import prepare_test_registry
 
         prepare_test_registry()
 

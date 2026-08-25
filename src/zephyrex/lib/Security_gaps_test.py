@@ -91,7 +91,7 @@ class TestRouteInventory:
         os.environ["DATABASE_NAME"] = f"inventory_{os.getpid()}"
         os.environ["DATABASE_PATH"] = str(tmp)
 
-        from zephyrex.lib.Pydantic2SQLAlchemy import (
+        from zephyrex.pydantic2.sqlalchemy import (
             clear_registry_cache,
             reset_extension_system,
         )

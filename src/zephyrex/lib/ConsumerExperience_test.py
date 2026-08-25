@@ -33,7 +33,7 @@ def _make_consumer_extension(tmp_path: Path) -> Path:
     (ext_dir / "BLL_Widget.py").write_text(textwrap.dedent("""\
         from typing import Optional
         from pydantic import BaseModel, Field
-        from zephyrex.lib.Pydantic2SQLAlchemy import ApplicationModel, UpdateMixinModel
+        from zephyrex.pydantic2.sqlalchemy import ApplicationModel, UpdateMixinModel
         from zephyrex.logic.AbstractLogicManager import AbstractBLLManager
 
         class WidgetModel(ApplicationModel, UpdateMixinModel):
@@ -171,7 +171,7 @@ class TestSAModelFallback:
     def test_create_sqlalchemy_model_for_plain_model(self):
         from sqlalchemy.orm import DeclarativeBase
 
-        from zephyrex.lib.Pydantic2SQLAlchemy import (
+        from zephyrex.pydantic2.sqlalchemy import (
             ApplicationModel,
             create_sqlalchemy_model,
         )
@@ -205,7 +205,7 @@ class TestRouterAutoGeneration:
         """create_router_from_manager derives /v1/<resource> from the manager name."""
         import stringcase
         from zephyrex.lib.Pydantic2FastAPI import create_router_from_manager
-        from zephyrex.lib.Pydantic2SQLAlchemy import ApplicationModel
+        from zephyrex.pydantic2.sqlalchemy import ApplicationModel
         from zephyrex.logic.AbstractLogicManager import AbstractBLLManager
 
         class GadgetModel(ApplicationModel):
@@ -255,7 +255,7 @@ class TestModelManagerAutoWiring:
         import types
 
         from zephyrex.lib.Pydantic import PydanticUtility
-        from zephyrex.lib.Pydantic2SQLAlchemy import ApplicationModel
+        from zephyrex.pydantic2.sqlalchemy import ApplicationModel
         from zephyrex.logic.AbstractLogicManager import AbstractBLLManager
 
         class AutoWireModel(ApplicationModel):
@@ -329,7 +329,7 @@ class TestMigrationCreateAllFallback:
         from sqlalchemy.orm import DeclarativeBase
 
         from zephyrex.lib.Pydantic import ModelRegistry
-        from zephyrex.lib.Pydantic2SQLAlchemy import (
+        from zephyrex.pydantic2.sqlalchemy import (
             ApplicationModel,
             create_sqlalchemy_model,
         )

@@ -46,7 +46,7 @@ from sqlalchemy.orm import Session, joinedload
 from zephyrex.lib.Logging import logger
 from zephyrex.lib.Pydantic import BaseNetworkModel, classproperty, obj_to_dict
 from zephyrex.lib.Pydantic2FastAPI import AuthType
-from zephyrex.lib.Pydantic2SQLAlchemy import DatabaseMixin
+from zephyrex.pydantic2.sqlalchemy import DatabaseMixin
 
 T = TypeVar("T")
 
@@ -1080,7 +1080,7 @@ class ModelMeta(ModelMetaclass):
 
         # Import here to avoid circular imports
         try:
-            from zephyrex.lib.Pydantic2SQLAlchemy import DatabaseMixin
+            from zephyrex.pydantic2.sqlalchemy import DatabaseMixin
 
             # Check the full MRO (Method Resolution Order) for DatabaseMixin
             for base_class in cls.__mro__:
