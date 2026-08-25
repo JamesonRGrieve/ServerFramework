@@ -182,7 +182,7 @@ class TestSAModelFallback:
         class TestBase(DeclarativeBase):
             pass
 
-        from zephyrex.lib.Pydantic import ModelRegistry
+        from zephyrex.pydantic2.registry import ModelRegistry
 
         registry = ModelRegistry()
         sa_model = create_sqlalchemy_model(
@@ -254,7 +254,7 @@ class TestModelManagerAutoWiring:
     def test_auto_wires_manager(self):
         import types
 
-        from zephyrex.lib.Pydantic import PydanticUtility
+        from zephyrex.pydantic2.registry import PydanticUtility
         from zephyrex.pydantic2.sqlalchemy import ApplicationModel
         from zephyrex.logic.AbstractLogicManager import AbstractBLLManager
 
@@ -328,7 +328,7 @@ class TestMigrationCreateAllFallback:
         from sqlalchemy import create_engine, inspect
         from sqlalchemy.orm import DeclarativeBase
 
-        from zephyrex.lib.Pydantic import ModelRegistry
+        from zephyrex.pydantic2.registry import ModelRegistry
         from zephyrex.pydantic2.sqlalchemy import (
             ApplicationModel,
             create_sqlalchemy_model,

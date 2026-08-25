@@ -23,7 +23,7 @@ from fastapi import HTTPException
 from pydantic import Field
 
 from zephyrex.lib.Environment import env
-from zephyrex.lib.Pydantic import BaseModel
+from zephyrex.pydantic2.registry import BaseModel
 from zephyrex.pydantic2.fastapi import (
     AuthType,
     RouteType,

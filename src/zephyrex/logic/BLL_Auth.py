@@ -65,7 +65,7 @@ from zephyrex.lib.InboundSecurity import (
     rate_limit,
 )
 from zephyrex.lib.Logging import logger
-from zephyrex.lib.Pydantic import BaseModel  # type: ignore[no-redef]
+from zephyrex.pydantic2.registry import BaseModel  # type: ignore[no-redef]
 from zephyrex.pydantic2.fastapi import (
     AuthType,
     RequestInfo,
@@ -2227,7 +2227,7 @@ class UserManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef]
         user_id = self.requester.id
         user = self.get(id=user_id)
 
-        from zephyrex.lib.Pydantic import obj_to_dict
+        from zephyrex.pydantic2.registry import obj_to_dict
 
         for invitation in invitations:
             if invitation.team_id:
@@ -3149,7 +3149,7 @@ class TeamManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef]
         invitations = self.invitations.list(team_id=team_id, include=["invitation"])
         invitations_dict = []
 
-        from zephyrex.lib.Pydantic import obj_to_dict
+        from zephyrex.pydantic2.registry import obj_to_dict
 
         for invitation in invitations:
             invitation_dict = obj_to_dict(invitation)

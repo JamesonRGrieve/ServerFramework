@@ -159,7 +159,7 @@ def discover_core_seed_items():
     # Use ModelRegistry for model discovery instead of deprecated scoped_import
     try:
         from zephyrex.database.DatabaseManager import DatabaseManager
-        from zephyrex.lib.Pydantic import ModelRegistry
+        from zephyrex.pydantic2.registry import ModelRegistry
 
         # Create temporary registry and database manager for discovery
         # Use test prefix to avoid touching production database
@@ -249,7 +249,7 @@ def discover_extension_seed_items():
     try:
         from zephyrex.database.DatabaseManager import DatabaseManager
         from zephyrex.lib.Environment import env
-        from zephyrex.lib.Pydantic import ModelRegistry
+        from zephyrex.pydantic2.registry import ModelRegistry
 
         # Only try to discover extensions if they're configured
         app_extensions = env("APP_EXTENSIONS")

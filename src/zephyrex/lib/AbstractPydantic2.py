@@ -970,7 +970,7 @@ class AbstractPydanticConverter(ABC):
     def __init__(self, model_registry=None):
         """Initialize the converter with shared utilities."""
         # Import here to avoid circular imports
-        from zephyrex.lib.Pydantic import ModelRegistry
+        from zephyrex.pydantic2.registry import ModelRegistry
 
         self.model_registry = model_registry or ModelRegistry()
         self.cache_manager = getattr(

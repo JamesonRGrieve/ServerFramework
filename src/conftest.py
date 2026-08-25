@@ -368,7 +368,7 @@ if str(project_root) not in sys.path:
 
 from zephyrex.lib.Environment import env
 from zephyrex.lib.Logging import logger
-from zephyrex.lib.Pydantic import BaseModel as FrameworkBaseModel
+from zephyrex.pydantic2.registry import BaseModel as FrameworkBaseModel
 
 from zephyrex.pydantic2.sqlalchemy import prepare_test_registry
 

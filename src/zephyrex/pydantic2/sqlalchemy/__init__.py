@@ -40,7 +40,7 @@ from zephyrex.database.AbstractDatabaseEntity import BaseMixin, ImageMixin, Upda
 from zephyrex.lib.AbstractPydantic2 import default_name_processor
 from zephyrex.lib.Environment import inflection
 from zephyrex.lib.Logging import logger
-from zephyrex.lib.Pydantic import ModelRegistry
+from zephyrex.pydantic2.registry import ModelRegistry
 
 # Type variable for generic models
 T = TypeVar("T", bound=BaseModel)
@@ -1299,7 +1299,7 @@ class ModelConverter:
     @staticmethod
     def create_sqlalchemy_model(model, **kwargs):
         """Legacy method - use create_sqlalchemy_model function instead."""
-        from zephyrex.lib.Pydantic import ModelRegistry
+        from zephyrex.pydantic2.registry import ModelRegistry
 
         registry = ModelRegistry()
         return create_sqlalchemy_model(model, registry, **kwargs)
@@ -1547,7 +1547,7 @@ class DatabaseMixin:
 
         # If we still don't have a model registry, we need to create one for this declarative base
         if model_registry is None:
-            from zephyrex.lib.Pydantic import ModelRegistry
+            from zephyrex.pydantic2.registry import ModelRegistry
 
             model_registry = ModelRegistry()
             model_registry.declarative_base = declarative_base

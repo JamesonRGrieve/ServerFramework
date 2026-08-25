@@ -28,7 +28,7 @@ from zephyrex.extensions.payment.EXT_Payment import AbstractPaymentProvider
 from zephyrex.lib.Dependencies import Dependencies, PIP_Dependency
 from zephyrex.lib.Environment import env
 from zephyrex.lib.Logging import logger
-from zephyrex.lib.Pydantic import BaseModel  # type: ignore[no-redef]
+from zephyrex.pydantic2.registry import BaseModel  # type: ignore[no-redef]
 from zephyrex.logic.AbstractLogicManager import ModelMeta
 from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 

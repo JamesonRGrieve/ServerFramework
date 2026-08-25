@@ -34,10 +34,10 @@ Generated files include the following metadata comments near the top:
     * ``# deprecated_in: <iso-8601>`` — when ``RouterMixin.deprecated_in`` is set
     * ``# sunset_in: <iso-8601>`` — when ``RouterMixin.sunset_in`` is set
 
-Future cleanup item: ``Pydantic2SDKHandler`` is currently fully commented
-out; once it ships a public API for resource-name / endpoint inference,
-this generator should consume that API rather than re-implementing the
-inference here.
+The shared, language-agnostic resource-name / endpoint inference now lives in
+``sdk.SDKModel`` (``extract_resources``), which the ``meta_sdk_*`` extensions
+consume to emit multi-language clients. This generator predates ``SDKModel`` and
+still re-implements the inference locally; consolidating the two is a follow-up.
 """
 
 from __future__ import annotations

@@ -5,7 +5,7 @@ from fastapi import HTTPException
 from pydantic import Field
 
 from zephyrex.lib.Logging import logger
-from zephyrex.lib.Pydantic import BaseModel
+from zephyrex.pydantic2.registry import BaseModel
 from zephyrex.logic.AbstractLogicManager import (
     AbstractBLLManager,
     ApplicationModel,

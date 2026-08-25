@@ -23,7 +23,7 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 
 from zephyrex.lib.Logging import logger
-from zephyrex.lib.Pydantic import BaseNetworkModel
+from zephyrex.pydantic2.registry import BaseNetworkModel
 from zephyrex.pydantic2.sqlalchemy import (
     ApplicationModel,
     ImageMixinModel,
@@ -602,7 +602,7 @@ def discover_bll_models_for_testing(
 
     logger.debug("Discovering BLL models for testing...")
 
-    from zephyrex.lib.Pydantic import ModelRegistry
+    from zephyrex.pydantic2.registry import ModelRegistry
 
     _DISCOVERED_MODELS_CACHE = {}  # type: ignore[var-annotated]
 
@@ -751,7 +751,7 @@ def discover_bll_managers_for_testing(
 
     logger.debug("Discovering BLL managers for testing...")
 
-    from zephyrex.lib.Pydantic import ModelRegistry
+    from zephyrex.pydantic2.registry import ModelRegistry
 
     _DISCOVERED_MANAGERS_CACHE = {}  # type: ignore[var-annotated]
 

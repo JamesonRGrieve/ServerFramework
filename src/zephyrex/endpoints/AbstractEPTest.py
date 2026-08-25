@@ -45,7 +45,7 @@ from zephyrex.lib.ContentNegotiation import (
 )
 from zephyrex.lib.Environment import env, inflection
 from zephyrex.lib.Logging import logger
-from zephyrex.lib.Pydantic import PydanticUtility
+from zephyrex.pydantic2.registry import PydanticUtility
 from zephyrex.lib.Scalability import (
     ScalabilityProfile,
     ScalingMetric,

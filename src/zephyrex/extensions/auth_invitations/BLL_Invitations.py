@@ -22,7 +22,7 @@ from pydantic import Field, model_validator
 
 from zephyrex.lib.Environment import env
 from zephyrex.lib.Logging import logger
-from zephyrex.lib.Pydantic import BaseModel
+from zephyrex.pydantic2.registry import BaseModel
 from zephyrex.pydantic2.fastapi import AuthType, RouterMixin
 from zephyrex.logic.AbstractLogicManager import (
     AbstractBLLManager,

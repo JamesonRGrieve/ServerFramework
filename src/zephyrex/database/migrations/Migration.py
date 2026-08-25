@@ -250,7 +250,7 @@ class MigrationManager:
                 BLL_Extensions,
                 BLL_Providers,
             )  # noqa: F401
-            from zephyrex.lib.Pydantic import ModelRegistry, Base
+            from zephyrex.pydantic2.registry import ModelRegistry, Base
 
             ModelRegistry().commit(extensions=os.environ.get("APP_EXTENSIONS", ""))
 
@@ -847,7 +847,7 @@ class MigrationManager:
 
         Returns True if at least one BLL file exists for the extension.
         """
-        from zephyrex.lib.Pydantic import ModelRegistry
+        from zephyrex.pydantic2.registry import ModelRegistry
 
         ext_path = self._extension_source_dir(extension_name)
         if not ext_path.exists() or not list(ext_path.glob("BLL_*.py")):

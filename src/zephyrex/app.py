@@ -31,7 +31,7 @@ from fastapi.responses import JSONResponse
 from zephyrex.database.DatabaseManager import DatabaseManager
 from zephyrex.lib.Environment import env, inflection
 from zephyrex.lib.Logging import logger
-from zephyrex.lib.Pydantic import ModelRegistry
+from zephyrex.pydantic2.registry import ModelRegistry
 from zephyrex.lib.RequestContext import (
     DeadlineExceededError,
     clear_request_context,

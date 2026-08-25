@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 # Add parent directory to sys.path to import Pydantic
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from zephyrex.lib.Logging import logger
-from zephyrex.lib.Pydantic import ModelRegistry, PydanticUtility, obj_to_dict
+from zephyrex.pydantic2.registry import ModelRegistry, PydanticUtility, obj_to_dict
 from zephyrex.pydantic2.sqlalchemy import DatabaseMixin
 
 # Access the utility functions from PydanticUtility

@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field, create_model
 # All static artifacts have been replaced with instance-based approaches
 # Tests now use GraphQLManager and SchemaManager instances
 from zephyrex.lib.AbstractPydantic2Test import AbstractPydanticTestMixin
-from zephyrex.lib.Pydantic import ModelRegistry
+from zephyrex.pydantic2.registry import ModelRegistry
 from zephyrex.pydantic2.strawberry import (
     ANY_SCALAR,
     DICT_SCALAR,

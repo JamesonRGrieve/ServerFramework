@@ -66,7 +66,7 @@ class TestModelRegistryPerformance:
         os.environ["DATABASE_NAME"] = f"bench_registry_{os.getpid()}"
         os.environ["DATABASE_PATH"] = str(tmp_path)
         from zephyrex.database.DatabaseManager import DatabaseManager
-        from zephyrex.lib.Pydantic import ModelRegistry
+        from zephyrex.pydantic2.registry import ModelRegistry
 
         def commit():
             _reset_registry()
@@ -82,7 +82,7 @@ class TestSQLAlchemyModelCreation:
     @pytest.mark.parametrize("count", [1, 10, 50])
     def test_create_models(self, count):
         from sqlalchemy.orm import DeclarativeBase
-        from zephyrex.lib.Pydantic import ModelRegistry
+        from zephyrex.pydantic2.registry import ModelRegistry
         from zephyrex.pydantic2.sqlalchemy import (
             ApplicationModel,
             create_sqlalchemy_model,

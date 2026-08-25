@@ -11,7 +11,7 @@ from zephyrex.logic.BLL_Auth import RoleModel, TeamModel
 
 from zephyrex.database.DatabaseManager import DatabaseManager
 from zephyrex.lib.Logging import logger
-from zephyrex.lib.Pydantic import ModelRegistry
+from zephyrex.pydantic2.registry import ModelRegistry
 from zephyrex.pydantic2.sqlalchemy import (
     ApplicationModel,
     DatabaseMixin,

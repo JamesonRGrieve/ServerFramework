@@ -9,7 +9,7 @@ from zephyrex.extensions.AbstractExtensionProvider import (
 from zephyrex.lib.Dependencies import EXT_Dependency, PIP_Dependency
 from zephyrex.lib.Environment import env
 from zephyrex.lib.Logging import logger
-from zephyrex.lib.Pydantic import classproperty
+from zephyrex.pydantic2.registry import classproperty
 
 
 class EXT_Meta_Logging(AbstractStaticExtension):

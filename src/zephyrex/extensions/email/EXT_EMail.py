@@ -45,7 +45,7 @@ from zephyrex.extensions.AbstractExtensionProvider import (
 from zephyrex.lib.Dependencies import Dependencies, PIP_Dependency
 from zephyrex.lib.Environment import env
 from zephyrex.lib.Logging import logger
-from zephyrex.lib.Pydantic import classproperty
+from zephyrex.pydantic2.registry import classproperty
 from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 
 # Hard caps applied uniformly across all email providers. Sized for RFC 5322

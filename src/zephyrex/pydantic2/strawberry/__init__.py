@@ -40,7 +40,7 @@ from zephyrex.lib.AbstractPydantic2 import (
 )
 from zephyrex.lib.Environment import inflection
 from zephyrex.lib.Logging import logger
-from zephyrex.lib.Pydantic import ModelRegistry
+from zephyrex.pydantic2.registry import ModelRegistry
 from zephyrex.logic.AbstractLogicManager import AbstractBLLManager
 
 

@@ -16,7 +16,7 @@ from typing import Any, ClassVar, Dict, List, Optional, Type
 from fastapi import HTTPException
 from pydantic import Field, model_validator
 
-from zephyrex.lib.Pydantic import BaseModel
+from zephyrex.pydantic2.registry import BaseModel
 from zephyrex.pydantic2.fastapi import AuthType, RouterMixin
 from zephyrex.logic.AbstractLogicManager import (
     AbstractBLLManager,

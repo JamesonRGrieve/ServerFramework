@@ -10,7 +10,7 @@ from zephyrex.AbstractTest import AbstractTest, CategoryOfTest, ClassOfTestsConf
 from zephyrex.database.StaticPermissions import check_permission
 from zephyrex.lib.Environment import env
 from zephyrex.lib.Logging import logger
-from zephyrex.lib.Pydantic import obj_to_dict
+from zephyrex.pydantic2.registry import obj_to_dict
 from zephyrex.lib.Scalability import (
     ScalabilityProfile,
     ScalingMetric,

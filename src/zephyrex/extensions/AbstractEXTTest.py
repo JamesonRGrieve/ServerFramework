@@ -328,7 +328,7 @@ class AbstractEXTTest(AbstractTest, ExtensionServerMixin):
         """Test model registry functionality."""
         self._skip_if_not_configured(ExtensionTestType.MODEL_REGISTRY)
 
-        from zephyrex.lib.Pydantic import ModelRegistry
+        from zephyrex.pydantic2.registry import ModelRegistry
 
         assert isinstance(
             model_registry, ModelRegistry

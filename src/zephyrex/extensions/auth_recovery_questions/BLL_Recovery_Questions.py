@@ -15,7 +15,7 @@ from pydantic import Field
 
 from zephyrex.lib.FieldACL import Sensitive
 from zephyrex.lib.InboundSecurity import LockoutPolicy, LockoutTracker
-from zephyrex.lib.Pydantic import BaseModel
+from zephyrex.pydantic2.registry import BaseModel
 from zephyrex.pydantic2.fastapi import AuthType, RouterMixin, RouteType
 from zephyrex.logic.AbstractLogicManager import (
     AbstractBLLManager,

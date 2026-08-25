@@ -19,7 +19,7 @@ from zephyrex.lib.Dependencies import (
     PIP_Dependency,
     SYS_Dependency,
 )
-from zephyrex.lib.Pydantic import classproperty
+from zephyrex.pydantic2.registry import classproperty
 
 
 class TestExtensionSystemComponent(AbstractStaticExtension):

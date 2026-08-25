@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 
 from zephyrex.lib.Environment import env
 from zephyrex.lib.Logging import logger
-from zephyrex.lib.Pydantic import obj_to_dict
+from zephyrex.pydantic2.registry import obj_to_dict
 
 
 class ParentEntity(BaseModel):

@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field, model_validator
 from zephyrex.lib.Environment import env
 from zephyrex.lib.InboundSecurity import LockoutPolicy, LockoutTracker
 from zephyrex.lib.Logging import logger
-from zephyrex.lib.Pydantic import BaseModel  # type: ignore[no-redef]
+from zephyrex.pydantic2.registry import BaseModel  # type: ignore[no-redef]
 from zephyrex.pydantic2.fastapi import AuthType, RouterMixin, RouteType
 
 # Encryption-at-rest for ``totp_secret``. Implementation lives in the shared

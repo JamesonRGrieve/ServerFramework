@@ -44,7 +44,7 @@ def _escape_like(v: object) -> str:
 from sqlalchemy.orm import Session, joinedload
 
 from zephyrex.lib.Logging import logger
-from zephyrex.lib.Pydantic import BaseNetworkModel, classproperty, obj_to_dict
+from zephyrex.pydantic2.registry import BaseNetworkModel, classproperty, obj_to_dict
 from zephyrex.pydantic2.fastapi import AuthType
 from zephyrex.pydantic2.sqlalchemy import DatabaseMixin
 

@@ -24,7 +24,7 @@ from zephyrex.lib.Paths import (
     extensions_dir as _resolve_extensions_dir,
     src_dir as _resolve_src_dir,
 )
-from zephyrex.lib.Pydantic import classproperty
+from zephyrex.pydantic2.registry import classproperty
 from zephyrex.logic.BLL_Providers import ProviderInstanceModel, RotationManager
 
 # Imports needed for patching in tests and used in methods
@@ -1925,7 +1925,7 @@ class AbstractStaticExtension(
                     # Also check if it inherits from AbstractExternalModel
                     elif obj.__module__ == module.__name__:
                         try:
-                            from zephyrex.lib.Pydantic import AbstractExternalModel
+                            from zephyrex.pydantic2.registry import AbstractExternalModel
 
                             # Only add concrete subclasses, not the abstract base class itself
                             if (
