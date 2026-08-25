@@ -459,7 +459,7 @@ Invariants:
 
 ### `extension_model` (decorator)
 
-- Module: `zephyrex.lib.Pydantic2SQLAlchemy`
+- Module: `zephyrex.pydantic2.sqlalchemy`
 - Signature: `extension_model(target_model: Type[pydantic.main.BaseModel]) -> Callable[[Type[pydantic.main.BaseModel]], Type[pydantic.main.BaseModel]]`
 - Live docstring: Decorator to mark a model as an extension of another model.
 
@@ -506,7 +506,7 @@ Enum of REST/GRAPHQL/SDK exposure targets.
 
 ### `RouterMixin` (class)
 
-- Module: `zephyrex.lib.Pydantic2FastAPI`
+- Module: `zephyrex.pydantic2.fastapi`
 - Signature: `RouterMixin()`
 - Live docstring: Mixin class that provides router generation functionality for BLL managers.
 

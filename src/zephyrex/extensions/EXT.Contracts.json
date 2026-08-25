@@ -378,7 +378,7 @@
         },
         {
           "name": "extension_model",
-          "module": "zephyrex.lib.Pydantic2SQLAlchemy",
+          "module": "zephyrex.pydantic2.sqlalchemy",
           "kind": "decorator",
           "summary": "Injects extension-declared fields into a core ApplicationModel.",
           "invariants": [
@@ -427,7 +427,7 @@
         },
         {
           "name": "RouterMixin",
-          "module": "zephyrex.lib.Pydantic2FastAPI",
+          "module": "zephyrex.pydantic2.fastapi",
           "kind": "class",
           "summary": "Mixin that turns a BLL manager into a FastAPI router source."
         }
