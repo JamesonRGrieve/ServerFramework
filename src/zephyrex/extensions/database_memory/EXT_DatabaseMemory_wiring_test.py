@@ -21,6 +21,37 @@ def _make_mock_client():
     return client
 
 
+@pytest.fixture(autouse=True)
+def _restore_framework_backend_globals():
+    """``wire_framework_backends()`` sets five process-global backends at once,
+    but each test here patches only the one setter it asserts on — so the others
+    leak a Mock-backed backend (e.g. a ``ValkeyEntityCache`` wrapping an
+    ``AsyncMock``) into module globals and contaminate later tests sharing the
+    xdist worker. A leaked entity cache is especially harmful: session
+    enforcement (``_enforce_session_not_revoked``) then sees a truthy
+    ``get_by_field`` hit and short-circuits, silently disabling enforcement in
+    unrelated tests. Snapshot and restore every global these tests can touch — by
+    raw module attribute, so no getter lazy-init or setter side effect fires."""
+    import zephyrex.lib.InboundSecurity as _inbound
+    import zephyrex.lib.ReplayCache as _replay
+    import zephyrex.lib.ResponseCache as _response
+    import zephyrex.logic.AbstractLogicManager as _alm
+    import zephyrex.logic.EventBus as _eventbus
+
+    saved = (
+        (_alm, "_entity_cache", _alm._entity_cache),
+        (_eventbus, "_active_bus", _eventbus._active_bus),
+        (_replay, "_GLOBAL_REPLAY_CACHE", _replay._GLOBAL_REPLAY_CACHE),
+        (_response, "_response_cache", _response._response_cache),
+        (_inbound, "_rate_limit_counter", _inbound._rate_limit_counter),
+    )
+    try:
+        yield
+    finally:
+        for module, name, value in saved:
+            setattr(module, name, value)
+
+
 class TestWireFrameworkBackends:
     def test_wires_rate_limit_counter(self):
         client = _make_mock_client()
