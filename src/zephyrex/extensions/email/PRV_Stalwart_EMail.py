@@ -13,6 +13,7 @@ import mimetypes
 import os
 from datetime import datetime
 from decimal import Decimal
+from email.utils import formataddr, parseaddr
 from typing import Any, ClassVar, Dict, List, Optional, Set, Type
 
 from pydantic import EmailStr, SecretStr
@@ -35,9 +36,16 @@ from zephyrex.extensions.email.EXT_EMail import (
     AbstractEmailProvider,
     Capability,
     EmailMessage,
+    Importance,
     _DeprecatedEnvDict,
 )
 from zephyrex.extensions.ExternalErrors import DegradationPolicy, fail_fast
+from zephyrex.extensions.FieldMappings import (
+    Compose,
+    EnumRemap,
+    FieldMapping,
+    Rename,
+)
 from zephyrex.extensions.Paginators import AbstractPaginator, PageTokenPaginator
 from zephyrex.extensions.QueryTranslators import (
     AbstractQueryDSLTranslator,
@@ -106,6 +114,32 @@ class StalwartProvider(AbstractEmailProvider):
     # ``SEARCH`` (RFC 3501); results page via an opaque next-token cursor.
     paginator: ClassVar[Type[AbstractPaginator]] = PageTokenPaginator
     query_translator: ClassVar[Type[AbstractQueryDSLTranslator]] = IMAPSearchTranslator
+
+    # Item 93 — declarative EmailMessage <-> RFC-5322 message mappings for the
+    # SMTP submission path. ``EmailAddress`` <-> ``From`` mailbox is a
+    # ``Compose``; ``Importance`` <-> the ``X-Priority`` numeric header is an
+    # ``EnumRemap``.
+    field_mappings: ClassVar[List[FieldMapping]] = [
+        Rename(internal="subject", external="subject"),
+        Compose(
+            externals=["from_address", "from_name"],
+            internal="from",
+            fn=lambda addr, name: formataddr((name or "", addr)),
+            inverse_fn=lambda mailbox: (
+                parseaddr(mailbox)[1],
+                parseaddr(mailbox)[0] or None,
+            ),
+        ),
+        EnumRemap(
+            internal="importance",
+            external="x_priority",
+            mapping={
+                Importance.HIGH.value: "1",
+                Importance.NORMAL.value: "3",
+                Importance.LOW.value: "5",
+            },
+        ),
+    ]
 
     dependencies: ClassVar[Dependencies] = Dependencies(
         [

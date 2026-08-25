@@ -59,6 +59,8 @@ from zephyrex.extensions.email.PRV_SendGrid_EMail import (
     _sendgrid_payload_to_message_kwargs,
     _register_sendgrid_webhook_handlers,
 )
+from zephyrex.extensions.email.PRV_SMTP2Go_EMail import Smtp2goProvider
+from zephyrex.extensions.email.PRV_Stalwart_EMail import StalwartProvider
 from zephyrex.extensions.FieldMappings import apply_from_external, apply_to_external
 from zephyrex.extensions.Paginators import (
     decode_token,
@@ -367,6 +369,51 @@ def test_field_mappings_enum_remap_importance():
     out = apply_to_external(SendgridProvider.field_mappings, flat)
     assert out["priority"] == "low"
     inv = apply_from_external(SendgridProvider.field_mappings, out)
+    assert inv["importance"] == Importance.LOW.value
+
+
+def test_smtp2go_field_mappings_round_trip():
+    # Item 93 — SMTP2go's declared EmailMessage <-> send-payload mappings must
+    # round-trip every declared field (subject, bodies, sender mailbox, priority).
+    flat = {
+        "subject": "Hi",
+        "body_text": "b",
+        "from_address": "from@example.com",
+        "from_name": "From Name",
+        "importance": Importance.HIGH.value,
+    }
+    ext = apply_to_external(Smtp2goProvider.field_mappings, flat)
+    assert ext["subject"] == "Hi"
+    assert ext["text_body"] == "b"
+    assert ext["sender"] == "From Name <from@example.com>"
+    assert ext["priority"] == "1"
+
+    inv = apply_from_external(Smtp2goProvider.field_mappings, ext)
+    assert inv["subject"] == "Hi"
+    assert inv["body_text"] == "b"
+    assert inv["from_address"] == "from@example.com"
+    assert inv["from_name"] == "From Name"
+    assert inv["importance"] == Importance.HIGH.value
+
+
+def test_stalwart_field_mappings_round_trip():
+    # Item 93 — Stalwart's declared EmailMessage <-> RFC-5322 mappings must
+    # round-trip (subject, From mailbox, X-Priority).
+    flat = {
+        "subject": "Hi",
+        "from_address": "from@example.com",
+        "from_name": "From Name",
+        "importance": Importance.LOW.value,
+    }
+    ext = apply_to_external(StalwartProvider.field_mappings, flat)
+    assert ext["subject"] == "Hi"
+    assert ext["from"] == "From Name <from@example.com>"
+    assert ext["x_priority"] == "5"
+
+    inv = apply_from_external(StalwartProvider.field_mappings, ext)
+    assert inv["subject"] == "Hi"
+    assert inv["from_address"] == "from@example.com"
+    assert inv["from_name"] == "From Name"
     assert inv["importance"] == Importance.LOW.value
 
 

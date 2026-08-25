@@ -8,6 +8,7 @@ import mimetypes
 import os
 from datetime import datetime
 from decimal import Decimal
+from email.utils import formataddr, parseaddr
 from typing import Any, ClassVar, Dict, List, Optional, Set, Type
 
 from pydantic import EmailStr, HttpUrl, SecretStr
@@ -29,9 +30,16 @@ from zephyrex.extensions.email.EXT_EMail import (
     AbstractEmailProvider,
     Capability,
     EmailMessage,
+    Importance,
     _DeprecatedEnvDict,
 )
 from zephyrex.extensions.ExternalErrors import DegradationPolicy, fail_fast
+from zephyrex.extensions.FieldMappings import (
+    Compose,
+    EnumRemap,
+    FieldMapping,
+    Rename,
+)
 from zephyrex.extensions.Paginators import AbstractPaginator, PageTokenPaginator
 from zephyrex.extensions.QueryTranslators import (
     AbstractQueryDSLTranslator,
@@ -92,6 +100,35 @@ class Smtp2goProvider(AbstractEmailProvider):
     # next-token cursor.
     paginator: ClassVar[Type[AbstractPaginator]] = PageTokenPaginator
     query_translator: ClassVar[Type[AbstractQueryDSLTranslator]] = KeyValueTranslator
+
+    # Item 93 — declarative EmailMessage <-> SMTP2go send-payload mappings.
+    # SMTP2go's HTTP API takes a flat JSON body: ``sender`` (an RFC-5322 mailbox
+    # string), ``subject``, ``text_body``/``html_body``. ``EmailAddress`` <->
+    # mailbox is a ``Compose``; ``Importance`` <-> the numeric X-Priority value
+    # is an ``EnumRemap``.
+    field_mappings: ClassVar[List[FieldMapping]] = [
+        Rename(internal="subject", external="subject"),
+        Rename(internal="body_text", external="text_body"),
+        Rename(internal="body_html", external="html_body"),
+        Compose(
+            externals=["from_address", "from_name"],
+            internal="sender",
+            fn=lambda addr, name: formataddr((name or "", addr)),
+            inverse_fn=lambda mailbox: (
+                parseaddr(mailbox)[1],
+                parseaddr(mailbox)[0] or None,
+            ),
+        ),
+        EnumRemap(
+            internal="importance",
+            external="priority",
+            mapping={
+                Importance.HIGH.value: "1",
+                Importance.NORMAL.value: "3",
+                Importance.LOW.value: "5",
+            },
+        ),
+    ]
 
     dependencies: ClassVar[Dependencies] = Dependencies(
         [
