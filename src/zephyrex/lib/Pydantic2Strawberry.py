@@ -2290,11 +2290,11 @@ class GraphQLManager(ErrorHandlerMixin):
                         # Fall back to JWT authentication
                         elif auth_header:
                             try:
-                                from zephyrex.logic.BLL_Auth import UserManager
+                                from zephyrex.lib.AuthProvider import get_auth_provider
 
                                 if self.model_registry:
                                     # Use the static auth method with model_registry parameter
-                                    user = UserManager.auth(
+                                    user = get_auth_provider().auth(
                                         model_registry=self.model_registry,
                                         authorization=auth_header,
                                         request=request,

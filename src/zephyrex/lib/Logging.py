@@ -320,7 +320,7 @@ def _sentry_before_send(event, hint):
     # from the extension; the extension registers a callable on
     # ``on_load`` and we consult it. Without the extension, only the
     # registered-secret redaction above fires.
-    from zephyrex.logic.BLL_Auth import _pii_hooks
+    from zephyrex.lib.Hooks import _pii_hooks
 
     pii_filter = _pii_hooks["log_filter"]
     if pii_filter is not None:

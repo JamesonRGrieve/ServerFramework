@@ -1403,7 +1403,7 @@ class RouterMixin:
 def get_auth_dependency(auth_type: AuthType) -> Optional[Any]:
     """Get the authentication dependency based on auth_type."""
     if auth_type == AuthType.JWT:
-        from zephyrex.logic.BLL_Auth import UserManager
+        from zephyrex.lib.AuthProvider import get_auth_provider
 
         def jwt_auth(
             request: Request,
@@ -1416,13 +1416,13 @@ def get_auth_dependency(auth_type: AuthType) -> Optional[Any]:
 
             # Support both JWT and API key for JWT endpoints
             if x_api_key:
-                return UserManager.auth(
+                return get_auth_provider().auth(
                     model_registry=model_registry,
                     authorization=f"Bearer {x_api_key}",
                     request=request,
                 )
             elif authorization:
-                return UserManager.auth(
+                return get_auth_provider().auth(
                     model_registry=model_registry,
                     authorization=authorization,
                     request=request,
@@ -1442,7 +1442,7 @@ def get_auth_dependency(auth_type: AuthType) -> Optional[Any]:
             authorization: str = Header(None),
             x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
         ):
-            from zephyrex.logic.BLL_Auth import UserManager
+            from zephyrex.lib.AuthProvider import get_auth_provider
 
             if x_api_key:
                 # API key provided - authenticate with it
@@ -1451,7 +1451,7 @@ def get_auth_dependency(auth_type: AuthType) -> Optional[Any]:
                     if request
                     else None
                 )
-                return UserManager.auth(
+                return get_auth_provider().auth(
                     model_registry=model_registry,
                     authorization=f"Bearer {x_api_key}",
                     request=request,
@@ -1787,7 +1787,7 @@ def create_manager_factory(
     def factory_function(request: Any = Depends(get_request_info)) -> Any:
         """Factory function to get manager instance."""
         from zephyrex.lib.Environment import env
-        from zephyrex.logic.BLL_Auth import UserManager
+        from zephyrex.lib.AuthProvider import get_auth_provider
 
         request_info = _prepare_request_info(request)
         requester_id: Optional[str] = None
@@ -1808,7 +1808,7 @@ def create_manager_factory(
             else:
                 auth_header = headers.get("authorization")
                 if auth_header:
-                    user = UserManager.auth(
+                    user = get_auth_provider().auth(
                         model_registry=model_registry,
                         authorization=auth_header,
                         request=request_info,
@@ -2260,7 +2260,7 @@ def register_route(
                     # When fields are specified, work directly with serialized_result
                     serialized_entity = serialized_result
 
-                from zephyrex.logic.BLL_Auth import UserManager
+                from zephyrex.lib.AuthProvider import get_auth_provider
 
                 def _attach_user_includes_to_entity(entity: Optional[Dict[str, Any]]):
                     if not entity or not include_selection:
@@ -2274,7 +2274,7 @@ def register_route(
 
                     # Build a user manager to fetch user objects
                     try:
-                        user_mgr = UserManager(
+                        user_mgr = get_auth_provider()(
                             requester_id=manager.requester.id,
                             model_registry=manager.model_registry,
                         )
@@ -2649,7 +2649,7 @@ def register_route(
 
                 include_selection = _normalize_projection_values(query_params.include)
 
-                from zephyrex.logic.BLL_Auth import UserManager
+                from zephyrex.lib.AuthProvider import get_auth_provider
 
                 def _attach_user_includes_to_items(items: List[Dict[str, Any]]):
                     if not items or not include_selection:
@@ -2660,7 +2660,7 @@ def register_route(
                     if not user_includes:
                         return
                     try:
-                        user_mgr = UserManager(
+                        user_mgr = get_auth_provider()(
                             requester_id=manager.requester.id,
                             model_registry=manager.model_registry,
                         )

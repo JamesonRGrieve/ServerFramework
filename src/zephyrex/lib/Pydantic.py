@@ -1825,7 +1825,7 @@ class ModelRegistry(AbstractRegistry):
         # ``_registry_hooks["bootstrap_federation"]`` at on_load time and
         # we dispatch through that. Without the extension, the registry
         # commits as a single-app deployment.
-        from zephyrex.logic.BLL_Auth import _registry_hooks
+        from zephyrex.lib.Hooks import _registry_hooks
 
         bootstrap = _registry_hooks["bootstrap_federation"]
         if federation_enabled and bootstrap is not None:
@@ -3122,14 +3122,17 @@ class ModelRegistry(AbstractRegistry):
                         detail="Token is missing or empty",
                     )
 
-                # Import UserManager and verify token
+                # Verify the token via the registered identity/auth provider
+                # (issue #221 — no concrete UserManager import in lib/).
                 try:
-                    from zephyrex.logic.BLL_Auth import UserManager
+                    from zephyrex.lib.AuthProvider import get_auth_provider
 
-                    UserManager.verify_token(token=token, model_registry=model_registry)
+                    get_auth_provider().verify_token(
+                        token=token, model_registry=model_registry
+                    )
                     return Response(status_code=status.HTTP_204_NO_CONTENT)
-                except ImportError:
-                    logger.error("Could not import UserManager for token verification")
+                except (ImportError, RuntimeError):
+                    logger.error("No auth provider available for token verification")
                     raise HTTPException(
                         status_code=500, detail="Authentication service unavailable"
                     )

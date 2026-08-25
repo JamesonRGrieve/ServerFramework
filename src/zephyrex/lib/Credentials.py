@@ -417,7 +417,7 @@ class RedactingFilter(logging.Filter):
             # ``on_load`` registers a record-mutating callable. Without
             # the extension, only the registered-secret scrubbing above
             # fires.
-            from zephyrex.logic.BLL_Auth import _pii_hooks
+            from zephyrex.lib.Hooks import _pii_hooks
 
             pii_filter = _pii_hooks["log_filter"]
             if pii_filter is not None:
