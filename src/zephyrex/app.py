@@ -1161,6 +1161,26 @@ def build_app(model_registry: ModelRegistry):
                 erd: str = build_mermaid_erd(model_registry)
                 return erd
 
+        # Prometheus scrape endpoint (#210). Served whenever the active metrics
+        # backend exposes an exposition — the observability extension's
+        # PrometheusMetricsBackend does when METRICS_BACKEND=prometheus; a 404
+        # otherwise. Not docs-gated: scrapers need it on every deployment.
+        @app.get("/metrics", tags=["Meta"])
+        async def prometheus_metrics():
+            from fastapi import HTTPException, Response
+
+            from zephyrex.extensions.observability.EXT_Observability import (
+                render_metrics_exposition,
+            )
+
+            exposition = render_metrics_exposition()
+            if exposition is None:
+                raise HTTPException(
+                    status_code=404, detail="No Prometheus metrics backend is active."
+                )
+            payload, content_type = exposition
+            return Response(content=payload, media_type=content_type)
+
         @app.get("/v1", tags=["Authentication"], status_code=204)
         async def verify_jwt(request: Request):
             """Verify JWT token and return 204 if valid, 401 if invalid"""

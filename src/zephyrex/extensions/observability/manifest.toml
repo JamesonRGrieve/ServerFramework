@@ -1,0 +1,17 @@
+name = "observability"
+version = "1.0.0"
+description = "Env-driven metrics (Prometheus/OTel) + error-reporter (Sentry/Rollbar) wiring; concrete backends live here, out of core lib/"
+author = "ZephyrexTechnologies"
+entry_module = "EXT_Observability"
+minimum_framework_version = "0.0.0"
+
+# The backend adapters lazy-import their SDKs and degrade to a no-op when the
+# dependency is absent, and the four backends are mutually optional (one metrics
+# backend + one error reporter are ever active), so none is a hard requirement.
+# Install only the one(s) a deployment enables via env:
+#   METRICS_BACKEND=prometheus -> prometheus_client
+#   METRICS_BACKEND=otel        -> opentelemetry-api + opentelemetry-sdk
+#   SENTRY_DSN=...              -> sentry_sdk
+#   ROLLBAR_TOKEN=...           -> rollbar
+pip_dependencies = []
+system_dependencies = []

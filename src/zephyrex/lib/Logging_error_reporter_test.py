@@ -18,11 +18,13 @@ from typing import Any, List, Mapping, Tuple
 
 import pytest
 
+from zephyrex.extensions.observability.ErrorReporters import (
+    RollbarErrorReporter,
+    SentryErrorReporter,
+)
 from zephyrex.lib.Logging import (
     ErrorReporter,
     NoopErrorReporter,
-    RollbarErrorReporter,
-    SentryErrorReporter,
     get_error_reporter,
     set_error_reporter,
 )

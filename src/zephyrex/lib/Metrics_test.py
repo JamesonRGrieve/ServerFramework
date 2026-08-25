@@ -13,12 +13,14 @@ import importlib.util
 
 import pytest
 
+from zephyrex.extensions.observability.MetricsBackends import (
+    OpenTelemetryMetricsBackend,
+    PrometheusMetricsBackend,
+)
 from zephyrex.lib.Metrics import (
     InMemoryMetricsBackend,
     MetricsBackend,
     NoopMetricsBackend,
-    OpenTelemetryMetricsBackend,
-    PrometheusMetricsBackend,
     _current_span_id_var,
     get_metrics_backend,
     reset_metrics_backend,

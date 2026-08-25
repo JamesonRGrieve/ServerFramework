@@ -43,11 +43,12 @@ boundary handoffs.
 
 Pluggable error reporting
 -------------------------
-:class:`ErrorReporter` is an ABC with three concrete subclasses shipped
-in this module: :class:`NoopErrorReporter` (the default), and
-:class:`SentryErrorReporter` / :class:`RollbarErrorReporter` (which
-import their respective SDKs lazily — the SDK is an optional dependency
-and missing it must never crash the framework). Use
+:class:`ErrorReporter` is an ABC. Core ships :class:`NoopErrorReporter`
+(the default) here; the concrete :class:`SentryErrorReporter` /
+:class:`RollbarErrorReporter` adapters live in the ``observability``
+extension — out of core so the framework wheel never carries their
+optional SDKs — which wires one from ``SENTRY_DSN`` / ``ROLLBAR_TOKEN``
+at on_load. Use
 :func:`set_error_reporter` to install a different reporter at startup,
 and call :func:`get_error_reporter` from exception handlers to route
 uncaught exceptions to the configured backend.
@@ -237,129 +238,6 @@ class NoopErrorReporter(ErrorReporter):
 
     def report(self, exception: BaseException, context: Mapping[str, Any]) -> None:
         return None
-
-
-class SentryErrorReporter(ErrorReporter):
-    """Routes exceptions to Sentry via ``sentry_sdk``. The SDK is an
-    optional dependency: if it is not installed the reporter degrades to
-    a no-op (with a single ``debug`` log line on construction) rather
-    than crashing the framework at import time.
-
-    M-5 — initialises the SDK with ``send_default_pii=False`` and
-    ``include_local_variables=False`` so request-handler local vars
-    (``password``, ``authorization``, etc.) do not exit the process. A
-    ``before_send`` hook applies the `privacy` extension's PII filter
-    when loaded.
-    """
-
-    def __init__(self) -> None:
-        try:
-            import sentry_sdk  # type: ignore[import-not-found]
-
-            self._sentry_sdk = sentry_sdk
-            # Best-effort hardening if `sentry_sdk.init` was not called
-            # explicitly elsewhere. We don't override an already-initialised
-            # client (Hub.current.client check) — the deployment's own init
-            # wins.
-            try:
-                if sentry_sdk.Hub.current.client is None:  # type: ignore[union-attr]
-                    sentry_sdk.init(
-                        send_default_pii=False,
-                        include_local_variables=False,
-                        before_send=_sentry_before_send,
-                    )
-            except Exception:
-                # SDK pre-1.0 / non-standard layout — leave caller's init alone.
-                pass
-        except ImportError:
-            self._sentry_sdk = None
-            logger.debug(
-                "SentryErrorReporter: sentry_sdk not installed; "
-                "reporter will no-op until the dependency is available."
-            )
-
-    def report(self, exception: BaseException, context: Mapping[str, Any]) -> None:
-        if self._sentry_sdk is None:
-            return None
-        try:
-            with self._sentry_sdk.push_scope() as scope:  # type: ignore[union-attr]
-                for key, value in context.items():
-                    try:
-                        scope.set_extra(key, value)
-                    except Exception:
-                        # Never let scope-tagging derail error reporting.
-                        continue
-                self._sentry_sdk.capture_exception(exception)  # type: ignore[union-attr]
-        except Exception as e:
-            logger.warning(
-                "SentryErrorReporter.report: capture_exception failed; "
-                f"swallowing to avoid masking the original error ({e})"
-            )
-
-
-def _sentry_before_send(event, hint):
-    """Sentry `before_send` hook (M-5). Scrubs known PII patterns from
-    the event message + breadcrumb data using the privacy extension's
-    filter when loaded; falls back to the secrets-only redactor otherwise.
-    """
-    try:
-        from zephyrex.lib.Credentials import redact
-
-        msg = event.get("message")
-        if isinstance(msg, str):
-            event["message"] = redact(msg)
-        for crumb in event.get("breadcrumbs", {}).get("values", []) or []:
-            m = crumb.get("message")
-            if isinstance(m, str):
-                crumb["message"] = redact(m)
-    except Exception:
-        # Never let scrubbing drop the event silently.
-        return event
-    # Delegate richer PII pattern coverage to the ``privacy`` extension
-    # via the ``_pii_hooks["log_filter"]`` registry. Core never imports
-    # from the extension; the extension registers a callable on
-    # ``on_load`` and we consult it. Without the extension, only the
-    # registered-secret redaction above fires.
-    from zephyrex.lib.Hooks import _pii_hooks
-
-    pii_filter = _pii_hooks["log_filter"]
-    if pii_filter is not None:
-        try:
-            pii_filter(event)
-        except Exception:
-            # Never let an extension's pattern bug drop the event.
-            return event
-    return event
-
-
-class RollbarErrorReporter(ErrorReporter):
-    """Routes exceptions to Rollbar via ``rollbar``. The SDK is an
-    optional dependency: missing it degrades the reporter to a no-op."""
-
-    def __init__(self) -> None:
-        try:
-            import rollbar  # type: ignore[import-not-found]
-
-            self._rollbar = rollbar
-        except ImportError:
-            self._rollbar = None
-            logger.debug(
-                "RollbarErrorReporter: rollbar not installed; "
-                "reporter will no-op until the dependency is available."
-            )
-
-    def report(self, exception: BaseException, context: Mapping[str, Any]) -> None:
-        if self._rollbar is None:
-            return None
-        try:
-            self._rollbar.report_exc_info(  # type: ignore[union-attr]
-                extra_data=dict(context)
-            )
-        except Exception as e:
-            logger.warning(
-                "RollbarErrorReporter.report: report_exc_info failed; "
-                f"swallowing to avoid masking the original error ({e})"
-            )
 
 
 _active_reporter: ErrorReporter = NoopErrorReporter()
