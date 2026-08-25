@@ -175,7 +175,7 @@ def _multiformat_request_body_extra() -> Dict[str, Any]:
 from zephyrex.lib.Logging import logger
 
 if TYPE_CHECKING:
-    from zephyrex.logic.AbstractLogicManager import AbstractBLLManager
+    from zephyrex.pydantic2.manager_contract import ManagerContract
 
 # Type variable for network models
 T = TypeVar("T", bound=BaseModel)
@@ -1734,7 +1734,7 @@ def _populate_includes_on_serialized(
 
 
 def create_manager_factory(
-    manager_class: Type["AbstractBLLManager"],
+    manager_class: Type["ManagerContract"],
     model_registry: Any,
     auth_type: AuthType = AuthType.JWT,
 ) -> Callable:
@@ -1962,12 +1962,12 @@ def _normalize_query_list(value: Any) -> Optional[List[str]]:
 def register_route(
     router: APIRouter,
     route_type: RouteType,
-    manager_class: Type["AbstractBLLManager"],
+    manager_class: Type["ManagerContract"],
     model_registry: Any,
     auth_type: AuthType,
     route_auth_overrides: Dict[RouteType, AuthType],
     examples: Dict[str, Dict[str, Any]],
-    child_manager_class: Optional[Type["AbstractBLLManager"]] = None,
+    child_manager_class: Optional[Type["ManagerContract"]] = None,
     parent_param_name: Optional[str] = None,
     manager_property: Optional[str] = None,
 ) -> None:
@@ -3680,7 +3680,7 @@ def register_custom_route(
     router: APIRouter,
     custom_route: CustomRouteConfig,
     manager_factory: Callable,
-    manager_class: Type["AbstractBLLManager"],
+    manager_class: Type["ManagerContract"],
 ) -> None:
     """Register a custom route on the router."""
     import inspect
@@ -4317,7 +4317,7 @@ def generate_routers_from_model_registry(model_registry) -> Dict[str, APIRouter]
 
         # Check if model has a Manager attribute
         if hasattr(model_class, "Manager") and model_class.Manager:
-            manager_class: Type["AbstractBLLManager"] = model_class.Manager
+            manager_class: Type["ManagerContract"] = model_class.Manager
             manager_name: str = manager_class.__name__
 
             # Check if it has RouterMixin (Router method)

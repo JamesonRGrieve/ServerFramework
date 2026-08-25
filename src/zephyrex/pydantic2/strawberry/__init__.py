@@ -41,7 +41,7 @@ from zephyrex.lib.AbstractPydantic2 import (
 from zephyrex.lib.Environment import inflection
 from zephyrex.lib.Logging import logger
 from zephyrex.pydantic2.registry import ModelRegistry
-from zephyrex.logic.AbstractLogicManager import AbstractBLLManager
+from zephyrex.pydantic2.manager_contract import ManagerContract
 
 
 def enum_serializer(value: Any) -> str:
@@ -161,7 +161,7 @@ class ModelInfo:
     model_class: Type[BaseModel]
     ref_model_class: Type[BaseModel]
     network_model_class: Type[BaseModel]
-    manager_class: Type[AbstractBLLManager]
+    manager_class: Type[ManagerContract]
     gql_type: Optional[Type] = None
     plural_name: str = ""
     singular_name: str = ""
@@ -1172,7 +1172,7 @@ class GraphQLManager(ErrorHandlerMixin):
             )
 
     def _generate_components_for_model(
-        self, model_class: Type[BaseModel], manager_class: Type[AbstractBLLManager]
+        self, model_class: Type[BaseModel], manager_class: Type[ManagerContract]
     ) -> None:
         """Generate all components for a specific model class"""
         if not model_class or not manager_class:
@@ -1828,7 +1828,7 @@ class GraphQLManager(ErrorHandlerMixin):
         self,
         field_name: str,
         return_type: Type,
-        manager_class: Type[AbstractBLLManager],
+        manager_class: Type[ManagerContract],
     ) -> None:
         """Add a query resolver for getting a single item"""
         # Special handling for user queries - users can only query themselves
@@ -1883,7 +1883,7 @@ class GraphQLManager(ErrorHandlerMixin):
         self,
         field_name: str,
         return_type: Type,
-        manager_class: Type[AbstractBLLManager],
+        manager_class: Type[ManagerContract],
         filter_type: Type,
     ) -> None:
         """Add a query resolver for listing items with filtering and pagination"""
@@ -1974,7 +1974,7 @@ class GraphQLManager(ErrorHandlerMixin):
         self,
         field_name: str,
         return_type: Type,
-        manager_class: Type[AbstractBLLManager],
+        manager_class: Type[ManagerContract],
         input_type: Type,
     ) -> None:
         """Add a mutation resolver for creating items"""
@@ -2035,7 +2035,7 @@ class GraphQLManager(ErrorHandlerMixin):
         self,
         field_name: str,
         return_type: Type,
-        manager_class: Type[AbstractBLLManager],
+        manager_class: Type[ManagerContract],
         input_type: Type,
     ) -> None:
         """Add a mutation resolver for updating items"""
@@ -2139,7 +2139,7 @@ class GraphQLManager(ErrorHandlerMixin):
             )
 
     def _add_delete_mutation_resolver(
-        self, field_name: str, manager_class: Type[AbstractBLLManager]
+        self, field_name: str, manager_class: Type[ManagerContract]
     ) -> None:
         """Add a mutation resolver for deleting items"""
         # Special handling for user delete mutations - users can only delete themselves
