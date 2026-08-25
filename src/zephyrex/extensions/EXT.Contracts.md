@@ -545,7 +545,7 @@ Canonical Pydantic+SQLAlchemy base for persisted entities.
 ### `HookContext` (class)
 
 - Module: `zephyrex.logic.AbstractLogicManager`
-- Signature: `HookContext(manager: 'AbstractBLLManager', method_name: str, args: tuple, kwargs: dict, result: typing.Any | None = None, timing: zephyrex.logic.AbstractLogicManager.HookTiming = <HookTiming.BEFORE: 'before'>)`
+- Signature: `HookContext(manager: 'AbstractBLLManager', method_name: str, args: tuple, kwargs: dict, result: typing.Any | None = None, timing: zephyrex.logic.AbstractLogicManager.hooks.HookTiming = <HookTiming.BEFORE: 'before'>)`
 - Live docstring: Type-safe context object passed to hooks (Item 41).
 
 Generic over (P, R) — the target's ParamSpec and return type.
@@ -553,7 +553,7 @@ Generic over (P, R) — the target's ParamSpec and return type.
 ### `hook_bll` (decorator)
 
 - Module: `zephyrex.logic.AbstractLogicManager`
-- Signature: `hook_bll(target: Union[Type[ForwardRef('AbstractBLLManager')], Callable], timing: Union[zephyrex.logic.AbstractLogicManager.HookTiming, str] = <HookTiming.BEFORE: 'before'>, priority: int = 50, condition: Optional[Callable[[zephyrex.logic.AbstractLogicManager.HookContext], bool]] = None, before: Optional[List[str]] = None, after: Optional[List[str]] = None, blocking: Optional[bool] = None) -> Callable`
+- Signature: `hook_bll(target: Union[Type[ForwardRef('AbstractBLLManager')], Callable], timing: Union[zephyrex.logic.AbstractLogicManager.hooks.HookTiming, str] = <HookTiming.BEFORE: 'before'>, priority: int = 50, condition: Optional[Callable[[zephyrex.logic.AbstractLogicManager.hooks.HookContext], bool]] = None, before: Optional[List[str]] = None, after: Optional[List[str]] = None, blocking: Optional[bool] = None) -> Callable`
 - Live docstring: Enhanced hook decorator for BLL methods.
 
 Registers a function as a BEFORE/AFTER hook on a BLL method.
@@ -608,7 +608,7 @@ Service consuming or producing a continuous stream.
 ### `ProviderInstanceModel` (class)
 
 - Module: `zephyrex.logic.BLL_Providers`
-- Signature: `ProviderInstanceModel(*, provider_id: str, provider: Optional[zephyrex.logic.BLL_Providers.ProviderModel] = None, team_id: Optional[str] = None, team: Optional[zephyrex.logic.BLL_Auth.TeamModel] = None, user_id: Optional[str] = None, user: Optional[zephyrex.logic.BLL_Auth.UserModel] = None, name: str, updated_at: Optional[datetime.datetime], updated_by_user_id: Optional[str], id: str, created_at: datetime.datetime, created_by_user_id: str, model_name: Optional[str] = None, api_key: Optional[str] = None, enabled: Optional[bool] = True, scope: Literal['root', 'system', 'team', 'user'] = 'user', region: Optional[str] = None, auth_strategy_name: Optional[str] = None) -> None`
+- Signature: `ProviderInstanceModel(*, provider_id: str, provider: Optional[zephyrex.logic.BLL_Providers.ProviderModel] = None, team_id: Optional[str] = None, team: Optional[zephyrex.logic.BLL_Auth.team.TeamModel] = None, user_id: Optional[str] = None, user: Optional[zephyrex.logic.BLL_Auth.user.UserModel] = None, name: str, updated_at: Optional[datetime.datetime], updated_by_user_id: Optional[str], id: str, created_at: datetime.datetime, created_by_user_id: str, model_name: Optional[str] = None, api_key: Optional[str] = None, enabled: Optional[bool] = True, scope: Literal['root', 'system', 'team', 'user'] = 'user', region: Optional[str] = None, auth_strategy_name: Optional[str] = None) -> None`
 - Live docstring: Base mixin for all models with common audit fields.
 
 Persisted credential-and-configuration record for a bonded provider.
@@ -650,7 +650,7 @@ Registry of (grant_type, validator) pairs for UserManager.login_via_grant.
 ### `SessionModel` (class)
 
 - Module: `zephyrex.logic.BLL_Auth`
-- Signature: `SessionModel(*, user_id: Optional[str] = None, user: Optional[zephyrex.logic.BLL_Auth.UserModel] = None, updated_at: Optional[datetime.datetime] = None, updated_by_user_id: Optional[str] = None, id: Optional[str] = None, created_at: Optional[datetime.datetime] = None, created_by_user_id: Optional[str] = None, session_key: str, jwt_issued_at: datetime.datetime, refresh_token_hash: Optional[str] = None, device_type: Optional[str] = None, device_name: Optional[str] = None, browser: Optional[str] = None, is_active: bool = True, last_activity: datetime.datetime, expires_at: datetime.datetime, revoked: bool = False, trust_score: int = 50, requires_verification: bool = False, grant_type: Optional[str] = None, pending_state: Optional[Literal['awaiting_approval', 'approved', 'denied']] = None) -> None`
+- Signature: `SessionModel(*, user_id: Optional[str] = None, user: Optional[zephyrex.logic.BLL_Auth.user.UserModel] = None, updated_at: Optional[datetime.datetime] = None, updated_by_user_id: Optional[str] = None, id: Optional[str] = None, created_at: Optional[datetime.datetime] = None, created_by_user_id: Optional[str] = None, session_key: str, jwt_issued_at: datetime.datetime, refresh_token_hash: Optional[str] = None, device_type: Optional[str] = None, device_name: Optional[str] = None, browser: Optional[str] = None, is_active: bool = True, last_activity: datetime.datetime, expires_at: datetime.datetime, revoked: bool = False, trust_score: int = 50, requires_verification: bool = False, grant_type: Optional[str] = None, pending_state: Optional[Literal['awaiting_approval', 'approved', 'denied']] = None) -> None`
 - Live docstring: Persisted authentication-session row.
 
 Persisted authenticated session with freshness and scope.
