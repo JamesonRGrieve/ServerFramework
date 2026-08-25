@@ -310,6 +310,50 @@ class TestSendgridProvider(AbstractPRVTest, AbstractEmailProviderSecurityTests):
             ), f"Unexpected error: {e}"
 
     @pytest.mark.asyncio
+    async def test_send_email_routes_through_shared_http_client(self, monkeypatch):
+        """#220 (Item 97): send POSTs to ``/v3/mail/send`` via the shared async
+        ``ProviderHTTPClient`` — the same path SMTP2go uses — not the SDK's
+        direct urllib ``.send()``. Verifies the URL, bearer auth, and that
+        ``Mail.get()`` supplies the v3 body, with no real network call."""
+        if SendgridProvider.bond_instance(_MockProviderInstance()) is None:
+            pytest.skip("sendgrid package not available to bond a client")
+
+        import zephyrex.lib.ProviderHTTPClient as php
+
+        monkeypatch.setenv("SENDGRID_API_KEY", "SG.routing-test-key")
+        monkeypatch.setenv("SENDGRID_FROM_EMAIL", "from@example.com")
+
+        captured: dict = {}
+
+        class _Resp:
+            status_code = 202
+            text = ""
+
+        class _FakeClient:
+            async def post(self, url, **kwargs):
+                captured["url"] = url
+                captured["headers"] = kwargs.get("headers")
+                captured["json"] = kwargs.get("json")
+                return _Resp()
+
+        monkeypatch.setattr(php, "get_async_client", lambda policy: _FakeClient())
+
+        instance = _MockProviderInstance(
+            api_key="SG.routing-test-key", from_email="from@example.com"
+        )
+        result = await SendgridProvider.send_email(
+            instance, "to@example.com", "Subject", "Body text"
+        )
+
+        assert result == "Email sent successfully to to@example.com"
+        assert captured["url"] == "https://api.sendgrid.com/v3/mail/send"
+        assert captured["headers"]["Authorization"] == "Bearer SG.routing-test-key"
+        assert captured["headers"]["Content-Type"] == "application/json"
+        # Mail.get() carries the sender + recipient in the v3 shape.
+        assert captured["json"]["from"]["email"] == "from@example.com"
+        assert "to@example.com" in str(captured["json"])
+
+    @pytest.mark.asyncio
     async def test_get_emails_not_supported(self, provider_instance):
         """Test that get_emails is not supported by SendGrid."""
         # SendGrid doesn't support receiving emails

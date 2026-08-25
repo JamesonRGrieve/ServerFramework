@@ -638,19 +638,35 @@ class SendgridProvider(AbstractEmailProvider):
                         message.attachment = attachment
 
             logger.debug(f"Sending email to {recipient} from {from_email}")
-            # Access the actual client if wrapped
-            actual_client = getattr(client, "_client", client)
-            # Item 97 — injecting a `ProviderHTTPClient`-backed transport
-            # into the SendGrid SDK's underlying `python-http-client` is a
-            # follow-up; `health_check` already routes through the shared
-            # client. Direct SDK send preserves existing behavior here.
-            response = actual_client.send(message)
+            # Item 97 — route send through the shared ``ProviderHTTPClient``,
+            # the same async path SMTP2go's send uses (PRV_SMTP2Go_EMail), so it
+            # gets the SSRF guard, TLS/timeout policy, connection pooling, and
+            # trace/redaction hooks instead of the SendGrid SDK's direct urllib
+            # ``.send()``. ``Mail.get()`` produces the exact v3 ``/mail/send``
+            # payload the SDK would have posted. The API key is resolved
+            # per-request, so a rotated ``SENDGRID_API_KEY`` takes effect on the
+            # next send without a framework restart.
+            from zephyrex.lib.ProviderHTTPClient import (
+                ClientPolicy,
+                get_async_client,
+            )
 
-            if response.status_code >= 200 and response.status_code < 300:
+            api_key = provider_instance.api_key or env("SENDGRID_API_KEY")
+            shared = get_async_client(ClientPolicy(timeout=30.0))
+            response = await shared.post(
+                "https://api.sendgrid.com/v3/mail/send",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=message.get(),
+            )
+
+            if 200 <= response.status_code < 300:
                 logger.debug(f"Email sent successfully to {recipient}")
                 return f"Email sent successfully to {recipient}"
             else:
-                return f"Failed to send email: {response.status_code}: {response.body}"
+                return f"Failed to send email: {response.status_code}: {response.text}"
         except Exception as e:
             logger.error(f"Error sending SendGrid email: {str(e)}")
             return f"Failed to send email: {str(e)}"
