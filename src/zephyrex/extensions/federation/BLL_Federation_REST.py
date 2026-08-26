@@ -25,14 +25,12 @@ import re
 from dataclasses import dataclass, field
 from typing import (
     Any,
-    Awaitable,
     Callable,
-    ClassVar,
     Dict,
     List,
     Mapping,
+    NoReturn,
     Optional,
-    Sequence,
     Set,
     Tuple,
     Type,
@@ -345,6 +343,58 @@ class RESTUpstreamTransport:
             raise KeyError(f"Unknown REST operation: {name!r}")
         return op
 
+    def _prepare(
+        self,
+        *,
+        operation: str,
+        path_args: Optional[Mapping[str, Any]],
+        query_args: Optional[Mapping[str, Any]],
+        body: Any,
+        idempotency_key: Optional[str],
+        requester_id: Optional[str],
+    ) -> Tuple[Callable[..., Any], str, Dict[str, Any]]:
+        """Resolve an operation into its bound HTTP verb, URL, and kwargs.
+
+        Shared by :meth:`send` and :meth:`send_sync`; the only thing that
+        differs between the two entry points is whether the returned verb is
+        awaited (async) or called directly (sync).
+        """
+
+        op = self.get_operation(operation)
+        url = self._render_path(op, path_args or {})
+        kwargs: Dict[str, Any] = {
+            "params": dict(query_args or {}),
+            "requester_id": requester_id,
+        }
+        if idempotency_key is not None:
+            kwargs["idempotency_key"] = idempotency_key
+        if body is not None:
+            kwargs["json"] = body
+        verb = getattr(self._http, op.method.lower())
+        return verb, url, kwargs
+
+    @staticmethod
+    def _translate_auth_error(exc: Exception) -> NoReturn:
+        """Re-raise ``exc``, mapping ``AuthExternalError`` to an HTTP 407.
+
+        Both :meth:`send` and :meth:`send_sync` route upstream failures through
+        this so a missing or expired upstream credential surfaces identically
+        as ``Proxy Authentication Required`` rather than leaking the raw
+        provider exception. Any other error is re-raised unchanged.
+        """
+
+        from zephyrex.extensions.ExternalErrors import AuthExternalError
+
+        if isinstance(exc, AuthExternalError):
+            from fastapi import HTTPException
+
+            raise HTTPException(
+                status_code=407,
+                detail="Proxy Authentication Required — upstream credential missing or expired",
+                headers={"Proxy-Authenticate": "Bearer"},
+            )
+        raise exc
+
     async def send(
         self,
         *,
@@ -357,32 +407,18 @@ class RESTUpstreamTransport:
     ) -> Any:
         """Send an operation upstream and return the JSON-decoded body."""
 
-        op = self.get_operation(operation)
-        url = self._render_path(op, path_args or {})
-        kwargs: Dict[str, Any] = {
-            "params": dict(query_args or {}),
-            "requester_id": requester_id,
-        }
-        if idempotency_key is not None:
-            kwargs["idempotency_key"] = idempotency_key
-        if body is not None:
-            kwargs["json"] = body
-        method = op.method.lower()
-        verb = getattr(self._http, method)
+        verb, url, kwargs = self._prepare(
+            operation=operation,
+            path_args=path_args,
+            query_args=query_args,
+            body=body,
+            idempotency_key=idempotency_key,
+            requester_id=requester_id,
+        )
         try:
             return await verb(url, **kwargs)
         except Exception as exc:
-            from zephyrex.extensions.ExternalErrors import AuthExternalError
-
-            if isinstance(exc, AuthExternalError):
-                from fastapi import HTTPException
-
-                raise HTTPException(
-                    status_code=407,
-                    detail="Proxy Authentication Required — upstream credential missing or expired",
-                    headers={"Proxy-Authenticate": "Bearer"},
-                )
-            raise
+            self._translate_auth_error(exc)
 
     def send_sync(
         self,
@@ -394,19 +430,25 @@ class RESTUpstreamTransport:
         idempotency_key: Optional[str] = None,
         requester_id: Optional[str] = None,
     ) -> Any:
-        op = self.get_operation(operation)
-        url = self._render_path(op, path_args or {})
-        kwargs: Dict[str, Any] = {
-            "params": dict(query_args or {}),
-            "requester_id": requester_id,
-        }
-        if idempotency_key is not None:
-            kwargs["idempotency_key"] = idempotency_key
-        if body is not None:
-            kwargs["json"] = body
-        method = op.method.lower()
-        verb = getattr(self._http, method)
-        return verb(url, **kwargs)
+        """Send an operation upstream synchronously and return the JSON body.
+
+        Mirrors :meth:`send` exactly, including the ``AuthExternalError`` →
+        HTTP 407 translation; the sole difference is that the HTTP verb is
+        invoked synchronously instead of awaited.
+        """
+
+        verb, url, kwargs = self._prepare(
+            operation=operation,
+            path_args=path_args,
+            query_args=query_args,
+            body=body,
+            idempotency_key=idempotency_key,
+            requester_id=requester_id,
+        )
+        try:
+            return verb(url, **kwargs)
+        except Exception as exc:
+            self._translate_auth_error(exc)
 
     def _render_path(self, op: OperationSpec, path_args: Mapping[str, Any]) -> str:
         rendered = op.path_template

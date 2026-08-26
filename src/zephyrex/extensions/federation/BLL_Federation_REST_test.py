@@ -13,14 +13,11 @@ Covers:
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any, Dict, List
 
 import pytest
 
 from zephyrex.extensions.federation.BLL_Federation_REST import (
-    OPENAPI_TYPE_TO_PY,
-    OpenAPIToPydanticResult,
     OperationSpec,
     RESTUpstreamTransport,
     derive_external_models,
@@ -121,7 +118,7 @@ def test_openapi_imports_simple_model():
     assert fields["id"].annotation is str
     assert fields["name"].annotation is str
     # Optional fields wrap.
-    from typing import Union, get_args, get_origin
+    from typing import Union, get_origin
 
     assert get_origin(fields["age"].annotation) is Union
 
@@ -212,7 +209,7 @@ def test_openapi_extracts_enums():
 
 
 def test_openapi_handles_arrays():
-    from typing import List as _List, get_args, get_origin
+    from typing import get_args, get_origin
 
     spec = {
         "components": {
@@ -310,7 +307,7 @@ def test_openapi_handles_oneof_union():
     }
     result = openapi_to_pydantic_models(spec)
     item = result.models["Item"]
-    from typing import Union, get_args, get_origin
+    from typing import Union, get_origin
 
     ann = item.model_fields["value"].annotation
     # Optional wrap leaves Union at top.
@@ -400,6 +397,70 @@ async def test_transport_unknown_operation_raises(transport_with_ops):
 
 
 # ---------------------------------------------------------------------------
+# AuthExternalError → HTTP 407 translation (parity across send / send_sync)
+# ---------------------------------------------------------------------------
+
+
+def test_send_sync_translates_auth_error_to_407(transport_with_ops):
+    """The synchronous entry point must map an upstream ``AuthExternalError``
+    (missing/expired credential) to ``HTTPException(407)`` — the same
+    translation the async ``send`` performs — instead of leaking the raw
+    provider exception. This is the exercised path: every ``*_via_provider``
+    method synthesized by ``derive_external_models`` dispatches through
+    ``send_sync``.
+    """
+
+    from fastapi import HTTPException
+
+    from zephyrex.extensions.ExternalErrors import AuthExternalError
+
+    def _raise(url, **kwargs):
+        raise AuthExternalError("upstream credential missing")
+
+    # Mock the sync HTTP verb that send_sync dispatches to for a GET.
+    transport_with_ops._http.get = _raise
+
+    with pytest.raises(HTTPException) as excinfo:
+        transport_with_ops.send_sync(operation="get_user", path_args={"id": "abc"})
+    assert excinfo.value.status_code == 407
+    assert excinfo.value.headers.get("Proxy-Authenticate") == "Bearer"
+
+
+async def test_send_translates_auth_error_to_407(transport_with_ops):
+    """Regression parity check: the async entry point keeps the same 407
+    translation, so both ``send`` and ``send_sync`` behave identically.
+    """
+
+    from fastapi import HTTPException
+
+    from zephyrex.extensions.ExternalErrors import AuthExternalError
+
+    async def _raise(url, **kwargs):
+        raise AuthExternalError("upstream credential missing")
+
+    transport_with_ops._http.get = _raise
+
+    with pytest.raises(HTTPException) as excinfo:
+        await transport_with_ops.send(operation="get_user", path_args={"id": "abc"})
+    assert excinfo.value.status_code == 407
+    assert excinfo.value.headers.get("Proxy-Authenticate") == "Bearer"
+
+
+def test_send_sync_reraises_non_auth_error_unchanged(transport_with_ops):
+    """Non-auth failures must propagate unchanged — the translation is
+    scoped to ``AuthExternalError`` and does not swallow other exceptions.
+    """
+
+    def _raise(url, **kwargs):
+        raise ValueError("boom")
+
+    transport_with_ops._http.get = _raise
+
+    with pytest.raises(ValueError, match="boom"):
+        transport_with_ops.send_sync(operation="get_user", path_args={"id": "abc"})
+
+
+# ---------------------------------------------------------------------------
 # derive_external_models — REST → GQL projection
 # ---------------------------------------------------------------------------
 
@@ -466,3 +527,49 @@ def test_derive_external_models_respects_crud_map():
     rows = cls.list_via_provider(None)
     assert rows == [{"id": "z"}]
     assert http.calls[-1]["url"] == "https://api.example.com/widgets"
+
+
+def test_derived_via_provider_surfaces_auth_error_as_407():
+    """End-to-end guard on the real exercised path: a derived REST external
+    model whose upstream credential is missing/expired must surface an
+    ``HTTPException(407)`` through its synthesized ``get_via_provider``
+    (which dispatches via ``send_sync``), not the raw ``AuthExternalError``.
+    """
+
+    from fastapi import HTTPException
+
+    from zephyrex.extensions.ExternalErrors import AuthExternalError
+
+    class _AuthFailingSyncHTTPClient:
+        def get(self, url: str, **kwargs: Any) -> Any:
+            raise AuthExternalError("upstream credential expired")
+
+    spec = {
+        "components": {
+            "schemas": {
+                "User": {
+                    "type": "object",
+                    "required": ["id"],
+                    "properties": {"id": {"type": "string"}},
+                }
+            }
+        },
+        "paths": {
+            "/users/{id}": {
+                "get": {
+                    "operationId": "get_user",
+                    "parameters": [{"name": "id", "in": "path"}],
+                }
+            }
+        },
+    }
+    result = openapi_to_pydantic_models(spec)
+    transport = RESTUpstreamTransport(
+        _AuthFailingSyncHTTPClient(), "https://api.example.com", result.operations
+    )
+    derived = derive_external_models(pydantic_result=result, transport=transport)
+    cls = derived["User"]
+
+    with pytest.raises(HTTPException) as excinfo:
+        cls.get_via_provider(None, external_id="abc")
+    assert excinfo.value.status_code == 407
