@@ -172,11 +172,12 @@ class TestTeamEndpoints(AbstractEPTest):
             my_team_ids
         ), "admin_a should see every team they created"
 
-        # The include ran on every returned row (attach key present). Content
-        # population of the *_user relationship is a separate pre-existing
-        # concern; this test guards the query-count contract of the batch fix.
-        for team in teams:
-            assert "created_by_user" in team
+        # #240: the include resolves to the actual creator, not an empty {} —
+        # each of admin_a's teams has created_by_user populated with admin_a.
+        for team in mine:
+            attached = team.get("created_by_user")
+            assert attached, f"creator not resolved for team {team.get('id')}"
+            assert str(attached["id"]) == str(admin_a.id)
 
         # N+1 guard: the old path fetched each creator with a per-row get(), so
         # get() scaled with the page (up to one call per (row, include) slot).

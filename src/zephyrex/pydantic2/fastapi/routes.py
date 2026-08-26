@@ -394,7 +394,11 @@ def register_route(
                             continue
 
                         # If include already present (e.g., joinedload produced it), don't overwrite
-                        if inc in entity and entity.get(inc) is not None:
+                        # Truthy, not `is not None`: an unloaded relationship or an
+                        # empty nested DTO field serializes to {} (falsy), which must
+                        # still be resolved from the *_id -- only a genuinely-loaded
+                        # object (truthy) is left untouched.
+                        if inc in entity and entity.get(inc):
                             continue
 
                         user_id = entity.get(id_field)
@@ -463,7 +467,7 @@ def register_route(
 
                 if include_selection:
                     populated = _populate_includes_on_serialized(
-                        serialized_result, include_selection, model_registry  # type: ignore[arg-type]
+                        serialized_result, include_selection, model_registry, requester_id=getattr(getattr(manager, "requester", None), "id", None)  # type: ignore[arg-type]
                     )
                     populated = apply_field_acl_to_payload(
                         populated, manager, target_model
@@ -781,7 +785,9 @@ def register_route(
                             id_field = f"{inc}_id"
                             if id_field not in entity:
                                 continue
-                            if inc in entity and entity.get(inc) is not None:
+                            # Truthy, not `is not None`: an empty ({}) nested field
+                            # from an unloaded relationship must still be resolved.
+                            if inc in entity and entity.get(inc):
                                 continue
                             user_id = entity.get(id_field)
                             if not user_id:
@@ -924,7 +930,7 @@ def register_route(
 
                 if include_selection:
                     populated_items = _populate_includes_on_serialized(
-                        serialized_results, include_selection, model_registry  # type: ignore[arg-type]
+                        serialized_results, include_selection, model_registry, requester_id=getattr(getattr(manager, "requester", None), "id", None)  # type: ignore[arg-type]
                     )
                     if isinstance(populated_items, list):
                         populated_items = [
@@ -1461,7 +1467,7 @@ def register_route(
 
                     if include_selection:
                         populated = _populate_includes_on_serialized(
-                            serialized_fresh, include_selection, model_registry  # type: ignore[arg-type]
+                            serialized_fresh, include_selection, model_registry, requester_id=getattr(getattr(manager, "requester", None), "id", None)  # type: ignore[arg-type]
                         )
                         return JSONResponse(
                             content=jsonable_encoder({resource_name: populated}),
@@ -1719,7 +1725,7 @@ def register_route(
 
                 if include_selection:
                     populated_items = _populate_includes_on_serialized(
-                        serialized_search_results, include_selection, model_registry  # type: ignore[arg-type]
+                        serialized_search_results, include_selection, model_registry, requester_id=getattr(getattr(manager, "requester", None), "id", None)  # type: ignore[arg-type]
                     )
                     return JSONResponse(
                         content=jsonable_encoder(

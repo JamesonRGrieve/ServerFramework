@@ -308,29 +308,78 @@ def validate_field_acl_query(
         )
 
 
+def _populate_user_includes(
+    items: List[Dict[str, Any]],
+    user_includes: List[str],
+    model_registry: Any,
+    requester_id: Optional[str],
+) -> None:
+    """Resolve ``*_user`` / ``user`` include keys in-place to the actual user via
+    a single permission-filtered batch fetch (no per-row query). A value that is
+    absent or empty (``{}`` from an unloaded relationship) is (re)resolved from
+    the sibling ``*_id``; a genuinely-loaded nested object is left untouched. A
+    user the requester cannot view resolves to ``None``."""
+    if not user_includes or not items:
+        return
+    from zephyrex.lib.AuthProvider import get_auth_provider
+    from zephyrex.lib.Environment import env
+
+    try:
+        user_mgr = get_auth_provider()(
+            requester_id=requester_id or env("ROOT_ID"),
+            model_registry=model_registry,
+        )
+    except Exception:
+        return
+
+    needed: List[Any] = []
+    seen: set = set()
+    for item in items:
+        for inc in user_includes:
+            id_field = f"{inc}_id"
+            if id_field not in item or item.get(inc):
+                continue
+            uid = item.get(id_field)
+            if uid and uid not in seen:
+                seen.add(uid)
+                needed.append(uid)
+
+    user_map: Dict[str, Any] = {}
+    if needed:
+        try:
+            users = user_mgr.list(filters=[user_mgr.DB.id.in_(needed)])
+        except Exception:
+            users = []
+        for user in users or []:
+            uid = (
+                user.get("id") if isinstance(user, dict) else getattr(user, "id", None)
+            )
+            if uid is not None:
+                user_map[str(uid)] = serialize_for_response(user)
+
+    for item in items:
+        for inc in user_includes:
+            id_field = f"{inc}_id"
+            if id_field not in item or item.get(inc):
+                continue
+            uid = item.get(id_field)
+            item[inc] = user_map.get(str(uid)) if uid else None
+
+
 def _populate_includes_on_serialized(
     serialized: Union[Dict[str, Any], List[Dict[str, Any]]],
     include_selection: Optional[List[str]],
     model_registry: Any,
+    requester_id: Optional[str] = None,
 ) -> Union[Dict[str, Any], List[Dict[str, Any]]]:
-    """
-    Populate requested include navigation properties when they are missing
-    from already-serialized data. This is a best-effort helper used by the
-    route handlers when generate_joins didn't populate relationships at the
-    SQLAlchemy level.
+    """Populate requested include navigation properties on already-serialized data.
 
-    Heuristics supported (covers common cases used in tests):
-      - created_by_user / updated_by_user / user -> lookup via UserManager.get
-      - team -> TeamManager.get
-      - role -> RoleManager.get
-      - invitees -> InviteeManager.list(filtered by invitation_id)
-
-    The helper is intentionally conservative: if a lookup fails it leaves the
-    serialized value unchanged.
+    ``*_user`` / ``user`` includes are resolved to the actual user through a
+    single permission-filtered batch fetch (fixing the empty-``{}`` result and
+    avoiding a per-row N+1). Any other requested include key that is still
+    missing gets an empty placeholder (plural -> ``[]``, singular -> ``{}``) so
+    the navigation key is always present in the response.
     """
-    # Minimal, safe population: ensure the key exists so callers/tests that only
-    # assert presence of the navigation key succeed. Avoid DB lookups here to
-    # keep this function side-effect free and resilient during testing.
     if not include_selection or serialized is None:
         return serialized
 
@@ -344,15 +393,13 @@ def _populate_includes_on_serialized(
     else:
         return serialized
 
+    user_includes = [k for k in include_selection if k == "user" or k.endswith("_user")]
+    _populate_user_includes(items, user_includes, model_registry, requester_id)
+
     for item in items:
         for include_key in include_selection:
-            if include_key in item:
-                continue
-            # plural includes should be an empty list, singular includes an empty dict
-            if include_key.endswith("s"):
-                item[include_key] = []
-            else:
-                item[include_key] = {}
+            if include_key not in item:
+                item[include_key] = [] if include_key.endswith("s") else {}
 
     return items[0] if single else items
 
