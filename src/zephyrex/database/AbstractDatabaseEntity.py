@@ -12,6 +12,7 @@ from typing import (
     Union,
     get_args,
     get_origin,
+    get_type_hints,
 )
 
 from fastapi import HTTPException, Request
@@ -382,6 +383,26 @@ def db_to_return_type(
     return entity  # type: ignore[return-value]
 
 
+# Resolved type hints are deterministic per class, so memoize them keyed on the
+# class object itself. ``db_to_return_type`` resolves the same DTO/model class
+# once per row (and again per nested field); keying on the class collapses that
+# O(rows x nesting) recomputation to one resolution per class.
+_type_hints_cache: dict[type, dict[str, Any]] = {}
+
+
+def _cached_type_hints(cls):
+    """Return ``get_type_hints(cls)``, memoized on the class object.
+
+    Callers must treat the returned mapping as read-only — it is shared across
+    calls and never copied.
+    """
+    hints = _type_hints_cache.get(cls)
+    if hints is None:
+        hints = get_type_hints(cls)
+        _type_hints_cache[cls] = hints
+    return hints
+
+
 def _process_nested_objects(data_dict, parent_dto_type):
     """
     Process nested objects in a dictionary based on parent DTO type annotations.
@@ -389,10 +410,8 @@ def _process_nested_objects(data_dict, parent_dto_type):
     """
     result = {}
 
-    # Get type hints from the DTO class and all its parent classes
-    from typing import get_type_hints
-
-    type_hints = get_type_hints(parent_dto_type)
+    # Get type hints from the DTO class and all its parent classes (memoized).
+    type_hints = _cached_type_hints(parent_dto_type)
 
     for key, value in data_dict.items():
         if key not in type_hints:

@@ -651,6 +651,65 @@ def test_dto_conversion_error_handling():
     assert result.optional_value is None  # Default value
 
 
+def test_db_to_return_type_memoizes_type_hints_across_rows():
+    """Converting a list to DTOs must resolve the DTO class's type hints once,
+    not once per row (was O(rows) ``get_type_hints`` calls)."""
+    import zephyrex.database.AbstractDatabaseEntity as ade
+    from unittest.mock import patch
+
+    class RowDTO:
+        __annotations__ = {
+            "id": str,
+            "name": str,
+            "count": int,
+            "items": List[str],
+            "optional_value": Optional[int],
+        }
+
+        def __init__(
+            self, id=None, name=None, count=0, items=None, optional_value=None, **kwargs
+        ):
+            self.id = id
+            self.name = name
+            self.count = count
+            self.items = items or []
+            self.optional_value = optional_value
+
+    row_count = 5
+    entities = [
+        {
+            "id": str(i),
+            "name": f"Entity {i}",
+            "count": i,
+            "items": [f"item-{i}"],
+            "optional_value": i,
+        }
+        for i in range(row_count)
+    ]
+
+    # Start from a cold cache for this class so the count is deterministic.
+    ade._type_hints_cache.pop(RowDTO, None)
+
+    with patch.object(ade, "get_type_hints", wraps=ade.get_type_hints) as spy:
+        results = db_to_return_type(entities, return_type="dto", dto_type=RowDTO)
+
+    # (a) Output/conversion is unchanged: every row converts field-for-field.
+    assert len(results) == row_count
+    for i, result in enumerate(results):
+        assert isinstance(result, RowDTO)
+        assert result.id == str(i)
+        assert result.name == f"Entity {i}"
+        assert result.count == i
+        assert result.items == [f"item-{i}"]
+        assert result.optional_value == i
+
+    # (b) One resolution total for the class — down from once per row.
+    assert spy.call_count == 1, (
+        f"get_type_hints must resolve RowDTO once across {row_count} rows; "
+        f"got {spy.call_count}"
+    )
+
+
 # Test for empty and None cases in utility functions
 def test_utility_edge_cases(mock_server):
     """Test edge cases in utility functions"""

@@ -44,6 +44,27 @@ def _escape_like(v: object) -> str:
     return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
+# Resolved type hints are deterministic per class, so memoize them keyed on the
+# class object itself. ``model_registry.apply(...)`` returns a distinct bound
+# class per registry, so keying on that resolved class keeps different applied
+# models from colliding while collapsing the per-list/search/count
+# ``get_type_hints`` recomputation to one resolution per class.
+_type_hints_cache: Dict[type, Dict[str, Any]] = {}
+
+
+def _cached_type_hints(cls: type) -> Dict[str, Any]:
+    """Return ``get_type_hints(cls)``, memoized on the class object.
+
+    Callers must treat the returned mapping as read-only — it is shared across
+    calls and never copied.
+    """
+    hints = _type_hints_cache.get(cls)
+    if hints is None:
+        hints = get_type_hints(cls)
+        _type_hints_cache[cls] = hints
+    return hints
+
+
 class _BoundModelDescriptor:
     """Descriptor providing registry-aware model access for BLL managers."""
 
@@ -444,7 +465,7 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
         date_fields = []
         boolean_fields = []
 
-        all_annotations = get_type_hints(self.model_registry.apply(self.Model))
+        all_annotations = _cached_type_hints(self.model_registry.apply(self.Model))
         # Get all annotations from the model
         for field_name, field_info in all_annotations.items():
             # Handle Optional types

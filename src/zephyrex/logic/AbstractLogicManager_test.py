@@ -1011,6 +1011,48 @@ class TestAbstractLogicManager:
                 # Cleanup
                 del self.base_manager.search_transformers["custom_search"]
 
+    def test_get_field_types_memoizes_type_hints_per_class(self):
+        """``get_field_types`` must categorize identically while resolving the
+        applied model's type hints only once, no matter how many times list /
+        search / count call it (was recomputed on every call)."""
+        import zephyrex.logic.AbstractLogicManager.manager as manager_mod
+
+        # Reference categorization computed against a cold cache with the real
+        # ``get_type_hints`` — this is the exact pre-optimization output.
+        manager_mod._type_hints_cache.clear()
+        reference = self.base_manager.get_field_types()
+
+        # Cold cache again, then count real resolutions across repeated calls.
+        manager_mod._type_hints_cache.clear()
+        with patch.object(
+            manager_mod, "get_type_hints", wraps=manager_mod.get_type_hints
+        ) as spy:
+            first = self.base_manager.get_field_types()
+            second = self.base_manager.get_field_types()
+            # ``build_search_filters`` is the hot caller — it invokes
+            # ``get_field_types`` on every search/list/count.
+            self.base_manager.build_search_filters({})
+            third = self.base_manager.get_field_types()
+
+        # (a) Output/categorization is byte-for-byte unchanged across calls.
+        assert first == reference
+        assert second == reference
+        assert third == reference
+
+        # Sanity-check the categorization itself so the equality above is not
+        # comparing two identically-broken results.
+        string_fields, numeric_fields, date_fields, _boolean_fields = reference
+        assert "name" in string_fields
+        assert "description" in string_fields
+        assert "count" in numeric_fields
+        assert "created_at" in date_fields
+
+        # (b) One resolution total for the class — down from once per call.
+        assert spy.call_count == 1, (
+            "get_type_hints must resolve the applied model once across repeated "
+            f"get_field_types/build_search_filters calls; got {spy.call_count}"
+        )
+
     def test_resolve_load_only_columns_adds_required_fields(self):
         """Required audit columns should always be included for load_only selections."""
 
