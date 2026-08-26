@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import pytest
 from fastapi import APIRouter, Depends, FastAPI
 from fastapi.testclient import TestClient
 
@@ -49,6 +48,17 @@ def test_queued_for_retry_returns_202_with_tracking_id() -> None:
     response = client.post("/v1/widgets")
     assert response.status_code == 202
     assert response.json() == {"status": "accepted", "tracking_id": "abc"}
+
+
+def test_queued_status_derives_from_sentinel_not_a_hardcode() -> None:
+    # Divergence resolution (issue #225): the REST emitter now derives the
+    # queued status from the sentinel's real attribute via the shared
+    # extractor, rather than hard-coding "accepted". A non-default status
+    # therefore reaches the wire body unchanged.
+    client = _build_app(QueuedForRetry(tracking_id="t1", status="queued"))
+    response = client.post("/v1/widgets")
+    assert response.status_code == 202
+    assert response.json() == {"status": "queued", "tracking_id": "t1"}
 
 
 def test_silent_dropped_returns_200_with_documented_body() -> None:

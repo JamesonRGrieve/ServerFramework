@@ -336,6 +336,80 @@ class SilentDropped:
     ability: Optional[str] = None
 
 
+# Item 48 — shared degradation-sentinel projection (single source of truth).
+#
+# The knowledge of *which* rotation degradation sentinels exist and *what
+# fields* each one projects onto the wire lives here, once. The FastAPI and
+# Strawberry emitters both call `extract_degradation_sentinel` and render the
+# returned `NormalizedSentinel` into their own transport, rather than
+# re-encoding the sentinel field set independently (which had already drifted:
+# one emitter hard-coded the queued status while the other read the sentinel's
+# real attribute).
+
+SILENT_DROPPED_STATUS: Literal["silent_dropped"] = "silent_dropped"
+"""Wire-level status discriminator for a SILENT_DROP projection.
+
+The `SilentDropped` sentinel carries no status attribute of its own; this is
+the shared constant both transports advertise for it, mirrored by
+`SilentDroppedModel.status` and the GraphQL `SilentDroppedGQL.status`.
+"""
+
+
+@dataclass(frozen=True)
+class NormalizedSentinel:
+    """Item 48 — transport-agnostic projection of a rotation degradation
+    sentinel, produced by :func:`extract_degradation_sentinel`.
+
+    ``kind`` discriminates the two sentinel families and fixes which fields
+    are populated:
+
+    - ``"queued"`` (from :class:`QueuedForRetry`): ``status`` and
+      ``tracking_id`` (the outbox handle) are populated; ``provider`` /
+      ``ability`` are ``None``.
+    - ``"silent_dropped"`` (from :class:`SilentDropped`): ``status`` and the
+      ``(provider, ability)`` pair are populated; ``tracking_id`` is ``None``.
+
+    Emitters map this onto their transport: FastAPI selects the HTTP status
+    code (202 vs 200) and builds the JSON body from these fields; Strawberry
+    builds the matching typed GraphQL object.
+    """
+
+    kind: Literal["queued", "silent_dropped"]
+    status: str
+    tracking_id: Optional[str] = None
+    provider: Optional[str] = None
+    ability: Optional[str] = None
+
+
+def extract_degradation_sentinel(result: Any) -> Optional[NormalizedSentinel]:
+    """Item 48 — normalize a rotation degradation sentinel into a
+    transport-agnostic :class:`NormalizedSentinel`.
+
+    Returns ``None`` when ``result`` is not a degradation sentinel, so the
+    FastAPI / Strawberry emitters can fall through to their regular response
+    path. This is the single place that knows the sentinel field set; the
+    emitters render the returned normalized form into their own transport.
+
+    The queued projection reads the sentinel's own ``status`` attribute (its
+    default is ``"accepted"``) rather than hard-coding a status, so both
+    transports agree on the value.
+    """
+    if isinstance(result, QueuedForRetry):
+        return NormalizedSentinel(
+            kind="queued",
+            status=result.status,
+            tracking_id=result.tracking_id,
+        )
+    if isinstance(result, SilentDropped):
+        return NormalizedSentinel(
+            kind="silent_dropped",
+            status=SILENT_DROPPED_STATUS,
+            provider=result.provider,
+            ability=result.ability,
+        )
+    return None
+
+
 # Item 48 — OpenAPI surface model for QUEUE_AND_RETRY 202 responses.
 class QueuedForRetryModel(BaseModel):
     """OpenAPI representation of a `QueuedForRetry` 202 response body."""
@@ -347,7 +421,7 @@ class QueuedForRetryModel(BaseModel):
 class SilentDroppedModel(BaseModel):
     """OpenAPI representation of a `SilentDropped` 200 response body."""
 
-    status: Literal["silent_dropped"] = "silent_dropped"
+    status: Literal["silent_dropped"] = SILENT_DROPPED_STATUS
     provider: Optional[str] = None
     ability: Optional[str] = None
 
@@ -372,6 +446,9 @@ __all__ = [
     "default_degradation_policy",
     "QueuedForRetry",
     "SilentDropped",
+    "SILENT_DROPPED_STATUS",
+    "NormalizedSentinel",
+    "extract_degradation_sentinel",
     "QueuedForRetryModel",
     "SilentDroppedModel",
 ]

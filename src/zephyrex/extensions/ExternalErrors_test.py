@@ -5,20 +5,24 @@ from __future__ import annotations
 import pytest
 
 from zephyrex.extensions.ExternalErrors import (
+    SILENT_DROPPED_STATUS,
     AuthExternalError,
     BaseExternalError,
     DegradationMode,
-    DegradationPolicy,
     InvalidInputExternalError,
     InvalidPaginationError,
     NavigationNotIncludedError,
+    NormalizedSentinel,
     PermanentExternalError,
+    QueuedForRetry,
     RateLimitExternalError,
     RotationPolicy,
+    SilentDropped,
     TransientExternalError,
     UnsupportedOperatorError,
     default_degradation_policy,
     default_rotation_policy,
+    extract_degradation_sentinel,
     fail_fast,
     queue_and_retry,
     silent_drop,
@@ -152,3 +156,58 @@ class TestDegradationPolicy:
             degradation_policy = queue_and_retry()
 
         assert _Provider.degradation_policy.mode == DegradationMode.QUEUE_AND_RETRY
+
+
+# ---- Item 48: shared degradation-sentinel projection (SSOT) ------------------
+
+
+class TestExtractDegradationSentinel:
+    """`extract_degradation_sentinel` is the single source of truth for the
+    sentinel field set. Both the FastAPI and Strawberry emitters derive their
+    transport output from the `NormalizedSentinel` it returns."""
+
+    def test_queued_for_retry_normalizes_status_and_tracking_id(self):
+        norm = extract_degradation_sentinel(QueuedForRetry(tracking_id="abc"))
+        assert isinstance(norm, NormalizedSentinel)
+        assert norm.kind == "queued"
+        assert norm.status == "accepted"
+        assert norm.tracking_id == "abc"
+        # Queued projection carries no provider/ability.
+        assert norm.provider is None
+        assert norm.ability is None
+
+    def test_queued_projection_honors_sentinel_status_attribute(self):
+        # Divergence resolution: the projection reads the sentinel's real
+        # `status` attribute (not a hard-coded literal), so a non-default
+        # status flows through both transports consistently.
+        norm = extract_degradation_sentinel(
+            QueuedForRetry(tracking_id="t1", status="queued")
+        )
+        assert norm is not None
+        assert norm.kind == "queued"
+        assert norm.status == "queued"
+        assert norm.tracking_id == "t1"
+
+    def test_silent_dropped_normalizes_provider_and_ability(self):
+        norm = extract_degradation_sentinel(
+            SilentDropped(provider="email_provider", ability="send_email")
+        )
+        assert isinstance(norm, NormalizedSentinel)
+        assert norm.kind == "silent_dropped"
+        assert norm.status == SILENT_DROPPED_STATUS == "silent_dropped"
+        assert norm.provider == "email_provider"
+        assert norm.ability == "send_email"
+        # Silent-drop projection carries no outbox tracking handle.
+        assert norm.tracking_id is None
+
+    def test_silent_dropped_defaults(self):
+        norm = extract_degradation_sentinel(SilentDropped())
+        assert norm is not None
+        assert norm.kind == "silent_dropped"
+        assert norm.status == SILENT_DROPPED_STATUS
+        assert norm.provider is None
+        assert norm.ability is None
+
+    @pytest.mark.parametrize("value", [None, 42, "widget", {"id": "w1"}, object()])
+    def test_returns_none_for_non_sentinel(self, value):
+        assert extract_degradation_sentinel(value) is None

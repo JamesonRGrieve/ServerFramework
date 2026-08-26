@@ -443,29 +443,33 @@ def _render_degradation_sentinel(result: Any) -> Optional[Response]:
 
     Returns ``None`` when ``result`` is not a degradation sentinel so the
     caller can fall through to the regular response path.
+
+    The sentinel field set is owned by
+    :func:`zephyrex.extensions.ExternalErrors.extract_degradation_sentinel`
+    (the single source of truth); this function only maps the normalized
+    projection onto the HTTP transport — selecting the status code (202 for
+    queued, 200 for silent-dropped) and shaping the JSON body.
     """
     try:
-        from zephyrex.extensions.ExternalErrors import (
-            QueuedForRetry,
-            SilentDropped,
-        )
+        from zephyrex.extensions.ExternalErrors import extract_degradation_sentinel
     except Exception:
         return None
-    if isinstance(result, QueuedForRetry):
+    sentinel = extract_degradation_sentinel(result)
+    if sentinel is None:
+        return None
+    if sentinel.kind == "queued":
         return JSONResponse(
             status_code=status.HTTP_202_ACCEPTED,
-            content={"status": "accepted", "tracking_id": result.tracking_id},
+            content={"status": sentinel.status, "tracking_id": sentinel.tracking_id},
         )
-    if isinstance(result, SilentDropped):
-        return JSONResponse(
-            status_code=status.HTTP_200_OK,
-            content={
-                "status": "silent_dropped",
-                "provider": result.provider,
-                "ability": result.ability,
-            },
-        )
-    return None
+    return JSONResponse(
+        status_code=status.HTTP_200_OK,
+        content={
+            "status": sentinel.status,
+            "provider": sentinel.provider,
+            "ability": sentinel.ability,
+        },
+    )
 
 
 def _degradation_responses_annotation(

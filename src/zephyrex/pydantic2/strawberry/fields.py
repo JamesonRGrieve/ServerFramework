@@ -145,27 +145,30 @@ def render_degradation_sentinel_gql(result: Any) -> Optional[Any]:
     return type as a union of the payload type and these GQL types
     (typically via ``Annotated[Union[..., QueuedForRetryGQL, SilentDroppedGQL]]``)
     and calling this helper before returning.
+
+    The sentinel field set is owned by
+    :func:`zephyrex.extensions.ExternalErrors.extract_degradation_sentinel`
+    (the single source of truth); this function only maps the normalized
+    projection onto the matching typed Strawberry object.
     """
     try:
-        from zephyrex.extensions.ExternalErrors import (
-            QueuedForRetry,
-            SilentDropped,
-        )
+        from zephyrex.extensions.ExternalErrors import extract_degradation_sentinel
     except Exception:  # pragma: no cover - defensive
         return None
 
-    if isinstance(result, QueuedForRetry):
+    sentinel = extract_degradation_sentinel(result)
+    if sentinel is None:
+        return None
+    if sentinel.kind == "queued":
         return QueuedForRetryGQL(
-            status=result.status,
-            tracking_id=result.tracking_id,
+            status=sentinel.status,
+            tracking_id=sentinel.tracking_id or "",
         )
-    if isinstance(result, SilentDropped):
-        return SilentDroppedGQL(
-            status="silent_dropped",
-            provider=result.provider,
-            ability=result.ability,
-        )
-    return None
+    return SilentDroppedGQL(
+        status=sentinel.status,
+        provider=sentinel.provider,
+        ability=sentinel.ability,
+    )
 
 
 def degradation_aware(resolver: Callable[..., Any]) -> Callable[..., Any]:
