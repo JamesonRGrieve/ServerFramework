@@ -1,3 +1,5 @@
+import hmac
+
 from fastapi import Body, Depends, HTTPException, Path, Query, status
 
 from zephyrex.endpoints.AbstractEPRouter import (
@@ -575,9 +577,12 @@ async def token(
 
     client = client_list[0]
 
-    # Validate client secret for confidential clients
+    # Validate client secret for confidential clients. Constant-time compare
+    # (matching the in-memory twin and auth_api_keys) — a plaintext ``!=`` here
+    # leaks the secret via a timing side-channel (#228).
     if client.is_confidential and (
-        not client_secret or client_secret != client.client_secret
+        not client_secret
+        or not hmac.compare_digest(str(client_secret), str(client.client_secret))
     ):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
