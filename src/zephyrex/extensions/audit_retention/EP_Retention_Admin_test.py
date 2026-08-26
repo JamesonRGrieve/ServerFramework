@@ -120,7 +120,12 @@ def test_post_release_validates_body():
         json={"registration_name": "", "reason": ""},
     )
 
-    assert resp.status_code in (400, 422)
+    # Empty required fields fail pydantic min_length validation -> a
+    # deterministic 422 (not the endpoint's own 400). Pin it and assert the
+    # validation error actually names the offending field.
+    assert resp.status_code == 422
+    detail = resp.json()["detail"]
+    assert any(err.get("loc", [])[-1] == "registration_name" for err in detail)
 
 
 def test_resolver_pulls_service_from_registry():

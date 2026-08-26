@@ -368,10 +368,12 @@ class TestMultifactorRecoveryCodeManager(AbstractBLLTest, ExtensionServerMixin):
             requester_id=admin_a.id, model_registry=model_registry
         )
         codes = rec_manager.generate_recovery_codes(mfa_method.id, count=2)
-        # `generate_recovery_codes` returns the cleartext codes once.
-        first_code = codes[0] if isinstance(codes, list) else None
-        if first_code is None:
-            pytest.skip("Recovery-code generator did not return cleartext codes")
+        # Hard-fail (not skip) if no cleartext codes come back — returning the
+        # cleartext once IS the contract this one-time-use test guards.
+        assert (
+            isinstance(codes, list) and codes
+        ), "generate_recovery_codes must return a non-empty list of cleartext codes"
+        first_code = codes[0]
 
         # First use must succeed.
         assert rec_manager.verify_recovery_code(mfa_method.id, first_code) is True
@@ -400,8 +402,9 @@ class TestMultifactorRecoveryCodeManager(AbstractBLLTest, ExtensionServerMixin):
         seen = set()
         for _ in range(20):
             batch = rec_manager.generate_recovery_codes(mfa_method.id, count=5)
-            if not isinstance(batch, list):
-                pytest.skip("Recovery-code generator did not return cleartext codes")
+            assert (
+                isinstance(batch, list) and batch
+            ), "generate_recovery_codes must return a non-empty list of cleartext codes"
             for code in batch:
                 assert code not in seen, "Duplicate recovery code in 100-sample batch"
                 assert len(code) >= 10, f"Recovery code too short: {len(code)}"
