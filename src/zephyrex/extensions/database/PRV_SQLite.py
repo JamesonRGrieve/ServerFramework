@@ -6,8 +6,7 @@ Fully static implementation compatible with the Provider Rotation System.
 
 import os
 import sqlite3
-from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from zephyrex.extensions.database.EXT_Database import (
     AbstractDatabaseExtensionProvider as AbstractDatabaseProvider,
@@ -118,7 +117,7 @@ class PRV_SQLite(AbstractDatabaseProvider):
             return None
 
     @classmethod
-    async def execute_sql(cls, query: str, **kwargs) -> str:  # type: ignore[return]
+    async def execute_sql(cls, query: str, **kwargs) -> str:
         """Execute a custom SQL query in the SQLite database."""
         try:
             # Clean up query format
@@ -137,41 +136,44 @@ class PRV_SQLite(AbstractDatabaseProvider):
             try:
                 cursor.execute(query)
 
-                # Check if this is a SELECT query that returns rows
-                if query.strip().upper().startswith("SELECT"):
-                    rows = cursor.fetchall()
-
-                    # If no rows returned
-                    if not rows:
-                        connection.commit()
-                        return "Query executed successfully. No rows returned."
-
-                    # If there is only 1 row and 1 column, return the value as a string
-                    if len(rows) == 1 and len(rows[0]) == 1:
-                        return str(rows[0][0])
-
-                    # If there is more than 1 column and at least 1 row, return it as a CSV format
-                    if len(rows) >= 1:
-                        # Build column heading
-                        column_names = [desc[0] for desc in cursor.description]
-                        column_headings = [f'"{col}"' for col in column_names]
-                        rows_string = ",".join(column_headings) + "\n"
-
-                        # Add data rows
-                        for row in rows:
-                            row_string = [
-                                f'"{row[i]}"' for i in range(len(column_names))
-                            ]
-                            rows_string += ",".join(row_string) + "\n"
-
-                        return rows_string
-                else:
-                    # For non-SELECT queries (INSERT, UPDATE, DELETE, etc.)
+                # Classify write-vs-read on the presence of a result set,
+                # matching the sibling relational providers (Postgres/MySQL/
+                # MSSQL). ``cursor.description`` is ``None`` only for statements
+                # that return no result set (INSERT/UPDATE/DELETE/DDL); any
+                # row-returning statement — a plain SELECT, a ``WITH`` CTE,
+                # ``PRAGMA``, or ``EXPLAIN`` — populates it. Keying on the
+                # ``SELECT`` keyword misclassified those non-SELECT reads as
+                # writes and committed them while returning "0 rows affected".
+                if cursor.description is None:
+                    # Non-row-returning statement (INSERT, UPDATE, DELETE, DDL)
                     connection.commit()
                     affected_rows = cursor.rowcount
                     return (
                         f"Query executed successfully. {affected_rows} rows affected."
                     )
+
+                rows = cursor.fetchall()
+
+                # If no rows returned
+                if not rows:
+                    return "Query executed successfully. No rows returned."
+
+                # If there is only 1 row and 1 column, return the value as a string
+                if len(rows) == 1 and len(rows[0]) == 1:
+                    return str(rows[0][0])
+
+                # If there is more than 1 column and at least 1 row, return it as a CSV format
+                # Build column heading
+                column_names = [desc[0] for desc in cursor.description]
+                column_headings = [f'"{col}"' for col in column_names]
+                rows_string = ",".join(column_headings) + "\n"
+
+                # Add data rows
+                for row in rows:
+                    row_string = [f'"{row[i]}"' for i in range(len(column_names))]
+                    rows_string += ",".join(row_string) + "\n"
+
+                return rows_string
 
             finally:
                 cursor.close()

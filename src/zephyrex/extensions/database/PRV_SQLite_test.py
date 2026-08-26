@@ -10,7 +10,6 @@ failure paths are tagged ``@pytest.mark.unit`` and locally import
 
 import os
 import tempfile
-from typing import Dict
 
 import pytest
 
@@ -174,6 +173,55 @@ class TestPRVSQLite:
             result = await PRV_SQLite.execute_sql("SELECT * FROM test;")
             assert "No rows returned" in result
 
+        finally:
+            os.unlink(tmp.name)
+
+    @pytest.mark.asyncio
+    async def test_execute_sql_cte_returns_rows(self):
+        """A row-returning CTE (leading ``WITH``) returns its rows.
+
+        Regression for issue #229: classification keyed on the ``SELECT``
+        keyword misclassified a ``WITH ... SELECT`` query as a write, which
+        was committed and reported as "0 rows affected" instead of returning
+        the result set. Row-vs-write is now decided on ``cursor.description``
+        (the presence of a result set), matching the sibling relational
+        providers.
+        """
+        tmp = self._make_tmp_db()
+        config = {"database_file": tmp.name}
+        PRV_SQLite.bond_instance(config)
+
+        try:
+            result = await PRV_SQLite.execute_sql(
+                "WITH t AS (SELECT 1 AS x) SELECT x FROM t;"
+            )
+            assert "rows affected" not in result
+            assert result == "1"
+        finally:
+            os.unlink(tmp.name)
+
+    @pytest.mark.asyncio
+    async def test_execute_sql_pragma_returns_rows(self):
+        """A row-returning ``PRAGMA`` returns its result set, not a write count.
+
+        Regression for issue #229: ``PRAGMA table_info(...)`` returns rows but
+        does not start with ``SELECT``, so the old keyword-based classification
+        treated it as a write. It must surface the introspection rows instead.
+        """
+        tmp = self._make_tmp_db()
+        config = {"database_file": tmp.name}
+        PRV_SQLite.bond_instance(config)
+
+        try:
+            await PRV_SQLite.execute_sql(
+                "CREATE TABLE widgets (id INTEGER PRIMARY KEY, label TEXT);"
+            )
+            result = await PRV_SQLite.execute_sql("PRAGMA table_info(widgets);")
+            assert "rows affected" not in result
+            # table_info returns one row per column; both column names appear
+            # in the CSV payload.
+            assert "id" in result
+            assert "label" in result
         finally:
             os.unlink(tmp.name)
 
