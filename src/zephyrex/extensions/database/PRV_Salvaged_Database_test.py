@@ -76,7 +76,15 @@ class TestSalvagedDatabaseProviderConformance:
         cls.bond_instance({})
         result = await cls.execute_sql("SELECT 1")
         assert isinstance(result, str)
-        assert result  # non-empty, no exception
+        lowered = result.lower()
+        # The message must signal the actual state, not a fabricated success: a
+        # relational provider with no connection reports the connect failure; a
+        # non-relational provider redirects SQL to its native query verb. A stub
+        # returning any other constant string fails here.
+        if classification == "relational":
+            assert "error connecting" in lowered, result
+        else:
+            assert "does not support sql" in lowered, result
 
     async def test_get_schema_graceful_without_connection(
         self, cls, db_type, classification
@@ -84,20 +92,34 @@ class TestSalvagedDatabaseProviderConformance:
         cls.bond_instance({})
         result = await cls.get_schema()
         assert isinstance(result, str)
+        # Without a connection every provider reports the connect failure, never
+        # an empty string that a no-op stub would return.
+        assert "error connecting" in result.lower(), result
 
     async def test_chat_with_db_returns_string(self, cls, db_type, classification):
         cls.bond_instance({})
-        result = await cls.chat_with_db("show me everything")
+        request = "show me everything"
+        result = await cls.chat_with_db(request)
         assert isinstance(result, str)
-        assert result
+        # chat_with_db echoes the NL request verbatim, embeds the schema, and
+        # appends guidance pointing at an execute_* verb. A constant-string stub
+        # would carry none of these.
+        assert f'query: "{request}"' in result, result
+        assert "execute_" in result, result
 
 
 class TestRelationalExecuteQuery:
     @pytest.mark.parametrize("cls", [c for c, _, _ in RELATIONAL])
     async def test_execute_query_aliases_execute_sql(self, cls):
         cls.bond_instance({})
-        result = await cls.execute_query("SELECT 1")
-        assert isinstance(result, str)
+        # The aliasing IS the contract: execute_query must produce byte-identical
+        # output to execute_sql for the same query. A broken alias that diverged
+        # (or a stub) fails here where an isinstance check would not.
+        query = "SELECT 1"
+        via_query = await cls.execute_query(query)
+        via_sql = await cls.execute_sql(query)
+        assert isinstance(via_query, str)
+        assert via_query == via_sql
 
     @pytest.mark.parametrize("cls", [c for c, _, _ in RELATIONAL])
     async def test_write_data_requires_insert(self, cls):

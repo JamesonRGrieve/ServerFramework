@@ -13,8 +13,6 @@ on a real config dict, classification metadata) are tagged
 isolation per AGENTS.md.
 """
 
-from typing import Dict
-
 import pytest
 
 from zephyrex.extensions.database.PRV_InfluxDB import PRV_InfluxDB
@@ -241,6 +239,10 @@ class TestPRVInfluxDBLive:
             'from(bucket:"_monitoring") |> range(start: -1h) |> limit(n:1)'
         )
         assert isinstance(result, str)
+        # A live query returns key=value rows or the explicit empty-result
+        # marker -- never a connect/execute error string (which is also a str).
+        assert result.strip(), result
+        assert "error" not in result.lower(), result
 
     @pytest.mark.external_api(provider="influxdb")
     @pytest.mark.asyncio
@@ -256,6 +258,10 @@ class TestPRVInfluxDBLive:
         PRV_InfluxDB.bond_instance(config)
         result = await PRV_InfluxDB.get_schema()
         assert isinstance(result, str)
+        # The schema must name the introspected bucket and list its
+        # measurements -- an empty or error schema string would fail here.
+        assert "_monitoring" in result, result
+        assert "measurements" in result.lower(), result
 
     @pytest.mark.external_api(provider="influxdb")
     @pytest.mark.asyncio
@@ -287,3 +293,6 @@ class TestPRVInfluxDBLive:
         PRV_InfluxDB.bond_instance(config)
         result = await PRV_InfluxDB.write_data("temperature,sensor=1 value=23.5")
         assert isinstance(result, str)
+        # The write must signal success -- a silently-failed write that returned
+        # an error string (also a str) would otherwise pass unnoticed.
+        assert "written successfully" in result.lower(), result

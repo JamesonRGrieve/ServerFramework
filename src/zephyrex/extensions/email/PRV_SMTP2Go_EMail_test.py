@@ -297,6 +297,10 @@ class TestSmtp2goLiveSend:
             "This is a test email from the zephyrex test suite.",
         )
         assert isinstance(result, str)
+        # send_email returns "Failed to send email: ..." on failure -- also a
+        # str -- so a broken live send would pass an isinstance check. Pin the
+        # success outcome instead.
+        assert "sent successfully" in result.lower(), result
 
     def test_health_check_live(self):
         report = Smtp2goProvider.health_check()
