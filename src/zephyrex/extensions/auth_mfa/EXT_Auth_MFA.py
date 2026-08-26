@@ -1,24 +1,10 @@
 from typing import Any, ClassVar, Dict, List, Set
 
-from fastapi import Depends, HTTPException, Path
-from pydantic import BaseModel
-
 from zephyrex.extensions.AbstractExtensionProvider import (
     AbstractStaticExtension,
-    ability,
-)
-from zephyrex.extensions.auth_mfa.BLL_Auth_MFA import (
-    MultifactorMethodManager,
-    MultifactorRecoveryCodeManager,
 )
 from zephyrex.lib.Dependencies import Dependencies, PIP_Dependency
 from zephyrex.lib.Logging import logger
-from zephyrex.pydantic2.fastapi import AuthType, static_route
-from zephyrex.logic.BLL_Auth import UserManager
-
-
-class VerifyCodeRequest(BaseModel):
-    code: str
 
 
 class EXT_Auth_MFA(AbstractStaticExtension):
@@ -174,96 +160,3 @@ class EXT_Auth_MFA(AbstractStaticExtension):
             )
 
         return issues
-
-    # Static routes for MFA operations
-    @classmethod
-    @static_route(
-        "/v1/user/mfa/{mfa_method_id}/recovery/generate",
-        method="POST",
-        auth_type=AuthType.JWT,
-        summary="Generate recovery codes for MFA method",
-        description="Generate new recovery codes for a specific MFA method",
-        tags=["Multi-Factor Authentication"],
-    )
-    def generate_recovery_codes(
-        cls,
-        mfa_method_id: str = Path(..., description="MFA method ID"),
-        count: int = 10,
-        user=Depends(UserManager.auth),
-        model_registry=Depends(lambda: None),  # Will be injected
-    ) -> List[str]:
-        """Generate recovery codes for a specific MFA method."""
-        # Create manager instance
-        manager = MultifactorMethodManager(
-            requester_id=user.id,
-            target_id=user.id,
-            model_registry=model_registry,
-        )
-
-        # Verify the MFA method exists and belongs to the user
-        mfa_method = manager.get(id=mfa_method_id)
-        if not mfa_method:
-            raise HTTPException(status_code=404, detail="MFA method not found")
-
-        # Generate recovery codes for this MFA method
-        recovery_manager = manager.recovery_codes
-        return recovery_manager.generate_recovery_codes(  # type: ignore[no-any-return]
-            multifactor_method_id=mfa_method_id, count=count
-        )
-
-    @classmethod
-    @static_route(
-        "/v1/user/mfa/{mfa_method_id}/verify",
-        method="POST",
-        auth_type=AuthType.JWT,
-        summary="Verify MFA code",
-        description="Verify an MFA code for a specific method",
-        tags=["Multi-Factor Authentication"],
-    )
-    def verify_mfa_code(
-        cls,
-        mfa_method_id: str = Path(..., description="MFA method ID"),
-        request: "VerifyCodeRequest" = ...,  # type: ignore[assignment]
-        user=Depends(UserManager.auth),
-        model_registry=Depends(lambda: None),  # Will be injected
-    ) -> dict:
-        """Verify an MFA code."""
-        # Create manager instance
-        manager = MultifactorMethodManager(
-            requester_id=user.id,
-            target_id=user.id,
-            model_registry=model_registry,
-        )
-
-        is_valid = manager.verify_mfa_code(method_id=mfa_method_id, code=request.code)
-        return {"verified": is_valid}
-
-    @classmethod
-    @static_route(
-        "/v1/user/mfa/{mfa_method_id}/recovery/verify",
-        method="POST",
-        auth_type=AuthType.JWT,
-        summary="Verify recovery code",
-        description="Verify a recovery code for a specific MFA method",
-        tags=["Multi-Factor Authentication"],
-    )
-    def verify_recovery_code(
-        cls,
-        mfa_method_id: str = Path(..., description="MFA method ID"),
-        request: "VerifyCodeRequest" = ...,  # type: ignore[assignment]
-        user=Depends(UserManager.auth),
-        model_registry=Depends(lambda: None),  # Will be injected
-    ) -> dict:
-        """Verify a recovery code."""
-        # Create manager instance
-        manager = MultifactorMethodManager(
-            requester_id=user.id,
-            target_id=user.id,
-            model_registry=model_registry,
-        )
-
-        recovery_manager = manager.recovery_codes
-        is_valid = recovery_manager.verify_recovery_code(
-            multifactor_method_id=mfa_method_id, code=request.code
-        )
-        return {"verified": is_valid}

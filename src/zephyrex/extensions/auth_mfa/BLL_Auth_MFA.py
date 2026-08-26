@@ -7,7 +7,6 @@ import bcrypt
 from fastapi import HTTPException
 from pydantic import BaseModel, Field, model_validator
 
-from zephyrex.lib.Environment import env
 from zephyrex.lib.InboundSecurity import LockoutPolicy, LockoutTracker
 from zephyrex.lib.Logging import logger
 from zephyrex.pydantic2.registry import BaseModel  # type: ignore[no-redef]
@@ -276,6 +275,68 @@ class MultifactorMethodManager(AbstractBLLManager, RouterMixin):
         RouteType.UPDATE,
         RouteType.DELETE,
     ]
+    # Action endpoints hosted via custom_routes on this RouterMixin manager (the
+    # working path). The old @static_route-on-extension mechanism never mounted
+    # (framework #241), so these formerly-dead verbs live here instead.
+    custom_routes: ClassVar[List[Dict[str, Any]]] = [
+        {
+            "path": "/{mfa_method_id}/recovery/generate",
+            "method": "post",
+            "function": "generate_recovery_codes_route",
+            "auth_type": AuthType.JWT,
+            "is_static": False,
+            "summary": "Generate recovery codes for an MFA method",
+            "status_code": 200,
+        },
+        {
+            "path": "/{mfa_method_id}/verify",
+            "method": "post",
+            "function": "verify_mfa_code_route",
+            "auth_type": AuthType.JWT,
+            "is_static": False,
+            "summary": "Verify an MFA code",
+            "status_code": 200,
+        },
+        {
+            "path": "/{mfa_method_id}/recovery/verify",
+            "method": "post",
+            "function": "verify_recovery_code_route",
+            "auth_type": AuthType.JWT,
+            "is_static": False,
+            "summary": "Verify a recovery code",
+            "status_code": 200,
+        },
+    ]
+
+    def generate_recovery_codes_route(
+        self, mfa_method_id: str, body: Optional[Dict[str, Any]] = None
+    ) -> List[str]:
+        """POST /v1/user/mfa/{id}/recovery/generate — new recovery codes."""
+        method = self.get(id=mfa_method_id)
+        if not method:
+            raise HTTPException(status_code=404, detail="MFA method not found")
+        count = int((body or {}).get("count", 10))
+        return self.recovery_codes.generate_recovery_codes(
+            multifactor_method_id=mfa_method_id, count=count
+        )
+
+    def verify_mfa_code_route(
+        self, mfa_method_id: str, body: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, bool]:
+        """POST /v1/user/mfa/{id}/verify — verify an MFA code."""
+        code = str((body or {}).get("code") or "")
+        return {"verified": self.verify_mfa_code(method_id=mfa_method_id, code=code)}
+
+    def verify_recovery_code_route(
+        self, mfa_method_id: str, body: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, bool]:
+        """POST /v1/user/mfa/{id}/recovery/verify — verify a recovery code."""
+        code = str((body or {}).get("code") or "")
+        return {
+            "verified": self.recovery_codes.verify_recovery_code(
+                multifactor_method_id=mfa_method_id, code=code
+            )
+        }
 
     def __init__(
         self,
@@ -755,3 +816,9 @@ hook_bll(MultifactorRecoveryCodeManager, timing=HookTiming.BEFORE, priority=10)(
 hook_bll(MultifactorMethodManager.create, timing=HookTiming.BEFORE, priority=15)(
     totp_secret_validation_hook
 )
+
+
+# Link the model to its manager so the registry generates its router. Without
+# this, generate_routers_from_model_registry skips the model and NONE of the MFA
+# routes mount (CRUD or the custom_routes action verbs) — the root of #241.
+MultifactorMethodModel.Manager = MultifactorMethodManager

@@ -229,17 +229,23 @@ class TestEXTAuthMFA(AbstractEXTTest):
         assert isinstance(result, bool)
         assert result is True
 
-    def test_static_route_definitions(self):
-        """Test that static routes are properly defined"""
-        # Check that the extension has static routes defined
-        assert hasattr(EXT_Auth_MFA, "generate_recovery_codes")
-        assert hasattr(EXT_Auth_MFA, "verify_mfa_code")
-        assert hasattr(EXT_Auth_MFA, "verify_recovery_code")
+    def test_action_routes_migrated_to_manager(self):
+        """The MFA action endpoints are custom_routes on the manager (migrated
+        from the dead @static_route-on-extension mechanism, #241)."""
+        from zephyrex.extensions.auth_mfa.BLL_Auth_MFA import (
+            MultifactorMethodManager,
+        )
 
-        # Check that they are classmethods (via class dict since accessing through class returns bound method)
-        assert isinstance(EXT_Auth_MFA.__dict__["generate_recovery_codes"], classmethod)
-        assert isinstance(EXT_Auth_MFA.__dict__["verify_mfa_code"], classmethod)
-        assert isinstance(EXT_Auth_MFA.__dict__["verify_recovery_code"], classmethod)
+        functions = {r["function"] for r in MultifactorMethodManager.custom_routes}
+        assert {
+            "generate_recovery_codes_route",
+            "verify_mfa_code_route",
+            "verify_recovery_code_route",
+        } <= functions
+        for fn in functions:
+            assert callable(getattr(MultifactorMethodManager, fn))
+        # They no longer live on the extension class.
+        assert not hasattr(EXT_Auth_MFA, "generate_recovery_codes")
 
     def test_get_abilities_method(self):
         """Test the get_abilities method"""
@@ -258,10 +264,18 @@ class TestEXTAuthMFA(AbstractEXTTest):
 
     def test_auth_mfa_integration_points(self):
         """Test that auth_mfa has proper integration points"""
-        # The extension should provide static routes for MFA operations
-        assert hasattr(EXT_Auth_MFA, "generate_recovery_codes")
-        assert hasattr(EXT_Auth_MFA, "verify_mfa_code")
-        assert hasattr(EXT_Auth_MFA, "verify_recovery_code")
+        # The MFA action verbs are custom_routes on the manager, not the ext
+        # (migrated off the dead @static_route mechanism, #241).
+        from zephyrex.extensions.auth_mfa.BLL_Auth_MFA import (
+            MultifactorMethodManager,
+        )
+
+        functions = {r["function"] for r in MultifactorMethodManager.custom_routes}
+        assert {
+            "generate_recovery_codes_route",
+            "verify_mfa_code_route",
+            "verify_recovery_code_route",
+        } <= functions
 
         # Check that it doesn't have instance methods that were in the old tests
         extension = EXT_Auth_MFA()
