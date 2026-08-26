@@ -270,18 +270,32 @@ class InvitationManager(AbstractBLLManager, RouterMixin):
                 raise HTTPException(status_code=400, detail="empty")
             emails = [email] if isinstance(email, str) else email
 
-            existing_invitees = []
-            for invitation in existing_invitations:
-                invitees = self.Invitee_manager.list(
-                    invitation_id=invitation.id, deleted_at=None, declined_at=None
+            # Fetch every existing invitee across all matching invitations in
+            # ONE query (was N+1: one list() per existing invitation) and hold
+            # them in a set for O(1) membership (was an O(emails x invitees)
+            # scan of a list). Membership is compared against the stored invitee
+            # email exactly as before.
+            existing_invitees: set[str] = set()
+            if existing_invitations:
+                InviteeDB = self.Invitee_manager.DB
+                invitation_ids = [inv.id for inv in existing_invitations]
+                existing_invitee_rows = self.Invitee_manager.list(
+                    filters=[InviteeDB.invitation_id.in_(invitation_ids)],
+                    deleted_at=None,
+                    declined_at=None,
                 )
-                for invitee in invitees:
-                    existing_invitees.append(invitee.email)
+                existing_invitees = {row.email for row in existing_invitee_rows}
 
-            for em in emails:
-                em = em.lower().strip()
-                if em in existing_invitees:
-                    emails.remove(em)
+            # Drop already-invited emails, keeping the rest. Build a NEW list
+            # rather than mutating the one being iterated: the previous
+            # ``for em in emails: ... emails.remove(em)`` both skipped entries
+            # (mutation during iteration) and could raise ValueError, because it
+            # removed the lowercased form that need not be present in ``emails``.
+            emails = [
+                normalized
+                for normalized in (em.lower().strip() for em in emails)
+                if normalized not in existing_invitees
+            ]
 
             if not emails:
                 raise HTTPException(status_code=400, detail="already invited")

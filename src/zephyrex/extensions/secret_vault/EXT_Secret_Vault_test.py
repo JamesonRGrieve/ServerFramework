@@ -1,16 +1,20 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Tests for the secret vault extension and OpenBao provider.
 
-No mocks. Tests exercise real code paths that don't require a live
-vault: metadata, config validation, env var parsing, error paths,
-client construction, and the extension manifest. CRUD tests that
-need a live vault are gated on OPENBAO_ADDR.
+Tests exercise real code paths that don't require a live vault: metadata,
+config validation, env var parsing, error paths, client construction, and
+the extension manifest. CRUD tests that need a live vault are gated on
+OPENBAO_ADDR. The client-caching tests drive the real caching/re-auth logic
+against a fake hvac client standing in for the vault HTTP boundary (the only
+external dependency), never a mock of the provider's own logic.
 """
 
 from __future__ import annotations
 
 import os
+import types
 
+import hvac
 import pytest
 
 from zephyrex.extensions.AbstractExtensionProvider import HealthStatus
@@ -18,8 +22,10 @@ from zephyrex.extensions.secret_vault.EXT_Secret_Vault import (
     EXT_Secret_Vault,
     Capability,
 )
+from zephyrex.extensions.secret_vault import PRV_OpenBao
 from zephyrex.extensions.secret_vault.PRV_OpenBao import (
     OpenBaoProvider,
+    _BONDED_CLIENTS,
     _build_client,
     _get_addr,
     _get_mount,
@@ -392,3 +398,142 @@ class TestOpenBaoLiveCRUD:
         bonded = OpenBaoProvider.bond_instance(self._inst())
         assert bonded is not None
         assert bonded.sdk["client"].is_authenticated()
+
+
+# ---------------------------------------------------------------------------
+# Client caching (E2 efficiency fix, issue #230) — no live vault needed
+# ---------------------------------------------------------------------------
+
+
+class _FakeKvV2:
+    """Fake KV v2 surface recording ops; optionally fails a read once."""
+
+    def __init__(self, calls: list, *, fail_read_with=None) -> None:
+        self._calls = calls
+        self._fail_read_with = fail_read_with
+
+    def read_secret_version(self, **kwargs):
+        self._calls.append(("read", kwargs.get("path")))
+        if self._fail_read_with is not None:
+            exc = self._fail_read_with
+            self._fail_read_with = None
+            raise exc
+        return {"data": {"data": {"k": "v"}}}
+
+    def create_or_update_secret(self, path, secret, mount_point):
+        self._calls.append(("write", path))
+        return {"data": {"ok": True}}
+
+    def list_secrets(self, path, mount_point):
+        self._calls.append(("list", path))
+        return {"data": {"keys": ["a", "b"]}}
+
+
+class _FakeClient:
+    """Fake hvac.Client standing in for the vault HTTP boundary."""
+
+    def __init__(
+        self,
+        counters: dict,
+        *,
+        authed: bool = True,
+        fail_read_with: BaseException | None = None,
+    ) -> None:
+        self._counters = counters
+        self._authed: bool = authed
+        self.calls: list = []
+        self.secrets = types.SimpleNamespace(
+            kv=types.SimpleNamespace(
+                v2=_FakeKvV2(self.calls, fail_read_with=fail_read_with)
+            )
+        )
+
+    def is_authenticated(self) -> bool:
+        self._counters["is_authenticated"] += 1
+        return self._authed
+
+
+class TestOpenBaoClientCaching:
+    """The authenticated client is built once and reused across ops."""
+
+    @pytest.fixture(autouse=True)
+    def _clean_cache_and_env(self, monkeypatch):
+        # Deterministic connection identity.
+        monkeypatch.setenv("OPENBAO_ADDR", "http://bao-cache-test:8200")
+        monkeypatch.setenv("OPENBAO_TOKEN", "s.cache-test")
+        for var in (
+            "VAULT_ADDR",
+            "VAULT_TOKEN",
+            "OPENBAO_ROLE_ID",
+            "OPENBAO_SECRET_ID",
+            "OPENBAO_NAMESPACE",
+            "OPENBAO_MOUNT_POINT",
+        ):
+            monkeypatch.delenv(var, raising=False)
+        _BONDED_CLIENTS.clear()
+        yield
+        _BONDED_CLIENTS.clear()
+
+    def _inst(self):
+        class _Inst:
+            id = "cache-test"
+            api_key = None
+
+        return _Inst()
+
+    def test_client_built_and_authenticated_once_across_ops(self, monkeypatch):
+        counters = {"build": 0, "is_authenticated": 0}
+
+        def _factory(addr, token=None, namespace=None):
+            counters["build"] += 1
+            return _FakeClient(counters)
+
+        monkeypatch.setattr(PRV_OpenBao, "_build_client", _factory)
+
+        inst = self._inst()
+        assert OpenBaoProvider.read_secret(inst, "path/one") == {"k": "v"}
+        assert OpenBaoProvider.read_secret(inst, "path/two") == {"k": "v"}
+        OpenBaoProvider.write_secret(inst, "path/three", {"x": "1"})
+        OpenBaoProvider.list_secrets(inst, "path")
+
+        # One client build and one auth round-trip for FOUR ops (was one per op).
+        assert counters["build"] == 1
+        assert counters["is_authenticated"] == 1
+
+    def test_env_change_rebinds_new_client(self, monkeypatch):
+        counters = {"build": 0, "is_authenticated": 0}
+
+        def _factory(addr, token=None, namespace=None):
+            counters["build"] += 1
+            return _FakeClient(counters)
+
+        monkeypatch.setattr(PRV_OpenBao, "_build_client", _factory)
+
+        inst = self._inst()
+        OpenBaoProvider.read_secret(inst, "path/one")
+        assert counters["build"] == 1
+
+        # A different token is a different connection identity -> rebuild.
+        monkeypatch.setenv("OPENBAO_TOKEN", "s.rotated")
+        OpenBaoProvider.read_secret(inst, "path/one")
+        assert counters["build"] == 2
+
+    def test_reauth_on_expiry_rebuilds_once(self, monkeypatch):
+        counters = {"build": 0, "is_authenticated": 0}
+
+        def _factory(addr, token=None, namespace=None):
+            counters["build"] += 1
+            # The first client's read fails as if the token expired; the
+            # rebuilt client after re-auth succeeds.
+            fail = (
+                hvac.exceptions.Forbidden("token expired")
+                if counters["build"] == 1
+                else None
+            )
+            return _FakeClient(counters, fail_read_with=fail)
+
+        monkeypatch.setattr(PRV_OpenBao, "_build_client", _factory)
+
+        # Read succeeds after a single transparent re-authentication.
+        assert OpenBaoProvider.read_secret(self._inst(), "path/one") == {"k": "v"}
+        assert counters["build"] == 2

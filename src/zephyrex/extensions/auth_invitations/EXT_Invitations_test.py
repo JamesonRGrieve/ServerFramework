@@ -223,3 +223,105 @@ class TestHookLookupNaiveExpiryEnsureUtc(ExtensionServerMixin):
         for result in results:
             assert result is not None
             assert result["code"] == code
+
+
+class TestInvitationCreateDedupBatching(ExtensionServerMixin):
+    """Invitation-create de-dup (E2 efficiency fix, issue #230).
+
+    Existing invitees across all matching invitations are fetched in ONE
+    batched query (was one ``list()`` per invitation) and membership is a set
+    lookup. The de-dup outcome is preserved and the previous latent bug --
+    ``emails.remove(em)`` mutating the list under iteration and removing the
+    lowercased form that need not be present -- is fixed.
+    """
+
+    extension_class = AuthInvitationsExtension
+
+    def _invitee_emails(self, model_registry, invitation_id):
+        mgr = InviteeManager(requester_id=env("ROOT_ID"), model_registry=model_registry)
+        return {i.email for i in mgr.list(invitation_id=invitation_id)}
+
+    def test_dedup_single_batched_query_and_outcome(
+        self, admin_a, team_a, model_registry, monkeypatch
+    ):
+        role_id = env("USER_ROLE_ID")
+
+        # Two separate invitations for the SAME (team, role): the old code
+        # issued one invitee list() PER invitation, the new code one for all.
+        with InvitationManager(
+            requester_id=admin_a.id, model_registry=model_registry
+        ) as mgr:
+            inv1 = mgr.create(
+                team_id=team_a.id,
+                role_id=role_id,
+                email=["alice@example.com"],
+            )
+        with InvitationManager(
+            requester_id=admin_a.id, model_registry=model_registry
+        ) as mgr:
+            inv1b = mgr.create(
+                team_id=team_a.id,
+                role_id=role_id,
+                email=["carol@example.com"],
+            )
+
+        assert self._invitee_emails(model_registry, inv1.id) == {"alice@example.com"}
+        assert self._invitee_emails(model_registry, inv1b.id) == {"carol@example.com"}
+
+        with InvitationManager(
+            requester_id=admin_a.id, model_registry=model_registry
+        ) as mgr:
+            invitee_mgr = mgr.Invitee_manager
+            calls = {"n": 0}
+            original_list = invitee_mgr.list
+
+            def counting_list(*args, **kwargs):
+                calls["n"] += 1
+                return original_list(*args, **kwargs)
+
+            monkeypatch.setattr(invitee_mgr, "list", counting_list)
+
+            # Two consecutive already-invited emails (one mixed-case, which the
+            # old code would have crashed on) plus one genuinely new email.
+            inv2 = mgr.create(
+                team_id=team_a.id,
+                role_id=role_id,
+                email=[
+                    "Alice@Example.com",
+                    "carol@example.com",
+                    "bob@example.com",
+                ],
+            )
+
+        # A single batched invitee query regardless of how many invitations
+        # already exist (was one per existing invitation).
+        assert calls["n"] == 1
+        # Only the genuinely-new email became an invitee on the new invitation.
+        assert self._invitee_emails(model_registry, inv2.id) == {"bob@example.com"}
+        # The pre-existing invitations' invitees are untouched.
+        assert self._invitee_emails(model_registry, inv1.id) == {"alice@example.com"}
+        assert self._invitee_emails(model_registry, inv1b.id) == {"carol@example.com"}
+
+    def test_all_already_invited_raises_400(self, admin_a, team_a, model_registry):
+        role_id = env("USER_ROLE_ID")
+
+        with InvitationManager(
+            requester_id=admin_a.id, model_registry=model_registry
+        ) as mgr:
+            mgr.create(
+                team_id=team_a.id,
+                role_id=role_id,
+                email=["dave@example.com"],
+            )
+
+        with InvitationManager(
+            requester_id=admin_a.id, model_registry=model_registry
+        ) as mgr:
+            with pytest.raises(HTTPException) as exc_info:
+                mgr.create(
+                    team_id=team_a.id,
+                    role_id=role_id,
+                    email=["Dave@Example.com"],
+                )
+        assert exc_info.value.status_code == 400
+        assert "already invited" in str(exc_info.value.detail)

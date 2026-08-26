@@ -161,40 +161,88 @@ class CostSummaryRollup:
             )
 
 
+@dataclass
+class _CachedRow:
+    """In-memory view of a persisted summary row for the current bucket."""
+
+    id: str
+    total: Decimal
+    count: int
+
+
 def _make_default_upsert(
     model_registry: Any,
     requester_id: str,
 ) -> Callable[[CostSummaryModel.Create], str]:
     """Build an upsert callable that finds-or-creates a CostSummaryModel
-    row keyed by (tenant_id, provider, ability, period, period_key)."""
+    row keyed by (tenant_id, provider, ability, period, period_key).
 
-    def upsert(create: CostSummaryModel.Create) -> str:
-        DB = CostSummaryModel.DB(model_registry.DB.manager.Base)
+    A roll-up pass emits one ``Create`` per unique ``(tenant, provider,
+    ability)`` key, but every key in a pass shares the same
+    ``(period, period_key)`` bucket. Rather than issue a per-key
+    ``SELECT`` (the previous N+1: one lookup + one write per key), the first
+    key of a bucket loads *all* existing rows for that bucket in a single
+    ``SELECT``; later keys diff against that in-memory snapshot. The snapshot
+    is kept in sync as this callable writes, so a re-run of the same bucket
+    (e.g. a retry after a partial-failure pass that skipped the counter reset)
+    still adds to the rows it already created -- identical to the prior
+    per-key re-``SELECT`` behaviour, because this callable is the sole writer
+    of these aggregate rows. Only one bucket is held at a time; a new bucket
+    evicts the old, bounding memory.
+    """
+
+    DB = CostSummaryModel.DB(model_registry.DB.manager.Base)
+    loaded_bucket: Optional[tuple[str, str]] = None
+    rows_by_key: Dict[tuple[str, str, str], _CachedRow] = {}
+
+    def _load_bucket(period: str, period_key: str) -> None:
+        nonlocal loaded_bucket, rows_by_key
         existing = DB.list(
             requester_id=requester_id,
             model_registry=model_registry,
             filters=[
-                DB.tenant_id == create.tenant_id,
-                DB.provider == create.provider,
-                DB.ability == create.ability,
-                DB.period == create.period,
-                DB.period_key == create.period_key,
+                DB.period == period,
+                DB.period_key == period_key,
             ],
             return_type="dto",
             override_dto=CostSummaryModel,
         )
-        if existing:
-            row = existing[0]
-            new_total = Decimal(str(row.total_cost_usd)) + create.total_cost_usd
-            new_count = int(row.call_count) + int(create.call_count)
+        rows_by_key = {
+            (row.tenant_id, row.provider, row.ability): _CachedRow(
+                id=str(row.id),
+                total=Decimal(str(row.total_cost_usd)),
+                count=int(row.call_count),
+            )
+            for row in existing
+        }
+        loaded_bucket = (period, period_key)
+
+    def upsert(create: CostSummaryModel.Create) -> str:
+        bucket = (create.period, create.period_key)
+        if loaded_bucket != bucket:
+            _load_bucket(create.period, create.period_key)
+
+        row_key = (create.tenant_id, create.provider, create.ability)
+        cached = rows_by_key.get(row_key)
+        if cached is not None:
+            new_total = cached.total + create.total_cost_usd
+            new_count = cached.count + int(create.call_count)
             DB.update(
                 requester_id=requester_id,
                 model_registry=model_registry,
-                id=row.id,
-                total_cost_usd=new_total,
-                call_count=new_count,
+                new_properties={
+                    "total_cost_usd": new_total,
+                    "call_count": new_count,
+                },
+                id=cached.id,
             )
-            return str(row.id)
+            rows_by_key[row_key] = _CachedRow(
+                id=cached.id,
+                total=Decimal(str(new_total)),
+                count=new_count,
+            )
+            return cached.id
+
         created = DB.create(
             requester_id=requester_id,
             model_registry=model_registry,
@@ -205,8 +253,16 @@ def _make_default_upsert(
             period_key=create.period_key,
             total_cost_usd=create.total_cost_usd,
             call_count=create.call_count,
+            return_type="dto",
+            override_dto=CostSummaryModel,
         )
-        return str(getattr(created, "id", created))
+        new_id = str(getattr(created, "id", created))
+        rows_by_key[row_key] = _CachedRow(
+            id=new_id,
+            total=Decimal(str(create.total_cost_usd)),
+            count=int(create.call_count),
+        )
+        return new_id
 
     return upsert
 

@@ -2,16 +2,23 @@
 
 from __future__ import annotations
 
+import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Dict, List, Tuple
 
+import pytest
+
+from zephyrex.extensions.AbstractEXTTest import ExtensionServerMixin
 from zephyrex.extensions.billing.BLL_CostSummary import CostSummaryModel
 from zephyrex.extensions.billing.BLL_CostSummaryService import (
     CostSummaryRollup,
     _default_period_key,
+    _make_default_upsert,
     make_cost_summary_scheduled_service,
 )
+from zephyrex.extensions.billing.EXT_Billing import EXT_Billing
+from zephyrex.lib.Environment import env
 
 # ---------- _default_period_key -----------------------------------------
 
@@ -285,3 +292,151 @@ def test_factory_lifecycle_start_stop():
     svc.stop()
     assert not svc.running
     assert svc.health().status == HealthStatus.DOWN
+
+
+# ---------- _make_default_upsert batching (E2 fix, issue #230) ------------
+
+
+class TestDefaultUpsertBatching(ExtensionServerMixin):
+    """The default DB upsert loads existing rows for a whole
+    ``(period, period_key)`` bucket in ONE query instead of one SELECT per
+    key (the previous N+1), while producing identical created/updated rows."""
+
+    extension_class = EXT_Billing
+
+    @pytest.fixture(autouse=True)
+    def _ensure_cost_summaries_table(self, model_registry):
+        # The billing extension ships no migrations, so its table is not
+        # created by the test server; create it once on the same bind the DB
+        # layer uses so these are real-DB tests, not mocks.
+        import sqlite3
+
+        # ``total_cost_usd`` maps to a String column; Postgres' driver adapts a
+        # Decimal to its textual form, but sqlite3 has no built-in Decimal
+        # adapter. Teach it the same str() conversion so the REAL upsert path
+        # runs against the test SQLite backend.
+        sqlite3.register_adapter(Decimal, str)
+
+        table = CostSummaryModel.DB(model_registry.DB.manager.Base).__table__
+        session = model_registry.DB.session()
+        try:
+            table.create(bind=session.get_bind(), checkfirst=True)
+            session.commit()
+        finally:
+            session.close()
+
+    def _make_creates(self, period_key: str, keys, *, cost="0.10", count=1):
+        return [
+            CostSummaryModel.Create(
+                tenant_id=t,
+                provider=p,
+                ability=a,
+                period="day",
+                period_key=period_key,
+                total_cost_usd=Decimal(cost),
+                call_count=count,
+            )
+            for (t, p, a) in keys
+        ]
+
+    def _rows_for(self, model_registry, requester_id, period_key):
+        DB = CostSummaryModel.DB(model_registry.DB.manager.Base)
+        rows = DB.list(
+            requester_id=requester_id,
+            model_registry=model_registry,
+            filters=[DB.period == "day", DB.period_key == period_key],
+            return_type="dto",
+            override_dto=CostSummaryModel,
+        )
+        return {(r.tenant_id, r.provider, r.ability): r for r in rows}
+
+    def test_one_select_per_bucket_and_correct_rows(self, model_registry, monkeypatch):
+        requester_id = env("ROOT_ID")
+        period_key = f"2026-01-{uuid.uuid4().hex[:6]}"
+        keys = [
+            ("teamA", "openai", "complete"),
+            ("teamA", "openai", "embed"),
+            ("teamB", "anthropic", "complete"),
+        ]
+
+        DB = CostSummaryModel.DB(model_registry.DB.manager.Base)
+        original_list = DB.list
+        list_calls = {"n": 0}
+
+        def counting_list(*args, **kwargs):
+            list_calls["n"] += 1
+            return original_list(*args, **kwargs)
+
+        monkeypatch.setattr(DB, "list", counting_list)
+
+        upsert = _make_default_upsert(model_registry, requester_id)
+        for create in self._make_creates(period_key, keys, cost="0.50", count=2):
+            upsert(create)
+
+        # THREE keys, but a single batched SELECT for the bucket.
+        assert list_calls["n"] == 1
+
+        rows = self._rows_for(model_registry, requester_id, period_key)
+        assert set(rows) == set(keys)
+        for key in keys:
+            assert Decimal(str(rows[key].total_cost_usd)) == Decimal("0.50")
+            assert int(rows[key].call_count) == 2
+
+    def test_same_bucket_rerun_updates_without_reselect(
+        self, model_registry, monkeypatch
+    ):
+        requester_id = env("ROOT_ID")
+        period_key = f"2026-02-{uuid.uuid4().hex[:6]}"
+        keys = [("teamC", "openai", "complete")]
+
+        DB = CostSummaryModel.DB(model_registry.DB.manager.Base)
+        original_list = DB.list
+        list_calls = {"n": 0}
+
+        def counting_list(*args, **kwargs):
+            list_calls["n"] += 1
+            return original_list(*args, **kwargs)
+
+        monkeypatch.setattr(DB, "list", counting_list)
+
+        upsert = _make_default_upsert(model_registry, requester_id)
+
+        # First pass creates the row.
+        [create] = self._make_creates(period_key, keys, cost="0.30", count=1)
+        first_id = upsert(create)
+        # Second pass over the SAME bucket (e.g. a retry) adds to it via UPDATE,
+        # reusing the in-memory snapshot -- no second SELECT, same row id.
+        second_id = upsert(create)
+
+        assert list_calls["n"] == 1
+        assert first_id == second_id
+
+        rows = self._rows_for(model_registry, requester_id, period_key)
+        assert Decimal(str(rows[keys[0]].total_cost_usd)) == Decimal("0.60")
+        assert int(rows[keys[0]].call_count) == 2
+
+    def test_new_bucket_triggers_second_select(self, model_registry, monkeypatch):
+        requester_id = env("ROOT_ID")
+        nonce = uuid.uuid4().hex[:6]
+        pk_one = f"2026-03-{nonce}"
+        pk_two = f"2026-04-{nonce}"
+        key = [("teamD", "openai", "complete")]
+
+        DB = CostSummaryModel.DB(model_registry.DB.manager.Base)
+        original_list = DB.list
+        list_calls = {"n": 0}
+
+        def counting_list(*args, **kwargs):
+            list_calls["n"] += 1
+            return original_list(*args, **kwargs)
+
+        monkeypatch.setattr(DB, "list", counting_list)
+
+        upsert = _make_default_upsert(model_registry, requester_id)
+        [c1] = self._make_creates(pk_one, key)
+        [c2] = self._make_creates(pk_two, key)
+        upsert(c1)
+        upsert(c2)
+
+        # A different bucket evicts the snapshot and re-SELECTs.
+        assert list_calls["n"] == 2
