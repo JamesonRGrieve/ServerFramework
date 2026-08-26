@@ -22,8 +22,6 @@ Two integration points:
 from __future__ import annotations
 
 import asyncio
-import ipaddress
-import socket
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Type
 from urllib.parse import urlparse
 
@@ -58,33 +56,6 @@ def _is_private_or_local(host: str) -> bool:
         return False
     except Exception:
         return True
-
-
-def _is_private_or_local_fallback(host: str) -> bool:
-    """Stdlib fallback if ProviderHTTPClient is unavailable."""
-    try:
-        addrinfos = socket.getaddrinfo(host, None)
-    except socket.gaierror:
-        return True
-    for info in addrinfos:
-        sockaddr = info[4]
-        ip_str = sockaddr[0] if isinstance(sockaddr, tuple) else None
-        if ip_str is None:
-            return True
-        try:
-            ip = ipaddress.ip_address(ip_str)
-        except ValueError:
-            return True
-        if (
-            ip.is_private
-            or ip.is_loopback
-            or ip.is_link_local
-            or ip.is_multicast
-            or ip.is_reserved
-            or ip.is_unspecified
-        ):
-            return True
-    return False
 
 
 def validate_upstream_url(url: str, *, allow_private: Optional[bool] = None) -> None:
