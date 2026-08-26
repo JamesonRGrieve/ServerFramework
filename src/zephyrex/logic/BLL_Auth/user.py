@@ -1100,94 +1100,16 @@ class UserManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef]
                 except jwt.InvalidTokenError:
                     raise HTTPException(status_code=401, detail="Invalid token")
 
-            elif authorization.startswith("Basic"):
-                # Basic auth with username/email and password
-                try:
-                    identifier, password = UserManager._decode_basic_auth(authorization)
-
-                    user = UserModel.DB(db_manager.Base).get(
-                        requester_id=env("ROOT_ID"),
-                        model_registry=model_registry if model_registry else None,
-                        db=db if not model_registry else None,
-                        filters=[
-                            or_(
-                                UserModel.DB(db_manager.Base).email == identifier,
-                                UserModel.DB(db_manager.Base).username == identifier,
-                            )
-                        ],
-                        return_type="dto",
-                        override_dto=UserModel,
-                    )
-
-                    if not user:
-                        raise HTTPException(
-                            status_code=401, detail="Invalid credentials"
-                        )
-
-                    if not user.active:
-                        raise HTTPException(
-                            status_code=403, detail="User account is disabled"
-                        )
-
-                    # Get current credential (password_changed_at is NULL for current password)
-                    credentials = UserCredentialModel.DB(db_manager.Base).get(
-                        requester_id=env("ROOT_ID"),
-                        model_registry=model_registry if model_registry else None,
-                        db=db if not model_registry else None,
-                        filters=[
-                            UserCredentialModel.DB(db_manager.Base).user_id == user.id,
-                            UserCredentialModel.DB(db_manager.Base).password_changed_at
-                            == None,
-                        ],
-                    )
-
-                    if not credentials:
-                        raise HTTPException(
-                            status_code=401, detail="No valid credentials found"
-                        )
-
-                    # Check password
-                    if not bcrypt.checkpw(
-                        password.encode(), credentials.password_hash.encode()
-                    ):
-                        # Check if there is an older password that matches
-                        old_credentials = UserCredentialModel.list(
-                            filters=[
-                                UserCredentialModel.DB(db_manager.Base).user_id
-                                == user.id,
-                                UserCredentialModel.DB(
-                                    db_manager.Base
-                                ).password_changed_at
-                                != None,
-                            ],
-                            order_by=[
-                                UserCredentialModel.DB(
-                                    db_manager.Base
-                                ).password_changed_at.desc()
-                            ],
-                        )[0]
-
-                        if old_credentials and bcrypt.checkpw(
-                            password.encode(),
-                            old_credentials.password_hash.encode(),
-                        ):
-                            logger.info(
-                                "Login attempt used a previously valid password "
-                                "(changed %s)",
-                                old_credentials.password_changed_at.strftime("%Y-%m"),
-                            )
-                        raise HTTPException(
-                            status_code=401, detail="Invalid credentials"
-                        )
-
-                    return user  # type: ignore[no-any-return]
-                except Exception as e:
-                    if isinstance(e, HTTPException):
-                        raise e
-                    raise HTTPException(status_code=401, detail="Authentication failed")
             else:
+                # Per-request authentication accepts Bearer/JWT (and API keys)
+                # only. Basic credentials are exchanged for a token at the login
+                # endpoint (POST /v1/user/authorize -> UserManager.login); they
+                # are not a valid per-request scheme on protected routes, so any
+                # non-Bearer header is rejected here rather than re-implementing
+                # a second password-verification path.
                 raise HTTPException(
-                    status_code=401, detail="Unsupported authorization method"
+                    status_code=401,
+                    detail="Unsupported authorization method; use a Bearer token",
                 )
         finally:
             db.close()

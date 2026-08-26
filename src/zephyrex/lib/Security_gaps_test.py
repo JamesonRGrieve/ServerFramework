@@ -651,15 +651,24 @@ class TestAuthHeaderParsing:
 
     @pytest.mark.security
     def test_authorization_basic_scheme_not_treated_as_bearer(self, server, admin_a):
-        """Basic scheme must not be accepted where Bearer is expected."""
+        """Basic must be rejected on a protected route -- even with *valid*
+        credentials. Per-request auth is Bearer-only; Basic creds are exchanged
+        for a token at ``/v1/user/authorize`` (UserManager.login) and are never
+        accepted inline by the auth dependency (UserManager.auth)."""
         import base64
 
-        creds = base64.b64encode(b"admin:password").decode()
-        response = server.get(
-            "/v1/team",
-            headers={"Authorization": f"Basic {creds}"},
-        )
-        assert response.status_code != 500
+        # Invalid Basic creds: a clean 401, never a 500 from a mishandled scheme.
+        bad = base64.b64encode(b"admin:password").decode()
+        r_bad = server.get("/v1/team", headers={"Authorization": f"Basic {bad}"})
+        assert r_bad.status_code == 401, r_bad.text
+
+        # Valid Basic creds (correct email:password) must ALSO be rejected: the
+        # scheme is refused before any credential check, so a real password
+        # cannot authenticate a protected endpoint via Basic.
+        good = base64.b64encode(f"{admin_a.email}:testpassword".encode()).decode()
+        r_good = server.get("/v1/team", headers={"Authorization": f"Basic {good}"})
+        assert r_good.status_code == 401, r_good.text
+        assert "Bearer" in r_good.json().get("detail", ""), r_good.text
 
 
 # ------------------------------------------------------------------ #
