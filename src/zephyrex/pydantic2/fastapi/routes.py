@@ -6,6 +6,7 @@ from typing import (
     Dict,
     List,
     Optional,
+    Tuple,
     Type,
     Union,
 )
@@ -769,6 +770,12 @@ def register_route(
                     except Exception:
                         return
 
+                    # First pass: decide per (entity, include) what needs
+                    # resolving and collect every referenced user id. Entities
+                    # already populated, or missing a usable id, are settled now.
+                    pending: List[Tuple[Dict[str, Any], str, str]] = []
+                    needed_ids: List[Any] = []
+                    seen_ids: set = set()
                     for entity in items:
                         for inc in user_includes:
                             id_field = f"{inc}_id"
@@ -780,15 +787,38 @@ def register_route(
                             if not user_id:
                                 entity[inc] = None
                                 continue
-                            try:
-                                user_obj = user_mgr.get(id=user_id)
-                                entity[inc] = (
-                                    serialize_for_response(user_obj)
-                                    if user_obj is not None
-                                    else None
-                                )
-                            except Exception:
-                                entity[inc] = None
+                            pending.append((entity, inc, str(user_id)))
+                            if user_id not in seen_ids:
+                                seen_ids.add(user_id)
+                                needed_ids.append(user_id)
+
+                    if not needed_ids:
+                        return
+
+                    # One permission-filtered batch fetch for every referenced
+                    # user, instead of a get() per entity (was O(entities x
+                    # user-includes) point queries). A user the requester cannot
+                    # view is absent from the map -> attached as None, matching
+                    # the old per-get semantics exactly.
+                    try:
+                        users = user_mgr.list(filters=[user_mgr.DB.id.in_(needed_ids)])
+                    except Exception:
+                        for entity, inc, _uid in pending:
+                            entity[inc] = None
+                        return
+
+                    user_map: Dict[str, Any] = {}
+                    for user_obj in users or []:
+                        uid = (
+                            user_obj.get("id")
+                            if isinstance(user_obj, dict)
+                            else getattr(user_obj, "id", None)
+                        )
+                        if uid is not None:
+                            user_map[str(uid)] = serialize_for_response(user_obj)
+
+                    for entity, inc, uid in pending:
+                        entity[inc] = user_map.get(uid)
 
                 _attach_user_includes_to_items(serialized_items)  # type: ignore[arg-type]
 
@@ -808,16 +838,47 @@ def register_route(
                     if not invitee_mgr:
                         return
 
+                    invitation_ids: List[Any] = []
                     for entity in items:
                         invitation_id = entity.get("id")
                         if not invitation_id:
                             entity["invitees"] = []
+                        else:
+                            invitation_ids.append(invitation_id)
+
+                    if not invitation_ids:
+                        return
+
+                    # One batch fetch grouped by invitation_id, instead of a
+                    # list() per invitation (was O(invitations) queries).
+                    try:
+                        InviteeDB = invitee_mgr.DB
+                        all_invitees = invitee_mgr.list(
+                            filters=[InviteeDB.invitation_id.in_(invitation_ids)]
+                        )
+                    except Exception:
+                        for entity in items:
+                            if entity.get("id"):
+                                entity["invitees"] = []
+                        return
+
+                    grouped: Dict[str, List[Any]] = {}
+                    for inv in all_invitees or []:
+                        key = (
+                            inv.get("invitation_id")
+                            if isinstance(inv, dict)
+                            else getattr(inv, "invitation_id", None)
+                        )
+                        if key is not None:
+                            grouped.setdefault(str(key), []).append(inv)
+
+                    for entity in items:
+                        eid = entity.get("id")
+                        if not eid:
                             continue
-                        try:
-                            invitees = invitee_mgr.list(invitation_id=invitation_id)
-                            entity["invitees"] = serialize_for_response(invitees) or []
-                        except Exception:
-                            entity["invitees"] = []
+                        entity["invitees"] = (
+                            serialize_for_response(grouped.get(str(eid), [])) or []
+                        )
 
                 # Attach invitees for Invitation resources when requested
                 _attach_invitees_to_items(serialized_items)  # type: ignore[arg-type]

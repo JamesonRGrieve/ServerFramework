@@ -131,6 +131,63 @@ class TestTeamEndpoints(AbstractEPTest):
         # Extract and return the list of teams
         return response.json().get("user_teams", [])  # type: ignore[no-any-return]
 
+    def test_GET_200_team_list_include_created_by_user_is_batched(
+        self, server: Any, admin_a: Any, monkeypatch: Any
+    ) -> None:
+        """``?include=created_by_user`` attaches the creator to every row via a
+        single batched user fetch, not a ``get()`` per row (#230 N+1 fix). The
+        old code issued one user point-lookup per returned team."""
+        from zephyrex.lib.AuthProvider import get_auth_provider
+        from zephyrex.testing.factories import create_team
+
+        my_team_ids = {
+            str(create_team(server, admin_a.id, name=f"BatchTeam {i}").id)
+            for i in range(4)
+        }
+
+        user_mgr_cls = get_auth_provider()
+        orig_get = user_mgr_cls.get
+        orig_list = user_mgr_cls.list
+        calls = {"get": 0, "list": 0}
+
+        def counting_get(self: Any, *a: Any, **k: Any) -> Any:
+            calls["get"] += 1
+            return orig_get(self, *a, **k)
+
+        def counting_list(self: Any, *a: Any, **k: Any) -> Any:
+            calls["list"] += 1
+            return orig_list(self, *a, **k)
+
+        monkeypatch.setattr(user_mgr_cls, "get", counting_get)
+        monkeypatch.setattr(user_mgr_cls, "list", counting_list)
+
+        response = server.get(
+            "/v1/team?include=created_by_user",
+            headers={"Authorization": f"Bearer {admin_a.jwt}"},
+        )
+        assert response.status_code == 200, response.text
+        teams = response.json().get("teams", [])
+        mine = [t for t in teams if str(t.get("id")) in my_team_ids]
+        assert len(mine) == len(
+            my_team_ids
+        ), "admin_a should see every team they created"
+
+        # The include ran on every returned row (attach key present). Content
+        # population of the *_user relationship is a separate pre-existing
+        # concern; this test guards the query-count contract of the batch fix.
+        for team in teams:
+            assert "created_by_user" in team
+
+        # N+1 guard: the old path fetched each creator with a per-row get(), so
+        # get() scaled with the page (up to one call per (row, include) slot).
+        # The batched path issues a single list() for the whole page. get()==0
+        # proves the per-row path is gone; list() stays a small constant
+        # independent of row count.
+        assert calls["get"] == 0, "include-attach fell back to per-entity get()"
+        assert (
+            1 <= calls["list"] <= 2
+        ), f"expected one batched user fetch, got {calls['list']}"
+
     def test_GET_200_team_list_permissions_isolation(
         self, server: Any, admin_a: Any
     ) -> None:
