@@ -125,6 +125,28 @@ def _cache_sync_run(coro, timeout: float | None = 2):
     return asyncio.run(coro)
 
 
+def _fire_and_forget(coro) -> None:
+    """Run an async coroutine to completion in a background daemon thread,
+    WITHOUT waiting for the result — the fire-and-forget counterpart to
+    :func:`_cache_sync_run`. Shared so callers (non-blocking hook dispatch and
+    email provider callbacks) don't each re-roll a new-event-loop-in-a-thread
+    helper. The daemon thread is not joined; error handling is the coroutine's
+    own responsibility.
+    """
+    import asyncio
+    import threading
+
+    def _run() -> None:
+        loop = asyncio.new_event_loop()
+        try:
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(coro)
+        finally:
+            loop.close()
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
 class AbstractBLLManager(ABC, Generic[ModelT]):
     _model = None
 

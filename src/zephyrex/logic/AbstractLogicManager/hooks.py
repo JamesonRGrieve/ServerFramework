@@ -1,6 +1,4 @@
-import asyncio
 import inspect
-import threading
 from enum import Enum
 from typing import (
     TYPE_CHECKING,
@@ -894,9 +892,13 @@ def wrap_method_with_hooks(
                 try:
                     import asyncio
 
+                    from zephyrex.logic.AbstractLogicManager.manager import (
+                        _fire_and_forget,
+                    )
+
                     func = hook_info["func"]
                     if asyncio.iscoroutinefunction(func):
-                        call_async_without_waiting(func(context))
+                        _fire_and_forget(func(context))
                     else:
                         func(context)
 
@@ -924,18 +926,6 @@ def wrap_method_with_hooks(
                     )
 
         return result
-
-    def run_async_in_thread(coroutine):
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(coroutine)
-
-    def call_async_without_waiting(async_function):
-        thread = threading.Thread(target=run_async_in_thread, args=(async_function,))
-        thread.daemon = (
-            True  # Allows the program to exit even if the thread is still running
-        )
-        thread.start()
 
     # Preserve method metadata
     wrapped_method.__name__ = method_name

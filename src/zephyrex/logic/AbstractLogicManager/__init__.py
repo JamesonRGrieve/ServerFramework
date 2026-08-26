@@ -47,6 +47,7 @@ from zephyrex.logic.AbstractLogicManager.manager import (
     T as T,
     _BoundModelDescriptor as _BoundModelDescriptor,
     _cache_sync_run as _cache_sync_run,
+    _fire_and_forget as _fire_and_forget,
     _escape_like as _escape_like,
     get_entity_cache as get_entity_cache,
     set_entity_cache as set_entity_cache,

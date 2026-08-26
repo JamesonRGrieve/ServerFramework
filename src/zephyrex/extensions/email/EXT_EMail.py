@@ -32,13 +32,11 @@ from typing import (
     Optional,
     Set,
     Type,
-    Union,
 )
 
-from pydantic import BaseModel, EmailStr, Field, ValidationError
+from pydantic import BaseModel, EmailStr, Field
 
 from zephyrex.extensions.AbstractExtensionProvider import (
-    AbstractProviderInstance,
     AbstractStaticExtension,
     AbstractStaticProvider,
     ability,
@@ -1616,34 +1614,17 @@ def provider_callback(provider_instance, **kwargs):
     This can be used to handle provider-specific logic.
     """
 
+    from zephyrex.logic.AbstractLogicManager import _fire_and_forget
+
     providers = EXT_EMail.providers
     for provider in providers:
         if provider.name.lower() == provider_instance.model_name.lower():
             coro = provider.send_email(provider_instance, **kwargs)
-
-            call_async_without_waiting(coro)
+            _fire_and_forget(coro)
 
     logger.debug(f"Provider callback called for {provider_instance.name}")
     # Implement provider-specific logic here
     return {"status": "success", "message": "Callback executed successfully"}
-
-
-def run_async_in_thread(coroutine):
-    import asyncio
-
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_until_complete(coroutine)
-
-
-def call_async_without_waiting(async_function):
-    import threading
-
-    thread = threading.Thread(target=run_async_in_thread, args=(async_function,))
-    thread.daemon = (
-        True  # Allows the program to exit even if the thread is still running
-    )
-    thread.start()
 
 
 AbstractEmailProvider.extension = EXT_EMail
