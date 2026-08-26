@@ -1007,3 +1007,71 @@ class TestCurrencyConversion:
     def test_get_default_currency_no_env_var_uses_classvar(self):
         # ConcretePaymentProvider sets no _currency_env_var → base default "USD"
         assert ConcretePaymentProvider.get_default_currency() == "USD"
+
+
+@pytest.mark.payment
+class TestWebhookSignatureVerification:
+    """HMAC-SHA256 webhook-signature SSOT (#228).
+
+    Replaces the four hand-rolled ``hmac.new(...).hexdigest()`` + ``compare_digest``
+    copies (Square, PayPal, Moneris, Helcim) that had diverged — Square notably
+    lacked the empty-signature guard the others enforced. The check must be
+    constant-time and reject an empty/missing signature before computing anything.
+    """
+
+    P = AbstractPaymentProvider
+
+    _SECRET = "whsec_test_secret"
+    _PAYLOAD = b'{"type": "payment.updated", "event_id": "evt_1"}'
+
+    @staticmethod
+    def _sign(secret: str, payload: bytes) -> str:
+        import hashlib
+        import hmac
+
+        return hmac.new(secret.encode(), payload, hashlib.sha256).hexdigest()
+
+    def test_correct_signature_returns_true(self):
+        sig = self._sign(self._SECRET, self._PAYLOAD)
+        assert self.P.verify_hmac_sha256(self._SECRET, self._PAYLOAD, sig) is True
+
+    def test_wrong_signature_returns_false(self):
+        # Well-formed but incorrect digest.
+        wrong = self._sign(self._SECRET, self._PAYLOAD).replace("a", "b", 1)
+        assert self.P.verify_hmac_sha256(self._SECRET, self._PAYLOAD, wrong) is False
+
+    def test_garbage_signature_returns_false(self):
+        assert (
+            self.P.verify_hmac_sha256(self._SECRET, self._PAYLOAD, "not-a-digest")
+            is False
+        )
+
+    def test_signature_under_different_secret_returns_false(self):
+        # A digest that is valid for a *different* key must not verify.
+        sig = self._sign("other_secret", self._PAYLOAD)
+        assert self.P.verify_hmac_sha256(self._SECRET, self._PAYLOAD, sig) is False
+
+    def test_signature_for_tampered_payload_returns_false(self):
+        sig = self._sign(self._SECRET, self._PAYLOAD)
+        assert (
+            self.P.verify_hmac_sha256(self._SECRET, b'{"tampered": true}', sig) is False
+        )
+
+    def test_empty_signature_returns_false(self):
+        # Single empty-signature policy: rejected before any HMAC is computed.
+        assert self.P.verify_hmac_sha256(self._SECRET, self._PAYLOAD, "") is False
+
+    def test_verify_is_available_on_every_concrete_provider(self):
+        # SSOT lives on the abstract base, inherited by all providers (incl. the
+        # four hand-rolled ones this replaced).
+        for module, name in [
+            ("PRV_Square_Payment", "PaymentExtensionSquareProvider"),
+            ("PRV_PayPal_Payment", "PaymentExtensionPayPalProvider"),
+            ("PRV_Moneris_Payment", "PaymentExtensionMonerisProvider"),
+            ("PRV_Helcim_Payment", "PaymentExtensionHelcimProvider"),
+        ]:
+            mod = __import__(f"zephyrex.extensions.payment.{module}", fromlist=[name])
+            provider = getattr(mod, name)
+            sig = self._sign(self._SECRET, self._PAYLOAD)
+            assert provider.verify_hmac_sha256(self._SECRET, self._PAYLOAD, sig) is True
+            assert provider.verify_hmac_sha256(self._SECRET, self._PAYLOAD, "") is False

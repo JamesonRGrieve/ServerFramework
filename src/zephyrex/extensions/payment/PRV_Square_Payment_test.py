@@ -1,6 +1,4 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-from decimal import Decimal
-
 import pytest
 
 from zephyrex.extensions.payment.BLL_Payment import *  # noqa: F401,F403
@@ -11,7 +9,6 @@ from zephyrex.extensions.payment.PRV_Square_Payment import (
     Square_PaymentModel,
     Square_SubscriptionModel,
 )
-from zephyrex.lib.Dependencies import Dependencies
 from zephyrex.lib.Environment import env
 
 
@@ -90,6 +87,7 @@ class TestSquareProvider:
         try:
             from square.client import Client as SquareClient
 
+            assert SquareClient is not None
             assert bonded is not None
             assert hasattr(bonded, "sdk")
         except ImportError:
@@ -157,3 +155,53 @@ class TestSquareProvider:
                 err in error_msg
                 for err in ["signature", "webhook", "invalid", "verify", "configured"]
             )
+
+    @pytest.mark.asyncio
+    async def test_process_webhook_empty_signature_rejected(self):
+        # #228: Square previously had NO empty-signature guard and would fall
+        # through to an HMAC compare, returning {"success": False}. It must now
+        # reject an empty/missing signature up front — uniform with PayPal /
+        # Moneris / Helcim, which raise before any HMAC is computed. The guard
+        # runs before provider_instance / the signing key are touched.
+        with pytest.raises(Exception) as exc_info:
+            await PaymentExtensionSquareProvider.process_webhook(
+                None, b'{"type": "payment.updated"}', ""
+            )
+        assert "signature" in str(exc_info.value).lower()
+
+    @pytest.mark.asyncio
+    async def test_process_webhook_valid_signature_via_ssot(self, monkeypatch):
+        # A correctly signed payload verifies through the shared
+        # AbstractPaymentProvider.verify_hmac_sha256 SSOT and is processed.
+        import hashlib
+        import hmac
+
+        secret = "whsec_square_test"
+        payload = b'{"type": "payment.updated", "event_id": "evt_sq_1"}'
+        monkeypatch.setattr(
+            PaymentExtensionSquareProvider,
+            "get_webhook_signature_key",
+            classmethod(lambda cls: secret),
+        )
+        good_sig = hmac.new(secret.encode(), payload, hashlib.sha256).hexdigest()
+        result = await PaymentExtensionSquareProvider.process_webhook(
+            None, payload, good_sig
+        )
+        assert result["success"] is True
+        assert result["event_type"] == "payment.updated"
+        assert result["event_id"] == "evt_sq_1"
+
+    @pytest.mark.asyncio
+    async def test_process_webhook_wrong_signature_returns_failure(self, monkeypatch):
+        # A non-empty but incorrect signature keeps Square's return-dict branch.
+        secret = "whsec_square_test"
+        payload = b'{"type": "payment.updated"}'
+        monkeypatch.setattr(
+            PaymentExtensionSquareProvider,
+            "get_webhook_signature_key",
+            classmethod(lambda cls: secret),
+        )
+        result = await PaymentExtensionSquareProvider.process_webhook(
+            None, payload, "deadbeef_not_the_real_digest"
+        )
+        assert result["success"] is False

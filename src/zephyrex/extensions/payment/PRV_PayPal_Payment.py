@@ -493,15 +493,10 @@ class PaymentExtensionPayPalProvider(AbstractPaymentProvider):
         if not webhook_id:
             return {"success": False, "error": "Webhook ID not configured"}
         try:
-            import hashlib
-            import hmac as _hmac
             import json
 
             payload_bytes = payload.encode() if isinstance(payload, str) else payload
-            expected = _hmac.new(
-                webhook_id.encode(), payload_bytes, hashlib.sha256
-            ).hexdigest()
-            if not _hmac.compare_digest(signature, expected):
+            if not cls.verify_hmac_sha256(webhook_id, payload_bytes, signature):
                 raise Exception("Webhook signature verification failed")
 
             event = json.loads(

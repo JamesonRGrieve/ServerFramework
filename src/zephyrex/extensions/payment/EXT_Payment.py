@@ -3,6 +3,8 @@ Payment extension for AGInfrastructure.
 Implements the Provider Rotation System for payment processing.
 """
 
+import hashlib
+import hmac
 from abc import abstractmethod
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, ClassVar, Dict, List, Optional, Union
@@ -109,6 +111,28 @@ class AbstractPaymentProvider(AbstractStaticProvider):
         quantum = Decimal(1).scaleb(-exp)  # 10**-exp, e.g. Decimal("0.01")
         quantized = Decimal(str(amount)).quantize(quantum, rounding=ROUND_HALF_UP)
         return f"{quantized:.{exp}f}"
+
+    @classmethod
+    def verify_hmac_sha256(cls, secret: str, payload: bytes, signature: str) -> bool:
+        """Constant-time HMAC-SHA256 webhook-signature check (SSOT, #228).
+
+        Computes ``HMAC-SHA256(secret, payload)`` as a hex digest and compares it
+        to ``signature`` with :func:`hmac.compare_digest`, so the comparison is
+        constant-time and cannot leak the expected digest through timing. An empty
+        or missing ``signature`` is rejected up front (``False``) before any HMAC
+        is computed — the single empty-signature policy now shared by every
+        payment provider.
+
+        This is the one true implementation behind Square, PayPal, Moneris, and
+        Helcim webhook verification. It replaces four hand-rolled
+        ``hmac.new(...).hexdigest()`` + ``compare_digest`` copies that had
+        diverged — Square, in particular, had no empty-signature guard. (Stripe
+        verifies via the vendor SDK's ``construct_event`` and does not use this.)
+        """
+        if not signature:
+            return False
+        expected = hmac.new(secret.encode(), payload, hashlib.sha256).hexdigest()
+        return hmac.compare_digest(expected, signature)
 
     @classmethod
     @abstractmethod

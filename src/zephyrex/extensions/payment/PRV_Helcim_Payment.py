@@ -12,8 +12,6 @@ the provider becomes active.
 
 from __future__ import annotations
 
-import hashlib
-import hmac
 import json
 import uuid
 from typing import Any, ClassVar, Dict, List, Optional
@@ -505,10 +503,7 @@ class PaymentExtensionHelcimProvider(AbstractPaymentProvider):
             raise Exception("Webhook secret not configured — cannot verify")
         try:
             payload_bytes = payload.encode() if isinstance(payload, str) else payload
-            expected = hmac.new(
-                secret.encode(), payload_bytes, hashlib.sha256
-            ).hexdigest()
-            if not hmac.compare_digest(signature, expected):
+            if not cls.verify_hmac_sha256(secret, payload_bytes, signature):
                 raise Exception("Webhook signature verification failed")
             payload_str = payload if isinstance(payload, str) else payload.decode()
             event = json.loads(payload_str)

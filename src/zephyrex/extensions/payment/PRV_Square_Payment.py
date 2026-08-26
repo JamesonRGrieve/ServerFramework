@@ -581,21 +581,20 @@ class PaymentExtensionSquareProvider(AbstractPaymentProvider):
         cls, provider_instance: ProviderInstanceModel, payload: str, signature: str
     ) -> Dict:
         """Process a webhook from Square. Async to match the abstract interface."""
+        # Empty-signature guard, uniform with the other providers (#228): Square
+        # previously had none — an empty/missing signature can never be verified,
+        # so reject it up front before any HMAC computation.
+        if not signature:
+            raise Exception("Webhook signature missing — cannot verify authenticity")
         sig_key = cls.get_webhook_signature_key()
         if not sig_key:
             return {"success": False, "error": "Webhook signature key not configured"}
         try:
-            import hashlib
-            import hmac
-
-            payload_bytes = payload if isinstance(payload, bytes) else payload.encode()
-            expected = hmac.new(
-                sig_key.encode(), payload_bytes, hashlib.sha256
-            ).hexdigest()
-            if not hmac.compare_digest(expected, signature):
-                return {"success": False, "error": "Invalid signature"}
             import json
 
+            payload_bytes = payload if isinstance(payload, bytes) else payload.encode()
+            if not cls.verify_hmac_sha256(sig_key, payload_bytes, signature):
+                return {"success": False, "error": "Invalid signature"}
             event = json.loads(payload_bytes)
             event_type = event.get("type", "unknown")
             return {
