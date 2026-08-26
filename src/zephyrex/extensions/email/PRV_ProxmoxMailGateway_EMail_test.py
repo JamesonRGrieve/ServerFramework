@@ -155,3 +155,25 @@ class TestWebhookDispatch:
             assert e.message_id == "M1"
         finally:
             unsubscribe_email_delivery(cb)
+
+
+class TestSendValidation:
+    """send_email must run the _validate_send_inputs SSOT first, like every
+    sibling provider (regression for the header-injection gap in #228)."""
+
+    def test_send_email_rejects_crlf_recipient(self):
+        # Validation runs before any bonding/network, so provider_instance=None
+        # is never reached — the CRLF recipient is denied up front.
+        err = _run(
+            PMG.send_email(
+                None,
+                "victim@example.com\r\nBcc: attacker@evil.test",
+                "Subject",
+                "Body",
+            )
+        )
+        assert err == "Failed to send email: rejected CRLF in recipient"
+
+    def test_send_email_rejects_nul_in_subject(self):
+        err = _run(PMG.send_email(None, "victim@example.com", "Sub\x00ject", "Body"))
+        assert "NUL byte" in err

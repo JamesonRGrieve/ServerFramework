@@ -328,6 +328,12 @@ class ProxmoxMailGatewayProvider(AbstractEmailProvider):
         importance: str = "normal",
     ) -> str:
         """Send an email through the PMG SMTP relay."""
+        validation_error = cls._validate_send_inputs(
+            recipient, subject, body, attachments
+        )
+        if validation_error:
+            logger.error(validation_error)
+            return validation_error  # type: ignore[no-any-return]
         bonded = cls.bond_instance(provider_instance)
         if not bonded or not bonded.sdk:
             return "Failed to bond Proxmox Mail Gateway instance"
