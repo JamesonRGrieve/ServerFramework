@@ -307,10 +307,6 @@ class PaymentExtensionMonerisProvider(AbstractPaymentProvider):
         return env("MONERIS_MERCHANT_ID")  # type: ignore[no-any-return]
 
     @classmethod
-    def get_default_currency(cls) -> str:
-        return env("MONERIS_CURRENCY") or "CAD"
-
-    @classmethod
     def get_env_value(cls, key: str, default: Any = None) -> Any:
         return env(key, default)
 
@@ -348,7 +344,7 @@ class PaymentExtensionMonerisProvider(AbstractPaymentProvider):
             body: Dict[str, Any] = {
                 "idempotencyKey": str(uuid.uuid4()),
                 "amount": {
-                    "amount": int(amount * 100),
+                    "amount": cls.to_minor_units(amount, currency),
                     "currency": currency.upper(),
                 },
                 "automaticCapture": True,
@@ -392,7 +388,11 @@ class PaymentExtensionMonerisProvider(AbstractPaymentProvider):
                 return {
                     "success": True,
                     "payment_id": data.get("paymentId"),
-                    "amount": amount_obj.get("amount", 0) / 100.0,
+                    "amount": float(
+                        cls.from_minor_units(
+                            amount_obj.get("amount", 0), amount_obj.get("currency")
+                        )
+                    ),
                     "currency": amount_obj.get("currency", "CAD"),
                     "status": data.get("paymentStatus"),
                 }
@@ -419,7 +419,7 @@ class PaymentExtensionMonerisProvider(AbstractPaymentProvider):
             }
             if amount is not None:
                 body["refundAmount"] = {
-                    "amount": int(amount * 100),
+                    "amount": cls.to_minor_units(amount),
                     "currency": cls.get_default_currency(),
                 }
             if reason:
@@ -432,7 +432,9 @@ class PaymentExtensionMonerisProvider(AbstractPaymentProvider):
                     "success": True,
                     "refund_id": data.get("refundId"),
                     "payment_id": payment_id,
-                    "amount": refund_amount.get("amount", 0) / 100.0,
+                    "amount": float(
+                        cls.from_minor_units(refund_amount.get("amount", 0))
+                    ),
                     "reason": reason,
                     "status": data.get("refundStatus"),
                 }

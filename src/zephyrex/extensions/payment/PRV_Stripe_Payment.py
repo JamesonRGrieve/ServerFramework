@@ -797,11 +797,6 @@ class PaymentExtensionStripeProvider(AbstractPaymentProvider):
         return env("STRIPE_PUBLISHABLE_KEY") or ""
 
     @classmethod
-    def get_default_currency(cls) -> str:
-        """Return the configured default currency."""
-        return env("STRIPE_CURRENCY") or "USD"
-
-    @classmethod
     def get_env_value(cls, key: str, default: Any = None) -> Any:
         """Get environment value with fallback."""
         return env(key, default)
@@ -850,8 +845,7 @@ class PaymentExtensionStripeProvider(AbstractPaymentProvider):
             raise Exception("Stripe client not configured")
 
         try:
-            # Convert amount to cents
-            amount_cents = int(amount * 100)
+            amount_cents = cls.to_minor_units(amount, currency)
 
             # Prepare payment intent data
             intent_data = {
@@ -906,7 +900,7 @@ class PaymentExtensionStripeProvider(AbstractPaymentProvider):
             return {
                 "success": True,
                 "payment_id": intent.id,
-                "amount": intent.amount / 100.0,  # Convert from cents
+                "amount": float(cls.from_minor_units(intent.amount, intent.currency)),
                 "currency": intent.currency.upper(),
                 "status": intent.status,
                 "customer_id": intent.customer,
@@ -938,7 +932,7 @@ class PaymentExtensionStripeProvider(AbstractPaymentProvider):
             refund_data = {"payment_intent": payment_id}
 
             if amount is not None:
-                refund_data["amount"] = int(amount * 100)  # type: ignore[assignment]
+                refund_data["amount"] = cls.to_minor_units(amount)  # type: ignore[assignment]
 
             if reason:
                 refund_data["reason"] = reason
@@ -949,7 +943,7 @@ class PaymentExtensionStripeProvider(AbstractPaymentProvider):
                 "success": True,
                 "refund_id": refund.id,
                 "payment_id": payment_id,
-                "amount": refund.amount / 100.0,  # Convert from cents
+                "amount": float(cls.from_minor_units(refund.amount)),
                 "reason": refund.reason,
                 "status": refund.status,
             }

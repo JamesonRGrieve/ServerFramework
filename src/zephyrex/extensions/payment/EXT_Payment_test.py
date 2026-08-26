@@ -927,3 +927,83 @@ class TestAbstractPaymentProvider:
 
         # Test that extension linkage works
         assert ConcretePaymentProvider.extension == EXT_Payment
+
+
+class TestCurrencyConversion:
+    """Currency amount⇄minor-units SSOT (#227).
+
+    Replaces the per-provider ``int(amount*100)`` / ``f"{amount:.2f}"`` / raw-float
+    conversions that rounded differently and hardcoded a 2-decimal assumption.
+    """
+
+    P = AbstractPaymentProvider
+
+    @pytest.mark.parametrize(
+        "amount,currency,expected",
+        [
+            ("1.15", "USD", 115),  # the mischarge: int(1.15*100) truncated to 114
+            ("1.15", "usd", 115),  # case-insensitive
+            ("10.00", "USD", 1000),
+            ("0.01", "USD", 1),
+            ("1.155", "USD", 116),  # HALF_UP rounds up
+            ("1.154", "USD", 115),  # HALF_UP rounds down
+            ("100", "JPY", 100),  # zero-decimal: NOT multiplied by 100
+            ("1000", "JPY", 1000),
+            ("1.234", "BHD", 1234),  # three-decimal
+            ("1.2345", "BHD", 1235),  # three-decimal HALF_UP
+            (Decimal("1.15"), "USD", 115),  # Decimal input
+            (1.15, "USD", 115),  # float input coerced via str()
+            ("1.15", "ZZZ", 115),  # unknown currency → default 2 places
+        ],
+    )
+    def test_to_minor_units(self, amount, currency, expected):
+        assert self.P.to_minor_units(amount, currency) == expected
+
+    @pytest.mark.parametrize(
+        "units,currency,expected",
+        [
+            (115, "USD", Decimal("1.15")),
+            (100, "JPY", Decimal("100")),
+            (1234, "BHD", Decimal("1.234")),
+        ],
+    )
+    def test_from_minor_units(self, units, currency, expected):
+        assert self.P.from_minor_units(units, currency) == expected
+
+    @pytest.mark.parametrize("currency", ["USD", "JPY", "BHD", "EUR", "KWD"])
+    @pytest.mark.parametrize("amount", ["0.01", "1.15", "100", "9999.99", "1"])
+    def test_round_trip_exact_at_currency_precision(self, amount, currency):
+        exp = self.P._currency_exponent(currency)
+        minor = self.P.to_minor_units(amount, currency)
+        back = self.P.from_minor_units(minor, currency)
+        assert back == Decimal(amount).quantize(Decimal(1).scaleb(-exp))
+
+    @pytest.mark.parametrize(
+        "amount,currency,expected",
+        [
+            ("1.15", "USD", "1.15"),
+            ("1.5", "USD", "1.50"),
+            ("1.155", "USD", "1.16"),  # HALF_UP
+            ("100", "JPY", "100"),  # PayPal fix: not "100.00"
+            ("1.2345", "BHD", "1.235"),  # three-decimal HALF_UP (matches to_minor 1235)
+        ],
+    )
+    def test_format_amount(self, amount, currency, expected):
+        assert self.P.format_amount(amount, currency) == expected
+
+    def test_get_default_currency_env_then_default(self, monkeypatch):
+        class _P(AbstractPaymentProvider):
+            _currency_env_var = "TEST_CUR"
+            _default_currency = "CAD"
+
+        monkeypatch.setattr(
+            _P, "get_env_value", classmethod(lambda cls, k, d=None: "GBP")
+        )
+        assert _P.get_default_currency() == "GBP"
+        # empty env value falls back to the default (matches the deleted overrides)
+        monkeypatch.setattr(_P, "get_env_value", classmethod(lambda cls, k, d=None: ""))
+        assert _P.get_default_currency() == "CAD"
+
+    def test_get_default_currency_no_env_var_uses_classvar(self):
+        # ConcretePaymentProvider sets no _currency_env_var → base default "USD"
+        assert ConcretePaymentProvider.get_default_currency() == "USD"

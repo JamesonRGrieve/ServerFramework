@@ -8,7 +8,6 @@ Provider Rotation System.
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any, ClassVar, Dict, List, Optional
 
 try:
@@ -316,10 +315,6 @@ class PaymentExtensionSquareProvider(AbstractPaymentProvider):
         return env("SQUARE_WEBHOOK_SIGNATURE_KEY")  # type: ignore[no-any-return]
 
     @classmethod
-    def get_default_currency(cls) -> str:
-        return env("SQUARE_CURRENCY") or "USD"
-
-    @classmethod
     def get_env_value(cls, key: str, default: Any = None) -> Any:
         return env(key, default)
 
@@ -358,7 +353,7 @@ class PaymentExtensionSquareProvider(AbstractPaymentProvider):
             body: Dict[str, Any] = {
                 "idempotency_key": str(uuid.uuid4()),
                 "amount_money": {
-                    "amount": int(amount * 100),
+                    "amount": cls.to_minor_units(amount, currency),
                     "currency": currency.upper(),
                 },
                 "source_id": payment_method_id or "EXTERNAL",
@@ -397,7 +392,12 @@ class PaymentExtensionSquareProvider(AbstractPaymentProvider):
                 return {
                     "success": True,
                     "payment_id": payment.get("id"),
-                    "amount": amount_money.get("amount", 0) / 100.0,
+                    "amount": float(
+                        cls.from_minor_units(
+                            amount_money.get("amount", 0),
+                            amount_money.get("currency"),
+                        )
+                    ),
                     "currency": amount_money.get("currency", "USD"),
                     "status": payment.get("status"),
                 }
@@ -426,7 +426,7 @@ class PaymentExtensionSquareProvider(AbstractPaymentProvider):
             }
             if amount is not None:
                 body["amount_money"] = {
-                    "amount": int(amount * 100),
+                    "amount": cls.to_minor_units(amount),
                     "currency": cls.get_default_currency(),
                 }
             if reason:
@@ -439,7 +439,9 @@ class PaymentExtensionSquareProvider(AbstractPaymentProvider):
                     "success": True,
                     "refund_id": refund.get("id"),
                     "payment_id": payment_id,
-                    "amount": refund_amount.get("amount", 0) / 100.0,
+                    "amount": float(
+                        cls.from_minor_units(refund_amount.get("amount", 0))
+                    ),
                     "reason": reason,
                     "status": refund.get("status"),
                 }

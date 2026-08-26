@@ -292,10 +292,6 @@ class PaymentExtensionHelcimProvider(AbstractPaymentProvider):
         return env("HELCIM_API_TOKEN")  # type: ignore[no-any-return]
 
     @classmethod
-    def get_default_currency(cls) -> str:
-        return env("HELCIM_CURRENCY") or "CAD"
-
-    @classmethod
     def get_env_value(cls, key: str, default: Any = None) -> Any:
         return env(key, default)
 
@@ -330,7 +326,7 @@ class PaymentExtensionHelcimProvider(AbstractPaymentProvider):
             raise Exception("Helcim client not configured")
         try:
             body: Dict[str, Any] = {
-                "amount": amount,
+                "amount": float(cls.format_amount(amount, currency)),
                 "currency": currency.upper(),
                 "idempotencyKey": str(uuid.uuid4()),
             }
@@ -393,7 +389,7 @@ class PaymentExtensionHelcimProvider(AbstractPaymentProvider):
                 "idempotencyKey": str(uuid.uuid4()),
             }
             if amount is not None:
-                body["amount"] = amount
+                body["amount"] = float(cls.format_amount(amount))
             resp = client.post("/payment/refund", json=body)
             if resp.status_code in (200, 201):
                 data = resp.json()

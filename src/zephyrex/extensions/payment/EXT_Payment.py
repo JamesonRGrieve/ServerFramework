@@ -4,8 +4,8 @@ Implements the Provider Rotation System for payment processing.
 """
 
 from abc import abstractmethod
-from decimal import Decimal
-from typing import Any, ClassVar, Dict, List, Optional
+from decimal import ROUND_HALF_UP, Decimal
+from typing import Any, ClassVar, Dict, List, Optional, Union
 
 from zephyrex.extensions.AbstractExtensionProvider import (
     AbstractProviderInstance,
@@ -29,6 +29,87 @@ class AbstractPaymentProvider(AbstractStaticProvider):
     _currency_env_var: ClassVar[str] = ""
     _default_currency: ClassVar[str] = "USD"
 
+    # ISO 4217 currencies whose minor-unit exponent is NOT the default of 2.
+    # Everything not listed here has 2 decimal places. Used by the money
+    # conversion SSOT below so a JPY amount is not multiplied by 100 and a BHD
+    # amount is not truncated to 2 places.
+    _CURRENCY_MINOR_UNITS: ClassVar[Dict[str, int]] = {
+        # zero-decimal
+        "JPY": 0,
+        "KRW": 0,
+        "VND": 0,
+        "CLP": 0,
+        "ISK": 0,
+        "PYG": 0,
+        "RWF": 0,
+        "UGX": 0,
+        "XOF": 0,
+        "XAF": 0,
+        "XPF": 0,
+        "BIF": 0,
+        "DJF": 0,
+        "GNF": 0,
+        "KMF": 0,
+        # three-decimal
+        "BHD": 3,
+        "KWD": 3,
+        "OMR": 3,
+        "TND": 3,
+        "JOD": 3,
+        "IQD": 3,
+        "LYD": 3,
+    }
+
+    @classmethod
+    def get_default_currency(cls) -> str:
+        """Provider's configured default currency (``_currency_env_var`` override,
+        else ``_default_currency``). Single source of truth — concrete providers
+        must NOT re-hardcode ``env("X_CURRENCY") or "..."``."""
+        if cls._currency_env_var:
+            # ``… or default`` (not ``env(key, default)``) so an env var set to an
+            # empty string falls back to the default, matching the per-provider
+            # overrides this replaces.
+            return cls.get_env_value(cls._currency_env_var, "") or cls._default_currency
+        return cls._default_currency
+
+    @classmethod
+    def _currency_exponent(cls, currency: Optional[str]) -> int:
+        code = (currency or cls.get_default_currency()).upper()
+        return cls._CURRENCY_MINOR_UNITS.get(code, 2)
+
+    @classmethod
+    def to_minor_units(
+        cls, amount: Union[Decimal, int, float, str], currency: Optional[str] = None
+    ) -> int:
+        """Major-unit amount → integer minor units, currency-exponent aware and
+        rounded HALF_UP. ``$1.15 → 115``, ``¥100 → 100``, ``1.234 BHD → 1234``.
+        Replaces per-provider ``int(amount * 100)`` (which truncated and assumed
+        2 decimals for every currency)."""
+        scaled = Decimal(str(amount)) * (10 ** cls._currency_exponent(currency))
+        return int(scaled.to_integral_value(rounding=ROUND_HALF_UP))
+
+    @classmethod
+    def from_minor_units(
+        cls, units: Union[int, str], currency: Optional[str] = None
+    ) -> Decimal:
+        """Inverse of :meth:`to_minor_units`: integer minor units → major-unit
+        ``Decimal``. ``115 → Decimal('1.15')``, ``100 JPY → Decimal('100')``."""
+        return Decimal(int(units)) / Decimal(10) ** cls._currency_exponent(currency)
+
+    @classmethod
+    def format_amount(
+        cls, amount: Union[Decimal, int, float, str], currency: Optional[str] = None
+    ) -> str:
+        """Major-unit amount as a decimal string with the currency's minor-unit
+        places, rounded HALF_UP. ``$1.15 → "1.15"``, ``¥100 → "100"``,
+        ``1.2345 BHD → "1.234"``. For APIs (e.g. PayPal) that want a decimal
+        string rather than integer minor units — replaces ``f"{amount:.2f}"``
+        (which fixed 2 places for every currency)."""
+        exp = cls._currency_exponent(currency)
+        quantum = Decimal(1).scaleb(-exp)  # 10**-exp, e.g. Decimal("0.01")
+        quantized = Decimal(str(amount)).quantize(quantum, rounding=ROUND_HALF_UP)
+        return f"{quantized:.{exp}f}"
+
     @classmethod
     @abstractmethod
     def services(cls) -> List[str]:
@@ -41,9 +122,7 @@ class AbstractPaymentProvider(AbstractStaticProvider):
 
     @classmethod
     def get_extension_info(cls) -> Dict[str, Any]:
-        currency = cls._default_currency
-        if cls._currency_env_var:
-            currency = cls.get_env_value(cls._currency_env_var, cls._default_currency)
+        currency = cls.get_default_currency()
         return {
             "name": "Payment",
             "description": f"Payment extension providing payment processing via {cls.get_platform_name()}",

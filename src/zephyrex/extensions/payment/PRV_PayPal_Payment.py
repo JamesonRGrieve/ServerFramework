@@ -242,10 +242,6 @@ class PaymentExtensionPayPalProvider(AbstractPaymentProvider):
         return env("PAYPAL_WEBHOOK_ID")  # type: ignore[no-any-return]
 
     @classmethod
-    def get_default_currency(cls) -> str:
-        return env("PAYPAL_CURRENCY") or "USD"
-
-    @classmethod
     def get_env_value(cls, key: str, default: Any = None) -> Any:
         return env(key, default)
 
@@ -287,7 +283,7 @@ class PaymentExtensionPayPalProvider(AbstractPaymentProvider):
                     "transactions": [
                         {
                             "amount": {
-                                "total": f"{amount:.2f}",
+                                "total": cls.format_amount(amount, currency),
                                 "currency": currency.upper(),
                             },
                             "description": description or "",
@@ -363,7 +359,7 @@ class PaymentExtensionPayPalProvider(AbstractPaymentProvider):
             refund_data: Dict[str, Any] = {}
             if amount is not None:
                 refund_data["amount"] = {
-                    "total": f"{amount:.2f}",
+                    "total": cls.format_amount(amount),
                     "currency": cls.get_default_currency(),
                 }
             refund = sale.refund(refund_data)
