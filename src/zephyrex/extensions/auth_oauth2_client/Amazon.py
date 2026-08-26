@@ -4,53 +4,49 @@ from typing import Any, Dict, Optional
 import requests
 from fastapi import HTTPException
 
-from zephyrex.extensions.auth_oauth.PRV_OAuth import AbstractOAuthProvider
+from zephyrex.extensions.auth_oauth2_client.PRV_OAuth import AbstractOAuthProvider
 from zephyrex.lib.Environment import env
 
-# Google OAuth scopes
-OAUTH_SCOPES = (
-    "https://www.googleapis.com/auth/userinfo.profile "
-    "https://www.googleapis.com/auth/calendar.events.owned "
-    "https://www.googleapis.com/auth/contacts.readonly "
-    "https://www.googleapis.com/auth/calendar.readonly"
-)
 
-
-class GoogleOAuthProvider(AbstractOAuthProvider):
+class AmazonOAuthProvider(AbstractOAuthProvider):
     def __init__(
         self,
         access_token: Optional[str] = None,
         refresh_token: Optional[str] = None,
         **kwargs,
     ):
-        client_id = env("GOOGLE_CLIENT_ID")
-        client_secret = env("GOOGLE_CLIENT_SECRET")
+        # Set client info from environment
+        client_id = env("AWS_CLIENT_ID")
+        client_secret = env("AWS_CLIENT_SECRET")
 
+        # Setup AWS-specific configuration
+        self.user_pool_id = env("AWS_USER_POOL_ID")
+        self.region = env("AWS_REGION")
+
+        # Initialize the parent class
         super().__init__(
             access_token=access_token,
             refresh_token=refresh_token,
             client_id=client_id,
             client_secret=client_secret,
-            scopes=OAUTH_SCOPES,
+            scopes="openid email profile",
             **kwargs,
         )
-        self.name = "GoogleOAuth"
-        self.email_address = self.get_email()
+        self.name = "AmazonOAuth"
 
     @staticmethod
     def services():
-        return ["auth", "user_info", "calendar"]
+        return ["auth", "user_info", "aws_services"]
 
-    def get_new_token(self):
+    def get_new_token(self) -> str:  # type: ignore[return]
         try:
             response = requests.post(
-                "https://oauth2.googleapis.com/token",
+                f"https://{self.user_pool_id}.auth.{self.region}.amazoncognito.com/oauth2/token",
                 data={
                     "client_id": self.client_id,
                     "client_secret": self.client_secret,
                     "refresh_token": self.refresh_token,
                     "grant_type": "refresh_token",
-                    "scope": self.scopes,
                 },
                 timeout=10,
             )
@@ -62,7 +58,7 @@ class GoogleOAuthProvider(AbstractOAuthProvider):
                 )
 
             self.access_token = response.json()["access_token"]
-            return self.access_token
+            return self.access_token  # type: ignore[no-any-return]
         except Exception as e:
             self.handle_auth_error(e, "token refresh")
 
@@ -71,7 +67,7 @@ class GoogleOAuthProvider(AbstractOAuthProvider):
             return {}
 
         try:
-            uri = "https://people.googleapis.com/v1/people/me?personFields=names,emailAddresses"
+            uri = f"https://{self.user_pool_id}.auth.{self.region}.amazoncognito.com/oauth2/userInfo"
             response = requests.get(
                 uri,
                 headers={"Authorization": f"Bearer {self.access_token}"},
@@ -93,15 +89,11 @@ class GoogleOAuthProvider(AbstractOAuthProvider):
                 )
 
             data = response.json()
-            first_name = data["names"][0]["givenName"]
-            last_name = data["names"][0]["familyName"]
-            email = data["emailAddresses"][0]["value"]
-
             return {
-                "email": email,
-                "first_name": first_name,
-                "last_name": last_name,
-                "display_name": f"{first_name} {last_name}",
+                "email": data["email"],
+                "first_name": data.get("given_name", ""),
+                "last_name": data.get("family_name", ""),
+                "display_name": data.get("name", ""),
             }
         except Exception as e:
             self.handle_auth_error(e, "user info retrieval")
@@ -114,21 +106,22 @@ class GoogleOAuthProvider(AbstractOAuthProvider):
         code = cls.sanitize_code(code)
 
         try:
+            user_pool_id = env("AWS_USER_POOL_ID")
+            region = env("AWS_REGION")
+
             response = requests.post(
-                "https://accounts.google.com/o/oauth2/token",
-                params={
+                f"https://{user_pool_id}.auth.{region}.amazoncognito.com/oauth2/token",
+                data={
+                    "client_id": env("AWS_CLIENT_ID"),
+                    "client_secret": env("AWS_CLIENT_SECRET"),
                     "code": code,
-                    "client_id": env("GOOGLE_CLIENT_ID"),
-                    "client_secret": env("GOOGLE_CLIENT_SECRET"),
-                    "redirect_uri": redirect_uri,
                     "grant_type": "authorization_code",
-                    "scope": OAUTH_SCOPES,
-                    "access_type": "offline",
+                    "redirect_uri": redirect_uri,
                 },
             )
 
             if response.status_code != 200:
-                logging.error(f"Error getting Google access token: {response.text}")
+                logging.error(f"Error getting Amazon access token: {response.text}")
                 return None
 
             data = response.json()
@@ -137,5 +130,5 @@ class GoogleOAuthProvider(AbstractOAuthProvider):
 
             return cls(access_token=access_token, refresh_token=refresh_token)
         except Exception as e:
-            logging.error(f"Error in Google SSO: {str(e)}")
+            logging.error(f"Error in Amazon SSO: {str(e)}")
             return None

@@ -22,7 +22,7 @@ from zephyrex.lib.Environment import env
 from zephyrex.lib.Logging import logger
 
 
-class EXT_Auth_OAuth(AbstractStaticExtension):
+class EXT_Auth_OAuth2Client(AbstractStaticExtension):
     """
     OAuth authentication extension for AGInfrastructure.
 
@@ -45,7 +45,7 @@ class EXT_Auth_OAuth(AbstractStaticExtension):
     """
 
     # Extension metadata
-    name = "auth_oauth"
+    name = "auth_oauth2_client"
     version = "1.0.0"
     description = (
         "OAuth authentication extension for OAuth 2.0 authorization flows, "
@@ -240,7 +240,7 @@ class EXT_Auth_OAuth(AbstractStaticExtension):
         """
         try:
             self.provider = {
-                "type": "auth_oauth",
+                "type": "auth_oauth2_client",
                 "oauth_clients": self.oauth_clients,
                 "active_flows": self.active_flows,
                 "session_store": self.session_store,

@@ -2253,10 +2253,12 @@ class TestDeepAuditOAuthTiming:
     def test_oauth_client_secret_comparison_is_constant_time(self):
         """OAuth client_secret comparison must use hmac.compare_digest."""
         try:
-            from zephyrex.extensions.auth_oauth.EXT_Auth_OAuth import EXT_Auth_OAuth
+            from zephyrex.extensions.auth_oauth2_client.EXT_Auth_OAuth2Client import (
+                EXT_Auth_OAuth2Client,
+            )
             import inspect
 
-            source = inspect.getsource(EXT_Auth_OAuth)
+            source = inspect.getsource(EXT_Auth_OAuth2Client)
             lines = source.split("\n")
             for i, line in enumerate(lines):
                 stripped = line.strip()
@@ -2269,7 +2271,7 @@ class TestDeepAuditOAuthTiming:
                             "instead of hmac.compare_digest — timing oracle"
                         )
         except ImportError:
-            pytest.skip("auth_oauth extension not available")
+            pytest.skip("auth_oauth2_client extension not available")
 
 
 class TestDeepAuditPagination:

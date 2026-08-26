@@ -18,19 +18,19 @@ from unittest.mock import patch
 
 import pytest
 
-from zephyrex.extensions.auth_oauth.Amazon import AmazonOAuthProvider
-from zephyrex.extensions.auth_oauth.Google import GoogleOAuthProvider
-from zephyrex.extensions.auth_oauth.Microsoft import MicrosoftOAuthProvider
+from zephyrex.extensions.auth_oauth2_client.Amazon import AmazonOAuthProvider
+from zephyrex.extensions.auth_oauth2_client.Google import GoogleOAuthProvider
+from zephyrex.extensions.auth_oauth2_client.Microsoft import MicrosoftOAuthProvider
 
 # (module_path_for_patching, provider_class, client_id_env_var)
 _PROVIDER_CASES = [
-    ("zephyrex.extensions.auth_oauth.Google", GoogleOAuthProvider, "GOOGLE_CLIENT_ID"),
+    ("zephyrex.extensions.auth_oauth2_client.Google", GoogleOAuthProvider, "GOOGLE_CLIENT_ID"),
     (
-        "zephyrex.extensions.auth_oauth.Microsoft",
+        "zephyrex.extensions.auth_oauth2_client.Microsoft",
         MicrosoftOAuthProvider,
         "MICROSOFT_CLIENT_ID",
     ),
-    ("zephyrex.extensions.auth_oauth.Amazon", AmazonOAuthProvider, "AWS_CLIENT_ID"),
+    ("zephyrex.extensions.auth_oauth2_client.Amazon", AmazonOAuthProvider, "AWS_CLIENT_ID"),
 ]
 
 

@@ -6,18 +6,18 @@ import pytest
 from zephyrex.AbstractTest import CategoryOfTest, SkipThisTest
 from zephyrex.extensions.AbstractEXTTest import ExtensionTestConfig
 from zephyrex.extensions.AbstractEXTTest import AbstractEXTTest
-from zephyrex.extensions.auth_oauth.EXT_Auth_OAuth import EXT_Auth_OAuth
+from zephyrex.extensions.auth_oauth2_client.EXT_Auth_OAuth2Client import EXT_Auth_OAuth2Client
 from zephyrex.lib.Dependencies import install_pip_dependencies
 
 
 class TestEXTAuthOAuth(AbstractEXTTest):
     """
-    Test suite for EXT_Auth_OAuth extension.
+    Test suite for EXT_Auth_OAuth2Client extension.
 
     Tests extension initialization, OAuth 2.0 capabilities, abilities, and authentication functionality.
     """
 
-    extension_class = EXT_Auth_OAuth
+    extension_class = EXT_Auth_OAuth2Client
     test_config = ExtensionTestConfig(skip_performance_tests=True)
 
     expected_abilities = [
@@ -45,7 +45,7 @@ class TestEXTAuthOAuth(AbstractEXTTest):
     @pytest.fixture
     def oauth_instance(self):
         """Create an actual instance for testing instance methods."""
-        return EXT_Auth_OAuth(enable_pkce=False)
+        return EXT_Auth_OAuth2Client(enable_pkce=False)
 
     @pytest.mark.dependency(name="auth_oauth_dependencies")
     def test_install_pip_dependencies(self):
@@ -89,7 +89,7 @@ class TestEXTAuthOAuth(AbstractEXTTest):
     @pytest.fixture
     def mock_env_configured(self):
         """Mock environment with OAuth configured"""
-        with patch("zephyrex.extensions.auth_oauth.EXT_Auth_OAuth.env") as mock_env:
+        with patch("zephyrex.extensions.auth_oauth2_client.EXT_Auth_OAuth2Client.env") as mock_env:
             mock_env.side_effect = lambda key, default=None: {
                 "REDIS_URL": "redis://localhost:6379/4",
                 "JWT_SECRET_KEY": "test_jwt_secret_key",
@@ -101,7 +101,7 @@ class TestEXTAuthOAuth(AbstractEXTTest):
     @pytest.fixture
     def mock_env_no_redis(self):
         """Mock environment without Redis configured"""
-        with patch("zephyrex.extensions.auth_oauth.EXT_Auth_OAuth.env") as mock_env:
+        with patch("zephyrex.extensions.auth_oauth2_client.EXT_Auth_OAuth2Client.env") as mock_env:
             mock_env.side_effect = lambda key, default=None: {
                 "REDIS_URL": "",
                 "JWT_SECRET_KEY": "test_jwt_secret_key",
@@ -157,7 +157,7 @@ class TestEXTAuthOAuth(AbstractEXTTest):
     @pytest.mark.dependency(depends=["auth_oauth_dependencies"])
     def test_extension_metadata(self, extension):
         """Test extension metadata and basic attributes"""
-        assert extension.name == "auth_oauth"
+        assert extension.name == "auth_oauth2_client"
         assert extension.version == "1.0.0"
         assert "OAuth authentication extension" in extension.description
         assert hasattr(extension, "capabilities")
@@ -229,7 +229,7 @@ class TestEXTAuthOAuth(AbstractEXTTest):
     @pytest.mark.dependency(depends=["auth_oauth_dependencies"])
     def test_initialization_with_custom_settings(self):
         """Test extension initialization with custom settings"""
-        ext = EXT_Auth_OAuth(
+        ext = EXT_Auth_OAuth2Client(
             enable_pkce=False,
             session_timeout_minutes=60,
             max_concurrent_flows=50,
@@ -243,8 +243,8 @@ class TestEXTAuthOAuth(AbstractEXTTest):
     def test_on_initialize_success_with_redis(self, mock_redis_available):
         """Test successful extension initialization with Redis"""
         with patch("zephyrex.lib.Logging.logger"):
-            with patch.object(EXT_Auth_OAuth, "_register_oauth_hooks") as mock_hooks:
-                extension = EXT_Auth_OAuth()
+            with patch.object(EXT_Auth_OAuth2Client, "_register_oauth_hooks") as mock_hooks:
+                extension = EXT_Auth_OAuth2Client()
                 result = extension.on_initialize()
 
                 assert result is True
@@ -254,8 +254,8 @@ class TestEXTAuthOAuth(AbstractEXTTest):
     def test_on_initialize_success_without_redis(self):
         """Test successful extension initialization without Redis"""
         with patch("zephyrex.lib.Logging.logger"):
-            with patch.object(EXT_Auth_OAuth, "_register_oauth_hooks") as mock_hooks:
-                extension = EXT_Auth_OAuth()
+            with patch.object(EXT_Auth_OAuth2Client, "_register_oauth_hooks") as mock_hooks:
+                extension = EXT_Auth_OAuth2Client()
                 result = extension.on_initialize()
 
                 assert result is True
@@ -265,11 +265,11 @@ class TestEXTAuthOAuth(AbstractEXTTest):
     def test_on_initialize_failure(self):
         """Test extension initialization failure handling"""
         with patch.object(
-            EXT_Auth_OAuth,
+            EXT_Auth_OAuth2Client,
             "_create_provider",
             side_effect=Exception("Test error"),
         ):
-            ext = EXT_Auth_OAuth()
+            ext = EXT_Auth_OAuth2Client()
             result = ext.on_initialize()
             assert result is False
 
@@ -386,7 +386,7 @@ class TestEXTAuthOAuth(AbstractEXTTest):
     @pytest.mark.dependency(depends=["auth_oauth_dependencies"])
     async def test_create_authorization_url_with_pkce(self):
         """Test authorization URL creation with PKCE"""
-        pkce_instance = EXT_Auth_OAuth(enable_pkce=True)
+        pkce_instance = EXT_Auth_OAuth2Client(enable_pkce=True)
 
         # Register a client
         client_result = await pkce_instance.register_oauth_client(
@@ -745,7 +745,7 @@ class TestEXTAuthOAuth(AbstractEXTTest):
             }
 
             with patch.dict("sys.modules", mock_libs):
-                extension = EXT_Auth_OAuth(enable_jwt_tokens=False)
+                extension = EXT_Auth_OAuth2Client(enable_jwt_tokens=False)
                 issues = extension.validate_config()
 
                 assert len(issues) == 0
@@ -755,7 +755,7 @@ class TestEXTAuthOAuth(AbstractEXTTest):
         """Test configuration validation with missing cryptography"""
         with patch("zephyrex.lib.Logging.logger"):
             with patch.dict("sys.modules", {"cryptography": None}):
-                extension = EXT_Auth_OAuth()
+                extension = EXT_Auth_OAuth2Client()
                 issues = extension.validate_config()
 
                 assert len(issues) >= 1
@@ -766,7 +766,7 @@ class TestEXTAuthOAuth(AbstractEXTTest):
     def test_validate_config_jwt_without_secret(self):
         """Test configuration validation for JWT without secret key"""
         with patch("zephyrex.lib.Logging.logger"):
-            extension = EXT_Auth_OAuth(enable_jwt_tokens=True, jwt_secret_key=None)
+            extension = EXT_Auth_OAuth2Client(enable_jwt_tokens=True, jwt_secret_key=None)
             issues = extension.validate_config()
 
             assert len(issues) >= 1
@@ -791,7 +791,7 @@ class TestEXTAuthOAuth(AbstractEXTTest):
     def test_on_start_success(self):
         """Test successful extension start"""
         with patch("zephyrex.lib.Logging.logger"):
-            extension = EXT_Auth_OAuth()
+            extension = EXT_Auth_OAuth2Client()
             result = extension.on_start()
 
             assert result is True
@@ -883,9 +883,9 @@ class TestEXTAuthOAuth(AbstractEXTTest):
         """Test that OAuth hooks are properly registered"""
         with patch("zephyrex.lib.Logging.logger"):
             with patch(
-                "zephyrex.extensions.auth_oauth.EXT_Auth_OAuth.AbstractExtension.bll_hook"
+                "zephyrex.extensions.auth_oauth2_client.EXT_Auth_OAuth2Client.AbstractExtension.bll_hook"
             ) as mock_hook:
-                extension = EXT_Auth_OAuth()
+                extension = EXT_Auth_OAuth2Client()
                 extension._register_oauth_hooks()
 
                 # Should register hooks for login and user creation

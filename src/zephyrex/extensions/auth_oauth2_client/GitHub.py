@@ -4,7 +4,7 @@ from typing import Any, Dict, Optional
 import requests
 from fastapi import HTTPException
 
-from zephyrex.extensions.auth_oauth.PRV_OAuth import AbstractOAuthProvider
+from zephyrex.extensions.auth_oauth2_client.PRV_OAuth import AbstractOAuthProvider
 from zephyrex.lib.Environment import env
 
 
