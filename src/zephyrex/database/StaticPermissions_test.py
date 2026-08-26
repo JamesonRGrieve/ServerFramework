@@ -394,8 +394,11 @@ class TestPermissionChecks:
         result, _ = check_permission(
             regular_user_id, ResourceForTest, resource_id, mock_db, Base
         )
-        # Since ResourceForTest doesn't have a DB attribute, it returns ERROR instead of NOT_FOUND
-        assert result == PermissionResult.ERROR
+        # Corrected (issue #229): ResourceForTest is an already-mapped ORM class,
+        # so check_permission now resolves it via _resolve_db_class instead of
+        # calling the nonexistent .DB(); a missing record correctly yields
+        # NOT_FOUND rather than the ERROR the old .DB(...) AttributeError produced.
+        assert result == PermissionResult.NOT_FOUND
 
 
 # Test permission references

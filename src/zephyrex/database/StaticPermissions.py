@@ -397,10 +397,16 @@ def check_access_to_all_referenced_entities(
         # Get the referenced record
         ref_id = kwargs[ref_id_field]
 
-        # Check if user has access to this record using the optimized check
-        # Defaulting to VIEW access unless minimum_role is specified
+        # Check if user has access to this record using the optimized check.
+        # Defaulting to VIEW access unless minimum_role is specified. The role
+        # goes to the ``minimum_role`` param, not the ``declarative_base`` slot.
         access_result, error_msg = check_permission(
-            user_id, ref_model, ref_id, db, minimum_role
+            user_id,
+            ref_model,
+            ref_id,
+            db,
+            declarative_base=None,
+            minimum_role=minimum_role,
         )
 
         if access_result == PermissionResult.NOT_FOUND:
@@ -517,9 +523,15 @@ def can_manage_permissions(
     if hasattr(record, "deleted_at") and record.deleted_at is not None:
         return (False, f"Cannot manage permissions for deleted records")
 
-    # Check for explicit SHARE permission using check_permission
+    # Check for explicit SHARE permission using check_permission. The
+    # PermissionType goes to ``required_level``, not the ``declarative_base`` slot.
     result, _ = check_permission(
-        user_id, model_class, resource_id, db, PermissionType.SHARE
+        user_id,
+        model_class,
+        resource_id,
+        db,
+        declarative_base=None,
+        required_level=PermissionType.SHARE,
     )
     if result == PermissionResult.GRANTED:
         return (True, None)
@@ -530,7 +542,12 @@ def can_manage_permissions(
         if (
             operation_type == "delete"
             and not check_permission(
-                user_id, model_class, resource_id, db, PermissionType.DELETE
+                user_id,
+                model_class,
+                resource_id,
+                db,
+                declarative_base=None,
+                required_level=PermissionType.DELETE,
             )[0]
             == PermissionResult.GRANTED
         ):
@@ -727,8 +744,12 @@ def check_permission(
             else:  # Default to VIEW for None, 'user', or anything else
                 required_level = PermissionType.VIEW
 
-        # Get the SQLAlchemy model for the record class
-        record_db_cls = record_cls.DB(declarative_base)
+        # Get the SQLAlchemy model for the record class. Use the shared resolver
+        # so an already-mapped ORM class is returned as-is and ``.DB(base)`` is
+        # only invoked for Pydantic (DatabaseMixin) inputs. Calling
+        # ``record_cls.DB(declarative_base)`` unconditionally raised when
+        # ``record_cls`` was already an ORM/DeclarativeMeta model (issue #229).
+        record_db_cls = _resolve_db_class(record_cls, declarative_base)
 
         # Check if the record exists at all
         record_exists = db.query(exists().where(record_db_cls.id == record_id)).scalar()
