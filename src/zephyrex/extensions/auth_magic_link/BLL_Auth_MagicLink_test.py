@@ -9,6 +9,7 @@ from zephyrex.extensions.auth_magic_link.BLL_Auth_MagicLink import (
     AuthMagicLinkTokenModel,
     MagicLinkManager,
     clear_send_listeners,
+    magic_link_grant_validator,
     register_send_listener,
 )
 from zephyrex.extensions.auth_magic_link.EXT_Auth_MagicLink import (
@@ -19,6 +20,7 @@ from zephyrex.logic.BLL_Auth import (
     InvalidGrantError,
     PasswordlessGrantRegistry,
     SessionModel,
+    UserIdGrantPayload,
 )
 
 
@@ -136,6 +138,38 @@ class TestMagicLink(ExtensionServerMixin):
     # ------------------------------------------------------------------
     # verify: expired token rejected
     # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # verify: an unissued/garbage token is rejected (shared resolver's
+    # constant-time bcrypt confirm returns no match)
+    # ------------------------------------------------------------------
+
+    def test_verify_wrong_token_rejected(self, model_registry, admin_a):
+        manager = self._manager(model_registry)
+        # An unissued token has no matching fingerprint row, so the shared
+        # resolver finds no candidate and verification is rejected. (No token
+        # is created, keeping the shared DB state hermetic for sibling tests.)
+        with pytest.raises(InvalidGrantError):
+            manager.verify_magic_link(token="not-a-real-token", email=admin_a.email)
+
+    # ------------------------------------------------------------------
+    # grant validator (shared factory) resolves a live user and guards a
+    # missing model_registry
+    # ------------------------------------------------------------------
+
+    def test_grant_validator_resolves_user_and_guards_missing_registry(
+        self, model_registry, admin_a
+    ):
+        user = magic_link_grant_validator(
+            UserIdGrantPayload(user_id=admin_a.id, model_registry=model_registry)
+        )
+        assert user.id == admin_a.id
+
+        with pytest.raises(InvalidGrantError) as exc:
+            magic_link_grant_validator(
+                UserIdGrantPayload(user_id=admin_a.id, model_registry=None)
+            )
+        assert "Magic-link grant payload missing model_registry" in exc.value.detail
 
     def test_verify_expired_token_fails(self, model_registry, captured_emails, admin_a):
         manager = self._manager(model_registry)

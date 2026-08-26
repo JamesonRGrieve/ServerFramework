@@ -9,6 +9,7 @@ from zephyrex.extensions.AbstractEXTTest import ExtensionServerMixin
 from zephyrex.extensions.auth_device_pairing.BLL_Auth_DevicePairing import (
     DevicePairingManager,
     DevicePairingRequestModel,
+    device_pairing_grant_validator,
 )
 from zephyrex.extensions.auth_device_pairing.EXT_Auth_DevicePairing import (
     EXT_Auth_DevicePairing,
@@ -18,6 +19,7 @@ from zephyrex.logic.BLL_Auth import (
     InvalidGrantError,
     PasswordlessGrantRegistry,
     SessionModel,
+    UserIdGrantPayload,
 )
 
 
@@ -83,6 +85,40 @@ class TestDevicePairing(ExtensionServerMixin):
 
         with pytest.raises(InvalidGrantError):
             manager.approve_pairing(token=raw_token, approver_user_id=admin_a.id)
+
+    # ------------------------------------------------------------------
+    # An unissued/garbage token is rejected (shared resolver's constant-time
+    # bcrypt confirm returns no match)
+    # ------------------------------------------------------------------
+
+    def test_approve_wrong_token_rejected(self, model_registry, admin_a):
+        manager = self._manager(model_registry)
+        # An unissued token has no matching fingerprint row, so the shared
+        # resolver finds no candidate and approval is rejected. (No pairing is
+        # created, keeping the shared DB state hermetic for sibling tests.)
+        with pytest.raises(InvalidGrantError):
+            manager.approve_pairing(
+                token="not-a-real-token", approver_user_id=admin_a.id
+            )
+
+    # ------------------------------------------------------------------
+    # grant validator (shared factory) resolves a live user and guards a
+    # missing model_registry
+    # ------------------------------------------------------------------
+
+    def test_grant_validator_resolves_user_and_guards_missing_registry(
+        self, model_registry, admin_a
+    ):
+        user = device_pairing_grant_validator(
+            UserIdGrantPayload(user_id=admin_a.id, model_registry=model_registry)
+        )
+        assert user.id == admin_a.id
+
+        with pytest.raises(InvalidGrantError) as exc:
+            device_pairing_grant_validator(
+                UserIdGrantPayload(user_id=admin_a.id, model_registry=None)
+            )
+        assert "Device-pairing grant payload missing model_registry" in exc.value.detail
 
     # ------------------------------------------------------------------
     # Denial path

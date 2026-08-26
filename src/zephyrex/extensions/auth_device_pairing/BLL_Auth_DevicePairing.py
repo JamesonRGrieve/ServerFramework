@@ -7,13 +7,13 @@ Guard / Discord cross-device approval flow.
 """
 
 from datetime import datetime, timedelta, timezone
-from typing import Any, AsyncIterator, ClassVar, List, Optional
+from typing import AsyncIterator, ClassVar, List, Optional
 
 from zephyrex.lib.DateTimeUtils import ensure_utc
 
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, Field
 
 from zephyrex.lib.CustomRoute import custom_route
 from zephyrex.lib.Environment import env
@@ -31,8 +31,9 @@ from zephyrex.logic.BLL_Auth import (
     InvalidGrantError,
     OneTimeTokenMixin,
     PasswordlessGrantRegistry,
+    UserIdGrantPayload,
     UserManager,
-    UserModel,
+    make_user_id_grant_validator,
 )
 
 # ---------------------------------------------------------------------------
@@ -80,16 +81,6 @@ class PairingApproveResponse(BaseModel):
     state: str
     session_key: str
     user_id: str
-
-
-class DevicePairingGrantPayload(BaseModel):
-    """Payload passed to the registered grant validator. Carries the resolved
-    approver ``user_id`` plus the registry needed to look the user up."""
-
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    user_id: str
-    model_registry: Any = None
 
 
 # ---------------------------------------------------------------------------
@@ -200,32 +191,20 @@ class DevicePairingManager(AbstractBLLManager, RouterMixin):
 
     def _resolve_token(self, raw_token: str) -> Optional[DevicePairingRequestModel]:
         # H-5 — indexed fingerprint lookup; bcrypt verifies the unique
-        # candidate. Replaces the bcrypt-against-every-unused-token loop.
+        # candidate. The shared resolver owns the fingerprint-narrow ->
+        # expiry gate -> constant-time bcrypt confirm.
         DB = DevicePairingRequestModel.DB(self.model_registry.DB.manager.Base)
-        fingerprint = OneTimeTokenMixin.fingerprint(raw_token)
-        candidates = (
-            DB.list(
+        return OneTimeTokenMixin.resolve(  # type: ignore[no-any-return]
+            DB,
+            lambda filters: DB.list(
                 requester_id=env("ROOT_ID"),
                 model_registry=self.model_registry,
-                filters=[
-                    DB.is_used == False,  # noqa: E712
-                    DB.code_fingerprint == fingerprint,
-                ],
+                filters=filters,
                 return_type="dto",
                 override_dto=DevicePairingRequestModel,
-            )
-            or []
+            ),
+            raw_token,
         )
-        now = datetime.now(timezone.utc)
-        for row in candidates:
-            expires_at = row.expires_at
-            if expires_at:
-                expires_at = ensure_utc(expires_at)
-            if expires_at < now:
-                continue
-            if row.verify(raw_token):
-                return row  # type: ignore[no-any-return]
-        return None
 
     # ------------------------------------------------------------------
     # Public BLL methods (driven by routes below)
@@ -298,7 +277,7 @@ class DevicePairingManager(AbstractBLLManager, RouterMixin):
 
         session = UserManager.login_via_grant(
             grant_type="device_pairing",
-            grant_payload=DevicePairingGrantPayload(
+            grant_payload=UserIdGrantPayload(
                 user_id=approver_user_id, model_registry=self.model_registry
             ),
             model_registry=self.model_registry,
@@ -501,24 +480,12 @@ def make_stream_endpoint(manager_factory):
 # ---------------------------------------------------------------------------
 
 
-def device_pairing_grant_validator(
-    payload: DevicePairingGrantPayload,
-) -> UserModel:
-    if payload.model_registry is None:
-        raise InvalidGrantError(
-            detail="Device-pairing grant payload missing model_registry"
-        )
-    UserDB = UserModel.DB(payload.model_registry.DB.manager.Base)
-    user = UserDB.get(
-        requester_id=env("ROOT_ID"),
-        model_registry=payload.model_registry,
-        id=payload.user_id,
-        return_type="dto",
-        override_dto=UserModel,
-    )
-    if user is None:
-        raise InvalidGrantError(detail="Approver user no longer exists")
-    return user
-
+# Resolves the approver ``user_id`` to a ``UserModel``; raises
+# ``InvalidGrantError`` when the approver no longer exists. The "Approver"
+# subject keeps the user-gone message byte-identical to the pre-consolidation
+# copy while the payload-missing message stays "Device-pairing".
+device_pairing_grant_validator = make_user_id_grant_validator(
+    "Device-pairing", subject="Approver"
+)
 
 PasswordlessGrantRegistry.register("device_pairing", device_pairing_grant_validator)

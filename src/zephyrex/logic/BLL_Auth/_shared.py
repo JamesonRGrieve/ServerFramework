@@ -4,11 +4,13 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from typing import (
     TYPE_CHECKING,
+    Any,
     Callable,
     ClassVar,
     Dict,
     List,
     Optional,
+    Sequence,
     Tuple,
 )
 
@@ -18,7 +20,7 @@ if TYPE_CHECKING:
 import bcrypt
 from fastapi import HTTPException
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 def _validate_team_name(v):
@@ -35,6 +37,7 @@ from zephyrex.database.HookRegistries import (
     register_acl_hooks as register_acl_hooks,
     register_invitation_hooks as register_invitation_hooks,
 )
+from zephyrex.lib.DateTimeUtils import ensure_utc
 from zephyrex.lib.Environment import env
 from zephyrex.pydantic2.registry import BaseModel  # type: ignore[no-redef]
 
@@ -158,6 +161,57 @@ class OneTimeTokenMixin(BaseModel):
         )
         return raw_code, instance
 
+    @classmethod
+    def resolve(
+        cls,
+        db_class: Any,
+        list_candidates: Callable[[List[Any]], Any],
+        raw_token: str,
+        *,
+        extra_filters: Sequence[Any] = (),
+    ) -> Any:
+        """Resolve ``raw_token`` to its single live one-time-token row.
+
+        Encapsulates the shared ``fingerprint-narrow -> expiry gate ->
+        constant-time bcrypt confirm`` lookup that magic-link (Item 58) and
+        device pairing (Item 59) both re-derived. Returns the one unused,
+        unexpired row whose bcrypt hash authoritatively matches ``raw_token``,
+        or ``None`` when nothing matches.
+
+        - ``db_class`` supplies the ``is_used`` / ``code_fingerprint`` columns
+          for the base filter (the H-5 indexed narrow that replaced the
+          bcrypt-against-every-unused-token loop).
+        - ``list_candidates`` runs the concrete ``.list`` query for a supplied
+          ``filters`` list, closing over the caller's ``requester_id``,
+          ``model_registry``, and ``override_dto``.
+        - ``extra_filters`` are appended to the base filter (e.g. magic-link's
+          optional ``requested_email`` narrow).
+
+        Single-use is enforced on the read side by the ``is_used == False``
+        base filter; the caller marks the returned row used after resolving.
+        Rows with a NULL ``code_fingerprint`` never match the ``== fingerprint``
+        predicate, so they are excluded exactly as the inlined copies did.
+        """
+        fingerprint = cls.fingerprint(raw_token)
+        filters: List[Any] = [
+            db_class.is_used == False,  # noqa: E712
+            db_class.code_fingerprint == fingerprint,
+            *extra_filters,
+        ]
+        candidates = list_candidates(filters) or []
+        now = datetime.now(timezone.utc)
+        for candidate in candidates:
+            expires_at = candidate.expires_at
+            if expires_at:
+                expires_at = ensure_utc(expires_at)
+            if expires_at < now:
+                continue
+            # Constant-time bcrypt confirm — the fingerprint narrows the
+            # candidate set to ~1 row; bcrypt is the authoritative match.
+            if candidate.verify(raw_token):
+                return candidate
+        return None
+
 
 class PasswordlessGrantRegistry:
     """Process-global registry of passwordless grant validators.
@@ -187,6 +241,61 @@ class PasswordlessGrantRegistry:
     @classmethod
     def list_grant_types(cls) -> List[str]:
         return list(cls._validators.keys())
+
+
+class UserIdGrantPayload(BaseModel):
+    """Typed payload shared by every passwordless grant validator.
+
+    Carries the resolved ``user_id`` plus the ``model_registry`` needed to look
+    the user up on dispatch, so the validator recovers the registry without a
+    thread-local or post-load monkey-patch. Magic-link (Item 58) and device
+    pairing (Item 59) pass this identical shape into
+    ``UserManager.login_via_grant``.
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    user_id: str
+    model_registry: Any = None
+
+
+def make_user_id_grant_validator(
+    label: str, *, subject: Optional[str] = None
+) -> Callable[["UserIdGrantPayload"], "UserModel"]:
+    """Build a passwordless-grant validator resolving a ``UserIdGrantPayload``
+    to its live ``UserModel``.
+
+    ``label`` names the grant in the "missing model_registry" error; ``subject``
+    (defaulting to ``label``) names the principal in the "user no longer exists"
+    error — device pairing surfaces its principal as ``"Approver"`` while its
+    payload error still reads ``"Device-pairing"``, so the two stay separable
+    and byte-identical to the pre-consolidation messages.
+
+    The returned validator raises ``InvalidGrantError`` when the registry is
+    absent or the ``user_id`` no longer resolves to a live user.
+    """
+    principal = subject or label
+
+    def _validator(payload: "UserIdGrantPayload") -> "UserModel":
+        if payload.model_registry is None:
+            raise InvalidGrantError(
+                detail=f"{label} grant payload missing model_registry"
+            )
+        from zephyrex.logic.BLL_Auth.user import UserModel
+
+        UserDB = UserModel.DB(payload.model_registry.DB.manager.Base)
+        user = UserDB.get(
+            requester_id=env("ROOT_ID"),
+            model_registry=payload.model_registry,
+            id=payload.user_id,
+            return_type="dto",
+            override_dto=UserModel,
+        )
+        if user is None:
+            raise InvalidGrantError(detail=f"{principal} user no longer exists")
+        return user
+
+    return _validator
 
 
 # Hook callables — populated by extensions at registration time. None when

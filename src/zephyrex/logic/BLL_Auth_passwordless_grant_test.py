@@ -2,7 +2,6 @@
 ``BLL_Auth``. These cover the door (mixin, registry, session fields,
 dispatch); the magic-link and device-pairing extensions arrive separately."""
 
-import time
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -17,8 +16,10 @@ from zephyrex.logic.BLL_Auth import (
     PasswordlessGrantRegistry,
     PendingSessionError,
     SessionModel,
+    UserIdGrantPayload,
     UserManager,
     UserModel,
+    make_user_id_grant_validator,
 )
 
 # ---------------------------------------------------------------------------
@@ -69,6 +70,142 @@ class TestOneTimeTokenMixin:
         assert token.is_used is True
         assert token.used_at is not None
         assert before <= token.used_at <= after
+
+
+# ---------------------------------------------------------------------------
+# OneTimeTokenMixin.resolve — the shared lookup hoisted out of magic-link and
+# device pairing (issue #228). Driven with a controllable ``list_candidates``
+# so the algorithm (fingerprint-narrow -> expiry gate -> constant-time bcrypt
+# confirm -> single-use base filter) is exercised without a DB; the extension
+# suites cover the same resolver against a real ModelRegistry end-to-end.
+# ---------------------------------------------------------------------------
+
+
+class _RecordingColumn:
+    """Stand-in for a SQLAlchemy column: ``col == value`` records the pair so
+    a test can assert which filters ``resolve`` built."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def __eq__(self, other):  # type: ignore[override]
+        return (self.name, other)
+
+    __hash__ = None  # type: ignore[assignment]
+
+
+class _FakeTokenDB:
+    is_used = _RecordingColumn("is_used")
+    code_fingerprint = _RecordingColumn("code_fingerprint")
+
+
+class TestOneTimeTokenResolve:
+    def test_resolves_matching_unexpired_token(self):
+        raw, token = OneTimeTokenMixin.generate(ttl_minutes=5)
+        captured = {}
+
+        def list_candidates(filters):
+            captured["filters"] = filters
+            return [token]
+
+        matched = OneTimeTokenMixin.resolve(_FakeTokenDB, list_candidates, raw)
+        assert matched is token
+        # Base filter narrows on the single-use flag AND the HMAC fingerprint —
+        # the single-use gate lives on the read side, exactly as before.
+        assert ("is_used", False) in captured["filters"]
+        assert (
+            "code_fingerprint",
+            OneTimeTokenMixin.fingerprint(raw),
+        ) in captured["filters"]
+
+    def test_rejects_wrong_token_via_bcrypt_confirm(self):
+        # A candidate is offered but the submitted code differs, so the
+        # constant-time bcrypt confirm must reject it.
+        _, token = OneTimeTokenMixin.generate(ttl_minutes=5)
+        matched = OneTimeTokenMixin.resolve(
+            _FakeTokenDB, lambda f: [token], "not-the-real-code"
+        )
+        assert matched is None
+
+    def test_skips_expired_token_even_when_bcrypt_would_match(self):
+        raw, token = OneTimeTokenMixin.generate(ttl_minutes=5)
+        token.expires_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+        matched = OneTimeTokenMixin.resolve(_FakeTokenDB, lambda f: [token], raw)
+        assert matched is None
+
+    def test_returns_none_for_empty_or_null_candidate_set(self):
+        raw, _ = OneTimeTokenMixin.generate(ttl_minutes=5)
+        assert OneTimeTokenMixin.resolve(_FakeTokenDB, lambda f: [], raw) is None
+        # A None from the list callable is tolerated like an empty list.
+        assert OneTimeTokenMixin.resolve(_FakeTokenDB, lambda f: None, raw) is None
+
+    def test_extra_filters_are_appended_to_base_filter(self):
+        raw, token = OneTimeTokenMixin.generate(ttl_minutes=5)
+        captured = {}
+
+        def list_candidates(filters):
+            captured["filters"] = filters
+            return [token]
+
+        sentinel = ("requested_email", "alice@example.com")
+        matched = OneTimeTokenMixin.resolve(
+            _FakeTokenDB, list_candidates, raw, extra_filters=[sentinel]
+        )
+        assert matched is token
+        assert sentinel in captured["filters"]
+
+    def test_first_unexpired_verifying_candidate_wins(self):
+        # An expired row sharing the fingerprint slot is skipped; the live one
+        # that bcrypt-confirms is returned (the >1-candidate edge).
+        raw, token = OneTimeTokenMixin.generate(ttl_minutes=5)
+        _, stale = OneTimeTokenMixin.generate(ttl_minutes=5)
+        stale.expires_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+        matched = OneTimeTokenMixin.resolve(_FakeTokenDB, lambda f: [stale, token], raw)
+        assert matched is token
+
+
+# ---------------------------------------------------------------------------
+# make_user_id_grant_validator — the shared passwordless-grant validator
+# factory hoisted out of both extensions (issue #228).
+# ---------------------------------------------------------------------------
+
+
+class TestMakeUserIdGrantValidator:
+    def test_resolves_a_live_user(self, admin_a, model_registry):
+        validator = make_user_id_grant_validator("Magic-link")
+        user = validator(
+            UserIdGrantPayload(user_id=admin_a.id, model_registry=model_registry)
+        )
+        assert isinstance(user, UserModel)
+        assert user.id == admin_a.id
+
+    def test_missing_registry_raises_invalid_grant_with_label(self):
+        validator = make_user_id_grant_validator("Magic-link")
+        with pytest.raises(InvalidGrantError) as exc:
+            validator(UserIdGrantPayload(user_id="whatever", model_registry=None))
+        assert exc.value.status_code == 401
+        assert "Magic-link grant payload missing model_registry" in exc.value.detail
+
+    def test_subject_overrides_only_the_user_gone_message(self):
+        # Device pairing passes subject="Approver": the payload-missing message
+        # keeps the label, byte-identical to the pre-consolidation copies.
+        validator = make_user_id_grant_validator("Device-pairing", subject="Approver")
+        with pytest.raises(InvalidGrantError) as exc:
+            validator(UserIdGrantPayload(user_id="whatever", model_registry=None))
+        assert "Device-pairing grant payload missing model_registry" in exc.value.detail
+
+    def test_unknown_user_id_raises_not_found_from_get(self, model_registry):
+        # Preserved behavior: ``UserDB.get`` (no allow_nonexistent) raises a 404
+        # HTTPException for a missing row — the ``if user is None`` branch is
+        # not reached. Both pre-consolidation validators did exactly this.
+        validator = make_user_id_grant_validator("Magic-link")
+        with pytest.raises(HTTPException) as exc:
+            validator(
+                UserIdGrantPayload(
+                    user_id=str(uuid.uuid4()), model_registry=model_registry
+                )
+            )
+        assert exc.value.status_code == 404
 
 
 # ---------------------------------------------------------------------------

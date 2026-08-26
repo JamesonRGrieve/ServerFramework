@@ -9,11 +9,9 @@ Walks through the door opened by the framework primitives in ``BLL_Auth.py``:
 """
 
 from datetime import datetime, timezone
-from typing import Any, Callable, ClassVar, List, Optional
+from typing import Callable, ClassVar, List, Optional
 
-from zephyrex.lib.DateTimeUtils import ensure_utc
-
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, Field
 
 from zephyrex.lib.CustomRoute import custom_route
 from zephyrex.lib.Environment import env
@@ -31,8 +29,10 @@ from zephyrex.logic.BLL_Auth import (
     InvalidGrantError,
     OneTimeTokenMixin,
     PasswordlessGrantRegistry,
+    UserIdGrantPayload,
     UserManager,
     UserModel,
+    make_user_id_grant_validator,
 )
 
 # ---------------------------------------------------------------------------
@@ -80,20 +80,6 @@ class MagicLinkVerifyResponse(BaseModel):
     user_id: str
     grant_type: str
     expires_at: datetime
-
-
-class MagicLinkGrantPayload(BaseModel):
-    """Typed payload passed to the registered grant validator.
-
-    Carries the ``model_registry`` along with the resolved ``user_id`` so the
-    validator does not need a thread-local or post-load monkey-patch to recover
-    the registry on dispatch.
-    """
-
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    user_id: str
-    model_registry: Any = None
 
 
 # ---------------------------------------------------------------------------
@@ -218,44 +204,28 @@ class MagicLinkManager(AbstractBLLManager, RouterMixin):
     ) -> MagicLinkVerifyResponse:
         # H-5 — indexed lookup via the HMAC fingerprint. Replaces the
         # bcrypt-against-every-unused-token loop that was a CPU DoS
-        # primitive against unauthenticated callers.
+        # primitive against unauthenticated callers. The shared resolver
+        # owns the fingerprint-narrow -> expiry gate -> constant-time bcrypt
+        # confirm; the optional ``email`` becomes an extra narrowing filter.
         TokenDB = AuthMagicLinkTokenModel.DB(self.model_registry.DB.manager.Base)
-        fingerprint = OneTimeTokenMixin.fingerprint(token)
-        filters = [
-            TokenDB.is_used == False,  # noqa: E712
-            TokenDB.code_fingerprint == fingerprint,
-        ]
-        if email is not None:
-            filters.append(TokenDB.requested_email == email)
-
-        candidates = (
-            TokenDB.list(
+        extra_filters = [TokenDB.requested_email == email] if email is not None else []
+        matched = OneTimeTokenMixin.resolve(
+            TokenDB,
+            lambda filters: TokenDB.list(
                 requester_id=env("ROOT_ID"),
                 model_registry=self.model_registry,
                 filters=filters,
                 return_type="dto",
                 override_dto=AuthMagicLinkTokenModel,
-            )
-            or []
+            ),
+            token,
+            extra_filters=extra_filters,
         )
-
-        now = datetime.now(timezone.utc)
-        matched: Optional[AuthMagicLinkTokenModel] = None
-        for candidate in candidates:
-            expires_at = candidate.expires_at
-            if expires_at:
-                expires_at = ensure_utc(expires_at)
-            if expires_at < now:
-                continue
-            # Constant-time bcrypt confirm — the fingerprint narrows the
-            # candidate set to ~1 row; bcrypt is the authoritative match.
-            if candidate.verify(token):
-                matched = candidate
-                break
 
         if matched is None:
             raise InvalidGrantError(detail="Invalid or expired magic-link token")
 
+        now = datetime.now(timezone.utc)
         TokenDB.update(
             requester_id=matched.user_id,
             model_registry=self.model_registry,
@@ -267,7 +237,7 @@ class MagicLinkManager(AbstractBLLManager, RouterMixin):
 
         session = UserManager.login_via_grant(
             grant_type="magic_link",
-            grant_payload=MagicLinkGrantPayload(
+            grant_payload=UserIdGrantPayload(
                 user_id=matched.user_id, model_registry=self.model_registry
             ),
             model_registry=self.model_registry,
@@ -334,27 +304,10 @@ class MagicLinkManager(AbstractBLLManager, RouterMixin):
 # ---------------------------------------------------------------------------
 
 
-def magic_link_grant_validator(payload: MagicLinkGrantPayload) -> UserModel:
-    """Resolve the magic-link grant payload to a ``UserModel``.
-
-    Raises ``InvalidGrantError`` when the user_id no longer corresponds to
-    an active user (e.g. user deleted between request and verify).
-    """
-    if payload.model_registry is None:
-        raise InvalidGrantError(
-            detail="Magic-link grant payload missing model_registry"
-        )
-    UserDB = UserModel.DB(payload.model_registry.DB.manager.Base)
-    user = UserDB.get(
-        requester_id=env("ROOT_ID"),
-        model_registry=payload.model_registry,
-        id=payload.user_id,
-        return_type="dto",
-        override_dto=UserModel,
-    )
-    if user is None:
-        raise InvalidGrantError(detail="Magic-link user no longer exists")
-    return user
-
+# Resolves the magic-link grant payload to a ``UserModel``; raises
+# ``InvalidGrantError`` when the user_id no longer corresponds to an active
+# user (e.g. deleted between request and verify). Shared with device pairing
+# via the ``make_user_id_grant_validator`` factory.
+magic_link_grant_validator = make_user_id_grant_validator("Magic-link")
 
 PasswordlessGrantRegistry.register("magic_link", magic_link_grant_validator)
