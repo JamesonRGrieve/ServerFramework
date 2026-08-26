@@ -31,7 +31,7 @@ import re
 import time
 from abc import ABC, abstractmethod
 from collections import defaultdict, deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from threading import RLock
 from typing import (
     Any,
@@ -1151,18 +1151,13 @@ def _resolve_actor_key(scope: str, request: Any) -> Optional[str]:
     by a `scope='user'` rule it cannot satisfy.
     """
     if scope == "ip" or scope == "(ip, endpoint)":
-        client = getattr(request, "client", None)
-        peer_host = getattr(client, "host", None) if client else None
-        # Only honour X-Forwarded-For when the immediate peer is a configured
-        # trusted proxy. Otherwise an attacker can spoof the header to rotate
-        # IPs and defeat per-IP rate limits including login throttling.
-        host: Optional[str] = peer_host
-        if _peer_is_trusted_proxy(peer_host):
-            headers = getattr(request, "headers", {}) or {}
-            xff = headers.get("X-Forwarded-For", "") if hasattr(headers, "get") else ""
-            forwarded = xff.split(",")[0].strip() if xff else None
-            if forwarded:
-                host = forwarded
+        # Spoof-safe client IP via the canonical SSOT: X-Forwarded-For is
+        # honoured only when the immediate peer is a configured trusted proxy,
+        # so an attacker cannot rotate IPs to defeat per-IP rate limits or login
+        # throttling. Routing through resolve_client_ip (instead of the old
+        # inline copy) means any hardening of that rule now covers the rate
+        # limiter automatically.
+        host = resolve_client_ip(request)
         if not host:
             return None
         return f"ip:{host}" if scope == "ip" else f"ip:{host}:{request.url.path}"

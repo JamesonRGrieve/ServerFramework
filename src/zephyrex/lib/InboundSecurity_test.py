@@ -715,6 +715,23 @@ class TestXForwardedForTrust:
         ip = resolve_client_ip({}, peer_host="10.0.0.1")
         assert ip == "10.0.0.1"
 
+    def test_actor_key_ignores_spoofed_xff_from_untrusted_peer(self, monkeypatch):
+        # The rate-limit actor key must derive the client IP through the same
+        # spoof-safe SSOT, so a crafted X-Forwarded-For from an untrusted peer
+        # cannot rotate the per-IP key and defeat login throttling (#228).
+        from types import SimpleNamespace
+
+        from zephyrex.lib.InboundSecurity import _resolve_actor_key
+
+        monkeypatch.delenv("TRUSTED_PROXIES", raising=False)  # peer is untrusted
+        request = SimpleNamespace(
+            client=SimpleNamespace(host="9.9.9.9"),
+            headers={"X-Forwarded-For": "1.2.3.4"},
+            url=SimpleNamespace(path="/login"),
+        )
+        assert _resolve_actor_key("ip", request) == "ip:9.9.9.9"
+        assert _resolve_actor_key("(ip, endpoint)", request) == "ip:9.9.9.9:/login"
+
 
 class TestSecurityHeadersMiddleware:
     """Response security headers are set."""
