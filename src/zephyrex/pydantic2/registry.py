@@ -74,6 +74,13 @@ class ModelRegistry(AbstractRegistry):
 
         # Model storage
         self.bound_models: OrderedSet[Type[BaseModel]] = OrderedSet()
+        # Name -> model index kept in lockstep with ``bound_models`` so the
+        # duplicate-name / duplicate-class guards in
+        # ``_add_model_with_dependencies`` resolve in O(1) instead of a linear
+        # scan of every bound model per add (which made binding O(B^2) overall).
+        # Mutated only where ``bound_models`` is: the add in
+        # ``_add_model_with_dependencies`` and the reset in ``clear``.
+        self._bound_model_names: Dict[str, Type[BaseModel]] = {}
         self.extension_models: Dict[Type[BaseModel], List[Type]] = (
             {}
         )  # target -> [extensions]
@@ -644,19 +651,18 @@ class ModelRegistry(AbstractRegistry):
             logger.debug(f"Model {model.__name__} already bound, skipping")
             return
 
-        # Check for duplicate model names with different class objects (this should never happen)
-        for existing_model in self.bound_models:
-            if (
-                existing_model.__name__ == model.__name__
-                and existing_model is not model
-            ):
-                raise RuntimeError(
-                    f"CRITICAL ERROR: Duplicate model class detected! "
-                    f"Model '{model.__name__}' exists with different class objects:\n"
-                    f"  Existing: {existing_model} (ID: {id(existing_model)}) from {existing_model.__module__}\n"
-                    f"  New: {model} (ID: {id(model)}) from {model.__module__}\n"
-                    f"This indicates a module import or class loading issue that must be fixed."
-                )
+        # Check for duplicate model names with different class objects (this should never happen).
+        # ``_bound_model_names`` holds at most one model per name, so an O(1)
+        # lookup surfaces the same conflicting model the linear scan would find.
+        existing_model = self._bound_model_names.get(model.__name__)
+        if existing_model is not None and existing_model is not model:
+            raise RuntimeError(
+                f"CRITICAL ERROR: Duplicate model class detected! "
+                f"Model '{model.__name__}' exists with different class objects:\n"
+                f"  Existing: {existing_model} (ID: {id(existing_model)}) from {existing_model.__module__}\n"
+                f"  New: {model} (ID: {id(model)}) from {model.__module__}\n"
+                f"This indicates a module import or class loading issue that must be fixed."
+            )
 
         # First, ensure all dependencies are added
         dependencies = self._model_dependencies.get(model, set())
@@ -668,17 +674,20 @@ class ModelRegistry(AbstractRegistry):
                 self._add_model_with_dependencies(dep_model, dep_metadata)
 
         # Now add this model
-        # Check for name duplicates before adding - this should never happen
-        for existing_model in self.bound_models:
-            if existing_model.__name__ == model.__name__:
-                raise RuntimeError(
-                    f"CRITICAL ERROR: Duplicate model name detected!\n"
-                    f"  Existing: {existing_model.__name__} (ID: {id(existing_model)}) from {existing_model.__module__}\n"
-                    f"  New: {model.__name__} (ID: {id(model)}) from {model.__module__}\n"
-                    f"This indicates a module import or class loading issue that must be fixed."
-                )
+        # Check for name duplicates before adding - this should never happen.
+        # A dependency added by the recursion above may have claimed this name,
+        # so re-check the index (O(1)) exactly as the prior linear scan did.
+        existing_model = self._bound_model_names.get(model.__name__)
+        if existing_model is not None:
+            raise RuntimeError(
+                f"CRITICAL ERROR: Duplicate model name detected!\n"
+                f"  Existing: {existing_model.__name__} (ID: {id(existing_model)}) from {existing_model.__module__}\n"
+                f"  New: {model.__name__} (ID: {id(model)}) from {model.__module__}\n"
+                f"This indicates a module import or class loading issue that must be fixed."
+            )
 
         self.bound_models.add(model)
+        self._bound_model_names[model.__name__] = model
         self.model_metadata[model] = metadata
 
         logger.debug(
@@ -1712,15 +1721,28 @@ class ModelRegistry(AbstractRegistry):
         for module_name in module_to_file.keys():
             G.add_node(module_name)
 
+        # Build an inverted index (class_fqn -> defining module) ONCE so each
+        # dependency resolves in O(1). The prior code re-scanned every module
+        # for every dep of every module, i.e. O(M^2 * D). Fully-qualified class
+        # names are unique per module (each is prefixed by its own module name),
+        # so there is exactly one owner per name; ``setdefault`` keeps the first
+        # module that claims a name, replicating the original "break on first
+        # match" semantics even in the theoretical duplicate case.
+        class_to_module: Dict[str, str] = {}
+        for other_module, classes in module_classes.items():
+            for class_fqn in classes:
+                class_to_module.setdefault(class_fqn, other_module)
+
         # Add edges for dependencies
         for module_name, deps in dependencies.items():
             for dep in deps:
                 # Find which module defines this dependency
-                for other_module, classes in module_classes.items():
-                    if dep in classes:
-                        if other_module != module_name:  # Avoid self-dependencies
-                            G.add_edge(module_name, other_module)
-                            break
+                other_module = class_to_module.get(dep)
+                if (
+                    other_module is not None
+                    and other_module != module_name  # Avoid self-dependencies
+                ):
+                    G.add_edge(module_name, other_module)
 
         # Check for cycles and resolve them
         try:
@@ -2294,6 +2316,7 @@ class ModelRegistry(AbstractRegistry):
     def clear(self) -> None:
         """Clear the registry (for testing purposes)."""
         self.bound_models.clear()
+        self._bound_model_names.clear()
         self.extension_models.clear()
         self.model_metadata.clear()
         self.db_models.clear()

@@ -1442,3 +1442,170 @@ class TestModelRegistry:
         except Exception as e:
             # Expected in test environment where BLL files may not exist
             pytest.skip(f"BLL files not available in test environment: {e}")
+
+    def test_build_dependency_graph_ordering_identical_to_reference(self, tmp_path):
+        """The inverted-index edge build must yield a byte-for-byte identical
+        graph (edge set + topological order) to the original triple-nested
+        "scan every module for every dep" implementation, for a representative
+        set of interdependent modules — including a dangling (external) import
+        and a self-import that must NOT produce an edge.
+        """
+        import networkx as nx
+
+        # Author temp source files whose ``from logic.<stem> import <Class>``
+        # strings resolve against the fully-qualified class names the parser
+        # emits (``logic.<stem>.<Class>``). Content is only AST-parsed, never
+        # imported, so the classes need not be real models.
+        (tmp_path / "DB_alpha.py").write_text("class Alpha:\n    pass\n")
+        (tmp_path / "DB_beta.py").write_text(
+            "from logic.DB_alpha import Alpha\n\n\nclass Beta:\n    pass\n"
+        )
+        (tmp_path / "DB_gamma.py").write_text(
+            "from logic.DB_alpha import Alpha\n"
+            "from logic.DB_beta import Beta\n"
+            "from typing import Optional\n\n\n"  # dangling dep -> no edge
+            "class Gamma:\n    pass\n"
+        )
+        (tmp_path / "DB_delta.py").write_text(
+            "from logic.DB_gamma import Gamma\n"
+            "from logic.DB_delta import Delta\n\n\n"  # self dep -> no edge
+            "class Delta:\n    pass\n"
+        )
+
+        file_list = [
+            str(tmp_path / "DB_alpha.py"),
+            str(tmp_path / "DB_beta.py"),
+            str(tmp_path / "DB_gamma.py"),
+            str(tmp_path / "DB_delta.py"),
+        ]
+        files_by_scope = {"logic": file_list}
+
+        registry = ModelRegistry()
+
+        # --- Reference: reproduce the ORIGINAL edge-building loop verbatim. ---
+        module_to_file_ref: Dict[str, str] = {}
+        module_classes_ref: Dict[str, set] = {}
+        dependencies_ref: Dict[str, set] = {}
+        for fp in file_list:
+            mod, deps, classes, _imports = registry._parse_imports_and_dependencies(
+                fp, "logic"
+            )
+            module_to_file_ref[mod] = fp
+            module_classes_ref[mod] = classes
+            dependencies_ref[mod] = deps
+
+        g_ref = nx.DiGraph()
+        for mod in module_to_file_ref:
+            g_ref.add_node(mod)
+        for mod, deps in dependencies_ref.items():
+            for dep in deps:
+                for other_module, classes in module_classes_ref.items():
+                    if dep in classes:
+                        if other_module != mod:
+                            g_ref.add_edge(mod, other_module)
+                            break
+        ordered_modules_ref = list(nx.topological_sort(g_ref))
+        ordered_files_ref = [
+            module_to_file_ref[m]
+            for m in ordered_modules_ref
+            if m in module_to_file_ref
+        ]
+        module_graph_ref = {node: set(g_ref.successors(node)) for node in g_ref.nodes()}
+
+        # --- Actual: the optimized inverted-index implementation. ---
+        ordered_files, module_graph, module_to_file = registry._build_dependency_graph(
+            files_by_scope
+        )
+
+        assert module_to_file == module_to_file_ref
+        assert module_graph == module_graph_ref
+        assert ordered_files == ordered_files_ref
+
+        # Sanity-pin the expected edge set so a future regression in BOTH the
+        # implementation and this reference cannot pass silently.
+        assert module_graph == {
+            "logic.DB_alpha": set(),
+            "logic.DB_beta": {"logic.DB_alpha"},
+            "logic.DB_gamma": {"logic.DB_alpha", "logic.DB_beta"},
+            "logic.DB_delta": {"logic.DB_gamma"},
+        }
+
+    def test_duplicate_class_detection_still_raises(self):
+        """Binding a second, distinct class object under an already-bound name
+        must still raise the "Duplicate model class detected" error (first
+        guard) — behavior preserved by the O(1) name index.
+        """
+
+        class _DupClassA(BaseModel):
+            id: int
+
+        class _DupClassB(BaseModel):
+            id: int
+
+        # Force a name collision with two distinct class objects.
+        _DupClassA.__name__ = "DupNameCollisionModel"
+        _DupClassB.__name__ = "DupNameCollisionModel"
+
+        registry = ModelRegistry()
+        registry.bind(_DupClassA)
+
+        with pytest.raises(RuntimeError, match="Duplicate model class detected"):
+            registry.bind(_DupClassB)
+
+        # Re-binding the exact same object is idempotent (early-return path).
+        registry.bind(_DupClassA)
+        assert len(registry.get_bound_models()) == 1
+
+    def test_duplicate_name_detection_second_guard_still_raises(self):
+        """The post-recursion "Duplicate model name detected" guard must still
+        fire when a dependency added during recursion claims the model's name.
+        Exercised directly to deterministically reach the second guard.
+        """
+
+        class _OuterSameName(BaseModel):
+            id: int
+
+        class _DepSameName(BaseModel):
+            id: int
+
+        _OuterSameName.__name__ = "SharedDependencyName"
+        _DepSameName.__name__ = "SharedDependencyName"
+
+        registry = ModelRegistry()
+        # The recursion will add the (identically named) dependency first,
+        # then the outer model's second guard must detect the name clash.
+        registry._model_dependencies[_OuterSameName] = {_DepSameName}
+
+        with pytest.raises(RuntimeError, match="Duplicate model name detected"):
+            registry._add_model_with_dependencies(_OuterSameName, {})
+
+    def test_name_check_does_not_scan_bound_models(self):
+        """Scaling proof: binding models must NOT iterate ``bound_models`` for
+        the duplicate-name guards. The former implementation scanned every
+        already-bound model twice per add (O(B^2) overall); the name index
+        makes each guard an O(1) dict lookup, so the set is never iterated.
+        """
+        from ordered_set import OrderedSet
+        from pydantic import create_model
+
+        iter_counts = {"n": 0}
+
+        class _CountingOrderedSet(OrderedSet):
+            def __iter__(self):
+                iter_counts["n"] += 1
+                return super().__iter__()
+
+        registry = ModelRegistry()
+        registry.bound_models = _CountingOrderedSet()
+
+        k = 50
+        for i in range(k):
+            registry.bind(create_model(f"ScaleGuardModel{i}", id=(int, ...)))
+
+        # No iteration of bound_models occurred while binding K models: the
+        # dup-name/dup-class guards resolved via the O(1) name index instead of
+        # a per-add linear scan.
+        assert iter_counts["n"] == 0
+        assert len(registry.bound_models) == k
+        # Index stayed in lockstep with the set.
+        assert len(registry._bound_model_names) == k
