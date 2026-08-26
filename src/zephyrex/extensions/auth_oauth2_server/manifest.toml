@@ -1,0 +1,7 @@
+name = "auth_oauth2_server"
+version = "1.0.0"
+description = "OAuth2 authorization server (client registration, auth-code + PKCE, opaque revocable tokens)"
+
+# Standard-library only (secrets, hmac, hashlib, base64); no third-party or
+# cross-extension dependencies. Core auth (users/teams) is an implicit base.
+[python_dependencies]
