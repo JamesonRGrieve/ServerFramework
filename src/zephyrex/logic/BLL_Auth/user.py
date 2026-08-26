@@ -954,6 +954,44 @@ class UserManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef]
             raise HTTPException(status_code=401, detail="Token verification failed")
 
     @staticmethod
+    def _decode_basic_auth(authorization: str) -> tuple[str, str]:
+        """Decode a Basic ``Authorization`` header into ``(identifier, password)``.
+
+        Strips the ``Basic `` scheme prefix, base64-decodes the credential
+        payload, and splits it on the first ``:``. Raises a 401 with a single
+        converged detail on any malformed input — bad base64, non-UTF-8 bytes,
+        or a missing ``:`` separator. Decode only: it neither looks up the user
+        nor verifies the password.
+        """
+        import base64
+
+        encoded = authorization.replace("Basic ", "").strip()
+        try:
+            decoded = base64.b64decode(encoded).decode("utf-8")
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=401, detail="Invalid Basic authentication header"
+            ) from exc
+        if ":" not in decoded:
+            raise HTTPException(
+                status_code=401, detail="Invalid Basic authentication header"
+            )
+        identifier, password = decoded.split(":", 1)
+        return identifier, password
+
+    @staticmethod
+    def _normalize_identifier(identifier: str) -> str:
+        """Normalize an email/username identifier for consistent matching.
+
+        Applies NFKC Unicode normalization, lowercases, and strips surrounding
+        whitespace. Used at both registration and login so a given user
+        normalizes to the exact same stored/looked-up value on both paths.
+        """
+        import unicodedata
+
+        return unicodedata.normalize("NFKC", identifier).lower().strip()
+
+    @staticmethod
     def auth(
         model_registry,
         authorization: str = Header(None),
@@ -1065,17 +1103,7 @@ class UserManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef]
             elif authorization.startswith("Basic"):
                 # Basic auth with username/email and password
                 try:
-                    import base64
-
-                    auth_encoded = authorization.replace("Basic ", "").strip()
-                    auth_decoded = base64.b64decode(auth_encoded).decode("utf-8")
-
-                    if ":" not in auth_decoded:
-                        raise HTTPException(
-                            status_code=401, detail="Invalid authentication format"
-                        )
-
-                    identifier, password = auth_decoded.split(":", 1)
+                    identifier, password = UserManager._decode_basic_auth(authorization)
 
                     user = UserModel.DB(db_manager.Base).get(
                         requester_id=env("ROOT_ID"),
@@ -1248,24 +1276,8 @@ class UserManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef]
 
             # Extract credentials from Basic Auth header if provided
             if authorization and authorization.startswith("Basic "):
-                try:
-                    import base64
-
-                    auth_encoded = authorization.replace("Basic ", "").strip()
-                    auth_decoded = base64.b64decode(auth_encoded).decode("utf-8")
-
-                    if ":" not in auth_decoded:
-                        raise HTTPException(
-                            status_code=401,
-                            detail="Invalid Authorization header, bad format for mode 'Basic'.",
-                        )
-
-                    identifier, password = auth_decoded.split(":", 1)
-                    login_data = {"email": identifier, "password": password}
-                except Exception:
-                    raise HTTPException(
-                        status_code=401, detail="Authentication failed."
-                    )
+                identifier, password = UserManager._decode_basic_auth(authorization)
+                login_data = {"email": identifier, "password": password}
 
             if not login_data:
                 raise HTTPException(
@@ -1286,12 +1298,8 @@ class UserManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef]
                     headers={"Retry-After": str(int(remaining or 60))},
                 )
 
-            import unicodedata
-
             login_model = UserManager.UserLoginModel(**login_data)
-            normalized_identifier = (
-                unicodedata.normalize("NFKC", login_model.email).lower().strip()
-            )
+            normalized_identifier = UserManager._normalize_identifier(login_model.email)
 
             # Try to find user by email or username
             user = UserModel.DB(model_registry.DB.manager.Base).list(
@@ -1465,19 +1473,44 @@ class UserManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef]
                 enabled=True,
             )
 
+            # E1 (#230) — batch-load the referenced teams and roles with a
+            # single ``id.in_(...)`` query each and build id->row maps, rather
+            # than firing TeamModel.get + RoleModel.get per membership (the old
+            # 2N-query pattern on every successful login). Mirrors the batched
+            # lookup already used by ``UserTeamManager.search``. Uses
+            # ``requester_id=root_id`` for both queries, exactly as the
+            # per-item gets did, so soft-delete/permission handling is
+            # identical.
+            TeamDB = TeamModel.DB(model_registry.DB.manager.Base)
+            RoleDB = RoleModel.DB(model_registry.DB.manager.Base)
+            team_ids = {ut["team_id"] for ut in user_teams if ut["team_id"]}
+            role_ids = {ut["role_id"] for ut in user_teams if ut["role_id"]}
+
+            team_map: Dict[str, Any] = {}
+            role_map: Dict[str, Any] = {}
+            if team_ids:
+                team_map = {
+                    team["id"]: team
+                    for team in TeamDB.list(
+                        requester_id=root_id,
+                        model_registry=model_registry,
+                        filters=[TeamDB.id.in_(team_ids)],
+                    )
+                }
+            if role_ids:
+                role_map = {
+                    role["id"]: role
+                    for role in RoleDB.list(
+                        requester_id=root_id,
+                        model_registry=model_registry,
+                        filters=[RoleDB.id.in_(role_ids)],
+                    )
+                }
+
             teams_with_roles = []
             for user_team in user_teams:
-                team = TeamModel.DB(model_registry.DB.manager.Base).get(
-                    requester_id=root_id,
-                    model_registry=model_registry,
-                    id=user_team["team_id"],
-                )
-
-                role = RoleModel.DB(model_registry.DB.manager.Base).get(
-                    requester_id=root_id,
-                    model_registry=model_registry,
-                    id=user_team["role_id"],
-                )
+                team = team_map[user_team["team_id"]]
+                role = role_map[user_team["role_id"]]
 
                 # Ensure the key is serializable
                 if isinstance(user_team["expires_at"], datetime):
@@ -1743,21 +1776,9 @@ class UserManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef]
         email_from_header = None
         password_from_header = None
         if authorization and authorization.startswith("Basic "):
-            try:
-                import base64
-
-                auth_encoded = authorization.replace("Basic ", "").strip()
-                auth_decoded = base64.b64decode(auth_encoded).decode("utf-8")
-
-                if ":" not in auth_decoded:
-                    raise HTTPException(
-                        status_code=401,
-                        detail="Invalid Authorization header, bad format for mode 'Basic'.",
-                    )
-
-                email_from_header, password_from_header = auth_decoded.split(":", 1)
-            except Exception:
-                raise HTTPException(status_code=401, detail="Authentication failed.")
+            email_from_header, password_from_header = UserManager._decode_basic_auth(
+                authorization
+            )
 
         # Extract fields from body
         email_from_body = registration_data.get("email")
@@ -1785,10 +1806,8 @@ class UserManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef]
             email = email_from_body  # type: ignore[assignment]
             password = password_from_body  # type: ignore[assignment]
 
-        import unicodedata
-
         if email:
-            email = unicodedata.normalize("NFKC", email).lower().strip()
+            email = UserManager._normalize_identifier(email)
             registration_data["email"] = email
 
         # Extract invitation fields

@@ -366,6 +366,163 @@ class TestUserManager(AbstractBLLTest):
             403,
         ), f"Inactive user must not authenticate; got {response.status_code}"
 
+    @pytest.mark.auth
+    def test_decode_basic_auth_roundtrip_and_malformed(self):
+        """#231 T1 — the shared Basic-auth decoder round-trips a valid
+        header and raises 401 on any malformed input (bad base64, non-UTF-8,
+        or a missing ':' separator)."""
+        import base64
+
+        identifier = "alice@example.com"
+        # A colon inside the password must survive: split on the *first* ':'.
+        password = "S3cr3t:with:colons"
+        raw = f"{identifier}:{password}".encode()
+        header = "Basic " + base64.b64encode(raw).decode()
+
+        got_id, got_pw = UserManager._decode_basic_auth(header)
+        assert got_id == identifier
+        assert got_pw == password
+
+        # Missing ':' separator -> 401
+        no_colon = "Basic " + base64.b64encode(b"nocolonhere").decode()
+        with pytest.raises(HTTPException) as exc_no_colon:
+            UserManager._decode_basic_auth(no_colon)
+        assert exc_no_colon.value.status_code == 401
+
+        # Invalid base64 -> 401
+        with pytest.raises(HTTPException) as exc_bad_b64:
+            UserManager._decode_basic_auth("Basic a")
+        assert exc_bad_b64.value.status_code == 401
+
+        # Valid base64 but non-UTF-8 bytes -> 401
+        bad_utf8 = "Basic " + base64.b64encode(b"\xff\xfe:x").decode()
+        with pytest.raises(HTTPException) as exc_bad_utf8:
+            UserManager._decode_basic_auth(bad_utf8)
+        assert exc_bad_utf8.value.status_code == 401
+
+    @pytest.mark.auth
+    def test_normalize_identifier_matches_inline_transform(self):
+        """#231 K — the shared normalizer reproduces the exact prior inline
+        transform (NFKC -> lower -> strip) shared by register and login."""
+        import unicodedata
+
+        samples = [
+            "  Alice@Example.COM  ",
+            "ﬀ",  # ligature -> NFKC 'ff'
+            "ＵＳＥＲ@example.com",  # fullwidth Latin -> ascii
+            "already.normal@example.com",
+            "\tMixed@Case.Test\n",
+        ]
+        for sample in samples:
+            expected = unicodedata.normalize("NFKC", sample).lower().strip()
+            assert UserManager._normalize_identifier(sample) == expected
+
+    @pytest.mark.auth
+    def test_login_batches_team_and_role_lookups(self, server, model_registry):
+        """#230 E1 — login assembles the same per-membership team/role data
+        as the old per-item gets, but via a single batched ``id.in_(...)``
+        query per relation instead of 2N queries."""
+        import re
+
+        from sqlalchemy import event
+        from sqlalchemy.engine import Engine
+
+        from zephyrex.logic.BLL_Auth import RoleModel, TeamModel, UserModel
+
+        email = f"batch_{uuid.uuid4().hex[:8]}@example.com"
+        password = "Test1234!"
+        UserManager.register(
+            {
+                "email": email,
+                "password": password,
+                "first_name": "Batch",
+                "last_name": "User",
+            },
+            model_registry,
+        )
+
+        UserDB = UserModel.DB(model_registry.DB.manager.Base)
+        users = UserDB.list(
+            requester_id=env("ROOT_ID"), model_registry=model_registry, email=email
+        )
+        assert len(users) == 1
+        user_id = users[0]["id"]
+
+        # Two teams with two *distinct* roles -> two memberships. Distinct ids
+        # make the 1-vs-2 query distinction meaningful.
+        team_ids = []
+        role_ids = [env("ADMIN_ROLE_ID"), env("USER_ROLE_ID")]
+        for i in range(2):
+            with TeamManager(
+                requester_id=env("ROOT_ID"), model_registry=model_registry
+            ) as team_manager:
+                team = team_manager.create(
+                    name=f"BatchTeam{i}_{uuid.uuid4().hex[:6]}",
+                    description="batch login test team",
+                )
+            team_ids.append(team.id)
+            with UserTeamManager(
+                requester_id=env("ROOT_ID"), model_registry=model_registry
+            ) as user_team_manager:
+                user_team_manager.create(
+                    user_id=user_id, team_id=team.id, role_id=role_ids[i]
+                )
+
+        TeamDB = TeamModel.DB(model_registry.DB.manager.Base)
+        RoleDB = RoleModel.DB(model_registry.DB.manager.Base)
+        expected_team_names = {
+            tid: TeamDB.get(
+                requester_id=env("ROOT_ID"), model_registry=model_registry, id=tid
+            )["name"]
+            for tid in team_ids
+        }
+        expected_role_names = {
+            rid: RoleDB.get(
+                requester_id=env("ROOT_ID"), model_registry=model_registry, id=rid
+            )["name"]
+            for rid in role_ids
+        }
+
+        team_re = re.compile(rf'\bfrom\s+"?{re.escape(TeamDB.__tablename__)}"?\b')
+        role_re = re.compile(rf'\bfrom\s+"?{re.escape(RoleDB.__tablename__)}"?\b')
+        counts = {"team": 0, "role": 0}
+
+        def _before(conn, cursor, statement, parameters, context, executemany):
+            lowered = statement.lower().strip()
+            if not lowered.startswith("select"):
+                return
+            if team_re.search(lowered):
+                counts["team"] += 1
+            if role_re.search(lowered):
+                counts["role"] += 1
+
+        event.listen(Engine, "before_cursor_execute", _before)
+        try:
+            result = UserManager.login(
+                {"email": email, "password": password},
+                ip_address=f"203.0.113.{uuid.uuid4().int % 250 + 1}",
+                model_registry=model_registry,
+            )
+        finally:
+            event.remove(Engine, "before_cursor_execute", _before)
+
+        teams = result["teams"]
+        assert len(teams) == 2
+        by_team = {entry["team_id"]: entry for entry in teams}
+        for tid, rid in zip(team_ids, role_ids):
+            entry = by_team[tid]
+            assert entry["team_name"] == expected_team_names[tid]
+            assert entry["role_id"] == rid
+            assert entry["role_name"] == expected_role_names[rid]
+            # The embedded rows keep the exact shape the per-item gets produced.
+            assert entry["team"]["id"] == tid
+            assert entry["role"]["id"] == rid
+
+        # Batched: exactly one SELECT against each of the team and role tables,
+        # even with two memberships (the old code issued 2N such queries).
+        assert counts["team"] == 1, f"expected 1 batched team query, got {counts}"
+        assert counts["role"] == 1, f"expected 1 batched role query, got {counts}"
+
     @pytest.mark.security
     @pytest.mark.auth
     def test_register_ignores_caller_supplied_id(self, model_registry):
