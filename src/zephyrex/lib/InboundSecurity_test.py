@@ -733,6 +733,96 @@ class TestXForwardedForTrust:
         assert _resolve_actor_key("(ip, endpoint)", request) == "ip:9.9.9.9:/login"
 
 
+class TestTrustedProxyParseMemoization:
+    """TRUSTED_PROXIES parsing is memoized on the raw env string so the hot
+    per-request path does not re-parse it on every call (#230), while a changed
+    env value still re-parses and malformed input keeps failing closed."""
+
+    def test_stable_config_parsed_once(self, monkeypatch):
+        import ipaddress
+
+        from zephyrex.lib.InboundSecurity import (
+            _parse_trusted_proxies,
+            _trusted_proxy_networks,
+        )
+
+        _parse_trusted_proxies.cache_clear()
+        monkeypatch.setenv("TRUSTED_PROXIES", "10.0.0.0/8, 192.168.0.0/16")
+
+        first = _trusted_proxy_networks()
+        assert first == [
+            ipaddress.ip_network("10.0.0.0/8"),
+            ipaddress.ip_network("192.168.0.0/16"),
+        ]
+        misses_after_first = _parse_trusted_proxies.cache_info().misses
+
+        for _ in range(50):
+            assert _trusted_proxy_networks() == first
+        info = _parse_trusted_proxies.cache_info()
+        assert (
+            info.misses == misses_after_first
+        ), "config re-parsed despite an unchanged TRUSTED_PROXIES"
+        assert info.hits >= 50
+
+    def test_changed_env_reparses(self, monkeypatch):
+        import ipaddress
+
+        from zephyrex.lib.InboundSecurity import (
+            _parse_trusted_proxies,
+            _trusted_proxy_networks,
+        )
+
+        _parse_trusted_proxies.cache_clear()
+        monkeypatch.setenv("TRUSTED_PROXIES", "10.0.0.0/8")
+        assert _trusted_proxy_networks() == [ipaddress.ip_network("10.0.0.0/8")]
+        misses_1 = _parse_trusted_proxies.cache_info().misses
+
+        monkeypatch.setenv("TRUSTED_PROXIES", "172.16.0.0/12")
+        assert _trusted_proxy_networks() == [ipaddress.ip_network("172.16.0.0/12")]
+        assert _parse_trusted_proxies.cache_info().misses == misses_1 + 1
+
+    def test_malformed_raises_every_call_and_is_not_cached(self, monkeypatch):
+        from zephyrex.lib.InboundSecurity import (
+            _parse_trusted_proxies,
+            _trusted_proxy_networks,
+        )
+
+        _parse_trusted_proxies.cache_clear()
+        monkeypatch.setenv("TRUSTED_PROXIES", "not-a-cidr")
+        with pytest.raises(ValueError):
+            _trusted_proxy_networks()
+        # lru_cache never memoizes an exception: a second call re-parses + raises.
+        with pytest.raises(ValueError):
+            _trusted_proxy_networks()
+
+    def test_wildcard_rejected(self, monkeypatch):
+        from zephyrex.lib.InboundSecurity import (
+            _parse_trusted_proxies,
+            _trusted_proxy_networks,
+        )
+
+        _parse_trusted_proxies.cache_clear()
+        monkeypatch.setenv("TRUSTED_PROXIES", "10.0.0.0/8,*")
+        with pytest.raises(ValueError):
+            _trusted_proxy_networks()
+
+    def test_xff_honoured_from_trusted_peer(self, monkeypatch):
+        # End-to-end: a trusted peer's X-Forwarded-For is still honoured, proving
+        # the memoized parse feeds the trust decision unchanged.
+        from zephyrex.lib.InboundSecurity import (
+            _parse_trusted_proxies,
+            resolve_client_ip,
+        )
+
+        _parse_trusted_proxies.cache_clear()
+        monkeypatch.setenv("TRUSTED_PROXIES", "9.9.9.0/24")
+        ip = resolve_client_ip(
+            {"X-Forwarded-For": "1.2.3.4, 5.6.7.8"},
+            peer_host="9.9.9.9",
+        )
+        assert ip == "1.2.3.4"
+
+
 class TestSecurityHeadersMiddleware:
     """Response security headers are set."""
 

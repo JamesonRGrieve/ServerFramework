@@ -24,6 +24,7 @@ on `LockoutTracker`.
 
 from __future__ import annotations
 
+import functools
 import ipaddress
 import json
 import os
@@ -46,13 +47,17 @@ from typing import (
 )
 
 
-def _trusted_proxy_networks() -> List[ipaddress._BaseNetwork]:
-    """Parse TRUSTED_PROXIES into a list of ip_network objects. Empty unless
-    explicitly configured. Wildcards and malformed entries are rejected.
+@functools.lru_cache(maxsize=8)
+def _parse_trusted_proxies(raw: str) -> Tuple[ipaddress._BaseNetwork, ...]:
+    """Parse a raw ``TRUSTED_PROXIES`` value into ip_network objects.
+
+    Memoized on the raw string: a stable config is parsed once rather than on
+    every request, while a changed env value (e.g. across tests) is a distinct
+    cache key that re-parses. Malformed input raises and is *not* cached
+    (``lru_cache`` never caches exceptions), so bad config keeps failing closed.
     """
-    raw = (os.environ.get("TRUSTED_PROXIES") or "").strip()
     if not raw:
-        return []
+        return ()
     nets: List[ipaddress._BaseNetwork] = []
     for part in (p.strip() for p in raw.split(",") if p.strip()):
         if part == "*" or "*" in part:
@@ -64,7 +69,18 @@ def _trusted_proxy_networks() -> List[ipaddress._BaseNetwork]:
             nets.append(ipaddress.ip_network(part, strict=False))
         except ValueError as e:
             raise ValueError(f"TRUSTED_PROXIES entry {part!r}: {e}") from e
-    return nets
+    return tuple(nets)
+
+
+def _trusted_proxy_networks() -> List[ipaddress._BaseNetwork]:
+    """Return the parsed TRUSTED_PROXIES networks (empty unless configured).
+
+    Delegates to the raw-string-memoized :func:`_parse_trusted_proxies` so the
+    hot per-request path (:func:`_peer_is_trusted_proxy`) does not re-parse the
+    environment on every call.
+    """
+    raw = (os.environ.get("TRUSTED_PROXIES") or "").strip()
+    return list(_parse_trusted_proxies(raw))
 
 
 def _peer_is_trusted_proxy(peer_host: Optional[str]) -> bool:
