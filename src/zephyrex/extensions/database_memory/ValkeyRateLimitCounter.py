@@ -13,10 +13,11 @@ split that ``_InMemoryCounter`` suffers under multi-worker uvicorn.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import time
 from typing import Any, Optional
+
+from zephyrex.logic.AbstractLogicManager import _cache_sync_run
 
 _logger = logging.getLogger(__name__)
 
@@ -38,10 +39,10 @@ class ValkeyRateLimitCounter:
     """Cross-process sliding-window rate-limit counter backed by Valkey.
 
     The public API is synchronous (``incr`` / ``reset``) because the
-    ``RateLimitMiddleware`` calls from a sync ASGI context. Internally
-    the counter drives the async redis client via ``asyncio.run`` /
-    ``loop.run_until_complete``, matching the pattern used by
-    ``DistributedRateLimit._run_async``.
+    ``RateLimitMiddleware`` calls from a sync ASGI context. Internally the
+    counter drives the async redis client through the shared
+    ``_cache_sync_run`` sync->async bridge, which safely runs the coroutine on
+    a worker thread when a loop is already running in the calling thread.
     """
 
     def __init__(self, client: Any, key_prefix: str = "rl:") -> None:
@@ -73,18 +74,7 @@ class ValkeyRateLimitCounter:
 
     def incr(self, key: str, window_seconds: int) -> int:
         """Synchronous sliding-window increment. Returns post-increment count."""
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = None
-
-        if loop is not None and loop.is_running():
-            import concurrent.futures
-
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                future = pool.submit(asyncio.run, self._async_incr(key, window_seconds))
-                return future.result(timeout=2)
-        return asyncio.run(self._async_incr(key, window_seconds))
+        return int(_cache_sync_run(self._async_incr(key, window_seconds)))
 
     async def _async_reset(self, key: Optional[str]) -> None:
         if key is None:
@@ -95,15 +85,7 @@ class ValkeyRateLimitCounter:
 
     def reset(self, key: Optional[str] = None) -> None:
         """Reset one or all rate-limit buckets."""
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = None
-
-        if loop is not None and loop.is_running():
-            import concurrent.futures
-
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                pool.submit(asyncio.run, self._async_reset(key)).result(timeout=5)
-        else:
-            asyncio.run(self._async_reset(key))
+        # A full reset may fan out a scan-and-delete over every bucket, so it
+        # keeps the wider 5s ceiling the inline copy used rather than the 2s
+        # default carried by ``incr``.
+        _cache_sync_run(self._async_reset(key), timeout=5)

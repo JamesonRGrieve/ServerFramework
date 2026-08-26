@@ -77,8 +77,18 @@ def get_entity_cache():
     return _entity_cache
 
 
-def _cache_sync_run(coro):
-    """Drive an async cache coroutine from sync BLL code."""
+def _cache_sync_run(coro, timeout: float | None = 2):
+    """Drive an async coroutine to completion from synchronous code.
+
+    Shared source of truth for the sync->async bridge used across the
+    framework (cache/BLL read-write paths, the Valkey replay-cache and
+    rate-limit backends, and the audit-retention archive callback). When a
+    loop is already running in the calling thread the coroutine is driven on
+    a dedicated worker thread — bounded by ``timeout`` seconds, or unbounded
+    when ``timeout`` is ``None`` — so it never re-enters the running loop
+    (which ``asyncio.run`` forbids); otherwise it runs directly via
+    ``asyncio.run``. Returns whatever the coroutine returns.
+    """
     import asyncio
 
     try:
@@ -90,7 +100,7 @@ def _cache_sync_run(coro):
         import concurrent.futures
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            return pool.submit(asyncio.run, coro).result(timeout=2)
+            return pool.submit(asyncio.run, coro).result(timeout=timeout)
     return asyncio.run(coro)
 
 

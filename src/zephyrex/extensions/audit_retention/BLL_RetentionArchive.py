@@ -10,6 +10,8 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Literal, Sequence
 
+from zephyrex.logic.AbstractLogicManager import _cache_sync_run
+
 _logger = logging.getLogger(__name__)
 
 
@@ -20,12 +22,19 @@ def _serialize_jsonl(rows: Sequence[Dict[str, Any]]) -> bytes:
 
 
 def _maybe_run(result: Any) -> Any:
+    """Drive an object-storage upload result to completion.
+
+    ``object_storage.upload`` may return either a plain value (sync provider)
+    or a coroutine (async provider). Route the coroutine through the shared
+    ``_cache_sync_run`` bridge so it is driven on a worker thread when a loop
+    is already running in the calling thread. The previous inline copy called
+    ``asyncio.run`` unconditionally, which raises "cannot be called from a
+    running event loop" whenever the retention pass runs inside an async
+    context — silently failing every scheduled archive and blocking the purge.
+    ``timeout=None`` preserves the original unbounded upload behaviour.
+    """
     if asyncio.iscoroutine(result):
-        try:
-            asyncio.get_event_loop()
-        except RuntimeError:
-            return asyncio.run(result)
-        return asyncio.run(result)
+        return _cache_sync_run(result, timeout=None)
     return result
 
 

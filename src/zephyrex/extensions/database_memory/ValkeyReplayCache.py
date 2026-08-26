@@ -14,28 +14,13 @@ processes (H-7).
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Any, cast
 
+from zephyrex.logic.AbstractLogicManager import _cache_sync_run
 from zephyrex.lib.ReplayCache import ReplayCache
 
 _logger = logging.getLogger(__name__)
-
-
-def _sync_run(coro):
-    """Drive an async coroutine from sync code."""
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = None
-
-    if loop is not None and loop.is_running():
-        import concurrent.futures
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            return pool.submit(asyncio.run, coro).result(timeout=2)
-    return asyncio.run(coro)
 
 
 class ValkeyReplayCache(ReplayCache):
@@ -61,10 +46,10 @@ class ValkeyReplayCache(ReplayCache):
         return result is not None and result is not False
 
     def mark_used(self, key: str, ttl_seconds: int) -> None:
-        _sync_run(self._async_mark_used(key, ttl_seconds))
+        _cache_sync_run(self._async_mark_used(key, ttl_seconds))
 
     def is_used(self, key: str) -> bool:
-        return cast(bool, _sync_run(self._async_is_used(key)))
+        return cast(bool, _cache_sync_run(self._async_is_used(key)))
 
     def mark_if_unused(self, key: str, ttl_seconds: int) -> bool:
         """Atomic CAS via ``SET NX EX`` — safe across processes (H-7).
@@ -73,7 +58,9 @@ class ValkeyReplayCache(ReplayCache):
         so a Valkey outage cannot be exploited for replay attacks.
         """
         try:
-            return cast(bool, _sync_run(self._async_mark_if_unused(key, ttl_seconds)))
+            return cast(
+                bool, _cache_sync_run(self._async_mark_if_unused(key, ttl_seconds))
+            )
         except Exception as exc:
             _logger.warning(
                 "ValkeyReplayCache.mark_if_unused failed (fail-closed): %s", exc

@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -81,3 +81,36 @@ class TestValkeyRateLimitCounter:
         await counter._async_reset(None)
 
         assert client.delete.await_count == 2
+
+    def test_incr_sync_wrapper_returns_count(self):
+        client = _make_mock_client()
+        client.evalsha = AsyncMock(return_value=4)
+        counter = ValkeyRateLimitCounter(client, key_prefix="rl:")
+
+        assert counter.incr("user:1", 60) == 4
+
+    def test_incr_runs_under_running_event_loop(self):
+        """The sync ``incr`` wrapper drives its coroutine via ``_cache_sync_run``
+        on a worker thread when a loop is already running in the caller."""
+        client = _make_mock_client()
+        client.evalsha = AsyncMock(return_value=5)
+        counter = ValkeyRateLimitCounter(client, key_prefix="rl:")
+
+        async def _driver():
+            return counter.incr("user:1", 60)
+
+        assert asyncio.run(_driver()) == 5
+
+    def test_reset_runs_under_running_event_loop(self):
+        """The sync ``reset`` wrapper (wider 5s ceiling) also routes through the
+        shared bridge when invoked from within a running loop."""
+        client = _make_mock_client()
+        client.delete = AsyncMock()
+        counter = ValkeyRateLimitCounter(client, key_prefix="rl:")
+
+        async def _driver() -> None:
+            counter.reset("user:1")
+
+        asyncio.run(_driver())
+
+        client.delete.assert_awaited_once_with("rl:user:1")
