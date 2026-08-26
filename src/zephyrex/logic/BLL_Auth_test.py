@@ -371,8 +371,11 @@ class TestUserManager(AbstractBLLTest):
     def test_register_ignores_caller_supplied_id(self, model_registry):
         """`register` must not honour a client-supplied `id`; server assigns it."""
         attacker_uuid = str(uuid.uuid4())
+        spoofed_creator = str(uuid.uuid4())
         user_data = {
             "id": attacker_uuid,
+            # every server-controlled audit field must be stripped, not just id
+            "created_by_user_id": spoofed_creator,
             "email": f"id_spoof_{uuid.uuid4().hex[:8]}@example.com",
             "password": "Test1234!",
             "first_name": "Spoof",
@@ -382,13 +385,20 @@ class TestUserManager(AbstractBLLTest):
         # The server MUST issue a new id, not honour the caller-supplied one.
         if isinstance(result, dict):
             assigned_id = result.get("id") or (result.get("user", {}) or {}).get("id")
+            created_by = result.get("created_by_user_id") or (
+                result.get("user", {}) or {}
+            ).get("created_by_user_id")
         else:
             assigned_id = getattr(result, "id", None)
+            created_by = getattr(result, "created_by_user_id", None)
         assert assigned_id, "register must return an id"
         assert assigned_id != attacker_uuid, (
             "Mass-assignment: register honoured client-supplied id "
             "(audit-field invariant violated)"
         )
+        assert (
+            created_by != spoofed_creator
+        ), "Mass-assignment: register honoured client-supplied created_by_user_id"
 
 
 class TestTeamManager(AbstractBLLTest):
@@ -2121,7 +2131,6 @@ class TestInvitationManager(AbstractBLLTest):
         self.server = server
         self.model_registry = model_registry
         from zephyrex.extensions.auth_invitations.BLL_Invitations import InvitationModel
-        from zephyrex.logic.BLL_Auth import UserManager
 
         # Test validation scenarios
         test_code = f"TESTCODE_{uuid.uuid4().hex[:8].upper()}"

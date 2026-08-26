@@ -1673,20 +1673,13 @@ class UserManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef]
         if model_registry is None:
             raise ValueError("model_registry is required for register")
 
-        # Strip server-controlled audit/identity fields from the inbound
-        # body so a registering client cannot spoof their `id`,
-        # `created_by_user_id`, or audit timestamps.
+        # Strip server-controlled audit/identity fields via the base SSOT so a
+        # registering client cannot spoof their `id`, `created_by_user_id`, or
+        # audit timestamps — the same set create()/update() enforce. Adding a
+        # field to AbstractBLLManager._SERVER_CONTROLLED_AUDIT_FIELDS now covers
+        # register too, instead of leaving this stale copy behind.
         if isinstance(registration_data, dict):
-            for banned in (
-                "id",
-                "created_at",
-                "updated_at",
-                "deleted_at",
-                "created_by_user_id",
-                "updated_by_user_id",
-                "deleted_by_user_id",
-            ):
-                registration_data.pop(banned, None)
+            UserManager._strip_server_controlled_fields(registration_data)
 
         # Check registration mode
         from zephyrex.lib.Environment import settings
