@@ -12,15 +12,22 @@ a higher tolerance (e.g. 0.50).
 from __future__ import annotations
 
 import json
+import math
 import subprocess
 import sys
 import textwrap
 import time
 from pathlib import Path
-from typing import Callable, cast
+from typing import Callable, Sequence, cast
 
 BASELINE_FILE = Path(__file__).resolve().parents[3] / ".efficiency-baseline.json"
 DEFAULT_TOLERANCE = 0.15
+
+# Absolute margin (in units of the complexity exponent) that a scaling ratchet
+# tolerates before calling a regression. A genuine O(n) -> O(n log n) drift is
+# ~+0.1–0.2 near these input sizes; O(n) -> O(n^2) is ~+1.0. 0.35 sits above
+# timing noise yet well below a true order-of-growth regression.
+DEFAULT_SCALING_MARGIN = 0.35
 
 
 def _read_mhz() -> float:
@@ -120,3 +127,78 @@ def ratchet_subprocess(
 
     data = json.loads(result.stdout.strip().splitlines()[-1])
     _check(key, data["elapsed"] * data["mhz"], data["elapsed"], data["mhz"], tolerance)
+
+
+def _lstsq_slope(xs: Sequence[float], ys: Sequence[float]) -> float:
+    """Least-squares slope of ys vs xs (the log-log complexity exponent).
+
+    With ``xs = log(N)`` and ``ys = log(time)``, the slope estimates ``k`` in
+    ``time ∝ N**k`` — i.e. the empirical big-O exponent (O(n)→~1, O(n·log n)→~1,
+    O(n²)→~2). Requires ≥ 2 points with non-zero spread in ``xs``.
+    """
+    n = len(xs)
+    if n < 2:
+        raise ValueError("need at least two measurement points")
+    mean_x = sum(xs) / n
+    mean_y = sum(ys) / n
+    denom = sum((x - mean_x) ** 2 for x in xs)
+    if denom == 0.0:
+        raise ValueError("all input sizes are identical — no scaling to fit")
+    num = sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, ys))
+    return num / denom
+
+
+def _check_scaling(key: str, exponent: float, margin: float) -> None:
+    baselines = _load()
+    best = baselines.get(key)
+
+    if best is None or exponent < best:
+        baselines[key] = exponent
+        _save(baselines)
+        return
+
+    limit = best + margin
+    assert exponent <= limit, (
+        f"Complexity regression: {key}\n"
+        f"  Current exponent:  {exponent:.3f} (time ∝ N^{exponent:.2f})\n"
+        f"  Baseline exponent: {best:.3f} (limit: {limit:.3f}, +{margin} margin)"
+    )
+
+
+def ratchet_scaling(
+    key: str,
+    run: Callable[[int], object],
+    *,
+    sizes: Sequence[int],
+    margin: float = DEFAULT_SCALING_MARGIN,
+    iterations: int = 1,
+) -> None:
+    """Ratchet the empirical big-O *exponent* of ``run`` across input ``sizes``.
+
+    ``run(n)`` must perform the work for problem size ``n`` (build its own input;
+    keep per-call fixed overhead small relative to the scaling work). We time it
+    at each size, fit ``k`` in ``time ∝ N**k`` via a log-log least-squares slope,
+    and ratchet ``k`` downward-only: it may improve but never regress past
+    ``baseline + margin``. This catches an O(n)→O(n²) regression even when the
+    absolute (wall-time) ratchet still passes because inputs are small.
+
+    Choose ``sizes`` (≥3 recommended, geometrically spaced e.g. 100/200/400/800)
+    large enough that the scaling work dominates timer noise; bump ``iterations``
+    for fast inner work. Pairs with :func:`ratchet` — use both on a hot,
+    input-scaling function: one guards constant factor, one guards order of growth.
+    """
+    if len(sizes) < 2:
+        raise ValueError("ratchet_scaling needs at least two sizes")
+    mhz = _read_mhz()
+    xs: list[float] = []
+    ys: list[float] = []
+    for n in sizes:
+        start = time.perf_counter()
+        for _ in range(iterations):
+            run(n)
+        elapsed = (time.perf_counter() - start) / iterations
+        xs.append(math.log(n))
+        # Floor the normalized time so a sub-microsecond sample can't produce a
+        # nonsense log; callers are told to size the work above noise regardless.
+        ys.append(math.log(max(elapsed * mhz, 1e-9)))
+    _check_scaling(f"scaling:{key}", _lstsq_slope(xs, ys), margin)
