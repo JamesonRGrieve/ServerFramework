@@ -167,9 +167,11 @@ class TestPayPalProvider:
             result = await PaymentExtensionPayPalProvider.process_webhook(
                 provider_instance, '{"event_type": "test"}', "sig"
             )
-            assert isinstance(result, dict)
-            if not result.get("success", True):
-                assert "error" in result
+            # Without a configured webhook id the webhook MUST be refused --
+            # unconditionally, not "if it happens to fail". A verifier that
+            # wrongly accepted (success truthy) slipped past the old conditional.
+            assert result["success"] is False
+            assert "error" in result
         finally:
             if original is not None:
                 os.environ["PAYPAL_WEBHOOK_ID"] = original

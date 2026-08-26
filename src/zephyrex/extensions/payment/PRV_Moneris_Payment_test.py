@@ -186,5 +186,18 @@ class TestMonerisProvider:
             provider_instance, "not json", "sig"
         )
         assert isinstance(result, dict)
+
+    async def test_process_webhook_wrong_signature_rejected(
+        self, provider_instance, monkeypatch
+    ):
+        # Valid JSON with a tampered HMAC must be refused. This isolates the
+        # signature check: a no-op verifier (`return True`) would accept it and
+        # fail this test.
+        monkeypatch.setenv("MONERIS_STORE_ID", "test-store")
+        payload = '{"type": "RECURRING_PAYMENT_CONFIRMED", "id": "evt_123"}'
+        result = await PaymentExtensionMonerisProvider.process_webhook(
+            provider_instance, payload, "deadbeef_not_the_real_hmac"
+        )
+        assert result["success"] is False
         assert not result.get("success", True)
         assert "error" in result

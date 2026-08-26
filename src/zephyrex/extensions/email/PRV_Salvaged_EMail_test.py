@@ -89,12 +89,17 @@ class TestSalvagedEmailProviderConformance:
             None, "user@example.com\r\nBcc: evil@example.com", "Subj", "Body"
         )
         assert isinstance(result, str)
-        assert "CRLF" in result or result.lower().startswith("failed")
+        # Assert the specific CRLF-rejection outcome, not a generic failure: with
+        # the old `or startswith("failed")` a provider that never checked CRLF
+        # (e.g. failing later for missing creds) still passed.
+        assert "rejected CRLF" in result
 
     async def test_send_email_rejects_nul_byte(self, cls):
         result = await cls.send_email(None, "user@example.com", "Sub\x00ject", "Body")
         assert isinstance(result, str)
-        assert result.lower().startswith("failed")
+        # Specific NUL-rejection outcome — a stub returning any "failed" string
+        # must not satisfy this.
+        assert "rejected NUL byte" in result
 
 
 @pytest.mark.parametrize(

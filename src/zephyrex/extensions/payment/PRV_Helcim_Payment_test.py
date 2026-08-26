@@ -187,5 +187,20 @@ class TestHelcimProvider:
             FakeInstance(), payload, sig
         )
         assert isinstance(result, dict)
+
+    async def test_process_webhook_wrong_signature_rejected(self, monkeypatch):
+        # Valid JSON with a tampered HMAC must be refused, isolating the
+        # signature check from the JSON-parse branch — a no-op verifier fails.
+        monkeypatch.setenv("HELCIM_API_TOKEN", "test-secret")
+        payload = '{"eventName": "transaction.completed", "id": "evt_456"}'
+
+        class FakeInstance:
+            id = "test"
+            api_key = "test"
+
+        result = await PaymentExtensionHelcimProvider.process_webhook(
+            FakeInstance(), payload, "deadbeef_not_the_real_hmac"
+        )
+        assert result["success"] is False
         assert not result.get("success", True)
         assert "error" in result
