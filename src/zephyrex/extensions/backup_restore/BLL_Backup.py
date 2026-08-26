@@ -49,12 +49,13 @@ import subprocess
 import time
 import uuid
 from abc import ABC, abstractmethod
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import IO, Any, Dict, List, Literal, Optional
+from typing import IO, Any, Dict, Iterator, List, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
 
 from zephyrex.lib.Logging import logger
 
@@ -237,6 +238,16 @@ class BackupCommand(ABC):
     def dump(self) -> bytes:
         """Produce a snapshot artifact for the configured DB."""
 
+    @contextmanager
+    def dump_stream(self) -> Iterator[IO[bytes]]:
+        """Yield the snapshot as a readable binary stream (memory-safe).
+
+        The default buffers via :meth:`dump`; engine subclasses override to
+        stream ``pg_dump`` / ``sqlite3`` stdout directly so a large DB never has
+        to be held whole in memory (the OOM the nightly job otherwise risks).
+        """
+        yield io.BytesIO(self.dump())
+
     @abstractmethod
     def restore(self, artifact: bytes, target_db: str) -> None:
         """Restore ``artifact`` into ``target_db`` (a scratch database identifier)."""
@@ -274,6 +285,24 @@ class PgDumpBackupCommand(BackupCommand):
         )
         return result.stdout
 
+    @contextmanager
+    def dump_stream(self) -> Iterator[IO[bytes]]:
+        cmd = [self.pg_dump_path, self.database_url]
+        proc = subprocess.Popen(  # noqa: S603 - explicit args, no shell
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        )
+        assert proc.stdout is not None
+        try:
+            yield proc.stdout
+        finally:
+            proc.stdout.close()
+            stderr = proc.stderr.read() if proc.stderr else b""
+            if proc.stderr:
+                proc.stderr.close()
+            rc = proc.wait()
+            if rc != 0:
+                raise subprocess.CalledProcessError(rc, cmd, stderr=stderr)
+
     def restore(self, artifact: bytes, target_db: str) -> None:
         subprocess.run(  # noqa: S603
             [self.psql_path, target_db],
@@ -310,6 +339,24 @@ class SqliteBackupCommand(BackupCommand):
             capture_output=True,
         )
         return result.stdout
+
+    @contextmanager
+    def dump_stream(self) -> Iterator[IO[bytes]]:
+        cmd = [self.sqlite3_path, self.db_path, ".dump"]
+        proc = subprocess.Popen(  # noqa: S603
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        )
+        assert proc.stdout is not None
+        try:
+            yield proc.stdout
+        finally:
+            proc.stdout.close()
+            stderr = proc.stderr.read() if proc.stderr else b""
+            if proc.stderr:
+                proc.stderr.close()
+            rc = proc.wait()
+            if rc != 0:
+                raise subprocess.CalledProcessError(rc, cmd, stderr=stderr)
 
     def restore(self, artifact: bytes, target_db: str) -> None:
         # Ensure target is empty.
@@ -391,17 +438,16 @@ class BackupService(_BackupServiceBase):  # type: ignore[misc, valid-type]
 
     def take_backup(self) -> str:
         """Synchronous take-a-backup entrypoint. Returns the key uploaded."""
-        artifact = self.command.dump()
         key = self._build_key()
-        stream = io.BytesIO(artifact)
-        url = self.target.upload(stream, key)
+        # Stream the dump straight into the upload rather than buffering the
+        # whole snapshot in memory — a large DB would otherwise OOM this job.
+        with self.command.dump_stream() as stream:
+            url = self.target.upload(stream, key)
         now = datetime.now(timezone.utc)
         self.last_backup_at = now
         self.last_backup_key = key
         _set_metric("backup_age_seconds", 0.0)
-        logger.info(
-            f"BackupService: snapshot uploaded key={key} url={url} bytes={len(artifact)}"
-        )
+        logger.info(f"BackupService: snapshot uploaded key={key} url={url}")
         return key
 
     async def update(self) -> None:

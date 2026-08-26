@@ -14,7 +14,6 @@ Postgres or any of the framework's optional dependencies.
 from __future__ import annotations
 
 import json
-import os
 import sys
 import sqlite3
 import tempfile
@@ -54,11 +53,10 @@ def _run() -> DrillReport:
     target = LocalFilesystemBackupTarget(target_root)
     command = SqliteBackupCommand(db_path=source)
 
-    # Take a snapshot first so the drill has something to restore.
-    artifact = command.dump()
-    import io
-
-    target.upload(io.BytesIO(artifact), "snapshots/drill-snapshot.bin")
+    # Take a snapshot first so the drill has something to restore — streamed
+    # (not buffered) so a large DB never has to be held whole in memory.
+    with command.dump_stream() as stream:
+        target.upload(stream, "snapshots/drill-snapshot.bin")
 
     drill = RestoreDrillService(
         requester_id="ci-restore-drill",
