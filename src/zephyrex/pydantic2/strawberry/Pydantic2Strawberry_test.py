@@ -364,11 +364,11 @@ class TestSchemaManager(AbstractPydanticTestMixin):
         schema_manager = GraphQLManager(mock_registry)
 
         # Test create input type generation
-        create_type = schema_manager._get_create_input_type(MockTestModel)
+        create_type = schema_manager._get_input_type(MockTestModel, "Create")
         assert create_type is not None
 
         # Test update input type generation
-        update_type = schema_manager._get_update_input_type(MockTestModel)
+        update_type = schema_manager._get_input_type(MockTestModel, "Update")
         assert update_type is not None
 
     def test_filter_conversion(self):

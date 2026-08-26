@@ -41,6 +41,12 @@ from .contributions import (
 )
 from .dataloader import build_request_dataloaders
 
+# Sentinel distinguishing "no result supplied" from a legitimately ``None``
+# result in ``_publish_mutation_event`` — create/update may broadcast a ``None``
+# result (serialized to the string ``"None"``), which a plain ``None`` default
+# could not tell apart from delete's id-only payload.
+_UNSET: Any = object()
+
 
 class GraphQLManager(ErrorHandlerMixin):
     """Main GraphQL schema manager that generates schemas from ModelRegistry"""
@@ -1163,6 +1169,77 @@ class GraphQLManager(ErrorHandlerMixin):
 
             self._query_fields[field_name] = _versioned_field(resolver, manager_class)
 
+    @staticmethod
+    def _is_user_manager(manager_class: Type[ManagerContract]) -> bool:
+        """Whether a manager uses the self-scoped User mutation flow.
+
+        User managers route create through ``manager_class.register`` and drop
+        the ``id`` argument on update/delete (a user acts only on itself). The
+        three CRUD mutation resolvers branch on this single predicate rather
+        than each re-testing the class name inline.
+        """
+        return "User" in manager_class.__name__
+
+    def _authenticated_manager(
+        self, manager_class: Type[ManagerContract], info: Info
+    ) -> Tuple[ManagerContract, str]:
+        """Resolve the requester from ``info`` and build an authenticated manager.
+
+        Shared preamble for every CRUD mutation resolver: extracts the GraphQL
+        context, requires a ``requester_id`` (raising the same auth error the
+        per-resolver code raised when absent), and constructs ``manager_class``
+        bound to the model registry and requester. Returns
+        ``(manager, requester_id)``.
+        """
+        context = self._get_context_from_info(info)
+        requester_id = context.get("requester_id")
+        if not requester_id:
+            raise Exception(
+                "Unable to authenticate user for GraphQL query - no requester_id found in context"
+            )
+        manager = manager_class(
+            model_registry=self.model_registry, requester_id=requester_id
+        )
+        return manager, requester_id
+
+    async def _publish_mutation_event(
+        self,
+        channel_base: str,
+        action: str,
+        verb: str,
+        *,
+        result: Any = _UNSET,
+        entity_id: Any = _UNSET,
+    ) -> None:
+        """Publish one CRUD mutation event on the broadcast bus.
+
+        Shared by the create/update/delete resolvers. The event is published on
+        ``f"{channel_base}_{action}"`` with ``action`` the past-tense verb
+        (``created``/``updated``/``deleted``) echoed in the message body; ``verb``
+        is the present-tense verb used only in the failure log line. Create/update
+        pass ``result`` — serialized to a ``data`` payload inside the same ``try``
+        as the publish, so a serialization failure is logged exactly as the
+        original per-resolver code did; delete passes ``entity_id`` for an ``id``
+        payload. Broadcast failures are swallowed and logged, never propagated.
+        """
+        try:
+            body: Dict[str, Any] = {"action": action}
+            if result is not _UNSET:
+                if hasattr(result, "model_dump"):
+                    body["data"] = result.model_dump()
+                elif hasattr(result, "dict"):
+                    body["data"] = result.dict()
+                else:
+                    body["data"] = str(result)
+            else:
+                body["id"] = entity_id
+            await self.broadcast.publish(
+                channel=f"{channel_base}_{action}",
+                message=json.dumps(body),
+            )
+        except Exception as e:
+            logger.log("SQL", f"Failed to broadcast {verb} event: {e}")
+
     def _add_create_mutation_resolver(
         self,
         field_name: str,
@@ -1174,20 +1251,12 @@ class GraphQLManager(ErrorHandlerMixin):
 
         async def resolver(input: input_type, info: Info) -> return_type:  # type: ignore[valid-type]
             try:
-                context = self._get_context_from_info(info)
-                requester_id = context.get("requester_id")
-                if not requester_id:
-                    raise Exception(
-                        "Unable to authenticate user for GraphQL query - no requester_id found in context"
-                    )
-                manager = manager_class(
-                    model_registry=self.model_registry, requester_id=requester_id
-                )
+                manager, _ = self._authenticated_manager(manager_class, info)
                 data = self._convert_input_to_dict(input)
 
                 # Call manager.create with same signature as REST API
                 # Special-case User creation which uses a register flow
-                if "User" in manager_class.__name__:
+                if self._is_user_manager(manager_class):
                     # Use the static register method on the manager class to perform registration
                     try:
                         result = manager_class.register(
@@ -1201,21 +1270,12 @@ class GraphQLManager(ErrorHandlerMixin):
                 else:
                     result = manager.create(**data)
 
-                # Broadcast subscription (convert to dict for JSON serialization)
-                try:
-                    if hasattr(result, "model_dump"):
-                        result_data = result.model_dump()
-                    elif hasattr(result, "dict"):
-                        result_data = result.dict()
-                    else:
-                        result_data = str(result)
-
-                    await self.broadcast.publish(
-                        channel=f"{return_type.__name__.lower()}_created",
-                        message=json.dumps({"action": "created", "data": result_data}),
-                    )
-                except Exception as e:
-                    logger.log("SQL", f"Failed to broadcast create event: {e}")
+                await self._publish_mutation_event(
+                    return_type.__name__.lower(),
+                    "created",
+                    "create",
+                    result=result,
+                )
 
                 return self._apply_field_acl(manager, result)  # type: ignore[no-any-return]
             except Exception as e:
@@ -1233,20 +1293,14 @@ class GraphQLManager(ErrorHandlerMixin):
     ) -> None:
         """Add a mutation resolver for updating items"""
         # Special handling for user update mutations - users can only update themselves
-        if "User" in manager_class.__name__:
+        if self._is_user_manager(manager_class):
 
             async def user_update_resolver(
                 input: input_type, info: Info  # type: ignore[valid-type]
             ) -> return_type:  # type: ignore[valid-type]
                 try:
-                    context = self._get_context_from_info(info)
-                    requester_id = context.get("requester_id")
-                    if not requester_id:
-                        raise Exception(
-                            "Unable to authenticate user for GraphQL query - no requester_id found in context"
-                        )
-                    manager = manager_class(
-                        model_registry=self.model_registry, requester_id=requester_id
+                    manager, requester_id = self._authenticated_manager(
+                        manager_class, info
                     )
                     logger.info(f"GraphQL update input: {input}")
                     logger.info(f"GraphQL update input type: {type(input)}")
@@ -1260,23 +1314,12 @@ class GraphQLManager(ErrorHandlerMixin):
                     # For users, always update the requester (no ID parameter allowed)
                     result = manager.update(requester_id, **data)
 
-                    # Broadcast subscription (convert to dict for JSON serialization)
-                    try:
-                        if hasattr(result, "model_dump"):
-                            result_data = result.model_dump()
-                        elif hasattr(result, "dict"):
-                            result_data = result.dict()
-                        else:
-                            result_data = str(result)
-
-                        await self.broadcast.publish(
-                            channel=f"{return_type.__name__.lower()}_updated",
-                            message=json.dumps(
-                                {"action": "updated", "data": result_data}
-                            ),
-                        )
-                    except Exception as e:
-                        logger.log("SQL", f"Failed to broadcast update event: {e}")
+                    await self._publish_mutation_event(
+                        return_type.__name__.lower(),
+                        "updated",
+                        "update",
+                        result=result,
+                    )
 
                     return self._apply_field_acl(manager, result)  # type: ignore[no-any-return]
                 except Exception as e:
@@ -1290,37 +1333,18 @@ class GraphQLManager(ErrorHandlerMixin):
 
             async def resolver(id: str, input: input_type, info: Info) -> return_type:  # type: ignore[valid-type]
                 try:
-                    context = self._get_context_from_info(info)
-                    requester_id = context.get("requester_id")
-                    if not requester_id:
-                        raise Exception(
-                            "Unable to authenticate user for GraphQL query - no requester_id found in context"
-                        )
-                    manager = manager_class(
-                        model_registry=self.model_registry, requester_id=requester_id
-                    )
+                    manager, _ = self._authenticated_manager(manager_class, info)
                     data = self._convert_input_to_dict(input)
 
                     # Call manager.update with same signature as REST API
                     result = manager.update(id, **data)
 
-                    # Broadcast subscription (convert to dict for JSON serialization)
-                    try:
-                        if hasattr(result, "model_dump"):
-                            result_data = result.model_dump()
-                        elif hasattr(result, "dict"):
-                            result_data = result.dict()
-                        else:
-                            result_data = str(result)
-
-                        await self.broadcast.publish(
-                            channel=f"{return_type.__name__.lower()}_updated",
-                            message=json.dumps(
-                                {"action": "updated", "data": result_data}
-                            ),
-                        )
-                    except Exception as e:
-                        logger.log("SQL", f"Failed to broadcast update event: {e}")
+                    await self._publish_mutation_event(
+                        return_type.__name__.lower(),
+                        "updated",
+                        "update",
+                        result=result,
+                    )
 
                     return self._apply_field_acl(manager, result)  # type: ignore[no-any-return]
                 except Exception as e:
@@ -1336,33 +1360,23 @@ class GraphQLManager(ErrorHandlerMixin):
     ) -> None:
         """Add a mutation resolver for deleting items"""
         # Special handling for user delete mutations - users can only delete themselves
-        if "User" in manager_class.__name__:
+        if self._is_user_manager(manager_class):
 
             async def user_delete_resolver(info: Info) -> bool:
                 try:
-                    context = self._get_context_from_info(info)
-                    requester_id = context.get("requester_id")
-                    if not requester_id:
-                        raise Exception(
-                            "Unable to authenticate user for GraphQL query - no requester_id found in context"
-                        )
-                    manager = manager_class(
-                        model_registry=self.model_registry, requester_id=requester_id
+                    manager, requester_id = self._authenticated_manager(
+                        manager_class, info
                     )
 
                     # For users, always delete the requester (no ID parameter allowed)
-                    result = manager.delete(id=requester_id)
+                    manager.delete(id=requester_id)
 
-                    # Broadcast subscription (convert to dict for JSON serialization)
-                    try:
-                        await self.broadcast.publish(
-                            channel=f"{manager_class.__name__.lower()}_deleted",
-                            message=json.dumps(
-                                {"action": "deleted", "id": requester_id}
-                            ),
-                        )
-                    except Exception as e:
-                        logger.log("SQL", f"Failed to broadcast delete event: {e}")
+                    await self._publish_mutation_event(
+                        manager_class.__name__.lower(),
+                        "deleted",
+                        "delete",
+                        entity_id=requester_id,
+                    )
 
                     return True
                 except Exception as e:
@@ -1376,27 +1390,17 @@ class GraphQLManager(ErrorHandlerMixin):
 
             async def resolver(id: str, info: Info) -> bool:
                 try:
-                    context = self._get_context_from_info(info)
-                    requester_id = context.get("requester_id")
-                    if not requester_id:
-                        raise Exception(
-                            "Unable to authenticate user for GraphQL query - no requester_id found in context"
-                        )
-                    manager = manager_class(
-                        model_registry=self.model_registry, requester_id=requester_id
-                    )
+                    manager, _ = self._authenticated_manager(manager_class, info)
 
                     # Call manager.delete with same signature as REST API
-                    result = manager.delete(id=id)
+                    manager.delete(id=id)
 
-                    # Broadcast subscription (convert to dict for JSON serialization)
-                    try:
-                        await self.broadcast.publish(
-                            channel=f"{manager_class.__name__.lower()}_deleted",
-                            message=json.dumps({"action": "deleted", "id": id}),
-                        )
-                    except Exception as e:
-                        logger.log("SQL", f"Failed to broadcast delete event: {e}")
+                    await self._publish_mutation_event(
+                        manager_class.__name__.lower(),
+                        "deleted",
+                        "delete",
+                        entity_id=id,
+                    )
 
                     return True
                 except Exception as e:
@@ -1528,19 +1532,16 @@ class GraphQLManager(ErrorHandlerMixin):
 
         return result
 
-    def _get_create_input_type(self, model_class: Type[BaseModel]) -> Type:
-        """Get or create the Create input type for a model"""
-        if hasattr(model_class, "Create"):
-            return self._convert_pydantic_to_input(model_class.Create)
-        # For now, return a simple placeholder to avoid complex dependencies
-        return self._create_simple_input_type(model_class, "Create")
+    def _get_input_type(self, model_class: Type[BaseModel], kind: str) -> Type:
+        """Get or create the ``kind`` input type for a model.
 
-    def _get_update_input_type(self, model_class: Type[BaseModel]) -> Type:
-        """Get or create the Update input type for a model"""
-        if hasattr(model_class, "Update"):
-            return self._convert_pydantic_to_input(model_class.Update)
-        # For now, return a simple placeholder to avoid complex dependencies
-        return self._create_simple_input_type(model_class, "Update")
+        ``kind`` is ``"Create"`` or ``"Update"``: when the model declares a
+        matching nested class it is converted directly, otherwise a simple
+        placeholder input type is synthesized to avoid complex dependencies.
+        """
+        if hasattr(model_class, kind):
+            return self._convert_pydantic_to_input(getattr(model_class, kind))
+        return self._create_simple_input_type(model_class, kind)
 
     def _convert_pydantic_to_input(self, pydantic_model: Type[BaseModel]) -> Type:
         """Convert Pydantic model to Strawberry input type"""
