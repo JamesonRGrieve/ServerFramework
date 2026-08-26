@@ -118,7 +118,7 @@ class GoogleOAuthProvider(AbstractOAuthProvider):
                 "https://accounts.google.com/o/oauth2/token",
                 params={
                     "code": code,
-                    "client_id": env("GOOGLE_CLIENT_ID", timeout=10),
+                    "client_id": env("GOOGLE_CLIENT_ID"),
                     "client_secret": env("GOOGLE_CLIENT_SECRET"),
                     "redirect_uri": redirect_uri,
                     "grant_type": "authorization_code",

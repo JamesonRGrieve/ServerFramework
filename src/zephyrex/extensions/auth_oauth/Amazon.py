@@ -112,7 +112,7 @@ class AmazonOAuthProvider(AbstractOAuthProvider):
             response = requests.post(
                 f"https://{user_pool_id}.auth.{region}.amazoncognito.com/oauth2/token",
                 data={
-                    "client_id": env("AWS_CLIENT_ID", timeout=10),
+                    "client_id": env("AWS_CLIENT_ID"),
                     "client_secret": env("AWS_CLIENT_SECRET"),
                     "code": code,
                     "grant_type": "authorization_code",

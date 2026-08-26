@@ -221,7 +221,7 @@ class MicrosoftOAuthProvider(AbstractOAuthProvider):
             response = requests.post(
                 "https://login.microsoftonline.com/common/oauth2/v2.0/token",
                 data={
-                    "client_id": env("MICROSOFT_CLIENT_ID", timeout=10),
+                    "client_id": env("MICROSOFT_CLIENT_ID"),
                     "client_secret": env("MICROSOFT_CLIENT_SECRET"),
                     "code": code,
                     "grant_type": "authorization_code",
