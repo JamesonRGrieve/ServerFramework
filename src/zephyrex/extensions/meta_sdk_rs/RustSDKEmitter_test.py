@@ -43,8 +43,15 @@ def test_generation_emits_client_mod_and_resource(monkeypatch, tmp_path):
     ):
         assert method in resource, method
 
-    # Paths and batch bodies match the shared contract.
-    assert '"POST", "/v1/meta_sdk_rs_widget", Some(data), None' in resource
+    # Paths and bodies match the shared SDK contract. create/update wrap the
+    # payload under the resource key ({resource: data}) to match the handler
+    # (aligned in #231), so both emit Some(body) off a json! prelude -- not the
+    # older raw Some(data).
+    assert 'serde_json::json!({ "meta_sdk_rs_widget": data })' in resource
+    assert '"POST", "/v1/meta_sdk_rs_widget", Some(body), None' in resource
+    assert (
+        '"PUT", &format!("/v1/meta_sdk_rs_widget/{}", id), Some(body), None' in resource
+    )
     assert '"GET", &format!("/v1/meta_sdk_rs_widget/{}", id), None, None' in resource
     assert '"GET", "/v1/meta_sdk_rs_widget/search", None, query' in resource
     assert 'serde_json::json!({ "meta_sdk_rs_widgets": items })' in resource
