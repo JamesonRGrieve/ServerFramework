@@ -1,14 +1,15 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """auth_oauth2_server extension — the OAuth2 authorization server.
 
-Owns the OAuth2 client/authorization-code/token entities (see
-``BLL_Auth_OAuth2Server``). The authorization-server HTTP verbs (``/authorize``,
-``/token``, ``/introspect``, ``/revoke``) are added to this class as
-``@static_route`` classmethods (phase 2). Opt-in via ``APP_EXTENSIONS``; not
-loaded by default.
+Owns the OAuth2 client/authorization-code/token entities and the
+authorization-server verbs, all defined in ``BLL_Auth_OAuth2Server``:
+``OAuth2ClientManager`` exposes client-registration CRUD at ``/v1/oauth2/client``
+and ``OAuth2TokenManager`` hosts the flow verbs (``/authorize``, ``/token``,
+``/introspect``, ``/revoke``) at ``/v1/oauth2`` via ``custom_routes``.
 
 Security posture: opaque, DB-stored, revocable tokens; PKCE S256 required for
-public clients; constant-time client-secret comparison.
+public clients; constant-time client-secret comparison. Opt-in via
+``APP_EXTENSIONS``; not loaded by default.
 """
 
 from typing import ClassVar, List, Type
@@ -22,7 +23,7 @@ class EXT_Auth_OAuth2Server(AbstractStaticExtension):
     description: ClassVar[str] = (
         "OAuth2 authorization server: third-party client registration, the "
         "authorization-code flow with PKCE, and opaque revocable access/refresh "
-        "tokens (validate / refresh / revoke / introspect)"
+        "tokens (introspect / revoke)"
     )
     extension_dependencies: ClassVar[List[str]] = []
 
