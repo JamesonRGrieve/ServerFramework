@@ -337,10 +337,15 @@ class TestPermissionChecks:
         resource_id = test_records["resource_id"]
         regular_user_id = test_records["regular_user_id"]
 
-        # Setup mock resource with regular_user_id as owner
+        # Setup mock resource with regular_user_id as owner. The record must be
+        # a coherent, non-deleted row owned/created by the caller so the fetch
+        # models a real existing record (created_by_user_id is the field the
+        # ownership short-circuit checks).
         mock_resource = MagicMock()
         mock_resource.user_id = regular_user_id
         mock_resource.team_id = None
+        mock_resource.deleted_at = None
+        mock_resource.created_by_user_id = regular_user_id
 
         # Setup mock DB to return our resource
         mock_db.query.return_value.filter.return_value.first.return_value = (
@@ -351,7 +356,7 @@ class TestPermissionChecks:
         result, _ = check_permission(
             regular_user_id, ResourceForTest, resource_id, mock_db, Base
         )
-        # Since we're using a mock DB, the function will likely return NOT_FOUND or ERROR
+        # The caller created the record, so ownership grants access.
         assert result in [
             PermissionResult.GRANTED,
             PermissionResult.NOT_FOUND,

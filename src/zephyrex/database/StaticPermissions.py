@@ -31,6 +31,17 @@ SYSTEM_ID = env("SYSTEM_ID")
 TEMPLATE_ID = env("TEMPLATE_ID")
 
 
+def _active(model: Any) -> Any:
+    """Not-expired temporal-authorization predicate for a permission/membership row.
+
+    A grant is active when it has no expiry (``expires_at IS NULL``) or the
+    expiry is still in the future. Extracted so this security-critical rule is
+    encoded once; the emitted SQL is identical at every call site
+    (``expires_at IS NULL OR expires_at > now()``).
+    """
+    return or_(model.expires_at.is_(None), model.expires_at > func.now())
+
+
 def is_any_internal_id(user_id: str) -> bool:
     """Check if the user ID is any of the system IDs."""
     return user_id in (ROOT_ID, SYSTEM_ID, TEMPLATE_ID)
@@ -96,8 +107,19 @@ def can_access_system_record(
 
 
 def gen_not_found_msg(classname):
-    """Generate a standard 'not found' message for a given class."""
-    return f"Request searched {classname} and could not find the required record."
+    """Generate a standard 'not found' message for a given class.
+
+    Delegates to the canonical implementation in
+    :mod:`zephyrex.logic.AbstractLogicManager.models` so the message format
+    lives in exactly one place. The import is deferred to call time to avoid a
+    circular import (``StaticPermissions`` is imported by the BLL layer during
+    that package's own initialization).
+    """
+    from zephyrex.logic.AbstractLogicManager.models import (
+        gen_not_found_msg as _canonical_gen_not_found_msg,
+    )
+
+    return _canonical_gen_not_found_msg(classname)
 
 
 def validate_columns(cls, updated=None, **kwargs):
@@ -418,6 +440,63 @@ def check_access_to_all_referenced_entities(
     return (True, None)
 
 
+# Cache of ``{__tablename__: SQLAlchemy model}`` maps keyed by the exact tuple of
+# BLL module paths scanned. That tuple is a pure function of the loaded extension
+# set, so a changed extension set yields a new key and rebuilds the map. Building
+# the map is an O(modules x members) reflective import + ``inspect.getmembers``
+# scan; memoizing turns the per-call scan into a dict lookup.
+_resource_model_map_cache: dict[tuple[str, ...], dict[str, Any]] = {}
+
+
+def _resource_type_model_map(bll_modules: tuple[str, ...]) -> dict[str, Any]:
+    """Build (and cache) a ``{__tablename__: SQLAlchemy model}`` map for the given
+    BLL modules.
+
+    Reproduces the historical first-match scan exactly: modules are scanned in
+    order and members in ``inspect.getmembers`` order, so the first model that
+    claims a given table name wins (``setdefault``). Errors reading a candidate's
+    ``.DB`` are swallowed and unimportable modules are skipped, matching the
+    previous inline behavior.
+    """
+    cached = _resource_model_map_cache.get(bll_modules)
+    if cached is not None:
+        return cached
+
+    import importlib
+
+    from sqlalchemy.ext.declarative import DeclarativeMeta
+
+    model_map: dict[str, Any] = {}
+    for module_name in bll_modules:
+        try:
+            module = importlib.import_module(module_name)
+        except (ImportError, ModuleNotFoundError) as e:
+            logger.debug(
+                f"Could not import BLL module {module_name} for permission check: {e}"
+            )
+            continue
+        for name, obj in inspect.getmembers(module):
+            # Check if it's a BLL model class with DatabaseMixin
+            if (
+                hasattr(obj, "__bases__")
+                and any("DatabaseMixin" in str(base) for base in obj.__bases__)
+                and hasattr(obj, "DB")
+            ):
+                try:
+                    # Get the SQLAlchemy model from the .DB property
+                    db_model = obj.DB
+                    if isinstance(db_model, DeclarativeMeta) and hasattr(
+                        db_model, "__tablename__"
+                    ):
+                        model_map.setdefault(db_model.__tablename__, db_model)
+                except Exception as e:
+                    logger.debug(f"Error accessing .DB property of {name}: {e}")
+                    continue
+
+    _resource_model_map_cache[bll_modules] = model_map
+    return model_map
+
+
 def can_manage_permissions(
     user_id, resource_type, resource_id, db, operation_type=None
 ):
@@ -452,13 +531,9 @@ def can_manage_permissions(
         if not isinstance(resource_type, str):
             return (False, "Resource type must be a string")
 
-    # Find the model class for this resource type
-    import importlib
-
-    from sqlalchemy.ext.declarative import DeclarativeMeta
-
-    model_class = None
-    # Try to find the model class by iterating through BLL modules and accessing their .DB property
+    # Find the model class for this resource type. The set of BLL modules to scan
+    # is a pure function of the loaded extension set (core modules plus one per
+    # APP_EXTENSIONS entry), so the resolved table->model map is memoized on it.
     bll_modules = [
         "zephyrex.logic.BLL_Auth",
         "zephyrex.logic.BLL_Providers",
@@ -476,36 +551,7 @@ def can_manage_permissions(
                 f"zephyrex.extensions.{ext_name}.BLL_{stringcase.pascalcase(ext_name)}"
             )
 
-    for module_name in bll_modules:
-        try:
-            module = importlib.import_module(module_name)
-            for name, obj in inspect.getmembers(module):
-                # Check if it's a BLL model class with DatabaseMixin
-                if (
-                    hasattr(obj, "__bases__")
-                    and any("DatabaseMixin" in str(base) for base in obj.__bases__)
-                    and hasattr(obj, "DB")
-                ):
-                    try:
-                        # Get the SQLAlchemy model from the .DB property
-                        db_model = obj.DB
-                        if (
-                            isinstance(db_model, DeclarativeMeta)
-                            and hasattr(db_model, "__tablename__")
-                            and db_model.__tablename__ == resource_type
-                        ):
-                            model_class = db_model
-                            break
-                    except Exception as e:
-                        logger.debug(f"Error accessing .DB property of {name}: {e}")
-                        continue
-            if model_class:
-                break
-        except (ImportError, ModuleNotFoundError) as e:
-            logger.debug(
-                f"Could not import BLL module {module_name} for permission check: {e}"
-            )
-            continue
+    model_class = _resource_type_model_map(tuple(bll_modules)).get(resource_type)
 
     if not model_class:
         return (False, f"Could not find model class for resource type: {resource_type}")
@@ -751,15 +797,10 @@ def check_permission(
         # ``record_cls`` was already an ORM/DeclarativeMeta model (issue #229).
         record_db_cls = _resolve_db_class(record_cls, declarative_base)
 
-        # Check if the record exists at all
-        record_exists = db.query(exists().where(record_db_cls.id == record_id)).scalar()
-        if not record_exists:
-            return (
-                PermissionResult.NOT_FOUND,
-                gen_not_found_msg(record_cls.__name__),
-            )
-
-        # Get the record to check various properties
+        # Fetch the record. A single round-trip is sufficient: a ``None`` result
+        # means the record does not exist (NOT_FOUND), and the row is needed
+        # immediately below for the deleted/system/ownership checks. (A prior
+        # ``exists()`` probe here duplicated this lookup with no added signal.)
         record = db.query(record_db_cls).filter(record_db_cls.id == record_id).first()
         if not record:
             return (
@@ -856,10 +897,7 @@ def check_permission(
                         permission_db_cls.resource_type == record_db_cls.__tablename__,
                         permission_db_cls.resource_id == record_id,
                         permission_db_cls.user_id == user_id,
-                        or_(
-                            permission_db_cls.expires_at == None,
-                            permission_db_cls.expires_at > func.now(),
-                        ),
+                        _active(permission_db_cls),
                         getattr(permission_db_cls, required_level.value) == True,
                     )
                 )
@@ -941,12 +979,7 @@ def _get_admin_accessible_team_ids_cte(
         )
         .where(user_team_db_cls.user_id == user_id)
         .where(user_team_db_cls.enabled == True)
-        .where(
-            or_(
-                user_team_db_cls.expires_at == None,
-                user_team_db_cls.expires_at > func.now(),
-            )
-        )
+        .where(_active(user_team_db_cls))
     ]
 
     # Invitations that target the user directly should also expose the team
@@ -963,12 +996,7 @@ def _get_admin_accessible_team_ids_cte(
         if hasattr(invitation_db_cls, "deleted_at"):
             invitation_filters.append(invitation_db_cls.deleted_at.is_(None))
         if hasattr(invitation_db_cls, "expires_at"):
-            invitation_filters.append(
-                or_(
-                    invitation_db_cls.expires_at.is_(None),
-                    invitation_db_cls.expires_at > func.now(),
-                )
-            )
+            invitation_filters.append(_active(invitation_db_cls))
 
         direct_invitation_query = select(
             invitation_db_cls.team_id.label("id"),
@@ -1175,10 +1203,7 @@ def _build_direct_permission_filter(
             permission_db_cls.resource_id == resource_db_cls.id,
             permission_db_cls.user_id == user_id,
             permission_field == True,
-            or_(
-                permission_db_cls.expires_at == None,
-                permission_db_cls.expires_at > func.now(),
-            ),  # Check expiration
+            _active(permission_db_cls),  # Check expiration
         )
     )
 
@@ -1192,10 +1217,7 @@ def _build_direct_permission_filter(
                 select(accessible_team_ids_cte.c.id)
             ),  # Check against accessible teams
             permission_field == True,
-            or_(
-                permission_db_cls.expires_at == None,
-                permission_db_cls.expires_at > func.now(),
-            ),  # Check expiration
+            _active(permission_db_cls),  # Check expiration
         )
     )
 
@@ -1210,12 +1232,7 @@ def _build_direct_permission_filter(
         )
         .where(user_team_db_cls.user_id == user_id)
         .where(user_team_db_cls.enabled == True)
-        .where(
-            or_(
-                user_team_db_cls.expires_at == None,
-                user_team_db_cls.expires_at > func.now(),
-            )
-        )
+        .where(_active(user_team_db_cls))
     )  # Subquery for user's relevant role IDs
 
     # Check if any of *those* roles have the required permission assigned
@@ -1230,10 +1247,7 @@ def _build_direct_permission_filter(
             == None,  # Role permission (not user/team specific)
             permission_db_cls.team_id == None,
             permission_field == True,
-            or_(
-                permission_db_cls.expires_at == None,
-                permission_db_cls.expires_at > func.now(),
-            ),
+            _active(permission_db_cls),
         )
     )
 
@@ -1400,10 +1414,7 @@ def generate_permission_filter(
                             == resource_db_cls.team_id,  # Link to the record's team
                             user_team_db_cls.role_id.in_(sufficient_role_ids_for_admin),
                             user_team_db_cls.enabled == True,
-                            or_(
-                                user_team_db_cls.expires_at == None,
-                                user_team_db_cls.expires_at > func.now(),
-                            ),
+                            _active(user_team_db_cls),
                         )
                     )
                     conditions.append(user_has_sufficient_role_on_team)
@@ -1476,10 +1487,7 @@ def generate_permission_filter(
                     == resource_db_cls.id,  # The user record being accessed
                     user_team_db_cls.team_id.in_(user_team_ids),
                     user_team_db_cls.enabled == True,
-                    or_(
-                        user_team_db_cls.expires_at == None,
-                        user_team_db_cls.expires_at > func.now(),
-                    ),
+                    _active(user_team_db_cls),
                 )
             )
             conditions.append(users_on_accessible_teams)
