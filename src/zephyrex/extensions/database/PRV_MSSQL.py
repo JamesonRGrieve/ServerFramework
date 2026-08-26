@@ -122,10 +122,9 @@ class PRV_MSSQL(AbstractDatabaseProvider):
                 if len(rows) == 1 and len(rows[0]) == 1:
                     return str(rows[0][0])
                 column_names = [desc[0] for desc in cursor.description]
-                out = ",".join(f'"{c}"' for c in column_names) + "\n"
-                for row in rows:
-                    out += ",".join(f'"{v}"' for v in row) + "\n"
-                return out
+                parts = [",".join(f'"{c}"' for c in column_names)]
+                parts.extend(",".join(f'"{v}"' for v in row) for row in rows)
+                return "\n".join(parts) + "\n"
             finally:
                 cursor.close()
                 connection.close()

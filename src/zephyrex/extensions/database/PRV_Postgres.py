@@ -6,7 +6,7 @@ current static ``AbstractDatabaseExtensionProvider`` format. Supports standard
 relational access plus optional pgvector similarity search.
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from zephyrex.extensions.database.EXT_Database import (
     AbstractDatabaseExtensionProvider as AbstractDatabaseProvider,
@@ -126,10 +126,9 @@ class PRV_Postgres(AbstractDatabaseProvider):
                 if len(rows) == 1 and len(rows[0]) == 1:
                     return str(rows[0][0])
                 column_names = [desc[0] for desc in cursor.description]
-                out = ",".join(f'"{c}"' for c in column_names) + "\n"
-                for row in rows:
-                    out += ",".join(f'"{v}"' for v in row) + "\n"
-                return out
+                parts = [",".join(f'"{c}"' for c in column_names)]
+                parts.extend(",".join(f'"{v}"' for v in row) for row in rows)
+                return "\n".join(parts) + "\n"
             finally:
                 cursor.close()
                 connection.close()

@@ -166,14 +166,15 @@ class PRV_SQLite(AbstractDatabaseProvider):
                 # Build column heading
                 column_names = [desc[0] for desc in cursor.description]
                 column_headings = [f'"{col}"' for col in column_names]
-                rows_string = ",".join(column_headings) + "\n"
+                parts = [",".join(column_headings)]
 
                 # Add data rows
-                for row in rows:
-                    row_string = [f'"{row[i]}"' for i in range(len(column_names))]
-                    rows_string += ",".join(row_string) + "\n"
+                parts.extend(
+                    ",".join(f'"{row[i]}"' for i in range(len(column_names)))
+                    for row in rows
+                )
 
-                return rows_string
+                return "\n".join(parts) + "\n"
 
             finally:
                 cursor.close()
