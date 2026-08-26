@@ -826,7 +826,7 @@ def _lookup_by_id(invitation_id: str, model_registry):
     )
     if inv is None:
         return None
-    if inv.expires_at and inv.expires_at < datetime.now(timezone.utc):
+    if inv.expires_at and ensure_utc(inv.expires_at) < datetime.now(timezone.utc):
         return None
     return {
         "id": inv.id,
@@ -849,7 +849,7 @@ def _lookup_by_code(invitation_code: str, model_registry):
     )
     if inv is None:
         return None
-    if inv.expires_at and inv.expires_at < datetime.now(timezone.utc):
+    if inv.expires_at and ensure_utc(inv.expires_at) < datetime.now(timezone.utc):
         return None
     return {
         "id": inv.id,

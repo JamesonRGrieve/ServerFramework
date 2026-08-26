@@ -11,13 +11,13 @@ from typing import Any, ClassVar, Dict, List, Optional, Type
 from zephyrex.extensions.AbstractExtensionProvider import (
     AbstractStaticExtension,
 )
+from zephyrex.lib.DateTimeUtils import ensure_utc
 
 
 def _lookup_by_id(invitation_id: str, model_registry) -> Optional[Dict[str, Any]]:
     from zephyrex.extensions.auth_invitations.BLL_Invitations import (
         InvitationModel,
     )
-    from zephyrex.lib.Environment import env
 
     db = model_registry.DB.session()
     inv = (
@@ -30,7 +30,7 @@ def _lookup_by_id(invitation_id: str, model_registry) -> Optional[Dict[str, Any]
     )
     if inv is None:
         return None
-    if inv.expires_at and inv.expires_at < datetime.now(timezone.utc):
+    if inv.expires_at and ensure_utc(inv.expires_at) < datetime.now(timezone.utc):
         return None
     return {
         "id": inv.id,
@@ -57,7 +57,7 @@ def _lookup_by_code(invitation_code: str, model_registry) -> Optional[Dict[str, 
     )
     if inv is None:
         return None
-    if inv.expires_at and inv.expires_at < datetime.now(timezone.utc):
+    if inv.expires_at and ensure_utc(inv.expires_at) < datetime.now(timezone.utc):
         return None
     return {
         "id": inv.id,
