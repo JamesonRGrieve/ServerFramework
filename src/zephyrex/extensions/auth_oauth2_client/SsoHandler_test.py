@@ -24,13 +24,21 @@ from zephyrex.extensions.auth_oauth2_client.Microsoft import MicrosoftOAuthProvi
 
 # (module_path_for_patching, provider_class, client_id_env_var)
 _PROVIDER_CASES = [
-    ("zephyrex.extensions.auth_oauth2_client.Google", GoogleOAuthProvider, "GOOGLE_CLIENT_ID"),
+    (
+        "zephyrex.extensions.auth_oauth2_client.Google",
+        GoogleOAuthProvider,
+        "GOOGLE_CLIENT_ID",
+    ),
     (
         "zephyrex.extensions.auth_oauth2_client.Microsoft",
         MicrosoftOAuthProvider,
         "MICROSOFT_CLIENT_ID",
     ),
-    ("zephyrex.extensions.auth_oauth2_client.Amazon", AmazonOAuthProvider, "AWS_CLIENT_ID"),
+    (
+        "zephyrex.extensions.auth_oauth2_client.Amazon",
+        AmazonOAuthProvider,
+        "AWS_CLIENT_ID",
+    ),
 ]
 
 
