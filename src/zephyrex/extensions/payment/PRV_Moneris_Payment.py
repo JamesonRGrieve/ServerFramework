@@ -26,7 +26,10 @@ from zephyrex.extensions.AbstractExternalModel import (
     AbstractExternalManager,
     AbstractExternalModel,
 )
-from zephyrex.extensions.payment.EXT_Payment import AbstractPaymentProvider
+from zephyrex.extensions.payment.EXT_Payment import (
+    AbstractPaymentProvider,
+    PassthroughExternalModel,
+)
 from zephyrex.lib.Dependencies import Dependencies, PIP_Dependency
 from zephyrex.lib.Environment import env
 from zephyrex.lib.Logging import logger
@@ -66,7 +69,7 @@ def _default_headers() -> Dict[str, str]:
 # ============================================================================
 
 
-class Moneris_CustomerModel(AbstractExternalModel, metaclass=ModelMeta):
+class Moneris_CustomerModel(PassthroughExternalModel, metaclass=ModelMeta):
     """External model for Moneris Customer API resource."""
 
     class Reference:
@@ -97,14 +100,6 @@ class Moneris_CustomerModel(AbstractExternalModel, metaclass=ModelMeta):
 
     class Search(BaseModel):
         email: Optional[str] = Field(None, description="Search by email")
-
-    @classmethod
-    def to_external_format(cls, internal_data: Dict[str, Any]) -> Dict[str, Any]:
-        return {k: v for k, v in internal_data.items() if v is not None}
-
-    @classmethod
-    def from_external_format(cls, external_data: Dict[str, Any]) -> Dict[str, Any]:
-        return {k: v for k, v in external_data.items() if v is not None}
 
     @classmethod
     def to_external_query_format(
@@ -303,10 +298,6 @@ class PaymentExtensionMonerisProvider(AbstractPaymentProvider):
     @classmethod
     def get_merchant_id(cls) -> Optional[str]:
         return env("MONERIS_MERCHANT_ID")  # type: ignore[no-any-return]
-
-    @classmethod
-    def get_env_value(cls, key: str, default: Any = None) -> Any:
-        return env(key, default)
 
     @classmethod
     def validate_config(cls) -> bool:

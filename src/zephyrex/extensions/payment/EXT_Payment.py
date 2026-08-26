@@ -9,6 +9,7 @@ from abc import abstractmethod
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, ClassVar, Dict, List, Optional, Union
 
+from zephyrex.extensions.AbstractExternalModel import AbstractExternalModel
 from zephyrex.extensions.AbstractExtensionProvider import (
     AbstractProviderInstance,
     AbstractStaticExtension,
@@ -17,6 +18,30 @@ from zephyrex.extensions.AbstractExtensionProvider import (
     ability,
 )
 from zephyrex.logic.BLL_Providers import ProviderInstanceModel
+
+
+class PassthroughExternalModel(AbstractExternalModel):
+    """External model whose payload is a 1:1 passthrough that only drops ``None``.
+
+    Providers that use the external API's own field names verbatim need no
+    field-mapping renames — they only strip unset (``None``) fields so optional
+    inputs are omitted from the request/response body. Consolidates the
+    identical ``to_external_format`` / ``from_external_format`` overrides that
+    previously lived on each such payment model.
+
+    This intentionally does **not** defer to the base ``field_mappings``
+    pipeline: with empty mappings the base passes every key through unchanged
+    (``None`` values included), whereas these models require ``None`` values to
+    be dropped.
+    """
+
+    @classmethod
+    def to_external_format(cls, internal_data: Dict[str, Any]) -> Dict[str, Any]:
+        return {k: v for k, v in internal_data.items() if v is not None}
+
+    @classmethod
+    def from_external_format(cls, external_data: Dict[str, Any]) -> Dict[str, Any]:
+        return {k: v for k, v in external_data.items() if v is not None}
 
 
 class AbstractPaymentProvider(AbstractStaticProvider):

@@ -28,7 +28,10 @@ from zephyrex.extensions.AbstractExternalModel import (
     AbstractExternalManager,
     AbstractExternalModel,
 )
-from zephyrex.extensions.payment.EXT_Payment import AbstractPaymentProvider
+from zephyrex.extensions.payment.EXT_Payment import (
+    AbstractPaymentProvider,
+    PassthroughExternalModel,
+)
 from zephyrex.lib.Dependencies import Dependencies, PIP_Dependency
 from zephyrex.lib.Environment import env
 from zephyrex.lib.Logging import logger
@@ -55,7 +58,7 @@ def _default_headers() -> Dict[str, str]:
 # ============================================================================
 
 
-class Helcim_CustomerModel(AbstractExternalModel, metaclass=ModelMeta):
+class Helcim_CustomerModel(PassthroughExternalModel, metaclass=ModelMeta):
     """External model for Helcim Customer API resource."""
 
     class Reference:
@@ -87,14 +90,6 @@ class Helcim_CustomerModel(AbstractExternalModel, metaclass=ModelMeta):
 
     class Search(BaseModel):
         email: Optional[str] = Field(None)
-
-    @classmethod
-    def to_external_format(cls, internal_data: Dict[str, Any]) -> Dict[str, Any]:
-        return {k: v for k, v in internal_data.items() if v is not None}
-
-    @classmethod
-    def from_external_format(cls, external_data: Dict[str, Any]) -> Dict[str, Any]:
-        return {k: v for k, v in external_data.items() if v is not None}
 
     @classmethod
     def to_external_query_format(
@@ -288,10 +283,6 @@ class PaymentExtensionHelcimProvider(AbstractPaymentProvider):
     @classmethod
     def get_api_token(cls) -> Optional[str]:
         return env("HELCIM_API_TOKEN")  # type: ignore[no-any-return]
-
-    @classmethod
-    def get_env_value(cls, key: str, default: Any = None) -> Any:
-        return env(key, default)
 
     @classmethod
     def validate_config(cls) -> bool:

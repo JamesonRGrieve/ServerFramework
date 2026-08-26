@@ -28,7 +28,10 @@ from zephyrex.extensions.AbstractExternalModel import (
     AbstractExternalManager,
     AbstractExternalModel,
 )
-from zephyrex.extensions.payment.EXT_Payment import AbstractPaymentProvider
+from zephyrex.extensions.payment.EXT_Payment import (
+    AbstractPaymentProvider,
+    PassthroughExternalModel,
+)
 from zephyrex.lib.Dependencies import Dependencies, PIP_Dependency
 from zephyrex.lib.Environment import env
 from zephyrex.lib.Logging import logger
@@ -41,7 +44,7 @@ from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 # ============================================================================
 
 
-class PayPal_CustomerModel(AbstractExternalModel, metaclass=ModelMeta):
+class PayPal_CustomerModel(PassthroughExternalModel, metaclass=ModelMeta):
     """External model for PayPal Customer (payer) resource.
 
     PayPal doesn't have a first-class customer object in the same way
@@ -82,14 +85,6 @@ class PayPal_CustomerModel(AbstractExternalModel, metaclass=ModelMeta):
         """Search model for PayPal Customer."""
 
         email: Optional[str] = Field(None, description="Search by email")
-
-    @classmethod
-    def to_external_format(cls, internal_data: Dict[str, Any]) -> Dict[str, Any]:
-        return {k: v for k, v in internal_data.items() if v is not None}
-
-    @classmethod
-    def from_external_format(cls, external_data: Dict[str, Any]) -> Dict[str, Any]:
-        return {k: v for k, v in external_data.items() if v is not None}
 
     @classmethod
     def to_external_query_format(
@@ -240,10 +235,6 @@ class PaymentExtensionPayPalProvider(AbstractPaymentProvider):
     @classmethod
     def get_webhook_id(cls) -> Optional[str]:
         return env("PAYPAL_WEBHOOK_ID")  # type: ignore[no-any-return]
-
-    @classmethod
-    def get_env_value(cls, key: str, default: Any = None) -> Any:
-        return env(key, default)
 
     @classmethod
     def validate_config(cls) -> bool:

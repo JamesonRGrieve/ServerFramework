@@ -28,7 +28,10 @@ from zephyrex.extensions.AbstractExternalModel import (
     AbstractExternalManager,
     AbstractExternalModel,
 )
-from zephyrex.extensions.payment.EXT_Payment import AbstractPaymentProvider
+from zephyrex.extensions.payment.EXT_Payment import (
+    AbstractPaymentProvider,
+    PassthroughExternalModel,
+)
 from zephyrex.lib.Dependencies import Dependencies, PIP_Dependency
 from zephyrex.lib.Environment import env
 from zephyrex.lib.Logging import logger
@@ -41,7 +44,7 @@ from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 # ============================================================================
 
 
-class Square_CustomerModel(AbstractExternalModel, metaclass=ModelMeta):
+class Square_CustomerModel(PassthroughExternalModel, metaclass=ModelMeta):
     """External model for Square Customer API resource."""
 
     class Reference:
@@ -88,14 +91,6 @@ class Square_CustomerModel(AbstractExternalModel, metaclass=ModelMeta):
 
         email_address: Optional[str] = Field(None, description="Search by email")
         phone_number: Optional[str] = Field(None, description="Search by phone")
-
-    @classmethod
-    def to_external_format(cls, internal_data: Dict[str, Any]) -> Dict[str, Any]:
-        return {k: v for k, v in internal_data.items() if v is not None}
-
-    @classmethod
-    def from_external_format(cls, external_data: Dict[str, Any]) -> Dict[str, Any]:
-        return {k: v for k, v in external_data.items() if v is not None}
 
     @classmethod
     def to_external_query_format(
@@ -313,10 +308,6 @@ class PaymentExtensionSquareProvider(AbstractPaymentProvider):
     @classmethod
     def get_webhook_signature_key(cls) -> Optional[str]:
         return env("SQUARE_WEBHOOK_SIGNATURE_KEY")  # type: ignore[no-any-return]
-
-    @classmethod
-    def get_env_value(cls, key: str, default: Any = None) -> Any:
-        return env(key, default)
 
     @classmethod
     def validate_config(cls) -> bool:

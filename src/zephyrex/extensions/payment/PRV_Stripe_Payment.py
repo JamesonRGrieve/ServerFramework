@@ -24,7 +24,10 @@ from zephyrex.extensions.AbstractExternalModel import (
     AbstractExternalManager,
     AbstractExternalModel,
 )
-from zephyrex.extensions.payment.EXT_Payment import AbstractPaymentProvider
+from zephyrex.extensions.payment.EXT_Payment import (
+    AbstractPaymentProvider,
+    PassthroughExternalModel,
+)
 from zephyrex.lib.Dependencies import Dependencies, PIP_Dependency
 from zephyrex.lib.Environment import env
 from zephyrex.lib.Logging import logger
@@ -37,7 +40,7 @@ from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 # ============================================================================
 
 
-class Stripe_CustomerModel(AbstractExternalModel, metaclass=ModelMeta):
+class Stripe_CustomerModel(PassthroughExternalModel, metaclass=ModelMeta):
     """External model for Stripe Customer API resource."""
 
     class Reference:
@@ -104,18 +107,6 @@ class Stripe_CustomerModel(AbstractExternalModel, metaclass=ModelMeta):
 
         email: Optional[str] = Field(None, description="Search by email")
         name: Optional[str] = Field(None, description="Search by name")
-
-    @classmethod
-    def to_external_format(cls, internal_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Convert internal format to Stripe API format."""
-        # Since we're using exact Stripe API field names, no conversion needed
-        return {k: v for k, v in internal_data.items() if v is not None}
-
-    @classmethod
-    def from_external_format(cls, external_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Convert Stripe API format to internal format."""
-        # Since we're using exact Stripe API field names, no conversion needed
-        return {k: v for k, v in external_data.items() if v is not None}
 
     @classmethod
     def to_external_query_format(
@@ -325,7 +316,7 @@ class Stripe_CustomerModel(AbstractExternalModel, metaclass=ModelMeta):
 # ============================================================================
 
 
-class Stripe_ProductModel(AbstractExternalModel, metaclass=ModelMeta):
+class Stripe_ProductModel(PassthroughExternalModel, metaclass=ModelMeta):
     """External model for Stripe Product API resource."""
 
     class Reference:
@@ -418,18 +409,6 @@ class Stripe_ProductModel(AbstractExternalModel, metaclass=ModelMeta):
         name: Optional[str] = Field(None, description="Search by name")
         active: Optional[bool] = Field(None, description="Filter by active status")
         description: Optional[str] = Field(None, description="Search by description")
-
-    @classmethod
-    def to_external_format(cls, internal_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Convert internal format to Stripe API format."""
-        # Since we're using exact Stripe API field names, no conversion needed
-        return {k: v for k, v in internal_data.items() if v is not None}
-
-    @classmethod
-    def from_external_format(cls, external_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Convert Stripe API format to internal format."""
-        # Since we're using exact Stripe API field names, no conversion needed
-        return {k: v for k, v in external_data.items() if v is not None}
 
     @classmethod
     def to_external_query_format(
@@ -795,11 +774,6 @@ class PaymentExtensionStripeProvider(AbstractPaymentProvider):
     def get_publishable_key(cls) -> str:
         """Get the publishable key from environment (or empty string)."""
         return env("STRIPE_PUBLISHABLE_KEY") or ""
-
-    @classmethod
-    def get_env_value(cls, key: str, default: Any = None) -> Any:
-        """Get environment value with fallback."""
-        return env(key, default)
 
     @classmethod
     def validate_config(cls) -> bool:
