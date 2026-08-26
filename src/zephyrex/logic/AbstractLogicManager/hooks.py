@@ -9,6 +9,7 @@ from typing import (
     Dict,
     List,
     Optional,
+    Tuple,
     Type,
     Union,
 )
@@ -159,9 +160,56 @@ class HookRegistry:
         self.parent_registry = parent_registry
         self.hooks: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
 
+        # --- get_hooks memoization (hot-path optimization) -----------------
+        # The registry is immutable after startup, yet ``get_hooks`` is called
+        # on every hooked BLL operation (get/list/create/update/delete/search)
+        # and re-ran Kahn's topological sort while re-walking the parent chain
+        # every time. Both are pure recompute over immutable data, so we
+        # memoize the fully-combined, sorted result per method name.
+        #
+        # ``_version`` is a monotonic mutation counter bumped on every write to
+        # this registry (see ``_invalidate``). A cached entry records the
+        # *chain* version (this registry plus every ancestor), so a hook
+        # registered on a parent AFTER a child was built still invalidates the
+        # child's cache purely by comparison -- no parent-to-child callback.
+        self._version: int = 0
+        self._get_hooks_cache: Dict[
+            str, Tuple[Tuple[int, ...], Dict[str, List[Dict[str, Any]]]]
+        ] = {}
+
+    def _invalidate(self) -> None:
+        """Invalidate memoized ``get_hooks`` results after a mutation.
+
+        Bumping ``_version`` changes this registry's contribution to every
+        descendant's chain-version, so children recompute lazily on their next
+        call. Clearing the local cache drops this registry's own stale entries.
+        Every code path that mutates ``self.hooks`` (or the parent linkage)
+        MUST call this, or a late-registered hook would be silently missed.
+        """
+        self._version += 1
+        self._get_hooks_cache.clear()
+
+    def _chain_version(self) -> Tuple[int, ...]:
+        """Combined mutation-version across this registry and its parent chain.
+
+        A memoized ``get_hooks`` result depends on the hooks on *this* registry
+        and on every ancestor (inheritance). Encoding each registry's
+        ``_version`` into one tuple lets a cached entry detect a mutation
+        anywhere in the chain -- including a hook registered on a parent after
+        this child was constructed -- by a single equality check, without a
+        parent needing to know its children.
+        """
+        versions: List[int] = []
+        registry: Optional["HookRegistry"] = self
+        while registry is not None:
+            versions.append(registry._version)
+            registry = registry.parent_registry
+        return tuple(versions)
+
     def clear(self) -> None:
         """Clear all hooks from this registry."""
         self.hooks.clear()
+        self._invalidate()
 
     def get_hooks(self, method_name: str) -> Dict[str, List[Dict[str, Any]]]:
         """
@@ -175,8 +223,18 @@ class HookRegistry:
             Lists are returned in the deterministic four-tier order described
             in Item 21: explicit ``before/after`` constraints, then priority,
             then extension name, then function name.
+
+        The combined, sorted result is memoized per method name and reused
+        until any registry in the parent chain is mutated (see ``_invalidate``
+        / ``_chain_version``). Callers treat the result as read-only, matching
+        the existing contract -- no caller mutates the returned dict or lists.
         """
-        hooks = {"before": [], "after": []}  # type: ignore[var-annotated]
+        version = self._chain_version()
+        cached = self._get_hooks_cache.get(method_name)
+        if cached is not None and cached[0] == version:
+            return cached[1]
+
+        hooks: Dict[str, List[Dict[str, Any]]] = {"before": [], "after": []}
 
         # Get parent hooks first (for inheritance)
         if self.parent_registry:
@@ -192,6 +250,8 @@ class HookRegistry:
         # Item 21: apply the deterministic four-tier sort BEFORE returning.
         hooks["before"] = _sort_hooks_topologically(hooks["before"])
         hooks["after"] = _sort_hooks_topologically(hooks["after"])
+
+        self._get_hooks_cache[method_name] = (version, hooks)
         return hooks
 
     def register_hook(
@@ -240,6 +300,9 @@ class HookRegistry:
         # Sort by priority (lower numbers run first); the get_hooks accessor
         # then applies the full four-tier topological sort.
         self.hooks[method_name][timing].sort(key=lambda x: x["priority"])
+        # Registration mutates the registry -- drop any memoized get_hooks
+        # result so a hook registered after first use is reflected.
+        self._invalidate()
 
 
 # ---------------------------------------------------------------------------
@@ -733,6 +796,10 @@ def auto_register_hooks(manager_class: Type["AbstractBLLManager"]) -> None:
                 "before": [],
                 "after": [],
             }
+
+    # This writes directly into the registry's ``hooks`` map, so drop any
+    # memoized get_hooks results to keep the cache honest.
+    manager_class._hook_registry._invalidate()  # type: ignore[attr-defined]
 
 
 def _should_execute_hook(hook_info: Dict[str, Any], context: HookContext) -> bool:

@@ -14,13 +14,14 @@ from unittest.mock import MagicMock
 
 import pytest
 
+import zephyrex.logic.AbstractLogicManager.hooks as _hooks_module
 from zephyrex.logic.AbstractLogicManager import (
     NON_BLOCKING_HOOK_FAILURES,
     AbstractBLLManager,
     HookContext,
     HookRegistry,
-    HookTiming,
     _register_hook_on_class,
+    _sort_hooks_topologically,
 )
 
 # ---------------------------------------------------------------------------
@@ -728,3 +729,155 @@ def test_hook_context_reports_correct_timing():
     mgr = HookTestManager()
     mgr.get(id="1")
     assert observed_timings == ["before", "after"]
+
+
+# ---------------------------------------------------------------------------
+# 18. get_hooks memoization (hot-path optimization + invalidation correctness)
+# ---------------------------------------------------------------------------
+
+
+def _named_hook(name: str, ext: str):
+    """Build a hook function whose derived extension name is ``ext``.
+
+    ``_hook_extension_name`` reads ``func.__module__``; spelling it as
+    ``zephyrex.extensions.<ext>.hooks`` yields extension ``<ext>`` so
+    before/after ordering constraints can reference distinct extensions.
+    """
+
+    def _hook(ctx: HookContext) -> None:
+        return None
+
+    _hook.__name__ = name
+    _hook.__module__ = f"zephyrex.extensions.{ext}.hooks"
+    return _hook
+
+
+def _register_ordered_before_hooks(manager_class) -> None:
+    """Register three ordered BEFORE hooks on ``create``.
+
+    Constraints force the deterministic order validate -> mfa -> audit:
+      * ``validate`` must run BEFORE ``mfa``
+      * ``audit`` must run AFTER ``mfa``
+    """
+    _register_hook_on_class(
+        manager_class,
+        "create",
+        "before",
+        _named_hook("audit", "audit"),
+        50,
+        None,
+        after=["mfa"],
+    )
+    _register_hook_on_class(
+        manager_class,
+        "create",
+        "before",
+        _named_hook("mfa", "mfa"),
+        50,
+        None,
+    )
+    _register_hook_on_class(
+        manager_class,
+        "create",
+        "before",
+        _named_hook("validate", "validate"),
+        50,
+        None,
+        before=["mfa"],
+    )
+
+
+@pytest.mark.unit
+def test_get_hooks_memoized_result_matches_fresh_sort():
+    """(a) The memoized result equals the pure topological sort and is stable
+    across repeated calls -- memoization does not alter the output."""
+    _register_ordered_before_hooks(HookTestManager)
+    reg = HookTestManager._hook_registry
+
+    # Canonical order computed directly from the raw hook list.
+    raw = list(reg.hooks["create"]["before"])
+    expected = [h["func"].__name__ for h in _sort_hooks_topologically(raw)]
+
+    got_first = [h["func"].__name__ for h in reg.get_hooks("create")["before"]]
+    got_second = [h["func"].__name__ for h in reg.get_hooks("create")["before"]]
+
+    assert expected == ["validate", "mfa", "audit"]
+    assert got_first == expected
+    assert got_second == expected
+
+
+@pytest.mark.unit
+def test_get_hooks_reflects_hook_registered_after_first_call():
+    """(b) A hook registered AFTER a first get_hooks call is reflected on the
+    next call -- registration invalidates the memoized result."""
+    _register_ordered_before_hooks(HookTestManager)
+    reg = HookTestManager._hook_registry
+
+    first = [h["func"].__name__ for h in reg.get_hooks("create")["before"]]
+    assert "late" not in first
+
+    _register_hook_on_class(
+        HookTestManager,
+        "create",
+        "before",
+        _named_hook("late", "late_ext"),
+        50,
+        None,
+    )
+
+    second = [h["func"].__name__ for h in reg.get_hooks("create")["before"]]
+    assert "late" in second
+    assert len(second) == len(first) + 1
+
+
+@pytest.mark.unit
+def test_get_hooks_reflects_hook_registered_on_parent_after_child_cached():
+    """(b') A hook registered on a PARENT registry after a CHILD cached its
+    result must still surface through the child -- chain-version invalidation.
+
+    This is the subtle correctness risk: the parent has no reference to its
+    children, so the child must detect the ancestor mutation on lookup."""
+    child_reg = ChildHookTestManager._hook_registry
+
+    # Child caches an (empty-of-own-hooks) result first.
+    before = [h["func"].__name__ for h in child_reg.get_hooks("create")["before"]]
+    assert "from_parent" not in before
+
+    # Register on the PARENT class after the child already cached.
+    _register_hook_on_class(
+        HookTestManager,
+        "create",
+        "before",
+        _named_hook("from_parent", "parent_ext"),
+        50,
+        None,
+    )
+
+    after = [h["func"].__name__ for h in child_reg.get_hooks("create")["before"]]
+    assert "from_parent" in after
+
+
+@pytest.mark.unit
+def test_get_hooks_does_not_recompute_sort_on_cache_hit(monkeypatch):
+    """(c) The topological sort is not re-run on a second identical call --
+    proving the hot path is memoized rather than recomputed each time."""
+    _register_ordered_before_hooks(HookTestManager)
+    reg = HookTestManager._hook_registry
+
+    call_count = {"n": 0}
+    original_sort = _hooks_module._sort_hooks_topologically
+
+    def _counting_sort(hook_list):
+        call_count["n"] += 1
+        return original_sort(hook_list)
+
+    monkeypatch.setattr(_hooks_module, "_sort_hooks_topologically", _counting_sort)
+
+    reg.get_hooks("create")  # first call: computes + caches
+    first_count = call_count["n"]
+    assert first_count > 0, "sort must run on the first (cold) call"
+
+    reg.get_hooks("create")  # second identical call: served from cache
+    assert (
+        call_count["n"] == first_count
+    ), "topological sort must not be recomputed on a memoized cache hit"
