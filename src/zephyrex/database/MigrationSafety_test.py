@@ -21,6 +21,7 @@ from zephyrex.database.MigrationSafety import (
     expand_phase,
     phase_of,
     validate_migration_safety,
+    validate_revision_directives,
 )
 
 
@@ -312,3 +313,85 @@ def test_emitted_contract_passes_validator_when_expand_in_history():
     )
     expand_mod = types.SimpleNamespace(revision=expand.migration_id)
     validate_migration_safety(mod, history=[expand_mod])  # does not raise
+
+
+# ---------------------------------------------------------------------------
+# SSOT parity: the source-inspection path (analyze_migration) and the
+# autogenerate-directive path (validate_revision_directives) must emit the
+# byte-identical finding detail — including remediation text — for the same
+# unsafe migration shape. Both feed the shared ``_evaluate_rules``.
+# ---------------------------------------------------------------------------
+
+
+# Directive stand-ins whose ``type().__name__`` matches what the directive
+# extractors switch on. Fields mirror the Alembic op attributes the extractors
+# read (``table_name``/``column_name`` for drops; ``source_table``/
+# ``constraint_name``/``kw`` for FKs).
+class DropColumnOp:
+    def __init__(self, table_name: str, column_name: str) -> None:
+        self.table_name = table_name
+        self.column_name = column_name
+
+
+class CreateForeignKeyOp:
+    def __init__(self, source_table: str, constraint_name: str, nullable: bool) -> None:
+        self.source_table = source_table
+        self.constraint_name = constraint_name
+        self.kw = {"nullable": nullable}
+
+
+@pytest.mark.unit
+def test_both_paths_emit_identical_findings_for_unsafe_shape():
+    """Regex path and directive path produce the same finding detail.
+
+    Covers the two rules that carry remediation sentences: a
+    drop-without-paired-expand and an fk-not-null-without-paired-expand.
+    Empty history => no paired expand => both rules fire on both paths.
+    """
+    # --- Source-inspection (regex) path ---
+    mod = _module_with_upgrade_source(
+        """
+        op.drop_column('t', 'c')
+        op.create_foreign_key('fk_t_o', 't', 'o', ['o_id'], ['id'], nullable=False)
+        """,
+        revision="parity_contract",
+    )
+    analysis = analyze_migration(mod, history=[])
+    regex_by_rule = {f.rule: f for f in analysis.findings}
+    assert set(regex_by_rule) == {
+        "drop_without_paired_expand",
+        "fk_not_null_without_paired_expand",
+    }
+
+    # --- Autogenerate-directive path (same unsafe shape) ---
+    upgrade_ops = types.SimpleNamespace(
+        ops=[
+            DropColumnOp(table_name="t", column_name="c"),
+            CreateForeignKeyOp(
+                source_table="t", constraint_name="fk_t_o", nullable=False
+            ),
+        ]
+    )
+    script = types.SimpleNamespace(upgrade_ops=upgrade_ops, revision="parity_contract")
+    with pytest.raises(MigrationSafetyError) as exc:
+        validate_revision_directives([script], history=[])
+    directive_msg = str(exc.value)
+
+    # Each path emits the byte-identical formatted finding (``[rule] detail``),
+    # so the directive path now carries the remediation sentences the regex
+    # path always had.
+    for finding in regex_by_rule.values():
+        assert finding.format() in directive_msg
+
+    # Explicitly assert the remediation text the directive path previously
+    # dropped is now present.
+    assert (
+        "Generate the expand first, ship it, then drop in a later contract migration."
+        in regex_by_rule["drop_without_paired_expand"].detail
+    )
+    assert (
+        "Split into expand (add nullable FK, backfill) + contract (set NOT NULL)."
+        in regex_by_rule["fk_not_null_without_paired_expand"].detail
+    )
+    assert "Generate the expand first" in directive_msg
+    assert "Split into expand (add nullable FK, backfill)" in directive_msg

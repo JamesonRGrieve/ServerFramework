@@ -36,10 +36,11 @@ file is committed.
 
 from __future__ import annotations
 
+import functools
 import inspect
 import re
 from dataclasses import dataclass, field
-from typing import Any, List, Literal, Optional, Sequence, Tuple
+from typing import Any, Callable, List, Literal, Optional, Sequence, Tuple
 
 # ---------------------------------------------------------------------------
 # Phase enum + errors
@@ -243,6 +244,77 @@ def _has_paired_earlier_expand(
     return False
 
 
+def _evaluate_rules(
+    add_columns: Sequence[Tuple[str, str, dict]],
+    drop_columns: Sequence[Tuple[str, str]],
+    add_fks: Sequence[Tuple[str, str, dict]],
+    has_paired_expand: Callable[[], bool],
+) -> List[MigrationFinding]:
+    """Apply the three rolling-deploy rules to already-gathered structural facts.
+
+    Single source of truth for the rule thresholds *and* the
+    :class:`MigrationFinding` messages (including the remediation sentences).
+    Both the source-inspection path (:func:`analyze_migration`) and the
+    autogenerate-directive path (:func:`validate_revision_directives`) gather
+    the add/drop/fk sets their own way and then call this to evaluate them, so
+    the rules and their wording live exactly once.
+
+    ``has_paired_expand`` is a zero-arg callable that reports whether the
+    migration under evaluation is a contract whose paired earlier expand
+    exists in history; it is queried only for the rules that need it (drops
+    and NOT NULL FK adds), matching each caller's own pairing lookup.
+    """
+    findings: List[MigrationFinding] = []
+
+    # Rule 1: NOT NULL column adds without server_default.
+    for table, column, info in add_columns:
+        if info["nullable_false"] and not info["has_server_default"]:
+            findings.append(
+                MigrationFinding(
+                    rule="not_null_without_default",
+                    detail=(
+                        f"add_column {table}.{column} is NOT NULL without a "
+                        f"server_default; v1 inserts will fail during the "
+                        f"rolling deploy. Either add a server_default or "
+                        f"split into expand (nullable=True + backfill) and "
+                        f"contract (nullable=False) phases."
+                    ),
+                )
+            )
+
+    # Rule 2: column drops without a paired earlier expand.
+    if drop_columns and not has_paired_expand():
+        for table, column in drop_columns:
+            findings.append(
+                MigrationFinding(
+                    rule="drop_without_paired_expand",
+                    detail=(
+                        f"drop_column {table}.{column} is not paired with an "
+                        f"earlier expand migration that retired reads/writes "
+                        f"on the column. Generate the expand first, ship it, "
+                        f"then drop in a later contract migration."
+                    ),
+                )
+            )
+
+    # Rule 3: FK adds with nullable=False without a paired earlier expand.
+    for table, _fk_name, info in add_fks:
+        if info["nullable_false"] and not has_paired_expand():
+            findings.append(
+                MigrationFinding(
+                    rule="fk_not_null_without_paired_expand",
+                    detail=(
+                        f"create_foreign_key on {table} adds a NOT NULL FK "
+                        f"without a paired expand that added the column "
+                        f"nullable and backfilled it. Split into expand "
+                        f"(add nullable FK, backfill) + contract (set NOT NULL)."
+                    ),
+                )
+            )
+
+    return findings
+
+
 def validate_migration_safety(
     migration_module: Any,
     history: Optional[Sequence[Any]] = None,
@@ -274,57 +346,14 @@ def analyze_migration(
     this module's docstring.
     """
     analysis = _build_analysis(migration_module)
-
-    # Rule 1: NOT NULL column adds without server_default.
-    for table, column, info in analysis.add_columns:
-        if info["nullable_false"] and not info["has_server_default"]:
-            analysis.findings.append(
-                MigrationFinding(
-                    rule="not_null_without_default",
-                    detail=(
-                        f"add_column {table}.{column} is NOT NULL without a "
-                        f"server_default; v1 inserts will fail during the "
-                        f"rolling deploy. Either add a server_default or "
-                        f"split into expand (nullable=True + backfill) and "
-                        f"contract (nullable=False) phases."
-                    ),
-                )
-            )
-
-    # Rule 2: column drops without a paired earlier expand.
-    if analysis.drop_columns and not _has_paired_earlier_expand(
-        migration_module, history
-    ):
-        for table, column in analysis.drop_columns:
-            analysis.findings.append(
-                MigrationFinding(
-                    rule="drop_without_paired_expand",
-                    detail=(
-                        f"drop_column {table}.{column} is not paired with an "
-                        f"earlier expand migration that retired reads/writes "
-                        f"on the column. Generate the expand first, ship it, "
-                        f"then drop in a later contract migration."
-                    ),
-                )
-            )
-
-    # Rule 3: FK adds with nullable=False without a paired earlier expand.
-    for table, _fk_name, info in analysis.add_fks:
-        if info["nullable_false"] and not _has_paired_earlier_expand(
-            migration_module, history
-        ):
-            analysis.findings.append(
-                MigrationFinding(
-                    rule="fk_not_null_without_paired_expand",
-                    detail=(
-                        f"create_foreign_key on {table} adds a NOT NULL FK "
-                        f"without a paired expand that added the column "
-                        f"nullable and backfilled it. Split into expand "
-                        f"(add nullable FK, backfill) + contract (set NOT NULL)."
-                    ),
-                )
-            )
-
+    analysis.findings.extend(
+        _evaluate_rules(
+            analysis.add_columns,
+            analysis.drop_columns,
+            analysis.add_fks,
+            functools.partial(_has_paired_earlier_expand, migration_module, history),
+        )
+    )
     return analysis
 
 
@@ -549,49 +578,14 @@ def validate_revision_directives(
         if upgrade_ops is None:
             continue
 
-        for table, column, info in _directive_add_columns(upgrade_ops):
-            if info["nullable_false"] and not info["has_server_default"]:
-                findings.append(
-                    MigrationFinding(
-                        rule="not_null_without_default",
-                        detail=(
-                            f"add_column {table}.{column} is NOT NULL without a "
-                            f"server_default; v1 inserts will fail during the "
-                            f"rolling deploy. Either add a server_default or "
-                            f"split into expand (nullable=True + backfill) and "
-                            f"contract (nullable=False) phases."
-                        ),
-                    )
-                )
-
-        drop_columns = _directive_drop_columns(upgrade_ops)
-        if drop_columns and not _has_paired_earlier_expand(script, history):
-            for table, column in drop_columns:
-                findings.append(
-                    MigrationFinding(
-                        rule="drop_without_paired_expand",
-                        detail=(
-                            f"drop_column {table}.{column} is not paired with an "
-                            f"earlier expand migration that retired reads/writes "
-                            f"on the column."
-                        ),
-                    )
-                )
-
-        for table, _fk_name, info in _directive_add_fks(upgrade_ops):
-            if info["nullable_false"] and not _has_paired_earlier_expand(
-                script, history
-            ):
-                findings.append(
-                    MigrationFinding(
-                        rule="fk_not_null_without_paired_expand",
-                        detail=(
-                            f"create_foreign_key on {table} adds a NOT NULL FK "
-                            f"without a paired expand that added the column "
-                            f"nullable and backfilled it."
-                        ),
-                    )
-                )
+        findings.extend(
+            _evaluate_rules(
+                _directive_add_columns(upgrade_ops),
+                _directive_drop_columns(upgrade_ops),
+                _directive_add_fks(upgrade_ops),
+                functools.partial(_has_paired_earlier_expand, script, history),
+            )
+        )
 
     if findings:
         raise MigrationSafetyError("; ".join(f.format() for f in findings))
