@@ -14,7 +14,11 @@ from typing import Optional
 import pytest
 from pydantic import Field
 
-from zephyrex.lib.EfficiencyRatchet import ratchet, ratchet_subprocess
+from zephyrex.lib.EfficiencyRatchet import (
+    ratchet,
+    ratchet_scaling,
+    ratchet_subprocess,
+)
 
 os.environ.setdefault("JWT_SECRET", "test-jwt-secret-32-bytes-or-more-aaaaaa")
 os.environ.setdefault("DATABASE_TYPE", "sqlite")
@@ -158,4 +162,48 @@ class TestRequestLatency:
             lambda: client.get("/"),
             tolerance=CPU_TOLERANCE,
             iterations=10,
+        )
+
+
+class TestScalingRatchets:
+    """Big-O *complexity-exponent* guards (ratchet_scaling), complementing the
+    wall-time point ratchets above.
+
+    These fit the empirical exponent k in ``time ~ N**k`` and ratchet it
+    downward-only, so a regression of the #230 O(n^2)->O(n) work (ModelRegistry
+    bind name-index, dependency-graph inverted index) back toward quadratic —
+    which pushes k from ~1 to ~2 — trips the ratchet even though the absolute
+    wall-time is small at these sizes. The per-fix deterministic count/scan-based
+    tests are the primary guards; this is the timing backstop the operator asked
+    for.
+    """
+
+    def test_sqlalchemy_model_creation_scaling(self):
+        from sqlalchemy.orm import DeclarativeBase
+
+        from zephyrex.pydantic2.registry import ModelRegistry
+        from zephyrex.pydantic2.sqlalchemy import (
+            ApplicationModel,
+            create_sqlalchemy_model,
+        )
+
+        def build(n: int) -> None:
+            base = type("ScaleBase", (DeclarativeBase,), {})
+            registry = ModelRegistry()
+            for i in range(n):
+                model = type(
+                    f"ScaleModel{i}",
+                    (ApplicationModel,),
+                    {
+                        "__annotations__": {"name": str, "value": Optional[int]},
+                        "name": Field(..., description=f"n{i}"),
+                        "value": Field(None),
+                    },
+                )
+                create_sqlalchemy_model(model, model_registry=registry, base_model=base)
+
+        # margin 0.6: per-model creation has real variance, but a regression to
+        # quadratic model registration pushes the exponent ~+1.0, well past this.
+        ratchet_scaling(
+            "sqlalchemy_model_creation", build, sizes=[40, 80, 160], margin=0.6
         )
