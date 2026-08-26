@@ -1,4 +1,5 @@
 # Add missing test model definitions and fixtures before the test classes
+import asyncio
 from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
@@ -833,3 +834,156 @@ class TestGraphQLDenyPaths:
                 None,
                 "",
             ), "GraphQL response must not surface password_hash"
+
+
+class _FakeInfo:
+    """Minimal stand-in for ``strawberry.types.Info`` exposing a mutable,
+    per-request ``context`` dict (as the FastAPI ``context_getter`` produces),
+    so the reverse-nav DataLoader cache can be shared across parent resolvers.
+    """
+
+    def __init__(self, context: Dict[str, Any]) -> None:
+        self.context = context
+
+
+class TestReverseNavigationBatching(AbstractGraphQLTestMixin):
+    """Reverse-navigation must batch its reads through a per-request DataLoader.
+
+    Issue #230 finding E1: the auto-generated reverse-navigation resolver used
+    to call ``manager.list(parent_id=<one id>)`` once per parent, so
+    ``{ parents { children } }`` over N parents fired N queries. It now routes
+    every sibling parent through a single per-request DataLoader that issues one
+    ``manager.list(parent_id IN (...))`` and buckets the rows back per parent.
+    """
+
+    def _build(self, children: List["ChildModel"]):
+        """Wire a GraphQLManager whose ChildModel manager counts ``list`` calls.
+
+        Returns ``(manager, reverse_resolver, call_log)`` where ``call_log`` gets
+        one entry per ``manager.list`` invocation — the query-count harness.
+        """
+        call_log: List[Dict[str, Any]] = []
+
+        class CountingChildManager:
+            def __init__(self, model_registry=None, requester_id=None):
+                self.model_registry = model_registry
+                self.requester_id = requester_id
+
+            def list(self, filters=None, limit=None, offset=None, **kwargs):
+                call_log.append(
+                    {
+                        "filters": filters,
+                        "limit": limit,
+                        "offset": offset,
+                        "kwargs": kwargs,
+                    }
+                )
+                # Emulate the DB: a single WHERE parent_id IN (...) scan whose
+                # per-parent row order matches the old per-parent equality query.
+                assert filters and len(filters) == 1
+                comparison = filters[0]
+                assert comparison.operator == "in"
+                assert comparison.field_name == "parent_id"
+                keyset = set(comparison.value)
+                return [c for c in children if c.parent_id in keyset]
+
+        registry = ModelRegistry()
+        registry.bind(ParentModel)
+        registry.bind(ChildModel)
+        registry._locked = True
+        registry.model_relationships = [
+            (ChildModel, ChildModel, None, CountingChildManager),
+        ]
+        manager = GraphQLManager(registry)
+        resolver = manager._create_reverse_navigation_resolver(
+            ParentModel, ChildModel, "parent", "children"
+        )
+        return manager, resolver, call_log
+
+    def test_reverse_nav_over_n_parents_issues_one_batched_query(self):
+        """N parents resolving ``children`` must collapse to ONE list() call."""
+        parents = [ParentModel(id=f"p{i}", name=f"P{i}") for i in range(3)]
+        children = [
+            ChildModel(id="c1", name="c1", parent_id="p0"),
+            ChildModel(id="c2", name="c2", parent_id="p0"),
+            ChildModel(id="c3", name="c3", parent_id="p1"),
+            ChildModel(id="c4", name="c4", parent_id="p2"),
+            ChildModel(id="c5", name="c5", parent_id="p2"),
+        ]
+        _manager, resolver, call_log = self._build(children)
+        info = _FakeInfo({"requester_id": "req-1"})
+
+        async def run():
+            # A shared context + concurrent gather is exactly how graphql-core
+            # completes a list field's item resolvers, so this reproduces the
+            # real coalescing path.
+            return await asyncio.gather(*(resolver(parent, info) for parent in parents))
+
+        results = asyncio.run(run())
+
+        # The whole point: one batched query, not one per parent.
+        assert len(call_log) == 1
+        batch_filter = call_log[0]["filters"][0]
+        assert batch_filter.operator == "in"
+        assert set(batch_filter.value) == {"p0", "p1", "p2"}
+
+        # Every parent still gets exactly its own children, in order — identical
+        # to the old ``manager.list(parent_id=<id>)`` per-parent result.
+        by_parent = {parent.id: result for parent, result in zip(parents, results)}
+        assert [c.id for c in by_parent["p0"]] == ["c1", "c2"]
+        assert [c.id for c in by_parent["p1"]] == ["c3"]
+        assert [c.id for c in by_parent["p2"]] == ["c4", "c5"]
+
+    def test_reverse_nav_matches_old_per_parent_path(self):
+        """Batched buckets must equal the old one-query-per-parent results."""
+        parents = [ParentModel(id=f"p{i}", name=f"P{i}") for i in range(4)]
+        children = [
+            ChildModel(id=f"c{p}_{n}", name=f"c{p}_{n}", parent_id=f"p{p}")
+            for p in range(4)
+            for n in range(p)  # p0->0, p1->1, p2->2, p3->3 children
+        ]
+        _manager, resolver, call_log = self._build(children)
+        info = _FakeInfo({"requester_id": "req-1"})
+
+        async def run():
+            return await asyncio.gather(*(resolver(parent, info) for parent in parents))
+
+        results = asyncio.run(run())
+
+        assert len(call_log) == 1  # still a single batch
+        for parent, result in zip(parents, results):
+            expected = [c.id for c in children if c.parent_id == parent.id]
+            assert [c.id for c in result] == expected
+
+    def test_reverse_nav_applies_per_parent_limit_and_offset(self):
+        """limit/offset slice each parent's bucket, not the whole batch."""
+        parents = [ParentModel(id="p0", name="P0"), ParentModel(id="p1", name="P1")]
+        children = [
+            ChildModel(id=f"c{n}", name=f"c{n}", parent_id="p0") for n in range(5)
+        ] + [ChildModel(id=f"d{n}", name=f"d{n}", parent_id="p1") for n in range(5)]
+        _manager, resolver, call_log = self._build(children)
+        info = _FakeInfo({"requester_id": "req-1"})
+
+        async def run():
+            # limit=2, offset=1 applied per parent.
+            return await asyncio.gather(
+                resolver(parents[0], info, 2, 1),
+                resolver(parents[1], info, 2, 1),
+            )
+
+        result0, result1 = asyncio.run(run())
+
+        assert len(call_log) == 1  # one batch despite per-parent slicing
+        assert [c.id for c in result0] == ["c1", "c2"]
+        assert [c.id for c in result1] == ["d1", "d2"]
+
+    def test_reverse_nav_missing_requester_returns_empty(self):
+        """No requester_id in context short-circuits to [] without querying."""
+        children = [ChildModel(id="c1", name="c1", parent_id="p0")]
+        _manager, resolver, call_log = self._build(children)
+        info = _FakeInfo({})
+
+        result = asyncio.run(resolver(ParentModel(id="p0", name="P0"), info))
+
+        assert result == []
+        assert call_log == []

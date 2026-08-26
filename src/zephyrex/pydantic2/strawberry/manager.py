@@ -7,8 +7,10 @@ from typing import (
     AsyncGenerator,
     Callable,
     Dict,
+    Hashable,
     List,
     Optional,
+    Sequence,
     Set,
     Tuple,
     Type,
@@ -39,13 +41,19 @@ from .contributions import (
     _diff_signatures,
     gql_contribution_registry,
 )
-from .dataloader import build_request_dataloaders
+from .dataloader import RequestDataLoader, build_request_dataloaders
 
 # Sentinel distinguishing "no result supplied" from a legitimately ``None``
 # result in ``_publish_mutation_event`` — create/update may broadcast a ``None``
 # result (serialized to the string ``"None"``), which a plain ``None`` default
 # could not tell apart from delete's id-only payload.
 _UNSET: Any = object()
+
+# Key under which the per-request reverse-navigation DataLoader cache is stored
+# on the shared GraphQL request context. Every parent object resolving the same
+# reverse field within one request reuses one DataLoader, so their loads
+# coalesce into a single batched ``manager.list(<fk> IN (...))`` query.
+_REVERSE_NAV_LOADER_KEY: str = "_reverse_nav_dataloaders"
 
 
 class GraphQLManager(ErrorHandlerMixin):
@@ -1847,6 +1855,87 @@ class GraphQLManager(ErrorHandlerMixin):
 
             return forward_resolver
 
+    def _reverse_nav_loader_store(self, info: Info) -> Dict[Any, "RequestDataLoader"]:
+        """Return the per-request cache of reverse-navigation DataLoaders.
+
+        The cache lives on the shared GraphQL request context so that every
+        parent object resolving the same reverse field in one request shares a
+        single DataLoader, whose ``load(key)`` calls coalesce into one batched
+        query. Production contexts (built by the FastAPI ``context_getter``) are
+        always dicts; for any non-dict context we fall back to a throwaway store
+        — results are still correct, only cross-parent coalescing is skipped.
+        """
+        ctx = getattr(info, "context", None)
+        if isinstance(ctx, dict):
+            store = ctx.get(_REVERSE_NAV_LOADER_KEY)
+            if store is None:
+                store = {}
+                ctx[_REVERSE_NAV_LOADER_KEY] = store
+            return store  # type: ignore[no-any-return]
+        return {}
+
+    def _get_reverse_nav_dataloader(
+        self,
+        info: Info,
+        source_model: Type[BaseModel],
+        source_field: str,
+        foreign_key_field: str,
+        manager_class: Any,
+        requester_id: str,
+        limit: Optional[int],
+        offset: Optional[int],
+    ) -> "RequestDataLoader":
+        """Get (or lazily build) the per-request DataLoader for one reverse
+        relationship.
+
+        The DataLoader's ``batch_load_fn`` issues a single
+        ``manager.list(<fk> IN (keys))`` query, then buckets the returned rows
+        by their foreign-key value and applies the per-parent ``limit``/
+        ``offset`` slice in memory — preserving the exact per-parent result
+        shape and ordering of the old one-query-per-parent path, while the
+        row-level VIEW permission filter (the field ACL) stays applied inside
+        ``manager.list`` for the batched query just as before.
+        """
+        store = self._reverse_nav_loader_store(info)
+        # ``limit``/``offset`` are part of the key: they are identical across
+        # every sibling parent in a single query (GraphQL field arguments do not
+        # vary per list item), so distinct argument combinations get distinct
+        # loaders/batches while a single query still collapses to one batch.
+        cache_key = (source_model.__name__, source_field, requester_id, limit, offset)
+        existing = store.get(cache_key)
+        if existing is not None:
+            return existing
+
+        model_registry = self.model_registry
+
+        def batch_load(keys: Sequence[Hashable]) -> List[List[Any]]:
+            from zephyrex.logic.AbstractLogicManager.models import FieldComparison
+
+            key_list = list(keys)
+            manager = manager_class(
+                model_registry=model_registry, requester_id=requester_id
+            )
+            # One batched query for every parent id at once.
+            rows = manager.list(
+                filters=[
+                    FieldComparison(source_model, foreign_key_field, "in", key_list)
+                ]
+            )
+            buckets: Dict[Hashable, List[Any]] = {key: [] for key in key_list}
+            for row in rows:
+                fk_value = getattr(row, foreign_key_field, None)
+                bucket = buckets.get(fk_value)
+                if bucket is not None:
+                    bucket.append(row)
+            start = offset or 0
+            if limit is None:
+                return [buckets[key][start:] for key in key_list]
+            return [buckets[key][start : start + limit] for key in key_list]
+
+        loader = RequestDataLoader(batch_load)
+        store[cache_key] = loader
+        return loader
+
     def _create_reverse_navigation_resolver(
         self,
         target_model: Type[BaseModel],
@@ -1875,16 +1964,24 @@ class GraphQLManager(ErrorHandlerMixin):
                     logger.error(f"No manager found for model {source_model}")
                     return []
 
-                manager = manager_class(
-                    model_registry=manager_ref.model_registry, requester_id=requester_id
-                )
-
-                # Build filter based on the foreign key
+                # Foreign key on the source (child) model pointing at this parent.
                 foreign_key_field = f"{source_field}_id"
-                filter_params = {foreign_key_field: self.id}
 
-                # Get the related items
-                results = manager.list(limit=limit, offset=offset, **filter_params)
+                # Route through a per-request DataLoader so that N sibling
+                # parents resolving this reverse field collapse into a single
+                # batched ``manager.list(<fk> IN (...))`` query instead of firing
+                # one query per parent (the N+1 this fixes).
+                loader = manager_ref._get_reverse_nav_dataloader(
+                    info,
+                    source_model,
+                    source_field,
+                    foreign_key_field,
+                    manager_class,
+                    requester_id,
+                    limit,
+                    offset,
+                )
+                results = await loader.load(self.id)
 
                 return results
 
