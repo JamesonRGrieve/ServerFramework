@@ -627,7 +627,7 @@ class TestSearchInputDeniesInjection:
 # Unit tests for pure functions — no server or DB required
 ###############################################################################
 
-from typing import Dict, Union
+from typing import Dict
 from unittest.mock import MagicMock
 
 from pydantic import BaseModel as PydanticBaseModel
@@ -746,14 +746,18 @@ class TestCreateColumnFromField:
         col = _create_column_from_field("ref", Optional[Ref])
         assert col is None
 
-    def test_list_of_forward_ref_skipped(self):
+    def test_list_of_forward_ref_becomes_json_column(self):
         from typing import ForwardRef
 
+        from sqlalchemy import JSON
+
         col = _create_column_from_field("refs", List[ForwardRef("SomeModel")])
-        # ForwardRef list items are treated as strings by the function
-        # when isinstance(list_item_type, str) — ForwardRef is not str,
-        # so the function falls through to JSON. Verify it doesn't crash.
-        assert col is not None or col is None  # either is valid behavior
+        # A ForwardRef list item is not a str, so the function does not treat it
+        # as a relationship to skip; it falls through to a JSON column. Pin that
+        # concrete contract (the old `col is not None or col is None` asserted
+        # nothing).
+        assert col is not None
+        assert isinstance(col.type, JSON)
 
 
 class TestExtractMixinClasses:

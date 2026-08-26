@@ -821,35 +821,19 @@ class TestQueryParameterInjection:
         client = TestClient(app)
 
         response = client.get(f"/v1/test/{entity.id}?fields=name&fields=value")
-        # Server may return a ValidationError (422) if the response key
-        # doesn't match the expected network model key. In that case the
-        # validation error includes the input under the error details; fall
-        # back to extracting the first value from that input so tests remain
-        # resilient to the resource-name mismatch.
-        if response.status_code == 200:
-            payload = response.json().get("test") or next(
-                iter(response.json().values())
-            )
-        else:
-            body = response.json()
-            details = (
-                body.get("detail", {}).get("details")
-                or body.get("detail", {}).get("errors")
-                or []
-            )
-            input_val = None
-            if details and isinstance(details, list):
-                input_val = details[0].get("input")
-            if isinstance(input_val, dict):
-                payload = next(iter(input_val.values()))
-            else:
-                pytest.fail(f"Unexpected response: {response.status_code} {body}")
+        # The user-visible contract is a 200 with the projected entity in the
+        # response body -- a 422 means the route is broken, which is a failure,
+        # not an alternate success path (the old if/else let a 422 pass as long
+        # as the manager recorded the params).
+        assert response.status_code == 200, response.text
+        # Response is wrapped under the manager's resource name ("query_aware").
+        payload = response.json()["query_aware"]
 
-        # Ensure required projected fields present (allow extra keys if projection
-        # wasn't applied due to earlier validation path).
-        assert "name" in payload and "value" in payload
         assert payload["name"] == "Seed"
         assert payload["value"] == 7
+        # Field projection actually applied: only the requested fields survive,
+        # so the un-requested "id" must NOT be in the body.
+        assert "id" not in payload
         assert manager_cls.last_get_params["fields"] == ["name", "value"]
         assert manager_cls.last_get_params["include"] is None
 
@@ -867,25 +851,18 @@ class TestQueryParameterInjection:
         client = TestClient(app)
 
         response = client.get(f"/v1/test/{entity.id}?fields=name&include=children")
-        if response.status_code == 200:
-            payload = response.json().get("test") or next(
-                iter(response.json().values())
-            )
 
-            # Ensure included relations are present and fields projection at least
-            # includes the requested field.
-            assert "name" in payload and "children" in payload
-            assert payload["name"] == "Seed"
-            assert manager_cls.last_get_params["include"] == ["children"]
-        else:
-            # Some validation paths will fail because the base model does not
-            # declare the included relation field (children). In that case we
-            # still consider the test successful if the manager received the
-            # include parameter correctly.
-            assert manager_cls.last_get_params.get("include") == ["children"]
+        # TestModel declares no ``children`` relation, so requesting it is an
+        # invalid include: the route must REJECT it with a deterministic 422 --
+        # never a 500, and never a silent 200 that dropped the include. (The
+        # positive "include survives projection" path needs a model with a real
+        # relation and is covered by the reverse-navigation include tests.) The
+        # old if/else accepted any status as long as the manager saw the param.
+        assert response.status_code == 422, response.text
+        assert manager_cls.last_get_params.get("include") == ["children"]
 
     def test_list_route_populates_query_model(self, model_registry):
-        """LIST route should normalize fields and apply projection to each entity."""
+        """LIST route returns the seeded entities (200, non-empty) and forwards fields."""
         manager_cls = self.QueryAwareManager
         manager_cls._shared_store = {}
         manager_cls.last_list_params = {}
@@ -899,29 +876,19 @@ class TestQueryParameterInjection:
         client = TestClient(app)
 
         response = client.get("/v1/test?fields=name")
-        if response.status_code == 200:
-            items = response.json().get("tests") or next(iter(response.json().values()))
-        else:
-            body = response.json()
-            detail = body.get("detail", {})
-            details = (
-                (detail.get("details") or detail.get("errors") or [])
-                if isinstance(detail, dict)
-                else (detail if isinstance(detail, list) else [])
-            )
-            input_val = None
-            if details and isinstance(details, list):
-                input_val = details[0].get("input")
-            if isinstance(input_val, dict):
-                first_val = next(iter(input_val.values()))
-                items = first_val if isinstance(first_val, list) else [first_val]
-            else:
-                pytest.fail(f"Unexpected response: {response.status_code} {body}")
+        # The route must return 200 with the seeded entities (never a 422 that
+        # the old if/else accepted, never an empty page). Response is wrapped
+        # under the manager's plural resource name.
+        assert response.status_code == 200, response.text
+        body = response.json()
+        items = body["query_awares"]
 
-        expected_names = [entity.name for entity in manager_cls._shared_store.values()]
-        assert [item["name"] for item in items] == expected_names
-        # Ensure each returned item contains at least the projected 'name' field.
-        assert all("name" in item for item in items)
+        # Both seeded rows are present, in order, with their real values -- a
+        # stubbed/empty list would fail here.
+        assert [item["name"] for item in items] == ["First", "Second"]
+        assert [item["value"] for item in items] == [1, 2]
+        assert body["pagination"]["total"] == 2
+        # The normalized fields param reached the manager.
         assert manager_cls.last_list_params["fields"] == ["name"]
 
 
@@ -1100,7 +1067,6 @@ class TestExampleGenerator:
 
         ExampleGenerator.clear_cache()
 
-        from zephyrex.logic.AbstractLogicManager import ModelFieldAccessor
         from zephyrex.logic.BLL_Auth import TeamModel
 
         try:
@@ -1253,9 +1219,35 @@ class TestExampleGeneratorIntegration:
         schema = response.json()
         assert "paths" in schema
 
-        # Check that paths exist (routes were registered)
         paths = schema["paths"]
         assert len(paths) > 0
+
+        # The docstring promises examples IN the schema, not merely that routes
+        # exist. Dig into the GET route's 200 response and assert a concrete
+        # example payload is emitted, wrapping the model under its resource name
+        # with real field values. A schema that omitted examples fails here.
+        # Collect every ``example`` payload emitted anywhere in the schema.
+        def _collect_examples(obj):
+            found = []
+            if isinstance(obj, dict):
+                for key, val in obj.items():
+                    if key in ("example", "examples"):
+                        found.append(val)
+                    found += _collect_examples(val)
+            elif isinstance(obj, list):
+                for val in obj:
+                    found += _collect_examples(val)
+            return found
+
+        examples = _collect_examples(paths)
+        # At least one example must be emitted (not merely that routes exist)...
+        assert examples, "OpenAPI schema carries no examples"
+        # ...and one of them must materialize the model's real fields (a bare
+        # ``{}`` placeholder or a schema with examples stripped fails this).
+        serialized = json.dumps(examples)
+        assert '"id"' in serialized
+        assert '"name"' in serialized
+        assert '"value"' in serialized
 
     def test_manager_with_example_overrides(self, model_registry):
         """Test manager with custom example overrides."""

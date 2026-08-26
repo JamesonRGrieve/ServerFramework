@@ -929,7 +929,12 @@ class GraphQLManager(ErrorHandlerMixin):
                             ):
                                 enum_name = f"{module_parts[1].title()}{enum_name}"
 
-                        new_enum = type(enum_name, (Enum,), enum_values)
+                        # Build the enum via the functional API: passing a plain
+                        # dict to ``type(name, (Enum,), ...)`` raises in CPython
+                        # 3.11+ (the namespace must be an ``_EnumDict``), which
+                        # silently sent every string-based enum to the String
+                        # fallback below instead of emitting a real GraphQL enum.
+                        new_enum = Enum(enum_name, enum_values)  # type: ignore[misc]
                         new_enum.__module__ = python_type.__module__
                         return strawberry.enum(new_enum)  # type: ignore[call-overload, no-any-return]
 

@@ -4,7 +4,7 @@ import sys
 import unittest
 from enum import Enum
 from typing import Dict, List, Optional, Union, get_args, get_origin
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 from pydantic import BaseModel, Field
@@ -336,26 +336,23 @@ class TestPydantic(unittest.TestCase):
             # Restore original method
             self.utility.resolve_string_reference = original_resolve
 
-    @patch("pydantic.create_model")
-    def test_create_model(self, mock_create_model):
-        """Test model creation with Pydantic."""
-        # Set up mock return value
-        mock_model = MagicMock()
-        mock_create_model.return_value = mock_model
+    def test_get_model_fields_returns_real_field_types(self):
+        """PydanticUtility.get_model_fields resolves a model's fields and types.
 
-        # Call the pydantic.create_model function directly
-        from pydantic import create_model as pydantic_create_model
+        The old ``test_create_model`` patched ``pydantic.create_model`` and then
+        asserted the *mock* was called -- exercising no framework code at all.
+        This drives the real utility and asserts the resolved field->type map.
+        """
 
-        # Test creating a simple model with fields
-        model_name = "MockTestModel"
-        fields = {"name": (str, ...), "age": (int, 0)}
+        class SampleModel(BaseModel):
+            name: str
+            age: int = 0
 
-        # We'll use the original implementation but verify our mock was called
-        model = pydantic_create_model(model_name, **fields)
+        fields = self.utility.get_model_fields(SampleModel)
 
-        # Verify our mock was called with the right parameters
-        mock_create_model.assert_called_once_with(model_name, **fields)
-        self.assertEqual(model, mock_model)
+        assert set(fields) == {"name", "age"}
+        assert fields["name"] is str
+        assert fields["age"] is int
 
     def test_is_scalar_type(self):
         """Test _is_scalar_type method."""
@@ -1171,21 +1168,19 @@ class TestModelRegistry:
         # Should not be able to get SQLAlchemy model yet
         assert registry.get_sqlalchemy_model(TestCommitModel) is None
 
-        # Commit the registry (without database manager for this test)
-        try:
-            registry.commit()
+        # Commit the registry. The local fallback commits against SQLite, so
+        # this MUST succeed -- the old `except Exception: pytest.skip` swallowed
+        # a genuine regression in commit / get_sqlalchemy_model (the core
+        # contract this test exists to guard) as a silent green skip.
+        registry.commit()
 
-            # After commit, should be locked
-            assert registry.is_committed()
+        # After commit, should be locked
+        assert registry.is_committed()
 
-            # Should be able to get SQLAlchemy model
-            sql_model = registry.get_sqlalchemy_model(TestCommitModel)
-            assert sql_model is not None
-            assert hasattr(sql_model, "__tablename__")
-
-        except Exception as e:
-            # Expected if database components aren't fully available
-            pytest.skip(f"Database components not available: {e}")
+        # Should be able to get SQLAlchemy model
+        sql_model = registry.get_sqlalchemy_model(TestCommitModel)
+        assert sql_model is not None
+        assert hasattr(sql_model, "__tablename__")
 
     def test_model_registry_isolation(self):
         """Test that ModelRegistry instances are properly isolated."""
@@ -1210,19 +1205,16 @@ class TestModelRegistry:
         assert registry2.is_model_bound(Model2)
         assert not registry2.is_model_bound(Model1)
 
-        # Commit both registries
-        try:
-            registry1.commit()
-            registry2.commit()
+        # Commit both registries -- SQLite fallback, so both MUST succeed. A
+        # skip here would have masked a real isolation/commit regression.
+        registry1.commit()
+        registry2.commit()
 
-            # Verify each registry only has its own models
-            assert registry1.get_sqlalchemy_model(Model1) is not None
-            assert registry1.get_sqlalchemy_model(Model2) is None
-            assert registry2.get_sqlalchemy_model(Model2) is not None
-            assert registry2.get_sqlalchemy_model(Model1) is None
-
-        except Exception as e:
-            pytest.skip(f"Database components not available: {e}")
+        # Verify each registry only has its own models
+        assert registry1.get_sqlalchemy_model(Model1) is not None
+        assert registry1.get_sqlalchemy_model(Model2) is None
+        assert registry2.get_sqlalchemy_model(Model2) is not None
+        assert registry2.get_sqlalchemy_model(Model1) is None
 
     def test_database_mixin_error_states(self):
         """Test that DatabaseMixin properly handles error states."""
@@ -1401,47 +1393,43 @@ class TestModelRegistry:
         """Test that ModelRegistry._scoped_import works correctly."""
         registry = ModelRegistry()
 
-        # Test importing BLL files from logic scope
-        try:
-            imported_modules, import_errors = registry._scoped_import(
-                file_type="BLL", scopes=["logic"]
-            )
+        # Import BLL files from logic scope. ``_scoped_import`` collects per-file
+        # failures into ``import_errors`` and does NOT raise, so the old
+        # ``except Exception: pytest.skip`` could only have fired on a genuine
+        # parse/import regression -- exactly what it must surface, not swallow.
+        imported_modules, import_errors = registry._scoped_import(
+            file_type="BLL", scopes=["logic"]
+        )
 
-            # Should return lists (even if empty for test environment)
-            assert isinstance(imported_modules, list)
-            assert isinstance(import_errors, list)
+        assert isinstance(imported_modules, list)
+        assert isinstance(import_errors, list)
 
-            # If there are any import errors, they should be tuples of (file_path, error_message)
-            for error in import_errors:
-                assert isinstance(error, tuple)
-                assert len(error) == 2
+        # The framework's own logic scope always contains BLL modules, so
+        # discovery must find *something* (imported or errored). An empty/empty
+        # result means discovery itself broke.
+        assert imported_modules or import_errors
 
-        except Exception as e:
-            # Expected in test environment where BLL files may not exist
-            pytest.skip(f"BLL files not available in test environment: {e}")
+        # Any import error must be a (file_path, error_message) tuple.
+        for error in import_errors:
+            assert isinstance(error, tuple)
+            assert len(error) == 2
 
     def test_from_scoped_import_class_method(self):
         """Test that ModelRegistry.from_scoped_import creates registry correctly."""
-        try:
-            # Create registry using the class method
-            registry = ModelRegistry.from_scoped_import(
-                file_type="BLL", scopes=["logic"]
-            )
+        # Create registry using the class method. This drives ``_scoped_import``
+        # over the framework's own logic BLLs, which do not raise, so any
+        # exception is a real regression -- surfaced, not skipped.
+        registry = ModelRegistry.from_scoped_import(file_type="BLL", scopes=["logic"])
 
-            # Should return a ModelRegistry instance
-            assert isinstance(registry, ModelRegistry)
+        assert isinstance(registry, ModelRegistry)
 
-            # Should have utility attached
-            assert hasattr(registry, "utility")
-            assert registry.utility is not None
+        # Should have utility attached
+        assert hasattr(registry, "utility")
+        assert registry.utility is not None
 
-            # May have bound models if BLL files were found
-            bound_models = registry.get_bound_models()
-            assert isinstance(bound_models, set)
-
-        except Exception as e:
-            # Expected in test environment where BLL files may not exist
-            pytest.skip(f"BLL files not available in test environment: {e}")
+        # The logic scope defines models, so from_scoped_import must bind them.
+        bound_models = registry.get_bound_models()
+        assert len(bound_models) >= 1
 
     def test_build_dependency_graph_ordering_identical_to_reference(self, tmp_path):
         """The inverted-index edge build must yield a byte-for-byte identical

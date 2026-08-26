@@ -135,6 +135,93 @@ class ParentManager:
         return ParentModel(id=id, name="Deleted")
 
 
+# ---------------------------------------------------------------------------
+# Real-registry helpers.
+#
+# A ``MagicMock(spec=ModelRegistry)`` lets the emitter run but produces only the
+# placeholder Query/Mutation, so a "schema is not None" assertion cannot fail on
+# a broken emitter. These helpers build a schema over a *real* bound registry
+# whose Query/Mutation actually carry the model's operations, so the emitter
+# tests can assert the concrete emitted fields (mirrors
+# ``test_schema_includes_query_fields_when_registry_binding_missing``).
+# ---------------------------------------------------------------------------
+
+
+class _BoundMockManager:
+    """A manager the GraphQL emitter can introspect (carries ``BaseModel``)."""
+
+    BaseModel = MockTestModel
+
+    def __init__(self, requester_id: str, model_registry: Any):
+        self.requester_id = requester_id
+        self.model_registry = model_registry
+
+    def get(
+        self,
+        id: str,
+        include: Optional[Any] = None,
+        fields: Optional[Any] = None,
+    ) -> MockTestModel:
+        return MockTestModel(id=id, name="Bound")  # type: ignore[call-arg]
+
+    def list(
+        self,
+        offset: int = 0,
+        limit: int = 100,
+        include: Optional[Any] = None,
+        fields: Optional[Any] = None,
+        **kwargs: Any,
+    ) -> List[MockTestModel]:
+        return [MockTestModel(id="1", name="Bound")]  # type: ignore[call-arg]
+
+    def create(self, **data: Any) -> MockTestModel:
+        return MockTestModel(id="created", name=data.get("name", "Created"))  # type: ignore[call-arg]
+
+    def update(self, id: str, **data: Any) -> MockTestModel:
+        return MockTestModel(id=id, name=data.get("name", "Updated"))  # type: ignore[call-arg]
+
+    def delete(self, id: str) -> bool:
+        return True
+
+
+class _RealMockRegistry:
+    """A minimal real registry the emitter drives to generate the model's ops."""
+
+    def __init__(self) -> None:
+        # Annotated as Any so subclasses can bind their own model set without a
+        # variance conflict on the inferred list element types.
+        self.bound_models: List[Any] = [MockTestModel]
+        self.model_relationships: List[Any] = [
+            (MockTestModel, MockTestRefModel, MockTestNetworkModel, _BoundMockManager)
+        ]
+
+    def apply(self, model: Any) -> Any:
+        raise TypeError("No matching type found in registry")
+
+
+def _real_schema_manager() -> "GraphQLManager":
+    """A GraphQLManager whose emitted schema carries MockTestModel's operations."""
+    return GraphQLManager(_RealMockRegistry())
+
+
+def _query_field_names(schema: Any) -> List[str]:
+    return [field.name for field in schema.get_type_by_name("Query").fields]
+
+
+def _mutation_field_names(schema: Any) -> List[str]:
+    mutation = schema.get_type_by_name("Mutation")
+    return [field.name for field in mutation.fields] if mutation else []
+
+
+def _enum_value_names(gql_type: Any) -> List[str]:
+    """Return the value names of an emitted Strawberry enum type."""
+    definition = getattr(gql_type, "_type_definition", None) or getattr(
+        gql_type, "__strawberry_definition__", None
+    )
+    assert definition is not None, f"not a Strawberry enum type: {gql_type!r}"
+    return [value.name for value in definition.values]
+
+
 # Abstract test mixin for GraphQL tests
 class AbstractGraphQLTestMixin(AbstractPydanticTestMixin):
     """Base test mixin for GraphQL-related tests"""
@@ -194,13 +281,18 @@ class TestSchemaManager(AbstractPydanticTestMixin):
         # Since TypeGenerator is now internal, test via GraphQLManager
         assert hasattr(schema_manager, "type_generator")
 
-        # Test that type generator exists and is functional
+        # With no model info the type generator yields nothing...
         if hasattr(schema_manager.type_generator, "create_type_for_model"):
             gql_type = schema_manager.type_generator.create_type_for_model(
                 MockTestModel
             )
-            # Should return None if no model info available
             assert gql_type is None
+
+        # ...but driven by a real bound registry it emits the model's object
+        # type. Assert the concrete emitted type is registered.
+        real_manager = _real_schema_manager()
+        real_manager.create_schema()
+        assert MockTestModel in real_manager._type_registry
 
     def test_batch_result_generator(self):
         """Test batch result generation via GraphQLManager"""
@@ -212,9 +304,12 @@ class TestSchemaManager(AbstractPydanticTestMixin):
             schema_manager, "_batch_result_generator"
         )
 
-        # Test that batch result generation is functional through the manager
-        schema = schema_manager.create_schema()
-        assert schema is not None
+        # Drive a real registry so the schema carries the model's operations,
+        # not just the placeholder Query. An empty/placeholder schema fails here.
+        schema = _real_schema_manager().create_schema()
+        query_fields = _query_field_names(schema)
+        assert "mockTest" in query_fields
+        assert "mockTests" in query_fields
 
     @pytest.mark.asyncio
     async def test_resolver_generator(self):
@@ -232,25 +327,26 @@ class TestSchemaManager(AbstractPydanticTestMixin):
             )
             assert callable(get_resolver)
 
-        # Test that the schema manager can create a schema (which uses resolvers)
-        schema = schema_manager.create_schema()
-        assert schema is not None
+        # Driven by a real registry, the resolvers wire into a schema whose Query
+        # exposes the model's get/list fields -- proving resolver generation
+        # actually produced operations, not an empty placeholder schema.
+        schema = _real_schema_manager().create_schema()
+        query_fields = _query_field_names(schema)
+        assert "mockTest" in query_fields
+        assert "mockTests" in query_fields
 
     def test_schema_creation_with_models(self):
-        """Test schema creation with actual model data"""
-        mock_registry = MagicMock(spec=ModelRegistry)
-        mock_registry.model_relationships = [
-            (MockTestModel, MockTestRefModel, MockTestNetworkModel, MockTestManager)
-        ]
+        """Test schema creation emits the model's query fields and CRUD mutations."""
+        schema = _real_schema_manager().create_schema()
 
-        schema_manager = GraphQLManager(mock_registry)
+        query_fields = _query_field_names(schema)
+        assert "mockTest" in query_fields
+        assert "mockTests" in query_fields
 
-        # Generate all components
-        schema_manager._generate_all_components()
-
-        # Should complete without errors (components are placeholders but functional)
-        schema = schema_manager.create_schema()
-        assert schema is not None
+        mutation_fields = _mutation_field_names(schema)
+        assert "createMockTest" in mutation_fields
+        assert "updateMockTest" in mutation_fields
+        assert "deleteMockTest" in mutation_fields
 
     def test_schema_includes_query_fields_when_registry_binding_missing(self):
         """GraphQL schema should expose query fields even without registry bindings."""
@@ -348,15 +444,19 @@ class TestSchemaManager(AbstractPydanticTestMixin):
         assert callable(graphql_manager.create_schema)
 
     def test_schema_creation(self):
-        """Test basic schema creation"""
+        """An empty registry still yields a queryable schema (placeholder Query)."""
         mock_registry = MagicMock(spec=ModelRegistry)
         mock_registry.model_relationships = []
 
         schema_manager = GraphQLManager(mock_registry)
         schema = schema_manager.create_schema()
 
-        # Should create a valid schema with placeholder fields
-        assert schema is not None
+        # Even with no models the schema must expose a valid, non-empty Query
+        # type (Strawberry rejects an empty Query), so a broken create_schema
+        # that returned an unusable schema fails here.
+        query = schema.get_type_by_name("Query")
+        assert query is not None
+        assert len(query.fields) >= 1
 
     def test_input_type_conversion(self):
         """Test input type generation and conversion"""
@@ -526,75 +626,111 @@ class TestIntegrationWithModelRegistry(AbstractGraphQLTestMixin):
         assert graphql_manager.model_registry == registry
 
     def test_no_global_state_pollution(self):
-        """Test that different instances don't pollute each other's state."""
-        # Create first registry and manager
-        registry1 = ModelRegistry()
-        registry1.bind(MockTestModel)
-        registry1._locked = True
-        registry1.model_relationships = [
-            (MockTestModel, MockTestRefModel, MockTestNetworkModel, MockTestManager)
-        ]
+        """Different manager instances do not share emitted type state."""
 
-        manager1 = GraphQLManager(registry1)
+        # A second, independently-bound model + manager.
+        class IsolatedModel(BaseModel):
+            id: str = Field(..., description="ID")
+            tag: str = Field(..., description="Tag")
 
-        # Create second registry and manager
-        registry2 = ModelRegistry()
-        registry2.bind(ParentModel)
-        registry2._locked = True
-        registry2.model_relationships = [(ParentModel, ChildModel, None, ParentManager)]
+            class Create(BaseModel):
+                tag: str
 
-        manager2 = GraphQLManager(registry2)
+            class Update(BaseModel):
+                tag: Optional[str] = None
 
-        # Verify different instances have different state
-        assert manager1.model_registry != manager2.model_registry
-        assert manager1.broadcast != manager2.broadcast
+        class IsolatedManager(_BoundMockManager):
+            BaseModel = IsolatedModel
 
-        # Verify managers are isolated
-        assert manager1.model_registry != manager2.model_registry
+            def get(self, id, include=None, fields=None):  # type: ignore[override]
+                return IsolatedModel(id=id, tag="t")
+
+            def list(self, offset=0, limit=100, include=None, fields=None, **kwargs):  # type: ignore[override]
+                return [IsolatedModel(id="1", tag="t")]
+
+        class IsolatedRegistry(_RealMockRegistry):
+            def __init__(self) -> None:
+                self.bound_models = [IsolatedModel]
+                self.model_relationships = [
+                    (IsolatedModel, IsolatedModel, None, IsolatedManager)
+                ]
+
+        manager1 = _real_schema_manager()
+        manager2 = GraphQLManager(IsolatedRegistry())
+
+        # Build both schemas, then prove emitted types do NOT bleed across
+        # managers: manager1 knows MockTestModel, manager2 knows IsolatedModel,
+        # and neither sees the other's. Two distinct-object registries would pass
+        # the old `!=` check trivially; this fails if generation mutated shared
+        # type state.
+        manager1.create_schema()
+        manager2.create_schema()
+
+        assert MockTestModel in manager1._type_registry
+        assert MockTestModel not in manager2._type_registry
+        assert IsolatedModel in manager2._type_registry
+        assert IsolatedModel not in manager1._type_registry
 
 
 class TestProgrammaticSchemaGeneration(AbstractGraphQLTestMixin):
     """Test that schemas are generated entirely programmatically"""
 
     def test_no_hardcoded_types(self):
-        """Test that there are no hardcoded type definitions"""
-        # Create a mock registry with dynamic model
-        mock_registry = MagicMock(spec=ModelRegistry)
+        """Types are emitted from the registered model, not hardcoded."""
 
-        # Create a completely dynamic model class with proper field annotations
+        # A model whose field name appears nowhere in the emitter source: if the
+        # schema exposes it, the type was generated from the model, proving the
+        # emitter is not returning a fixed/hardcoded type set.
         class DynamicModel(BaseModel):
             id: str = Field(..., description="ID")
             dynamic_field: str = Field(..., description="Dynamic field")
 
-        mock_registry.model_relationships = [
-            (DynamicModel, DynamicModel, None, MockTestManager)
-        ]
+            class Create(BaseModel):
+                dynamic_field: str
 
-        schema_manager = GraphQLManager(mock_registry)
-        schema_manager._generate_all_components()
+            class Update(BaseModel):
+                dynamic_field: Optional[str] = None
 
-        # Should complete without errors and create schema
-        schema = schema_manager.create_schema()
-        assert schema is not None
+        class DynamicManager(_BoundMockManager):
+            BaseModel = DynamicModel
+
+            def get(self, id, include=None, fields=None):  # type: ignore[override]
+                return DynamicModel(id=id, dynamic_field="x")
+
+            def list(self, offset=0, limit=100, include=None, fields=None, **kwargs):  # type: ignore[override]
+                return [DynamicModel(id="1", dynamic_field="x")]
+
+        class DynamicRegistry(_RealMockRegistry):
+            def __init__(self) -> None:
+                self.bound_models = [DynamicModel]
+                self.model_relationships = [
+                    (DynamicModel, DynamicModel, None, DynamicManager)
+                ]
+
+        schema = GraphQLManager(DynamicRegistry()).create_schema()
+
+        # The dynamically-named query field must be present -- a hardcoded type
+        # set could never contain "dynamic" (the "Model" suffix is stripped and
+        # the name camelCased, as MockTestModel -> mockTest).
+        query_fields = _query_field_names(schema)
+        assert "dynamic" in query_fields, query_fields
+        assert "dynamics" in query_fields, query_fields
 
     def test_comprehensive_operation_generation(self):
-        """Test that all operations are generated for each model"""
-        mock_registry = MagicMock(spec=ModelRegistry)
-        mock_registry.model_relationships = [
-            (MockTestModel, MockTestRefModel, MockTestNetworkModel, MockTestManager)
-        ]
+        """Every CRUD operation is generated for the registered model."""
+        schema = _real_schema_manager().create_schema()
 
-        schema_manager = GraphQLManager(mock_registry)
-        schema_manager._generate_all_components()
+        query_fields = _query_field_names(schema)
+        mutation_fields = _mutation_field_names(schema)
 
-        # Should complete without errors and create schema
-        schema = schema_manager.create_schema()
-        assert schema is not None
-
-        # Should have basic placeholder fields (strawberry uses different attribute names)
-        assert hasattr(schema, "query")
-        assert hasattr(schema, "mutation")
-        assert hasattr(schema, "subscription")
+        # get + list on Query, create/update/delete on Mutation -- the full CRUD
+        # surface, not merely that a query/mutation attribute exists (which is
+        # true for any Strawberry schema).
+        assert "mockTest" in query_fields, query_fields
+        assert "mockTests" in query_fields, query_fields
+        assert "createMockTest" in mutation_fields, mutation_fields
+        assert "updateMockTest" in mutation_fields, mutation_fields
+        assert "deleteMockTest" in mutation_fields, mutation_fields
 
 
 class TestEnumHandling(AbstractPydanticTestMixin):
@@ -624,9 +760,16 @@ class TestEnumHandling(AbstractPydanticTestMixin):
 
         schema_manager = GraphQLManager(mock_registry)
 
-        # Test conversion - should not raise an error
+        # A string-based enum must convert to a real GraphQL enum carrying its
+        # members -- not silently fall back to the String scalar (which is what
+        # a `type(name, (Enum,), dict)` build did before the emitter fix).
         gql_type = schema_manager._convert_python_type_to_gql(TestStringEnum)
-        assert gql_type is not None
+        assert gql_type is not TYPE_MAPPING[str], "string enum fell back to String"
+        assert set(_enum_value_names(gql_type)) == {
+            "OPTION_A",
+            "OPTION_B",
+            "OPTION_C",
+        }
 
         # Create schema - should not fail
         schema = schema_manager.create_schema()
@@ -657,9 +800,15 @@ class TestEnumHandling(AbstractPydanticTestMixin):
 
         schema_manager = GraphQLManager(mock_registry)
 
-        # Test conversion - should not raise an error
+        # A regular enum converts to a GraphQL enum carrying its four members.
         gql_type = schema_manager._convert_python_type_to_gql(TestRegularEnum)
-        assert gql_type is not None
+        assert gql_type is not TYPE_MAPPING[str]
+        assert set(_enum_value_names(gql_type)) == {
+            "PENDING",
+            "RUNNING",
+            "COMPLETED",
+            "FAILED",
+        }
 
         # Create schema - should not fail
         schema = schema_manager.create_schema()
@@ -680,39 +829,39 @@ class TestEnumHandling(AbstractPydanticTestMixin):
         mock_registry = MagicMock(spec=ModelRegistry)
         schema_manager = GraphQLManager(mock_registry)
 
-        # Test conversion - should not raise an error and should handle prefixing
+        # A str-based extension enum converts to a real GraphQL enum carrying its
+        # members (not the String fallback). NOTE: the extension-name *prefix*
+        # (module_parts[0] == "extensions") never fires for real
+        # `zephyrex.extensions.*` modules -- that dead-branch fix belongs to the
+        # emitter-DRY/introspection-SSOT work in #225, not this test-hardening
+        # pass; here we pin the conversion + member contract.
         gql_type = schema_manager._convert_python_type_to_gql(ExtensionEnum)
-        assert gql_type is not None
+        assert gql_type is not TYPE_MAPPING[str]
+        assert set(_enum_value_names(gql_type)) == {"STATE_A", "STATE_B"}
 
-    def test_problematic_enum_fallback(self):
-        """Test that problematic enums fall back to string type"""
-        # The warning messages in the test output show that enums are falling back to string
-        # when they have issues (like '_member_names' attribute missing)
-        # This is the expected behavior and shows our fix is working correctly
+    def test_problematic_enum_fallback(self, monkeypatch):
+        """When enum conversion raises, the emitter falls back to the String scalar."""
 
-        # Create a string enum to test the actual code path
         class TestEnumWithIssue(str, Enum):
             VALUE1 = "value1"
             VALUE2 = "value2"
 
-        # Create schema manager
         mock_registry = MagicMock(spec=ModelRegistry)
         schema_manager = GraphQLManager(mock_registry)
 
-        # Mock the enum to simulate an error during conversion
-        original_iter = TestEnumWithIssue.__iter__
-        TestEnumWithIssue.__iter__ = lambda self: (_ for _ in ()).throw(
-            Exception("Test error")
-        )
+        # Force the actual failure path: make Strawberry's enum builder raise, so
+        # the emitter's `except -> TYPE_MAPPING[str]` fallback is exercised. The
+        # contract is a concrete one -- the returned type IS the String scalar,
+        # not merely "not None".
+        import zephyrex.pydantic2.strawberry.manager as manager_module
 
-        try:
-            # Test conversion - should handle the error gracefully
-            gql_type = schema_manager._convert_python_type_to_gql(TestEnumWithIssue)
-            # The type should still be created (it falls back to string in the warning)
-            assert gql_type is not None
-        finally:
-            # Restore original behavior
-            TestEnumWithIssue.__iter__ = original_iter
+        def _boom(*args, **kwargs):
+            raise RuntimeError("enum build failed")
+
+        monkeypatch.setattr(manager_module.strawberry, "enum", _boom)
+
+        gql_type = schema_manager._convert_python_type_to_gql(TestEnumWithIssue)
+        assert gql_type is TYPE_MAPPING[str]
 
 
 # ----------------------------------------------------------------------
