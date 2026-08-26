@@ -73,9 +73,11 @@ def test_batch_body_keys_match_abstract_sdk_handler():
     bd = by_name["batch_delete"]
     assert [resolve_body_key(f, r) for f in bd.body] == ["target_ids"]
 
-    # create/update carry a raw (unwrapped) body.
-    assert resolve_body_key(by_name["create"].body[0], r) is None
-    assert resolve_body_key(by_name["update"].body[0], r) is None
+    # create/update wrap the payload as {<name>: data}, matching the handler's
+    # {self.config.name: data} (#231 — the IR previously declared a raw body, so
+    # generated TS/Rust POSTed a payload the Python SDK's handler did not).
+    assert resolve_body_key(by_name["create"].body[0], r) == "sdk_model_widget"
+    assert resolve_body_key(by_name["update"].body[0], r) == "sdk_model_widget"
 
 
 def test_extraction_is_deterministic():
