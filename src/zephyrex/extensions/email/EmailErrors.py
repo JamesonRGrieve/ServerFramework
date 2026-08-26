@@ -229,8 +229,14 @@ def map_upstream_status(
     return BaseExternalError(message)
 
 
-def extract_status_code(message: str):
-    """Pull the first 3-digit status code out of an error string, if any.
+def extract_status_code(message: str) -> int | None:
+    """Pull the first HTTP/SMTP-style status code (1xx–5xx) out of an error
+    string, if any.
+
+    The pattern is deliberately `\\b([1-5]\\d{2})\\b`, not a bare `\\d{3}`: a
+    real status code is always 1xx–5xx, so restricting the first digit avoids
+    matching an incidental 3-digit run in the message (e.g. the ``998`` in
+    "subject exceeds 998 octets") as if it were a status.
 
     Lives here (a provider-neutral module) rather than in a specific provider
     module so email providers can share it without importing each other — a
@@ -239,5 +245,5 @@ def extract_status_code(message: str):
     """
     import re
 
-    m = re.search(r"\b(\d{3})\b", message)
+    m = re.search(r"\b([1-5]\d{2})\b", message)
     return int(m.group(1)) if m else None

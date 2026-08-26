@@ -12,7 +12,6 @@ import email as _email
 import imaplib
 import os
 import smtplib
-from datetime import datetime
 from decimal import Decimal
 from email.header import decode_header
 from email.mime.application import MIMEApplication
@@ -28,17 +27,10 @@ from zephyrex.extensions.AbstractExtensionProvider import (
     HealthStatus,
     ability,
 )
-from zephyrex.extensions.AbstractExternalModel import idempotent
 from zephyrex.extensions.billing.BLL_CostModel import ConstantCostModel
-from zephyrex.extensions.email.EmailErrors import (
-    extract_status_code as _extract_status_code,
-    map_upstream_status,
-    map_validation_error,
-)
 from zephyrex.extensions.email.EXT_EMail import (
     AbstractEmailProvider,
     Capability,
-    EmailMessage,
     _DeprecatedEnvDict,
 )
 from zephyrex.extensions.ExternalErrors import DegradationPolicy, fail_fast
@@ -398,32 +390,3 @@ class IMAPProvider(AbstractEmailProvider):
     async def process_attachments(provider_instance, message_id):
         logger.warning("Processing attachments is not supported by the IMAP provider")
         return []
-
-    SEND_BULK_MAX_BATCH: ClassVar[int] = 1000
-
-    @classmethod
-    @idempotent
-    async def send_via_provider(
-        cls,
-        provider_instance: ProviderInstanceModel,
-        message: EmailMessage,
-    ) -> Dict[str, Any]:
-        validation_error = cls._validate_message(message)
-        if validation_error:
-            raise map_validation_error(validation_error)
-        legacy_result = await cls.send(provider_instance, message)
-        if isinstance(legacy_result, str) and legacy_result.lower().startswith(
-            "failed"
-        ):
-            status = _extract_status_code(legacy_result)
-            if status is not None:
-                raise map_upstream_status(status, legacy_result, provider=cls.name)
-            raise map_validation_error(legacy_result)
-        recipient = message.to[0].format() if message.to else ""
-        return {
-            "message_id": "",
-            "provider": cls.name,
-            "accepted_at": datetime.utcnow().isoformat(),
-            "recipient": recipient,
-            "upstream_response": {"raw": legacy_result},
-        }

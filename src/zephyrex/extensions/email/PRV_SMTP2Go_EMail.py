@@ -7,7 +7,6 @@ import base64
 import hmac
 import mimetypes
 import os
-from datetime import datetime
 from decimal import Decimal
 from email.utils import formataddr, parseaddr
 from typing import Any, ClassVar, Dict, List, Mapping, Optional, Set, Type
@@ -20,18 +19,11 @@ from zephyrex.extensions.AbstractExtensionProvider import (
     HealthStatus,
     ability,
 )
-from zephyrex.extensions.AbstractExternalModel import idempotent
 from zephyrex.extensions.billing.BLL_CostModel import ConstantCostModel
-from zephyrex.extensions.email.EmailErrors import (
-    EmailValidationError,
-    map_upstream_status,
-    map_validation_error,
-)
 from zephyrex.extensions.email.EXT_EMail import (
     AbstractEmailProvider,
     Capability,
     EmailDeliveryEvent,
-    EmailMessage,
     Importance,
     dispatch_email_delivery_event,
     _DeprecatedEnvDict,
@@ -63,20 +55,11 @@ except ImportError:
     _httpx_available = False
 
 try:
-    from zephyrex.extensions.email.PRV_SendGrid_EMail import (
-        _build_auth_strategy,
-        _extract_status_code,
-    )
+    from zephyrex.extensions.email.PRV_SendGrid_EMail import _build_auth_strategy
 except ImportError:
 
     def _build_auth_strategy(strategy: str, **kwargs):  # type: ignore[misc]
         return None
-
-    def _extract_status_code(msg: str) -> Optional[int]:  # type: ignore[misc]
-        import re
-
-        m = re.search(r"\b(\d{3})\b", msg)
-        return int(m.group(1)) if m else None
 
 
 class Smtp2goProvider(AbstractEmailProvider):
@@ -410,76 +393,6 @@ class Smtp2goProvider(AbstractEmailProvider):
     async def process_attachments(provider_instance, message_id):
         logger.warning("Processing attachments is not supported by SMTP2go")
         return []
-
-    SEND_BULK_MAX_BATCH: ClassVar[int] = 1000
-
-    @classmethod
-    @idempotent
-    async def send_via_provider(
-        cls,
-        provider_instance: ProviderInstanceModel,
-        message: EmailMessage,
-    ) -> Dict[str, Any]:
-        validation_error = cls._validate_message(message)
-        if validation_error:
-            raise map_validation_error(validation_error)
-
-        legacy_result = await cls.send(provider_instance, message)
-        if isinstance(legacy_result, str) and legacy_result.lower().startswith(
-            "failed"
-        ):
-            status = _extract_status_code(legacy_result)
-            if status is not None:
-                raise map_upstream_status(status, legacy_result, provider="smtp2go")
-            raise map_validation_error(legacy_result)
-
-        recipient = message.to[0].format() if message.to else ""
-        return {
-            "message_id": "",
-            "provider": cls.name,
-            "accepted_at": datetime.utcnow().isoformat(),
-            "recipient": recipient,
-            "upstream_response": {"raw": legacy_result},
-        }
-
-    @classmethod
-    @idempotent
-    async def send_bulk_via_provider(
-        cls,
-        provider_instance: ProviderInstanceModel,
-        messages: List[EmailMessage],
-    ) -> Dict[str, Any]:
-        if not messages:
-            return {"results": [], "succeeded": 0, "failed": 0}
-        if len(messages) > cls.SEND_BULK_MAX_BATCH:
-            raise EmailValidationError(
-                f"send_bulk_via_provider rejected: batch size "
-                f"{len(messages)} exceeds {cls.SEND_BULK_MAX_BATCH} cap"
-            )
-
-        for m in messages:
-            err = cls._validate_message(m)
-            if err:
-                raise map_validation_error(err)
-
-        results: List[Dict[str, Any]] = []
-        succeeded = 0
-        failed = 0
-        for m in messages:
-            try:
-                row = await cls.send_via_provider(provider_instance, m)
-                results.append({"success": True, **row})
-                succeeded += 1
-            except Exception as exc:
-                results.append(
-                    {
-                        "success": False,
-                        "error": str(exc),
-                        "error_type": type(exc).__name__,
-                    }
-                )
-                failed += 1
-        return {"results": results, "succeeded": succeeded, "failed": failed}
 
 
 # ============================================================================

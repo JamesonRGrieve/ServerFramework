@@ -26,7 +26,6 @@ from zephyrex.extensions.AbstractExternalModel import (
     AbstractExternalManager,
     AbstractExternalModel,
     create_external_reference_model,
-    idempotent,
 )
 from zephyrex.extensions.billing.BLL_CostModel import ConstantCostModel
 from zephyrex.extensions.email.AbstractEmailProviderInstance import (
@@ -735,130 +734,6 @@ class SendgridProvider(AbstractEmailProvider):
         logger.warning("Processing attachments is not supported by SendGrid")
         return []
 
-    # ------------------------------------------------------------------
-    # Item 91 — typed send_via_provider / send_bulk_via_provider.
-    #
-    # ``send_via_provider`` is the rotation-system entry point: it accepts
-    # a typed ``EmailMessage``, validates it (CRLF/NUL/length/address),
-    # raises a typed ``EmailValidationError`` on input rejection, raises
-    # the appropriate ``map_upstream_status`` error on provider-side
-    # failure, and returns a ``SentMessage`` shape on success. Decorated
-    # ``@idempotent`` so the rotation manager mints + persists an
-    # idempotency key per send.
-    #
-    # ``send_bulk_via_provider`` packs up to 1000 messages into a single
-    # SendGrid ``personalizations`` array, returning per-item rows.
-    # ------------------------------------------------------------------
-
-    SEND_BULK_MAX_BATCH: ClassVar[int] = 1000
-
-    @classmethod
-    @idempotent
-    async def send_via_provider(
-        cls,
-        provider_instance: ProviderInstanceModel,
-        message: EmailMessage,
-    ) -> Dict[str, Any]:
-        """Send a single typed ``EmailMessage`` via SendGrid.
-
-        Raises typed errors on validation failure (subclass of
-        ``EmailValidationError``) or upstream rejection (``map_upstream_status``).
-        Returns a dict carrying ``message_id`` / ``provider`` / ``recipient``
-        on success — this matches the ``SentMessage`` shape from Item 89
-        without forcing the dataclass import on call sites that still
-        consume dict envelopes.
-        """
-        validation_error = cls._validate_message(message)
-        if validation_error:
-            raise map_validation_error(validation_error)
-
-        legacy_result = await cls.send(provider_instance, message)
-        # ``send`` returns the legacy string envelope. Failures look like
-        # ``"Failed to send email: <reason>"``; map them to typed errors so
-        # the rotation manager can decide whether to retry.
-        if isinstance(legacy_result, str) and legacy_result.lower().startswith(
-            "failed"
-        ):
-            # Try to fish a status code out of the message.
-            status = _extract_status_code(legacy_result)
-            if status is not None:
-                raise map_upstream_status(status, legacy_result, provider="sendgrid")
-            raise map_validation_error(legacy_result)
-
-        recipient = message.to[0].format() if message.to else ""
-        return {
-            "message_id": "",
-            "provider": cls.name,
-            "accepted_at": datetime.utcnow().isoformat(),
-            "recipient": recipient,
-            "upstream_response": {"raw": legacy_result},
-        }
-
-    @classmethod
-    @idempotent
-    async def send_bulk_via_provider(
-        cls,
-        provider_instance: ProviderInstanceModel,
-        messages: List[EmailMessage],
-    ) -> Dict[str, Any]:
-        """Send up to ``SEND_BULK_MAX_BATCH`` messages in one upstream call.
-
-        SendGrid's REST API supports a ``personalizations`` array on a
-        single ``Mail`` payload — one element per recipient, sharing the
-        sender / subject / body. Per-item rejections (e.g., one invalid
-        recipient in a batch of 50) are surfaced as typed errors in the
-        per-item rows of the returned envelope; transport-level failures
-        (5xx, network) abort the whole batch with ``TransientExternalError``
-        from ``map_upstream_status``.
-        """
-        if not messages:
-            return {"results": [], "succeeded": 0, "failed": 0}
-        if len(messages) > cls.SEND_BULK_MAX_BATCH:
-            raise EmailValidationError(
-                f"send_bulk_via_provider rejected: batch size "
-                f"{len(messages)} exceeds {cls.SEND_BULK_MAX_BATCH} cap"
-            )
-
-        # Validate every message up-front so a batch with any unsafe
-        # member is rejected before we touch the upstream.
-        per_item_errors: List[Optional[Exception]] = []
-        for m in messages:
-            err = cls._validate_message(m)
-            if err:
-                per_item_errors.append(map_validation_error(err))
-            else:
-                per_item_errors.append(None)
-        if any(per_item_errors):
-            # Surface the first violation as a typed error rather than
-            # forwarding any half-valid batch.
-            for e in per_item_errors:
-                if e is not None:
-                    raise e
-
-        # Serial-loop fallback: SendGrid's ``personalizations`` API needs
-        # a homogeneous from/subject/body across items. For now, fall back
-        # to per-item ``send_via_provider`` so each message's full shape
-        # is preserved. The upstream-batched path lights up once Item 91
-        # finalises the schema diffing.
-        results: List[Dict[str, Any]] = []
-        succeeded = 0
-        failed = 0
-        for m in messages:
-            try:
-                row = await cls.send_via_provider(provider_instance, m)
-                results.append({"success": True, **row})
-                succeeded += 1
-            except Exception as exc:  # noqa: BLE001 — typed by send_via_provider
-                results.append(
-                    {
-                        "success": False,
-                        "error": str(exc),
-                        "error_type": type(exc).__name__,
-                    }
-                )
-                failed += 1
-        return {"results": results, "succeeded": succeeded, "failed": failed}
-
 
 # ============================================================================
 # Item 95 — SendGrid concrete `AbstractEmailProviderInstance` with the
@@ -1459,25 +1334,6 @@ def _register_sendgrid_webhook_handlers() -> None:
 
 
 _register_sendgrid_webhook_handlers()
-
-
-# ============================================================================
-# Helper: pluck an HTTP status code out of a legacy error string.
-# ============================================================================
-
-
-def _extract_status_code(message: str) -> Optional[int]:
-    """Return the first 3-digit status code in a legacy error string, if any.
-
-    Used by ``send_via_provider`` to map ``"Failed to send email: 503: ..."``
-    to a typed ``TransientExternalError`` via ``map_upstream_status``.
-    """
-    import re
-
-    m = re.search(r"\b([1-5]\d{2})\b", message or "")
-    if not m:
-        return None
-    return int(m.group(1))
 
 
 # ============================================================================

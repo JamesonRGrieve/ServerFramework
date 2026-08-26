@@ -19,6 +19,7 @@ based on file naming conventions.
 import os
 import warnings
 from abc import abstractmethod
+from datetime import datetime
 from email.utils import parseaddr
 from enum import Enum
 from typing import (
@@ -41,6 +42,13 @@ from zephyrex.extensions.AbstractExtensionProvider import (
     AbstractStaticExtension,
     AbstractStaticProvider,
     ability,
+)
+from zephyrex.extensions.AbstractExternalModel import idempotent
+from zephyrex.extensions.email.EmailErrors import (
+    EmailValidationError,
+    extract_status_code,
+    map_upstream_status,
+    map_validation_error,
 )
 from zephyrex.lib.Dependencies import Dependencies, PIP_Dependency
 from zephyrex.lib.Environment import env
@@ -885,6 +893,115 @@ class AbstractEmailProvider(AbstractStaticProvider):
                     os.unlink(tmp_path)
                 except OSError:
                     pass
+
+    # ------------------------------------------------------------------
+    # Item 91 — typed rotation-system send entry points.
+    #
+    # ``send_via_provider`` / ``send_bulk_via_provider`` are provider-neutral:
+    # they validate the typed ``EmailMessage``, delegate to ``cls.send`` (which
+    # each provider implements), and map any failure onto the typed external-
+    # error hierarchy — attributing every upstream error to ``cls.name``.
+    # Hoisted onto the base so all providers share one implementation; a
+    # provider overrides only when its send path genuinely diverges beyond
+    # attribution. Decorated ``@idempotent`` (a marker that survives
+    # inheritance) so the rotation manager mints + persists an idempotency key.
+    # ------------------------------------------------------------------
+
+    SEND_BULK_MAX_BATCH: ClassVar[int] = 1000
+
+    @classmethod
+    @idempotent
+    async def send_via_provider(
+        cls,
+        provider_instance: ProviderInstanceModel,
+        message: EmailMessage,
+    ) -> Dict[str, Any]:
+        """Send a single typed ``EmailMessage`` via this provider.
+
+        Validates the message, delegates to ``cls.send``, then maps a failure
+        onto the typed error hierarchy: a status code fished out of the legacy
+        envelope routes through ``map_upstream_status`` (attributed to
+        ``cls.name``), otherwise the failure is treated as a validation error.
+        Returns a ``SentMessage``-shaped dict on success.
+        """
+        validation_error = cls._validate_message(message)
+        if validation_error:
+            raise map_validation_error(validation_error)
+
+        legacy_result = await cls.send(provider_instance, message)
+        # ``send`` returns the legacy string envelope. Failures look like
+        # ``"Failed to send email: <reason>"``; map them to typed errors so the
+        # rotation manager can decide whether to retry.
+        if isinstance(legacy_result, str) and legacy_result.lower().startswith(
+            "failed"
+        ):
+            status = extract_status_code(legacy_result)
+            if status is not None:
+                raise map_upstream_status(status, legacy_result, provider=cls.name)
+            raise map_validation_error(legacy_result)
+
+        recipient = message.to[0].format() if message.to else ""
+        return {
+            "message_id": "",
+            "provider": cls.name,
+            "accepted_at": datetime.utcnow().isoformat(),
+            "recipient": recipient,
+            "upstream_response": {"raw": legacy_result},
+        }
+
+    @classmethod
+    @idempotent
+    async def send_bulk_via_provider(
+        cls,
+        provider_instance: ProviderInstanceModel,
+        messages: List[EmailMessage],
+    ) -> Dict[str, Any]:
+        """Send up to ``SEND_BULK_MAX_BATCH`` messages, one per recipient.
+
+        Validates every message up-front — collecting all violations, then
+        raising the first — so a batch with any unsafe member is rejected
+        before any upstream call is attempted. Per-message sends are then
+        attempted in order via :meth:`send_via_provider`; each row records
+        success or the typed error that ``send_via_provider`` raised.
+        """
+        if not messages:
+            return {"results": [], "succeeded": 0, "failed": 0}
+        if len(messages) > cls.SEND_BULK_MAX_BATCH:
+            raise EmailValidationError(
+                f"send_bulk_via_provider rejected: batch size "
+                f"{len(messages)} exceeds {cls.SEND_BULK_MAX_BATCH} cap"
+            )
+
+        # Validate every message up-front so a batch with any unsafe member is
+        # rejected before we touch the upstream. Collect all violations, then
+        # surface the first as a typed error rather than forwarding any
+        # half-valid batch.
+        per_item_errors: List[Optional[Exception]] = [
+            map_validation_error(err) if (err := cls._validate_message(m)) else None
+            for m in messages
+        ]
+        for e in per_item_errors:
+            if e is not None:
+                raise e
+
+        results: List[Dict[str, Any]] = []
+        succeeded = 0
+        failed = 0
+        for m in messages:
+            try:
+                row = await cls.send_via_provider(provider_instance, m)
+                results.append({"success": True, **row})
+                succeeded += 1
+            except Exception as exc:  # noqa: BLE001 — typed by send_via_provider
+                results.append(
+                    {
+                        "success": False,
+                        "error": str(exc),
+                        "error_type": type(exc).__name__,
+                    }
+                )
+                failed += 1
+        return {"results": results, "succeeded": succeeded, "failed": failed}
 
     @classmethod
     async def update_email(
