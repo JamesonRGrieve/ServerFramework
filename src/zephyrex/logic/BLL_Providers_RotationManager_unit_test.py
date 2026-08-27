@@ -7,7 +7,7 @@ acceptable per AGENTS.md `@pytest.mark.unit`.
 from __future__ import annotations
 
 import warnings
-from typing import Any, List, Optional
+from typing import Any, List
 from unittest.mock import MagicMock
 
 import pytest
@@ -35,33 +35,26 @@ from zephyrex.extensions.ExternalErrors import (
 )
 from zephyrex.logic.Outbox import InMemoryOutboxStore
 
-# `lib.Dependencies` is being mutated by a parallel agent and currently
-# fails to import in some sandboxed runs (`Optional[Any]` referenced
-# without an `Any` import). When that happens we skip the whole module
-# so our own contract tests don't get false-failed by an unrelated bug.
-try:
-    from zephyrex.logic import BLL_Providers as _bll_mod  # canonical reference for the
+from zephyrex.logic import BLL_Providers as _bll_mod  # canonical module reference
 
-    # OLD module — `_scoped_import` from `lib/Pydantic_test.py` may
-    # replace `sys.modules["zephyrex.logic.BLL_Providers"]` with a fresh module
-    # at runtime, leaving this test file's `RotationManager` symbol
-    # pointing at the OLD class that writes to the OLD
-    # `_STICKY_SESSIONS` dict. Asserting through `_bll_mod._sticky_get`
-    # (rather than re-importing from the live sys.modules) keeps reads
-    # and writes pointed at the same module-globals dict.
-    from zephyrex.logic.BLL_Providers import (
-        ManagerContractError,
-        RotationManager,
-        RoutingHint,
-        reset_auth_cooldowns,
-        reset_sticky_sessions,
-        validate_manager_constructors,
-    )
-except NameError as _exc:  # pragma: no cover - defensive
-    pytest.skip(
-        f"BLL_Providers import blocked by lib/Dependencies (other batch): {_exc}",
-        allow_module_level=True,
-    )
+# `_scoped_import` from `lib/Pydantic_test.py` may replace
+# `sys.modules["zephyrex.logic.BLL_Providers"]` with a fresh module at runtime,
+# leaving this file's `RotationManager` symbol pointing at the OLD class that
+# writes to the OLD `_STICKY_SESSIONS` dict. Asserting through
+# `_bll_mod._sticky_get` (rather than re-importing from the live sys.modules)
+# keeps reads and writes pointed at the same module-globals dict.
+#
+# The import is intentionally NOT wrapped in `except NameError: pytest.skip(...)`:
+# a genuine import break in BLL_Providers must fail this module loudly rather
+# than silently delete every RotationManager contract test from the run.
+from zephyrex.logic.BLL_Providers import (
+    ManagerContractError,
+    RotationManager,
+    RoutingHint,
+    reset_auth_cooldowns,
+    reset_sticky_sessions,
+    validate_manager_constructors,
+)
 
 
 @pytest.fixture(autouse=True)
