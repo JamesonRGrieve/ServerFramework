@@ -955,61 +955,43 @@ class TestAbstractLogicManager:
         )
 
     def test_search_filter_building(self):
-        """Test building of search filters."""
+        """Multiple field operators are ANDed and applied correctly to real rows.
 
-        # Create a mock SQLAlchemy field that can handle the ilike operation
-        mock_field = MagicMock()
-        mock_field.ilike.return_value = "mocked filter condition"
+        The old test mocked the ORM field so ``ilike`` returned a constant and
+        asserted only ``len(filters) == 5`` -- a regression emitting the wrong
+        operator (``eq`` for ``inc``, ``<`` for ``>``) still produced 5 filter
+        objects and passed. Here we build the filters via ``search`` against real
+        rows and assert only the row matching EVERY predicate survives, plus that
+        a registered custom transformer is actually invoked.
+        """
+        # Seed rows so exactly one satisfies BOTH the name and description
+        # substring predicates.
+        self.base_manager.create(name="alpha", description="keep")  # matches both
+        self.base_manager.create(name="alpha", description="drop")  # name only
+        self.base_manager.create(name="omega", description="keep")  # description only
 
-        # Patch the specific field access for the test
-        with (
-            patch.object(MockDBModel, "name", mock_field),
-            patch.object(MockDBModel, "description", mock_field),
-            patch.object(MockDBModel, "count", 3),
-            patch.object(MockDBModel, "created_at", datetime.now()),
-            patch.object(MockDBModel, "updated_at", datetime.now()),
-        ):
-            with patch.object(self.base_manager, "get_field_types") as mock_get_types:
-                mock_get_types.return_value = (
-                    ["name", "description"],  # string fields
-                    ["count", "value"],  # numeric fields
-                    ["created_at", "updated_at"],  # date fields
-                    ["is_active"],  # boolean fields
-                )
+        # Prove the custom-transformer registration path is exercised (not a
+        # no-op) by wrapping the real description transformer.
+        transformer_calls: List[Any] = []
+        real_description = self.base_manager.search_transformers["description"]
 
-                # Test with various search parameters - using only the fields we've properly mocked
-                search_params = {
-                    "name": {"inc": "test"},
-                    "count": {"gt": 3},
-                    "created_at": {"after": datetime.now()},
-                    "updated_at": {"before": datetime.now()},
-                    "custom_search": "custom value",
-                }
+        def counting_description(value: Any) -> Any:
+            transformer_calls.append(value)
+            return real_description(value)
 
-                # Register a custom transformer for testing
-                custom_transformer_called = False
+        self.base_manager.search_transformers["description"] = counting_description
+        try:
+            results = self.base_manager.search(
+                name={"inc": "alpha"}, description={"inc": "keep"}
+            )
+        finally:
+            self.base_manager.search_transformers["description"] = real_description
 
-                def mock_custom_transformer(value):
-                    nonlocal custom_transformer_called
-                    custom_transformer_called = True
-                    return [MagicMock()]
-
-                self.base_manager.search_transformers["custom_search"] = (
-                    mock_custom_transformer
-                )
-
-                # Build filters
-                filters = self.base_manager.build_search_filters(search_params)
-
-                # Verify custom transformer was called
-                assert custom_transformer_called
-                # Verify we got filters back
-                assert len(filters) > 0
-
-                assert len(filters) == 5
-
-                # Cleanup
-                del self.base_manager.search_transformers["custom_search"]
+        pairs = sorted((r.name, r.description) for r in results)
+        # Only the ("alpha", "keep") row matches BOTH substrings; a wrong
+        # operator (eq vs inc) or an OR instead of an AND would change this set.
+        assert pairs == [("alpha", "keep")], pairs
+        assert transformer_calls == [{"inc": "keep"}], transformer_calls
 
     def test_get_field_types_memoizes_type_hints_per_class(self):
         """``get_field_types`` must categorize identically while resolving the

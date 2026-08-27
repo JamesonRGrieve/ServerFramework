@@ -1014,26 +1014,28 @@ class TestSessionManager(AbstractBLLTest):
 
     @pytest.mark.security
     @pytest.mark.auth
-    def test_session_key_is_high_entropy(self, admin_a, team_a, model_registry):
-        """Generated session_key must be unguessable: 1k samples must all be unique."""
-        manager = self.class_under_test(
-            requester_id=admin_a.id,
-            target_team_id=team_a.id,
-            model_registry=model_registry,
-        )
+    def test_session_key_is_high_entropy(self):
+        """The SERVER-generated session_key must be unguessable.
+
+        Exercises the real generator (``issue_session`` with no supplied key),
+        NOT a client-supplied uuid: the old test passed ``session_key=uuid4``
+        and only proved the test's own uuid was unique, so a server that emitted
+        a constant or low-entropy key still passed. Passing ``model_registry=
+        None`` returns the freshly-generated key without a DB round-trip.
+        """
+        from zephyrex.extensions.auth_session.BLL_Session import issue_session
+
         keys = set()
         for _ in range(1000):
-            session = manager.create(
-                user_id=admin_a.id,
-                session_key=f"session_{uuid.uuid4().hex}",
-                jwt_issued_at=datetime.now(timezone.utc),
-                last_activity=datetime.now(timezone.utc),
-                expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
-            )
-            sk = getattr(session, "session_key", None) or session["session_key"]
-            assert sk not in keys, "Duplicate session_key in 1000 samples"
-            assert len(sk) >= 16, f"session_key too short: {len(sk)} chars"
+            sk = issue_session(user_id="entropy-probe", model_registry=None)
+            assert (
+                sk not in keys
+            ), "server-generated session_key collided in 1000 samples"
+            # secrets.token_hex(16) == 128 bits == 32 hex chars; anything shorter
+            # is a weakened generator.
+            assert len(sk) >= 32, f"session_key too short: {len(sk)} chars"
             keys.add(sk)
+        assert len(keys) == 1000
 
     @pytest.mark.security
     @pytest.mark.auth

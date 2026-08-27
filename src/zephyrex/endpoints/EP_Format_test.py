@@ -218,8 +218,15 @@ class TestFormatNegotiationCRUD:
         self, server: Any, admin_a: Any, team_a: Any, fmt: str, mime: str
     ) -> None:
         """GET /v1/team (list) with each Accept header."""
+        from faker import Faker
+
+        faker = Faker()
+        name = f"ListFmt-{fmt}-{faker.random_int()}"
+        created = self._create_team_json(server, admin_a, name)
+        team_id = str(created["id"])
+
         headers = {**self._auth_headers(admin_a), "Accept": mime}
-        resp = server.get("/v1/team", headers=headers)
+        resp = server.get("/v1/team?limit=1000", headers=headers)
         assert resp.status_code == 200, (
             f"GET /v1/team with Accept: {mime} returned "
             f"{resp.status_code}: {resp.text}"
@@ -234,19 +241,35 @@ class TestFormatNegotiationCRUD:
             )
             data = _parse_response(resp.text, fmt)
 
-        # The list response is either a dict with a plural key or a bare list.
+        # Extract the team list (dict with a plural key, or a bare list).
         if isinstance(data, dict):
             list_values = [v for v in data.values() if isinstance(v, list)]
-            assert len(list_values) > 0, (
+            assert list_values, (
                 f"Expected at least one list in {fmt} response dict, "
                 f"got keys: {list(data.keys())}"
             )
+            items = list_values[0]
         elif isinstance(data, list):
-            pass  # Bare list is acceptable
+            items = data
         else:
             pytest.fail(
-                f"Expected dict or list from {fmt} list response, " f"got {type(data)}"
+                f"Expected dict or list from {fmt} list response, got {type(data)}"
             )
+
+        # The team we just created MUST appear in the list with its id AND name
+        # surviving the format round-trip. The old `len(list_values) > 0` check
+        # passed on an empty `{"teams": []}` (which still yields one list value)
+        # and never verified any entity was actually serialized.
+        by_id = {
+            str(item.get("id")): item
+            for item in items
+            if isinstance(item, dict) and item.get("id") is not None
+        }
+        assert team_id in by_id, (
+            f"created team {team_id} absent from {fmt} list "
+            f"(got {len(by_id)} teams): {sorted(by_id)[:5]}"
+        )
+        assert str(by_id[team_id].get("name")) == name
 
     # -- POST with each Content-Type (request body format) -----------------
 

@@ -7,6 +7,7 @@ These cover the new ``ScheduledService``, ``QueueConsumerService``, and
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 from typing import Any, List
 
 import pytest
@@ -250,5 +251,25 @@ def test_reset_failed_clears_state():
 @pytest.mark.unit
 def test_health_status_to_dict():
     svc = _NoopPerpetual(requester_id="r")
-    d = svc.health().to_dict()
-    assert "status" in d and "detail" in d and "timestamp" in d
+
+    # Unstarted -> DOWN. Assert the serialized status VALUE, not merely that the
+    # key exists: a to_dict emitting the wrong status, None, or a stale timestamp
+    # passed the old key-presence check.
+    down = svc.health().to_dict()
+    assert down["status"] == HealthStatus.DOWN
+
+    # Started -> OK. to_dict must reflect the CHANGED state, proving it
+    # serializes the real status rather than a constant.
+    svc.start()
+    try:
+        report = svc.health()
+        d = report.to_dict()
+        assert d["status"] == HealthStatus.OK
+        assert d["status"] == report.status
+        assert isinstance(d["detail"], str)
+        # The timestamp round-trips as a well-formed, recent, tz-aware ISO string.
+        parsed = datetime.fromisoformat(d["timestamp"])
+        assert parsed.tzinfo is not None
+        assert abs((datetime.now(timezone.utc) - parsed).total_seconds()) < 60
+    finally:
+        svc.stop()
