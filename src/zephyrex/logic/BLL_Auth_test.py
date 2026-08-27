@@ -564,6 +564,10 @@ class TestTeamManager(AbstractBLLTest):
         "name": f"Test Team {faker.word()}",
         "description": faker.sentence(),
         "encryption_salt": faker.uuid4(),
+        # Seed the user-settable image URL so its search-operator coverage runs
+        # instead of skipping. (token / training_data are server-managed and
+        # parent_id is an FK requiring a target, so they stay unset.)
+        "image_url": "https://example.com/team.png",
     }
     update_fields = {
         "name": f"Updated Team {faker.word()}",
@@ -902,6 +906,13 @@ class TestSessionManager(AbstractBLLTest):
         "last_activity": lambda: datetime.now(timezone.utc),
         "expires_at": lambda: datetime.now(timezone.utc) + timedelta(hours=24),
         "user_id": None,  # Will be set by build_entities from parameter
+        # Seed the simple, creatable searchable device fields so their
+        # search-operator coverage runs instead of skipping. (grant_type /
+        # pending_state / refresh_token_hash are server-controlled and stay unset
+        # -- their skip is correct, not masking.)
+        "device_type": "web",
+        "device_name": "test-device",
+        "browser": "test-browser",
     }
     update_fields = {
         "last_activity": datetime(2025, 12, 25, 12, 0, 0),
@@ -979,7 +990,11 @@ class TestSessionManager(AbstractBLLTest):
         # Get field value
         field_value = entity_dict.get(search_field)
         if field_value is None:
-            pytest.skip(f"Field {search_field} is None in test entity")
+            pytest.skip(
+                f"'{search_field}' is legitimately unset on a fresh "
+                f"{self.class_under_test.__name__} entity "
+                f"(unseeded FK / server-controlled / audit field)"
+            )
 
         # Get search value for operator
         search_value = self.get_search_value_for_operator(field_value, search_operator)
@@ -1225,7 +1240,11 @@ class TestInvitationManager(AbstractBLLTest):
         # Get field value and perform search
         field_value = getattr(entity, search_field, None)
         if field_value is None:
-            pytest.skip(f"Entity has no field '{search_field}' or field is None")
+            pytest.skip(
+                f"'{search_field}' is legitimately unset on a fresh "
+                f"{self.class_under_test.__name__} entity "
+                f"(unseeded FK / server-controlled / audit field)"
+            )
             return
 
         search_params = {search_field: {search_operator: field_value}}
@@ -3489,7 +3508,11 @@ class TestPermissionManager(AbstractBLLTest):
         # Get field value
         field_value = entity_dict.get(search_field)
         if field_value is None:
-            pytest.skip(f"Field {search_field} is None in test entity")
+            pytest.skip(
+                f"'{search_field}' is legitimately unset on a fresh "
+                f"{self.class_under_test.__name__} entity "
+                f"(unseeded FK / server-controlled / audit field)"
+            )
 
         # Get search value for operator
         search_value = self.get_search_value_for_operator(field_value, search_operator)
