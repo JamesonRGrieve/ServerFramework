@@ -319,7 +319,10 @@ class TestJWTSemantics:
         }
         token = pyjwt.encode(payload, env("JWT_SECRET"), algorithm="HS256")
         response = server.get("/v1/team", headers={"Authorization": f"Bearer {token}"})
-        assert response.status_code != 500
+        # A forged token carrying inflated scope claims must NOT be honored: it is
+        # rejected outright (missing the real claims a valid session needs), never
+        # granted access. A regression that trusted the `scope` claim would 200.
+        assert response.status_code in (401, 403), response.status_code
 
 
 # ------------------------------------------------------------------ #
@@ -434,8 +437,6 @@ class TestAuditSecurity:
     @pytest.mark.security
     def test_failed_auth_does_not_log_password(self, server):
         """Failed login must not log the attempted password."""
-        import logging
-
         server.post(
             "/v1/user/login",
             json={"email": "test@example.com", "password": "SECRET_PASSWORD_VALUE"},
@@ -531,12 +532,21 @@ class TestPropertyLevelAuth:
     @pytest.mark.security
     def test_update_cannot_change_verified_status(self, server, admin_a, team_a):
         """PUT must not accept is_verified or email_verified fields."""
+        headers = {"Authorization": f"Bearer {admin_a.jwt}"}
         response = server.put(
             f"/v1/team/{team_a.id}",
             json={"team": {"is_verified": True, "email_verified": True}},
-            headers={"Authorization": f"Bearer {admin_a.jwt}"},
+            headers=headers,
         )
         assert response.status_code != 500
+        # Re-fetch the team: the client-supplied verification flags must NOT have
+        # been persisted (they are not accept-listed Team fields). A server that
+        # honored them would surface is_verified/email_verified == True here.
+        fetched = server.get(f"/v1/team/{team_a.id}", headers=headers)
+        if fetched.status_code == 200:
+            team = fetched.json().get("team", fetched.json())
+            assert team.get("is_verified") is not True
+            assert team.get("email_verified") is not True
 
 
 # ------------------------------------------------------------------ #
@@ -546,13 +556,29 @@ class TestPropertyLevelAuth:
 
 class TestRelationshipAuth:
     @pytest.mark.security
-    def test_deleted_parent_does_not_reveal_child(self, server, admin_a, team_a):
+    def test_deleted_parent_does_not_reveal_child(self, server, admin_a):
         """If parent team is deleted, child resources must not be accessible."""
-        response = server.get(
-            f"/v1/team/{team_a.id}/user",
-            headers={"Authorization": f"Bearer {admin_a.jwt}"},
+        headers = {"Authorization": f"Bearer {admin_a.jwt}"}
+        # Own the lifecycle: create a team, confirm its child listing is reachable,
+        # then delete the parent and assert the child collection is no longer
+        # accessible. The old test never deleted anything and only checked !=500.
+        created = server.post(
+            "/v1/team",
+            json={"team": {"name": f"delparent_{uuid.uuid4().hex[:6]}"}},
+            headers=headers,
         )
-        assert response.status_code != 500
+        assert created.status_code == 201, created.text
+        team_id = created.json()["team"]["id"]
+
+        before = server.get(f"/v1/team/{team_id}/user", headers=headers)
+        assert before.status_code == 200, before.text
+
+        deleted = server.delete(f"/v1/team/{team_id}", headers=headers)
+        assert deleted.status_code in (200, 204), deleted.text
+
+        after = server.get(f"/v1/team/{team_id}/user", headers=headers)
+        # The child collection under a deleted parent must not be served.
+        assert after.status_code in (403, 404), after.status_code
 
     @pytest.mark.security
     def test_nested_include_cannot_return_unauthorized_records(
@@ -702,7 +728,10 @@ class TestSerializationSecurity:
             headers={"Authorization": f"Bearer {admin_a.jwt}"},
         )
         body = response.text
-        assert "os.system" not in body or "class" not in body.lower()
+        # The `or` let a leak through whenever the body simply lacked the word
+        # "class". The contract is that the internal class token never appears.
+        assert "os.system" not in body, "response leaked an internal class name"
+        assert "__class__" not in body, "response echoed the injected __class__ key"
 
 
 # ------------------------------------------------------------------ #
@@ -734,10 +763,16 @@ class TestPrototypePollutionStructural:
             json={"team": {"name": "req2", "encryption_salt": "s2"}},
             headers={"Authorization": f"Bearer {admin_a.jwt}"},
         )
-        if r1.status_code == 201 and r2.status_code == 201:
-            t1 = r1.json().get("team", {})
-            t2 = r2.json().get("team", {})
-            assert t1.get("name") != t2.get("name")
+        # Both creates must succeed and the second must NOT inherit the first
+        # request's field values (a shared/mutable default would bleed req1's
+        # name/salt into req2). Asserted unconditionally so a 4xx cannot hide it.
+        assert r1.status_code == 201, r1.text
+        assert r2.status_code == 201, r2.text
+        t1 = r1.json().get("team", {})
+        t2 = r2.json().get("team", {})
+        assert t1.get("name") == "req1"
+        assert t2.get("name") == "req2"
+        assert t1.get("id") != t2.get("id")
 
 
 # ------------------------------------------------------------------ #
@@ -779,21 +814,45 @@ class TestUnicodeAdvanced:
         assert response.status_code != 500
 
     @pytest.mark.security
-    def test_normalization_applied_before_uniqueness_check(self, server, admin_a):
-        """Unicode normalization must happen before uniqueness checks."""
-        name1 = f"café_{uuid.uuid4().hex[:4]}"
-        name2 = f"café_{uuid.uuid4().hex[:4]}"
-        server.post(
-            "/v1/team",
-            json={"team": {"name": name1, "encryption_salt": "x"}},
-            headers={"Authorization": f"Bearer {admin_a.jwt}"},
+    def test_normalization_applied_before_uniqueness_check(self, server):
+        """Case/Unicode normalization must happen before the uniqueness check.
+
+        Uses the user email, which carries a real uniqueness constraint (team
+        names do not), so a normalized-equivalent second registration is a true
+        duplicate the server must reject -- not two distinct rows.
+        """
+        local = f"norm_{uuid.uuid4().hex[:8]}"
+        first = server.post(
+            "/v1/user",
+            json={
+                "user": {
+                    "email": f"{local}@Example.COM",
+                    "password": "TestPass123!",
+                    "first_name": "Norm",
+                    "last_name": "One",
+                }
+            },
         )
-        r2 = server.post(
-            "/v1/team",
-            json={"team": {"name": name2, "encryption_salt": "x"}},
-            headers={"Authorization": f"Bearer {admin_a.jwt}"},
+        assert first.status_code in (200, 201), first.text
+
+        # Same email after case normalization -> must be rejected as a duplicate,
+        # never silently accepted as a second account.
+        second = server.post(
+            "/v1/user",
+            json={
+                "user": {
+                    "email": f"{local}@example.com",
+                    "password": "TestPass123!",
+                    "first_name": "Norm",
+                    "last_name": "Two",
+                }
+            },
         )
-        assert r2.status_code != 500
+        assert second.status_code in (
+            400,
+            409,
+            422,
+        ), f"normalized-duplicate email was not rejected; got {second.status_code}"
 
 
 # ------------------------------------------------------------------ #
@@ -1391,37 +1450,75 @@ class TestStateMachineSecurity:
 
 class TestSessionFixation:
     @pytest.mark.security
-    def test_session_creation_timestamp_not_client_controlled(self, server, admin_a):
-        """Session creation timestamps must be server-controlled."""
-        response = server.post(
-            "/v1/user/login",
+    def test_session_creation_timestamp_not_client_controlled(self, server):
+        """Creation timestamps must be server-assigned, ignoring client input."""
+        email = f"ts_{uuid.uuid4().hex[:8]}@example.com"
+        reg = server.post(
+            "/v1/user",
             json={
-                "email": "admin@example.com",
-                "password": "TestPass123!",
-                "created_at": "2000-01-01T00:00:00Z",
+                "user": {
+                    "email": email,
+                    "password": "TestPass123!",
+                    "first_name": "Ts",
+                    "last_name": "User",
+                    "created_at": "2000-01-01T00:00:00Z",
+                }
             },
         )
-        assert response.status_code != 500
+        assert reg.status_code in (200, 201), reg.text
+        auth = server.post(
+            "/v1/user/authorize",
+            json={"email": email, "password": "TestPass123!"},
+        )
+        assert auth.status_code == 200, auth.text
+        me = server.get(
+            "/v1/user",
+            headers={"Authorization": f"Bearer {auth.json()['token']}"},
+        )
+        assert me.status_code == 200, me.text
+        created_at = me.json().get("user", me.json()).get("created_at", "")
+        # The client's 2000 timestamp must have been ignored: the server stamps
+        # the real creation time.
+        assert not str(created_at).startswith(
+            "2000"
+        ), f"client-supplied created_at was honored: {created_at}"
 
     @pytest.mark.security
-    def test_session_id_not_client_controlled(self, server, admin_a):
-        """Session IDs must not be settable by the client."""
-        response = server.post(
-            "/v1/user/login",
+    def test_session_id_not_client_controlled(self, server):
+        """Session IDs must be server-generated, not settable by the client."""
+        email = f"sid_{uuid.uuid4().hex[:8]}@example.com"
+        reg = server.post(
+            "/v1/user",
             json={
-                "email": "admin@example.com",
+                "user": {
+                    "email": email,
+                    "password": "TestPass123!",
+                    "first_name": "Sid",
+                    "last_name": "User",
+                }
+            },
+        )
+        assert reg.status_code in (200, 201), reg.text
+        # Authenticate while smuggling an attacker-chosen session_id.
+        auth = server.post(
+            "/v1/user/authorize",
+            json={
+                "email": email,
                 "password": "TestPass123!",
                 "session_id": "attacker-controlled-id",
             },
         )
-        if response.status_code in (200, 201):
-            body = response.json()
-            user_data = body.get("user", body)
-            if isinstance(user_data, dict):
-                sid = user_data.get("session_id", "")
-                assert (
-                    sid != "attacker-controlled-id"
-                ), "Client-supplied session_id was accepted"
+        assert auth.status_code == 200, auth.text
+        sessions = server.get(
+            "/v1/session",
+            headers={"Authorization": f"Bearer {auth.json()['token']}"},
+        )
+        assert sessions.status_code == 200, sessions.text
+        ids = [s.get("id") for s in sessions.json().get("sessions", [])]
+        assert ids, "a freshly authenticated user must hold a session"
+        assert (
+            "attacker-controlled-id" not in ids
+        ), "client-supplied session_id was accepted"
 
 
 # ------------------------------------------------------------------ #
@@ -2394,7 +2491,11 @@ class TestFastAPIExceptionHandlerMasking:
             json={"team": {"name": "test", "encryption_salt": "x"}},
             headers={"Authorization": f"Bearer {admin_a.jwt}"},
         )
-        assert response.status_code != 500 or response.status_code != 422
+        # `!= 500 or != 422` was a tautology (a status is never both). The intent
+        # is that this valid create is NOT masked as a 422 validation failure --
+        # it succeeds cleanly.
+        assert response.status_code != 422, response.text
+        assert response.status_code in (200, 201), response.text
 
 
 class TestFastAPIOpenAPISideEffects:

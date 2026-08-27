@@ -985,12 +985,14 @@ class TestLIKEWildcardEscaping:
             json={"team": {"name": {"inc": "%"}}},
             headers={"Authorization": f"Bearer {admin_a.jwt}"},
         )
-        if response.status_code == 200:
-            body = response.json()
-            teams = body.get("teams", [])
-            assert len(teams) == 0 or all(
-                "%" in t.get("name", "") for t in teams
-            ), "Search for literal '%' should only match names containing '%'"
+        # The search must succeed and treat '%' as a LITERAL, not a LIKE wildcard:
+        # a 500 (escaping regression) or non-200 is a failure, not a pass. A
+        # broken escape would return every team.
+        assert response.status_code == 200, response.text
+        teams = response.json().get("teams", [])
+        assert all(
+            "%" in t.get("name", "") for t in teams
+        ), "search for literal '%' matched names without '%' (wildcard leaked)"
 
     def test_search_underscore_not_wildcard(self, server, admin_a):
         response = server.post(
@@ -998,12 +1000,13 @@ class TestLIKEWildcardEscaping:
             json={"team": {"name": {"inc": "_"}}},
             headers={"Authorization": f"Bearer {admin_a.jwt}"},
         )
-        if response.status_code == 200:
-            body = response.json()
-            teams = body.get("teams", [])
-            assert len(teams) == 0 or all(
-                "_" in t.get("name", "") for t in teams
-            ), "Search for literal '_' should only match names containing '_'"
+        # '_' must be a LITERAL, not a single-char LIKE wildcard. Assert 200 and
+        # that every returned name actually contains '_'.
+        assert response.status_code == 200, response.text
+        teams = response.json().get("teams", [])
+        assert all(
+            "_" in t.get("name", "") for t in teams
+        ), "search for literal '_' matched names without '_' (wildcard leaked)"
 
 
 class TestErrorMessageLeakage:
@@ -1017,12 +1020,12 @@ class TestErrorMessageLeakage:
             f"/v1/team/{fake_team_id}",
             headers={"Authorization": f"Bearer {admin_a.jwt}"},
         )
-        if response.status_code in (403, 404):
-            body = response.text
-            assert admin_a.id not in body, "Error must not echo user ID"
-            assert (
-                fake_team_id not in body or response.status_code == 404
-            ), "Error should not confirm resource existence"
+        # A non-existent id must be a clean 403/404 -- never a 200 that leaked the
+        # resource (which the `if 403/404` guard would have passed silently), and
+        # the error body must not echo the requester's user id.
+        assert response.status_code in (403, 404), response.status_code
+        body = response.text
+        assert admin_a.id not in body, "error echoed the requester's user id"
 
 
 class TestGraphQLSecurity:
@@ -1035,13 +1038,13 @@ class TestGraphQLSecurity:
             json={"query": nested},
             headers={"Authorization": f"Bearer {admin_a.jwt}"},
         )
-        if response.status_code == 200:
-            body = response.json()
-            if "errors" in body:
-                error_msgs = " ".join(str(e) for e in body["errors"])
-                assert (
-                    "depth" in error_msgs.lower() or "too" in error_msgs.lower()
-                ), "Deep query should be rejected by depth limiter"
+        # A deeply-nested query must be REJECTED, not answered: GraphQL returns a
+        # 200 envelope carrying `errors` and no `data`. A 200-with-data (depth
+        # limit bypassed) or a 500 (crash) is a failure.
+        assert response.status_code != 500, response.text
+        body = response.json()
+        assert "errors" in body and body["errors"], "deep query was not rejected"
+        assert not body.get("data"), "deep query returned data despite the depth limit"
 
 
 # ---------------------------------------------------------------------------

@@ -595,11 +595,14 @@ class TestSearchInputDeniesInjection:
             "/v1/team?sort_by=password_hash&sort_order=asc",
             headers={"Authorization": f"Bearer {fresh_user.jwt}"},
         )
-        # Either rejects (422) or silently ignores (200). Reject is preferred.
-        assert response.status_code in (200, 422), (
-            f"sort_by=password_hash must be 422 or silently ignored 200; "
-            f"got {response.status_code}"
-        )
+        # `password_hash` is not a Team column, so the request must NOT 500 (a raw
+        # column name interpolated into ORDER BY) -- it is either rejected (422,
+        # preferred) or safely ignored (200 returning a normal team list, proving
+        # the unknown column was dropped rather than executed).
+        assert response.status_code != 500, response.text
+        assert response.status_code in (200, 422), response.status_code
+        if response.status_code == 200:
+            assert "teams" in response.json(), response.text
 
     def test_filter_value_with_quote_does_not_break_query(self, server, fresh_user):
         """Filter value containing SQL syntax must be parameterized, not interpolated.

@@ -1456,24 +1456,24 @@ class TestAutoGenerationInvariants:
             "columns. Violations:\n  - " + "\n  - ".join(violations)
         )
 
-    def test_x_forwarded_for_not_trusted_without_proxy_config(self, server):
-        """Untrusted X-Forwarded-For must not be accepted as the client IP.
+    def test_x_forwarded_for_not_trusted_without_proxy_config(self, monkeypatch):
+        """An untrusted peer's X-Forwarded-For must NOT be honored as the client IP.
 
-        EXPECTED FAIL today — Pydantic2FastAPI.py:3048 reads X-Forwarded-For
-        unconditionally and prefers it over `request.client.host`. The
-        framework should require a `TRUSTED_PROXIES` allowlist before
-        honouring the header.
+        Behavioral assertion on the SSOT resolver (fixed under #228): with no
+        TRUSTED_PROXIES configured the immediate peer is untrusted, so a spoofed
+        header is ignored and the real connection peer is used. The old test only
+        asserted the config field existed, never that it was enforced.
         """
-        # The contract being tested is "the framework refuses to honour
-        # untrusted XFF". In the absence of a trusted-proxy config knob, this
-        # test asserts the env-var exists and is enforced.
         from zephyrex.lib.Environment import AppSettings
+        from zephyrex.lib.InboundSecurity import resolve_client_ip
 
-        # Pydantic v2 stores fields on `model_fields`, not as plain class
-        # attributes — `hasattr` returns False even when the field is
-        # declared. The test asserts the field is part of the schema.
-        assert "TRUSTED_PROXIES" in AppSettings.model_fields, (
-            "AppSettings must define TRUSTED_PROXIES so X-Forwarded-For can "
-            "be validated. Pydantic2FastAPI.py honours the header only when "
-            "the upstream peer matches a trusted-proxy entry."
-        )
+        monkeypatch.delenv("TRUSTED_PROXIES", raising=False)
+
+        headers = {"X-Forwarded-For": "6.6.6.6, 7.7.7.7"}
+        resolved = resolve_client_ip(headers, peer_host="10.0.0.5")
+        assert (
+            resolved == "10.0.0.5"
+        ), f"untrusted X-Forwarded-For was honored: resolved={resolved!r}"
+
+        # The config knob must exist so a trusted-proxy allowlist can opt in.
+        assert "TRUSTED_PROXIES" in AppSettings.model_fields

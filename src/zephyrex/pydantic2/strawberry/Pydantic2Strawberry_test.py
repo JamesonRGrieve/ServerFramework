@@ -916,29 +916,19 @@ class TestGraphQLDenyPaths:
         schema under production and validate against it directly — that is
         the production code path being audited.
         """
-        from graphql import parse, validate
-
         monkeypatch.setenv("ENVIRONMENT", "production")
         registry = server.app.state.model_registry
         prod_schema = GraphQLManager(registry).create_schema()
-        # The validation rules attached by GraphQLManager in production
-        # include ``NoSchemaIntrospectionCustomRule``; ``validate`` will
-        # surface the violation.
-        from strawberry.schema.config import StrawberryConfig  # noqa: F401
-
-        document = parse("{ __schema { types { name } } }")
-        try:
-            errors = validate(prod_schema._schema, document)
-        except Exception:
-            errors = []
-        if not errors:
-            # Fall back to executing the query and asserting no schema data.
-            result = prod_schema.execute_sync("{ __schema { types { name } } }")
-            data = result.data or {}
-            errors = result.errors or []
-            assert (
-                errors or "__schema" not in data
-            ), "GraphQL introspection must be disabled in production"
+        # Executing an introspection query against the PRODUCTION schema must be
+        # rejected -- NoSchemaIntrospectionCustomRule is wired when
+        # ENVIRONMENT=production, so the query returns errors and no __schema
+        # data. The old code validated with the default rule set (which never
+        # blocks introspection) and swallowed any validate() exception into
+        # "no errors", so a broken guard could slip through the fallback.
+        result = prod_schema.execute_sync("{ __schema { types { name } } }")
+        data = result.data or {}
+        assert result.errors, "production introspection query was not rejected"
+        assert "__schema" not in data, "production schema leaked introspection data"
 
     def test_query_depth_limit_enforced(self, server, admin_a):
         """A maliciously-deep query must be rejected, not OOM the server.
@@ -957,12 +947,25 @@ class TestGraphQLDenyPaths:
             body,
             headers={"Authorization": f"Bearer {admin_a.jwt}"},
         )
+        # A 30-level query must be REJECTED cleanly -- never a 500 (crash/OOM, the
+        # exact thing the depth limit prevents) and never a 200-with-data (limit
+        # bypassed). The QueryDepthLimiter rejects at the transport layer with a
+        # 400; a 200 + `errors` envelope is equally valid. The old `if 200` guard
+        # let a 500 pass unasserted.
+        assert response.status_code != 500, response.text
         if response.status_code == 200:
             data = response.json()
-            assert "errors" in data, (
-                f"30-level nested query must be rejected by depth-limit; "
-                f"got data={data.get('data') is not None}"
-            )
+            assert data.get(
+                "errors"
+            ), "depth query returned 200 without errors (limit bypassed)"
+            assert not data.get("data"), "depth-limited query still returned data"
+        else:
+            assert response.status_code in (
+                400,
+                403,
+                413,
+                422,
+            ), f"depth query rejected with unexpected status {response.status_code}"
 
     def test_secret_field_not_queryable(self, server, admin_a):
         """A field named `password_hash` (or similar) must not be queryable."""
@@ -971,18 +974,18 @@ class TestGraphQLDenyPaths:
             '{ user(id: "%s") { id passwordHash } }' % admin_a.id,
             headers={"Authorization": f"Bearer {admin_a.jwt}"},
         )
-        # Either schema rejects the field outright (errors) or returns null.
-        if response.status_code == 200:
-            data = response.json()
-            errors = data.get("errors") or []
-            field_unknown = any(
-                "passwordHash" in (e.get("message") or "") for e in errors
-            )
-            user_blob = (data.get("data") or {}).get("user") or {}
-            assert field_unknown or user_blob.get("passwordHash") in (
-                None,
-                "",
-            ), "GraphQL response must not surface password_hash"
+        # Either the schema rejects the field outright (errors) or returns null --
+        # asserted unconditionally (the old `if 200` guard let a non-200 pass
+        # silently), and never a 500.
+        assert response.status_code != 500, response.text
+        data = response.json()
+        errors = data.get("errors") or []
+        field_unknown = any("passwordHash" in (e.get("message") or "") for e in errors)
+        user_blob = (data.get("data") or {}).get("user") or {}
+        assert field_unknown or user_blob.get("passwordHash") in (
+            None,
+            "",
+        ), "GraphQL response must not surface password_hash"
 
 
 class _FakeInfo:
