@@ -13,8 +13,10 @@ timestamps), so regeneration is byte-stable and diff-friendly.
 from __future__ import annotations
 
 import os
+import shutil
+import subprocess
 from pathlib import Path
-from typing import Any, List, cast
+from typing import Any, List, Optional, Tuple, cast
 
 import stringcase
 
@@ -173,6 +175,39 @@ def _render_index(resources: List[ResourceDescriptor]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def resolve_ts_formatter() -> Optional[Tuple[str, List[str]]]:
+    """Return ``(binary, write_args)`` for the first available TS formatter.
+
+    Prettier is preferred, Biome (the workspace-standard TS toolchain) is the
+    fallback. The formatter *check* in the test suite must resolve the same tool
+    in the same order so the emitted layout and the checked layout agree. Returns
+    ``None`` when no formatter is on ``PATH``.
+    """
+    prettier = shutil.which("prettier")
+    if prettier:
+        return prettier, ["--write"]
+    biome = shutil.which("biome")
+    if biome:
+        return biome, ["format", "--write"]
+    return None
+
+
+def _format_typescript_sources(files: List[Path]) -> None:
+    """Rewrite the emitted files through the canonical TS formatter if present.
+
+    Best-effort: when no formatter is on ``PATH`` the files are left as emitted.
+    """
+    formatter = resolve_ts_formatter()
+    if formatter is None:
+        return
+    binary, args = formatter
+    subprocess.run(
+        [binary, *args, *[str(f) for f in files]],
+        check=False,
+        capture_output=True,
+    )
+
+
 def generate_typescript_sdk(*, model_registry: Any) -> None:
     """Emit a TypeScript client SDK for every manager in the registry.
 
@@ -186,12 +221,17 @@ def generate_typescript_sdk(*, model_registry: Any) -> None:
     out_dir = Path(output)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    written: List[Path] = [out_dir / "runtime.ts"]
     (out_dir / "runtime.ts").write_text(_RUNTIME_TS, encoding="utf-8")
     for resource in resources:
-        (out_dir / f"{_class_name(resource)}.ts").write_text(
-            _render_resource(resource), encoding="utf-8"
-        )
-    (out_dir / "index.ts").write_text(_render_index(resources), encoding="utf-8")
+        resource_path = out_dir / f"{_class_name(resource)}.ts"
+        resource_path.write_text(_render_resource(resource), encoding="utf-8")
+        written.append(resource_path)
+    index_path = out_dir / "index.ts"
+    index_path.write_text(_render_index(resources), encoding="utf-8")
+    written.append(index_path)
+
+    _format_typescript_sources(written)
 
     logger.info(
         f"meta_sdk_ts: generated {len(resources)} TypeScript resource "
