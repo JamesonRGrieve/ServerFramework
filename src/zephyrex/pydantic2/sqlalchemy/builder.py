@@ -23,6 +23,12 @@ from sqlalchemy.orm import relationship
 from zephyrex.database.AbstractDatabaseEntity import BaseMixin, ImageMixin, UpdateMixin
 from zephyrex.lib.AbstractPydantic2 import default_name_processor
 from zephyrex.lib.Logging import logger
+from zephyrex.pydantic2.util import (
+    PRIMARY_KEY_FIELD,
+    is_reference_field_name,
+    reference_relationship_name,
+    reference_target_model_name,
+)
 from zephyrex.pydantic2.registry import ModelRegistry
 from zephyrex.pydantic2.sqlalchemy._const import RESERVED_SQLALCHEMY_NAMES, TYPE_MAPPING
 from zephyrex.pydantic2.sqlalchemy.mixins import DatabaseMixin, ParentRelationshipMixin
@@ -426,14 +432,14 @@ def _create_column_from_field(
     params["nullable"] = is_optional
 
     # Add primary key for id columns
-    if name == "id":
+    if name == PRIMARY_KEY_FIELD:
         params["primary_key"] = True
         params["nullable"] = False
         # Ensure proper type for primary key - always use String for IDs
         sa_type = String  # type: ignore[assignment]
 
     # Force String type for all ID fields (UUID pattern)
-    if name.endswith("_id") or name == "id":
+    if is_reference_field_name(name) or name == PRIMARY_KEY_FIELD:
         sa_type = String  # type: ignore[assignment]
 
     if field_info:
@@ -694,7 +700,9 @@ def _process_reference_fields(
             try:
                 ref_fields = get_type_hints(base)
                 for field_name, field_type in ref_fields.items():
-                    if field_name not in own_ref_fields and field_name.endswith("_id"):
+                    if field_name not in own_ref_fields and is_reference_field_name(
+                        field_name
+                    ):
                         all_ref_fields[field_name] = field_type
                         all_optional_fields.add(field_name)
             except Exception:
@@ -709,7 +717,9 @@ def _process_reference_fields(
                     continue
 
                 for field_name, field_type in parent_fields.items():
-                    if field_name not in own_ref_fields and field_name.endswith("_id"):
+                    if field_name not in own_ref_fields and is_reference_field_name(
+                        field_name
+                    ):
                         all_ref_fields[field_name] = field_type
                         all_optional_fields.add(field_name)
 
@@ -719,7 +729,9 @@ def _process_reference_fields(
             try:
                 ref_fields = get_type_hints(base)
                 for field_name, field_type in ref_fields.items():
-                    if field_name not in own_ref_fields and field_name.endswith("_id"):
+                    if field_name not in own_ref_fields and is_reference_field_name(
+                        field_name
+                    ):
                         all_ref_fields[field_name] = field_type
                         if hasattr(base, "Optional"):
                             optional_fields = set(get_type_hints(base.Optional).keys())
@@ -737,12 +749,12 @@ def _process_reference_fields(
     )
 
     for name, field_type in all_ref_fields.items():
-        if not name.endswith("_id"):
+        if not is_reference_field_name(name):
             continue
 
-        entity_name = name.removesuffix("_id")
+        entity_name = reference_relationship_name(name)
         entity_class_name = stringcase.pascalcase(entity_name)
-        entity_class_name_with_model = f"{entity_class_name}Model"
+        entity_class_name_with_model = reference_target_model_name(name)
         is_optional = name in all_optional_fields
 
         entity_module, entity_class = get_entity_module_class(
@@ -979,7 +991,7 @@ def _fix_null_type_columns(model_class: Type[Any]) -> None:
     for column in model_class.__table__.columns:
         if isinstance(column.type, NullType):
             # Replace NullType with appropriate type based on column name
-            if column.name.endswith("_id") or column.name == "id":
+            if is_reference_field_name(column.name) or column.name == PRIMARY_KEY_FIELD:
                 # ID fields should be String (UUID)
                 column.type = String()
             elif column.name.endswith("_at"):
@@ -1064,12 +1076,12 @@ def _analyze_model_dependencies(bll_models: Dict[str, Type[BaseModel]]) -> List[
             ref_fields = get_type_hints(ref_class)
 
             for name, field_type in ref_fields.items():
-                if name.endswith("_id"):
-                    entity_name = name.removesuffix("_id")
+                if is_reference_field_name(name):
+                    entity_name = reference_relationship_name(name)
                     entity_class_name = stringcase.pascalcase(entity_name)
 
                     # Look for the referenced model
-                    ref_model_name = f"{entity_class_name}Model"
+                    ref_model_name = reference_target_model_name(name)
                     if ref_model_name in bll_models and ref_model_name != model_name:
                         deps.add(ref_model_name)
 

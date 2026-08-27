@@ -17,6 +17,11 @@ from sqlalchemy.ext.declarative import declared_attr
 from sqlalchemy.orm import relationship
 
 from zephyrex.lib.Logging import logger
+from zephyrex.pydantic2.util import (
+    is_reference_field_name,
+    reference_relationship_name,
+    reference_target_model_name,
+)
 
 
 # Search model for string fields
@@ -432,9 +437,13 @@ class DatabaseMixin:
                 try:
                     ref_fields = get_type_hints(base)
                     for field_name, field_type in ref_fields.items():
-                        if field_name.endswith("_id"):
-                            entity_name = field_name.removesuffix("_id")
-                            entity_class_name = f"{entity_name.title()}Model"
+                        if is_reference_field_name(field_name):
+                            entity_name = reference_relationship_name(field_name)
+                            # Was ``entity_name.title()`` here -- which diverged
+                            # from the builder's pascalcase for multi-word
+                            # entities (user_team -> User_Team vs UserTeam). The
+                            # SSOT unifies on pascalcase (#225).
+                            entity_class_name = reference_target_model_name(field_name)
 
                             # Try to import and get the dependency model
                             try:

@@ -33,6 +33,10 @@ from zephyrex.lib.AbstractPydantic2 import (
 )
 from zephyrex.lib.Environment import inflection
 from zephyrex.lib.Logging import logger
+from zephyrex.pydantic2.util import (
+    is_reference_field_name,
+    reference_relationship_name,
+)
 
 
 class classproperty:
@@ -1044,8 +1048,8 @@ def validate_entity_includes(
     if hasattr(model_class, "model_fields"):
         for field_name, field_info in model_class.model_fields.items():
             # If field name ends with _id, the relationship might be the name without _id
-            if field_name.endswith("_id"):
-                relationship_name = field_name[:-3]  # Remove '_id'
+            if is_reference_field_name(field_name):
+                relationship_name = reference_relationship_name(field_name)
                 valid_includes.add(relationship_name)
                 # Also add plural form
                 valid_includes.add(inflection.plural(relationship_name))

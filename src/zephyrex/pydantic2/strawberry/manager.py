@@ -30,6 +30,10 @@ from zephyrex.lib.Environment import inflection
 from zephyrex.lib.Logging import logger
 from zephyrex.pydantic2.registry import ModelRegistry
 from zephyrex.pydantic2.manager_contract import ManagerContract
+from zephyrex.pydantic2.util import (
+    is_reference_field_name,
+    reference_relationship_name,
+)
 
 from .scalars import ANY_SCALAR, DICT_SCALAR, TYPE_MAPPING, _type_introspector
 from .fields import convert_field_name, _versioned_field
@@ -1677,9 +1681,9 @@ class GraphQLManager(ErrorHandlerMixin):
                     field_type = next(arg for arg in args if arg is not type(None))
 
             # Check for foreign key relationships (fields ending with _id)
-            if field_name.endswith("_id") and field_name != "id":
+            if is_reference_field_name(field_name):
                 # Try to find the corresponding model
-                base_field_name = field_name[:-3]  # Remove '_id'
+                base_field_name = reference_relationship_name(field_name)
 
                 # Debug logging for UserTeamModel
                 if "UserTeam" in model_class.__name__:

@@ -27,6 +27,10 @@ from zephyrex.lib.ContentNegotiation import (
     MIME_YAML,
 )
 from zephyrex.lib.Environment import inflection
+from zephyrex.pydantic2.util import (
+    is_reference_field_name,
+    reference_relationship_name,
+)
 
 # ---------------------------------------------------------------------------
 # Multi-format OpenAPI helpers — content negotiation advertisement
@@ -259,8 +263,8 @@ def _get_valid_includes_for_model(
 
     for field_name in model_class.model_fields.keys():
         # Fields ending with _id indicate a relationship
-        if field_name.endswith("_id"):
-            relationship_name = field_name[:-3]  # Remove '_id'
+        if is_reference_field_name(field_name):
+            relationship_name = reference_relationship_name(field_name)
             valid_includes.add(relationship_name)
             # Also add plural form for collection relationships
             valid_includes.add(inflection.plural(relationship_name))
@@ -268,7 +272,7 @@ def _get_valid_includes_for_model(
         # Fields ending with _user_id have special handling
         if field_name.endswith("_user_id"):
             # e.g., created_by_user_id -> created_by_user
-            user_relationship = field_name[:-3]  # Remove '_id'
+            user_relationship = reference_relationship_name(field_name)
             valid_includes.add(user_relationship)
 
     # Also check for Reference class if it exists
