@@ -593,43 +593,9 @@ class GraphQLManager(ErrorHandlerMixin):
             else:
                 type_name = f"{base_name}Type"
 
-            # Create field annotations for the class
-            annotations: Dict[str, Type] = {}
-            # Track field name mappings for resolvers (camelCase -> snake_case)
-            field_name_mappings: Dict[str, str] = {}
-
-            for field_name, field_info in model_class.model_fields.items():
-                field_type = field_info.annotation
-
-                # Debug logging for ActivityState field
-                if "state" in field_name and "Activity" in model_class.__name__:
-                    logger.debug(
-                        f"Processing field {field_name} in {model_class.__name__}: "
-                        f"field_type={field_type}, type={type(field_type)}, "
-                        f"is_dict={isinstance(field_type, dict)}"
-                    )
-
-                gql_field_type = self._convert_python_type_to_gql(field_type)  # type: ignore[arg-type]
-                # Convert snake_case field names to camelCase for GraphQL (GraphQL convention)
-                gql_field_name = convert_field_name(field_name, use_camelcase=True)
-                annotations[gql_field_name] = gql_field_type  # type: ignore[index]
-                # Store mapping for resolver if names differ
-                if gql_field_name != field_name:
-                    field_name_mappings[gql_field_name] = field_name  # type: ignore[index]
-
-            # Add reverse navigation properties
-            if model_class in self._reverse_relationships:
-                for reverse_field_name, (
-                    source_model,
-                    source_field,
-                ) in self._reverse_relationships[model_class].items():
-                    # Add annotation for the reverse field using the lazy type
-                    source_gql_type: Type = self._get_or_create_type(source_model)
-                    annotations[reverse_field_name] = List[source_gql_type]  # type: ignore[valid-type]
-
-            # Always add at least one field to avoid empty type error
-            if not annotations:
-                annotations["_dummy"] = Optional[str]  # type: ignore[assignment]
+            annotations, field_name_mappings = self._build_field_annotations(
+                model_class
+            )
 
             # Check if a type with this name already exists
             # This is a global registry to track all type names
@@ -705,41 +671,9 @@ class GraphQLManager(ErrorHandlerMixin):
                 f"{model_class.__module__}.{model_class.__name__}"
             )
 
-            # Create fields dict to hold strawberry fields with resolvers
-            fields_dict: Dict[str, Any] = {"__annotations__": annotations}
-
-            # Add field resolvers for camelCase -> snake_case mapping
-            # Strawberry needs explicit resolvers when GraphQL field names differ from Python attribute names
-            for gql_field_name, pydantic_field_name in field_name_mappings.items():
-                # Create a resolver that maps the camelCase GraphQL field to the snake_case Pydantic attribute
-                def make_resolver(py_field_name: str):
-                    def resolver(root) -> Any:
-                        # root is the Pydantic model instance
-                        return getattr(root, py_field_name, None)
-
-                    return resolver
-
-                # Use strawberry.field with a resolver to map GraphQL field name to Python attribute
-                fields_dict[gql_field_name] = strawberry.field(
-                    resolver=make_resolver(pydantic_field_name)
-                )
-
-            # Add navigation resolver methods for reverse relationships
-            if model_class in self._reverse_relationships:
-                for reverse_field_name, (
-                    source_model,
-                    source_field,
-                ) in self._reverse_relationships[model_class].items():
-                    # Create a resolver method for this reverse relationship
-                    resolver = self._create_reverse_navigation_resolver(
-                        model_class, source_model, source_field, reverse_field_name
-                    )
-                    # Add the resolver as a method on the type using strawberry.field
-                    # This creates a proper GraphQL field with the resolver
-                    fields_dict[reverse_field_name] = strawberry.field(
-                        resolver=resolver,
-                        description=f"List of related {source_model.__name__} objects",
-                    )
+            fields_dict = self._build_type_fields_dict(
+                model_class, annotations, field_name_mappings
+            )
 
             # Create the type class with proper annotations and methods
             type_class = type(type_name, (), fields_dict)
@@ -761,6 +695,102 @@ class GraphQLManager(ErrorHandlerMixin):
         finally:
             # Remove from types being created
             self._types_being_created.discard(model_class)
+
+    def _build_field_annotations(
+        self, model_class: Type[BaseModel]
+    ) -> Tuple[Dict[str, Type], Dict[str, str]]:
+        """Build the GraphQL field annotations + a camelCase->snake_case name map.
+
+        Converts each model field to its GraphQL type (camelCasing the name) and
+        appends reverse-navigation list fields. Extracted from
+        _create_gql_type_from_model so that method reads as named phases.
+        """
+        # Create field annotations for the class
+        annotations: Dict[str, Type] = {}
+        # Track field name mappings for resolvers (camelCase -> snake_case)
+        field_name_mappings: Dict[str, str] = {}
+
+        for field_name, field_info in model_class.model_fields.items():
+            field_type = field_info.annotation
+
+            # Debug logging for ActivityState field
+            if "state" in field_name and "Activity" in model_class.__name__:
+                logger.debug(
+                    f"Processing field {field_name} in {model_class.__name__}: "
+                    f"field_type={field_type}, type={type(field_type)}, "
+                    f"is_dict={isinstance(field_type, dict)}"
+                )
+
+            gql_field_type = self._convert_python_type_to_gql(field_type)  # type: ignore[arg-type]
+            # Convert snake_case field names to camelCase for GraphQL (GraphQL convention)
+            gql_field_name = convert_field_name(field_name, use_camelcase=True)
+            annotations[gql_field_name] = gql_field_type  # type: ignore[index]
+            # Store mapping for resolver if names differ
+            if gql_field_name != field_name:
+                field_name_mappings[gql_field_name] = field_name  # type: ignore[index]
+
+        # Add reverse navigation properties
+        if model_class in self._reverse_relationships:
+            for reverse_field_name, (
+                source_model,
+                source_field,
+            ) in self._reverse_relationships[model_class].items():
+                # Add annotation for the reverse field using the lazy type
+                source_gql_type: Type = self._get_or_create_type(source_model)
+                annotations[reverse_field_name] = List[source_gql_type]  # type: ignore[valid-type]
+
+        # Always add at least one field to avoid empty type error
+        if not annotations:
+            annotations["_dummy"] = Optional[str]  # type: ignore[assignment]
+
+        return annotations, field_name_mappings
+
+    def _build_type_fields_dict(
+        self,
+        model_class: Type[BaseModel],
+        annotations: Dict[str, Type],
+        field_name_mappings: Dict[str, str],
+    ) -> Dict[str, Any]:
+        """Assemble the strawberry fields dict: annotations + name-mapping and
+        reverse-navigation field resolvers. Extracted from
+        _create_gql_type_from_model."""
+        # Create fields dict to hold strawberry fields with resolvers
+        fields_dict: Dict[str, Any] = {"__annotations__": annotations}
+
+        # Add field resolvers for camelCase -> snake_case mapping
+        # Strawberry needs explicit resolvers when GraphQL field names differ from Python attribute names
+        for gql_field_name, pydantic_field_name in field_name_mappings.items():
+            # Create a resolver that maps the camelCase GraphQL field to the snake_case Pydantic attribute
+            def make_resolver(py_field_name: str):
+                def resolver(root) -> Any:
+                    # root is the Pydantic model instance
+                    return getattr(root, py_field_name, None)
+
+                return resolver
+
+            # Use strawberry.field with a resolver to map GraphQL field name to Python attribute
+            fields_dict[gql_field_name] = strawberry.field(
+                resolver=make_resolver(pydantic_field_name)
+            )
+
+        # Add navigation resolver methods for reverse relationships
+        if model_class in self._reverse_relationships:
+            for reverse_field_name, (
+                source_model,
+                source_field,
+            ) in self._reverse_relationships[model_class].items():
+                # Create a resolver method for this reverse relationship
+                resolver = self._create_reverse_navigation_resolver(
+                    model_class, source_model, source_field, reverse_field_name
+                )
+                # Add the resolver as a method on the type using strawberry.field
+                # This creates a proper GraphQL field with the resolver
+                fields_dict[reverse_field_name] = strawberry.field(
+                    resolver=resolver,
+                    description=f"List of related {source_model.__name__} objects",
+                )
+
+        return fields_dict
 
     def _create_input_type_from_model(
         self, model_class: Type[BaseModel], suffix: str
