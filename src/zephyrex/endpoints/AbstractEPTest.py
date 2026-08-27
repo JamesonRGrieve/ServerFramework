@@ -4464,6 +4464,48 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         return f"{base}/{resource_id}"
 
     # ------------------------------------------------------------------ #
+    # Security-test helpers
+    # ------------------------------------------------------------------ #
+
+    def _result_count(self, response: Any) -> int:
+        """Number of entities in a list response (bare list or plural-keyed dict)."""
+        try:
+            body = response.json()
+        except ValueError:
+            return 0
+        if isinstance(body, list):
+            return len(body)
+        if isinstance(body, dict):
+            for value in body.values():
+                if isinstance(value, list):
+                    return len(value)
+        return 0
+
+    def _created_entity(self, response: Any) -> Dict[str, Any]:
+        """Extract the created entity dict from a POST response, or ``{}``."""
+        try:
+            body = response.json()
+        except ValueError:
+            return {}
+        if isinstance(body, dict):
+            entity = body.get(self.entity_name, body)
+            if isinstance(entity, dict):
+                return entity
+        return {}
+
+    def _fetch_entity(
+        self, server: Any, admin_a: Any, entity_id: str
+    ) -> Dict[str, Any]:
+        """GET a single entity by id and return its dict, or ``{}`` on failure."""
+        detail = server.get(
+            self.get_detail_endpoint(entity_id),
+            headers=self._get_appropriate_headers(admin_a.jwt),
+        )
+        if detail.status_code != 200:
+            return {}
+        return self._created_entity(detail)
+
+    # ------------------------------------------------------------------ #
     # Security — automatic per-entity hardening tests
     # ------------------------------------------------------------------ #
 
@@ -4599,9 +4641,16 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         response = server.get(
             endpoint, headers=self._get_appropriate_headers(admin_a.jwt)
         )
-        assert (
-            response.status_code != 500
-        ), f"SQLi payload in ID caused 500: {sqli_payload}"
+        # A SQLi string is not a valid resource id -- it must be rejected, never a
+        # 200 that executed the injection and leaked rows. Payloads containing
+        # spaces / ';' can also be refused at routing (405) before reaching the
+        # handler, which is equally safe (no injection executed).
+        assert response.status_code in (
+            400,
+            404,
+            405,
+            422,
+        ), f"SQLi payload in ID got {response.status_code}; expected 400/404/405/422"
 
     @pytest.mark.security
     @pytest.mark.parametrize(
@@ -4615,14 +4664,25 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
     def test_security_sqli_in_query_param(
         self, server: Any, admin_a: Any, sqli_payload: str
     ):
-        """SQL injection in query parameters must not execute or cause 500."""
-        endpoint = f"{self.get_list_endpoint({})}?name={sqli_payload}"
-        response = server.get(
-            endpoint, headers=self._get_appropriate_headers(admin_a.jwt)
-        )
+        """SQL injection in a query filter must be treated as a literal value."""
+        base = self.get_list_endpoint({})
+        headers = self._get_appropriate_headers(admin_a.jwt)
+        injected = server.get(f"{base}?name={sqli_payload}", headers=headers)
+        benign = server.get(f"{base}?name=zzz_no_such_value_zzz", headers=headers)
+
         assert (
-            response.status_code != 500
+            injected.status_code != 500
         ), f"SQLi payload in query param caused 500: {sqli_payload}"
+        # The payload must be bound as a literal filter value, never executed: an
+        # injected `' OR '1'='1` that ran would return the whole table, i.e. MORE
+        # rows than a benign non-matching literal. Whether the field is filtered
+        # (both -> 0 rows) or ignored (both -> all rows), the injected result must
+        # never EXCEED the benign one.
+        if injected.status_code == 200 and benign.status_code == 200:
+            assert self._result_count(injected) <= self._result_count(benign), (
+                f"SQLi payload widened the result set (executed, not bound): "
+                f"{sqli_payload}"
+            )
 
     @pytest.mark.security
     def test_security_deeply_nested_json(self, server: Any, admin_a: Any, team_a: Any):
@@ -5139,6 +5199,21 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         assert (
             response.status_code != 500
         ), f"Oversized field value ({len(payload)} chars) caused 500"
+        # If the value was accepted, reading it back must also not crash -- the
+        # large value has to be both storable AND retrievable. (This framework
+        # does not cap `name` length on most entities, so rejection/truncation is
+        # a per-model decision and is deliberately NOT asserted here; the write
+        # path already proved it does not 500.)
+        if response.status_code in (200, 201):
+            entity_id = self._created_entity(response).get("id")
+            if entity_id:
+                detail = server.get(
+                    self.get_detail_endpoint(entity_id),
+                    headers=self._get_appropriate_headers(admin_a.jwt),
+                )
+                assert (
+                    detail.status_code != 500
+                ), "reading back an oversized value crashed the detail endpoint"
 
     @pytest.mark.security
     @pytest.mark.parametrize(
@@ -5164,6 +5239,17 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         assert (
             response.status_code != 500
         ), f"Prototype pollution field '{field_name}' caused 500"
+        # If the row was created, the pollution key must NOT have been processed
+        # onto it -- neither echoed in the create response nor persisted.
+        if response.status_code in (200, 201):
+            created = self._created_entity(response)
+            assert field_name not in created, (
+                f"prototype-pollution field '{field_name}' was accepted onto the "
+                "created entity"
+            )
+            entity_id = created.get("id")
+            if entity_id:
+                assert field_name not in self._fetch_entity(server, admin_a, entity_id)
 
     @pytest.mark.security
     def test_security_json_key_with_dot_notation(self, server: Any, admin_a: Any):
@@ -5175,6 +5261,14 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
             headers=self._get_appropriate_headers(admin_a.jwt),
         )
         assert response.status_code != 500, "Dot-notation JSON key caused 500"
+        # The dotted key must be ignored, never interpreted as a nested-attribute
+        # write: it must not be persisted onto the created entity.
+        if response.status_code in (200, 201):
+            created = self._created_entity(response)
+            assert "user.role" not in created, "dot-notation key was persisted"
+            entity_id = created.get("id")
+            if entity_id:
+                assert "user.role" not in self._fetch_entity(server, admin_a, entity_id)
 
     @pytest.mark.security
     def test_security_json_key_with_dollar_operator(self, server: Any, admin_a: Any):
@@ -5186,6 +5280,17 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
             headers=self._get_appropriate_headers(admin_a.jwt),
         )
         assert response.status_code != 500, "NoSQL operator key caused 500"
+        # The `$`-operator keys must be ignored, not treated as query operators:
+        # they must not be persisted onto the created entity.
+        if response.status_code in (200, 201):
+            created = self._created_entity(response)
+            assert (
+                "$gt" not in created and "$ne" not in created
+            ), "NoSQL-operator keys were persisted onto the entity"
+            entity_id = created.get("id")
+            if entity_id:
+                fetched = self._fetch_entity(server, admin_a, entity_id)
+                assert "$gt" not in fetched and "$ne" not in fetched
 
     @pytest.mark.security
     @pytest.mark.parametrize(
@@ -5508,8 +5613,6 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         self, server: Any, admin_a: Any, json_value: float
     ):
         """NaN/Infinity in numeric fields must not cause 500."""
-        import math
-
         endpoint = self.get_list_endpoint({})
         try:
             response = server.post(
