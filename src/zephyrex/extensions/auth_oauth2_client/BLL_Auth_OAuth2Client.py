@@ -32,6 +32,7 @@ from fastapi import HTTPException
 from pydantic import Field
 
 from zephyrex.extensions.auth_oauth2_client.Amazon import AmazonOAuthProvider
+from zephyrex.extensions.auth_oauth2_client.Forgejo import ForgejoOAuthProvider
 from zephyrex.extensions.auth_oauth2_client.GitHub import GitHubOAuthProvider
 from zephyrex.extensions.auth_oauth2_client.Google import GoogleOAuthProvider
 from zephyrex.extensions.auth_oauth2_client.Microsoft import MicrosoftOAuthProvider
@@ -53,10 +54,14 @@ PROVIDER_REGISTRY: Dict[str, Type[Any]] = {
     "github": GitHubOAuthProvider,
     "microsoft": MicrosoftOAuthProvider,
     "amazon": AmazonOAuthProvider,
+    "forgejo": ForgejoOAuthProvider,
 }
 
 # Authorize-endpoint config per provider: the URL to redirect the user to, the
-# default scope, and the env var holding the client id.
+# default scope, and the env var holding the client id. Public-host providers
+# carry a static ``auth_url``; self-hosted ones (Forgejo) instead carry an
+# ``auth_path`` plus the env vars that hold the instance base URL, so the
+# authorize URL is resolved at request time by ``_auth_url``.
 _PROVIDER_AUTH: Dict[str, Dict[str, str]] = {
     "google": {
         "auth_url": "https://accounts.google.com/o/oauth2/v2/auth",
@@ -78,7 +83,26 @@ _PROVIDER_AUTH: Dict[str, Dict[str, str]] = {
         "scope": "profile",
         "client_id_env": "AWS_CLIENT_ID",
     },
+    "forgejo": {
+        "auth_path": "/login/oauth/authorize",
+        "base_url_env": "FORGEJO_OAUTH_BASE_URL",
+        "base_url_fallback_env": "FORGEJO_BASE_URL",
+        "scope": "read:user",
+        "client_id_env": "FORGEJO_CLIENT_ID",
+    },
 }
+
+
+def _auth_url(cfg: Dict[str, str]) -> str:
+    """Resolve a provider's authorize URL.
+
+    Static for public hosts (``auth_url``); for self-hosted providers,
+    built from the instance base URL env var plus ``auth_path``.
+    """
+    if cfg.get("auth_url"):
+        return cfg["auth_url"]
+    base = env(cfg.get("base_url_env", "")) or env(cfg.get("base_url_fallback_env", ""))
+    return f"{(base or '').rstrip('/')}{cfg.get('auth_path', '')}"
 
 
 def _require_provider(provider: str) -> Type[Any]:
@@ -305,7 +329,7 @@ class UserOAuthManager(AbstractBLLManager, RouterMixin):
             "scope": cfg["scope"],
             "state": secrets.token_urlsafe(16),
         }
-        return {"authorize_url": f"{cfg['auth_url']}?{urlencode(params)}"}
+        return {"authorize_url": f"{_auth_url(cfg)}?{urlencode(params)}"}
 
     def callback_route(self, provider: str, body: Dict[str, Any]) -> Dict[str, Any]:
         provider = (provider or "").lower()

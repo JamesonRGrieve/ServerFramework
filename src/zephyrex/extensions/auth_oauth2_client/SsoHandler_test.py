@@ -19,6 +19,7 @@ from unittest.mock import patch
 import pytest
 
 from zephyrex.extensions.auth_oauth2_client.Amazon import AmazonOAuthProvider
+from zephyrex.extensions.auth_oauth2_client.Forgejo import ForgejoOAuthProvider
 from zephyrex.extensions.auth_oauth2_client.Google import GoogleOAuthProvider
 from zephyrex.extensions.auth_oauth2_client.Microsoft import MicrosoftOAuthProvider
 
@@ -38,6 +39,11 @@ _PROVIDER_CASES = [
         "zephyrex.extensions.auth_oauth2_client.Amazon",
         AmazonOAuthProvider,
         "AWS_CLIENT_ID",
+    ),
+    (
+        "zephyrex.extensions.auth_oauth2_client.Forgejo",
+        ForgejoOAuthProvider,
+        "FORGEJO_CLIENT_ID",
     ),
 ]
 
