@@ -24,8 +24,6 @@ adapters (``Google``/``GitHub``/``Microsoft``/``Amazon`` subclasses of
 persists the resulting link.
 """
 
-import secrets
-import time
 from typing import Any, ClassVar, Dict, List, Optional, Type
 from urllib.parse import urlencode
 
@@ -39,7 +37,11 @@ from zephyrex.extensions.auth_oauth2_client.Google import GoogleOAuthProvider
 from zephyrex.extensions.auth_oauth2_client.Microsoft import MicrosoftOAuthProvider
 from zephyrex.lib.Dependencies import jwt
 from zephyrex.lib.Environment import env
-from zephyrex.lib.ReplayCache import get_replay_cache
+from zephyrex.lib.SingleUseToken import (
+    issue_single_use_token,
+    read_single_use_token,
+    redeem_single_use_token,
+)
 from zephyrex.logic.AbstractLogicManager import (
     AbstractBLLManager,
     ApplicationModel,
@@ -117,29 +119,18 @@ def _require_provider(provider: str) -> Type[Any]:
 
 # Account-linking ``state``: a signed token binding one callback to the
 # connect call that started it (user, provider, redirect URI), consumed once
-# through the shared replay cache. Its audience keeps it from ever passing
-# as a session token (which also requires ``jti``).
+# once (a ``SingleUseToken``).
 LINK_STATE_AUDIENCE = "zephyrex:oauth2_client:link_state"
 LINK_STATE_TTL_SECONDS = 600
-_LINK_STATE_ALGORITHM = "HS256"
 
 
 def issue_link_state(user_id: str, provider: str, redirect_uri: str) -> str:
-    now = int(time.time())
-    state: str = jwt.encode(
-        {
-            "sub": user_id,
-            "provider": provider,
-            "redirect_uri": redirect_uri,
-            "nonce": secrets.token_urlsafe(16),
-            "aud": LINK_STATE_AUDIENCE,
-            "iat": now,
-            "exp": now + LINK_STATE_TTL_SECONDS,
-        },
-        env("JWT_SECRET"),
-        algorithm=_LINK_STATE_ALGORITHM,
+    return issue_single_use_token(
+        audience=LINK_STATE_AUDIENCE,
+        subject=user_id,
+        ttl_seconds=LINK_STATE_TTL_SECONDS,
+        claims={"provider": provider, "redirect_uri": redirect_uri},
     )
-    return state
 
 
 def consume_link_state(state: Optional[str], user_id: str, provider: str) -> str:
@@ -149,20 +140,12 @@ def consume_link_state(state: Optional[str], user_id: str, provider: str) -> str
     if not state:
         raise HTTPException(status_code=400, detail="state is required")
     try:
-        claims = jwt.decode(
-            state,
-            env("JWT_SECRET"),
-            algorithms=[_LINK_STATE_ALGORITHM],
-            audience=LINK_STATE_AUDIENCE,
-            options={"require": ["sub", "exp", "aud"]},
-        )
+        claims = read_single_use_token(state, audience=LINK_STATE_AUDIENCE)
     except jwt.PyJWTError:
         raise HTTPException(status_code=400, detail="invalid or expired state")
     if claims.get("sub") != user_id or claims.get("provider") != provider:
         raise HTTPException(status_code=400, detail="invalid or expired state")
-    if not get_replay_cache().mark_if_unused(
-        f"oauth2_client:link_state:{claims['nonce']}", LINK_STATE_TTL_SECONDS
-    ):
+    if not redeem_single_use_token(claims):
         raise HTTPException(status_code=400, detail="state already used")
     return str(claims["redirect_uri"])
 

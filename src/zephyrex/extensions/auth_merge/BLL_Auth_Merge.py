@@ -18,8 +18,7 @@ operator can rerun.
 Pattern reference: ``auth_invitations/BLL_Invitations.py``.
 """
 
-import secrets
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from collections.abc import Collection
 from typing import Any, Callable, ClassVar, Dict, List, Optional, Type
 
@@ -32,7 +31,11 @@ from zephyrex.lib.Environment import env
 from zephyrex.lib.InboundSecurity import DEFAULT_AUTH_RATE_LIMIT, rate_limit
 from zephyrex.lib.Logging import logger
 from zephyrex.pydantic2.fastapi import AuthType, RouteType, RouterMixin
-from zephyrex.lib.ReplayCache import get_replay_cache
+from zephyrex.lib.SingleUseToken import (
+    issue_single_use_token,
+    read_single_use_token,
+    redeem_single_use_token,
+)
 from zephyrex.logic.AbstractLogicManager import (
     AbstractBLLManager,
     ApplicationModel,
@@ -56,30 +59,23 @@ from zephyrex.logic.BLL_Auth import (
 # mints from their *own* authenticated session and hands to the
 # initiating user, who then submits it on the merge call.
 #
-# The token is HS256 with ``JWT_SECRET`` (already required at startup),
-# carries ``sub=target_user_id`` and ``init=initiating_user_id``, and
-# its ``jti`` is burned on first use via the replay cache so a leaked
+# The token is a ``SingleUseToken`` carrying ``sub=target_user_id`` and
+# ``init=initiating_user_id``; it is burned on first use so a leaked
 # token cannot drive a second merge.
 _MERGE_CONSENT_TTL_SECONDS = 600
 _MERGE_CONSENT_AUD = "auth.user_merge.consent"
-_MERGE_CONSENT_KEY_PREFIX = "auth.user_merge.consent.jti:"
 
 
 def _mint_merge_consent_token(*, target_user_id: str, initiating_user_id: str) -> str:
     """Mint a single-use JWT proving the target consents to be merged
     into the initiating user. Caller is responsible for verifying the
     target's own session before calling this helper."""
-    now = datetime.now(timezone.utc)
-    payload = {
-        "sub": target_user_id,
-        "init": initiating_user_id,
-        "iat": int(now.timestamp()),
-        "nbf": int(now.timestamp()),
-        "exp": int((now + timedelta(seconds=_MERGE_CONSENT_TTL_SECONDS)).timestamp()),
-        "aud": _MERGE_CONSENT_AUD,
-        "jti": secrets.token_urlsafe(24),
-    }
-    return jwt.encode(payload, env("JWT_SECRET"), algorithm="HS256")
+    return issue_single_use_token(
+        audience=_MERGE_CONSENT_AUD,
+        subject=target_user_id,
+        ttl_seconds=_MERGE_CONSENT_TTL_SECONDS,
+        claims={"init": initiating_user_id},
+    )
 
 
 def _verify_merge_consent_token(
@@ -88,14 +84,7 @@ def _verify_merge_consent_token(
     """Validate ``token`` and burn its ``jti``. Raises HTTPException 403
     on any failure (forged signature, wrong subject, expired, replayed)."""
     try:
-        payload = jwt.decode(
-            token,
-            env("JWT_SECRET"),
-            algorithms=["HS256"],
-            audience=_MERGE_CONSENT_AUD,
-            leeway=30,
-            options={"require": ["exp", "nbf", "iat", "jti", "aud", "sub"]},
-        )
+        payload = read_single_use_token(token, audience=_MERGE_CONSENT_AUD)
     except jwt.InvalidTokenError as exc:
         raise HTTPException(status_code=403, detail=f"Invalid consent token: {exc}")
     if payload.get("sub") != target_user_id:
@@ -107,9 +96,7 @@ def _verify_merge_consent_token(
             status_code=403,
             detail="Consent token initiating user does not match request",
         )
-    cache = get_replay_cache()
-    jti_key = _MERGE_CONSENT_KEY_PREFIX + payload["jti"]
-    if not cache.mark_if_unused(jti_key, ttl_seconds=_MERGE_CONSENT_TTL_SECONDS * 2):
+    if not redeem_single_use_token(payload):
         raise HTTPException(status_code=403, detail="Consent token already redeemed")
 
 

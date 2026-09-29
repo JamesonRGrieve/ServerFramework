@@ -107,15 +107,30 @@ class MultifactorRecoveryCodeModel:
 - `GET /v1/user/mfa` - List user's MFA methods
 - `POST /v1/user/mfa` - Create new MFA method
 - `GET /v1/user/mfa/{id}` - Get specific MFA method
-- `PUT /v1/user/mfa/{id}` - Update MFA method
-- `DELETE /v1/user/mfa/{id}` - Delete MFA method
+- `PUT /v1/user/mfa/{id}` - Update MFA method (`is_primary`, `always_ask`)
+- `GET /v1/user/mfa/{id}/totp/provisioning` - `otpauth://` URI and key; 409 once verified
+- `POST /v1/user/mfa/{id}/disable` - Disable; a verified method needs `{code}`
+- `POST /v1/user/mfa/{id}/delete` - Delete with its recovery codes; a verified method needs `{code}`
 
 ### Code Verification
-- `POST /v1/user/mfa/{id}/verify` - Verify MFA code
+- `POST /v1/user/mfa/{id}/verify` - Verify MFA code; the first correct code enrols the method
 - `POST /v1/user/mfa/{id}/recovery/verify` - Verify recovery code
 
 ### Recovery Code Management
-- `POST /v1/user/mfa/{id}/recovery/generate` - Generate new recovery codes
+- `POST /v1/user/mfa/{id}/recovery/generate` - Generate new recovery codes (retires the old set)
+
+### Login
+With this extension loaded, a user with an enabled, verified method logs in
+in two steps:
+
+1. `POST /v1/user/authorize` with the password returns
+   `{mfa_required: true, challenge_token, methods: [{id, method_type}]}` and
+   issues no session.
+2. `POST /v1/user/authorize/mfa` with `{challenge_token, code}` (a current
+   TOTP or a recovery code) returns the normal login response.
+
+The challenge expires after five minutes and a correct code spends it. Wrong
+codes count toward the MFA verification lockout.
 
 ## Manager Usage Examples
 

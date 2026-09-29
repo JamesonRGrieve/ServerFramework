@@ -416,6 +416,25 @@ def register_api_key_hooks(
         _api_key_hooks["resolve_principal"] = resolve_principal
 
 
+# auth_mfa extension hooks — populated when ``auth_mfa.BLL_Auth_MFA`` is
+# imported. Without the extension no user has MFA methods and login is a
+# single step.
+_mfa_hooks: dict = {
+    "login_methods": None,  # (user_id, model_registry) -> [{id, method_type}]
+    "verify_login_code": None,  # (user_id, code, model_registry) -> bool
+}
+
+
+def register_mfa_hooks(*, login_methods=None, verify_login_code=None) -> None:
+    """Called when ``auth_mfa.BLL_Auth_MFA`` is imported."""
+    for name, fn in (
+        ("login_methods", login_methods),
+        ("verify_login_code", verify_login_code),
+    ):
+        if fn is not None:
+            _mfa_hooks[name] = fn
+
+
 def reset_session_hooks() -> None:
     """Test helper — clear every registered ``_session_hooks`` entry.
 

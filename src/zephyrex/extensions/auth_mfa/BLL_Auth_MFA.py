@@ -1,4 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 import hashlib
+import re
 import secrets
 import string
 from datetime import datetime, timezone
@@ -32,7 +34,15 @@ from zephyrex.logic.AbstractLogicManager import (
     UpdateMixinModel,
     hook_bll,
 )
-from zephyrex.logic.BLL_Auth import UserManager, UserModel
+from zephyrex.logic.BLL_Auth import UserManager, UserModel, register_mfa_hooks
+
+# Recovery codes are two dash-joined groups: ``XXXXX-XXXXX``.
+_RECOVERY_CODE_ALPHABET = string.ascii_uppercase + string.digits
+_RECOVERY_CODE_GROUPS = 2
+_RECOVERY_CODE_GROUP_LENGTH = 5
+_RECOVERY_CODE_SHAPE = re.compile(
+    "-".join([rf"[A-Z0-9]{{{_RECOVERY_CODE_GROUP_LENGTH}}}"] * _RECOVERY_CODE_GROUPS)
+)
 
 
 def _totp_digest(algorithm: str) -> Callable[..., Any]:
@@ -438,13 +448,23 @@ class MultifactorMethodManager(AbstractBLLManager, RouterMixin):
             raise HTTPException(
                 status_code=403, detail="A current MFA code is required"
             )
-        proven = self.verify_mfa_code(
-            method_id=mfa_method_id, code=code
-        ) or self.recovery_codes.verify_recovery_code(
-            multifactor_method_id=mfa_method_id, code=code
-        )
-        if not proven:
+        if not self.verify_code_or_recovery(mfa_method_id, code):
             raise HTTPException(status_code=403, detail="Invalid MFA code")
+
+    def verify_code_or_recovery(self, mfa_method_id: str, code: str) -> bool:
+        """Check ``code`` as a recovery code when it has that shape, else as
+        the method's own code, so one wrong entry is one lockout failure."""
+        recovery = code.strip().upper()
+        if _RECOVERY_CODE_SHAPE.fullmatch(recovery):
+            return self.recovery_codes.verify_recovery_code(
+                multifactor_method_id=mfa_method_id, code=recovery
+            )
+        return self.verify_mfa_code(method_id=mfa_method_id, code=code)
+
+    def login_methods(self) -> List[MultifactorMethodModel]:
+        """The caller's methods that can complete a login: enabled and
+        proven by a first correct code."""
+        return self.list(user_id=self.requester.id, is_enabled=True, verification=True)
 
     def _set_state(self, mfa_method_id: str, **properties: Any) -> None:
         """Write server-owned method state (verification, is_enabled,
@@ -826,13 +846,13 @@ class MultifactorRecoveryCodeManager(AbstractBLLManager):
         codes = []
 
         for _ in range(count):
-            first_part = "".join(
-                secrets.choice(string.ascii_uppercase + string.digits) for _ in range(5)
+            code = "-".join(
+                "".join(
+                    secrets.choice(_RECOVERY_CODE_ALPHABET)
+                    for _ in range(_RECOVERY_CODE_GROUP_LENGTH)
+                )
+                for _ in range(_RECOVERY_CODE_GROUPS)
             )
-            second_part = "".join(
-                secrets.choice(string.ascii_uppercase + string.digits) for _ in range(5)
-            )
-            code = f"{first_part}-{second_part}"
             codes.append(code)
 
             # Hash and store the code. L-5 — pin rounds via the framework
@@ -955,3 +975,33 @@ hook_bll(MultifactorMethodManager.create, timing=HookTiming.BEFORE, priority=15)
 # this, generate_routers_from_model_registry skips the model and NONE of the MFA
 # routes mount (CRUD or the custom_routes action verbs) — the root of #241.
 MultifactorMethodModel.Manager = MultifactorMethodManager
+
+
+# Password login consults these to demand and check a second factor. Both run
+# as the user logging in, so the verification lockout keys on them. The hook
+# table is process-global: an app that did not load auth_mfa has no methods.
+def _login_methods(user_id: str, model_registry: Any) -> List[Dict[str, str]]:
+    if not model_registry.is_model_bound(MultifactorMethodModel):
+        return []
+    manager = MultifactorMethodManager(
+        requester_id=user_id, model_registry=model_registry
+    )
+    return [
+        {"id": method.id, "method_type": method.method_type}
+        for method in manager.login_methods()
+    ]
+
+
+def _verify_login_code(user_id: str, code: str, model_registry: Any) -> bool:
+    if not model_registry.is_model_bound(MultifactorMethodModel):
+        return False
+    manager = MultifactorMethodManager(
+        requester_id=user_id, model_registry=model_registry
+    )
+    return any(
+        manager.verify_code_or_recovery(method.id, code)
+        for method in manager.login_methods()
+    )
+
+
+register_mfa_hooks(login_methods=_login_methods, verify_login_code=_verify_login_code)

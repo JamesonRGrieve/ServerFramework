@@ -44,11 +44,22 @@ from zephyrex.logic.BLL_Auth._shared import (
     _invitation_hooks,
     _lockout_hooks,
     _metadata_hooks,
+    _mfa_hooks,
     _session_hooks,
+)
+from zephyrex.lib.SingleUseToken import (
+    issue_single_use_token,
+    read_single_use_token,
+    redeem_single_use_token,
 )
 
 # A compact JWT is three base64url segments joined by two ``.`` separators.
 _JWT_SEPARATOR_COUNT = 2
+
+# Password login for a user with a second factor yields this challenge,
+# redeemed with a code at POST /v1/user/authorize/mfa.
+MFA_CHALLENGE_AUDIENCE = "zephyrex:auth:mfa_challenge"
+MFA_CHALLENGE_TTL_SECONDS = 300
 
 # User fields only root may change (see UserManager.update).
 ACCOUNT_STATE_FIELDS = frozenset({"active", "mfa_count"})
@@ -440,6 +451,27 @@ class UserManager(AbstractBLLManager, RouterMixin):
                 },
                 401: {"description": "Invalid credentials"},
                 429: {"description": "Too many failed login attempts"},
+            },
+        },
+        {
+            "path": "/authorize/mfa",
+            "method": "post",
+            "function": "login_mfa",
+            "auth_type": AuthType.NONE,
+            "is_static": True,
+            "summary": "Complete an MFA login",
+            "description": """
+            For a user with a verified second factor, POST /authorize returns
+            {mfa_required: true, challenge_token, methods} and no session.
+            Posting {challenge_token, code} here, with a current TOTP or
+            recovery code, returns the normal login response. The challenge
+            expires after five minutes and is spent by a correct code.
+            """,
+            "response_model": "Dict[str, Any]",
+            "status_code": 200,
+            "responses": {
+                401: {"description": "Invalid code or challenge"},
+                429: {"description": "Too many verification attempts"},
             },
         },
         {
@@ -1237,6 +1269,133 @@ class UserManager(AbstractBLLManager, RouterMixin):
         password: str = Field(..., description="User's password")
 
     @staticmethod
+    def _complete_login(user: Dict[str, Any], model_registry: Any) -> Dict[str, Any]:
+        """Issue the session and build the login response for a user whose
+        credentials (and second factor, when they have one) are proven.
+        Shared by password login and the MFA challenge step."""
+        root_id = env("ROOT_ID")
+
+        # Login successful — issue the session row first (when
+        # ``auth_session`` is loaded) so its key becomes the JWT's
+        # ``jti``. Revoking the session row then invalidates every
+        # bearer token bound to it (see ``_enforce_session_not_revoked``).
+        user_timezone = (
+            user.get("timezone", "UTC")
+            if isinstance(user, dict)
+            else getattr(user, "timezone", "UTC")
+        )
+        issue_hook = _session_hooks["issue_session"]
+        if issue_hook is not None:
+            session_key = issue_hook(
+                user_id=user["id"],
+                model_registry=model_registry,
+                # Login defaults to a 30-day session; 24h JWT exp is
+                # carried by ``generate_jwt_token`` independently.
+                expiration_hours=24 * 30,
+                device_type="web",
+            )
+        else:
+            session_key = secrets.token_hex(16)
+        token = UserManager.generate_jwt_token(
+            user_id=str(user["id"]),
+            email=user["email"],
+            timezone_str=user_timezone,
+            session_key=session_key,
+        )
+
+        # Get user preferences via metadata extension hook (Scope #3).
+        preferences: Dict[str, str] = {}
+        list_prefs = _metadata_hooks["list_preferences"]
+        if list_prefs is not None:
+            try:
+                preferences = list_prefs(user["id"], model_registry) or {}
+            except Exception:
+                pass
+
+        # Get user teams with roles
+        from zephyrex.logic.BLL_Auth.user_team import UserTeamModel
+        from zephyrex.logic.BLL_Auth.team import TeamModel
+        from zephyrex.logic.BLL_Auth.role import RoleModel
+
+        user_teams = UserTeamModel.DB(model_registry.DB.manager.Base).list(
+            requester_id=root_id,
+            model_registry=model_registry,
+            user_id=user["id"],
+            enabled=True,
+        )
+
+        # E1 (#230) — batch-load the referenced teams and roles with a
+        # single ``id.in_(...)`` query each and build id->row maps, rather
+        # than firing TeamModel.get + RoleModel.get per membership (the old
+        # 2N-query pattern on every successful login). Mirrors the batched
+        # lookup already used by ``UserTeamManager.search``. Uses
+        # ``requester_id=root_id`` for both queries, exactly as the
+        # per-item gets did, so soft-delete/permission handling is
+        # identical.
+        TeamDB = TeamModel.DB(model_registry.DB.manager.Base)
+        RoleDB = RoleModel.DB(model_registry.DB.manager.Base)
+        team_ids = {ut["team_id"] for ut in user_teams if ut["team_id"]}
+        role_ids = {ut["role_id"] for ut in user_teams if ut["role_id"]}
+
+        team_map: Dict[str, Any] = {}
+        role_map: Dict[str, Any] = {}
+        if team_ids:
+            team_map = {
+                team["id"]: team
+                for team in TeamDB.list(
+                    requester_id=root_id,
+                    model_registry=model_registry,
+                    filters=[TeamDB.id.in_(team_ids)],
+                )
+            }
+        if role_ids:
+            role_map = {
+                role["id"]: role
+                for role in RoleDB.list(
+                    requester_id=root_id,
+                    model_registry=model_registry,
+                    filters=[RoleDB.id.in_(role_ids)],
+                )
+            }
+
+        teams_with_roles = []
+        for user_team in user_teams:
+            team = team_map[user_team["team_id"]]
+            role = role_map[user_team["role_id"]]
+
+            # Ensure the key is serializable
+            if isinstance(user_team["expires_at"], datetime):
+                user_team["expires_at"] = user_team["expires_at"].isoformat()
+            if isinstance(user_team["created_at"], datetime):
+                user_team["created_at"] = user_team["created_at"].isoformat()
+            if isinstance(user_team["updated_at"], datetime):
+                user_team["updated_at"] = user_team["updated_at"].isoformat()
+
+            teams_with_roles.append(
+                {
+                    "team_id": user_team["team_id"],
+                    "user_team_id": user_team["id"],
+                    "team_name": team["name"],
+                    "role_id": user_team["role_id"],
+                    "role_name": role["name"],
+                    "user_team": user_team,
+                    "role": role,
+                    "team": team,
+                }
+            )
+
+        result = {
+            "user": user,
+            "token": token,
+            "preferences": preferences,
+            "teams": teams_with_roles,
+            "session_key": session_key,
+        }
+
+        model_registry.DB.session().commit()
+        return result
+
+    @staticmethod
     def logout(authorization: Optional[str], model_registry: Any) -> None:
         """Revoke the session the presented JWT belongs to.
 
@@ -1284,9 +1443,6 @@ class UserManager(AbstractBLLManager, RouterMixin):
         close_session = True
 
         try:
-
-            root_id = env("ROOT_ID")
-
             # Extract credentials from Basic Auth header if provided
             if authorization and authorization.startswith("Basic "):
                 identifier, password = UserManager._decode_basic_auth(authorization)
@@ -1437,129 +1593,68 @@ class UserManager(AbstractBLLManager, RouterMixin):
             # failure into the next legitimate attempt.
             UserManager._lockout_tracker.clear(lockout_key, "password_login")
 
-            # Login successful — issue the session row first (when
-            # ``auth_session`` is loaded) so its key becomes the JWT's
-            # ``jti``. Revoking the session row then invalidates every
-            # bearer token bound to it (see ``_enforce_session_not_revoked``).
-            user_timezone = (
-                user.get("timezone", "UTC")
-                if isinstance(user, dict)
-                else getattr(user, "timezone", "UTC")
-            )
-            issue_hook = _session_hooks["issue_session"]
-            if issue_hook is not None:
-                session_key = issue_hook(
-                    user_id=user["id"],
-                    model_registry=model_registry,
-                    # Login defaults to a 30-day session; 24h JWT exp is
-                    # carried by ``generate_jwt_token`` independently.
-                    expiration_hours=24 * 30,
-                    device_type="web",
-                )
-            else:
-                session_key = secrets.token_hex(16)
-            token = UserManager.generate_jwt_token(
-                user_id=str(user["id"]),
-                email=user["email"],
-                timezone_str=user_timezone,
-                session_key=session_key,
-            )
-
-            # Get user preferences via metadata extension hook (Scope #3).
-            preferences: Dict[str, str] = {}
-            list_prefs = _metadata_hooks["list_preferences"]
-            if list_prefs is not None:
-                try:
-                    preferences = list_prefs(user["id"], model_registry) or {}
-                except Exception:
-                    pass
-
-            # Get user teams with roles
-            from zephyrex.logic.BLL_Auth.user_team import UserTeamModel
-            from zephyrex.logic.BLL_Auth.team import TeamModel
-            from zephyrex.logic.BLL_Auth.role import RoleModel
-
-            user_teams = UserTeamModel.DB(model_registry.DB.manager.Base).list(
-                requester_id=root_id,
-                model_registry=model_registry,
-                user_id=user["id"],
-                enabled=True,
-            )
-
-            # E1 (#230) — batch-load the referenced teams and roles with a
-            # single ``id.in_(...)`` query each and build id->row maps, rather
-            # than firing TeamModel.get + RoleModel.get per membership (the old
-            # 2N-query pattern on every successful login). Mirrors the batched
-            # lookup already used by ``UserTeamManager.search``. Uses
-            # ``requester_id=root_id`` for both queries, exactly as the
-            # per-item gets did, so soft-delete/permission handling is
-            # identical.
-            TeamDB = TeamModel.DB(model_registry.DB.manager.Base)
-            RoleDB = RoleModel.DB(model_registry.DB.manager.Base)
-            team_ids = {ut["team_id"] for ut in user_teams if ut["team_id"]}
-            role_ids = {ut["role_id"] for ut in user_teams if ut["role_id"]}
-
-            team_map: Dict[str, Any] = {}
-            role_map: Dict[str, Any] = {}
-            if team_ids:
-                team_map = {
-                    team["id"]: team
-                    for team in TeamDB.list(
-                        requester_id=root_id,
-                        model_registry=model_registry,
-                        filters=[TeamDB.id.in_(team_ids)],
-                    )
+            # A user with a verified second factor gets a challenge, not a
+            # session: POST /v1/user/authorize/mfa completes the login.
+            login_methods = _mfa_hooks["login_methods"]
+            methods = login_methods(user["id"], model_registry) if login_methods else []
+            if methods:
+                return {
+                    "mfa_required": True,
+                    "challenge_token": issue_single_use_token(
+                        audience=MFA_CHALLENGE_AUDIENCE,
+                        subject=str(user["id"]),
+                        ttl_seconds=MFA_CHALLENGE_TTL_SECONDS,
+                    ),
+                    "methods": methods,
                 }
-            if role_ids:
-                role_map = {
-                    role["id"]: role
-                    for role in RoleDB.list(
-                        requester_id=root_id,
-                        model_registry=model_registry,
-                        filters=[RoleDB.id.in_(role_ids)],
-                    )
-                }
-
-            teams_with_roles = []
-            for user_team in user_teams:
-                team = team_map[user_team["team_id"]]
-                role = role_map[user_team["role_id"]]
-
-                # Ensure the key is serializable
-                if isinstance(user_team["expires_at"], datetime):
-                    user_team["expires_at"] = user_team["expires_at"].isoformat()
-                if isinstance(user_team["created_at"], datetime):
-                    user_team["created_at"] = user_team["created_at"].isoformat()
-                if isinstance(user_team["updated_at"], datetime):
-                    user_team["updated_at"] = user_team["updated_at"].isoformat()
-
-                teams_with_roles.append(
-                    {
-                        "team_id": user_team["team_id"],
-                        "user_team_id": user_team["id"],
-                        "team_name": team["name"],
-                        "role_id": user_team["role_id"],
-                        "role_name": role["name"],
-                        "user_team": user_team,
-                        "role": role,
-                        "team": team,
-                    }
-                )
-
-            result = {
-                "user": user,
-                "token": token,
-                "preferences": preferences,
-                "teams": teams_with_roles,
-                "session_key": session_key,
-            }
-
-            model_registry.DB.session().commit()
-            return result
+            return UserManager._complete_login(user, model_registry)
         finally:
             # Close session if we created it
             if close_session:
                 model_registry.DB.session().close()
+
+    @staticmethod
+    @rate_limit(DEFAULT_AUTH_RATE_LIMIT, scope="ip")
+    def login_mfa(body: Dict[str, Any], model_registry: Any) -> Dict[str, Any]:
+        """Second step of an MFA login: exchange the challenge issued by
+        POST /authorize and a current TOTP or recovery code for the normal
+        login response. A wrong code leaves the challenge usable until it
+        expires (attempts are bounded by the MFA verification lockout); a
+        right one spends it."""
+        verify_code = _mfa_hooks["verify_login_code"]
+        try:
+            claims = read_single_use_token(
+                str(body.get("challenge_token") or ""),
+                audience=MFA_CHALLENGE_AUDIENCE,
+            )
+        except jwt.PyJWTError:
+            raise HTTPException(
+                status_code=401, detail="Invalid or expired MFA challenge"
+            )
+        user_id = str(claims["sub"])
+        code = str(body.get("code") or "")
+        try:
+            if (
+                verify_code is None
+                or not code
+                or not verify_code(user_id, code, model_registry)
+            ):
+                raise HTTPException(status_code=401, detail="Invalid MFA code")
+            if not redeem_single_use_token(claims):
+                raise HTTPException(
+                    status_code=401, detail="MFA challenge already used"
+                )
+            users = UserModel.DB(model_registry.DB.manager.Base).list(
+                requester_id=env("ROOT_ID"),
+                model_registry=model_registry,
+                id=user_id,
+            )
+            # The account may have been disabled since the password step.
+            if len(users) != 1 or not users[0]["active"] or users[0]["deleted_at"]:
+                raise HTTPException(status_code=401, detail="Invalid credentials")
+            return UserManager._complete_login(users[0], model_registry)
+        finally:
+            model_registry.DB.session().close()
 
     @staticmethod
     def _issue_session(
