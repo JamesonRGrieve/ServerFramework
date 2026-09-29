@@ -1,3 +1,59 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+import types
+
+import pytest
+from fastapi import HTTPException
+
+from zephyrex.extensions.meta_logging.BLL_Meta_Logging import (
+    META_LOG_QUERY_LIMIT,
+    meta_logging_rate_limiting_hook,
+)
+from zephyrex.lib.InboundSecurity import _inmemory_counter
+from zephyrex.logic.AbstractLogicManager import HookContext, HookTiming
+
+
+class TestQueryRateLimit:
+    """The limit persists across requests: each request builds a fresh
+    manager, which is exactly what the old per-instance tally could not
+    survive."""
+
+    @staticmethod
+    def _context(requester_id: str, method: str = "list") -> HookContext:
+        manager = types.SimpleNamespace(
+            optional_requester=types.SimpleNamespace(id=requester_id)
+        )
+        return HookContext(
+            manager=manager,
+            method_name=method,
+            args=[],
+            kwargs={},
+            timing=HookTiming.BEFORE,
+        )
+
+    @pytest.fixture(autouse=True)
+    def _fresh_counter(self):
+        _inmemory_counter.reset()
+        yield
+        _inmemory_counter.reset()
+
+    def test_blocks_the_query_after_the_limit_across_fresh_managers(self):
+        for _ in range(META_LOG_QUERY_LIMIT):
+            meta_logging_rate_limiting_hook(self._context("user-1"))
+        with pytest.raises(HTTPException) as exc:
+            meta_logging_rate_limiting_hook(self._context("user-1"))
+        assert exc.value.status_code == 429
+
+    def test_limit_is_per_requester(self):
+        for _ in range(META_LOG_QUERY_LIMIT):
+            meta_logging_rate_limiting_hook(self._context("user-1"))
+        meta_logging_rate_limiting_hook(self._context("user-2"))
+
+    def test_non_query_methods_are_not_counted(self):
+        for _ in range(META_LOG_QUERY_LIMIT * 2):
+            meta_logging_rate_limiting_hook(self._context("user-1", "create"))
+        meta_logging_rate_limiting_hook(self._context("user-1"))
+
+
 # from datetime import datetime, timedelta
 # from unittest.mock import AsyncMock, MagicMock, patch
 

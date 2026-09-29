@@ -587,39 +587,39 @@ def meta_logging_audit_hook(context: HookContext) -> None:
         )
 
 
+META_LOG_QUERY_LIMIT = 20
+META_LOG_QUERY_WINDOW_SECONDS = 60
+RATE_LIMITED_QUERY_METHODS = frozenset(
+    {"query_audit_logs", "query_failed_logins", "list", "search"}
+)
+
+
 def meta_logging_rate_limiting_hook(context: HookContext) -> None:
-    """Rate limiting for meta logging queries to prevent abuse."""
-    method_name = context.method_name
-    manager = context.manager
+    """Limit each requester to META_LOG_QUERY_LIMIT log queries per window.
 
-    # Apply rate limiting to query operations
-    if method_name in ["query_audit_logs", "query_failed_logins", "list", "search"]:
-        # Simple in-memory rate limiting (could be enhanced with Redis)
-        if not hasattr(manager, "_query_rate_limit_tracker"):
-            manager._query_rate_limit_tracker = {}
+    Counts through the framework's shared rate-limit counter (process-wide, or
+    distributed when one is wired). It used to keep its tally on the manager
+    instance, which is built per request, so the limit could never trip.
+    """
+    if context.method_name not in RATE_LIMITED_QUERY_METHODS:
+        return
+    requester = context.manager.optional_requester
+    if requester is None:
+        return
 
-        requester_id = manager.requester.id
-        current_time = datetime.now(timezone.utc)
+    from zephyrex.lib.InboundSecurity import _get_counter
 
-        # Check if user has exceeded rate limit (20 queries per minute)
-        if requester_id in manager._query_rate_limit_tracker:
-            attempts = manager._query_rate_limit_tracker[requester_id]
-            recent_attempts = [t for t in attempts if (current_time - t).seconds < 60]
-
-            if len(recent_attempts) >= 20:
-                logger.warning(
-                    f"Meta logging query rate limit exceeded by user {requester_id}"
-                )
-                raise HTTPException(
-                    status_code=429,
-                    detail="Too many log queries. Please wait before trying again.",
-                )
-
-            manager._query_rate_limit_tracker[requester_id] = recent_attempts + [
-                current_time
-            ]
-        else:
-            manager._query_rate_limit_tracker[requester_id] = [current_time]
+    attempts = _get_counter().incr(
+        f"meta_logging_query:{requester.id}", META_LOG_QUERY_WINDOW_SECONDS
+    )
+    if attempts > META_LOG_QUERY_LIMIT:
+        logger.warning(
+            "Meta logging query rate limit exceeded by user %s", requester.id
+        )
+        raise HTTPException(
+            status_code=429,
+            detail="Too many log queries. Please wait before trying again.",
+        )
 
 
 # Privacy audit access hook function
