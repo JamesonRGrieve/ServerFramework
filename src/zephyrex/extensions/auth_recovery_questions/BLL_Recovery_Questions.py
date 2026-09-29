@@ -13,7 +13,6 @@ import bcrypt
 from fastapi import HTTPException
 from pydantic import Field
 
-from zephyrex.lib.FieldACL import Sensitive
 from zephyrex.lib.InboundSecurity import LockoutPolicy, LockoutTracker
 from zephyrex.pydantic2.registry import BaseModel
 from zephyrex.pydantic2.fastapi import AuthType, RouterMixin, RouteType
@@ -58,14 +57,13 @@ class UserRecoveryQuestionModel(
     Manager: ClassVar[Type["UserRecoveryQuestionManager"]] = None  # type: ignore[assignment]
     question: str = Field(..., description="Recovery question")
     # H-3 — the bcrypt hash of the answer must NEVER appear in any
-    # response. Recovery answers have low entropy and crack offline; the
-    # ``Sensitive`` permission gate causes ``FieldACL`` to drop the field
-    # from response payloads unless the requester holds the explicit
-    # ``auth.user.read_secret`` permission (only ROOT in practice).
+    # response. Recovery answers have low entropy and crack offline, so the
+    # field is write-only: excluded from every serialization and from
+    # GraphQL types; verification reads the attribute.
     answer: str = Field(
         ...,
-        description="Hashed answer to recovery question",
-        **Sensitive("auth.user.read_secret"),
+        exclude=True,
+        description="Hashed answer to recovery question (write-only)",
     )
 
     table_comment: ClassVar[str] = (

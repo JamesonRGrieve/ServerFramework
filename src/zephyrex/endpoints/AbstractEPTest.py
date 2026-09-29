@@ -2691,6 +2691,7 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
         "password_hash",
         "password",
         "secret",
+        "api_key",
         "api_key_hash",
         "recovery_answer_hash",
         "answer_hash",

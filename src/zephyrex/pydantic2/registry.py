@@ -330,8 +330,9 @@ class ModelRegistry(AbstractRegistry):
             return False
 
         for field_name_inner, field_info in model_fields.items():
-            # Skip fields that are already defined (like offset, limit, etc.)
-            if field_name_inner in list_annotations:
+            # Skip fields that are already defined (like offset, limit, etc.),
+            # and write-only fields, which must not be probed by equality.
+            if field_name_inner in list_annotations or field_info.exclude:
                 continue
 
             field_type = field_info.annotation

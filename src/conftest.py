@@ -450,13 +450,17 @@ def is_relationship_field(model_field: Any) -> bool:
 
 
 def get_field_test_candidates(model_class: Any) -> List[str]:
-    """Return scalar field names that qualify for field selection tests."""
+    """Return scalar field names that qualify for field selection tests.
+
+    Write-only fields (``Field(exclude=True)``) are never readable, so they
+    are not selectable response fields.
+    """
     if not hasattr(model_class, "model_fields"):
         return []
 
     candidates: List[str] = []
     for field_name, model_field in model_class.model_fields.items():
-        if field_name.startswith("_"):
+        if field_name.startswith("_") or model_field.exclude:
             continue
         if is_relationship_field(model_field):
             continue

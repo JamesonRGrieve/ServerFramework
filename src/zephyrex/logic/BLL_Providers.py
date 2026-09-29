@@ -701,7 +701,11 @@ class ProviderInstanceModel(
     metaclass=ModelMeta,
 ):
     model_name: Optional[str] | None = None
-    api_key: Optional[str] | None = None
+    # Write-only: excluded from every serialization (responses, the entity
+    # cache) and from GraphQL types; providers read the attribute.
+    api_key: Optional[str] | None = Field(
+        None, exclude=True, description="Credential for the provider (write-only)"
+    )
     enabled: Optional[bool] = Field(True, description="Whether it is enabled")
     # Item 19: provider scope. Resolution semantics differ by scope:
     #   * root   -> framework-internal only; never reachable via user-context resolution.
@@ -863,7 +867,6 @@ class ProviderInstanceModel(
         ProviderModel.Reference.ID.Search,  # type: ignore[name-defined]
     ):
         model_name: Optional[StringSearchModel] | None = None
-        api_key: Optional[StringSearchModel] | None = None
         scope: Optional[StringSearchModel] | None = None
         # Item 36: residency region (consumed by residency extension).
         region: Optional[StringSearchModel] | None = None

@@ -786,6 +786,9 @@ class GraphQLManager(ErrorHandlerMixin):
         field_name_mappings: Dict[str, str] = {}
 
         for field_name, field_info in model_class.model_fields.items():
+            # Write-only fields (``Field(exclude=True)``) are never readable.
+            if field_info.exclude:
+                continue
             field_type = field_info.annotation
 
             # Debug logging for ActivityState field
@@ -958,6 +961,8 @@ class GraphQLManager(ErrorHandlerMixin):
         # Create basic filter fields for string/numeric fields
         annotations: Dict[str, Type] = {}
         for field_name, field_info in model_class.model_fields.items():
+            if field_info.exclude:
+                continue
             field_type = field_info.annotation
             if field_type == str:
                 annotations[f"{field_name}_contains"] = Optional[str]  # type: ignore[assignment]

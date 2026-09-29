@@ -61,16 +61,18 @@ class TestAnswerHashRoundTrip:
 
 
 class TestSensitiveAnswerField:
-    """H-3 — the bcrypt hash on ``answer`` is gated by the
-    ``auth.user.read_secret`` permission so REST/GraphQL responses
-    omit it for any non-ROOT requester."""
+    """H-3 — the bcrypt hash on ``answer`` never leaves the server: it is
+    write-only, so no serialization (REST response, entity cache) carries
+    it, while verification still reads the attribute."""
 
-    def test_answer_field_carries_required_permission(self):
-        from zephyrex.lib.FieldACL import get_required_permissions
+    def test_answer_hash_is_never_serialized(self):
+        question = UserRecoveryQuestionModel.model_construct(
+            id="q1", user_id="u1", question="First pet?", answer="$2b$12$hash"
+        )
 
-        info = UserRecoveryQuestionModel.model_fields["answer"]
-        perms = get_required_permissions(info)
-        assert "auth.user.read_secret" in perms
+        assert question.answer == "$2b$12$hash"
+        assert "answer" not in question.model_dump()
+        assert "answer" not in question.model_dump(mode="json")
 
     def test_routes_to_register_excludes_search_and_list(self):
         # H-3 — SEARCH/LIST returned the full DTO including the

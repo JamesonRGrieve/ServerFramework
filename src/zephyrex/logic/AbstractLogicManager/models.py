@@ -144,30 +144,6 @@ class ModelMeta(ModelMetaclass):
             config_data["ignored_types"] = tuple(dict.fromkeys(ignored_types))
             namespace["model_config"] = ConfigDict(**config_data)
 
-        # Add a custom model_serializer to ensure mixin fields are included in serialization
-        def model_serializer(self, serializer, info):
-            """Custom serializer to ensure all fields including mixin fields are serialized"""
-            # Use the default serializer first
-            result = serializer(self)
-
-            # Check for any missing mixin fields that should be included
-            model_fields = getattr(self.__class__, "model_fields", {})
-            for field_name in model_fields:
-                if field_name not in result and hasattr(self, field_name):
-                    value = getattr(self, field_name)
-                    result[field_name] = value
-
-            return result
-
-        # Only add the serializer if this is a BaseModel subclass
-        if any(issubclass(base, BaseModel) for base in bases if isinstance(base, type)):
-            # Add the necessary import for the decorator
-            from pydantic import model_serializer as pydantic_model_serializer
-
-            namespace["model_serializer"] = pydantic_model_serializer(mode="wrap")(
-                model_serializer
-            )
-
         cls = super().__new__(mcs, name, bases, namespace, **kwargs)
 
         # Only generate for actual model classes (not base classes)
