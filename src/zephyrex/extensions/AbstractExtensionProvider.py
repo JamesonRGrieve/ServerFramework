@@ -1303,9 +1303,11 @@ class AbstractStaticProvider(AbstractStaticExtensionSystemComponent):
 
     @classmethod
     @abstractmethod
-    def bond_instance(cls, instance: ProviderInstanceModel) -> AbstractProviderInstance:
-        """Bond a provider instance with the service SDK."""
-        return AbstractProviderInstance(instance)
+    def bond_instance(
+        cls, instance: ProviderInstanceModel
+    ) -> Optional[AbstractProviderInstance]:
+        """Bond a provider instance with the service SDK; ``None`` when it
+        cannot be bonded (SDK not installed, credentials missing)."""
 
     @classproperty
     @abstractmethod

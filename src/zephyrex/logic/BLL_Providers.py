@@ -797,6 +797,33 @@ class ProviderInstanceModel(
             logger.error(f"Error discovering provider instances for seeding: {e}")
             return []
 
+    # ``str | None``: inside a model body ``Optional`` is the model's nested
+    # ``Optional`` class, not ``typing.Optional``.
+    def get_setting(self, key: str, default: str | None = None) -> str | None:
+        """This instance's ``ProviderInstanceSetting`` value for ``key``, or
+        ``default`` when the instance has no such setting.
+
+        Read against the attached app's registry: providers run inside
+        rotations, which have no request to take a registry from.
+        """
+        from zephyrex.pydantic2.registry import ModelRegistry
+
+        registry = ModelRegistry.attached()
+        if registry is None:
+            raise RuntimeError("No app registry attached to read provider settings")
+        rows = ProviderInstanceSettingModel.DB(registry.DB.manager.Base).list(
+            requester_id=env("ROOT_ID"),
+            model_registry=registry,
+            return_type="dto",
+            override_dto=ProviderInstanceSettingModel,
+            provider_instance_id=self.id,
+            key=key,
+        )
+        for row in rows:
+            if row.value is not None:
+                return str(row.value)
+        return default
+
     class Create(BaseModel):
         name: str
         provider_id: str
