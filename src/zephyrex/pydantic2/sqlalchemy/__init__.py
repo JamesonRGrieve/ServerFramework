@@ -43,7 +43,6 @@ from zephyrex.pydantic2.sqlalchemy.builder import (
     _extract_mixin_classes as _extract_mixin_classes,
     _find_pydantic_model_by_name as _find_pydantic_model_by_name,
     _fix_null_type_columns as _fix_null_type_columns,
-    _get_db_manager_from_context as _get_db_manager_from_context,
     _get_existing_columns as _get_existing_columns,
     _is_database_model as _is_database_model,
     _process_reference_fields as _process_reference_fields,
@@ -61,6 +60,5 @@ from zephyrex.pydantic2.sqlalchemy.extensions import (
     _MODEL_SNAPSHOTS as _MODEL_SNAPSHOTS,
     _apply_model_extension as _apply_model_extension,
     _apply_nested_model_extensions as _apply_nested_model_extensions,
-    _clear_model_cache as _clear_model_cache,
     _undo_model_extension as _undo_model_extension,
 )

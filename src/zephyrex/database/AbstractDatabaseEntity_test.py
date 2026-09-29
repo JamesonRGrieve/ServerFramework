@@ -166,9 +166,6 @@ def test_hooks_descriptor():
 
 def test_register_seed_items(mock_server):
     """Test the register_seed_items class method"""
-    # Clear database model cache to ensure fresh SQLAlchemy models
-    AbstractDbEntityTestModel.clear_db_cache()
-
     # Get model registry from mock server
     model_registry = mock_server.app.state.model_registry
     TestModel = AbstractDbEntityTestModel.DB(model_registry.DB.Base)
@@ -193,9 +190,6 @@ def test_register_seed_items(mock_server):
 
 def test_create_foreign_key(mock_server):
     """Test the create_foreign_key method"""
-    # Clear database model cache to ensure fresh SQLAlchemy models
-    AbstractDbEntityTestModel.clear_db_cache()
-
     # Get model registry from mock server
     model_registry = mock_server.app.state.model_registry
     TestModel = AbstractDbEntityTestModel.DB(model_registry.DB.Base)
@@ -231,9 +225,6 @@ def test_create_foreign_key(mock_server):
 
 def test_id_column(mock_server):
     """Test that the id column is automatically generated"""
-    # Clear database model cache to ensure fresh SQLAlchemy models
-    AbstractDbEntityTestModel.clear_db_cache()
-
     # Get model registry from mock server
     model_registry = mock_server.app.state.model_registry
     db = model_registry.DB.get_session()

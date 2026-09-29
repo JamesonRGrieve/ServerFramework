@@ -31,7 +31,7 @@ from zephyrex.pydantic2.util import (
 )
 from zephyrex.pydantic2.registry import ModelRegistry
 from zephyrex.pydantic2.sqlalchemy._const import RESERVED_SQLALCHEMY_NAMES, TYPE_MAPPING
-from zephyrex.pydantic2.sqlalchemy.mixins import DatabaseMixin, ParentRelationshipMixin
+from zephyrex.pydantic2.sqlalchemy.mixins import ParentRelationshipMixin
 
 
 def _sanitize_field_name(field_name: str) -> str:
@@ -49,98 +49,19 @@ def _sanitize_field_name(field_name: str) -> str:
     return NameProcessor.sanitize_name(field_name, RESERVED_SQLALCHEMY_NAMES)  # type: ignore[no-any-return]
 
 
-# Note: Removed singleton _CURRENT_BASE - use base_model parameter instead
-
-
-def _get_db_manager_from_context() -> Optional[Any]:
-    """
-    DEPRECATED: Try to get DatabaseManager from context for legacy compatibility.
-
-    This function provides fallback access to DatabaseManager for legacy code
-    that hasn't been updated to use dependency injection. It should not be used
-    in new code.
-
-    Returns:
-        DatabaseManager instance if found, None otherwise
-    """
-    import warnings
-
-    warnings.warn(
-        "_get_db_manager_from_context is deprecated - use dependency injection instead",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-
-    try:
-        # Try to get from current context (e.g., FastAPI request context)
-        # This is a fallback approach - in practice, the DatabaseManager should be
-        # passed explicitly or accessed through app.state.model_registry.database_manager
-        # Try to access through various context mechanisms
-        # 1. Try to get from current asyncio task context
-        try:
-            import asyncio
-
-            task = asyncio.current_task()
-            if task and hasattr(task, "_db_manager"):
-                return task._db_manager
-        except RuntimeError as e:
-            # current_task() raises RuntimeError outside an event loop.
-            logger.debug("DatabaseManager lookup: no current asyncio task: %s", e)
-
-        # 2. Try to get from thread-local storage (not recommended but for compatibility)
-        try:
-            import threading
-
-            local = threading.current_thread()
-            if hasattr(local, "_db_manager"):
-                return local._db_manager
-        except (AttributeError, RuntimeError) as e:
-            logger.debug("DatabaseManager lookup: thread-local probe failed: %s", e)
-
-        # 3. Try to get from global app state (last resort)
-        try:
-            # This is very fragile but might work in some cases
-            import sys
-
-            for module_name, module in sys.modules.items():
-                if hasattr(module, "app") and hasattr(module.app, "state"):
-                    if hasattr(module.app.state, "DB"):
-                        return module.app.state.model_registry.database_manager
-        except (AttributeError, RuntimeError, ImportError) as e:
-            logger.debug("DatabaseManager lookup: app-state probe failed: %s", e)
-
-        return None
-
-    except Exception as e:
-        from zephyrex.lib.Logging import logger
-
-        logger.warning(f"Could not get DatabaseManager from context: {e}")
-        return None
-
-
 def clear_registry_cache() -> None:
-    """
-    Clear all cached mapper configurations to allow reconfiguration.
-    Use this when there are mapper initialization issues or for testing isolation.
+    """Reverse every extension applied to a Pydantic target model.
 
-    Note: With the new architecture, caching is done per declarative base via _pydantic_models.
-    This function clears those caches without needing to iterate through all system modules.
-
-    Also reverses every extension that has been applied to a Pydantic
-    target model (e.g. payment's ``external_payment_id`` on
-    ``UserModel``). The extension system mutates target ``model_fields``
-    in place, so without this reset a test that loads payment leaves
-    the column on ``UserModel`` for the next test running in the same
-    worker process.
+    E.g. payment's ``external_payment_id`` on ``UserModel``. The extension
+    system mutates target ``model_fields`` in place, so without this reset a
+    test that loads payment leaves the column on ``UserModel`` for the next
+    test running in the same worker process. SQLAlchemy models are cached
+    per declarative base, so a fresh app's base starts empty.
     """
     from zephyrex.pydantic2.sqlalchemy.extensions import (
         _EXTENSION_REGISTRY_COMPAT,
         _undo_model_extension,
     )
-
-    # Clear DatabaseMixin cache (legacy, mostly for compatibility)
-    if hasattr(DatabaseMixin, "_db_cache"):
-        DatabaseMixin._db_cache.clear()
 
     # Walk the compat registry and undo every applied extension on its
     # target model. The compat registry tracks extension classes by
@@ -160,52 +81,6 @@ def clear_registry_cache() -> None:
             continue
     for target_model in targets_to_reset:
         _undo_model_extension(target_model)
-
-    # Clear cached models from all known declarative bases
-    # This approach avoids iterating through all system modules and accessing deprecated typing modules
-    cleared_bases = []
-
-    try:
-        # Look for database managers in likely locations
-        try:
-            from zephyrex.database.DatabaseManager import get_database_manager_singleton
-
-            db_manager = get_database_manager_singleton()
-            if (
-                db_manager
-                and hasattr(db_manager, "Base")
-                and hasattr(db_manager.Base, "_pydantic_models")
-            ):
-                db_manager.Base._pydantic_models.clear()
-                cleared_bases.append("DatabaseManager.Base")
-        except (ImportError, AttributeError):
-            pass
-
-        # Check app state if available
-        try:
-            import starlette.concurrency
-
-            context = starlette.concurrency.context.get()  # type: ignore[attr-defined]
-            if context and hasattr(context, "state"):
-                app_state = context.state
-                if hasattr(app_state, "DB") and hasattr(
-                    app_state.model_registry.database_manager, "Base"
-                ):
-                    base = app_state.model_registry.database_manager.Base
-                    if hasattr(base, "_pydantic_models"):
-                        base._pydantic_models.clear()
-                        cleared_bases.append(
-                            "zephyrex.app.state.model_registry.database_manager.Base"
-                        )
-        except (ImportError, AttributeError, LookupError):
-            pass
-
-    except Exception as e:
-        logger.debug(f"Some caches could not be cleared: {e}")
-
-    logger.debug(
-        f"Cleared SQLAlchemy model caches from: {cleared_bases if cleared_bases else 'no active declarative bases found'}"
-    )
 
 
 # Note: set_base_model function removed - was deprecated singleton pattern

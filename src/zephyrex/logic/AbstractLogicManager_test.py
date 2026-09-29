@@ -504,9 +504,6 @@ class TestAbstractLogicManager:
         # Reset hook tracker
         hook_tracker.reset()
 
-        # Clear database model cache to ensure fresh SQLAlchemy models
-        AbstractDbBaseEntityTestModel.clear_db_cache()
-
         # Get database session and manager from mock server
         self.db = mock_server.app.state.model_registry.database_manager.get_session()
         self.db_manager = mock_server.app.state.model_registry.database_manager

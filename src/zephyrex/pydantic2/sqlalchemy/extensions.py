@@ -341,9 +341,6 @@ def _apply_model_extension(
     # Apply extensions to nested classes (Create, Update, Search, etc.)
     _apply_nested_model_extensions(target_model, extension_class)
 
-    # Clear any cached SQLAlchemy models to force regeneration
-    _clear_model_cache(target_model)
-
     # Log the changes
     if added_fields:
         logger.debug(f"Added fields to {target_model.__name__}: {added_fields}")
@@ -407,27 +404,6 @@ def _apply_nested_model_extensions(
 
             if fields_modified and hasattr(target_nested, "model_rebuild"):
                 target_nested.model_rebuild(force=True)
-
-
-def _clear_model_cache(target_model: Type[BaseModel]) -> None:
-    """
-    Clear SQLAlchemy model cache to force regeneration with extended fields.
-
-    Args:
-        target_model: The model whose cache should be cleared
-    """
-    from zephyrex.lib.Logging import logger
-
-    # Clear DatabaseMixin cache if the model uses it
-    if hasattr(target_model, "clear_db_cache"):
-        target_model.clear_db_cache()
-        logger.debug(f"Cleared DatabaseMixin cache for {target_model.__name__}")
-
-    # Note: Global registries have been removed in favor of isolated ModelRegistry instances
-    # The cache clearing is now handled primarily through the DatabaseMixin.clear_db_cache() method
-    # and the ModelRegistry.clear_cache() method when available
-
-    logger.debug(f"Cleared model cache for {target_model.__name__}")
 
 
 def get_applied_extensions() -> Dict[str, List[str]]:

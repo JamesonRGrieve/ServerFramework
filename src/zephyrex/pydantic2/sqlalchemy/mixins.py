@@ -282,8 +282,7 @@ class DatabaseMixin:
             email: str = Field(..., description="User's email")
 
         # Access the SQLAlchemy model for a specific declarative base
-        # Note: In practice, get the db_manager from app.state.model_registry.database_manager or dependency injection
-        db_manager = _get_db_manager_from_context()
+        db_manager = model_registry.database_manager
         User = UserModel.DB(db_manager.Base)
 
         # Use it with SQLAlchemy
@@ -307,10 +306,7 @@ class DatabaseMixin:
         Returns:
             The SQLAlchemy model class corresponding to this Pydantic model
         """
-        from zephyrex.pydantic2.sqlalchemy.builder import (
-            _get_db_manager_from_context,
-            create_sqlalchemy_model,
-        )
+        from zephyrex.pydantic2.sqlalchemy.builder import create_sqlalchemy_model
 
         if declarative_base is None:
             raise ValueError("declarative_base cannot be None")
@@ -345,39 +341,9 @@ class DatabaseMixin:
         else:
             declarative_base._pydantic_models = {}
 
-        # Get the model registry from the declarative base or database manager
-        model_registry = None
-
-        # First, try to get it from the declarative base if it has one attached
-        if hasattr(declarative_base, "_model_registry"):
-            model_registry = declarative_base._model_registry
-        else:
-            # Try to get it from the database manager
-            try:
-                # WARNING: This is deprecated singleton usage - use dependency injection in practice
-                db_manager = _get_db_manager_from_context()
-                if (
-                    db_manager
-                    and hasattr(db_manager, "Base")
-                    and db_manager.Base == declarative_base
-                ):
-                    # Check if there's an app state with model registry
-                    try:
-                        # This is a fallback - in practice we should have the registry attached to the base
-                        pass
-                    except ImportError as e:
-                        logger.debug(
-                            "starlette unavailable while resolving "
-                            "model_registry: %s",
-                            e,
-                        )
-            except Exception as e:
-                logger.debug(
-                    "model_registry resolution from db_manager context failed: %s",
-                    e,
-                )
-
-        # If we still don't have a model registry, we need to create one for this declarative base
+        # The model registry attached to the declarative base, else a new one
+        # attached to it.
+        model_registry = getattr(declarative_base, "_model_registry", None)
         if model_registry is None:
             from zephyrex.pydantic2.registry import ModelRegistry
 
@@ -480,17 +446,6 @@ class DatabaseMixin:
             except Exception:
                 # If creating a dependency fails, continue with others
                 pass
-
-    @classmethod
-    def clear_db_cache(cls):
-        """
-        Clear any cached database models for this Pydantic model.
-        Note: With the new approach, caching is per declarative base,
-        so this method is mainly for compatibility.
-        """
-        # This method is now mainly for compatibility
-        # The actual cache is stored in each declarative base
-        pass
 
     @classmethod
     def get_db_model(cls, declarative_base) -> Type:
