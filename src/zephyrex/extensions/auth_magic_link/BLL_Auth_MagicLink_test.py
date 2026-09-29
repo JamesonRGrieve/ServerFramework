@@ -21,6 +21,7 @@ from zephyrex.logic.BLL_Auth import (
     PasswordlessGrantRegistry,
     SessionModel,
     UserIdGrantPayload,
+    UserManager,
 )
 
 
@@ -119,6 +120,13 @@ class TestMagicLink(ExtensionServerMixin):
         assert len(sessions) == 1
         assert sessions[0].grant_type == "magic_link"
         assert sessions[0].user_id == admin_a.id
+
+        # The token is the client's credential for that session.
+        assert UserManager._decode_jwt(result.token)["jti"] == result.session_key
+        user = UserManager.auth(
+            model_registry=model_registry, authorization=f"Bearer {result.token}"
+        )
+        assert user.id == admin_a.id
 
     # ------------------------------------------------------------------
     # verify: replay rejected

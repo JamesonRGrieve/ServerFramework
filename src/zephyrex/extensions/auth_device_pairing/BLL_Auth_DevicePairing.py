@@ -67,6 +67,8 @@ class PairingDeny(BaseModel):
 class PairingStatus(BaseModel):
     pairing_id: str
     state: str  # pending / approved / denied / expired
+    # Once approved: the requesting device's credential.
+    token: Optional[str] = None
     session_key: Optional[str] = None
     user_id: Optional[str] = None
 
@@ -368,6 +370,7 @@ class DevicePairingManager(AbstractBLLManager, RouterMixin):
         return PairingStatus(
             pairing_id=pairing_id,
             state=state,
+            token=UserManager.session_token(s, self.model_registry),
             session_key=s.session_key,
             user_id=s.user_id,
         )

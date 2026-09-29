@@ -76,6 +76,7 @@ class MagicLinkVerify(BaseModel):
 
 
 class MagicLinkVerifyResponse(BaseModel):
+    token: str = Field(..., description="JWT to present as Authorization: Bearer")
     session_key: str
     user_id: str
     grant_type: str
@@ -244,6 +245,7 @@ class MagicLinkManager(AbstractBLLManager, RouterMixin):
         )
 
         return MagicLinkVerifyResponse(
+            token=UserManager.session_token(session, self.model_registry),
             session_key=session.session_key,
             user_id=session.user_id,
             grant_type=session.grant_type or "magic_link",

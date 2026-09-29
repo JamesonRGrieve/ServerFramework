@@ -20,6 +20,7 @@ from zephyrex.logic.BLL_Auth import (
     PasswordlessGrantRegistry,
     SessionModel,
     UserIdGrantPayload,
+    UserManager,
 )
 
 
@@ -214,6 +215,14 @@ class TestDevicePairing(ExtensionServerMixin):
         assert polled.state == "approved"
         assert polled.session_key == approved.session_key
         assert polled.user_id == admin_a.id
+
+        # The requesting device receives its credential for that session.
+        assert polled.token is not None
+        assert UserManager._decode_jwt(polled.token)["jti"] == polled.session_key
+        user = UserManager.auth(
+            model_registry=model_registry, authorization=f"Bearer {polled.token}"
+        )
+        assert user.id == admin_a.id
 
     # ------------------------------------------------------------------
     # Status: expired pairings report "expired"

@@ -1616,6 +1616,25 @@ class UserManager(AbstractBLLManager, RouterMixin):
         )
 
     @staticmethod
+    def session_token(session: Any, model_registry: Any) -> str:
+        """The JWT a client presents for an issued session: ``jti`` is the
+        session's key, so revoking the session revokes the token. Grant
+        flows (magic link, device pairing) hand this to the client."""
+        user = UserModel.DB(model_registry.DB.manager.Base).get(
+            requester_id=env("ROOT_ID"),
+            model_registry=model_registry,
+            id=session.user_id,
+            return_type="dto",
+            override_dto=UserModel,
+        )
+        return UserManager.generate_jwt_token(
+            user_id=user.id,
+            email=user.email,
+            timezone_str=user.timezone or "UTC",
+            session_key=session.session_key,
+        )
+
+    @staticmethod
     def login_via_grant(
         grant_type: str, grant_payload: BaseModel, model_registry=None
     ) -> Any:
