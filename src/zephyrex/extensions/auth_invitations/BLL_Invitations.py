@@ -203,12 +203,14 @@ class InvitationManager(AbstractBLLManager, RouterMixin):
         target_id: Optional[str] = None,
         target_team_id: Optional[str] = None,
         model_registry: Optional[Any] = None,
+        parent: Optional[Any] = None,
     ):
         super().__init__(
             requester_id=requester_id,
             target_id=target_id,
             target_team_id=target_team_id,
             model_registry=model_registry,
+            parent=parent,
         )
         self._Invitee_manager = None
 

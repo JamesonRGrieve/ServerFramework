@@ -214,14 +214,6 @@ class TeamManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef]
                     "description": "Revokes ALL open invitations for a team.",
                     "status_code": 204,
                 },
-                {
-                    "path": "",
-                    "method": "get",
-                    "function": "list_invitations_for_team",
-                    "summary": "List invitations for team",
-                    "description": "Lists all invitations for a team.",
-                    "status_code": 200,
-                },
             ],
         },
         "metadata": {
@@ -338,6 +330,7 @@ class TeamManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef]
                 requester_id=self.requester.id,
                 target_team_id=self.target_team_id,
                 model_registry=self.model_registry,
+                parent=self,
             )
         return self._invitations
 
@@ -522,34 +515,6 @@ class TeamManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef]
         return {
             "message": f"Revoked {len(invitation_ids)} invitations for team {team_id}"
         }
-
-    def list_invitations_for_team(self, team_id: str):
-        """List all invitations for a team (nested custom route method)"""
-        invitations = self.invitations.list(team_id=team_id, include=["invitation"])
-        invitations_dict = []
-
-        from zephyrex.pydantic2.registry import obj_to_dict
-
-        for invitation in invitations:
-            invitation_dict = obj_to_dict(invitation)
-
-            invitees = self.invitations.Invitee_manager.list(
-                invitation_id=invitation.id
-            )
-            invitees_dict = []
-            for invitee in invitees:
-                invitee_dict = obj_to_dict(invitee)
-                invitee_dict["status"] = (
-                    "declined"
-                    if invitee.declined_at
-                    else "accepted" if invitee.accepted_at else "pending"
-                )
-                invitees_dict.append(invitee_dict)
-            if invitees_dict:
-                invitation_dict["invitees"] = invitees_dict
-
-            invitations_dict.append(invitation_dict)
-        return {"invitations": invitations_dict}
 
 
 # Unified Metadata Model
