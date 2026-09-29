@@ -13,7 +13,6 @@ from zephyrex.extensions.auth_mfa.BLL_Auth_MFA import (
 )
 from zephyrex.extensions.auth_mfa.EXT_Auth_MFA import EXT_Auth_MFA
 from zephyrex.logic.AbstractBLLTest import AbstractBLLTest
-from zephyrex.logic.BLL_Auth_test import TestUserManager as CoreUserManagerTests
 
 # Initialize faker
 faker = Faker()
@@ -29,21 +28,16 @@ class TestMultifactorMethodManager(AbstractBLLTest, ExtensionServerMixin):
         "is_primary": False,
         "always_ask": False,
     }
+    # is_enabled is not client-updatable (disable is the code-gated route).
     update_fields = {
-        "is_enabled": True,
         "is_primary": True,
         "always_ask": True,
     }
     unique_fields: list[str] = (
         []
     )  # No unique fields for MFA methods  # type: ignore[var-annotated]
-    parent_entities = [
-        ParentEntity(
-            name="user",
-            foreign_key="user_id",
-            test_class=CoreUserManagerTests,
-        ),
-    ]
+    # No parent user: a method always belongs to its caller (user_id
+    # defaults to the requester and any other owner is refused).
 
     def test_create_email_mfa_method(self, admin_a, model_registry):
         """Test creating an email MFA method"""
@@ -216,6 +210,115 @@ class TestMultifactorMethodManager(AbstractBLLTest, ExtensionServerMixin):
         # Verify invalid code
         is_invalid = manager.verify_mfa_code(mfa_method.id, "000000")
         assert is_invalid is False
+
+    def _enrolled_totp(self, manager):
+        """A TOTP method taken through enrolment: provisioned, then verified
+        with a code from the provisioning secret."""
+        import pyotp
+
+        method = manager.create(method_type=MultifactorMethodType.TOTP)
+        provisioning = manager.totp_provisioning_route(method.id)
+        assert manager.verify_mfa_code(
+            method.id, pyotp.TOTP(provisioning["secret"]).now()
+        )
+        return method, provisioning
+
+    def test_totp_enrolment_provisions_then_locks_the_seed(
+        self, admin_a, model_registry
+    ):
+        pytest.importorskip("pyotp")
+        manager = self.class_under_test(
+            requester_id=admin_a.id, model_registry=model_registry
+        )
+        method, provisioning = self._enrolled_totp(manager)
+
+        assert provisioning["provisioning_uri"].startswith("otpauth://totp/")
+        assert f"secret={provisioning['secret']}" in provisioning["provisioning_uri"]
+        enrolled = manager.get(id=method.id)
+        assert enrolled.verification is True
+        assert enrolled.last_used is not None
+        with pytest.raises(HTTPException) as exc:
+            manager.totp_provisioning_route(method.id)
+        assert exc.value.status_code == 409
+
+    def test_method_is_bound_to_its_caller(self, admin_a, admin_b, model_registry):
+        manager = self.class_under_test(
+            requester_id=admin_a.id, model_registry=model_registry
+        )
+        assert manager.create(method_type=MultifactorMethodType.TOTP).user_id == (
+            admin_a.id
+        )
+        with pytest.raises(HTTPException) as exc:
+            manager.create(user_id=admin_b.id, method_type=MultifactorMethodType.TOTP)
+        assert exc.value.status_code == 403
+
+    def test_disabling_a_verified_method_needs_a_code(self, admin_a, model_registry):
+        pytest.importorskip("pyotp")
+        manager = self.class_under_test(
+            requester_id=admin_a.id, model_registry=model_registry
+        )
+        method, _ = self._enrolled_totp(manager)
+        recovery = manager.generate_recovery_codes_route(method.id, {"count": 2})
+
+        for body in ({}, {"code": "WRONG-CODE0"}):
+            with pytest.raises(HTTPException) as exc:
+                manager.disable_route(method.id, body)
+            assert exc.value.status_code == 403
+        assert manager.get(id=method.id).is_enabled is True
+
+        assert manager.disable_route(method.id, {"code": recovery[0]}) == {
+            "disabled": True
+        }
+        assert manager.get(id=method.id).is_enabled is False
+
+    def test_deleting_a_verified_method_needs_a_code_and_drops_its_codes(
+        self, admin_a, model_registry
+    ):
+        pytest.importorskip("pyotp")
+        manager = self.class_under_test(
+            requester_id=admin_a.id, model_registry=model_registry
+        )
+        method, _ = self._enrolled_totp(manager)
+        recovery = manager.generate_recovery_codes_route(method.id, {"count": 3})
+
+        with pytest.raises(HTTPException) as exc:
+            manager.delete_route(method.id, {})
+        assert exc.value.status_code == 403
+
+        manager.delete_route(method.id, {"code": recovery[0]})
+        with pytest.raises(HTTPException) as exc:
+            manager.get(id=method.id)
+        assert exc.value.status_code == 404
+        assert (
+            manager.recovery_codes.list(multifactor_method_id=method.id, is_used=False)
+            == []
+        )
+
+    def test_an_abandoned_enrolment_deletes_without_a_code(
+        self, admin_a, model_registry
+    ):
+        manager = self.class_under_test(
+            requester_id=admin_a.id, model_registry=model_registry
+        )
+        method = manager.create(method_type=MultifactorMethodType.TOTP)
+        manager.delete_route(method.id, {})
+        with pytest.raises(HTTPException) as exc:
+            manager.get(id=method.id)
+        assert exc.value.status_code == 404
+
+    def test_regenerating_recovery_codes_retires_the_old_set(
+        self, admin_a, model_registry
+    ):
+        manager = self.class_under_test(
+            requester_id=admin_a.id, model_registry=model_registry
+        )
+        method = manager.create(method_type=MultifactorMethodType.TOTP)
+        old = manager.generate_recovery_codes_route(method.id, {"count": 2})
+        new = manager.generate_recovery_codes_route(method.id, {"count": 2})
+
+        codes = manager.recovery_codes
+        assert codes.verify_recovery_code(method.id, old[0]) is False
+        assert codes.verify_recovery_code(method.id, new[0]) is True
 
     def test_update_primary_mfa_method(self, admin_a, team_a, model_registry):
         """Test updating primary MFA method"""

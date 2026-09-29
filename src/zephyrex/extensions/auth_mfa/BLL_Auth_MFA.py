@@ -1,12 +1,14 @@
+import hashlib
 import secrets
 import string
 from datetime import datetime, timezone
-from typing import Any, ClassVar, Dict, List, Optional
+from typing import Any, Callable, ClassVar, Dict, List, Optional
 
 import bcrypt
 from fastapi import HTTPException
 from pydantic import BaseModel, Field, model_validator
 
+from zephyrex.lib.Environment import env
 from zephyrex.lib.InboundSecurity import LockoutPolicy, LockoutTracker
 from zephyrex.lib.Logging import logger
 from zephyrex.pydantic2.fastapi import AuthType, RouterMixin, RouteType
@@ -31,6 +33,17 @@ from zephyrex.logic.AbstractLogicManager import (
     hook_bll,
 )
 from zephyrex.logic.BLL_Auth import UserManager, UserModel
+
+
+def _totp_digest(algorithm: str) -> Callable[..., Any]:
+    """The hashlib constructor pyotp needs for a stored algorithm name
+    ("SHA1"); pyotp's provisioning URI calls it, so a bare name fails."""
+    digest = getattr(hashlib, algorithm.lower(), None)
+    if digest is None:
+        raise HTTPException(
+            status_code=400, detail=f"Unsupported TOTP algorithm {algorithm}"
+        )
+    return digest  # type: ignore[no-any-return]
 
 
 # MFA method type constants
@@ -236,12 +249,11 @@ class MultifactorMethodModel(
                     )
             return self
 
-    class Update(BaseModel, UserModel.Reference.ID.Optional):
+    # A method can't be moved to another user, and disabling one is the
+    # code-gated POST /{id}/disable, not a field update.
+    class Update(BaseModel):
         identifier: Optional[str] = Field(
             None, description="Phone number or email for SMS/email methods"
-        )
-        is_enabled: Optional[bool] = Field(
-            None, description="Whether this MFA method is enabled"
         )
         is_primary: Optional[bool] = Field(
             None, description="Whether this is the primary MFA method"
@@ -271,13 +283,16 @@ class MultifactorMethodManager(AbstractBLLManager, RouterMixin):
     # M-4 — explicit allow-list. The default RouteType set exposes
     # SEARCH, which leaks identifiers and ``totp_secret`` to anyone
     # with read access; a user only needs to manage their own methods.
+    # No generic DELETE: removing a verified method is the code-gated
+    # POST /{id}/delete below.
     routes_to_register: ClassVar[Optional[List[RouteType]]] = [
         RouteType.GET,
         RouteType.LIST,
         RouteType.CREATE,
         RouteType.UPDATE,
-        RouteType.DELETE,
     ]
+    # A method always belongs to its caller (root/system may set any owner).
+    _CALLER_OWNED_FIELDS: ClassVar[tuple] = ("user_id",)
     # Action endpoints hosted via custom_routes on this RouterMixin manager (the
     # working path). The old @static_route-on-extension mechanism never mounted
     # (framework #241), so these formerly-dead verbs live here instead.
@@ -308,6 +323,33 @@ class MultifactorMethodManager(AbstractBLLManager, RouterMixin):
             "is_static": False,
             "summary": "Verify a recovery code",
             "status_code": 200,
+        },
+        {
+            "path": "/{mfa_method_id}/totp/provisioning",
+            "method": "get",
+            "function": "totp_provisioning_route",
+            "auth_type": AuthType.JWT,
+            "is_static": False,
+            "summary": "otpauth:// URI and key for an unverified TOTP method",
+            "status_code": 200,
+        },
+        {
+            "path": "/{mfa_method_id}/disable",
+            "method": "post",
+            "function": "disable_route",
+            "auth_type": AuthType.JWT,
+            "is_static": False,
+            "summary": "Disable an MFA method (a verified one needs a current code)",
+            "status_code": 200,
+        },
+        {
+            "path": "/{mfa_method_id}/delete",
+            "method": "post",
+            "function": "delete_route",
+            "auth_type": AuthType.JWT,
+            "is_static": False,
+            "summary": "Delete an MFA method (a verified one needs a current code)",
+            "status_code": 204,
         },
     ]
 
@@ -340,6 +382,79 @@ class MultifactorMethodManager(AbstractBLLManager, RouterMixin):
                 multifactor_method_id=mfa_method_id, code=code
             )
         }
+
+    def totp_provisioning_route(self, mfa_method_id: str) -> Dict[str, str]:
+        """GET /v1/user/mfa/{id}/totp/provisioning — what an authenticator
+        app needs to enrol. Available only until the method is verified;
+        after that the seed is never readable again."""
+        method = self.get(id=mfa_method_id)
+        if method.method_type != MultifactorMethodType.TOTP:
+            raise HTTPException(status_code=400, detail="Not a TOTP method")
+        if method.verification:
+            raise HTTPException(status_code=409, detail="Method is already enrolled")
+        import pyotp
+
+        # Unpadded base32: the Key URI format omits padding, and several
+        # authenticator apps reject it; pyotp re-pads when verifying.
+        secret = decrypt_totp_secret(method.totp_secret).rstrip("=")
+        uri = pyotp.TOTP(
+            secret,
+            digest=_totp_digest(method.totp_algorithm),
+            digits=method.totp_digits,
+            interval=method.totp_period,
+        ).provisioning_uri(
+            name=self.requester.email or self.requester.id,
+            issuer_name=env("APP_NAME"),
+        )
+        return {"provisioning_uri": uri, "secret": secret}
+
+    def disable_route(
+        self, mfa_method_id: str, body: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, bool]:
+        """POST /v1/user/mfa/{id}/disable — stop using a method. A verified
+        method needs a current TOTP or recovery code."""
+        self._require_code_if_verified(mfa_method_id, body)
+        self._set_state(mfa_method_id, is_enabled=False, is_primary=False)
+        return {"disabled": True}
+
+    def delete_route(
+        self, mfa_method_id: str, body: Optional[Dict[str, Any]] = None
+    ) -> None:
+        """POST /v1/user/mfa/{id}/delete — remove a method and its recovery
+        codes. A verified method needs a current TOTP or recovery code; an
+        abandoned (unverified) enrolment deletes without one."""
+        self._require_code_if_verified(mfa_method_id, body)
+        self.recovery_codes.revoke_all(mfa_method_id)
+        self.delete(id=mfa_method_id)
+
+    def _require_code_if_verified(
+        self, mfa_method_id: str, body: Optional[Dict[str, Any]]
+    ) -> None:
+        method = self.get(id=mfa_method_id)
+        if not method.verification:
+            return
+        code = str((body or {}).get("code") or "")
+        if not code:
+            raise HTTPException(
+                status_code=403, detail="A current MFA code is required"
+            )
+        proven = self.verify_mfa_code(
+            method_id=mfa_method_id, code=code
+        ) or self.recovery_codes.verify_recovery_code(
+            multifactor_method_id=mfa_method_id, code=code
+        )
+        if not proven:
+            raise HTTPException(status_code=403, detail="Invalid MFA code")
+
+    def _set_state(self, mfa_method_id: str, **properties: Any) -> None:
+        """Write server-owned method state (verification, is_enabled,
+        last_used): never client-updatable, so it bypasses the Update body."""
+        self.DB.update(
+            requester_id=self.requester.id,
+            model_registry=self.model_registry,
+            id=mfa_method_id,
+            new_properties=properties,
+        )
 
     def __init__(
         self,
@@ -442,6 +557,10 @@ class MultifactorMethodManager(AbstractBLLManager, RouterMixin):
                     "values are refused"
                 ),
             )
+        if not is_root_id(self.requester.id):
+            # Bound to the caller; a different user_id is refused (403) by
+            # the _CALLER_OWNED_FIELDS check.
+            kwargs["user_id"] = kwargs.get("user_id") or self.requester.id
         return super().create(**kwargs)
 
     def update(self, id: str, **kwargs):
@@ -523,7 +642,7 @@ class MultifactorMethodManager(AbstractBLLManager, RouterMixin):
             import pyotp
 
             totp = pyotp.TOTP(
-                secret, digest=algorithm.lower(), digits=digits, interval=period
+                secret, digest=_totp_digest(algorithm), digits=digits, interval=period
             )
             if not totp.verify(code, valid_window=1):
                 return False
@@ -597,6 +716,12 @@ class MultifactorMethodManager(AbstractBLLManager, RouterMixin):
                     _MFA_VERIFY_LOCKOUT.clear(actor_key, "mfa_verify")
                 else:
                     _MFA_VERIFY_LOCKOUT.record_failure(actor_key, "mfa_verify")
+            if ok:
+                # The first correct code completes enrolment.
+                state: Dict[str, Any] = {"last_used": datetime.now(timezone.utc)}
+                if not method.verification:
+                    state["verification"] = True
+                self._set_state(method_id, **state)
             return ok
         else:
             # For email/SMS, this would verify against stored temporary codes
@@ -695,6 +820,9 @@ class MultifactorRecoveryCodeManager(AbstractBLLManager):
         3.7×10^15 combinations — well beyond brute-force given the MFA
         attempt rate-limit at the verify path.
         """
+        # A new set replaces the old one: codes the user may have lost track
+        # of (or leaked) stop working.
+        self.revoke_all(multifactor_method_id)
         codes = []
 
         for _ in range(count):
@@ -723,6 +851,15 @@ class MultifactorRecoveryCodeManager(AbstractBLLManager):
             )
 
         return codes
+
+    def revoke_all(self, multifactor_method_id: str) -> None:
+        """Retire every unused recovery code of a method."""
+        for recovery_code in self.list(
+            multifactor_method_id=multifactor_method_id, is_used=False
+        ):
+            self.update(
+                recovery_code.id, is_used=True, used_at=datetime.now(timezone.utc)
+            )
 
     def verify_recovery_code(self, multifactor_method_id: str, code: str) -> bool:
         """Verify and mark a recovery code as used"""
