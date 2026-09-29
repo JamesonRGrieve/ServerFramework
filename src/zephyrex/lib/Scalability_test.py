@@ -325,10 +325,13 @@ class TestAssertScalingWithinBounds:
                 for j in range(n):
                     total += i + j
 
+        # Sizes large enough (tens of ms at the top end) and min-of-5 samples so
+        # a scheduler preemption under xdist load cannot flatten the fitted
+        # exponent of a genuinely quadratic workload.
         profile = ScalabilityProfile(
-            n_values=[50, 100, 200],
+            n_values=[200, 400, 800],
             metrics=[ScalingMetric.TIME],
-            repetitions=2,
+            repetitions=5,
             threshold_overrides={
                 ScalingMetric.TIME: ScalabilityThreshold(
                     metric=ScalingMetric.TIME,

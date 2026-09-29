@@ -330,13 +330,45 @@ class TestJWTSemantics:
 # ------------------------------------------------------------------ #
 
 
+def _outsider_and_foreign_team(server):
+    """Create a team owned by a fresh user, plus a fresh user outside it.
+
+    Cross-tenant tests must not use the session-scoped ``user_b``/``team_a``
+    fixtures: they are shared across the whole xdist worker, so any earlier
+    test that grants cross-team access turns the assertion into an
+    order-dependent flake. An outsider created here provably has no access to
+    a team created here.
+    """
+    from conftest import create_team, create_user
+
+    owner = create_user(
+        server,
+        email=f"xte_owner_{uuid.uuid4().hex[:8]}@example.com",
+        password="testpassword",
+        first_name="XteOwner",
+        last_name="Test",
+    )
+    foreign_team = create_team(
+        server, owner.id, name=f"XTE Team {uuid.uuid4().hex[:8]}"
+    )
+    outsider = create_user(
+        server,
+        email=f"xte_out_{uuid.uuid4().hex[:8]}@example.com",
+        password="testpassword",
+        first_name="XteOut",
+        last_name="Test",
+    )
+    return outsider, foreign_team
+
+
 class TestFunctionLevelAuth:
     @pytest.mark.security
-    def test_non_admin_cannot_access_other_team(self, server, user_b, team_a):
+    def test_non_admin_cannot_access_other_team(self, server):
         """Non-admin user cannot access another team's resources."""
+        outsider, foreign_team = _outsider_and_foreign_team(server)
         response = server.get(
-            f"/v1/team/{team_a.id}",
-            headers={"Authorization": f"Bearer {user_b.jwt}"},
+            f"/v1/team/{foreign_team.id}",
+            headers={"Authorization": f"Bearer {outsider.jwt}"},
         )
         assert response.status_code in (
             403,
@@ -344,12 +376,13 @@ class TestFunctionLevelAuth:
         ), f"Non-admin accessed other team: {response.status_code}"
 
     @pytest.mark.security
-    def test_non_admin_cannot_modify_other_team(self, server, user_b, team_a):
+    def test_non_admin_cannot_modify_other_team(self, server):
         """Non-admin user cannot modify another team."""
+        outsider, foreign_team = _outsider_and_foreign_team(server)
         response = server.put(
-            f"/v1/team/{team_a.id}",
+            f"/v1/team/{foreign_team.id}",
             json={"team": {"name": "hacked"}},
-            headers={"Authorization": f"Bearer {user_b.jwt}"},
+            headers={"Authorization": f"Bearer {outsider.jwt}"},
         )
         assert response.status_code in (
             403,
@@ -375,25 +408,7 @@ class TestMultiTenantIsolation:
         outsider provably has no access to a team created within this test, so
         the existent and non-existent lookups must return the same status.
         """
-        from conftest import create_team, create_user
-
-        owner = create_user(
-            server,
-            email=f"xte_owner_{uuid.uuid4().hex[:8]}@example.com",
-            password="testpassword",
-            first_name="XteOwner",
-            last_name="Test",
-        )
-        other_team = create_team(
-            server, owner.id, name=f"XTE Team {uuid.uuid4().hex[:8]}"
-        )
-        outsider = create_user(
-            server,
-            email=f"xte_out_{uuid.uuid4().hex[:8]}@example.com",
-            password="testpassword",
-            first_name="XteOut",
-            last_name="Test",
-        )
+        outsider, other_team = _outsider_and_foreign_team(server)
         hdr = {"Authorization": f"Bearer {outsider.jwt}"}
 
         r_nonexistent = server.get(f"/v1/team/{uuid.uuid4()}", headers=hdr)
