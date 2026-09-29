@@ -203,10 +203,13 @@ def ratchet_scaling(
     for n in sizes:
         samples = []
         for _ in range(repeats):
-            start = time.perf_counter()
+            # CPU time, not wall time: the fit is about how the work grows,
+            # and wall time also counts every other process competing for
+            # the core (e.g. the other xdist workers), which flattens it.
+            start = time.process_time()
             for _ in range(iterations):
                 run(n)
-            samples.append((time.perf_counter() - start) / iterations)
+            samples.append((time.process_time() - start) / iterations)
         elapsed = min(samples)
         xs.append(math.log(n))
         # Floor the normalized time so a sub-microsecond sample can't produce a

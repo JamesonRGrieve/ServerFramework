@@ -81,7 +81,7 @@ class TestRatchetScalingIntegration:
         for d in durations:
             ticks += [ticks[-1], ticks[-1] + d]
         clock = iter(ticks[1:])
-        monkeypatch.setattr(ER.time, "perf_counter", lambda: next(clock))
+        monkeypatch.setattr(ER.time, "process_time", lambda: next(clock))
         monkeypatch.setattr(ER, "_read_mhz", lambda: 1.0)
 
         ER.ratchet_scaling("demo_repeats", lambda n: None, sizes=[1, 2, 4])
