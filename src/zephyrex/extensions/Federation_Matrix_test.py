@@ -13,16 +13,14 @@ This file does three things:
    ones, so a new external extension automatically gains 20 cells of
    coverage.
 
-No mocks. The reference upstreams are real FastAPI ASGI apps served via
-``httpx.ASGITransport`` so every outbound call exercises ``ProviderHTTPClient``,
-auth strategy, rotation, and rate-limit machinery exactly as in production.
+No mocks. The reference upstreams are real FastAPI ASGI apps driven through
+FastAPI's TestClient, behind the real ``GQLUpstreamTransport`` /
+``RESTUpstreamTransport`` exactly as the framework's providers build them.
 """
 
 from __future__ import annotations
 
-import asyncio
-import os
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 import pytest
 
@@ -37,7 +35,6 @@ from zephyrex.extensions.AbstractFederationMatrixTest import (
 from zephyrex.extensions.Federation_Matrix_Generator import generate_matrix_tests
 from zephyrex.extensions.federation.BLL_Federation_GQL import GQLUpstreamTransport
 from zephyrex.extensions.federation.BLL_Federation_REST import (
-    OperationSpec,
     RESTUpstreamTransport,
     openapi_to_pydantic_models,
 )
@@ -113,8 +110,6 @@ def _build_gql_upstream_transport() -> GQLUpstreamTransport:
     and ``widgets`` queries returning a deterministic seed.
     """
 
-    import httpx
-
     SEED = {
         "1": {"id": "1", "name": "Alpha", "size": 10},
         "2": {"id": "2", "name": "Beta", "size": 20},
@@ -142,51 +137,21 @@ def _build_gql_upstream_transport() -> GQLUpstreamTransport:
             return {"data": {"__typename": "Query"}}
         return {"errors": [{"message": "unsupported"}]}
 
-    class _Wrapper:
-        """Sync wrapper so transport.send_sync works without an event loop."""
+    # The real transport over a sync client, the shape GraphQL providers
+    # build (``ProviderHTTPClientSync``); TestClient drives the ASGI app.
+    from fastapi.testclient import TestClient
 
-        def __init__(self, app):
-            self._client = httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app),
-                base_url="http://upstream",
-            )
-            self._sync_client = httpx.Client(
-                transport=httpx.ASGITransport(app=app),
-                base_url="http://upstream",
-            )
+    sync_client = TestClient(app, base_url="http://upstream")
 
-        async def post(self, url, *, json=None, **_):
-            r = await self._client.post(url, json=json)
-            return r.json()
+    class _SyncHTTP:
+        def post(self, url, *, json=None, **_):
+            return sync_client.post(url, json=json).json()
 
-        def post_sync(self, url, *, json=None, **_):
-            r = self._sync_client.post(url, json=json)
-            return r.json()
-
-    wrapper = _Wrapper(app)
-
-    class _GQLTransport:
-        """Mimics ``GQLUpstreamTransport`` shape but runs in-process."""
-
-        async def send(self, *, query, variables=None, requester_id=None):
-            body = {"query": query}
-            if variables is not None:
-                body["variables"] = dict(variables)
-            return await wrapper.post("/graphql", json=body)
-
-        def send_sync(self, *, query, variables=None, requester_id=None):
-            body = {"query": query}
-            if variables is not None:
-                body["variables"] = dict(variables)
-            return wrapper.post_sync("/graphql", json=body)
-
-    return _GQLTransport()
+    return GQLUpstreamTransport(http_client=_SyncHTTP(), upstream_url="/graphql")
 
 
 def _build_rest_upstream_transport() -> RESTUpstreamTransport:
     """Build a REST transport pointing at an in-process FastAPI widget app."""
-
-    import httpx
 
     SEED = {
         "1": {"id": "1", "name": "Alpha", "size": 10},

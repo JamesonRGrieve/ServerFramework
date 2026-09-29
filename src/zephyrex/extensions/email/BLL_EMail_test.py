@@ -1,6 +1,4 @@
-# Set default test configuration for all test classes
-
-# Set default test configuration for all test classes
+from typing import Any, Dict, List
 
 from zephyrex.AbstractTest import ClassOfTestsConfig, CategoryOfTest
 from zephyrex.logic.AbstractBLLTest import AbstractBLLTest
@@ -9,10 +7,6 @@ from zephyrex.extensions.email.EXT_EMail import EXT_EMail
 from zephyrex.lib.Environment import env
 
 from zephyrex.extensions.auth_invitations.BLL_Invitations import InvitationManager
-
-AbstractBLLTest.test_config = ClassOfTestsConfig(
-    categories=[CategoryOfTest.LOGIC, CategoryOfTest.EXTENSION]
-)
 
 
 class TestEmailManager(AbstractBLLTest, ExtensionServerMixin):
@@ -26,9 +20,12 @@ class TestEmailManager(AbstractBLLTest, ExtensionServerMixin):
     class_under_test = InvitationManager
     extension_class = EXT_EMail
 
-    create_fields = {}  # type: ignore[var-annotated]
-    update_fields = {}  # type: ignore[var-annotated]
-    unique_fields = {}  # type: ignore[var-annotated]
+    test_config = ClassOfTestsConfig(
+        categories=[CategoryOfTest.LOGIC, CategoryOfTest.EXTENSION]
+    )
+    create_fields: Dict[str, Any] = {}
+    update_fields: Dict[str, Any] = {}
+    unique_fields: List[str] = []
 
     def test_send_email_on_invitation(self, admin_a, team_a, model_registry):
         """

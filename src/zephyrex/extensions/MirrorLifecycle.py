@@ -130,7 +130,7 @@ def _register_hook(manager_cls: type, spec: MirrorSpec) -> None:
     # placeholder hook that records the spec on the active context for
     # the executor to pick up.
     @hook_bll(manager_cls, timing=HookTiming.BEFORE, priority=20)
-    def _mirror_hook(context):  # type: ignore[no-redef]
+    def _mirror_hook(context):
         if context.method_name != method_name:
             return
         bag = getattr(context, "condition_data", None)

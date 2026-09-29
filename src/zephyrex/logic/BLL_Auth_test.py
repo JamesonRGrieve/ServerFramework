@@ -10,8 +10,6 @@ from fastapi import HTTPException
 from loguru import logger
 
 from zephyrex.AbstractTest import (
-    CategoryOfTest,
-    ClassOfTestsConfig,
     ParentEntity,
     SkipReason,
     SkipThisTest,
@@ -36,9 +34,6 @@ from zephyrex.logic.BLL_Auth import (
     UserManager,
     UserTeamManager,
 )
-
-# Set default test configuration for all test classes
-AbstractBLLTest.test_config = ClassOfTestsConfig(categories=[CategoryOfTest.LOGIC])
 
 # Initialize faker for generating test data once
 faker = Faker()
@@ -2484,7 +2479,7 @@ class TestInviteeManager(AbstractBLLTest):
         create_data = self.create_fields.copy()
         for field in create_data:
             if callable(create_data[field]):
-                create_data[field] = create_data[field]()  # type: ignore[operator]
+                create_data[field] = create_data[field]()
 
         # Set the invitation_id from our manually created invitation
         create_data["invitation_id"] = invitation.id

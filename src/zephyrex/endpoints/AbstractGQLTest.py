@@ -31,7 +31,7 @@ class AbstractGraphQLTest:
         # this file in isolation; these declarations have no runtime
         # effect (TYPE_CHECKING is False at import time).
         entity_name: str
-        string_field_to_update: str
+        string_field_to_update: Optional[str]
         parent_entities: List["ParentEntity"]
         system_entity: bool
         faker: "Faker"

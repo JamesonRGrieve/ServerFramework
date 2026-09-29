@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, ClassVar, Dict, List, Mapping, Optional, Set, Tuple, Type
 
-from pydantic import BaseModel, EmailStr, Field, HttpUrl, SecretStr
+from pydantic import BaseModel, EmailStr, Field, SecretStr
 
 from zephyrex.extensions.AbstractExtensionProvider import (
     AbstractProviderInstance_SDK,
@@ -41,7 +41,7 @@ from zephyrex.extensions.email.EmailErrors import (
     NotSupportedError,
     map_validation_error,
 )
-from zephyrex.extensions.ExternalErrors import map_upstream_status
+from zephyrex.extensions.ExternalErrors import AuthExternalError, map_upstream_status
 from zephyrex.extensions.email.EXT_EMail import (
     AbstractEmailProvider,
     Capability,
@@ -55,7 +55,6 @@ from zephyrex.extensions.email.EXT_EMail import (
 from zephyrex.extensions.ExternalErrors import DegradationPolicy, fail_fast
 from zephyrex.extensions.FieldMappings import (
     Compose,
-    Decompose,
     EnumRemap,
     FieldMapping,
     Rename,
@@ -514,7 +513,6 @@ class SendgridProvider(AbstractEmailProvider):
                 HealthStatus.DOWN, detail="SendGrid API key not configured"
             )
         try:
-            import httpx
 
             from zephyrex.lib.ProviderHTTPClient import ClientPolicy, get_sync_client
 
@@ -567,7 +565,7 @@ class SendgridProvider(AbstractEmailProvider):
         )
         if validation_error:
             logger.error(validation_error)
-            return validation_error  # type: ignore[no-any-return]
+            return validation_error
 
         # Get bonded instance
         bonded = cls.bond_instance(provider_instance)
@@ -804,7 +802,7 @@ def _sendgrid_message_to_sg_payload(message: EmailMessage) -> Dict[str, Any]:
         payload["categories"] = list(message.tags)
     if message.headers:
         payload["headers"] = dict(message.headers)
-    return payload  # type: ignore[no-any-return]
+    return payload
 
 
 def _sendgrid_payload_to_message_kwargs(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -902,6 +900,15 @@ class SendgridEmailInstance(AbstractEmailProviderInstance):
     # delegating to the legacy provider classmethods where possible.
 
     async def send(self, message: EmailMessage) -> SentMessage:
+        # Sending bonds through the provider instance's settings; an instance
+        # built from an API key alone serves only the HTTP ladder methods.
+        # Unconfigured is this provider's failure, so rotation moves on.
+        if self.model is None:
+            raise AuthExternalError(
+                "SendGrid send requires a configured provider instance",
+                provider=SendgridProvider.name,
+                ability="email_send",
+            )
         result = await SendgridProvider.send(self.model, message)
         recipient = message.to[0].format() if message.to else ""
         if isinstance(result, str) and result.lower().startswith("failed"):

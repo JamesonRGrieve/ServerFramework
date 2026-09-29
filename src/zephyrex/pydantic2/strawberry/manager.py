@@ -10,14 +10,15 @@ from typing import (
     Callable,
     Dict,
     Hashable,
+    Iterable,
     List,
     Optional,
+    Protocol,
     Sequence,
     Set,
     Tuple,
     Type,
     TypeGuard,
-    Union,
     get_args,
     get_origin,
 )
@@ -31,7 +32,7 @@ from strawberry.types import Info
 from zephyrex.lib.AbstractPydantic2 import ErrorHandlerMixin
 from zephyrex.lib.Environment import inflection
 from zephyrex.lib.Logging import logger
-from zephyrex.pydantic2.registry import ModelRegistry
+from zephyrex.lib.TypeUnions import unwrap_optional
 from zephyrex.pydantic2.manager_contract import (
     ManagerContract,
     SelfScopedManagerContract,
@@ -75,12 +76,24 @@ def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
     )
 
 
+class SchemaModelSource(Protocol):
+    """What schema generation reads from a model registry."""
+
+    @property
+    def bound_models(self) -> Iterable[Type[BaseModel]]: ...
+
+    @property
+    def model_relationships(self) -> Sequence[Tuple[Any, ...]]: ...
+
+    def apply(self, type: Type[Any], /) -> Type[Any]: ...
+
+
 class GraphQLManager(ErrorHandlerMixin):
     """Main GraphQL schema manager that generates schemas from ModelRegistry"""
 
     def __init__(
         self,
-        model_registry: ModelRegistry,
+        model_registry: SchemaModelSource,
         contribution_registry: Optional[GraphQLContributionRegistry] = None,
     ) -> None:
         """Initialize SchemaManager with ModelRegistry.
@@ -554,7 +567,7 @@ class GraphQLManager(ErrorHandlerMixin):
             # Generate resolvers using safe operations
             self.safe_operation(
                 lambda: (
-                    self._add_query_resolver(model_name_camel, gql_type, manager_class),  # type: ignore[func-returns-value, arg-type]
+                    self._add_query_resolver(model_name_camel, gql_type, manager_class),  # type: ignore[func-returns-value]
                     self._add_list_query_resolver(  # type: ignore[func-returns-value]
                         model_name_plural, gql_type, manager_class, filter_input
                     ),
@@ -804,13 +817,13 @@ class GraphQLManager(ErrorHandlerMixin):
                     f"is_dict={isinstance(field_type, dict)}"
                 )
 
-            gql_field_type = self._convert_python_type_to_gql(field_type)  # type: ignore[arg-type]
+            gql_field_type = self._convert_python_type_to_gql(field_type)
             # Convert snake_case field names to camelCase for GraphQL (GraphQL convention)
             gql_field_name = convert_field_name(field_name)
-            annotations[gql_field_name] = gql_field_type  # type: ignore[index]
+            annotations[gql_field_name] = gql_field_type
             # Store mapping for resolver if names differ
             if gql_field_name != field_name:
-                field_name_mappings[gql_field_name] = field_name  # type: ignore[index]
+                field_name_mappings[gql_field_name] = field_name
 
         # Add reverse navigation properties
         if model_class in self._reverse_relationships:
@@ -939,7 +952,7 @@ class GraphQLManager(ErrorHandlerMixin):
             gql_field_name = convert_field_name(field_name)
 
             gql_field_type = self._convert_python_type_to_gql(field_type)
-            annotations[gql_field_name] = gql_field_type  # type: ignore[index]
+            annotations[gql_field_name] = gql_field_type
 
         # Always add at least one field to avoid empty input type error
         if not annotations:
@@ -998,26 +1011,25 @@ class GraphQLManager(ErrorHandlerMixin):
         filter_class = type(filter_name, (), {"__annotations__": annotations})
         return strawberry.input(filter_class)
 
-    def _is_already_optional(self, python_type: Type) -> bool:
+    # ``Any``: annotations such as ``Optional[str]`` are not ``type`` instances.
+    def _is_already_optional(self, python_type: Any) -> bool:
         """Check if a type is already Optional (Union with None)"""
-        return _type_introspector.is_optional_type(python_type)  # type: ignore[no-any-return]
+        return _type_introspector.is_optional_type(python_type)
 
-    def _convert_python_type_to_gql(self, python_type: Type) -> Any:
+    def _convert_python_type_to_gql(self, python_type: Any) -> Any:
         """The GraphQL annotation for a Python type: a strawberry type, a
         scalar, or a typing form (``Optional``/``List``/lazy) around one."""
         try:
             # Handle Optional types
-            if get_origin(python_type) is Union:
-                args = get_args(python_type)
-                if len(args) == 2 and type(None) in args:
-                    inner_type = next(arg for arg in args if arg is not type(None))
-                    return Optional[self._convert_python_type_to_gql(inner_type)]  # type: ignore[return-value]
+            inner_type = unwrap_optional(python_type)
+            if inner_type is not python_type:
+                return Optional[self._convert_python_type_to_gql(inner_type)]
 
             # Handle List types
             if get_origin(python_type) is list:
                 args = get_args(python_type)
                 return (
-                    List[self._convert_python_type_to_gql(args[0])]  # type: ignore[misc, return-value]
+                    List[self._convert_python_type_to_gql(args[0])]  # type: ignore[misc]
                     if args
                     else List[str]
                 )
@@ -1035,13 +1047,10 @@ class GraphQLManager(ErrorHandlerMixin):
                 return TYPE_MAPPING[str]
 
             # Handle Enum types
-            if _type_introspector.is_enum_type(python_type):
+            if issubclass(python_type, Enum):
                 try:
                     # Check if it's an IntEnum
-                    if (
-                        hasattr(python_type, "__mro__")
-                        and IntEnum in python_type.__mro__
-                    ):
+                    if issubclass(python_type, IntEnum):
                         return TYPE_MAPPING[int]
 
                     # Handle string-based enums
@@ -1070,10 +1079,10 @@ class GraphQLManager(ErrorHandlerMixin):
                         # fallback below instead of emitting a real GraphQL enum.
                         new_enum = Enum(enum_name, enum_values)  # type: ignore[misc]
                         new_enum.__module__ = python_type.__module__
-                        return strawberry.enum(new_enum)  # type: ignore[call-overload, no-any-return]
+                        return strawberry.enum(new_enum)
 
                     # Try direct strawberry conversion
-                    return strawberry.enum(python_type)  # type: ignore[call-overload, no-any-return]
+                    return strawberry.enum(python_type)
                 except Exception:
                     return TYPE_MAPPING[str]
 
@@ -1085,9 +1094,7 @@ class GraphQLManager(ErrorHandlerMixin):
                 return TYPE_MAPPING[str]
 
             # Handle Pydantic models (nested types)
-            if hasattr(python_type, "__bases__") and any(
-                base.__name__ == "BaseModel" for base in python_type.__mro__
-            ):
+            if issubclass(python_type, BaseModel):
                 # Skip extension models
                 if (
                     hasattr(python_type, "_is_extension_model")
@@ -1703,12 +1710,12 @@ class GraphQLManager(ErrorHandlerMixin):
                 continue
 
             # Convert field type to optional GraphQL type
-            gql_type = self._convert_python_type_to_gql(field_type)  # type: ignore[arg-type]
+            gql_type = self._convert_python_type_to_gql(field_type)
             if not self._is_already_optional(gql_type):
-                gql_type = Optional[gql_type]  # type: ignore[assignment]
+                gql_type = Optional[gql_type]
             # Convert snake_case field names to camelCase for GraphQL input types
             gql_field_name = convert_field_name(field_name)
-            annotations[gql_field_name] = gql_type  # type: ignore[index]
+            annotations[gql_field_name] = gql_type
 
         # Always add at least one field to avoid empty input type error
         if not annotations:
@@ -1789,11 +1796,7 @@ class GraphQLManager(ErrorHandlerMixin):
         for field_name, field_info in model_class.model_fields.items():
             field_type = field_info.annotation
 
-            # Handle Optional types
-            if get_origin(field_type) is Union:
-                args = get_args(field_type)
-                if len(args) == 2 and type(None) in args:
-                    field_type = next(arg for arg in args if arg is not type(None))
+            field_type = unwrap_optional(field_type)
 
             # Check for foreign key relationships (fields ending with _id)
             if is_reference_field_name(field_name):
@@ -1816,12 +1819,7 @@ class GraphQLManager(ErrorHandlerMixin):
                     ].annotation
 
                     # Extract the actual model type
-                    if get_origin(object_field_type) is Union:
-                        args = get_args(object_field_type)
-                        if len(args) == 2 and type(None) in args:
-                            object_field_type = next(
-                                arg for arg in args if arg is not type(None)
-                            )
+                    object_field_type = unwrap_optional(object_field_type)
 
                     if self._is_pydantic_model(object_field_type):
                         # Register forward relationship
@@ -1851,7 +1849,7 @@ class GraphQLManager(ErrorHandlerMixin):
 
     def _is_pydantic_model(self, field_type: Any) -> bool:
         """Check if a type is a Pydantic model."""
-        return _type_introspector.is_pydantic_model(field_type)  # type: ignore[no-any-return]
+        return _type_introspector.is_pydantic_model(field_type)
 
     def _get_type_name_for_model(self, model_class: Type[BaseModel]) -> str:
         """Get the GraphQL type name for a model."""
@@ -1995,7 +1993,7 @@ class GraphQLManager(ErrorHandlerMixin):
             if store is None:
                 store = {}
                 ctx[_REVERSE_NAV_LOADER_KEY] = store
-            return store  # type: ignore[no-any-return]
+            return store
         return {}
 
     def _get_reverse_nav_dataloader(

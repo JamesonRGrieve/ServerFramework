@@ -1,10 +1,8 @@
-import os
-import tempfile
 from typing import List
 
 import pytest
 
-from zephyrex.AbstractTest import CategoryOfTest, ClassOfTestsConfig, SkipThisTest
+from zephyrex.AbstractTest import CategoryOfTest, SkipThisTest
 from zephyrex.extensions.AbstractPRVTest import (
     AbstractEmailProviderSecurityTests,
     AbstractPRVTest,
@@ -14,7 +12,6 @@ from zephyrex.extensions.email.PRV_SMTP2Go_EMail import Smtp2goProvider
 from zephyrex.extensions.email.PRV_Stalwart_EMail import StalwartProvider
 from zephyrex.lib.Dependencies import check_pip_dependencies, install_pip_dependencies
 from zephyrex.lib.Environment import env
-from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 
 # Provide lightweight placeholders for extension-level fixtures that are not available
 # in this focused test run; the provider tests will skip the heavy integration tests
@@ -70,40 +67,8 @@ class TestSendgridProvider(AbstractPRVTest, AbstractEmailProviderSecurityTests):
     provider_class = SendgridProvider
     extension_id = "email"
 
-    # The test harness expects some common ClassOfTestsConfig fields (timeout, categories, cleanup)
-    # while the provider mixin expects a ProviderTestConfig with test_types etc. Create a tiny
-    # adapter object that exposes both shapes and wrap the provider basic_config here.
-    class _TestConfigAdapter:
-        def __init__(
-            self,
-            provider_conf,
-            categories=None,
-            timeout=None,
-            parallel=False,
-            cleanup=True,
-            gh_action_skip=False,
-        ):
-            # AbstractPRVTest / AbstractTest expectations
-            self.categories = categories or [CategoryOfTest.EXTENSION]
-            self.timeout = timeout
-            self.parallel = parallel
-            self.cleanup = cleanup
-            self.gh_action_skip = gh_action_skip
-
-            # ProviderTestConfig surface
-            self.test_types = provider_conf.test_types
-            self.expected_abilities = provider_conf.expected_abilities
-            self.expected_services = provider_conf.expected_services
-            self.expected_dependencies = provider_conf.expected_dependencies
-            self.performance_thresholds = provider_conf.performance_thresholds
-            self.skip_rotation_tests = provider_conf.skip_rotation_tests
-            self.skip_performance_tests = provider_conf.skip_performance_tests
-            self.skip_error_handling_tests = provider_conf.skip_error_handling_tests
-
-    test_config = _TestConfigAdapter(
-        AbstractPRVTest.basic_config(),
-        categories=[CategoryOfTest.EXTENSION, CategoryOfTest.INTEGRATION],
-        cleanup=True,
+    test_config = AbstractPRVTest.basic_config().model_copy(
+        update={"categories": [CategoryOfTest.EXTENSION, CategoryOfTest.INTEGRATION]}
     )
 
     # Expected abilities and services
@@ -474,23 +439,9 @@ class TestStalwartProvider(AbstractPRVTest, AbstractEmailProviderSecurityTests):
     provider_class = StalwartProvider
     extension_id = "email"
 
-    class _TestConfigAdapter:
-        def __init__(self, provider_conf, categories=None):
-            self.categories = categories or [CategoryOfTest.EXTENSION]
-            self.timeout = None
-            self.parallel = False
-            self.cleanup = True
-            self.gh_action_skip = False
-            self.test_types = provider_conf.test_types
-            self.expected_abilities = provider_conf.expected_abilities
-            self.expected_services = provider_conf.expected_services
-            self.expected_dependencies = provider_conf.expected_dependencies
-            self.performance_thresholds = provider_conf.performance_thresholds
-            self.skip_rotation_tests = provider_conf.skip_rotation_tests
-            self.skip_performance_tests = provider_conf.skip_performance_tests
-            self.skip_error_handling_tests = provider_conf.skip_error_handling_tests
-
-    test_config = _TestConfigAdapter(AbstractPRVTest.basic_config())
+    test_config = AbstractPRVTest.basic_config().model_copy(
+        update={"categories": [CategoryOfTest.EXTENSION]}
+    )
     expected_services = ["email", "smtp"]
     _skip_tests: List[SkipThisTest] = []
 
@@ -519,23 +470,9 @@ class TestSmtp2goProvider(AbstractPRVTest, AbstractEmailProviderSecurityTests):
     provider_class = Smtp2goProvider
     extension_id = "email"
 
-    class _TestConfigAdapter:
-        def __init__(self, provider_conf, categories=None):
-            self.categories = categories or [CategoryOfTest.EXTENSION]
-            self.timeout = None
-            self.parallel = False
-            self.cleanup = True
-            self.gh_action_skip = False
-            self.test_types = provider_conf.test_types
-            self.expected_abilities = provider_conf.expected_abilities
-            self.expected_services = provider_conf.expected_services
-            self.expected_dependencies = provider_conf.expected_dependencies
-            self.performance_thresholds = provider_conf.performance_thresholds
-            self.skip_rotation_tests = provider_conf.skip_rotation_tests
-            self.skip_performance_tests = provider_conf.skip_performance_tests
-            self.skip_error_handling_tests = provider_conf.skip_error_handling_tests
-
-    test_config = _TestConfigAdapter(AbstractPRVTest.basic_config())
+    test_config = AbstractPRVTest.basic_config().model_copy(
+        update={"categories": [CategoryOfTest.EXTENSION]}
+    )
     expected_services = ["email", "messaging"]
     _skip_tests: List[SkipThisTest] = []
 

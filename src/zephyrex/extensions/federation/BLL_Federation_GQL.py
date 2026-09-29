@@ -1597,7 +1597,7 @@ def _mount_gql_to_rest_route(
 ) -> None:
     from fastapi import HTTPException, Request
 
-    async def handler(request: "Request") -> Any:  # type: ignore[name-defined]
+    async def handler(request: "Request") -> Any:
         params: Dict[str, Any] = {}
         if method == "POST":
             try:

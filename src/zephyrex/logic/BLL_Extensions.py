@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 
 from zephyrex.lib.Environment import env
 from zephyrex.lib.Logging import logger
-from zephyrex.pydantic2.registry import BaseModel  # type: ignore[no-redef]
+from zephyrex.pydantic2.registry import BaseModel
 from zephyrex.pydantic2.fastapi import AuthType, RouterMixin
 from zephyrex.logic.AbstractLogicManager import (
     AbstractBLLManager,
@@ -232,7 +232,7 @@ class AbilityModel(
     ApplicationModel,
     NameMixinModel,
     UpdateMixinModel,
-    ExtensionModel.Reference,  # type: ignore[name-defined]
+    ExtensionModel.Reference,
     metaclass=ModelMeta,
 ):
     model_config = {"extra": "ignore"}
@@ -329,12 +329,12 @@ class AbilityModel(
             logger.error(f"Error generating ability seed data: {e}")
             return []
 
-    class Create(BaseModel, NameMixinModel, ExtensionModel.Reference.ID):  # type: ignore[name-defined]
+    class Create(BaseModel, NameMixinModel, ExtensionModel.Reference.ID):
         meta: Optional[bool] = False
         friendly_name: Optional[str] = None
 
     class Update(
-        BaseModel, NameMixinModel.Optional, ExtensionModel.Reference.ID.Optional  # type: ignore[name-defined]
+        BaseModel, NameMixinModel.Optional, ExtensionModel.Reference.ID.Optional
     ):
         meta: Optional[bool] = None
         friendly_name: Optional[str] = None
@@ -342,7 +342,7 @@ class AbilityModel(
     class Search(
         ApplicationModel.Search,
         NameMixinModel.Search,
-        ExtensionModel.Reference.ID.Search,  # type: ignore[name-defined]
+        ExtensionModel.Reference.ID.Search,
     ):
         meta: Optional[bool] = None
         friendly_name: Optional[StringSearchModel] = None

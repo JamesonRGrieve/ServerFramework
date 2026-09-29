@@ -4,7 +4,6 @@
 from typing import Any, ClassVar, Dict, List, Set
 
 from zephyrex.extensions.AbstractExtensionProvider import AbstractStaticExtension
-from zephyrex.lib.Logging import logger
 
 
 class EXT_MetaSDKRs(AbstractStaticExtension):
@@ -32,12 +31,8 @@ class EXT_MetaSDKRs(AbstractStaticExtension):
 
     @classmethod
     def on_initialize(cls) -> bool:
-        logger.debug("Initializing meta_sdk_rs extension")
-        return True
-
-    @classmethod
-    def on_load(cls) -> None:
         from zephyrex.extensions.meta_sdk_rs.RustSDKEmitter import generate_rust_sdk
         from zephyrex.lib.Hooks import register_sdk_generator
 
-        register_sdk_generator("rs", generate_rust_sdk)
+        register_sdk_generator(cls.name, generate_rust_sdk)
+        return True

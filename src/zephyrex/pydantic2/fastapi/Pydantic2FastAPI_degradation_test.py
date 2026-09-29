@@ -106,7 +106,7 @@ def test_degradation_responses_annotation_includes_202_when_queue_and_retry() ->
 
     annotation = _degradation_responses_annotation(QueuedManager)
     assert 202 in annotation
-    assert "tracking_id" in str(annotation[202].get("model").model_fields)
+    assert "tracking_id" in str(annotation[202]["model"].model_fields)
 
 
 def test_degradation_responses_annotation_skips_fail_fast() -> None:

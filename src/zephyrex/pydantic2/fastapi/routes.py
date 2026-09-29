@@ -28,6 +28,7 @@ from fastapi.responses import JSONResponse
 from pydantic import ValidationError, create_model
 
 from zephyrex.lib.Environment import inflection
+from zephyrex.lib.InboundSecurity import carry_rate_limit
 from zephyrex.lib.Logging import logger
 
 from .types import AuthType, CustomRouteConfig, RouteType
@@ -114,7 +115,10 @@ def register_route(
     # Derive resource names
     if manager_property:
         resource_name_plural = manager_property
-        resource_name = inflection.singular_noun(resource_name_plural)
+        # ``singular_noun`` returns False for a word that is already singular.
+        resource_name = (
+            inflection.singular_noun(resource_name_plural) or resource_name_plural
+        )
         # manager_property is only ever set together with child_manager_class
         # by the nested-resource caller (see register_custom_route below).
         assert child_manager_class is not None
@@ -145,7 +149,6 @@ def register_route(
             return
         network_model = bound_base_model.Network
         target_model = bound_base_model
-        # network_model: Type[BaseModel] = model_registry.apply(base_model).Network
 
     # Generate examples if not provided
     if not examples or route_type not in examples:
@@ -168,13 +171,12 @@ def register_route(
             logger.warning(f"Failed to generate examples for {resource_name}: {e}")
             examples = {}
 
-    # Get route-specific auth
+    # The route's own auth (an override, else the manager's) governs both
+    # the dependency and how the manager is built.
     route_auth = route_auth_overrides.get(route_type, auth_type)
     auth_dependency = get_auth_dependency(route_auth)
-
-    # Create manager factory
     manager_factory: Callable = create_manager_factory(
-        manager_class, model_registry, auth_type
+        manager_class, model_registry, route_auth
     )
 
     # Build dependencies
@@ -406,7 +408,7 @@ def _build_get_route(
     async def get_resource(
         request: Dict = Depends(get_request_info),
         id: str = Path(..., description=f"{stringcase.titlecase(resource_name)} ID"),
-        query_params: network_model.GET = Depends(get_query_dependency),  # type: ignore[name-defined]
+        query_params: network_model.GET = Depends(get_query_dependency),
         manager=Depends(manager_factory),
     ):
         try:
@@ -677,7 +679,7 @@ def _build_list_route(
     async def list_resources(
         request: Dict = Depends(get_request_info),
         # see get_resource() above: dynamic attr-as-annotation, live at runtime
-        query_params: network_model.LIST = Depends(list_query_dependency),  # type: ignore[name-defined]
+        query_params: network_model.LIST = Depends(list_query_dependency),
         manager=Depends(manager_factory),
     ):
         try:
@@ -1174,7 +1176,7 @@ def _build_create_route(
                     post_data.dict() if hasattr(post_data, "dict") else post_data
                 )
                 if parent_param_name and request:
-                    item_data[parent_param_name] = request["path_params"][  # type: ignore[call-overload]
+                    item_data[parent_param_name] = request["path_params"][
                         parent_param_name
                     ]
                 created_instance = get_manager(manager, manager_property).create(  # type: ignore[arg-type]
@@ -1260,7 +1262,7 @@ def _build_update_route(
         request: Dict = Depends(get_request_info),
         id: str = Path(..., description=f"{stringcase.titlecase(resource_name)} ID"),
         # see get_resource() above: dynamic attr-as-annotation, live at runtime
-        body: network_model.PUT = Body(...),  # type: ignore[name-defined]
+        body: network_model.PUT = Body(...),
         manager=Depends(manager_factory),
     ):
         try:
@@ -1700,7 +1702,7 @@ def _build_search_route(
     async def search_resources(
         request: Dict = Depends(get_request_info),
         # see get_resource() above: dynamic attr-as-annotation, live at runtime
-        criteria: network_model.SEARCH = Body(...),  # type: ignore[name-defined]
+        criteria: network_model.SEARCH = Body(...),
         manager=Depends(manager_factory),
         include: Optional[Union[List[str], str]] = Query(None),
         fields: Optional[Union[List[str], str]] = Query(None),
@@ -1716,7 +1718,7 @@ def _build_search_route(
                 criteria, resource_name, resource_name_plural
             )
             if parent_param_name and request:
-                search_data[parent_param_name] = request["path_params"][  # type: ignore[call-overload]
+                search_data[parent_param_name] = request["path_params"][
                     parent_param_name
                 ]
 
@@ -1808,7 +1810,7 @@ def _build_search_route(
                 _search_limit = actual_page_size
                 _search_offset = (actual_page - 1) * actual_page_size
 
-            search_results = actual_manager.search(  # type: ignore[arg-type]
+            search_results = actual_manager.search(
                 include=actual_include,
                 fields=actual_fields,
                 offset=actual_offset,
@@ -1933,7 +1935,7 @@ def _build_batch_update_route(
         openapi_extra=_multiformat_request_body_extra(),
     )
     async def batch_update_resources(
-        body: BatchUpdateModel = Body(...),  # type: ignore[valid-type]
+        body: BatchUpdateModel = Body(...),
         manager=Depends(manager_factory),
     ):
         try:
@@ -2180,12 +2182,12 @@ def register_custom_route(
 
             return result
 
+    # The endpoint serves the manager method; its @rate_limit policy must
+    # be visible on the endpoint for route discovery to enforce it.
+    carry_rate_limit(method, endpoint)
+
     # Register the route
-    method_value: str = (
-        custom_route.method.value
-        if hasattr(custom_route.method, "value")
-        else str(custom_route.method)
-    )
+    method_value = custom_route.method.value
     route_method: Callable = getattr(router, method_value.lower())
     route_method(
         custom_route.path,

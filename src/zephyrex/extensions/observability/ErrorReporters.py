@@ -5,7 +5,7 @@ The reporter *facade* (``ErrorReporter`` ABC, ``set_error_reporter`` /
 ``get_error_reporter``, the ``NoopErrorReporter`` default) stays in core
 ``lib/Logging``. The concrete Sentry / Rollbar adapters live here so the
 framework wheel never carries ``sentry_sdk`` / ``rollbar``; the extension wires
-one from ``SENTRY_DSN`` / ``ROLLBAR_TOKEN`` at ``on_load``.
+one from ``SENTRY_DSN`` / ``ROLLBAR_TOKEN`` at ``on_initialize``.
 """
 
 from __future__ import annotations
@@ -58,11 +58,11 @@ class SentryErrorReporter(ErrorReporter):
 
     def __init__(self) -> None:
         try:
-            import sentry_sdk  # type: ignore[import-not-found]
+            import sentry_sdk
 
             self._sentry_sdk = sentry_sdk
             try:
-                if sentry_sdk.Hub.current.client is None:  # type: ignore[union-attr]
+                if sentry_sdk.Hub.current.client is None:
                     sentry_sdk.init(
                         send_default_pii=False,
                         include_local_variables=False,
@@ -81,13 +81,13 @@ class SentryErrorReporter(ErrorReporter):
         if self._sentry_sdk is None:
             return None
         try:
-            with self._sentry_sdk.push_scope() as scope:  # type: ignore[union-attr]
+            with self._sentry_sdk.push_scope() as scope:
                 for key, value in context.items():
                     try:
                         scope.set_extra(key, value)
                     except Exception:
                         continue
-                self._sentry_sdk.capture_exception(exception)  # type: ignore[union-attr]
+                self._sentry_sdk.capture_exception(exception)
         except Exception as e:
             logger.warning(
                 "SentryErrorReporter.report: capture_exception failed; "
@@ -101,7 +101,7 @@ class RollbarErrorReporter(ErrorReporter):
 
     def __init__(self) -> None:
         try:
-            import rollbar  # type: ignore[import-not-found]
+            import rollbar
 
             self._rollbar = rollbar
         except ImportError:
@@ -115,9 +115,7 @@ class RollbarErrorReporter(ErrorReporter):
         if self._rollbar is None:
             return None
         try:
-            self._rollbar.report_exc_info(  # type: ignore[union-attr]
-                extra_data=dict(context)
-            )
+            self._rollbar.report_exc_info(extra_data=dict(context))
         except Exception as e:
             logger.warning(
                 "RollbarErrorReporter.report: report_exc_info failed; "

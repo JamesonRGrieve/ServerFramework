@@ -16,10 +16,7 @@ import base64
 import hashlib
 import hmac
 import json
-from datetime import datetime, timezone
-from types import SimpleNamespace
-from typing import Any, Dict, List, Optional
-from unittest.mock import patch
+from typing import Any, Dict, List
 
 import pytest
 from fastapi import FastAPI
@@ -29,16 +26,15 @@ from zephyrex.extensions.webhooks import (
     WEBHOOK_REGISTRY,
     create_webhook_router,
 )
-from zephyrex.extensions.webhooks.BLL_Webhooks import _PROVIDER_CLASSES
 from zephyrex.extensions.email.AbstractEmailProviderInstance import (
     AbstractEmailProviderInstance,
-    BulkSendResult,
     EmailValidationResult,
     EmailStats,
     MessageListPage,
     SuppressionListPage,
 )
 from zephyrex.extensions.email.EmailErrors import NotSupportedError
+from zephyrex.extensions.ExternalErrors import AuthExternalError
 from zephyrex.extensions.email.EXT_EMail import (
     Capability,
     EmailAddress,
@@ -64,7 +60,6 @@ from zephyrex.extensions.email.PRV_Stalwart_EMail import StalwartProvider
 from zephyrex.extensions.FieldMappings import apply_from_external, apply_to_external
 from zephyrex.extensions.Paginators import (
     decode_token,
-    encode_token,
     query_hash,
 )
 from zephyrex.extensions.QueryTranslators import KeyValueTranslator
@@ -82,7 +77,7 @@ class _BareInstance(AbstractEmailProviderInstance):
     exercise the abstract-base `NotSupportedError` defaults in isolation.
     """
 
-    capabilities = frozenset()  # type: ignore[var-annotated]
+    capabilities = frozenset()
 
     async def send(self, message):
         raise NotImplementedError
@@ -151,6 +146,17 @@ def test_sendgrid_instance_inherits_capabilities():
     inst = SendgridEmailInstance(api_key="sk_test", from_email="x@y.z")
     assert Capability.VALIDATE_ADDRESS in inst.capabilities
     assert Capability.STATS in inst.capabilities
+
+
+def test_sendgrid_send_without_a_provider_instance_is_an_auth_failure():
+    """An instance built from an API key alone cannot send; the failure is
+    typed so rotation advances instead of crashing on a None instance."""
+    inst = SendgridEmailInstance(api_key="sk_test", from_email="x@y.z")
+    msg = EmailMessage(
+        to=[EmailAddress(address="a@b.c")], subject="s", body_text="hello"
+    )
+    with pytest.raises(AuthExternalError, match="configured provider instance"):
+        _run(inst.send(msg))
 
 
 # ---------------------------------------------------------------------------

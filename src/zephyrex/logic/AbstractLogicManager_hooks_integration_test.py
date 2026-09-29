@@ -346,7 +346,7 @@ def test_conditional_hook_skipped_when_false():
         call_tracker()
 
     def only_deletes(ctx: HookContext) -> bool:
-        return ctx.method_name == "delete"  # type: ignore[no-any-return]
+        return ctx.method_name == "delete"
 
     _register_hook_on_class(
         HookTestManager,

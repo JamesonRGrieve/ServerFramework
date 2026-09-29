@@ -173,9 +173,11 @@ def degradation_aware(resolver: Callable[..., Any]) -> Callable[..., Any]:
 
     Wraps both sync and async resolvers. The wrapped resolver signature is
     preserved so Strawberry's introspection still sees the original ``Info``
-    parameter and any declared arguments. The resolver's declared return
-    type should be a union of its happy-path payload, ``QueuedForRetryGQL``,
-    and ``SilentDroppedGQL`` to surface the degradation arms in the SDL.
+    parameter and any declared arguments. The resolver annotates what it
+    returns (its payload, ``QueuedForRetry`` or ``SilentDropped``); the field
+    declares the GraphQL union of the payload type, ``QueuedForRetryGQL`` and
+    ``SilentDroppedGQL`` with ``strawberry.field(graphql_type=...)`` so the
+    degradation arms appear in the SDL.
     """
     if asyncio.iscoroutinefunction(resolver):
 

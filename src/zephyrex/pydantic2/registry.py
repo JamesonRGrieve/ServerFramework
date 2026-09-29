@@ -1,6 +1,7 @@
 import inspect
 from datetime import time
 from typing import (
+    TYPE_CHECKING,
     Any,
     ClassVar,
     Dict,
@@ -9,7 +10,6 @@ from typing import (
     Set,
     Tuple,
     Type,
-    get_args,
 )
 
 from zephyrex.pydantic2.fastapi import generate_routers_from_model_registry
@@ -26,6 +26,7 @@ from zephyrex.lib.Paths import (
 from zephyrex.lib.AbstractPydantic2 import CacheManager
 from zephyrex.lib.Environment import AbstractRegistry, env
 from zephyrex.lib.Logging import logger
+from zephyrex.lib.TypeUnions import is_union, non_none_args
 from zephyrex.pydantic2.scoped_importer import ScopedModuleImporter
 from zephyrex.pydantic2.registry_utils import (
     BaseNetworkModel as BaseNetworkModel,
@@ -35,6 +36,9 @@ from zephyrex.pydantic2.registry_utils import (
     validate_entity_fields as validate_entity_fields,
     validate_entity_includes as validate_entity_includes,
 )
+
+if TYPE_CHECKING:
+    from zephyrex.extensions.AbstractExtensionProvider import ExtensionRegistry
 
 
 class ModelRegistry(AbstractRegistry):
@@ -73,7 +77,7 @@ class ModelRegistry(AbstractRegistry):
         """
         self.app = app_instance
         self.database_manager = database_manager
-        self.extension_registry = extension_registry
+        self.extension_registry: Optional[ExtensionRegistry] = extension_registry
         self.utility = PydanticUtility()
 
         # Model storage
@@ -149,7 +153,7 @@ class ModelRegistry(AbstractRegistry):
         - ResponseSingle: For single entity responses
         - ResponsePlural: For list responses
         """
-        from typing import List, Optional, Union, get_origin
+        from typing import List, Optional, get_origin
 
         import stringcase
         from pydantic import BaseModel, Field
@@ -214,7 +218,7 @@ class ModelRegistry(AbstractRegistry):
                     # Make all search fields optional
                     field_type = field_info.annotation
                     # Handle Union types (Optional fields)
-                    if get_origin(field_type) is Union:
+                    if is_union(field_type):
                         search_annotations[field_name_inner] = field_type
                     else:
                         search_annotations[field_name_inner] = Optional[field_type]
@@ -295,15 +299,10 @@ class ModelRegistry(AbstractRegistry):
             # Get the origin type for generic types (e.g., Optional[str] -> Union)
             origin = get_origin(field_type)
 
-            # Handle Optional types (Union[X, None])
-            if origin is Union:
-                args = get_args(field_type)
-                # Check if it's Optional (Union with None)
-                non_none_args = [arg for arg in args if arg is not type(None)]
-                if len(non_none_args) == 1:
-                    # It's Optional[X], check the inner type
-                    return is_filterable_type(non_none_args[0])
-                return False
+            # A union is filterable only as Optional[X] of a filterable X.
+            if is_union(field_type):
+                members = non_none_args(field_type)
+                return len(members) == 1 and is_filterable_type(members[0])
 
             # Handle List types - not filterable via simple query params
             if origin in (list, List):
@@ -340,7 +339,7 @@ class ModelRegistry(AbstractRegistry):
             # Only add filterable types
             if is_filterable_type(field_type):
                 # Make the field Optional for filtering
-                if get_origin(field_type) is Union:
+                if is_union(field_type):
                     # Already Optional, use as-is
                     list_annotations[field_name_inner] = field_type
                 else:
@@ -770,6 +769,11 @@ class ModelRegistry(AbstractRegistry):
         # Phase 1: Process extensions
         self._process_extensions()
 
+        # Phase 1.1: extension lifecycle. Every extension's modules and models
+        # are imported now, so each registers its hooks for this build.
+        if self.extension_registry is not None:
+            self.extension_registry.initialize_extensions()
+
         # Phase 1.6 — external federation (Item 16). Lifts external GraphQL
         # and REST upstreams into Pydantic models, synthesizes managers, and
         # binds them with this registry so the existing Pydantic2{Strawberry,
@@ -783,7 +787,7 @@ class ModelRegistry(AbstractRegistry):
         ).lower() == "true"
         # Federation is owned by the ``federation`` extension. Core never
         # imports from it; the extension registers a callable on
-        # ``_registry_hooks["bootstrap_federation"]`` at on_load time and
+        # ``_registry_hooks["bootstrap_federation"]`` at on_initialize and
         # we dispatch through that. Without the extension, the registry
         # commits as a single-app deployment.
         from zephyrex.lib.Hooks import _registry_hooks
@@ -957,20 +961,24 @@ class ModelRegistry(AbstractRegistry):
             logger.info(f"Skipping seeding because SEED_DATA='{seed_db_value}'")
 
         # SDK generation is opt-in and owned by the ``meta_sdk_<lang>``
-        # extensions, each of which registers a language generator on
-        # ``_registry_hooks["generate_sdk"]`` at on_load. Every registered
+        # extensions, each of which registers its generator on
+        # ``_registry_hooks["generate_sdk"]`` at on_initialize. Only the
+        # generators of extensions loaded into THIS registry run: the table is
+        # process-global, and an app that did not load ``meta_sdk_py`` must not
+        # emit a Python SDK because another app in the process did. Each
         # generator emits a typed client SDK (py/ts/rs) for this registry's
-        # RouterMixin-tagged managers; each self-gates on its configured output
+        # RouterMixin-tagged managers and self-gates on its configured output
         # target, so enabling an extension without a destination is a no-op.
-        # Core never imports a generator — this mirrors ``bootstrap_federation``.
-        from zephyrex.lib.Hooks import _registry_hooks as _sdk_reg_hooks
+        from zephyrex.lib.Hooks import sdk_generators_for
 
-        for _sdk_language, _generate_sdk in _sdk_reg_hooks["generate_sdk"].items():
+        for _sdk_extension, _generate_sdk in sdk_generators_for(
+            self.loaded_extension_names()
+        ):
             try:
                 _generate_sdk(model_registry=self)
             except Exception as exc:  # noqa: BLE001 - never block boot on SDK gen
                 logger.warning(
-                    f"SDK generation ({_sdk_language}) failed during " f"commit: {exc}"
+                    f"SDK generation ({_sdk_extension}) failed during commit: {exc}"
                 )
 
         logger.debug("Registry committed successfully")
@@ -1789,6 +1797,16 @@ class ModelRegistry(AbstractRegistry):
     def is_model_bound(self, model: Type[BaseModel]) -> bool:
         """Check if a model is bound to this registry."""
         return model in self.bound_models
+
+    def loaded_extension_names(self) -> frozenset[str]:
+        """Names of the extensions loaded into this registry's app.
+
+        Process-global hook tables (SDK generators, merge handlers) consult
+        this so a registration made by one app never acts on another app in
+        the same process that did not load the registering extension."""
+        if self.extension_registry is None:
+            return frozenset()
+        return self.extension_registry.extension_names
 
     def is_committed(self) -> bool:
         """Check if this registry has been committed (schema generated)."""

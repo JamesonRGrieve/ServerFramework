@@ -456,10 +456,11 @@ def register_api_key_auth() -> None:
     register_api_key_hooks(resolve_principal=resolve_api_key_principal)
 
 
-# Registered at import time: the extension loader imports this module when
-# ``auth_api_keys`` is on APP_EXTENSIONS, which is the extension's load path
-# (same pattern as auth_session / metadata). ``EXT_Auth_APIKeys.on_initialize``
-# re-registers idempotently.
+# Registered at import time — the only registration path, as for the other
+# core auth hook families (auth_session, auth_lockout, metadata, acl_rbac,
+# auth_invitations): model discovery imports this module for every app that
+# loads ``auth_api_keys``. ``resolve_api_key_principal`` resolves nothing for
+# an app that did not bind ``APIKeyModel``.
 register_api_key_auth()
 
 

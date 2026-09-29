@@ -218,7 +218,7 @@ def _try_distributed_consume(quotas: List[Quota], amount: int) -> Optional[bool]
     """Try to delegate to ``lib.DistributedCounter``. Returns the boolean
     result if available, ``None`` to signal the caller should fall back."""
     try:
-        from zephyrex.lib.DistributedCounter import (  # type: ignore[import-not-found]
+        from zephyrex.lib.DistributedCounter import (
             DistributedCounter,
         )
     except ImportError:

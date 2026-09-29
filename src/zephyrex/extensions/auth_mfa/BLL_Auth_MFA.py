@@ -9,7 +9,6 @@ from pydantic import BaseModel, Field, model_validator
 
 from zephyrex.lib.InboundSecurity import LockoutPolicy, LockoutTracker
 from zephyrex.lib.Logging import logger
-from zephyrex.pydantic2.registry import BaseModel  # type: ignore[no-redef]
 from zephyrex.pydantic2.fastapi import AuthType, RouterMixin, RouteType
 
 # Encryption-at-rest for ``totp_secret``. Implementation lives in the shared
@@ -504,7 +503,7 @@ class MultifactorMethodManager(AbstractBLLManager, RouterMixin):
         """Return True if this (secret, code) pair has already been used."""
         from zephyrex.lib.ReplayCache import get_replay_cache
 
-        return get_replay_cache().is_used(cls._replay_key(secret_fingerprint, code))  # type: ignore[no-any-return]
+        return get_replay_cache().is_used(cls._replay_key(secret_fingerprint, code))
 
     def verify_totp_code(
         self,
@@ -582,12 +581,16 @@ class MultifactorMethodManager(AbstractBLLManager, RouterMixin):
             # H-1 — secret is Fernet-encrypted at rest; decrypt for the
             # verification math, never re-store the cleartext. A TOTP method
             # without a secret can never verify.
-            ok = bool(method.totp_secret) and self.verify_totp_code(
-                decrypt_totp_secret(method.totp_secret),
-                code,
-                method.totp_algorithm,
-                method.totp_digits,
-                method.totp_period,
+            ok = (
+                self.verify_totp_code(
+                    decrypt_totp_secret(method.totp_secret),
+                    code,
+                    method.totp_algorithm,
+                    method.totp_digits,
+                    method.totp_period,
+                )
+                if method.totp_secret
+                else False
             )
             if actor_key:
                 if ok:
@@ -607,7 +610,7 @@ class MultifactorMethodManager(AbstractBLLManager, RouterMixin):
 class MultifactorRecoveryCodeModel(
     ApplicationModel,
     UpdateMixinModel,
-    MultifactorMethodModel.Reference,  # type: ignore[name-defined]
+    MultifactorMethodModel.Reference,
     metaclass=ModelMeta,
 ):
     # Write-only: recovery codes are low-entropy; their hashes never leave.
@@ -626,7 +629,7 @@ class MultifactorRecoveryCodeModel(
         None, description="IP address where code was created"
     )
 
-    class Create(BaseModel, MultifactorMethodModel.Reference.ID):  # type: ignore[name-defined]
+    class Create(BaseModel, MultifactorMethodModel.Reference.ID):
         created_ip: Optional[str] = Field(
             None, description="IP address where code was created"
         )
@@ -646,7 +649,7 @@ class MultifactorRecoveryCodeModel(
     class Search(
         ApplicationModel.Search,
         UpdateMixinModel.Search,
-        MultifactorMethodModel.Reference.ID.Search,  # type: ignore[name-defined]
+        MultifactorMethodModel.Reference.ID.Search,
     ):
         is_used: Optional[bool] = None
         created_ip: Optional[StringSearchModel] = None

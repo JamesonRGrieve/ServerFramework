@@ -53,7 +53,7 @@ def run_venv_bootstrap() -> bool:
     # Defer the logger import: when this runs from a fresh checkout
     # ``loguru`` may not be installed yet. Fall back to ``print`` if so.
     try:
-        from zephyrex.lib.Logging import logger  # type: ignore
+        from zephyrex.lib.Logging import logger
     except Exception:  # pragma: no cover - bootstrap path
         from logging import getLogger
 

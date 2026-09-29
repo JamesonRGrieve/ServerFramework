@@ -122,7 +122,7 @@ class TestJurisdictionMapping:
         m = JurisdictionMapping(jurisdiction="EU", regions=frozenset({"eu-west-1"}))
         with pytest.raises(Exception):
             # frozen=True dataclass disallows attribute assignment
-            m.jurisdiction = "US"  # type: ignore[misc]
+            m.jurisdiction = "US"
 
 
 class TestResidencyStringNewtypes:

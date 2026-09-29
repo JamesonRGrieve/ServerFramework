@@ -89,10 +89,9 @@ class TestLifecycle:
     def test_on_initialize_returns_true(self):
         assert EXT_Auth_APIKeys.on_initialize() is True
 
-    def test_on_initialize_registers_core_api_key_resolver(self):
+    def test_importing_bll_registers_core_api_key_resolver(self):
         from zephyrex.logic.BLL_Auth import _api_key_hooks
 
-        EXT_Auth_APIKeys.on_initialize()
         assert _api_key_hooks["resolve_principal"] is resolve_api_key_principal
 
     def test_validate_config_returns_list(self):

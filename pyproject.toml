@@ -115,6 +115,7 @@ target-version = ["py311"]
 python_version = "3.11"
 warn_return_any = true
 warn_unused_configs = true
+warn_unused_ignores = true
 ignore_missing_imports = true
 # zephyrex.mypy_plugin must precede pydantic.mypy; see its module docstring.
 plugins = ["zephyrex.mypy_plugin", "pydantic.mypy"]

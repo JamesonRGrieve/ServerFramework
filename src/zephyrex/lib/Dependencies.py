@@ -147,6 +147,59 @@ class SYS_Dependency(Dependency):
         # No matching package found or none installed
         return self.optional
 
+    # Shortcuts for declaring a dependency against one or every package manager.
+
+    @classmethod
+    def for_apt(cls, name: str, package: str, **kwargs: Any) -> "SYS_Dependency":
+        return DependencyFactory.create_system_dependency(
+            name=name, apt=package, **kwargs
+        )
+
+    @classmethod
+    def for_brew(cls, name: str, package: str, **kwargs: Any) -> "SYS_Dependency":
+        return DependencyFactory.create_system_dependency(
+            name=name, brew=package, **kwargs
+        )
+
+    @classmethod
+    def for_winget(cls, name: str, package: str, **kwargs: Any) -> "SYS_Dependency":
+        return DependencyFactory.create_system_dependency(
+            name=name, winget=package, **kwargs
+        )
+
+    @classmethod
+    def for_chocolatey(cls, name: str, package: str, **kwargs: Any) -> "SYS_Dependency":
+        return DependencyFactory.create_system_dependency(
+            name=name, chocolatey=package, **kwargs
+        )
+
+    @classmethod
+    def for_snap(cls, name: str, package: str, **kwargs: Any) -> "SYS_Dependency":
+        return DependencyFactory.create_system_dependency(
+            name=name, snap=package, **kwargs
+        )
+
+    @classmethod
+    def for_all_platforms(
+        cls,
+        name: str,
+        apt_pkg: Optional[str] = None,
+        brew_pkg: Optional[str] = None,
+        winget_pkg: Optional[str] = None,
+        chocolatey_pkg: Optional[str] = None,
+        snap_pkg: Optional[str] = None,
+        **kwargs: Any,
+    ) -> "SYS_Dependency":
+        return DependencyFactory.create_system_dependency(
+            name=name,
+            apt=apt_pkg,
+            brew=brew_pkg,
+            winget=winget_pkg,
+            chocolatey=chocolatey_pkg,
+            snap=snap_pkg,
+            **kwargs,
+        )
+
 
 class PIP_Dependency(Dependency):
     """
@@ -710,7 +763,7 @@ class DependencyFactory:
                     SystemPackageMapping(manager=manager, package_name=pkg_name)
                 )
 
-        return SYS_Dependency(  # type: ignore[call-arg]
+        return SYS_Dependency(
             name=name,
             friendly_name=friendly_name or name,
             optional=optional,
@@ -746,72 +799,6 @@ class DependencyFactory:
             reason=reason,
             semver=semver,
         )
-
-
-# Static methods for SYS_Dependency to make creation more convenient
-@staticmethod  # type: ignore[misc]
-def for_apt(name: str, package: str, **kwargs) -> "SYS_Dependency":
-    """Create a dependency for APT package manager."""
-    return DependencyFactory.create_system_dependency(name=name, apt=package, **kwargs)
-
-
-@staticmethod  # type: ignore[misc]
-def for_brew(name: str, package: str, **kwargs) -> "SYS_Dependency":
-    """Create a dependency for Homebrew package manager."""
-    return DependencyFactory.create_system_dependency(name=name, brew=package, **kwargs)
-
-
-@staticmethod  # type: ignore[misc]
-def for_winget(name: str, package: str, **kwargs) -> "SYS_Dependency":
-    """Create a dependency for WinGet package manager."""
-    return DependencyFactory.create_system_dependency(
-        name=name, winget=package, **kwargs
-    )
-
-
-@staticmethod  # type: ignore[misc]
-def for_chocolatey(name: str, package: str, **kwargs) -> "SYS_Dependency":
-    """Create a dependency for Chocolatey package manager."""
-    return DependencyFactory.create_system_dependency(
-        name=name, chocolatey=package, **kwargs
-    )
-
-
-@staticmethod  # type: ignore[misc]
-def for_snap(name: str, package: str, **kwargs) -> "SYS_Dependency":
-    """Create a dependency for Snap package manager."""
-    return DependencyFactory.create_system_dependency(name=name, snap=package, **kwargs)
-
-
-@staticmethod  # type: ignore[misc]
-def for_all_platforms(
-    name: str,
-    apt_pkg: Optional[str] | None = None,
-    brew_pkg: Optional[str] | None = None,
-    winget_pkg: Optional[str] | None = None,
-    chocolatey_pkg: Optional[str] | None = None,
-    snap_pkg: Optional[str] | None = None,
-    **kwargs,
-) -> "SYS_Dependency":
-    """Create a dependency with mappings for all supported platforms."""
-    return DependencyFactory.create_system_dependency(
-        name=name,
-        apt=apt_pkg,
-        brew=brew_pkg,
-        winget=winget_pkg,
-        chocolatey=chocolatey_pkg,
-        snap=snap_pkg,
-        **kwargs,
-    )
-
-
-# Add static methods to SYS_Dependency class
-SYS_Dependency.for_apt = for_apt  # type: ignore[attr-defined]
-SYS_Dependency.for_brew = for_brew  # type: ignore[attr-defined]
-SYS_Dependency.for_winget = for_winget  # type: ignore[attr-defined]
-SYS_Dependency.for_chocolatey = for_chocolatey  # type: ignore[attr-defined]
-SYS_Dependency.for_snap = for_snap  # type: ignore[attr-defined]
-SYS_Dependency.for_all_platforms = for_all_platforms  # type: ignore[attr-defined]
 
 
 def install_system_dependencies(

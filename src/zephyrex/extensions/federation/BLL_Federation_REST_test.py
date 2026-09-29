@@ -320,7 +320,12 @@ def test_openapi_handles_oneof_union():
 
 
 @pytest.fixture
-def transport_with_ops() -> RESTUpstreamTransport:
+def fake_http() -> _FakeHTTPClient:
+    return _FakeHTTPClient(response={"id": "x"})
+
+
+@pytest.fixture
+def transport_with_ops(fake_http: _FakeHTTPClient) -> RESTUpstreamTransport:
     ops = {
         "get_user": OperationSpec(
             name="get_user",
@@ -353,41 +358,38 @@ def transport_with_ops() -> RESTUpstreamTransport:
             parameters=[{"name": "id", "in": "path"}],
         ),
     }
-    http = _FakeHTTPClient(response={"id": "x"})
-    transport = RESTUpstreamTransport(
-        http, base_url="https://api.example.com", operations=ops
+    return RESTUpstreamTransport(
+        fake_http, base_url="https://api.example.com", operations=ops
     )
-    transport._http_for_test = http  # convenience for assertions
-    return transport
 
 
-async def test_transport_substitutes_path_args(transport_with_ops):
+async def test_transport_substitutes_path_args(transport_with_ops, fake_http):
     await transport_with_ops.send(operation="get_user", path_args={"id": "abc"})
-    call = transport_with_ops._http_for_test.calls[-1]
+    call = fake_http.calls[-1]
     assert call["url"] == "https://api.example.com/users/abc"
     assert call["method"] == "GET"
 
 
-async def test_transport_query_args_for_get(transport_with_ops):
+async def test_transport_query_args_for_get(transport_with_ops, fake_http):
     await transport_with_ops.send(operation="list_users", query_args={"limit": 10})
-    call = transport_with_ops._http_for_test.calls[-1]
+    call = fake_http.calls[-1]
     assert call["params"] == {"limit": 10}
 
 
-async def test_transport_body_for_post(transport_with_ops):
+async def test_transport_body_for_post(transport_with_ops, fake_http):
     await transport_with_ops.send(operation="create_user", body={"name": "bob"})
-    call = transport_with_ops._http_for_test.calls[-1]
+    call = fake_http.calls[-1]
     assert call["json"] == {"name": "bob"}
     assert call["method"] == "POST"
 
 
-async def test_transport_idempotency_key_passed_through(transport_with_ops):
+async def test_transport_idempotency_key_passed_through(transport_with_ops, fake_http):
     await transport_with_ops.send(
         operation="create_user",
         body={"name": "bob"},
         idempotency_key="key-42",
     )
-    call = transport_with_ops._http_for_test.calls[-1]
+    call = fake_http.calls[-1]
     assert call["idempotency_key"] == "key-42"
 
 

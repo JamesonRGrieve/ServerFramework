@@ -2,7 +2,7 @@ from datetime import datetime
 
 from faker import Faker
 
-from zephyrex.AbstractTest import CategoryOfTest, ClassOfTestsConfig, ParentEntity
+from zephyrex.AbstractTest import ParentEntity
 from zephyrex.database.AbstractDBTest import AbstractDBTest
 from zephyrex.database.DB_Auth_test import TestUser as CoreUserTests
 from zephyrex.extensions.AbstractEXTTest import ExtensionServerMixin
@@ -12,11 +12,6 @@ from zephyrex.extensions.auth_mfa.BLL_Auth_MFA import (
     MultifactorRecoveryCodeModel,
 )
 from zephyrex.extensions.auth_mfa.EXT_Auth_MFA import EXT_Auth_MFA
-
-# Set default test configuration for all test classes
-AbstractDBTest.test_config = ClassOfTestsConfig(
-    categories=[CategoryOfTest.DATABASE, CategoryOfTest.EXTENSION]
-)
 
 faker = Faker()
 

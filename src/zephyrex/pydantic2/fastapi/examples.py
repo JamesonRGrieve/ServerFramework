@@ -10,7 +10,6 @@ from typing import (
     Dict,
     Set,
     Type,
-    Union,
     get_args,
     get_origin,
 )
@@ -25,7 +24,7 @@ try:
     from pydantic_core import PydanticUndefined
 except ImportError:  # pragma: no cover - fallback for alternate Pydantic packages
     try:
-        from pydantic.fields import PydanticUndefined  # type: ignore
+        from pydantic.fields import PydanticUndefined
     except ImportError:  # pragma: no cover - ultimate fallback
 
         class _UndefinedSentinel:
@@ -35,6 +34,7 @@ except ImportError:  # pragma: no cover - fallback for alternate Pydantic packag
 
 from zephyrex.lib.Environment import inflection
 from zephyrex.lib.Logging import logger
+from zephyrex.lib.TypeUnions import is_optional, non_none_args
 
 if TYPE_CHECKING:
     from .types import NetworkModelProtocol as NetworkModelProtocol
@@ -204,14 +204,9 @@ class ExampleGenerator:
             An appropriate example value
         """
         # Check for Optional types
+        if is_optional(field_type):
+            field_type = non_none_args(field_type)[0]
         origin = get_origin(field_type)
-        if origin is Union:
-            args = get_args(field_type)
-            if type(None) in args:  # This is an Optional type
-                for arg in args:
-                    if arg is not type(None):
-                        field_type = arg
-                        break
 
         # Check for List types
         if origin is list:

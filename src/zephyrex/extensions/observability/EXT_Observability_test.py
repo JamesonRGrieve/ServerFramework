@@ -66,6 +66,18 @@ class TestMetricsWiring:
         EXT_Observability._wire_metrics_backend()
         assert isinstance(get_metrics_backend(), PrometheusMetricsBackend)
 
+    def test_repeated_initialization_keeps_the_installed_backend(self, monkeypatch):
+        """Every app build re-initializes the extension; a second Prometheus
+        backend would collide with the first one's collectors in the
+        process-global registry, so the installed backend must be kept."""
+        pytest.importorskip("prometheus_client")
+        set_metrics_backend(NoopMetricsBackend())
+        monkeypatch.setenv("METRICS_BACKEND", "prometheus")
+        assert EXT_Observability.on_initialize() is True
+        installed = get_metrics_backend()
+        assert EXT_Observability.on_initialize() is True
+        assert get_metrics_backend() is installed
+
 
 class TestErrorReporterWiring:
     def test_sentry_dsn_installs_sentry_reporter(self, monkeypatch):

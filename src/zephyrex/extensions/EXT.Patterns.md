@@ -1252,11 +1252,22 @@ class EXT_MyExtension(AbstractStaticExtension):
         
     @classmethod
     def on_initialize(cls) -> bool:
-        """Custom initialization logic."""
+        """Called once per app build, after this extension's modules and
+        models are imported. Returning False fails the build (only when the
+        extension cannot function at all). Must be safe to repeat."""
         api_key = cls.get_env_value("MY_EXTENSION_API_KEY")
         if api_key:
             cls.configure_api_client(api_key)
         return True
+
+    @classmethod
+    def on_start(cls) -> None:
+        """Called at app startup (FastAPI lifespan) once the worker's
+        database engine is ready."""
+
+    @classmethod
+    def on_stop(cls) -> None:
+        """Called at app shutdown (FastAPI lifespan), in reverse load order."""
         
     @classmethod
     @ability("my_ability", enabled=True)
@@ -1292,6 +1303,13 @@ class EXT_MyExtension(AbstractStaticExtension):
 
 # Extension is automatically registered via ExtensionRegistry and __init_subclass__
 ```
+
+The framework calls the lifecycle classmethods itself: `on_initialize` from
+`ModelRegistry.commit` for every extension loaded into the app (dependency
+order), `on_start`/`on_stop` from the app's FastAPI lifespan. See the
+Lifecycle section of `docs/EXTENSION_GUIDE.md` for the full contract,
+including idempotency and keeping process-global registrations scoped to the
+apps that loaded the extension.
 
 ### Step 2: Business Logic (Optional)
 ```python

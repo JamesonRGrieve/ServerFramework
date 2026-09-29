@@ -6,18 +6,19 @@ because it is the authorization gate consumed by every BLL operation; this
 extension is the opinionated 6-verb (VIEW/EXECUTE/COPY/EDIT/DELETE/SHARE)
 ACL shape.
 
-Hooks registered with core via `EXT_ACL.on_load` so `StaticPermissions` and
+Hooks registered with core when this module is imported (model discovery
+imports it for every app that loads ``acl_rbac``) so `StaticPermissions` and
 any future caller can resolve the SA model lazily.
 """
 
 from datetime import datetime
-from typing import Any, ClassVar, Dict, List, Optional, Type
+from typing import ClassVar, Optional, Self, Type
 
 from fastapi import HTTPException
 from pydantic import Field, model_validator
 
 from zephyrex.pydantic2.registry import BaseModel
-from zephyrex.pydantic2.fastapi import AuthType, RouterMixin
+from zephyrex.pydantic2.fastapi import RouterMixin
 from zephyrex.logic.AbstractLogicManager import (
     AbstractBLLManager,
     ApplicationModel,
@@ -79,7 +80,7 @@ class PermissionModel(
         can_share: Optional[bool] = Field(False)
 
         @model_validator(mode="after")
-        def validate_permission_combination(self) -> "Create":  # type: ignore[name-defined]
+        def validate_permission_combination(self) -> Self:
             # Case 1: User-specific permission (user_id only)
             if self.user_id and not self.team_id and not self.role_id:
                 return self

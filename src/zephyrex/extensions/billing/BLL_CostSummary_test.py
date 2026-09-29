@@ -54,7 +54,7 @@ def test_cost_summary_model_period_literal_rejects_garbage():
             tenant_id="team-1",
             provider="openai",
             ability="complete",
-            period="century",  # type: ignore[arg-type]
+            period="century",
             period_key="2026",
             total_cost_usd=Decimal("0"),
             call_count=0,

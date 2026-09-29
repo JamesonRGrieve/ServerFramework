@@ -1,9 +1,10 @@
 import json
 import uuid
-from typing import Any
+from typing import Any, List
 
 import pytest
 
+from zephyrex.AbstractTest import ParentEntity
 from zephyrex.endpoints.AbstractEPTest import AbstractEPTest
 from zephyrex.extensions.AbstractEXTTest import ExtensionServerMixin
 from zephyrex.extensions.meta_labels.BLL_Meta_Labels import LabelModel
@@ -20,7 +21,7 @@ class TestLabelEP(AbstractEPTest, ExtensionServerMixin):
     string_field_to_update = "description"
     searchable_fields = ["name"]
     # No parent entities for labels
-    parent_entities: list[str] = []
+    parent_entities: List[ParentEntity] = []
     # Not a system entity
     system_entity = False
 

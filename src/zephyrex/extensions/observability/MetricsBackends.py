@@ -6,7 +6,7 @@ The metrics *facade* (``MetricsBackend`` ABC, ``set_metrics_backend`` /
 ``lib/Metrics`` — ``BLL_Providers`` and ``app`` depend on it. The concrete
 ``prometheus_client`` / OpenTelemetry adapters live here so the framework wheel
 never carries those optional deps; the extension wires the chosen backend from
-``METRICS_BACKEND`` at ``on_load``.
+``METRICS_BACKEND`` at ``on_initialize``.
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ class PrometheusMetricsBackend(MetricsBackend):
 
     def __init__(self) -> None:
         try:
-            import prometheus_client  # type: ignore[import-not-found]
+            import prometheus_client
         except ImportError as e:
             raise ImportError(
                 "PrometheusMetricsBackend requires the optional "
@@ -164,10 +164,10 @@ class OpenTelemetryMetricsBackend(MetricsBackend):
 
     def __init__(self, service_name: str = "ZephyrexFrameworkServer") -> None:
         try:
-            from opentelemetry import (  # type: ignore[import-not-found]
+            from opentelemetry import (
                 metrics as _otel_metrics,
             )
-            from opentelemetry import (  # type: ignore[import-not-found]
+            from opentelemetry import (
                 trace as _otel_trace,
             )
         except ImportError as e:

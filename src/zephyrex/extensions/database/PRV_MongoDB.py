@@ -23,7 +23,7 @@ try:  # optional driver — guarded so discovery never fails on a missing packag
 
     _pymongo_available = True
 except ImportError:  # pragma: no cover - optional driver
-    _MongoClient = None  # type: ignore[assignment]
+    _MongoClient = None
     _pymongo_available = False
 
 MONGODB_DEFAULT_PORT = 27017

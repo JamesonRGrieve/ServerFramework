@@ -21,7 +21,7 @@ from zephyrex.logic.Permissions import (
 def test_permission_def_is_frozen():
     perm = PermissionDef(name="payment.subscription.read", description="Read")
     with pytest.raises(Exception):
-        perm.name = "other"  # type: ignore[misc]
+        perm.name = "other"
 
 
 def test_register_and_get():

@@ -36,40 +36,44 @@ class EXT_Observability(AbstractStaticExtension):
 
     @classmethod
     def on_initialize(cls) -> bool:
-        logger.debug("Initializing observability extension")
-        return True
-
-    @classmethod
-    def on_load(cls) -> None:
         cls._wire_metrics_backend()
         cls._wire_error_reporter()
+        return True
 
     @classmethod
     def _wire_metrics_backend(cls) -> None:
         backend_name = (env("METRICS_BACKEND") or "noop").strip().lower()
         if backend_name in ("", "noop"):
             return
-        from zephyrex.lib.Metrics import set_metrics_backend
+        from zephyrex.extensions.observability.MetricsBackends import (
+            OpenTelemetryMetricsBackend,
+            PrometheusMetricsBackend,
+        )
+        from zephyrex.lib.Metrics import (
+            MetricsBackend,
+            get_metrics_backend,
+            set_metrics_backend,
+        )
 
+        backend_class: type[MetricsBackend]
+        if backend_name == "prometheus":
+            backend_class = PrometheusMetricsBackend
+        elif backend_name in ("otel", "opentelemetry"):
+            backend_class = OpenTelemetryMetricsBackend
+        else:
+            logger.warning(
+                f"observability: unknown METRICS_BACKEND '{backend_name}'; "
+                "leaving the core no-op backend in place."
+            )
+            return
+        # Every app build re-initializes the extension. A backend of the chosen
+        # kind is kept: a second one would re-register its collectors under
+        # the same names in the process-global Prometheus registry, which
+        # rejects them, and every metric would be dropped.
+        if isinstance(get_metrics_backend(), backend_class):
+            return
         try:
-            if backend_name == "prometheus":
-                from zephyrex.extensions.observability.MetricsBackends import (
-                    PrometheusMetricsBackend,
-                )
-
-                set_metrics_backend(PrometheusMetricsBackend())
-            elif backend_name in ("otel", "opentelemetry"):
-                from zephyrex.extensions.observability.MetricsBackends import (
-                    OpenTelemetryMetricsBackend,
-                )
-
-                set_metrics_backend(OpenTelemetryMetricsBackend())
-            else:
-                logger.warning(
-                    f"observability: unknown METRICS_BACKEND '{backend_name}'; "
-                    "leaving the core no-op backend in place."
-                )
-                return
+            set_metrics_backend(backend_class())
             logger.info(f"observability: metrics backend wired: {backend_name}")
         except ImportError as exc:
             logger.warning(

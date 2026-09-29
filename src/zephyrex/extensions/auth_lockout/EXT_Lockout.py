@@ -1,7 +1,9 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """auth_lockout extension definition.
 
-Registers the `FailedLoginAttempt` model and wires `UserManager.login` hooks
-that consult the per-user threshold + record failures into the durable table.
+Registers the `FailedLoginAttempt` model. ``BLL_Lockout`` wires the
+`UserManager.login` hooks that consult the per-user threshold + record failures
+into the durable table when it is imported.
 """
 
 from typing import ClassVar, List
@@ -11,42 +13,9 @@ from zephyrex.extensions.AbstractExtensionProvider import (
 )
 
 
-def _assert_within_threshold(user_id, model_registry):
-    from zephyrex.extensions.auth_lockout.BLL_Lockout import (
-        FailedLoginAttemptManager,
-    )
-    from zephyrex.lib.Environment import env
-
-    mgr = FailedLoginAttemptManager(
-        requester_id=env("ROOT_ID"), model_registry=model_registry
-    )
-    mgr.assert_user_within_threshold(user_id, model_registry)
-
-
-def _record_failure(user_id, ip_address, model_registry):
-    from zephyrex.extensions.auth_lockout.BLL_Lockout import (
-        FailedLoginAttemptManager,
-    )
-    from zephyrex.lib.Environment import env
-
-    mgr = FailedLoginAttemptManager(
-        requester_id=env("ROOT_ID"), model_registry=model_registry
-    )
-    mgr.record_failure(user_id, ip_address, model_registry)
-
-
 class AuthLockoutExtension(AbstractStaticExtension):
     name: ClassVar[str] = "auth_lockout"
     description: ClassVar[str] = (
         "Persisted failed-login records and per-user lockout policy"
     )
     extension_dependencies: ClassVar[List[str]] = []
-
-    @classmethod
-    def on_load(cls) -> None:
-        from zephyrex.logic.BLL_Auth import register_lockout_hooks
-
-        register_lockout_hooks(
-            assert_within_threshold=_assert_within_threshold,
-            record_failure=_record_failure,
-        )

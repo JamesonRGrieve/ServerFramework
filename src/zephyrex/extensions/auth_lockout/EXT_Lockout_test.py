@@ -3,7 +3,7 @@
 Covers:
 - Canonical FailedLoginAttempt classes live at the extension path.
 - Core ``BLL_Auth`` PEP 562 forwards to the extension.
-- ``EXT_Lockout.on_load`` populates ``BLL_Auth._lockout_hooks``.
+- Importing ``BLL_Lockout`` registers its hooks in ``BLL_Auth._lockout_hooks``.
 - Core's ``UserManager.login`` consults the per-user threshold via the hook
   (no direct FailedLoginAttempt access from core anymore).
 - The IP-keyed in-memory ``LockoutTracker`` keeps working without the
@@ -16,6 +16,7 @@ os.environ.setdefault("JWT_SECRET", "x" * 32)
 os.environ.setdefault("PYTEST_CURRENT_TEST", "auth_lockout_test")
 
 
+from zephyrex.extensions.auth_lockout import BLL_Lockout
 from zephyrex.extensions.auth_lockout.BLL_Lockout import (
     FailedLoginAttemptManager,
     FailedLoginAttemptModel,
@@ -47,12 +48,18 @@ class TestExtensionLifecycle:
     def test_models_returns_failed_login_model(self):
         assert FailedLoginAttemptModel in AuthLockoutExtension.models
 
-    def test_on_load_populates_every_hook(self):
-        AuthLockoutExtension.on_load()
-        for key in ("assert_within_threshold", "record_failure"):
+
+class TestImportRegistersHooks:
+    def test_every_hook_is_the_bll_implementation(self):
+        expected = {
+            "assert_within_threshold": BLL_Lockout._assert_within_threshold,
+            "record_failure": BLL_Lockout._record_failure,
+            "manager_factory": BLL_Lockout._failed_logins_manager_factory,
+        }
+        for key, implementation in expected.items():
             assert (
-                BLL_Auth._lockout_hooks[key] is not None
-            ), f"hook {key!r} not registered by on_load"
+                BLL_Auth._lockout_hooks[key] is implementation
+            ), f"hook {key!r} is not the BLL_Lockout implementation"
 
 
 class TestIpKeyedLockoutAlwaysAvailable:

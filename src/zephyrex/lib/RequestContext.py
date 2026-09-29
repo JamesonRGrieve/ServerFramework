@@ -194,13 +194,13 @@ def wrap_in_context(
 
     # Async callable: return a coroutine that drives it under the snapshot.
     if inspect.iscoroutinefunction(target):
-        coro = target(*args, **kwargs)  # type: ignore[misc]
+        coro = target(*args, **kwargs)
         return _drive_coro_in_context(ctx, coro)
 
     # Sync callable: return a zero-arg callable to feed asyncio.to_thread.
-    @functools.wraps(target)  # type: ignore[arg-type]
+    @functools.wraps(target)
     def _runner_sync() -> Any:
-        return ctx.run(target, *args, **kwargs)  # type: ignore[arg-type]
+        return ctx.run(target, *args, **kwargs)
 
     return _runner_sync
 

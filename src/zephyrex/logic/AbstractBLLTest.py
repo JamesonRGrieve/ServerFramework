@@ -6,6 +6,8 @@ import pytest
 from zephyrex.AbstractTest import AbstractTest, CategoryOfTest, ClassOfTestsConfig
 from zephyrex.lib.Environment import env
 from zephyrex.lib.Logging import logger
+from zephyrex.lib.TypeUnions import is_optional as is_optional_annotation
+from zephyrex.lib.TypeUnions import non_none_args
 from zephyrex.lib.Scalability import (
     ScalabilityProfile,
     ScalingMetric,
@@ -65,7 +67,7 @@ class AbstractBLLTest(AbstractTest):
         Returns:
             Tuple of (python_type, is_optional, field_info)
         """
-        from typing import get_type_hints, get_origin, get_args, Union
+        from typing import get_type_hints
 
         if not model_class:
             return None, False, None
@@ -83,14 +85,9 @@ class AbstractBLLTest(AbstractTest):
         is_optional = False
         actual_type = field_type
 
-        origin = get_origin(field_type)
-        if origin is Union:
-            args = get_args(field_type)
-            # Check if it's Optional (Union with None)
-            if type(None) in args:
-                is_optional = True
-                # Get the non-None type
-                actual_type = next(arg for arg in args if arg is not type(None))
+        if is_optional_annotation(field_type):
+            is_optional = True
+            actual_type = non_none_args(field_type)[0]
 
         return actual_type, is_optional, field_info
 

@@ -13,7 +13,7 @@ are stored under the "" (empty string) domain.
 import os
 import sys
 from datetime import datetime
-from typing import Any, Callable, Dict, List, Optional, Type, Union
+from typing import Any, Callable, Dict, List, Optional, Type
 
 import pytest
 import stringcase
@@ -23,6 +23,7 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 
 from zephyrex.lib.Logging import logger
+from zephyrex.lib.TypeUnions import is_optional
 from zephyrex.pydantic2.registry import BaseNetworkModel
 from zephyrex.pydantic2.sqlalchemy import (
     ApplicationModel,
@@ -286,15 +287,15 @@ class MockSimpleNetworkModel(BaseModel):
         sort_order: Optional[str] = Field("asc", pattern="^(asc|desc)$")
 
     class POST(BaseModel):
-        simple: MockSimpleModel.Create = Field(..., description="Simple model data")  # type: ignore[name-defined]
+        simple: MockSimpleModel.Create = Field(..., description="Simple model data")
 
     class PUT(BaseModel):
-        simple: MockSimpleModel.Update = Field(  # type: ignore[name-defined]
+        simple: MockSimpleModel.Update = Field(
             ..., description="Simple model update data"
         )
 
     class SEARCH(BaseModel):
-        simple: MockSimpleModel.Search = Field(  # type: ignore[name-defined]
+        simple: MockSimpleModel.Search = Field(
             ..., description="Simple model search criteria"
         )
 
@@ -320,17 +321,17 @@ class MockRelationshipNetworkModel(BaseModel):
         sort_order: Optional[str] = Field("asc", pattern="^(asc|desc)$")
 
     class POST(BaseModel):
-        relationship: MockRelationshipModel.Create = Field(  # type: ignore[name-defined]
+        relationship: MockRelationshipModel.Create = Field(
             ..., description="Relationship model data"
         )
 
     class PUT(BaseModel):
-        relationship: MockRelationshipModel.Update = Field(  # type: ignore[name-defined]
+        relationship: MockRelationshipModel.Update = Field(
             ..., description="Relationship model update data"
         )
 
     class SEARCH(BaseModel):
-        relationship: MockRelationshipModel.Search = Field(  # type: ignore[name-defined]
+        relationship: MockRelationshipModel.Search = Field(
             ..., description="Relationship model search criteria"
         )
 
@@ -1019,13 +1020,8 @@ class AbstractPydanticTestMixin:
 
             # Determine required vs optional fields
             for field_name, field_type in type_hints.items():
-                if hasattr(field_type, "__origin__") and field_type.__origin__ is Union:
-                    # Check if it's Optional (Union with None)
-                    args = getattr(field_type, "__args__", ())
-                    if type(None) in args:
-                        analysis["nullable_fields"].append(field_name)  # type: ignore[attr-defined]
-                    else:
-                        analysis["required_fields"].append(field_name)  # type: ignore[attr-defined]
+                if is_optional(field_type):
+                    analysis["nullable_fields"].append(field_name)  # type: ignore[attr-defined]
                 else:
                     analysis["required_fields"].append(field_name)  # type: ignore[attr-defined]
 

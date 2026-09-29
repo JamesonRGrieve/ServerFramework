@@ -31,7 +31,7 @@ class TestProvider(AbstractDBTest):
 
 class TestProviderExtension(AbstractDBTest):
     class_under_test = ProviderExtensionModel
-    create_fields = {}  # type: ignore[var-annotated]
+    create_fields = {}
     update_fields: dict[str, str] = (
         {}
     )  # No updateable fields besides system fields  # type: ignore[var-annotated]
@@ -178,7 +178,7 @@ class TestRotation(AbstractDBTest):
 
 class TestRotationProviderInstance(AbstractDBTest):
     class_under_test = RotationProviderInstanceModel
-    create_fields = {}  # type: ignore[var-annotated]
+    create_fields = {}
     update_fields: dict[str, str] = (
         {}
     )  # No updateable fields besides system fields  # type: ignore[var-annotated]

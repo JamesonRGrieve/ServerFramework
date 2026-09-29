@@ -3,8 +3,8 @@
 Covers:
 - Canonical classes live at the extension import path.
 - Core ``BLL_Auth`` PEP 562 forwards to the extension.
-- ``EXT_Invitations.on_load`` populates every documented hook in
-  ``BLL_Auth._invitation_hooks``.
+- Importing ``BLL_Invitations`` registers its implementation of every
+  documented hook in ``BLL_Auth._invitation_hooks``.
 - Core registration paths degrade safely when the extension is absent
   (``invitation_details`` resolution returns None; nested-resource
   ``invitations`` property raises 503).
@@ -22,7 +22,7 @@ import pytest
 from fastapi import HTTPException
 
 from zephyrex.extensions.AbstractEXTTest import ExtensionServerMixin
-from zephyrex.extensions.auth_invitations import BLL_Invitations, EXT_Invitations
+from zephyrex.extensions.auth_invitations import BLL_Invitations
 from zephyrex.extensions.auth_invitations.BLL_Invitations import (
     InvitationAcceptanceResponse,
     InvitationManager,
@@ -72,8 +72,9 @@ class TestExtensionLifecycle:
         assert InvitationModel in models
         assert InviteeModel in models
 
-    def test_on_load_populates_every_hook(self):
-        AuthInvitationsExtension.on_load()
+
+class TestImportRegistersHooks:
+    def test_every_hook_is_the_bll_implementation(self):
         for key in (
             "lookup_by_id",
             "lookup_by_code",
@@ -81,10 +82,12 @@ class TestExtensionLifecycle:
             "invitation_manager_factory",
             "invitee_manager_factory",
             "list_invitees_for_user",
+            "invitation_db_class",
+            "invitee_db_class",
         ):
-            assert (
-                BLL_Auth._invitation_hooks[key] is not None
-            ), f"hook {key!r} not registered by on_load"
+            assert BLL_Auth._invitation_hooks[key] is getattr(
+                BLL_Invitations, f"_{key}"
+            ), f"hook {key!r} is not BLL_Invitations._{key}"
 
 
 class TestCoreFallbackWhenExtensionAbsent:
@@ -119,9 +122,6 @@ class TestCoreFallbackWhenExtensionAbsent:
 
 
 class TestHookRoundTrip:
-    def setup_method(self):
-        AuthInvitationsExtension.on_load()
-
     def test_invitation_manager_factory_returns_extension_class(self):
         factory = BLL_Auth._invitation_hooks["invitation_manager_factory"]
         try:
@@ -151,9 +151,8 @@ class TestHookLookupNaiveExpiryEnsureUtc(ExtensionServerMixin):
     """Regression for #228 — the hook-lookup expiry checks must route a naive
     persisted ``expires_at`` through ``ensure_utc``.
 
-    ``_lookup_by_id`` / ``_lookup_by_code`` exist in duplicate in both
-    ``BLL_Invitations`` and ``EXT_Invitations`` and run in the register/accept
-    hook path. On SQLite (the test/dev backend) a persisted datetime comes
+    ``BLL_Invitations._lookup_by_id`` / ``_lookup_by_code`` run in the
+    register/accept hook path. On SQLite (the test/dev backend) a persisted datetime comes
     back naive; without the ``ensure_utc`` wrap ``naive < aware`` raises
     ``TypeError`` -> HTTP 500. These tests prove an expired invitation is
     reported expired (lookup returns ``None``) with no ``TypeError``, and that
@@ -199,12 +198,10 @@ class TestHookLookupNaiveExpiryEnsureUtc(ExtensionServerMixin):
         )
         self._assert_persisted_expiry_is_naive(model_registry, inv_id)
 
-        # All four live hook-lookup sites must report the invitation expired
-        # (None) instead of raising TypeError on ``naive < aware``.
+        # Both hook-lookup sites must report the invitation expired (None)
+        # instead of raising TypeError on ``naive < aware``.
         assert BLL_Invitations._lookup_by_id(inv_id, model_registry) is None
         assert BLL_Invitations._lookup_by_code(code, model_registry) is None
-        assert EXT_Invitations._lookup_by_id(inv_id, model_registry) is None
-        assert EXT_Invitations._lookup_by_code(code, model_registry) is None
 
     def test_future_naive_expiry_still_resolves(self, model_registry):
         inv_id, code = self._insert_invitation(
@@ -217,8 +214,6 @@ class TestHookLookupNaiveExpiryEnsureUtc(ExtensionServerMixin):
         results = [
             BLL_Invitations._lookup_by_id(inv_id, model_registry),
             BLL_Invitations._lookup_by_code(code, model_registry),
-            EXT_Invitations._lookup_by_id(inv_id, model_registry),
-            EXT_Invitations._lookup_by_code(code, model_registry),
         ]
         for result in results:
             assert result is not None

@@ -38,7 +38,7 @@ from zephyrex.database.DatabaseManager import DatabaseManager
 from zephyrex.lib.Environment import env
 from zephyrex.lib.Logging import logger
 from zephyrex.lib.Metrics import get_metrics_backend
-from zephyrex.pydantic2.registry import BaseModel  # type: ignore[no-redef]
+from zephyrex.pydantic2.registry import BaseModel
 from zephyrex.pydantic2.fastapi import AuthType, RouterMixin
 from zephyrex.logic.AbstractLogicManager import (
     AbstractBLLManager,
@@ -868,7 +868,7 @@ class ProviderInstanceModel(
         NameMixinModel.Search,
         UserModel.Reference.ID.Search,
         TeamModel.Reference.ID.Search,
-        ProviderModel.Reference.ID.Search,  # type: ignore[name-defined]
+        ProviderModel.Reference.ID.Search,
     ):
         model_name: Optional[StringSearchModel] | None = None
         scope: Optional[StringSearchModel] | None = None
@@ -1379,7 +1379,7 @@ class RotationManager(AbstractBLLManager, RouterMixin):
         keeps working when Item 2's file isn't on the import path yet.
         """
         try:
-            from zephyrex.extensions import ExternalErrors  # type: ignore
+            from zephyrex.extensions import ExternalErrors
 
             return ExternalErrors
         except ImportError:

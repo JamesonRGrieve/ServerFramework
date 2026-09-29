@@ -76,7 +76,7 @@ class ForgejoOAuthProvider(AbstractOAuthProvider):
                 )
 
             self.access_token = response.json()["access_token"]
-            return self.access_token  # type: ignore[no-any-return]
+            return self.access_token
         except Exception as e:
             self.handle_auth_error(e, "token refresh")
 

@@ -37,6 +37,7 @@ from zephyrex.lib.AbstractPydantic2 import (
 )
 from zephyrex.lib.Environment import inflection
 from zephyrex.lib.Logging import logger
+from zephyrex.lib.TypeUnions import is_union
 from zephyrex.pydantic2.util import (
     is_reference_field_name,
     reference_relationship_name,
@@ -148,8 +149,8 @@ class PydanticUtility:
                     processed[field_name] = resolved_type
                 else:
                     processed[field_name] = field_type  # Keep as is if can't resolve
-            elif get_origin(field_type) is Union:
-                # Handle Optional[...] which is Union[..., None]
+            elif is_union(field_type):
+                # Handle Optional[...] / X | None and other unions
                 args = get_args(field_type)
                 new_args = [
                     (
@@ -387,7 +388,7 @@ class PydanticUtility:
                     get_args(field_type)[0], BaseModel
                 ):
                     description += f"List of Nested Model:\n{self.generate_detailed_schema(get_args(field_type)[0], max_depth, depth + 1)}"
-                elif get_origin(get_args(field_type)[0]) == Union:
+                elif is_union(get_args(field_type)[0]):
                     description += f"List of Union:\n"
                     for union_type in get_args(get_args(field_type)[0]):
                         if inspect.isclass(union_type) and issubclass(
@@ -403,7 +404,7 @@ class PydanticUtility:
                 key_type, value_type = get_args(field_type)
                 description += f"Dict[{self.type_introspector.get_type_name(key_type)}, {self.type_introspector.get_type_name(value_type)}]"
             # Handle union types (including Optional)
-            elif origin_type == Union:
+            elif is_union(field_type):
                 union_types = get_args(field_type)
 
                 for union_type in union_types:
@@ -614,8 +615,17 @@ class PydanticUtility:
                     (cls for name, cls in module_members if name == ref_model_name),
                     None,
                 )
+                # The manager for a model is the one declaring it as its
+                # ``_model``; when several do (subclasses inherit it), the
+                # conventionally named ``<Base>Manager`` wins.
+                candidates = [
+                    cls
+                    for _, cls in module_members
+                    if getattr(cls, "_model", None) is model_class
+                ]
                 manager_class = next(
-                    (cls for name, cls in module_members if name == manager_name), None
+                    (cls for cls in candidates if cls.__name__ == manager_name),
+                    candidates[0] if candidates else None,
                 )
 
                 if not ref_model_class:
@@ -772,8 +782,8 @@ class PydanticUtility:
                 relationship_cache[cache_key] = element_type
                 return element_type  # type: ignore[return-value]
 
-        # Handle Optional types (Union[type, None])
-        if get_origin(field_type) is Union:
+        # Handle Optional types (Optional[X] / X | None)
+        if is_union(field_type):
             args = get_args(field_type)
             for arg in args:
                 if arg is not type(None) and arg in model_fields_cache:

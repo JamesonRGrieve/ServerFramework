@@ -312,7 +312,7 @@ class OutboxDrainService:
     def resume(self) -> None:
         self._consumer.resume()
 
-    def health(self):  # type: ignore[no-untyped-def]
+    def health(self):
         return self._consumer.health()
 
     async def update(self) -> None:

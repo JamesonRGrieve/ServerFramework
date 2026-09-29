@@ -22,7 +22,7 @@ try:  # optional driver — guarded so discovery never fails on a missing packag
 
     _psycopg2_available = True
 except ImportError:  # pragma: no cover - optional driver
-    psycopg2 = None  # type: ignore[assignment]
+    psycopg2 = None
     _psycopg2_available = False
 
 POSTGRES_DEFAULT_PORT = 5432

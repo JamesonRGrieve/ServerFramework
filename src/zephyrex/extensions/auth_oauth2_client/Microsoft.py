@@ -60,7 +60,7 @@ class MicrosoftOAuthProvider(AbstractOAuthProvider):
                 )
 
             self.access_token = response.json()["access_token"]
-            return self.access_token  # type: ignore[no-any-return]
+            return self.access_token
         except Exception as e:
             self.handle_auth_error(e, "token refresh")
 
@@ -144,7 +144,7 @@ class MicrosoftOAuthProvider(AbstractOAuthProvider):
                     "Authorization": f"Bearer {self.access_token}",
                     "Content-Type": "application/json",
                 },
-                json=email_data,  # type: ignore[arg-type]
+                json=email_data,
                 timeout=10,
             )
 
@@ -156,7 +156,7 @@ class MicrosoftOAuthProvider(AbstractOAuthProvider):
                         "Authorization": f"Bearer {self.access_token}",
                         "Content-Type": "application/json",
                     },
-                    json=email_data,  # type: ignore[arg-type]
+                    json=email_data,
                     timeout=10,
                 )
 

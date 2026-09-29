@@ -501,6 +501,7 @@ When testing extensions using ServerMixin, follow these patterns:
 ### Hook Tests
 - Test hook registration via `@hook_bll` decorator
 - Test hook execution through HookContext
+- The framework calls `on_initialize` on every app build and `on_start`/`on_stop` in the lifespan; prove a lifecycle registration through a real app build (see `ExtensionLifecycle_test.py`), since calling `on_initialize()` by hand hides a registration the framework never makes
 
 ### Provider Discovery Tests
 - Test that `.providers` property discovers PRV_*.py files
@@ -511,9 +512,6 @@ When testing extensions using ServerMixin, follow these patterns:
 These methods are inherited but skipped since extensions are static:
 - `test_execute_ability`: Skipped (static extensions don't have instance abilities)
 - `test_get_ability_args`: Skipped (static extensions don't have instance ability args)
-- `test_on_initialize`: Skipped (static extensions don't have lifecycle methods)
-- `test_on_start`: Skipped (static extensions don't have lifecycle methods)
-- `test_on_stop`: Skipped (static extensions don't have lifecycle methods)
 - `test_get_available_abilities`: Skipped (static extensions don't have instance abilities)
 - `test_abilities_discovery`: Skipped (static extensions don't have instance abilities)
 - `test_metadata_access`: Skipped (static extensions don't have instance metadata)

@@ -21,12 +21,12 @@ Two integration points:
 
 from __future__ import annotations
 
-import asyncio
-from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Type
+from typing import Any, Dict, Iterable, List, Mapping, Optional
 from urllib.parse import urlparse
 
 from zephyrex.extensions.federation.BLL_Federation_GQL import (
     FederatedSubgraph,
+    GQLUpstreamTransport,
     MergedSchemaRegistry,
     SDLToPydanticResult,
     global_registry,
@@ -219,14 +219,16 @@ async def install_external_federation(
             logger.warning("Federation rejected for %s: %s", provider_cls.__name__, exc)
             continue
         try:
-            ingested = await provider_cls.register_with_registry(registry=target_registry)  # type: ignore[attr-defined]
+            ingested = await provider_cls.register_with_registry(
+                registry=target_registry
+            )
         except Exception as exc:
             logger.warning(
                 "Federation pipeline failed for %s: %s", provider_cls.__name__, exc
             )
             continue
         try:
-            lift_result = provider_cls.lift_to_pydantic(ingested)  # type: ignore[attr-defined]
+            lift_result = provider_cls.lift_to_pydantic(ingested)
         except Exception as exc:
             logger.warning(
                 "SDL→Pydantic lift failed for %s: %s", provider_cls.__name__, exc
@@ -443,7 +445,7 @@ def _synthesize_gql_external_model(
     *,
     type_name: str,
     model_cls: type,
-    transport: Any,
+    transport: GQLUpstreamTransport,
 ) -> type:
     """Wrap a GQL-lifted Pydantic model as an :class:`AbstractExternalModel`."""
 
@@ -452,7 +454,6 @@ def _synthesize_gql_external_model(
     )
     from zephyrex.extensions.federation.BLL_Federation_GQL import (
         build_query_document,
-        reconstruct_selection_set,
     )
 
     def _gql_get(provider_instance, external_id):
@@ -462,13 +463,7 @@ def _synthesize_gql_external_model(
             operation=f'{type_name.lower()}(id: "{external_id}")',
             selection_body=selection,
         )
-        try:
-            response = transport.send_sync(query=document)
-        except AttributeError:
-            # Async-only transport — fall back to the event loop.
-            import asyncio as _asyncio
-
-            response = _asyncio.run(transport.send(query=document))
+        response = transport.send_sync(query=document)
         if isinstance(response, dict):
             return (response.get("data") or {}).get(type_name.lower())
         return response
@@ -479,12 +474,7 @@ def _synthesize_gql_external_model(
             operation=f"{_pluralize(type_name.lower())}",
             selection_body=selection,
         )
-        try:
-            response = transport.send_sync(query=document)
-        except AttributeError:
-            import asyncio as _asyncio
-
-            response = _asyncio.run(transport.send(query=document))
+        response = transport.send_sync(query=document)
         if isinstance(response, dict):
             return (response.get("data") or {}).get(_pluralize(type_name.lower())) or []
         return response or []

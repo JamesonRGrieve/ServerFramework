@@ -215,7 +215,7 @@ class IMAPProvider(AbstractEmailProvider):
         )
         if validation_error:
             logger.error(validation_error)
-            return validation_error  # type: ignore[no-any-return]
+            return validation_error
 
         bonded = cls.bond_instance(provider_instance)
         if not bonded or not bonded.sdk:

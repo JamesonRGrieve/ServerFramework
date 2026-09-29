@@ -14,7 +14,37 @@ from zephyrex.lib.Logging import logger
 from zephyrex.pydantic2.strawberry import convert_field_name
 
 from zephyrex.extensions.auth_invitations.BLL_Invitations import InvitationModel
-from zephyrex.logic.BLL_Auth import RoleModel, TeamModel, UserModel
+from zephyrex.logic.BLL_Auth import RoleModel, TeamModel, UserManager, UserModel
+
+
+def generate_jwt_for_user(user_data: Dict[str, Any], server: Any = None) -> str:
+    """A session-backed JWT for ``user_data`` (a user dict, or one nested
+    under ``"user"``).
+
+    Every JWT must carry a ``jti`` resolvable to an active session row;
+    ``UserManager.generate_jwt_token`` mints the row when given the app's
+    ``model_registry``, taken from ``server`` or the conftest accessor."""
+    if "id" not in user_data and "user" in user_data:
+        user_data = user_data["user"]
+    user_id = user_data.get("id")
+    if not user_id:
+        raise ValueError(f"Cannot extract user ID from user data: {user_data}")
+    email = user_data.get("email") or f"user_{user_id}@example.com"
+
+    registry = None
+    if server is not None and hasattr(server, "app"):
+        registry = getattr(server.app.state, "model_registry", None)
+    if registry is None:
+        from conftest import get_test_model_registry
+
+        registry = get_test_model_registry()
+
+    return UserManager.generate_jwt_token(
+        user_id=user_id,
+        email=email,
+        timezone_str="UTC",
+        model_registry=registry,
+    )
 
 
 @pytest.mark.ep
@@ -848,7 +878,7 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
         endpoint = "/v1/user"
         response = server.post(endpoint, json=payload, headers=headers)
         self._assert_response_status(response, 201, "POST", endpoint, payload)
-        return self._assert_entity_in_response(response)  # type: ignore[no-any-return]
+        return self._assert_entity_in_response(response)
 
         # Extract user from response and verify structure
         response_data = response.json()
@@ -863,57 +893,13 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
         ), "Email should match the payload"
 
         # Generate JWT for the user
-        user["jwt"] = self._generate_jwt_for_user(user)
+        user["jwt"] = generate_jwt_for_user(user)
         user["password"] = payload["user"][
             "password"
         ]  # Add password to user for testing
 
         # All assertions passed - test successful
         assert user["jwt"] is not None, "JWT should be generated"
-
-    def _generate_jwt_for_user(
-        self, user_data: Dict[str, Any], server: Any = None
-    ) -> str:
-        """Generate a JWT token for the given user data for testing purposes.
-
-        After M-1, every JWT must carry a `jti` resolvable to an active
-        SessionModel row. ``UserManager.generate_jwt_token`` mints the
-        row when given a ``model_registry``; resolve it from the
-        supplied ``server`` (or fall back to the conftest accessor)."""
-        from zephyrex.logic.BLL_Auth import UserManager
-
-        user_id = None
-        email = None
-        if "id" in user_data:
-            user_id = user_data["id"]
-            email = user_data.get("email")
-        elif isinstance(user_data, dict) and "user" in user_data:
-            user_data = user_data["user"]
-            user_id = user_data.get("id")
-            email = user_data.get("email")
-
-        if not user_id:
-            raise ValueError(f"Cannot extract user ID from user data: {user_data}")
-        if not email:
-            email = f"user_{user_id}@example.com"
-
-        registry = None
-        if server is not None and hasattr(server, "app"):
-            registry = getattr(server.app.state, "model_registry", None)
-        if registry is None:
-            try:
-                from conftest import get_test_model_registry
-
-                registry = get_test_model_registry()
-            except Exception:
-                registry = None
-
-        return UserManager.generate_jwt_token(  # type: ignore[no-any-return]
-            user_id=user_id,
-            email=email,
-            timezone_str="UTC",
-            model_registry=registry,
-        )
 
     def test_POST_200_authorize(self, admin_a: Any) -> str:  # type: ignore[return]
         """Test that admin JWT token is valid."""
@@ -1003,7 +989,7 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
         response = server.delete(endpoint, headers={})
         self._assert_response_status(response, 401, "DELETE current user", endpoint)
 
-    def test_PUT_200(self, server: Any, db: Any, **kwargs: Any) -> Dict[str, Any]:  # type: ignore[return]
+    def test_PUT_200(self, server: Any, admin_a: Any, team_a: Any) -> None:
         """Test updating current user profile with isolated user."""
 
         # Create isolated user for this test only
@@ -1197,7 +1183,7 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
         assert "sessions" in sessions_data, "Response should contain 'sessions' key"
         assert isinstance(sessions_data["sessions"], list), "sessions should be a list"
 
-    def test_GET_200_id(self, server: Any, admin_a: Any) -> Dict[str, Any]:  # type: ignore[return]
+    def test_GET_200_id(self, server: Any, admin_a: Any, team_a: Any) -> None:
         """Test retrieving a specific session by ID."""
 
         # First, get all sessions to find one to retrieve
@@ -1715,8 +1701,8 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
             404,
         ), f"user_y must not delete user_x's session; got {response.status_code}"
 
-    def test_DELETE_204(self, server: Any, db: Any):
-        """Test deleting a user with an isolated test user (does not use shared fixtures)."""
+    def test_DELETE_204(self, server: Any, admin_a: Any, team_a: Any) -> None:
+        """Test deleting a user with an isolated test user (acts only on that user)."""
 
         # Create an isolated user for this test only
         from conftest import create_user
@@ -2548,7 +2534,7 @@ class TestRoleEndpoints(AbstractEPTest):
                 if callable(value):
                     update_data[field] = value()
                 else:
-                    update_data[field] = value  # type: ignore[assignment]
+                    update_data[field] = value
 
         path_parent_ids = {}  # type: ignore[var-annotated]
 
@@ -2719,50 +2705,6 @@ class TestInvitationEndpoints(AbstractEPTest):
         "max_uses": 10,
     }
     unique_fields = ["code"]
-
-    def _generate_jwt_for_user(
-        self, user_data: Dict[str, Any], server: Any = None
-    ) -> str:
-        """Generate a JWT token for the given user data for testing purposes.
-
-        After M-1, every JWT must carry a `jti` resolvable to an active
-        SessionModel row. ``UserManager.generate_jwt_token`` mints the
-        row when given a ``model_registry``; resolve it from the
-        supplied ``server`` (or fall back to the conftest accessor)."""
-        from zephyrex.logic.BLL_Auth import UserManager
-
-        user_id = None
-        email = None
-        if "id" in user_data:
-            user_id = user_data["id"]
-            email = user_data.get("email")
-        elif isinstance(user_data, dict) and "user" in user_data:
-            user_data = user_data["user"]
-            user_id = user_data.get("id")
-            email = user_data.get("email")
-
-        if not user_id:
-            raise ValueError(f"Cannot extract user ID from user data: {user_data}")
-        if not email:
-            email = f"user_{user_id}@example.com"
-
-        registry = None
-        if server is not None and hasattr(server, "app"):
-            registry = getattr(server.app.state, "model_registry", None)
-        if registry is None:
-            try:
-                from conftest import get_test_model_registry
-
-                registry = get_test_model_registry()
-            except Exception:
-                registry = None
-
-        return UserManager.generate_jwt_token(  # type: ignore[no-any-return]
-            user_id=user_id,
-            email=email,
-            timezone_str="UTC",
-            model_registry=registry,
-        )
 
     def create_payload(
         self,
@@ -3000,9 +2942,9 @@ class TestInvitationEndpoints(AbstractEPTest):
         # Get JWT for the new user - handle both dict and object formats
         jwt_token = None
         if isinstance(new_user, dict):
-            jwt_token = new_user.get("jwt") or self._generate_jwt_for_user(new_user)
+            jwt_token = new_user.get("jwt") or generate_jwt_for_user(new_user)
         else:
-            jwt_token = getattr(new_user, "jwt", None) or self._generate_jwt_for_user(
+            jwt_token = getattr(new_user, "jwt", None) or generate_jwt_for_user(
                 new_user
             )
 
@@ -3112,9 +3054,9 @@ class TestInvitationEndpoints(AbstractEPTest):
         # Get JWT for the new user - handle both dict and object formats
         jwt_token = None
         if isinstance(new_user, dict):
-            jwt_token = new_user.get("jwt") or self._generate_jwt_for_user(new_user)
+            jwt_token = new_user.get("jwt") or generate_jwt_for_user(new_user)
         else:
-            jwt_token = getattr(new_user, "jwt", None) or self._generate_jwt_for_user(
+            jwt_token = getattr(new_user, "jwt", None) or generate_jwt_for_user(
                 new_user
             )
 
@@ -3317,7 +3259,7 @@ class TestInvitationEndpoints(AbstractEPTest):
                 )
 
         # Verify user was added to the team by checking team membership via API
-        user_jwt = self._generate_jwt_for_user(user, server=server)
+        user_jwt = generate_jwt_for_user(user, server=server)
 
         team_users_response = server.get(
             f"/v1/team/{team_a.id}/user",
@@ -3538,7 +3480,7 @@ class TestInvitationEndpoints(AbstractEPTest):
             endpoint,
             json=payload,
             headers=self._get_appropriate_headers(
-                self._generate_jwt_for_user(user2, server=server)
+                generate_jwt_for_user(user2, server=server)
             ),
         )
         # Either 403 (email mismatch caught at the application layer) or 404

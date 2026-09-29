@@ -22,9 +22,9 @@ from zephyrex.logic.BLL_Auth.role import RoleModel, RoleManager
 class UserTeamModel(
     ApplicationModel,
     UpdateMixinModel,
-    UserModel.Reference,  # type: ignore[name-defined]
-    TeamModel.Reference,  # type: ignore[name-defined]
-    RoleModel.Reference,  # type: ignore[name-defined]
+    UserModel.Reference,
+    TeamModel.Reference,
+    RoleModel.Reference,
     metaclass=ModelMeta,
 ):
     Manager: ClassVar[Type["UserTeamManager"]] = None  # type: ignore[assignment]
@@ -40,9 +40,9 @@ class UserTeamModel(
 
     class Create(
         BaseModel,
-        UserModel.Reference.ID,  # type: ignore[name-defined]
-        TeamModel.Reference.ID,  # type: ignore[name-defined]
-        RoleModel.Reference.ID,  # type: ignore[name-defined]
+        UserModel.Reference.ID,
+        TeamModel.Reference.ID,
+        RoleModel.Reference.ID,
     ):
         enabled: Optional[bool] = Field(
             True, description="Whether this membership is enabled"
@@ -63,9 +63,9 @@ class UserTeamModel(
 
     class Search(
         ApplicationModel.Search,
-        UserModel.Reference.ID.Search,  # type: ignore[name-defined]
-        TeamModel.Reference.ID.Search,  # type: ignore[name-defined]
-        RoleModel.Reference.ID.Search,  # type: ignore[name-defined]
+        UserModel.Reference.ID.Search,
+        TeamModel.Reference.ID.Search,
+        RoleModel.Reference.ID.Search,
     ):
         enabled: Optional[bool] | None = None
 
@@ -229,7 +229,7 @@ class UserTeamModel(
             raise
 
 
-class UserTeamManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef]
+class UserTeamManager(AbstractBLLManager, RouterMixin):
     _model = UserTeamModel
     _entity_label: ClassVar[Optional[str]] = "User Team"
 
@@ -280,7 +280,7 @@ class UserTeamManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef
         )
 
         if not records:
-            return records  # type: ignore[no-any-return]
+            return records
 
         def _get_attr(record, attr):
             if isinstance(record, dict):
@@ -332,7 +332,7 @@ class UserTeamManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef
             if role_id and role_id in role_map:
                 _set_attr(record, "role", role_map[role_id])
 
-        return records  # type: ignore[no-any-return]
+        return records
 
     def update(
         self, id: str, team_id: str | None = None, db=None, db_manager=None, **kwargs

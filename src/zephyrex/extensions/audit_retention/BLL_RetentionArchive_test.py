@@ -126,7 +126,7 @@ def test_unsupported_format_raises():
     storage = _FakeObjectStorage()
     with pytest.raises(ValueError):
         make_object_storage_archive_callback(
-            storage, bucket_or_prefix="x", format="csv"  # type: ignore[arg-type]
+            storage, bucket_or_prefix="x", format="csv"
         )
 
 
@@ -134,7 +134,7 @@ def test_unsupported_compression_raises():
     storage = _FakeObjectStorage()
     with pytest.raises(ValueError):
         make_object_storage_archive_callback(
-            storage, bucket_or_prefix="x", compression="zstd"  # type: ignore[arg-type]
+            storage, bucket_or_prefix="x", compression="zstd"
         )
 
 

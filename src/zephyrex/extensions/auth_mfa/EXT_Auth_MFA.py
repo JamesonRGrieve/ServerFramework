@@ -108,28 +108,6 @@ class EXT_Auth_MFA(AbstractStaticExtension):
         return True
 
     @classmethod
-    def on_start(cls) -> bool:
-        """Start the MFA extension."""
-        try:
-            logger.debug("MFA extension started successfully")
-            return True
-
-        except Exception as e:
-            logger.error(f"Failed to start MFA extension: {e}")
-            return False
-
-    @classmethod
-    def on_stop(cls) -> bool:
-        """Stop the MFA extension."""
-        try:
-            logger.debug("MFA extension stopped successfully")
-            return True
-
-        except Exception as e:
-            logger.error(f"Error stopping MFA extension: {e}")
-            return False
-
-    @classmethod
     def validate_config(cls) -> List[str]:
         """Validate the extension configuration."""
         issues: List[str] = []

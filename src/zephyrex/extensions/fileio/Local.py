@@ -863,6 +863,6 @@ class LocalFileSystem(AbstractFileIOProvider):
         """
         try:
             _, allowed = self._check_path_permissions(path, check_exists=False)
-            return allowed  # type: ignore[no-any-return]
+            return allowed
         except Exception:
             return False

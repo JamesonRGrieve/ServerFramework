@@ -35,8 +35,8 @@ try:
 
     _hvac_available = True
 except ImportError:
-    hvac = None  # type: ignore[assignment]
-    hvac_exceptions = None  # type: ignore[assignment]
+    hvac = None
+    hvac_exceptions = None
     _hvac_available = False
 
 

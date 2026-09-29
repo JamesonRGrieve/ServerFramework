@@ -4,7 +4,6 @@
 from typing import Any, ClassVar, Dict, List, Set
 
 from zephyrex.extensions.AbstractExtensionProvider import AbstractStaticExtension
-from zephyrex.lib.Logging import logger
 
 
 class EXT_MetaSDKTs(AbstractStaticExtension):
@@ -32,14 +31,10 @@ class EXT_MetaSDKTs(AbstractStaticExtension):
 
     @classmethod
     def on_initialize(cls) -> bool:
-        logger.debug("Initializing meta_sdk_ts extension")
-        return True
-
-    @classmethod
-    def on_load(cls) -> None:
         from zephyrex.extensions.meta_sdk_ts.TypeScriptSDKEmitter import (
             generate_typescript_sdk,
         )
         from zephyrex.lib.Hooks import register_sdk_generator
 
-        register_sdk_generator("ts", generate_typescript_sdk)
+        register_sdk_generator(cls.name, generate_typescript_sdk)
+        return True

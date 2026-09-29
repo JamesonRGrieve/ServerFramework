@@ -100,7 +100,7 @@ class UserNetworkModel(BaseModel):
 class UserManager:
     """User manager for relationship testing."""
 
-    pass
+    _model = UserModel
 
 
 class PostModel(BaseModel):
@@ -641,6 +641,44 @@ class TestPydantic(unittest.TestCase):
         self.assertEqual(model_class, UserModel)
         self.assertEqual(ref_model_class, UserReferenceModel)
         self.assertEqual(manager_class, UserManager)
+
+    def test_manager_is_paired_by_its_declared_model(self):
+        """A manager named after something other than its model (MagicLinkManager
+        for AuthMagicLinkTokenModel) is still that model's manager; among
+        managers inheriting the same ``_model``, ``<Base>Manager`` wins."""
+
+        class TokenModel(BaseModel):
+            id: int
+
+        class TokenReferenceModel(BaseModel):
+            id: int
+
+        class IssuerManager:
+            _model = TokenModel
+
+        class TokenManager(IssuerManager):
+            pass
+
+        unconventional = MagicMock(
+            TokenModel=TokenModel,
+            TokenReferenceModel=TokenReferenceModel,
+            IssuerManager=IssuerManager,
+        )
+        [(_, _, manager_class)] = self.utility.discover_model_relationships(
+            {"token_module": unconventional}
+        )
+        self.assertIs(manager_class, IssuerManager)
+
+        both = MagicMock(
+            TokenModel=TokenModel,
+            TokenReferenceModel=TokenReferenceModel,
+            IssuerManager=IssuerManager,
+            TokenManager=TokenManager,
+        )
+        [(_, _, manager_class)] = self.utility.discover_model_relationships(
+            {"token_module": both}
+        )
+        self.assertIs(manager_class, TokenManager)
 
     def test_collect_model_fields(self):
         """Test collect_model_fields method."""

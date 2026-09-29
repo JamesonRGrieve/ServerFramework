@@ -41,7 +41,7 @@ class TestNormalize:
 
     def test_invalid_type_raises(self):
         with pytest.raises(TypeError):
-            normalize_mappings("not a list or dict")  # type: ignore[arg-type]
+            normalize_mappings("not a list or dict")
 
 
 class TestRename:

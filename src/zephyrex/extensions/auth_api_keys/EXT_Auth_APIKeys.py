@@ -35,11 +35,9 @@ class EXT_Auth_APIKeys(AbstractStaticExtension):
     @classmethod
     def on_initialize(cls) -> bool:
         from zephyrex.extensions.auth_api_keys.BLL_Auth_APIKeys import (
-            register_api_key_auth,
             register_merge_participation,
         )
 
-        register_api_key_auth()
         register_merge_participation()
         logger.debug("auth_api_keys initialized")
         return True

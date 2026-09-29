@@ -140,7 +140,7 @@ class TestProviderExtensionEndpoints(AbstractEPTest):
     update_fields = {
         "extension_id": lambda: str(uuid.uuid4()),  # Different extension ID
     }
-    unique_fields: list[str] = []  # type: ignore[var-annotated]
+    unique_fields: list[str] = []
 
     # Tests to skip (if any)
     _skip_tests: list[SkipThisTest] = []
@@ -471,7 +471,7 @@ class TestRotationProviderInstanceEndpoints(AbstractEPTest):
     update_fields: dict[str, str] = (
         {}
     )  # No updateable fields besides system  # type: ignore[var-annotated]
-    unique_fields: list[str] = []  # type: ignore[var-annotated]
+    unique_fields: list[str] = []
 
     _skip_tests: list[SkipThisTest] = []
 
@@ -587,7 +587,7 @@ class TestProviderExtensionAbilityEndpoints(AbstractEPTest):
     update_fields: dict[str, str] = (
         {}
     )  # No updateable fields besides system fields  # type: ignore[var-annotated]
-    unique_fields: list[str] = []  # type: ignore[var-annotated]
+    unique_fields: list[str] = []
 
     # ProviderExtensionAbility is a high-volume system-seeded join table.
     # Generic timestamp-based searches (created_at eq/on, updated_at eq/on)

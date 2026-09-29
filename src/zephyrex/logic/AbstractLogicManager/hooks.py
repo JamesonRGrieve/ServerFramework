@@ -14,6 +14,7 @@ from typing import (
 
 import numpy as np
 
+from zephyrex.lib.InboundSecurity import RATE_LIMIT_MARKERS
 from zephyrex.lib.Logging import logger
 
 if TYPE_CHECKING:
@@ -485,6 +486,9 @@ def hook_bll(
         def audit_logging(context: HookContext) -> None:
             ...
     """
+    # Imported here: manager.py imports this module at load time.
+    from zephyrex.logic.AbstractLogicManager.manager import AbstractBLLManager
+
     # Determine if target is a class or method
     if inspect.isclass(target) and issubclass(target, AbstractBLLManager):
         # Class-level hook registration - applies to ALL methods
@@ -938,10 +942,7 @@ def wrap_method_with_hooks(
     for marker in (
         "__custom_route_spec__",
         "_static_route_config",
-        "_rate_limit_spec",
-        "_rate_limit_count",
-        "_rate_limit_window_seconds",
-        "_rate_limit_scope",
+        *RATE_LIMIT_MARKERS,
     ):
         if hasattr(original_method, marker):
             setattr(wrapped_method, marker, getattr(original_method, marker))

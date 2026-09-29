@@ -192,14 +192,14 @@ def test_set_get_metrics_backend_round_trip():
 @pytest.mark.unit
 def test_set_metrics_backend_rejects_non_backend():
     with pytest.raises(TypeError):
-        set_metrics_backend("not a backend")  # type: ignore[arg-type]
+        set_metrics_backend("not a backend")
 
 
 @pytest.mark.unit
 def test_metrics_backend_is_abstract():
     # Direct instantiation must fail — the ABC has unimplemented methods.
     with pytest.raises(TypeError):
-        MetricsBackend()  # type: ignore[abstract]
+        MetricsBackend()
 
 
 # ---------------------------------------------------------------------------

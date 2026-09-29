@@ -137,7 +137,7 @@ class AbstractTest:
     __skip_lookup__: ClassVar[Dict[str, SkipThisTest]] = {}
 
     # Test configuration - should be overridden by subclasses if needed
-    test_config: ClassOfTestsConfig = ClassOfTestsConfig()  # type: ignore[call-arg]
+    test_config: ClassOfTestsConfig = ClassOfTestsConfig()
 
     # Create a faker instance for generating test data
     faker = Faker()

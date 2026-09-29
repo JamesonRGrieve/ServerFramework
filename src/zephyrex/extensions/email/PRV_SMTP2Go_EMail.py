@@ -273,7 +273,7 @@ class Smtp2goProvider(AbstractEmailProvider):
         )
         if validation_error:
             logger.error(validation_error)
-            return validation_error  # type: ignore[no-any-return]
+            return validation_error
 
         if not _httpx_available:
             return "Failed to send email: httpx not installed"

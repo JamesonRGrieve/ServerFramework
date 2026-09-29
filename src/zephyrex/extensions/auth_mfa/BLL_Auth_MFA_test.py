@@ -4,7 +4,7 @@ import pytest
 from faker import Faker
 from fastapi import HTTPException
 
-from zephyrex.AbstractTest import CategoryOfTest, ClassOfTestsConfig, ParentEntity
+from zephyrex.AbstractTest import ParentEntity
 from zephyrex.extensions.AbstractEXTTest import ExtensionServerMixin
 from zephyrex.extensions.auth_mfa.BLL_Auth_MFA import (
     MultifactorMethodManager,
@@ -14,11 +14,6 @@ from zephyrex.extensions.auth_mfa.BLL_Auth_MFA import (
 from zephyrex.extensions.auth_mfa.EXT_Auth_MFA import EXT_Auth_MFA
 from zephyrex.logic.AbstractBLLTest import AbstractBLLTest
 from zephyrex.logic.BLL_Auth_test import TestUserManager as CoreUserManagerTests
-
-# Set default test configuration for all test classes
-AbstractBLLTest.test_config = ClassOfTestsConfig(
-    categories=[CategoryOfTest.LOGIC, CategoryOfTest.EXTENSION]
-)
 
 # Initialize faker
 faker = Faker()

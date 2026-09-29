@@ -20,7 +20,7 @@ try:  # optional driver — guarded so discovery never fails on a missing packag
 
     _pyodbc_available = True
 except ImportError:  # pragma: no cover - optional driver
-    _pyodbc = None  # type: ignore[assignment]
+    _pyodbc = None
     _pyodbc_available = False
 
 MSSQL_DEFAULT_PORT = 1433

@@ -411,7 +411,7 @@ def _require_admin_principal(
     if api_key:
         principal = resolve_principal_from_api_key(api_key)
         if principal is not None:
-            return principal  # type: ignore[no-any-return]
+            return principal
         # An API-key-shaped credential that does not match is a clear
         # 401, not a fall-through to the JWT path.
         raise HTTPException(

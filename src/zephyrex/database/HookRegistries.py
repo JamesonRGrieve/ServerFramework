@@ -14,8 +14,8 @@ implementations at load time via ``register_acl_hooks`` /
 these names for backward compatibility.
 """
 
-# auth_invitations extension hooks — populated by `auth_invitations.on_load`
-# (Scope #4). Encapsulate every place core used to reach into
+# auth_invitations extension hooks — populated when `auth_invitations.BLL_Invitations`
+# is imported (Scope #4). Encapsulate every place core used to reach into
 # InvitationModel / InviteeModel / InvitationManager / InviteeManager.
 _invitation_hooks: dict = {
     "lookup_by_id": None,  # (invitation_id, model_registry) -> dict | None
@@ -54,7 +54,7 @@ def register_invitation_hooks(
             _invitation_hooks[name] = fn
 
 
-# acl_rbac extension hooks — populated by `acl_rbac.on_load` (Scope #5).
+# acl_rbac extension hooks — populated when `acl_rbac.BLL_ACL` is imported (Scope #5).
 _acl_hooks: dict = {
     "permission_db_class": None,  # (declarative_base) -> SA model
     "create_permission": None,  # (resource_type, resource_id, user_id, can_*, model_registry, **kw) -> Any

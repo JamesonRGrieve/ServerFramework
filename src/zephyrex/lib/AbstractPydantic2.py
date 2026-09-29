@@ -13,7 +13,6 @@ from typing import (
     Optional,
     Set,
     Type,
-    Union,
     get_args,
     get_origin,
 )
@@ -23,6 +22,7 @@ from pydantic import BaseModel, ConfigDict
 
 from zephyrex.lib.Environment import inflection
 from zephyrex.lib.Logging import logger
+from zephyrex.lib.TypeUnions import is_optional, is_union, unwrap_optional
 
 
 class CacheManager:
@@ -83,7 +83,7 @@ class NameProcessor:
     def generate_resource_name(class_name: str, use_plural: bool = True) -> str:
         base_name = NameProcessor.extract_base_name(class_name)
         snake_case_name = stringcase.snakecase(base_name)
-        return inflection.plural(snake_case_name) if use_plural else snake_case_name  # type: ignore[no-any-return]
+        return inflection.plural(snake_case_name) if use_plural else snake_case_name
 
     @staticmethod
     def generate_unique_name(
@@ -169,20 +169,12 @@ class TypeIntrospector:
     def is_scalar_type(self, field_type: Any) -> bool:
         if field_type in self.SCALAR_TYPES:
             return True
-        if get_origin(field_type) is Union:
-            args = get_args(field_type)
-            return (
-                len(args) == 2
-                and type(None) in args
-                and self.is_scalar_type(
-                    next(arg for arg in args if arg is not type(None))
-                )
-            )
-        return False
+        inner = unwrap_optional(field_type)
+        return inner is not field_type and self.is_scalar_type(inner)
 
     @lru_cache(maxsize=1024)
     def is_optional_type(self, field_type: Any) -> bool:
-        return get_origin(field_type) is Union and type(None) in get_args(field_type)
+        return is_optional(field_type)
 
     def extract_optional_inner_type(self, field_type: Any) -> Any:
         return (
@@ -211,7 +203,7 @@ class TypeIntrospector:
 
     @lru_cache(maxsize=1024)
     def is_union_type(self, field_type: Any) -> bool:
-        return get_origin(field_type) is Union
+        return is_union(field_type)
 
     @lru_cache(maxsize=1024)
     def is_enum_type(self, field_type: Any) -> bool:
@@ -734,11 +726,7 @@ class RelationshipAnalyzer:
         for field_name, field_info in getattr(model, "model_fields", {}).items():
             field_type = field_info.annotation
 
-            # Handle Optional[SomeModel]
-            if get_origin(field_type) is Union:
-                args = get_args(field_type)
-                if len(args) == 2 and type(None) in args:
-                    field_type = next(arg for arg in args if arg is not type(None))
+            field_type = unwrap_optional(field_type)
 
             # Check if it's a Pydantic model
             if (
@@ -750,7 +738,7 @@ class RelationshipAnalyzer:
                     {
                         "field_name": field_name,
                         "model_class": field_type,
-                        "is_optional": get_origin(field_info.annotation) is Union,
+                        "is_optional": is_union(field_info.annotation),
                     }
                 )
 
@@ -802,11 +790,10 @@ class RelationshipAnalyzer:
         }
 
         # Check if it's an Optional type
-        if get_origin(field_type) is Union:
-            args = get_args(field_type)
-            if len(args) == 2 and type(None) in args:
-                info["is_optional"] = True
-                field_type = next(arg for arg in args if arg is not type(None))
+        unwrapped = unwrap_optional(field_type)
+        if unwrapped is not field_type:
+            info["is_optional"] = True
+            field_type = unwrapped
 
         # Check if it's a List type
         if get_origin(field_type) in (list, List):
@@ -827,13 +814,9 @@ class RelationshipAnalyzer:
                 and hasattr(model, "model_fields")
                 and base_name in model.model_fields
             ):
-                obj_field_type = model.model_fields[base_name].annotation
-                if get_origin(obj_field_type) is Union:
-                    args = get_args(obj_field_type)
-                    if len(args) == 2 and type(None) in args:
-                        obj_field_type = next(
-                            arg for arg in args if arg is not type(None)
-                        )
+                obj_field_type = unwrap_optional(
+                    model.model_fields[base_name].annotation
+                )
                 if isinstance(obj_field_type, type) and issubclass(
                     obj_field_type, BaseModel
                 ):

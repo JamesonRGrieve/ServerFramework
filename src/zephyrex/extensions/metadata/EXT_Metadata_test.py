@@ -3,8 +3,8 @@
 Covers:
 - Canonical classes live at the extension import path.
 - Core ``BLL_Auth`` PEP 562 forwards to the extension.
-- ``EXT_Metadata.on_load`` populates every documented hook in
-  ``BLL_Auth._metadata_hooks``.
+- Importing ``BLL_Metadata`` registers its implementation of every
+  documented hook in ``BLL_Auth._metadata_hooks``.
 - Core surfaces that depended on metadata degrade safely when the extension
   has not been loaded (``UserManager.metadata`` raises 503; the login
   preferences hook returns ``{}``).
@@ -21,6 +21,7 @@ os.environ.setdefault("PYTEST_CURRENT_TEST", "metadata_test")
 import pytest
 from fastapi import HTTPException
 
+from zephyrex.extensions.metadata import BLL_Metadata
 from zephyrex.extensions.metadata.BLL_Metadata import (
     MetadataManager,
     MetadataModel,
@@ -28,6 +29,7 @@ from zephyrex.extensions.metadata.BLL_Metadata import (
     UserMetadataManager,
 )
 from zephyrex.extensions.metadata.EXT_Metadata import MetadataExtension
+from zephyrex.lib.Environment import env
 from zephyrex.logic import BLL_Auth
 
 
@@ -66,8 +68,9 @@ class TestExtensionLifecycle:
     def test_models_returns_metadata_model(self):
         assert MetadataModel in MetadataExtension.models
 
-    def test_on_load_populates_every_hook(self):
-        MetadataExtension.on_load()
+
+class TestImportRegistersHooks:
+    def test_every_hook_is_the_bll_implementation(self):
         for key in (
             "list_preferences",
             "list_user_metadata",
@@ -76,14 +79,14 @@ class TestExtensionLifecycle:
             "create_user_metadata",
             "update_user_metadata",
         ):
-            assert (
-                BLL_Auth._metadata_hooks[key] is not None
-            ), f"hook {key!r} not registered by on_load"
+            assert BLL_Auth._metadata_hooks[key] is getattr(
+                BLL_Metadata, f"_{key}"
+            ), f"hook {key!r} is not BLL_Metadata._{key}"
 
 
 class TestCoreFallbackWhenExtensionAbsent:
     """Core code that previously called UserMetadataManager directly now goes
-    through the hook. Without on_load, every consumer must degrade safely
+    through the hook. Without the hooks, every consumer must degrade safely
     (typed 503 for manager-property paths, empty dict/list for read paths)."""
 
     def setup_method(self):
@@ -116,34 +119,38 @@ class TestCoreFallbackWhenExtensionAbsent:
 
 
 class TestHookRoundTrip:
-    """When on_load HAS run, the hook-driven path on core resolves to the
-    canonical extension implementation."""
+    """The hook-driven path on core resolves to the canonical extension
+    implementation for an app that loaded ``metadata``, and to nothing for
+    one that did not."""
 
-    def setup_method(self):
-        MetadataExtension.on_load()
-
-    def test_user_manager_factory_returns_extension_class(self):
+    def test_user_manager_factory_returns_extension_class(self, model_registry):
         factory = BLL_Auth._metadata_hooks["user_manager_factory"]
-        try:
-            mgr = factory(
-                requester_id="x",
-                target_id="y",
-                model_registry=None,
-            )
-        except Exception:
-            # Without a real model_registry the construct fails; we still
-            # care that the factory itself is hooked up to the extension.
-            return
+        mgr = factory(
+            requester_id=env("ROOT_ID"),
+            target_id=env("ROOT_ID"),
+            model_registry=model_registry,
+        )
         assert isinstance(mgr, UserMetadataManager)
 
-    def test_team_manager_factory_returns_extension_class(self):
+    def test_team_manager_factory_returns_extension_class(self, model_registry):
         factory = BLL_Auth._metadata_hooks["team_manager_factory"]
-        try:
-            mgr = factory(
-                requester_id="x",
-                target_team_id="y",
-                model_registry=None,
-            )
-        except Exception:
-            return
+        mgr = factory(
+            requester_id=env("ROOT_ID"),
+            target_team_id=None,
+            model_registry=model_registry,
+        )
         assert isinstance(mgr, TeamMetadataManager)
+
+    def test_factories_resolve_nothing_without_the_extension(self):
+        assert (
+            BLL_Auth._metadata_hooks["user_manager_factory"](
+                requester_id="x", target_id="y", model_registry=None
+            )
+            is None
+        )
+        assert (
+            BLL_Auth._metadata_hooks["team_manager_factory"](
+                requester_id="x", target_team_id="y", model_registry=None
+            )
+            is None
+        )

@@ -504,7 +504,7 @@ class ScheduledService(AbstractService):
             base.timestamp() + self.interval_seconds, tz=timezone.utc
         )
 
-    async def run_service_loop(self) -> None:  # type: ignore[override]
+    async def run_service_loop(self) -> None:
         while self.running:
             try:
                 if self.paused:
@@ -759,7 +759,7 @@ class FairQueueConsumerService(QueueConsumerService):
             summary["count"] = summary["count"] + 1
             summary["sum"] = summary["sum"] + wait
 
-    async def update(self) -> None:  # type: ignore[override]
+    async def update(self) -> None:
         await self._drain_into_partitions()
         selected = self._select_next()
         if selected is None:
@@ -1094,7 +1094,7 @@ class StreamingService(AbstractService):
             if self._inflight is not None and not self._inflight.done():
                 self._inflight.cancel()
 
-    async def run_service_loop(self) -> None:  # type: ignore[override]
+    async def run_service_loop(self) -> None:
         attempt = 0
         while self.running:
             if self.paused:

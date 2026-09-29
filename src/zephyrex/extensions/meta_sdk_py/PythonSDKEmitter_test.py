@@ -44,13 +44,11 @@ def test_generation_is_deterministic(monkeypatch, tmp_path):
     assert first == second
 
 
-def test_on_load_registers_python_generator():
-    """on_load wires the generator into the language-keyed SDK hook registry."""
-    from zephyrex.lib.Hooks import _registry_hooks
+def test_on_initialize_registers_python_generator():
+    """on_initialize wires the generator into the SDK hook registry under the
+    extension's own name, so only apps that load it run it."""
+    from zephyrex.lib.Hooks import sdk_generators_for
 
-    _registry_hooks["generate_sdk"].pop("py", None)
-    try:
-        EXT_MetaSDKPy.on_load()
-        assert _registry_hooks["generate_sdk"].get("py") is generate_python_sdk
-    finally:
-        _registry_hooks["generate_sdk"].pop("py", None)
+    assert EXT_MetaSDKPy.on_initialize() is True
+    assert sdk_generators_for({"meta_sdk_py"}) == [("meta_sdk_py", generate_python_sdk)]
+    assert sdk_generators_for(set()) == []

@@ -27,6 +27,7 @@ from zephyrex.lib.ContentNegotiation import (
     MIME_YAML,
 )
 from zephyrex.lib.Environment import inflection
+from zephyrex.lib.TypeUnions import is_union, non_none_args
 from zephyrex.pydantic2.util import (
     is_reference_field_name,
     reference_relationship_name,
@@ -136,12 +137,8 @@ def _type_accepts_list(annotation: Any) -> bool:
     origin = get_origin(annotation)
     if origin in {list, List, set, Set, tuple, Tuple}:
         return True
-    if origin is Union:
-        return any(
-            _type_accepts_list(arg)
-            for arg in get_args(annotation)
-            if arg is not type(None)
-        )
+    if is_union(annotation):
+        return any(_type_accepts_list(arg) for arg in non_none_args(annotation))
     if origin is Annotated:
         args = get_args(annotation)
         return bool(args) and _type_accepts_list(args[0])
@@ -157,12 +154,8 @@ def _type_accepts_str(annotation: Any) -> bool:
         return True
 
     origin = get_origin(annotation)
-    if origin is Union:
-        return any(
-            _type_accepts_str(arg)
-            for arg in get_args(annotation)
-            if arg is not type(None)
-        )
+    if is_union(annotation):
+        return any(_type_accepts_str(arg) for arg in non_none_args(annotation))
     if origin is Annotated:
         args = get_args(annotation)
         return bool(args) and _type_accepts_str(args[0])

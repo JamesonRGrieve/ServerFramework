@@ -189,7 +189,7 @@ class MicrosoftProvider(AbstractEmailProvider):
         )
         if validation_error:
             logger.error(validation_error)
-            return validation_error  # type: ignore[no-any-return]
+            return validation_error
         if not _requests_available:
             return "Failed to send email: requests not installed"
         bonded = cls.bond_instance(provider_instance)

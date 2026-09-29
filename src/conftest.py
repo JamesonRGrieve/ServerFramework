@@ -376,6 +376,20 @@ prepare_test_registry()
 
 
 @pytest.fixture(autouse=True)
+def _reset_rate_limit_counts_between_tests():
+    """Each test starts with no requests counted against the rate limits.
+
+    Every test drives the apps from the same test-client address, so counts
+    left by earlier tests (e.g. registrations) would throttle later ones.
+    Policies stay registered: the session-scoped apps registered them at
+    build time.
+    """
+    from zephyrex.lib.InboundSecurity import reset_rate_limit_counts
+
+    reset_rate_limit_counts()
+
+
+@pytest.fixture(autouse=True)
 def _reset_gql_contribution_registry_between_tests():
     """Every test starts and ends with a clean process-wide GraphQL contribution
     registry.

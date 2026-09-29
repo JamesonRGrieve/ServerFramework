@@ -312,7 +312,7 @@ def make_retention_scheduled_service(
     inner = RetentionService(registrations, audit_emit=audit_emit)
 
     class _RetentionScheduled(ScheduledService):
-        retention_service: RetentionService = inner  # type: ignore[assignment]
+        retention_service: RetentionService = inner
 
         async def update(self) -> None:
             inner.run_pass()

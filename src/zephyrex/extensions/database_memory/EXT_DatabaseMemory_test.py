@@ -155,8 +155,8 @@ def test_prv_valkey_connect_raises_clear_error_when_redis_missing(monkeypatch):
     exercised at runtime; this guards against import-time crashes."""
     original = sys.modules.get("redis")
     original_async = sys.modules.get("redis.asyncio")
-    sys.modules["redis"] = None  # type: ignore[assignment]
-    sys.modules["redis.asyncio"] = None  # type: ignore[assignment]
+    sys.modules["redis"] = None
+    sys.modules["redis.asyncio"] = None
 
     instance = _FakeInstance(api_key="redis://no-host/0")
     PRV_Valkey._connections.clear()

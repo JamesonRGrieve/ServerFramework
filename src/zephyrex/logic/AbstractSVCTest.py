@@ -1,6 +1,6 @@
 import asyncio
 import uuid
-from typing import Any, Dict, Type, TypeVar
+from typing import Any, Dict, Iterator, Type, TypeVar
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -12,18 +12,7 @@ from zephyrex.logic.AbstractService import AbstractService
 # Type variable for service class
 T = TypeVar("T", bound=AbstractService)
 
-# Set up logging
 
-
-# Remove SkippedTest class definition
-# class SkippedTest(BaseModel):
-#     """Model for a skipped test with a reason."""
-#
-#     name: str
-#     reason: str
-
-
-# Inherit from AbstractTest
 class AbstractSVCTest(AbstractTest):
     """
     Abstract base class for testing service components.
@@ -57,19 +46,8 @@ class AbstractSVCTest(AbstractTest):
     mock_init_params: Dict[str, Any] = {}
 
     # Tests to skip - Inherited from AbstractTest
-    # skip_tests: List[SkippedTest] = []
-
-    # Remove reason_to_skip_test method - Inherited from AbstractTest
-    # def reason_to_skip_test(self, test_name: str) -> bool:
-    #     """Check if a test should be skipped based on the skip_tests list."""
-    #     for skip in self.skip_tests:
-    #         if skip.name == test_name:
-    #             pytest.skip(skip.reason)
-    #             return True
-    #     return False
-
     @pytest.fixture
-    def service(self, db: Session, requester_id: str) -> AbstractService:
+    def service(self, db: Session, requester_id: str) -> Iterator[AbstractService]:
         """
         Create a service instance for testing.
 
@@ -95,7 +73,9 @@ class AbstractSVCTest(AbstractTest):
         service.cleanup()
 
     @pytest.fixture
-    def mocked_service(self, db: Session, requester_id: str) -> AbstractService:
+    def mocked_service(
+        self, db: Session, requester_id: str
+    ) -> Iterator[AbstractService]:
         """
         Create a service instance with mocked dependencies.
 

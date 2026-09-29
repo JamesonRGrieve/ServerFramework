@@ -24,7 +24,6 @@ extensions/
 from typing import Any, ClassVar, Dict, List, Set
 from zephyrex.extensions.AbstractExtensionProvider import AbstractStaticExtension
 from zephyrex.lib.Dependencies import Dependencies
-from zephyrex.lib.Logging import logger
 
 class EXT_My_Feature(AbstractStaticExtension):
     name: ClassVar[str] = "my_feature"
@@ -39,10 +38,34 @@ class EXT_My_Feature(AbstractStaticExtension):
 
     @classmethod
     def on_initialize(cls) -> bool:
-        from zephyrex.extensions.my_feature import BLL_My_Feature  # noqa: F401
-        logger.debug("my_feature initialized")
+        from zephyrex.extensions.my_feature.BLL_My_Feature import register_hooks
+
+        register_hooks()
         return True
 ```
+
+### Lifecycle
+
+The framework drives three classmethods on every loaded extension. Override
+only the ones with real work; the defaults do nothing (`on_initialize` returns
+True).
+
+| Method | Called | Contract |
+|--------|--------|----------|
+| `on_initialize(cls) -> bool` | Once per app build (`instance()` → `ModelRegistry.commit`), in dependency order, after the extension's `BLL_*`/`PRV_*` modules and models are imported and before migrations run. | Register hooks and cross-extension participation here. Return False only when the extension cannot function at all (e.g. a required secret or dependency is missing); the build then fails with `StartupError` naming the extension. A missing *optional* dependency is not a reason to return False: degrade and log instead. |
+| `on_start(cls) -> None` | At app startup (FastAPI lifespan), in dependency order, once the worker's database engine (and Valkey, when configured) is ready and before background services start. | Open per-worker resources. An exception aborts startup. |
+| `on_stop(cls) -> None` | At app shutdown (FastAPI lifespan), in reverse dependency order, before the database engine closes. | Release what `on_start` opened. Every extension's `on_stop` runs even if another raises; failures are logged. |
+
+All three are classmethods: extensions are never instantiated.
+
+A process can build many apps (every test server is one), so `on_initialize`
+runs many times per process and must be idempotent: key registrations by name
+so a repeat overwrites instead of accumulating. Registration tables are
+process-global, so a registration must only act on apps that loaded the
+extension. Key it by the extension's `name` and have the consumer filter with
+`ModelRegistry.loaded_extension_names()` (as SDK generators and account-merge
+handlers do), or guard the hook on the app's registry binding the extension's
+model (as the core auth hooks do).
 
 ## 2. Database Model (`DB_My_Feature.py`)
 
@@ -91,7 +114,8 @@ run(extensions="my_feature")
 - [ ] `__init__.py` exists (can be empty)
 - [ ] Extension class inherits `AbstractStaticExtension`
 - [ ] `name` class var matches directory name
-- [ ] `on_initialize()` imports BLL module
+- [ ] Hook registrations live in `on_initialize()` (or at BLL import time for a
+      hook core may call before any app is built) and are safe to repeat
 - [ ] DB model inherits `DatabaseMixin`
 - [ ] BLL manager inherits `AbstractBLLManager` with `DB` and `Model` set
 - [ ] Tests inherit `AbstractEPTest` with `ExtensionServerMixin`

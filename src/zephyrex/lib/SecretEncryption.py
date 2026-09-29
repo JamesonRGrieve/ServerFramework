@@ -20,7 +20,7 @@ Operational policy:
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Optional, overload
 
 from zephyrex.lib.Environment import env
 from zephyrex.lib.Logging import logger
@@ -86,6 +86,12 @@ def encrypt_secret(plaintext: Optional[str]) -> Optional[str]:
     return FERNET_PREFIX + f.encrypt(plaintext.encode("utf-8")).decode("ascii")  # type: ignore[no-any-return]
 
 
+@overload
+def decrypt_secret(stored: str) -> str: ...
+@overload
+def decrypt_secret(stored: None) -> None: ...
+@overload
+def decrypt_secret(stored: Optional[str]) -> Optional[str]: ...
 def decrypt_secret(stored: Optional[str]) -> Optional[str]:
     """Reverse of :func:`encrypt_secret`.
 

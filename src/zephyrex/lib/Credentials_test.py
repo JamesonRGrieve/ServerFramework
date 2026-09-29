@@ -14,6 +14,7 @@ from zephyrex.lib.Credentials import (
     Secret,
     SecretValue,
     _CACHE,
+    _resolve_openbao,
     cache_bust_on_auth_rejection,
     clear_bad,
     invalidate,
@@ -186,3 +187,26 @@ def test_cache_bust_on_auth_rejection_marks_bad_when_identical(isolated_env):
     with pytest.raises(RuntimeError, match="re-resolved identical"):
         cache_bust_on_auth_rejection(ref)
     assert is_marked_bad(ref)
+
+
+@pytest.fixture
+def no_openbao_env(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
+    for key in ("OPENBAO_ADDR", "VAULT_ADDR", "OPENBAO_TOKEN", "VAULT_TOKEN"):
+        monkeypatch.delenv(key, raising=False)
+    return monkeypatch
+
+
+@pytest.mark.unit
+def test_openbao_tier_falls_through_without_an_address(no_openbao_env):
+    assert _resolve_openbao("app/api_key", None) is None
+
+
+@pytest.mark.unit
+def test_openbao_tier_falls_through_without_hvac(no_openbao_env):
+    """An address with no hvac installed skips the tier; it used to raise
+    RuntimeError from the client builder instead."""
+    from zephyrex.extensions.secret_vault import PRV_OpenBao
+
+    no_openbao_env.setenv("OPENBAO_ADDR", "http://127.0.0.1:8200")
+    no_openbao_env.setattr(PRV_OpenBao, "_hvac_available", False)
+    assert _resolve_openbao("app/api_key", None) is None

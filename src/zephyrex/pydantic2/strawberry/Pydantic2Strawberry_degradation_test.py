@@ -69,10 +69,15 @@ SendResult = Annotated[
     strawberry.union("SendResult"),
 ]
 
+# What a degradation-aware resolver returns: its payload, or a sentinel that
+# ``degradation_aware`` converts to the matching GraphQL arm. The schema type
+# (``SendResult``) is declared on the field.
+SendPayload = Union[WidgetGQL, QueuedForRetry, SilentDropped, None]
 
-def _build_schema(payload):
+
+def _build_schema(payload: SendPayload) -> strawberry.Schema:
     @degradation_aware
-    def send_resolver(info: Info) -> SendResult:  # type: ignore[valid-type]
+    def send_resolver(info: Info) -> SendPayload:
         return payload
 
     Query = strawberry.type(
@@ -81,7 +86,9 @@ def _build_schema(payload):
             (),
             {
                 "__annotations__": {"send": SendResult},
-                "send": strawberry.field(resolver=send_resolver),
+                "send": strawberry.field(
+                    resolver=send_resolver, graphql_type=SendResult
+                ),
             },
         )
     )
@@ -135,7 +142,7 @@ def test_normal_payload_passes_through_graphql_resolver() -> None:
 
 async def test_degradation_aware_handles_async_resolvers() -> None:
     @degradation_aware
-    async def send_async(info: Info) -> SendResult:  # type: ignore[valid-type]
+    async def send_async(info: Info) -> SendPayload:
         return QueuedForRetry(tracking_id="xyz")
 
     Query = strawberry.type(
@@ -144,7 +151,7 @@ async def test_degradation_aware_handles_async_resolvers() -> None:
             (),
             {
                 "__annotations__": {"send": SendResult},
-                "send": strawberry.field(resolver=send_async),
+                "send": strawberry.field(resolver=send_async, graphql_type=SendResult),
             },
         )
     )
@@ -160,7 +167,7 @@ async def test_degradation_aware_handles_async_resolvers() -> None:
 
 def test_degradation_aware_preserves_function_metadata() -> None:
     @degradation_aware
-    def named_resolver(info: Info) -> SendResult:  # type: ignore[valid-type]
+    def named_resolver(info: Info) -> SendPayload:
         """Doc preserved."""
         return None
 

@@ -63,7 +63,7 @@ class RateLimitPolicyModel(
         scope: Optional[StringSearchModel] | None = None
 
 
-class RateLimitPolicyManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef]
+class RateLimitPolicyManager(AbstractBLLManager, RouterMixin):
     _model = RateLimitPolicyModel
 
 

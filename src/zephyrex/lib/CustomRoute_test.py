@@ -182,7 +182,7 @@ def test_custom_route_spec_is_frozen():
     )
     assert dataclasses.is_dataclass(spec)
     with pytest.raises(dataclasses.FrozenInstanceError):
-        spec.method = "POST"  # type: ignore[misc]
+        spec.method = "POST"
 
 
 def test_custom_route_full_options():

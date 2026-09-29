@@ -196,12 +196,8 @@ def test_generated_rust_passes_clippy(monkeypatch, tmp_path):
     assert result.returncode == 0, f"clippy reported issues:\n{result.stderr}"
 
 
-def test_on_load_registers_rust_generator():
-    from zephyrex.lib.Hooks import _registry_hooks
+def test_on_initialize_registers_rust_generator():
+    from zephyrex.lib.Hooks import sdk_generators_for
 
-    _registry_hooks["generate_sdk"].pop("rs", None)
-    try:
-        EXT_MetaSDKRs.on_load()
-        assert _registry_hooks["generate_sdk"].get("rs") is generate_rust_sdk
-    finally:
-        _registry_hooks["generate_sdk"].pop("rs", None)
+    assert EXT_MetaSDKRs.on_initialize() is True
+    assert sdk_generators_for({"meta_sdk_rs"}) == [("meta_sdk_rs", generate_rust_sdk)]

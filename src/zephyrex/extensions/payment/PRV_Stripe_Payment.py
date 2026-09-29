@@ -31,7 +31,7 @@ from zephyrex.extensions.payment.EXT_Payment import (
 from zephyrex.lib.Dependencies import Dependencies, PIP_Dependency
 from zephyrex.lib.Environment import env
 from zephyrex.lib.Logging import logger
-from zephyrex.pydantic2.registry import BaseModel  # type: ignore[no-redef]
+from zephyrex.pydantic2.registry import BaseModel
 from zephyrex.logic.AbstractLogicManager import ModelMeta
 from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 
@@ -763,12 +763,12 @@ class PaymentExtensionStripeProvider(AbstractPaymentProvider):
     @classmethod
     def get_secret_key(cls) -> Optional[str]:
         """Get Stripe secret key from environment."""
-        return env("STRIPE_SECRET_KEY") or env("STRIPE_API_KEY")  # type: ignore[no-any-return]
+        return env("STRIPE_SECRET_KEY") or env("STRIPE_API_KEY")
 
     @classmethod
     def get_webhook_secret(cls) -> Optional[str]:
         """Get Stripe webhook secret from environment."""
-        return env("STRIPE_WEBHOOK_SECRET")  # type: ignore[no-any-return]
+        return env("STRIPE_WEBHOOK_SECRET")
 
     @classmethod
     def get_publishable_key(cls) -> str:

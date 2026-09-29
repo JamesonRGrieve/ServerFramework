@@ -13,7 +13,7 @@ from typing import Any, ClassVar, Dict, List, Optional
 try:
     import paypalrestsdk
 except ImportError:
-    paypalrestsdk = None  # type: ignore[assignment]
+    paypalrestsdk = None
     import warnings
 
     warnings.warn(
@@ -35,7 +35,7 @@ from zephyrex.extensions.payment.EXT_Payment import (
 from zephyrex.lib.Dependencies import Dependencies, PIP_Dependency
 from zephyrex.lib.Environment import env
 from zephyrex.lib.Logging import logger
-from zephyrex.pydantic2.registry import BaseModel  # type: ignore[no-redef]
+from zephyrex.pydantic2.registry import BaseModel
 from zephyrex.logic.AbstractLogicManager import ModelMeta
 from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 
@@ -226,15 +226,15 @@ class PaymentExtensionPayPalProvider(AbstractPaymentProvider):
 
     @classmethod
     def get_client_id(cls) -> Optional[str]:
-        return env("PAYPAL_CLIENT_ID")  # type: ignore[no-any-return]
+        return env("PAYPAL_CLIENT_ID")
 
     @classmethod
     def get_client_secret(cls) -> Optional[str]:
-        return env("PAYPAL_SECRET")  # type: ignore[no-any-return]
+        return env("PAYPAL_SECRET")
 
     @classmethod
     def get_webhook_id(cls) -> Optional[str]:
-        return env("PAYPAL_WEBHOOK_ID")  # type: ignore[no-any-return]
+        return env("PAYPAL_WEBHOOK_ID")
 
     @classmethod
     def validate_config(cls) -> bool:

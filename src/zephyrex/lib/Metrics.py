@@ -21,7 +21,7 @@ four:
 The concrete ``PrometheusMetricsBackend`` / ``OpenTelemetryMetricsBackend``
 adapters live in the ``observability`` extension — out of core so the
 framework wheel never carries their optional SDKs. That extension wires the
-chosen backend into this facade from ``METRICS_BACKEND`` at on_load.
+chosen backend into this facade from ``METRICS_BACKEND`` at on_initialize.
 
 Span nesting works across ``await`` because the active span id is held
 in a :class:`contextvars.ContextVar`. A child span opened inside a

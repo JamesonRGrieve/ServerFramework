@@ -22,9 +22,11 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Type
+from typing import Any, Dict, Iterable, List, Sequence, Type
 
 from pydantic import BaseModel
+
+from zephyrex.lib.TypeUnions import is_optional
 
 # ---------------------------------------------------------------------------
 # Schema extraction
@@ -42,7 +44,7 @@ def event_schema(event_class: Type[BaseModel]) -> Dict[str, Any]:
     for fname, finfo in sorted(event_class.model_fields.items()):
         annotation = finfo.annotation
         type_name = _type_name(annotation)
-        optional = _is_optional(annotation)
+        optional = is_optional(annotation)
         required = finfo.is_required()
         entry: Dict[str, Any] = {
             "type": type_name,
@@ -74,22 +76,6 @@ def _type_name(annotation: Any) -> str:
         return name  # type: ignore[no-any-return]
     # Optional[X], Union[X, None], List[X], etc. — fall back to repr.
     return str(annotation).replace("typing.", "")
-
-
-def _is_optional(annotation: Any) -> bool:
-    origin = getattr(annotation, "__origin__", None)
-    if origin is None:
-        # Direct Optional[X] resolves to typing.Union with NoneType.
-        from typing import get_args, get_origin
-
-        origin = get_origin(annotation)
-        if origin is None:
-            return False
-    from typing import Union, get_args
-
-    if origin is Union:
-        return type(None) in get_args(annotation)
-    return False
 
 
 def _is_pydantic_undefined(value: Any) -> bool:

@@ -48,7 +48,7 @@ Pluggable error reporting
 :class:`RollbarErrorReporter` adapters live in the ``observability``
 extension — out of core so the framework wheel never carries their
 optional SDKs — which wires one from ``SENTRY_DSN`` / ``ROLLBAR_TOKEN``
-at on_load. Use
+at on_initialize. Use
 :func:`set_error_reporter` to install a different reporter at startup,
 and call :func:`get_error_reporter` from exception handlers to route
 uncaught exceptions to the configured backend.
@@ -57,7 +57,7 @@ uncaught exceptions to the configured backend.
 import re
 import sys
 from abc import ABC, abstractmethod
-from typing import Any, Mapping, Optional
+from typing import Any, Mapping
 
 try:
     from zoneinfo import ZoneInfo

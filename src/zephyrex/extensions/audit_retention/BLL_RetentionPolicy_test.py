@@ -141,7 +141,7 @@ def test_archive_classification():
 def test_dataclass_is_frozen():
     p = RetentionPolicy(window="30d")
     with pytest.raises(Exception):  # FrozenInstanceError
-        p.window = "1y"  # type: ignore[misc]
+        p.window = "1y"
 
 
 # ---------- presets ----------------------------------------------------------

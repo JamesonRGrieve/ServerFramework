@@ -181,20 +181,6 @@ class TestTypeNameHelper:
         assert "str" in result or "Union" in result
 
 
-class TestIsOptionalHelper:
-    def test_optional_str(self):
-        from typing import Optional
-
-        from zephyrex.logic.EventBus_SchemaCheck import _is_optional
-
-        assert _is_optional(Optional[str]) is True
-
-    def test_plain_str(self):
-        from zephyrex.logic.EventBus_SchemaCheck import _is_optional
-
-        assert _is_optional(str) is False
-
-
 class TestSafeJsonify:
     @pytest.mark.parametrize(
         "value, expected",

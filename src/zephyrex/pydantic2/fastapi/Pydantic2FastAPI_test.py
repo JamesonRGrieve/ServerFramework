@@ -119,22 +119,24 @@ class TestManager(AbstractBLLManager, RouterMixin):
         self._data_store[entity_id] = entity
         return entity
 
-    def get(self, id: str, include=None, fields=None):
+    def get(self, include=None, fields=None, **kwargs):
         """Get a test entity."""
-        return self._data_store.get(id)
+        return self._data_store.get(kwargs["id"])
 
     def list(
         self,
         include=None,
         fields=None,
-        offset=0,
-        limit=100,
         sort_by=None,
         sort_order="asc",
-        **filters,
+        filters=None,
+        limit=None,
+        offset=None,
+        **kwargs,
     ):
         """List test entities."""
-        return list(self._data_store.values())[offset : offset + limit]
+        start = offset or 0
+        return list(self._data_store.values())[start : start + (limit or 100)]
 
     def update(self, id: str, **kwargs):
         """Update a test entity."""
@@ -573,6 +575,24 @@ class TestRouterCreation:
         # Check that static route was created
         assert any("/static" in path for path in paths)
 
+    def test_route_auth_override_governs_the_manager(self, model_registry):
+        """A route overridden to NONE on a JWT manager answers anonymous
+        callers: the override used to change only the auth dependency while
+        the manager was still built for JWT (401)."""
+
+        class PublicListManager(TestManager):
+            __test__ = False
+            route_auth_overrides = {RouteType.LIST: AuthType.NONE}
+
+        app = FastAPI()
+        app.include_router(
+            create_router_from_manager(PublicListManager, model_registry)
+        )
+
+        client = TestClient(app)
+        assert client.get("/v1/test").status_code == 200
+        assert client.get("/v1/test/some-id").status_code == 401
+
     def test_system_entity_defaults_do_not_mutate_manager_overrides(
         self, model_registry
     ):
@@ -790,12 +810,12 @@ class TestQueryParameterInjection:
             type(self).last_get_params = {}
             type(self).last_list_params = {}
 
-        def get(self, id: str, include=None, fields=None):
+        def get(self, include=None, fields=None, **kwargs):
             type(self).last_get_params = {
                 "include": include,
                 "fields": fields,
             }
-            entity = super().get(id=id, include=include, fields=fields)
+            entity = super().get(include=include, fields=fields, **kwargs)
             if entity and include:
                 setattr(entity, "children", [{"id": "child-1"}])
             return entity
@@ -804,11 +824,12 @@ class TestQueryParameterInjection:
             self,
             include=None,
             fields=None,
-            offset: int = 0,
-            limit: int = 100,
             sort_by=None,
             sort_order="asc",
-            **filters,
+            filters=None,
+            limit=None,
+            offset=None,
+            **kwargs,
         ):
             type(self).last_list_params = {
                 "include": include,
@@ -817,11 +838,12 @@ class TestQueryParameterInjection:
             results = super().list(
                 include=include,
                 fields=fields,
-                offset=offset,
-                limit=limit,
                 sort_by=sort_by,
                 sort_order=sort_order,
-                **filters,
+                filters=filters,
+                limit=limit,
+                offset=offset,
+                **kwargs,
             )
             if include:
                 for idx, item in enumerate(results, start=1):
@@ -929,7 +951,7 @@ class TestCompleteWorkflow:
         assert entity.name == "Test Entity"
 
         # Read
-        retrieved = manager.get(entity.id)
+        retrieved = manager.get(id=entity.id)
         assert retrieved.name == "Test Entity"
 
         # Update
@@ -946,7 +968,7 @@ class TestCompleteWorkflow:
 
         # Delete
         manager.delete(entity.id)
-        assert manager.get(entity.id) is None
+        assert manager.get(id=entity.id) is None
 
     def test_batch_operations(self, model_registry):
         """Test batch operations."""
@@ -969,8 +991,8 @@ class TestCompleteWorkflow:
 
         # Batch delete
         manager.batch_delete([entity1.id, entity2.id])
-        assert manager.get(entity1.id) is None
-        assert manager.get(entity2.id) is None
+        assert manager.get(id=entity1.id) is None
+        assert manager.get(id=entity2.id) is None
 
 
 class TestExampleGenerator:
@@ -1094,7 +1116,7 @@ class TestExampleGenerator:
             from pydantic_core import PydanticUndefined
         except ImportError:  # pragma: no cover - compatibility fallback
             try:
-                from pydantic.fields import PydanticUndefined  # type: ignore
+                from pydantic.fields import PydanticUndefined
             except ImportError:  # pragma: no cover - ultimate fallback
                 PydanticUndefined = object()
 

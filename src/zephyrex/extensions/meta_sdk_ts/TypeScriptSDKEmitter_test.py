@@ -137,12 +137,10 @@ def test_generated_typescript_passes_linter(monkeypatch, tmp_path):
     assert result.returncode == 0, f"biome lint reported issues:\n{result.stdout}"
 
 
-def test_on_load_registers_typescript_generator():
-    from zephyrex.lib.Hooks import _registry_hooks
+def test_on_initialize_registers_typescript_generator():
+    from zephyrex.lib.Hooks import sdk_generators_for
 
-    _registry_hooks["generate_sdk"].pop("ts", None)
-    try:
-        EXT_MetaSDKTs.on_load()
-        assert _registry_hooks["generate_sdk"].get("ts") is generate_typescript_sdk
-    finally:
-        _registry_hooks["generate_sdk"].pop("ts", None)
+    assert EXT_MetaSDKTs.on_initialize() is True
+    assert sdk_generators_for({"meta_sdk_ts"}) == [
+        ("meta_sdk_ts", generate_typescript_sdk)
+    ]

@@ -87,7 +87,7 @@ class PRV_Valkey(AbstractDatabaseMemoryProvider):
         if url in cls._connections:
             return cls._connections[url]
         try:
-            from redis import asyncio as redis_asyncio  # type: ignore
+            from redis import asyncio as redis_asyncio
         except ImportError as exc:
             raise RuntimeError(
                 "PRV_Valkey requires the `redis>=4.2` package on the "

@@ -329,8 +329,8 @@ class TestEXTDatabase(ExtensionServerMixin):
 
     def test_startup_shutdown_hooks(self):
         # No mocks: just verify the hooks complete without raising.
-        EXT_Database.on_startup()
-        EXT_Database.on_shutdown()
+        EXT_Database.on_start()
+        EXT_Database.on_stop()
 
 
 class TestAbstractDatabaseExtensionProvider:

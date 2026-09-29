@@ -4,7 +4,6 @@ Provides automatic transaction management with commit-on-success and rollback-on
 Consolidated database configuration and declarative base management.
 """
 
-import multiprocessing
 import os
 import tempfile
 import threading
@@ -12,7 +11,7 @@ from contextlib import asynccontextmanager, contextmanager
 from enum import Enum
 from os import makedirs, path
 from threading import local
-from typing import AsyncGenerator, Generator, Optional
+from typing import AsyncGenerator, Dict, Generator, List, Optional
 from weakref import WeakSet
 
 from sqlalchemy import UUID, String, create_engine, event
@@ -25,10 +24,17 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
+from zephyrex.database.ReadReplica import (
+    ReplicaPool,
+    mark_primary_write_seen,
+    should_route_to_replica,
+)
 from zephyrex.lib.Environment import env
 from zephyrex.lib.Logging import logger
 
 Operation = Enum("Operation", ["CREATE", "READ", "UPDATE", "DELETE"])
+
+_WORKER_NOT_INITIALIZED = "Session factory not initialized; call init_worker() first"
 
 
 def _redact_db_uri(uri: Optional[str]) -> str:
@@ -65,7 +71,6 @@ def setup_sqlite_for_regex(engine):
     This should be called after creating the SQLite engine.
     """
     import re
-    import sqlite3
 
     def regexp(expr, item):
         if item is None:
@@ -290,12 +295,12 @@ class DatabaseManager:
         # via round-robin with health gating. `replica_urls` is parsed at
         # engine-config time from `DB_REPLICA_URLS`; an empty list disables
         # replica routing entirely (every read still binds primary).
-        self.replica_urls: list = []
-        self._replica_pool = None  # ReplicaPool, populated in init_worker
-        self._replica_engines: dict = {}
-        self._replica_session_factories: dict = {}
-        self._replica_async_engines: dict = {}
-        self._replica_async_session_factories: dict = {}
+        self.replica_urls: List[str] = []
+        self._replica_pool: Optional[ReplicaPool] = None  # populated in init_worker
+        self._replica_engines: Dict[str, Engine] = {}
+        self._replica_session_factories: Dict[str, sessionmaker] = {}
+        self._replica_async_engines: Dict[str, AsyncEngine] = {}
+        self._replica_async_session_factories: Dict[str, async_sessionmaker] = {}
 
         # Database-specific declarative base and metadata
         self._base = None
@@ -543,8 +548,6 @@ class DatabaseManager:
                 logger.warning(f"Item 54 replica engine init failed for {url}: {exc}")
 
         # Build the replica pool now that we know which URLs were created.
-        from zephyrex.database.ReadReplica import ReplicaPool
-
         self._replica_pool = ReplicaPool(list(self._replica_engines.keys()))
 
         self._worker_initialized = True
@@ -563,8 +566,6 @@ class DatabaseManager:
         primary regardless of `@read_only`. The contextvar is set by the
         before-flush event listener registered on every primary session.
         """
-        from zephyrex.database.ReadReplica import should_route_to_replica
-
         if (
             should_route_to_replica()
             and self._replica_pool is not None
@@ -573,12 +574,12 @@ class DatabaseManager:
             url = self._replica_pool.next_url()
             if url is not None and url in self._replica_session_factories:
                 return self._replica_session_factories[url]
-        return self._session_factory  # type: ignore[return-value]
+        if self._session_factory is None:
+            raise RuntimeError(_WORKER_NOT_INITIALIZED)
+        return self._session_factory
 
     def _select_async_session_factory(self) -> "async_sessionmaker":
         """Async counterpart of `_select_session_factory`."""
-        from zephyrex.database.ReadReplica import should_route_to_replica
-
         if (
             should_route_to_replica()
             and self._replica_pool is not None
@@ -587,7 +588,9 @@ class DatabaseManager:
             url = self._replica_pool.next_url()
             if url is not None and url in self._replica_async_session_factories:
                 return self._replica_async_session_factories[url]
-        return self._async_session_factory  # type: ignore[return-value]
+        if self._async_session_factory is None:
+            raise RuntimeError(_WORKER_NOT_INITIALIZED)
+        return self._async_session_factory
 
     async def close_worker(self) -> None:
         """Clean up database connections for this worker."""
@@ -718,9 +721,6 @@ class DatabaseManager:
         is the canonical "we wrote" signal because SA bundles all dirty/
         new/deleted instances into a flush call.
         """
-        from sqlalchemy import event
-
-        from zephyrex.database.ReadReplica import mark_primary_write_seen
 
         def _before_flush(_session, flush_context, instances):
             if _session.new or _session.dirty or _session.deleted:
@@ -828,10 +828,6 @@ class DatabaseManager:
         SA's async session exposes a `sync_session` proxy whose `before_flush`
         event is the right hook for the same write-detection contract.
         """
-        from sqlalchemy import event
-
-        from zephyrex.database.ReadReplica import mark_primary_write_seen
-
         sync_proxy = getattr(session, "sync_session", None)
         if sync_proxy is None:
             return

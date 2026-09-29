@@ -10,7 +10,9 @@ import pytest
 import stringcase
 from faker import Faker
 
-from zephyrex.AbstractTest import AbstractTest
+from pydantic import ConfigDict, Field
+
+from zephyrex.AbstractTest import AbstractTest, ClassOfTestsConfig
 from zephyrex.extensions.AbstractExtensionProvider import AbstractStaticProvider
 from zephyrex.lib.Dependencies import Dependencies
 from zephyrex.lib.Environment import inflection
@@ -45,19 +47,20 @@ class GraphQLTestType(str, Enum):
     NAVIGATION = "navigation"
 
 
-@dataclass
-class ProviderTestConfig:
+class ProviderTestConfig(ClassOfTestsConfig):
     """Configuration for provider testing behavior."""
 
-    test_types: Set[ProviderTestType] = field(
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    test_types: Set[ProviderTestType] = Field(
         default_factory=lambda: set(ProviderTestType)
     )
-    expected_abilities: Set[str] = field(default_factory=set)
-    expected_services: Set[str] = field(default_factory=set)
-    expected_dependencies: Dependencies = field(
+    expected_abilities: Set[str] = Field(default_factory=set)
+    expected_services: Set[str] = Field(default_factory=set)
+    expected_dependencies: Dependencies = Field(
         default_factory=lambda: Dependencies([])
     )
-    performance_thresholds: Dict[str, float] = field(
+    performance_thresholds: Dict[str, float] = Field(
         default_factory=lambda: {
             "cache_improvement_min": 2.0,
             "concurrent_threads": 10,
@@ -104,7 +107,7 @@ class GraphQLTestMixin:
             entity_name = stringcase.camelcase(entity_name)
 
         if plural:
-            return inflection.plural(entity_name)  # type: ignore[no-any-return]
+            return inflection.plural(entity_name)
         return entity_name
 
     def _get_mutation_name(self, operation: str) -> str:
@@ -742,7 +745,6 @@ class AbstractPRVTest(AbstractTest):
 
         # For abstract providers, bond_instance should be abstract
         # For concrete providers, it should be implemented
-        import abc
 
         if hasattr(self.provider_class, "__abstractmethods__"):
             # This is still an abstract class
@@ -766,7 +768,6 @@ class AbstractPRVTest(AbstractTest):
 
         # For abstract providers, root should be abstract
         # For concrete providers, it should return a value
-        import abc
 
         if hasattr(self.provider_class, "__abstractmethods__"):
             # This is still an abstract class

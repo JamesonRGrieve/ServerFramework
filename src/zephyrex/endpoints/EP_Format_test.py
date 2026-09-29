@@ -60,7 +60,7 @@ def _parse_response(body: str, fmt: str) -> Any:
 def _serialize_body(data: Any, fmt: str) -> str:
     """Serialize data for a request body according to format key."""
     body, _ = serialize(data, fmt)
-    return body  # type: ignore[no-any-return]
+    return body
 
 
 # ---------------------------------------------------------------------------

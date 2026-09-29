@@ -20,7 +20,7 @@ try:  # optional driver — guarded so discovery never fails on a missing packag
 
     _mysql_available = True
 except ImportError:  # pragma: no cover - optional driver
-    _mysql_connector = None  # type: ignore[assignment]
+    _mysql_connector = None
     _mysql_available = False
 
 MYSQL_DEFAULT_PORT = 3306

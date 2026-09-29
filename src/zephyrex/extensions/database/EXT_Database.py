@@ -623,14 +623,14 @@ class EXT_Database(AbstractStaticExtension):
         return provider_names
 
     @classmethod
-    def on_startup(cls):
+    def on_start(cls) -> None:
         """
         Called during application startup.
         """
         logger.debug("Database extension startup hook called")
 
     @classmethod
-    def on_shutdown(cls):
+    def on_stop(cls) -> None:
         """
         Called during application shutdown.
         """

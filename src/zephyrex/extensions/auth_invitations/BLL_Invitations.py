@@ -5,7 +5,7 @@ Owns:
 - ``InviteeModel`` / ``InviteeManager`` — per-recipient tracking + acceptance flow.
 - ``InvitationAcceptanceResponse`` — the typed response shape for the patch route.
 
-Hooks registered with core via ``EXT_Invitations.on_load`` so
+Hooks registered with core when this module is imported so
 ``BLL_Auth.UserManager.register`` can validate and apply invitations without
 importing this module directly.
 """
@@ -574,7 +574,7 @@ class InviteeModel(
     ApplicationModel.Optional,
     UpdateMixinModel.Optional,
     UserModel.Reference.Optional,
-    InvitationModel.Reference,  # type: ignore[name-defined]
+    InvitationModel.Reference,
     metaclass=ModelMeta,
 ):
     Manager: ClassVar[Type["InviteeManager"]] = None  # type: ignore[assignment]
@@ -589,7 +589,7 @@ class InviteeModel(
     table_comment: ClassVar[str] = "Tracks specific individuals invited to join a team"
 
     class Create(
-        BaseModel, InvitationModel.Reference.ID, UserModel.Reference.ID.Optional  # type: ignore[name-defined]
+        BaseModel, InvitationModel.Reference.ID, UserModel.Reference.ID.Optional
     ):
         email: str = Field(..., description="Email of the invitee")
         declined_at: Optional[datetime] = Field(None)
@@ -601,7 +601,7 @@ class InviteeModel(
 
     class Search(
         ApplicationModel.Search,
-        InvitationModel.Reference.ID.Search,  # type: ignore[name-defined]
+        InvitationModel.Reference.ID.Search,
         UserModel.Reference.ID.Search,
     ):
         email: Optional[StringSearchModel] = None

@@ -25,13 +25,9 @@ from __future__ import annotations
 
 import logging
 import os
-import re
-from datetime import datetime, timezone
 from threading import RLock
 from typing import (
     Any,
-    Callable,
-    ClassVar,
     Dict,
     Generic,
     List,
@@ -40,7 +36,7 @@ from typing import (
     TypeVar,
 )
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr
+from pydantic import BaseModel, ConfigDict, SecretStr
 
 T = TypeVar("T")
 
@@ -49,7 +45,7 @@ T = TypeVar("T")
 
 # Re-export SecretStr for the common case (string secrets). This gives us
 # Pydantic-native validation, `***` repr, and a stable `.get_secret_value()`.
-Secret = SecretStr  # type: ignore[assignment]
+Secret = SecretStr
 
 
 class SecretValue(Generic[T]):
@@ -145,37 +141,26 @@ _CACHE = _CredentialCache()
 
 
 def _resolve_openbao(path: str, version: Optional[str]) -> Optional[str]:
-    """Resolve via OpenBao/Vault HTTP API. Stub — falls through if hvac is
-    not installed or the server is unreachable.
+    """Resolve via OpenBao/Vault HTTP API. Falls through (None) when no
+    address is configured, hvac is not installed, or the server is
+    unreachable.
     """
-    try:
-        from zephyrex.extensions.secret_vault.PRV_OpenBao import (
-            _build_client,
-            _get_addr,
-            _get_namespace,
-            _get_token,
-        )
+    from zephyrex.extensions.secret_vault.PRV_OpenBao import (
+        _build_client,
+        _get_addr,
+        _get_namespace,
+        _get_token,
+        _hvac_available,
+    )
 
-        addr = _get_addr()
-        if not addr:
-            return None
-        client = _build_client(addr, _get_token(), _get_namespace())
-    except ImportError:
-        try:
-            import hvac  # type: ignore
-        except ImportError:
-            logging.getLogger(__name__).debug(
-                "hvac not installed; skipping OpenBao tier"
-            )
-            return None
-        addr = os.environ.get("OPENBAO_ADDR") or os.environ.get("VAULT_ADDR")
-        if not addr:
-            return None
-        client = hvac.Client(
-            url=addr,
-            token=os.environ.get("OPENBAO_TOKEN") or os.environ.get("VAULT_TOKEN"),
-        )
+    addr = _get_addr()
+    if not addr:
+        return None
+    if not _hvac_available:
+        logging.getLogger(__name__).debug("hvac not installed; skipping OpenBao tier")
+        return None
     try:
+        client = _build_client(addr, _get_token(), _get_namespace())
         if not client.is_authenticated():
             logging.getLogger(__name__).warning("OpenBao client not authenticated")
             return None
@@ -414,7 +399,7 @@ class RedactingFilter(logging.Filter):
             # Delegate richer PII pattern coverage to the ``privacy``
             # extension via ``_pii_hooks["log_filter"]``. Core never
             # imports from the extension; the privacy extension's
-            # ``on_load`` registers a record-mutating callable. Without
+            # ``on_initialize`` registers a record-mutating callable. Without
             # the extension, only the registered-secret scrubbing above
             # fires.
             from zephyrex.lib.Hooks import _pii_hooks

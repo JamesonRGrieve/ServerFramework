@@ -3,7 +3,7 @@
 Covers:
 - Canonical PermissionModel/PermissionManager live at the extension path.
 - Core ``BLL_Auth`` PEP 562 forwards to the extension.
-- ``EXT_ACL.on_load`` populates ``BLL_Auth._acl_hooks``.
+- Importing ``BLL_ACL`` registers its hooks in ``BLL_Auth._acl_hooks``.
 - ``StaticPermissions`` continues to import PermissionModel from the
   extension path (Scope #5 dependency wiring).
 """
@@ -16,6 +16,7 @@ os.environ.setdefault("PYTEST_CURRENT_TEST", "acl_rbac_test")
 import pytest
 from pydantic import ValidationError
 
+from zephyrex.extensions.acl_rbac import BLL_ACL
 from zephyrex.extensions.acl_rbac.BLL_ACL import (
     PermissionManager,
     PermissionModel,
@@ -123,18 +124,16 @@ class TestExtensionLifecycle:
     def test_models_returns_permission_model(self):
         assert PermissionModel in AclRbacExtension.models
 
-    def test_on_load_populates_every_hook(self):
-        AclRbacExtension.on_load()
+
+class TestImportRegistersHooks:
+    def test_every_hook_is_the_bll_implementation(self):
         for key in ("permission_db_class", "create_permission"):
-            assert (
-                BLL_Auth._acl_hooks[key] is not None
-            ), f"hook {key!r} not registered by on_load"
+            assert BLL_Auth._acl_hooks[key] is getattr(
+                BLL_ACL, f"_{key}"
+            ), f"hook {key!r} is not BLL_ACL._{key}"
 
 
 class TestHookRoundTrip:
-    def setup_method(self):
-        AclRbacExtension.on_load()
-
     def test_permission_db_class_returns_sa_model(self):
         # We don't have a declarative_base in this test, but the hook should
         # at least be callable and return whatever PermissionModel.DB(base)

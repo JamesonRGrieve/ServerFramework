@@ -27,7 +27,7 @@ class RoleModel(
     ParentMixinModel,
     NameMixinModel,
     UpdateMixinModel,
-    TeamModel.Reference.Optional,  # type: ignore[name-defined]
+    TeamModel.Reference.Optional,
     metaclass=ModelMeta,
 ):
     Manager: ClassVar[Type["RoleManager"]] = None  # type: ignore[assignment]
@@ -69,7 +69,7 @@ class RoleModel(
         BaseModel,
         NameMixinModel,  # Name is required for creation
         ParentMixinModel.Optional,
-        TeamModel.Reference.ID.Optional,  # type: ignore[name-defined]
+        TeamModel.Reference.ID.Optional,
     ):
         friendly_name: Optional[str] = Field(
             None, description="Human-readable role name"
@@ -98,7 +98,7 @@ class RoleModel(
         ApplicationModel.Search,
         NameMixinModel.Search,
         ParentMixinModel.Search,
-        TeamModel.Reference.ID.Search,  # type: ignore[name-defined]
+        TeamModel.Reference.ID.Search,
     ):
         friendly_name: Optional[StringSearchModel] | None = None
         mfa_count: Optional[NumericalSearchModel] | None = None
@@ -175,7 +175,7 @@ class RoleModel(
         return False
 
 
-class RoleManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef]
+class RoleManager(AbstractBLLManager, RouterMixin):
     _model = RoleModel
     _entity_label: ClassVar[Optional[str]] = "Role"
 

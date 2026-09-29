@@ -103,10 +103,10 @@ class ChildModel(BaseModel):
 # Mock manager classes
 class MockTestManager:
     async def get(self, id: str, context: dict) -> MockTestModel:
-        return MockTestModel(id=id, name="Test")  # type: ignore[call-arg]
+        return MockTestModel(id=id, name="Test")
 
     async def list(self, search_params: dict, context: dict) -> List[MockTestModel]:
-        return [MockTestModel(id="1", name="Test1")]  # type: ignore[call-arg]
+        return [MockTestModel(id="1", name="Test1")]
 
     async def create(self, data: dict, context: dict) -> MockTestModel:
         return MockTestModel(id="new", **data)
@@ -115,7 +115,7 @@ class MockTestManager:
         return MockTestModel(id=id, **data)
 
     async def delete(self, id: str, context: dict) -> MockTestModel:
-        return MockTestModel(id=id, name="Deleted")  # type: ignore[call-arg]
+        return MockTestModel(id=id, name="Deleted")
 
 
 class ParentManager:
@@ -162,7 +162,7 @@ class _BoundMockManager:
         include: Optional[Any] = None,
         fields: Optional[Any] = None,
     ) -> MockTestModel:
-        return MockTestModel(id=id, name="Bound")  # type: ignore[call-arg]
+        return MockTestModel(id=id, name="Bound")
 
     def list(
         self,
@@ -172,13 +172,13 @@ class _BoundMockManager:
         fields: Optional[Any] = None,
         **kwargs: Any,
     ) -> List[MockTestModel]:
-        return [MockTestModel(id="1", name="Bound")]  # type: ignore[call-arg]
+        return [MockTestModel(id="1", name="Bound")]
 
     def create(self, **data: Any) -> MockTestModel:
-        return MockTestModel(id="created", name=data.get("name", "Created"))  # type: ignore[call-arg]
+        return MockTestModel(id="created", name=data.get("name", "Created"))
 
     def update(self, id: str, **data: Any) -> MockTestModel:
-        return MockTestModel(id=id, name=data.get("name", "Updated"))  # type: ignore[call-arg]
+        return MockTestModel(id=id, name=data.get("name", "Updated"))
 
     def delete(self, id: str) -> bool:
         return True
@@ -364,7 +364,7 @@ class TestSchemaManager(AbstractPydanticTestMixin):
                 include: Optional[Any] = None,
                 fields: Optional[Any] = None,
             ) -> MockTestModel:
-                return MockTestModel(id=id, name="Dummy")  # type: ignore[call-arg]
+                return MockTestModel(id=id, name="Dummy")
 
             def list(
                 self,
@@ -374,13 +374,13 @@ class TestSchemaManager(AbstractPydanticTestMixin):
                 fields: Optional[Any] = None,
                 **kwargs: Any,
             ) -> List[MockTestModel]:
-                return [MockTestModel(id="1", name="Dummy")]  # type: ignore[call-arg]
+                return [MockTestModel(id="1", name="Dummy")]
 
             def create(self, **data: Any) -> MockTestModel:
-                return MockTestModel(id="created", name=data.get("name", "Created"))  # type: ignore[call-arg]
+                return MockTestModel(id="created", name=data.get("name", "Created"))
 
             def update(self, id: str, **data: Any) -> MockTestModel:
-                return MockTestModel(id=id, name=data.get("name", "Updated"))  # type: ignore[call-arg]
+                return MockTestModel(id=id, name=data.get("name", "Updated"))
 
             def delete(self, id: str) -> bool:
                 return True
@@ -640,10 +640,10 @@ class TestIntegrationWithModelRegistry(AbstractGraphQLTestMixin):
         class IsolatedManager(_BoundMockManager):
             Model = IsolatedModel
 
-            def get(self, id, include=None, fields=None):  # type: ignore[override]
+            def get(self, id, include=None, fields=None):
                 return IsolatedModel(id=id, tag="t")
 
-            def list(self, offset=0, limit=100, include=None, fields=None, **kwargs):  # type: ignore[override]
+            def list(self, offset=0, limit=100, include=None, fields=None, **kwargs):
                 return [IsolatedModel(id="1", tag="t")]
 
         class IsolatedRegistry(_RealMockRegistry):
@@ -692,10 +692,10 @@ class TestProgrammaticSchemaGeneration(AbstractGraphQLTestMixin):
         class DynamicManager(_BoundMockManager):
             Model = DynamicModel
 
-            def get(self, id, include=None, fields=None):  # type: ignore[override]
+            def get(self, id, include=None, fields=None):
                 return DynamicModel(id=id, dynamic_field="x")
 
-            def list(self, offset=0, limit=100, include=None, fields=None, **kwargs):  # type: ignore[override]
+            def list(self, offset=0, limit=100, include=None, fields=None, **kwargs):
                 return [DynamicModel(id="1", dynamic_field="x")]
 
         class DynamicRegistry(_RealMockRegistry):

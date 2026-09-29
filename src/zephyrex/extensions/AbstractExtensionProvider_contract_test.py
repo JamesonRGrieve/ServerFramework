@@ -116,11 +116,11 @@ def test_health_check_default_reports_ok_when_configured(monkeypatch):
         _env = {}  # no required env -> is_configured == True
 
         @classmethod
-        def bond_instance(cls, instance):  # type: ignore[override]
+        def bond_instance(cls, instance):
             return AbstractProviderInstance(instance)
 
         @classmethod
-        def root(cls):  # type: ignore[override]
+        def root(cls):
             return None
 
     rep = _Provider.health_check()
@@ -134,11 +134,11 @@ def test_cached_health_check_returns_same_within_ttl(monkeypatch):
         _env = {}
 
         @classmethod
-        def bond_instance(cls, instance):  # type: ignore[override]
+        def bond_instance(cls, instance):
             return AbstractProviderInstance(instance)
 
         @classmethod
-        def root(cls):  # type: ignore[override]
+        def root(cls):
             return None
 
     _Provider._cached_health = None
@@ -175,11 +175,11 @@ def test_build_auth_strategy_uses_class_default():
         auth_strategy_name = "api_key"
 
         @classmethod
-        def bond_instance(cls, instance):  # type: ignore[override]
+        def bond_instance(cls, instance):
             return AbstractProviderInstance(instance)
 
         @classmethod
-        def root(cls):  # type: ignore[override]
+        def root(cls):
             return None
 
     strat = _Provider.build_auth_strategy(_FakeInstance(), {"api_key": "x"})
@@ -199,11 +199,11 @@ def test_build_auth_strategy_honors_per_instance_override():
         auth_strategy_name = "api_key"
 
         @classmethod
-        def bond_instance(cls, instance):  # type: ignore[override]
+        def bond_instance(cls, instance):
             return AbstractProviderInstance(instance)
 
         @classmethod
-        def root(cls):  # type: ignore[override]
+        def root(cls):
             return None
 
     strat = _Provider.build_auth_strategy(_Instance(), {"token": "abc"})
@@ -269,11 +269,11 @@ def test_build_auth_strategy_reads_field_from_real_model_instance():
         auth_strategy_name = "api_key"
 
         @classmethod
-        def bond_instance(cls, instance):  # type: ignore[override]
+        def bond_instance(cls, instance):
             return AbstractProviderInstance(instance)
 
         @classmethod
-        def root(cls):  # type: ignore[override]
+        def root(cls):
             return None
 
     strat = _Provider.build_auth_strategy(

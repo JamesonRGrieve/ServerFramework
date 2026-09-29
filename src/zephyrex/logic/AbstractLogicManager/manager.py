@@ -15,8 +15,6 @@ from typing import (
     Type,
     TypeVar,
     Union,
-    get_args,
-    get_origin,
     get_type_hints,
     overload,
 )
@@ -27,6 +25,7 @@ from sqlalchemy import and_
 from sqlalchemy.orm import Session, joinedload
 
 from zephyrex.lib.Logging import logger
+from zephyrex.lib.TypeUnions import is_union, non_none_args
 from zephyrex.pydantic2.registry import obj_to_dict
 from zephyrex.pydantic2.fastapi import AuthType, CustomRouteSpec, RouteType
 
@@ -469,11 +468,6 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
                     exc,
                 )
 
-    @property  # type: ignore[no-redef]
-    def DB(self):
-        """Property that returns the SQLAlchemy model class from the Pydantic Model."""
-        return self.Model.DB(self.model_registry.DB.manager.Base)
-
     @property
     def target(self) -> Any:
         """
@@ -551,13 +545,10 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
         all_annotations = _cached_type_hints(self.model_registry.apply(self.Model))
         # Get all annotations from the model
         for field_name, field_info in all_annotations.items():
-            # Handle Optional types
+            # A union field is categorized by its first non-None member.
             actual_type = field_info
-            origin = get_origin(field_info)
-
-            if origin is Union:
-                args = get_args(field_info)
-                actual_type = args[0]
+            if is_union(field_info) and non_none_args(field_info):
+                actual_type = non_none_args(field_info)[0]
 
             # Categorize by type
             if actual_type == str:
@@ -1055,8 +1046,6 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
         """
         """Generate join loads based on specified include fields."""
         from sqlalchemy.orm import RelationshipProperty
-        from zephyrex.lib.Logging import logger
-        from zephyrex.lib.Logging import logger
 
         joins = []
         invalid_includes = []
@@ -1982,8 +1971,3 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
                 for key in parent_class.__annotations__.keys():
                     if args.get(key) is not None:
                         self._parent.get(id=args[key])
-
-
-import zephyrex.logic.AbstractLogicManager.hooks as _hooks  # noqa: E402
-
-_hooks.AbstractBLLManager = AbstractBLLManager

@@ -15,7 +15,7 @@ from typing import (
     get_type_hints,
 )
 
-from fastapi import HTTPException, Request
+from fastapi import HTTPException
 from sqlalchemy import Column, DateTime, ForeignKey, String, event, func, inspect
 from sqlalchemy.orm import Query, Session, declared_attr, relationship
 from sqlalchemy.orm.exc import MultipleResultsFound, NoResultFound
@@ -30,40 +30,9 @@ from zephyrex.database.StaticPermissions import (
     validate_columns,
 )
 from zephyrex.lib.Environment import env
+from zephyrex.lib.TypeUnions import is_optional, non_none_args
 from zephyrex.lib.Logging import logger
 from zephyrex.pydantic2.registry import obj_to_dict
-
-
-def get_db_manager(
-    db: Session | None = None, request: Request | None = None
-) -> Optional[DatabaseManager]:
-    """Get the database manager from a request, a session, or return None.
-
-    Probe order:
-    1. ``request.app.state`` (if *request* is provided)
-    2. ``db._db_manager`` (direct session reference)
-    3. ``db.bind._db_manager`` (engine-level reference)
-    4. ``db.bind.engine._db_manager`` (engine wrapper)
-    """
-    # Request-based lookup (FastAPI app state)
-    if request and hasattr(request.app.state, "DB"):
-        return request.app.state.model_registry.database_manager
-
-    if not db:
-        return None
-
-    # Direct session reference
-    if hasattr(db, "_db_manager"):
-        return db._db_manager  # type: ignore[return-value]
-
-    # Bound engine / engine wrapper
-    if hasattr(db, "bind") and db.bind:
-        if hasattr(db.bind, "_db_manager"):
-            return db.bind._db_manager  # type: ignore[union-attr]
-        if hasattr(db.bind, "engine") and hasattr(db.bind.engine, "_db_manager"):  # type: ignore[union-attr]
-            return db.bind.engine._db_manager  # type: ignore[union-attr]
-
-    return None
 
 
 def with_session(func):
@@ -118,30 +87,6 @@ def get_dto_class(cls, override_dto=None):
     elif hasattr(cls, "dto") and cls.dto is not None:
         return cls.dto
     return None
-
-
-def get_declarative_base_from_db(db: Session) -> Any:
-    """
-    Get the declarative base from a database session.
-
-    Args:
-        db: Database session that must have a model registry attached
-
-    Returns:
-        The declarative base from the model registry's database manager
-
-    Raises:
-        RuntimeError: If no model registry is available
-    """
-    # Get database manager from the session's model registry
-    db_manager = get_db_manager(db)
-    if db_manager and hasattr(db_manager, "Base"):
-        return db_manager.Base
-
-    raise RuntimeError(
-        "No DatabaseManager found in session. "
-        "Ensure the session was created from a properly configured ModelRegistry."
-    )
 
 
 T = TypeVar("T")
@@ -223,9 +168,9 @@ def _apply_soft_delete_filter(db_cls, requester_id: str, filters: list) -> list:
 
     if hasattr(db_cls, "deleted_at") and not is_root_id(requester_id):
         if filters:
-            filters.append(db_cls.deleted_at == None)  # type: ignore[attr-defined]
+            filters.append(db_cls.deleted_at == None)
         else:
-            filters = [db_cls.deleted_at == None]  # type: ignore[attr-defined]
+            filters = [db_cls.deleted_at == None]
     return filters
 
 
@@ -438,25 +383,16 @@ def _convert_based_on_type_hint(value, type_hint):
     # Attempting to instantiate typing.Any (or calling Any(**value)) causes
     # TypeError: "Any cannot be instantiated". Guard here to keep behavior
     # resilient when DTO annotations use `Any` or Optional[Any].
-    try:
-        from typing import Any as _TypingAny
-    except Exception:
-        _TypingAny = Any
-    if type_hint is _TypingAny:
+    if type_hint is Any:
         return value
 
     # Get the origin type (for generics like List, Optional)
     origin = get_origin(type_hint)
 
-    # Handle Optional types (Union with NoneType)
-    if origin is Union:
-        args = get_args(type_hint)
-        if type(None) in args:
-            # Find the non-None type
-            for arg in args:
-                if arg is not type(None):
-                    return _convert_based_on_type_hint(value, arg)
-            return value
+    # Handle Optional types (``Optional[X]`` and ``X | None``)
+    if is_optional(type_hint):
+        members = non_none_args(type_hint)
+        return _convert_based_on_type_hint(value, members[0]) if members else value
 
     # Handle List types
     if origin is list:
@@ -696,8 +632,6 @@ class BaseMixin:
         """
         from zephyrex.database.StaticPermissions import (
             PermissionResult,
-            PermissionType,
-            check_permission,
             is_any_internal_id,
             is_root_id,
         )

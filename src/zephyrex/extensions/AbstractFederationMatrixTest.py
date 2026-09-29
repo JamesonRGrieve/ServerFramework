@@ -385,7 +385,7 @@ class AbstractFederationMatrixTest(ABC):
                 f"derive_external_models did not produce a model for "
                 f"{fixture.type_name!r}; got {sorted(derived.keys())}"
             )
-        return external  # type: ignore[no-any-return]
+        return external
 
     def _build_external_model_for_gql(self, fixture: FederationFixture) -> type:
         from zephyrex.extensions.federation.BLL_Federation_Bootstrap import (
@@ -402,7 +402,7 @@ class AbstractFederationMatrixTest(ABC):
                 f"sdl_to_pydantic_models did not produce {fixture.type_name!r}; "
                 f"got {sorted(lift.models.keys())}"
             )
-        return _synthesize_gql_external_model(  # type: ignore[no-any-return]
+        return _synthesize_gql_external_model(
             type_name=fixture.type_name,
             model_cls=model_cls,
             transport=fixture.transport,

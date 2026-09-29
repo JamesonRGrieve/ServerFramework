@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from zephyrex.database.StaticPermissions import ROOT_ID
 from zephyrex.pydantic2.sqlalchemy import DatabaseMixin
+from zephyrex.logic.AbstractLogicManager.manager import CachedRequester
 from zephyrex.logic.AbstractLogicManager import (
     AbstractBLLManager,
     ApplicationModel,
@@ -330,12 +331,7 @@ class BaseManagerForTest(AbstractBLLManager):
         self.target_id = target_id
         self.target_team_id = target_team_id
 
-        # Create a fake requester object for testing
-        class FakeRequester:
-            def __init__(self, id: str):
-                self.id = id
-
-        self.requester = FakeRequester(requester_id)
+        self.requester = CachedRequester(id=requester_id)
         self._target_user = None
         self._target_team = None
         self._target = None

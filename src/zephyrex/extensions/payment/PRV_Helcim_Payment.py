@@ -35,7 +35,7 @@ from zephyrex.extensions.payment.EXT_Payment import (
 from zephyrex.lib.Dependencies import Dependencies, PIP_Dependency
 from zephyrex.lib.Environment import env
 from zephyrex.lib.Logging import logger
-from zephyrex.pydantic2.registry import BaseModel  # type: ignore[no-redef]
+from zephyrex.pydantic2.registry import BaseModel
 from zephyrex.logic.AbstractLogicManager import ModelMeta
 from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 
@@ -282,7 +282,7 @@ class PaymentExtensionHelcimProvider(AbstractPaymentProvider):
 
     @classmethod
     def get_api_token(cls) -> Optional[str]:
-        return env("HELCIM_API_TOKEN")  # type: ignore[no-any-return]
+        return env("HELCIM_API_TOKEN")
 
     @classmethod
     def validate_config(cls) -> bool:

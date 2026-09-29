@@ -49,24 +49,24 @@ def is_any_internal_id(user_id: str) -> bool:
 
 def is_root_id(user_id: str) -> bool:
     """Check if the user ID is the ROOT_ID."""
-    return user_id == ROOT_ID  # type: ignore[no-any-return]
+    return user_id == ROOT_ID
 
 
 def is_system_id(user_id: str) -> bool:
     """Check if the user ID is the SYSTEM_ID."""
-    return user_id == SYSTEM_ID  # type: ignore[no-any-return]
+    return user_id == SYSTEM_ID
 
 
 def is_system_user_id(user_id: str) -> bool:
     """Alias of :func:`is_system_id`. Some callers prefer the
     `_user_` form; both names resolve to the same SYSTEM_ID check so
     that authorization helpers do not fork on naming."""
-    return user_id == SYSTEM_ID  # type: ignore[no-any-return]
+    return user_id == SYSTEM_ID
 
 
 def is_template_id(user_id: str) -> bool:
     """Check if the user ID is the TEMPLATE_ID."""
-    return user_id == TEMPLATE_ID  # type: ignore[no-any-return]
+    return user_id == TEMPLATE_ID
 
 
 def can_access_system_record(
@@ -85,7 +85,7 @@ def can_access_system_record(
     """
     # ROOT_ID records are only accessible by ROOT_ID
     if record_user_id == ROOT_ID:
-        return user_id == ROOT_ID  # type: ignore[no-any-return]
+        return user_id == ROOT_ID
 
     # SYSTEM_ID records are readable by anyone, but only ROOT_ID and SYSTEM_ID can modify
     if record_user_id == SYSTEM_ID:

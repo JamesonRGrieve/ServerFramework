@@ -40,7 +40,6 @@ from zephyrex.database.HookRegistries import (
 )
 from zephyrex.lib.DateTimeUtils import ensure_utc
 from zephyrex.lib.Environment import env
-from zephyrex.pydantic2.registry import BaseModel  # type: ignore[no-redef]
 
 # Resolve _BCRYPT_ROUNDS from env now that the import is available.
 # Using gensalt() without a rounds argument leaves the cost at whatever the
@@ -314,7 +313,7 @@ def register_lockout_hooks(
     record_failure=None,
     manager_factory=None,
 ) -> None:
-    """Called by `auth_lockout.EXT_Lockout.AuthLockoutExtension.on_load`."""
+    """Called when `auth_lockout.BLL_Lockout` is imported."""
     if assert_within_threshold is not None:
         _lockout_hooks["assert_within_threshold"] = assert_within_threshold
     if record_failure is not None:
@@ -323,7 +322,8 @@ def register_lockout_hooks(
         _lockout_hooks["manager_factory"] = manager_factory
 
 
-# auth_session extension hooks — populated by ``auth_session.on_load``. When
+# auth_session extension hooks — populated when ``auth_session.BLL_Session`` is
+# imported. When
 # the extension is not loaded, ``issue_session`` returns a fresh key without
 # persistence (token is stateless), ``enforce_not_revoked`` is a no-op once
 # ``jti`` is present (see ``_enforce_session_not_revoked``), and
@@ -344,7 +344,7 @@ def register_session_hooks(
     manager_factory=None,
     revoke_user_sessions=None,
 ) -> None:
-    """Called by ``auth_session.EXT_Session.AuthSessionExtension.on_load``.
+    """Called when ``auth_session.BLL_Session`` is imported.
 
     Each argument is optional — operators can swap individual hook
     implementations (e.g. for testing) without re-registering the others.
@@ -424,7 +424,8 @@ def reset_session_hooks() -> None:
         _session_hooks[name] = None
 
 
-# Metadata extension hooks — populated by `metadata.on_load` (Scope #3).
+# Metadata extension hooks — populated when `metadata.BLL_Metadata` is imported
+# (Scope #3).
 # Core code that historically called MetadataModel/UserMetadataManager/
 # TeamMetadataManager directly now goes through these hooks; when the
 # extension is not loaded, calls degrade to no-ops or empty results.
@@ -447,7 +448,7 @@ def register_metadata_hooks(
     create_user_metadata=None,
     update_user_metadata=None,
 ) -> None:
-    """Called by `metadata.EXT_Metadata.MetadataExtension.on_load`."""
+    """Called when `metadata.BLL_Metadata` is imported."""
     for name, fn in (
         ("list_preferences", list_preferences),
         ("list_user_metadata", list_user_metadata),

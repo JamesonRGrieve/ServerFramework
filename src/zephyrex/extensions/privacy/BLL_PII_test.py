@@ -42,7 +42,7 @@ class TestPiiHelper:
 
     def test_rejects_non_class(self):
         with pytest.raises(TypeError):
-            pii("direct_identifier")  # type: ignore[arg-type]
+            pii("direct_identifier")
 
     def test_enum_string_value(self):
         # The enum is a (str, Enum) for serialization; verify the string value.
@@ -98,7 +98,7 @@ class TestEnumeratePii:
             pass
 
         with pytest.raises(TypeError):
-            enumerate_pii(NotAModel)  # type: ignore[arg-type]
+            enumerate_pii(NotAModel)
 
     def test_annotated_with_field_works(self):
         # The Annotated[..., Field(...), pii(...)] form is the canonical way
@@ -167,7 +167,7 @@ class TestRedactPii:
 
     def test_rejects_non_instance(self):
         with pytest.raises(TypeError):
-            redact_pii({"email": "x"})  # type: ignore[arg-type]
+            redact_pii({"email": "x"})
 
 
 # ---------------------------------------------------------------------------
@@ -241,7 +241,7 @@ class TestErasureOrchestrator:
     def test_register_rejects_non_callable(self):
         orch = ErasureOrchestrator()
         with pytest.raises(TypeError):
-            orch.register_extension_eraser("ext", "not callable")  # type: ignore[arg-type]
+            orch.register_extension_eraser("ext", "not callable")
 
     def test_audit_class_outline(self):
         # Item 82: erasure_event class is pii_redactable=False.
@@ -284,4 +284,4 @@ class TestDataExporter:
     def test_register_rejects_non_callable(self):
         exp = DataExporter()
         with pytest.raises(TypeError):
-            exp.register_extension_exporter("x", 42)  # type: ignore[arg-type]
+            exp.register_extension_exporter("x", 42)

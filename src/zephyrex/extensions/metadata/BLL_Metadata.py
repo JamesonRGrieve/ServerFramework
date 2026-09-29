@@ -5,7 +5,7 @@ Owns:
 - ``MetadataManager`` — base preference-setting/getting logic.
 - ``UserMetadataManager`` / ``TeamMetadataManager`` — filtered managers.
 
-Hooks registered with core via ``EXT_Metadata.on_load`` so the
+Hooks registered with core when this module is imported so the
 ``BLL_Auth.UserManager`` registration / login flow can talk to this
 extension without importing it directly.
 """
@@ -305,8 +305,7 @@ try:
         update_user_metadata=_update_user_metadata,
     )
 except ImportError:
-    # Core not importable (e.g. extension imported in isolation for tests).
-    # The EXT class's `on_load` is a manual fallback for that path.
+    # Core not importable yet (framework-bootstrap import window).
     pass
 
 

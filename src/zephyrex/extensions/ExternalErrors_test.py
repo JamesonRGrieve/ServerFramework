@@ -173,7 +173,7 @@ class TestDegradationPolicy:
         # callers that share the same policy instance.
         p = fail_fast()
         with pytest.raises(Exception):  # FrozenInstanceError on >=3.7
-            p.mode = DegradationMode.SILENT_DROP  # type: ignore[misc]
+            p.mode = DegradationMode.SILENT_DROP
 
     def test_mode_string_value_round_trip(self):
         # Modes are str-typed enums so they round-trip through OpenAPI

@@ -19,7 +19,6 @@ from .types import (
     AuthType,
     CustomRouteConfig,
     CustomRouteSpec,
-    HTTPMethod,
     NestedResourceConfig,
     RouterMixin,
     RouteType,
@@ -141,28 +140,9 @@ def create_router_from_manager(
 
     # Register custom routes from configuration
     for custom_route_config in custom_routes:
-        # Convert dict to CustomRouteConfig if needed
-        if isinstance(custom_route_config, dict):
-            # Convert method to uppercase for HTTPMethod enum
-            method_str: str = custom_route_config["method"].upper()
-            custom_route = CustomRouteConfig(
-                path=custom_route_config["path"],
-                method=HTTPMethod(method_str),
-                function=custom_route_config["function"],
-                auth_type=custom_route_config.get("auth_type"),
-                summary=custom_route_config.get("summary"),
-                description=custom_route_config.get("description"),
-                response_model=custom_route_config.get("response_model"),
-                status_code=custom_route_config.get("status_code", 200),
-                tags=custom_route_config.get("tags", []),
-                is_static=custom_route_config.get("is_static", False),
-            )
-        else:
-            custom_route = custom_route_config
-
         register_custom_route(
             router=router,
-            custom_route=custom_route,
+            custom_route=CustomRouteConfig.from_spec(custom_route_config),
             manager_factory=create_manager_factory(
                 manager_class, model_registry, auth_type
             ),
@@ -184,21 +164,11 @@ def create_router_from_manager(
                     manager_class=manager_class,
                 )
 
-    # Item 40 hook — register typed @custom_route-decorated methods.
-    try:
-        from zephyrex.lib.CustomRoute import (
-            register_custom_routes as _register_typed_custom_routes,
-        )
+    # Typed @custom_route methods. A mis-declared route fails the build
+    # rather than silently disappearing from the API.
+    from zephyrex.lib.CustomRoute import register_custom_routes
 
-        _register_typed_custom_routes(
-            router,
-            manager_class,
-            manager_factory=create_manager_factory(
-                manager_class, model_registry, auth_type
-            ),
-        )
-    except Exception as _exc:  # pragma: no cover - defensive: never break CRUD
-        logger.debug("Item 40 custom-route registration skipped: %s", _exc)
+    register_custom_routes(router, manager_class)
 
     # Create nested routers
     for resource_key, config in nested_resources.items():
@@ -327,24 +297,7 @@ def create_router_from_manager(
 
         # Register nested custom routes
         for custom_route_config in nested_config.custom_routes:
-            # Convert dict to CustomRouteConfig if needed
-            if isinstance(custom_route_config, dict):
-                # Convert method to uppercase for HTTPMethod enum
-                method_str: str = custom_route_config["method"].upper()  # type: ignore[no-redef]
-                custom_route = CustomRouteConfig(
-                    path=custom_route_config["path"],
-                    method=HTTPMethod(method_str),
-                    function=custom_route_config["function"],
-                    auth_type=custom_route_config.get("auth_type"),
-                    summary=custom_route_config.get("summary"),
-                    description=custom_route_config.get("description"),
-                    response_model=custom_route_config.get("response_model"),
-                    status_code=custom_route_config.get("status_code", 200),
-                    tags=custom_route_config.get("tags", []),
-                    is_static=custom_route_config.get("is_static", False),
-                )
-            else:
-                custom_route = custom_route_config
+            custom_route = CustomRouteConfig.from_spec(custom_route_config)
 
             # Create a factory function to properly capture variables in closure
             def create_nested_endpoint(
@@ -374,11 +327,7 @@ def create_router_from_manager(
             )
 
             # Register the nested custom route
-            nested_method_value: str = (
-                custom_route.method.value
-                if hasattr(custom_route.method, "value")
-                else str(custom_route.method)
-            )
+            nested_method_value = custom_route.method.value
             route_method: Callable = getattr(nested_router, nested_method_value.lower())
             route_method(
                 custom_route.path,

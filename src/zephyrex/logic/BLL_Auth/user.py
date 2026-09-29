@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 import secrets
 from datetime import datetime, timedelta, timezone
-from typing import Any, ClassVar, Dict, List, Optional, Type, cast
+from typing import Any, ClassVar, Dict, List, Optional, Type, Union, cast
 
 import bcrypt
 from fastapi import HTTPException, Header, Request, status
@@ -378,7 +378,7 @@ class UserModel(
         language: Optional[str] | None = None
 
 
-class UserManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef]
+class UserManager(AbstractBLLManager, RouterMixin):
     _model = UserModel
     _entity_label: ClassVar[Optional[str]] = "User"
 
@@ -1605,8 +1605,8 @@ class UserManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef]
 
     def get(
         self,
-        include: Optional[List[str]] | None = None,
-        fields: Optional[List[str]] = [],
+        include: Optional[Union[List[str], str]] | None = None,
+        fields: Optional[Union[List[str], str]] | None = None,
         **kwargs,
     ) -> Any:
         """Get a user with optional included relationships."""
@@ -2074,7 +2074,7 @@ class UserManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef]
 class UserCredentialModel(
     ApplicationModel.Optional,
     UpdateMixinModel.Optional,
-    UserModel.Reference,  # type: ignore[name-defined]
+    UserModel.Reference,
     metaclass=ModelMeta,
 ):
     Manager: ClassVar[Type["UserCredentialManager"]] = None  # type: ignore[assignment]
@@ -2091,10 +2091,10 @@ class UserCredentialModel(
         "Stores user password hashes and tracks password change history"
     )
 
-    class Create(BaseModel, UserModel.Reference.ID):  # type: ignore[name-defined]
+    class Create(BaseModel, UserModel.Reference.ID):
         password_hash: Optional[str]
 
-    class CreateRaw(BaseModel, UserModel.Reference.ID):  # type: ignore[name-defined]
+    class CreateRaw(BaseModel, UserModel.Reference.ID):
         password: str = Field(None, description="New password (will be hashed)")  # type: ignore[assignment]
 
     class Update(BaseModel):
@@ -2102,11 +2102,11 @@ class UserCredentialModel(
         # However, we need to allow updating the password_changed_at field for tests
         password_changed_at: Optional[datetime] | None = None
 
-    class Search(ApplicationModel.Search, UserModel.Reference.ID.Search):  # type: ignore[name-defined]
+    class Search(ApplicationModel.Search, UserModel.Reference.ID.Search):
         password_changed_at: Optional[DateSearchModel] | None = None
 
 
-class UserCredentialManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef]
+class UserCredentialManager(AbstractBLLManager, RouterMixin):
     _model = UserCredentialModel
 
     def create(self, **kwargs):

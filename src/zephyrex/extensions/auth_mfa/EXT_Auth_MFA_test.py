@@ -1,6 +1,4 @@
-import base64
 import tempfile
-from typing import List
 
 import pytest
 
@@ -212,22 +210,10 @@ class TestEXTAuthMFA(AbstractEXTTest):
         assert extension.has_ability("mfa_recovery_codes")
         assert not extension.has_ability("nonexistent_ability")
 
-    def test_lifecycle_methods(self):
-        """Test extension lifecycle methods"""
-        # Test on_initialize
-        result = EXT_Auth_MFA.on_initialize()
-        assert isinstance(result, bool)
-        assert result is True  # Should succeed even without libraries
-
-        # Test on_start
-        result = EXT_Auth_MFA.on_start()
-        assert isinstance(result, bool)
-        assert result is True
-
-        # Test on_stop
-        result = EXT_Auth_MFA.on_stop()
-        assert isinstance(result, bool)
-        assert result is True
+    def test_on_initialize_succeeds_with_encryption_and_pyotp(self):
+        """The suite configures FRAMEWORK_FERNET_KEY and installs pyotp, so
+        the extension can function and initializes."""
+        assert EXT_Auth_MFA.on_initialize() is True
 
     def test_action_routes_migrated_to_manager(self):
         """The MFA action endpoints are custom_routes on the manager (migrated

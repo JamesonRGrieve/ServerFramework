@@ -155,7 +155,7 @@ class TeamModel(
         description: Optional[StringSearchModel] | None = None
 
 
-class TeamManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef]
+class TeamManager(AbstractBLLManager, RouterMixin):
     _model = TeamModel
     _entity_label: ClassVar[Optional[str]] = "Team"
 

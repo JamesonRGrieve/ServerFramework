@@ -88,6 +88,30 @@ class CustomRouteConfig:
     tags: List[str] = field(default_factory=list)
     is_static: bool = False
 
+    @classmethod
+    def from_spec(cls, spec: "CustomRouteSpec") -> "CustomRouteConfig":
+        """The config a manager declared, whether as a CustomRouteConfig or
+        as the equivalent dict literal."""
+        if isinstance(spec, CustomRouteConfig):
+            return spec
+        return cls(
+            path=spec["path"],
+            method=http_method(spec["method"]),
+            function=spec["function"],
+            auth_type=spec.get("auth_type"),
+            summary=spec.get("summary"),
+            description=spec.get("description"),
+            response_model=spec.get("response_model"),
+            status_code=spec.get("status_code", status.HTTP_200_OK),
+            tags=spec.get("tags", []),
+            is_static=spec.get("is_static", False),
+        )
+
+
+def http_method(method: HTTPMethod | str) -> HTTPMethod:
+    """``method`` as an HTTPMethod; route declarations may spell it "post"."""
+    return method if isinstance(method, HTTPMethod) else HTTPMethod(method.upper())
+
 
 # Managers may declare custom routes as CustomRouteConfig or as the equivalent
 # dict literal; the router normalizes dicts at registration time.
@@ -116,7 +140,7 @@ class NestedResourceConfig:
 
 def static_route(
     path: str,
-    method: HTTPMethod = HTTPMethod.GET,
+    method: HTTPMethod | str = HTTPMethod.GET,
     auth_type: Optional[AuthType] = None,
     summary: Optional[str] = None,
     description: Optional[str] = None,
@@ -137,12 +161,13 @@ def static_route(
         if not hasattr(func, "_static_route_config"):
             func._static_route_config = []  # type: ignore[attr-defined]
 
+        route_method = http_method(method)
         route_config: CustomRouteConfig = CustomRouteConfig(
             path=path,
-            method=method,
+            method=route_method,
             function=func.__name__,
             auth_type=auth_type,
-            summary=summary or f"{method} {path}",
+            summary=summary or f"{route_method.value} {path}",
             description=description or f"Static route for {func.__name__}",
             response_model=response_model,
             status_code=status_code,

@@ -27,7 +27,7 @@ def _enqueue(store: InMemoryOutboxStore, *, idempotency_key: str) -> str:
         payload={"hello": "world"},
         idempotency_key=idempotency_key,
     )
-    return store.enqueue(entry)  # type: ignore[no-any-return]
+    return store.enqueue(entry)
 
 
 def test_pending_entry_returns_pending_status() -> None:

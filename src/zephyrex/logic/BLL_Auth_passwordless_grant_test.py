@@ -88,7 +88,7 @@ class _RecordingColumn:
     def __init__(self, name: str) -> None:
         self.name = name
 
-    def __eq__(self, other):  # type: ignore[override]
+    def __eq__(self, other):
         return (self.name, other)
 
     __hash__ = None  # type: ignore[assignment]

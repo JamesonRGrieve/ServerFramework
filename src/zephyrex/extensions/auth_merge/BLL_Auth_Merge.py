@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """User-merge BLL.
 
 Records that a *target* user account was consolidated into an *initiating*
@@ -5,18 +6,21 @@ user account. Movement of side data is delegated to the canonical managers
 in ``zephyrex.logic.BLL_Auth`` (team memberships, here) and to
 extension-registered merge handlers (notifications, OAuth links, etc.).
 
-Other extensions participate via :func:`register_merge_handler`. A handler
-receives ``(ctx)`` with ``initiating_user_id``, ``target_user_id``,
-``model_registry``, and ``requester_id``; it re-homes its own side data
-and returns ``None``. Handler exceptions are caught and logged so one
-extension's failure does not abort the merge — the audit row is then
-marked with the handler errors and the operator can rerun.
+Other extensions participate via :func:`register_merge_handler`, keyed by
+their own extension name, from their ``on_initialize``. A merge runs only the
+handlers of extensions loaded into the merging app. A handler receives
+``(ctx)`` with ``initiating_user_id``, ``target_user_id``, ``model_registry``,
+and ``requester_id``; it re-homes its own side data and returns ``None``.
+Handler exceptions are caught and logged so one extension's failure does not
+abort the merge — the audit row is then marked with the handler errors and the
+operator can rerun.
 
 Pattern reference: ``auth_invitations/BLL_Invitations.py``.
 """
 
 import secrets
 from datetime import datetime, timedelta, timezone
+from collections.abc import Collection
 from typing import Any, Callable, ClassVar, Dict, List, Optional, Type
 
 import jwt
@@ -38,7 +42,6 @@ from zephyrex.logic.AbstractLogicManager import (
     UpdateMixinModel,
 )
 from zephyrex.logic.BLL_Auth import (
-    UserManager,
     UserModel,
     UserTeamManager,
     UserTeamModel,
@@ -135,9 +138,10 @@ _HANDLERS: Dict[str, MergeHandler] = {}
 def register_merge_handler(name: str, handler: MergeHandler) -> None:
     """Register a callable that is invoked during ``UserMergeManager.merge_users``.
 
-    The ``name`` is purely diagnostic (it is included in the per-handler
-    error report). Re-registering the same name overwrites — extensions
-    are expected to register exactly once at boot.
+    ``name`` is the owning extension's name: a merge runs the handler only
+    when that extension is loaded into the merging app, and the per-handler
+    error report is keyed by it. Re-registering the same name overwrites, so
+    every app build may register again.
     """
     _HANDLERS[name] = handler
 
@@ -176,11 +180,17 @@ def list_merge_handlers() -> List[str]:
     return sorted(_HANDLERS.keys())
 
 
-def _run_merge_handlers(ctx: MergeContext) -> Dict[str, str]:
-    """Invoke every registered handler with ``ctx`` and return per-handler
-    error strings (empty if every handler succeeded)."""
+def _run_merge_handlers(
+    ctx: MergeContext, loaded_extensions: Collection[str]
+) -> Dict[str, str]:
+    """Invoke the handler of every extension in ``loaded_extensions`` with
+    ``ctx`` and return per-handler error strings (empty if every handler
+    succeeded). The handler table is process-global; a handler whose
+    extension the merging app did not load has no tables there to act on."""
     errors: Dict[str, str] = {}
     for name, handler in list(_HANDLERS.items()):
+        if name not in loaded_extensions:
+            continue
         try:
             handler(ctx)
         except Exception as exc:  # pragma: no cover — defensive
@@ -434,7 +444,9 @@ class UserMergeManager(AbstractBLLManager, RouterMixin):
             requester_id=self.requester.id,
             model_registry=self.model_registry,
         )
-        handler_errors = _run_merge_handlers(ctx)
+        handler_errors = _run_merge_handlers(
+            ctx, self.model_registry.loaded_extension_names()
+        )
 
         UserDB = UserModel.DB(self.model_registry.DB.manager.Base)
         UserDB.update(

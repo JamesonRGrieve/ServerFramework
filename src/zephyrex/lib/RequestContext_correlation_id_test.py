@@ -184,7 +184,7 @@ def test_wrap_in_context_with_async_callable():
 @pytest.mark.unit
 def test_wrap_in_context_rejects_non_callable_non_coroutine():
     with pytest.raises(TypeError):
-        wrap_in_context(42)  # type: ignore[arg-type]
+        wrap_in_context(42)
 
 
 @pytest.mark.unit

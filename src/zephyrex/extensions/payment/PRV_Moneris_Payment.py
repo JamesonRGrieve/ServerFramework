@@ -33,7 +33,7 @@ from zephyrex.extensions.payment.EXT_Payment import (
 from zephyrex.lib.Dependencies import Dependencies, PIP_Dependency
 from zephyrex.lib.Environment import env
 from zephyrex.lib.Logging import logger
-from zephyrex.pydantic2.registry import BaseModel  # type: ignore[no-redef]
+from zephyrex.pydantic2.registry import BaseModel
 from zephyrex.logic.AbstractLogicManager import ModelMeta
 from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 
@@ -293,11 +293,11 @@ class PaymentExtensionMonerisProvider(AbstractPaymentProvider):
 
     @classmethod
     def get_store_id(cls) -> Optional[str]:
-        return env("MONERIS_STORE_ID")  # type: ignore[no-any-return]
+        return env("MONERIS_STORE_ID")
 
     @classmethod
     def get_merchant_id(cls) -> Optional[str]:
-        return env("MONERIS_MERCHANT_ID")  # type: ignore[no-any-return]
+        return env("MONERIS_MERCHANT_ID")
 
     @classmethod
     def validate_config(cls) -> bool:

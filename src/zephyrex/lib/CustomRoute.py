@@ -40,6 +40,7 @@ from typing import (
 from fastapi import HTTPException, Request, status
 from pydantic import BaseModel, TypeAdapter
 
+from zephyrex.lib.InboundSecurity import carry_rate_limit
 from zephyrex.pydantic2.fastapi.resource import (
     create_manager_factory,
     handle_resource_operation_error,
@@ -344,21 +345,17 @@ def _make_rest_endpoint(
         except Exception as err:
             handle_resource_operation_error(err)
 
+    carry_rate_limit(getattr(manager_cls, method_name), endpoint)
     return endpoint
 
 
-def register_custom_routes(
-    router, manager_cls, manager_factory: Optional[Callable] | None = None
-) -> int:
+def register_custom_routes(router, manager_cls) -> int:
     """Walk ``manager_cls`` for ``@custom_route`` methods and add them to ``router``.
 
     Additive: each tagged method becomes a typed FastAPI route on the supplied
-    router. Returns the number of routes registered.
-
-    Each route builds its manager for its own declared authentication type
-    (see ``_make_rest_endpoint``), so ``manager_factory`` -- a factory bound
-    to the manager class's auth, passed by ``create_router_from_manager`` --
-    is not used for dispatch.
+    router. Returns the number of routes registered. Each route builds its
+    manager for its own declared authentication type (see
+    ``_make_rest_endpoint``).
     """
     registered = 0
     for method_name, spec in iter_custom_routes(manager_cls):

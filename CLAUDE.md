@@ -23,7 +23,7 @@ src/zephyrex/
   logic/                Business logic managers (BLL_Auth, BLL_Providers, AbstractLogicManager)
   endpoints/            REST endpoints, AbstractEPTest
   database/             SQLAlchemy ORM, migrations, seeding, read replicas
-  extensions/           59 pluggable extensions (auth, billing, federation, etc.)
+  extensions/           34 pluggable extensions (auth, billing, federation, etc.)
   lib/                  Utilities (Environment, Pydantic, ContentNegotiation, etc.)
   sdk/                  Auto-generated client SDK
 ```
@@ -37,7 +37,7 @@ run(extensions="my_ext", extensions_path="./extensions", port=2000)
 
 ### Extension System
 
-59 extensions, each self-contained with its own models, BLL, endpoints, tests, and migrations. Extensions loaded dynamically via `APP_EXTENSIONS` env var or `extensions=` parameter.
+34 in-framework extensions, each self-contained with its own models, BLL, endpoints, tests, and migrations. Extensions loaded dynamically via `APP_EXTENSIONS` env var or `extensions=` parameter.
 
 ---
 
@@ -45,22 +45,29 @@ run(extensions="my_ext", extensions_path="./extensions", port=2000)
 
 ```bash
 pip install -e ".[dev]"
-pytest                        # Full suite (7746 tests, 20-worker xdist)
+pytest                        # Full suite (xdist)
 black --check src/
-mypy --ignore-missing-imports src/zephyrex/
+MYPYPATH=src mypy -p zephyrex --ignore-missing-imports
 python -m zephyrex run        # Boot server on port 1996
 ```
 
+Run mypy by package name rooted at `src`. `mypy src/zephyrex/` names the
+files by bare module (the package directories have no `__init__.py`), so
+every `zephyrex.*` import resolves to `Any` and real errors disappear.
+
+Memory-heavy commands (the full suite, whole-package mypy) go through the
+shared queue: `/home/jameson/Source/mem-queuer/memq run -m <GB> -- <cmd>`.
+
 ## Quality Gates
 
-- **Tests:** 7746 passed, 0 failed, 0 errors (full xdist parallelism)
-- **Mypy:** 0 errors
+- **Tests:** full suite green; the passing-test floor is ratcheted in `.ratchet-baseline.json`
+- **Mypy:** 0 errors, unused `# type: ignore` comments rejected (`warn_unused_ignores`)
 - **Black:** 0 violations
 - **Pre-commit hook:** tests + mypy ratchet + black check
 
 ## Companion Client
 
-The `zephyrex` npm package (client-framework repo) provides the frontend. 59 client extensions match server extensions 1:1. Consumer apps install both:
+The `zephyrex` npm package (client-framework repo) provides the frontend. Client extensions match server extensions 1:1 by name. Consumer apps install both:
 
 ```bash
 pip install zephyrex          # Server

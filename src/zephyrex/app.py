@@ -30,7 +30,6 @@ from fastapi.responses import JSONResponse
 
 from zephyrex.database.DatabaseManager import DatabaseManager
 from zephyrex.lib.Environment import env, inflection
-from zephyrex.lib.Logging import logger
 from zephyrex.pydantic2.registry import ModelRegistry
 from zephyrex.lib.RequestContext import (
     DeadlineExceededError,
@@ -117,7 +116,6 @@ if __name__ == "__main__":
     setup_extension_dependencies()
 
 
-import json
 import re as _re_module
 
 # Strict W3C trace-id: exactly 32 lowercase hex chars (the all-zero value is
@@ -531,6 +529,13 @@ def build_app(model_registry: ModelRegistry):
                     workers,
                 )
 
+        # Extension lifecycle: each loaded extension starts once the worker's
+        # database engine (and Valkey, when configured) is ready, and stops
+        # before they close.
+        extension_registry = model_registry.extension_registry
+        if extension_registry is not None:
+            extension_registry.start_extensions()
+
         # Opt-in background services (Item: agent invocation monitor et al.).
         # Off by default so existing deployments are unaffected; when
         # RUN_BACKGROUND_SERVICES=true, each loaded extension that defines
@@ -548,6 +553,8 @@ def build_app(model_registry: ModelRegistry):
         finally:
             for task in background_tasks:
                 task.cancel()
+            if extension_registry is not None:
+                extension_registry.stop_extensions()
             if valkey_client is not None:
                 try:
                     from zephyrex.extensions.database_memory.PRV_Valkey import (
@@ -851,9 +858,7 @@ def build_app(model_registry: ModelRegistry):
         return response
 
     # Add middleware to catch JSON parsing errors early
-    from starlette.middleware.base import BaseHTTPMiddleware
     from starlette.requests import Request as StarletteRequest
-    from starlette.responses import Response as StarletteResponse
 
     from zephyrex.pydantic2.fastapi import _error_envelope
 
@@ -1160,7 +1165,7 @@ def build_app(model_registry: ModelRegistry):
         @app.get("/v1", tags=["Authentication"], status_code=204)
         async def verify_jwt(request: Request):
             """Verify JWT token and return 204 if valid, 401 if invalid"""
-            from fastapi import Header, HTTPException, Response
+            from fastapi import HTTPException, Response
 
             from zephyrex.logic.BLL_Auth import UserManager
 
@@ -1205,7 +1210,7 @@ def build_app(model_registry: ModelRegistry):
                 """Context getter for GraphQL that provides authentication context"""
                 from zephyrex.lib.Logging import logger
 
-                context = {}
+                context: Dict[str, str] = {}
 
                 logger.debug(
                     f"GraphQL context getter called - Headers: {dict(request.headers)}"
@@ -1253,7 +1258,7 @@ def build_app(model_registry: ModelRegistry):
                                 authorization=auth_header,
                                 request=request,
                             )
-                            if user and hasattr(user, "id"):
+                            if user and user.id:
                                 context["requester_id"] = user.id
                                 logger.debug(
                                     f"GraphQL context: Authenticated JWT user with id={user.id}"
@@ -1573,7 +1578,6 @@ def build_app(model_registry: ModelRegistry):
                     logger.info("Testing schema components individually...")
 
                     try:
-                        from fastapi.openapi.utils import get_openapi_path
 
                         logger.info("Testing individual routes...")
 

@@ -2,9 +2,9 @@
 
 Extracted from ``logic/BLL_Auth.py``. Core JWT issuance no longer references
 the session row directly; instead it dispatches through the
-``_session_hooks`` registry in ``BLL_Auth``. When this extension is loaded,
-``EXT_Session.AuthSessionExtension.on_load`` registers the implementations
-in this module.
+``_session_hooks`` registry in ``BLL_Auth``. Importing this module (model
+discovery does for every app that loads ``auth_session``) registers the
+implementations it defines.
 
 Without this extension, core JWTs are stateless — they verify on
 signature/exp/aud/iss/jti/nbf but no row tracks them, so revocation, sign-
@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import secrets
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, ClassVar, Dict, List, Literal, Optional, Type
+from typing import Any, ClassVar, Dict, List, Literal, Optional, Type
 
 from zephyrex.lib.DateTimeUtils import ensure_utc
 
@@ -384,7 +384,7 @@ class SessionManager(AbstractBLLManager, RouterMixin):
             session["expires_at"] if isinstance(session, dict) else session.expires_at
         )
         expires_at = ensure_utc(expires_at)
-        return expires_at > datetime.now(timezone.utc)  # type: ignore[no-any-return]
+        return expires_at > datetime.now(timezone.utc)
 
     def cleanup_expired_sessions(self) -> Dict[str, Any]:
         current_time = datetime.now(timezone.utc)
@@ -601,7 +601,8 @@ __all__ = [
 # any session-aware path runs, the hooks are wired. The ImportError guard
 # is for the framework-bootstrap window where ``BLL_Auth`` hasn't finished
 # importing yet.
-try:
+def register_hooks() -> None:
+    """Wire this module's implementations into core's ``_session_hooks``."""
     from zephyrex.logic.BLL_Auth import register_session_hooks
 
     register_session_hooks(
@@ -610,5 +611,9 @@ try:
         manager_factory=session_manager_factory,
         revoke_user_sessions=revoke_user_sessions,
     )
+
+
+try:
+    register_hooks()
 except ImportError:
     pass

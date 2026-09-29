@@ -1,13 +1,13 @@
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, Set, Type
 
 import pytest
+from pydantic import ConfigDict, Field
 
-from zephyrex.AbstractTest import AbstractTest
+from zephyrex.AbstractTest import AbstractTest, ClassOfTestsConfig
 from conftest import (
     add_user_to_team,
     create_role,
@@ -41,19 +41,20 @@ class ExtensionTestType(str, Enum):
     DATABASE_ISOLATION = "database_isolation"
 
 
-@dataclass
-class ExtensionTestConfig:
+class ExtensionTestConfig(ClassOfTestsConfig):
     """Configuration for extension testing behavior."""
 
-    test_types: Set[ExtensionTestType] = field(
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    test_types: Set[ExtensionTestType] = Field(
         default_factory=lambda: set(ExtensionTestType)
     )
-    expected_abilities: Set[str] = field(default_factory=set)
-    expected_dependencies: Dependencies = field(
+    expected_abilities: Set[str] = Field(default_factory=set)
+    expected_dependencies: Dependencies = Field(
         default_factory=lambda: Dependencies([])
     )
-    expected_env_vars: Dict[str, Any] = field(default_factory=dict)
-    performance_thresholds: Dict[str, float] = field(
+    expected_env_vars: Dict[str, Any] = Field(default_factory=dict)
+    performance_thresholds: Dict[str, float] = Field(
         default_factory=lambda: {
             "cache_improvement_min": 2.0,
             "concurrent_threads": 10,
@@ -315,8 +316,8 @@ class AbstractEXTTest(AbstractTest, ExtensionServerMixin):
 
     def _test_environment(self, extension):
         """Test extension environment variables."""
-        env = extension._env
-        assert isinstance(env, dict), "_env property must return a dictionary"
+        env_vars = extension._env
+        assert isinstance(env_vars, dict), "_env property must return a dictionary"
 
     def test_model_registry_functionality(self, model_registry):
         """Test model registry functionality."""

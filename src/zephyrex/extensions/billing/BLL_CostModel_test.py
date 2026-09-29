@@ -33,7 +33,7 @@ def test_constant_cost_zero_is_valid():
 def test_constant_cost_frozen():
     m = ConstantCostModel(per_call_usd=Decimal("1.00"))
     with pytest.raises(Exception):
-        m.per_call_usd = Decimal("2.00")  # type: ignore[misc]
+        m.per_call_usd = Decimal("2.00")
 
 
 # ---------- TokenBasedCostModel ----------------------------------------------
@@ -196,7 +196,7 @@ def test_tenant_cap_invalid_window_rejected_at_construction():
 def test_tenant_cap_frozen():
     cap = TenantCostCap(cap_usd=Decimal("100"))
     with pytest.raises(Exception):
-        cap.cap_usd = Decimal("200")  # type: ignore[misc]
+        cap.cap_usd = Decimal("200")
 
 
 # ---------- Protocol conformance --------------------------------------------

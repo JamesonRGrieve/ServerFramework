@@ -28,14 +28,8 @@ def _hook_reset_around_each_test():
     # Re-register with the extension's defaults so unrelated tests that
     # depend on the loaded extension keep working under pytest-xdist.
     import zephyrex.extensions.auth_session.BLL_Session as session_mod
-    from zephyrex.logic.BLL_Auth import register_session_hooks
 
-    register_session_hooks(
-        issue_session=session_mod.issue_session,
-        enforce_not_revoked=session_mod.enforce_not_revoked,
-        manager_factory=session_mod.session_manager_factory,
-        revoke_user_sessions=session_mod.revoke_user_sessions,
-    )
+    session_mod.register_hooks()
 
 
 def test_register_session_hooks_partial_update():
@@ -55,19 +49,18 @@ def test_register_session_hooks_partial_update():
     assert _session_hooks["revoke_user_sessions"] is None
 
 
-def test_extension_on_load_registers_all_four_hooks():
-    """The extension's ``on_load`` wires every hook the core uses."""
-    from zephyrex.extensions.auth_session.EXT_Session import (
-        AuthSessionExtension,
-    )
+def test_register_hooks_wires_all_four_hooks():
+    """``BLL_Session.register_hooks`` (run when the module is imported) wires
+    every hook the core uses to this module's implementations."""
+    import zephyrex.extensions.auth_session.BLL_Session as session_mod
     from zephyrex.logic.BLL_Auth import _session_hooks
 
-    AuthSessionExtension.on_load()
+    session_mod.register_hooks()
 
-    assert _session_hooks["issue_session"] is not None
-    assert _session_hooks["enforce_not_revoked"] is not None
-    assert _session_hooks["manager_factory"] is not None
-    assert _session_hooks["revoke_user_sessions"] is not None
+    assert _session_hooks["issue_session"] is session_mod.issue_session
+    assert _session_hooks["enforce_not_revoked"] is session_mod.enforce_not_revoked
+    assert _session_hooks["manager_factory"] is session_mod.session_manager_factory
+    assert _session_hooks["revoke_user_sessions"] is session_mod.revoke_user_sessions
 
 
 def test_pep562_lazy_import_resolves_session_model():
@@ -247,12 +240,7 @@ class TestEnforceNotRevoked:
         _reset_hooks()
         import zephyrex.extensions.auth_session.BLL_Session as session_mod
 
-        session_mod.register_session_hooks(
-            issue_session=session_mod.issue_session,
-            enforce_not_revoked=session_mod.enforce_not_revoked,
-            manager_factory=session_mod.session_manager_factory,
-            revoke_user_sessions=session_mod.revoke_user_sessions,
-        )
+        session_mod.register_hooks()
 
     def test_missing_jti_raises(self):
         from zephyrex.extensions.auth_session.BLL_Session import (

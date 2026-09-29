@@ -13,7 +13,7 @@ from typing import Any, ClassVar, Dict, List, Optional
 try:
     from square.client import Client as SquareClient
 except ImportError:
-    SquareClient = None  # type: ignore[assignment, misc]
+    SquareClient = None
     import warnings
 
     warnings.warn(
@@ -35,7 +35,7 @@ from zephyrex.extensions.payment.EXT_Payment import (
 from zephyrex.lib.Dependencies import Dependencies, PIP_Dependency
 from zephyrex.lib.Environment import env
 from zephyrex.lib.Logging import logger
-from zephyrex.pydantic2.registry import BaseModel  # type: ignore[no-redef]
+from zephyrex.pydantic2.registry import BaseModel
 from zephyrex.logic.AbstractLogicManager import ModelMeta
 from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 
@@ -299,15 +299,15 @@ class PaymentExtensionSquareProvider(AbstractPaymentProvider):
 
     @classmethod
     def get_access_token(cls) -> Optional[str]:
-        return env("SQUARE_ACCESS_TOKEN")  # type: ignore[no-any-return]
+        return env("SQUARE_ACCESS_TOKEN")
 
     @classmethod
     def get_app_id(cls) -> Optional[str]:
-        return env("SQUARE_APP_ID")  # type: ignore[no-any-return]
+        return env("SQUARE_APP_ID")
 
     @classmethod
     def get_webhook_signature_key(cls) -> Optional[str]:
-        return env("SQUARE_WEBHOOK_SIGNATURE_KEY")  # type: ignore[no-any-return]
+        return env("SQUARE_WEBHOOK_SIGNATURE_KEY")
 
     @classmethod
     def validate_config(cls) -> bool:

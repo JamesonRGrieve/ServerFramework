@@ -1147,7 +1147,7 @@ class AbstractExternalModel(BaseModel, ABC):
             return cached  # type: ignore[no-any-return]
         normalized = normalize_mappings(cls.field_mappings)
         cls._field_mappings_cache = normalized  # type: ignore[attr-defined]
-        return normalized  # type: ignore[no-any-return]
+        return normalized
 
     @classmethod
     def to_external_format(cls, internal_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -1158,13 +1158,13 @@ class AbstractExternalModel(BaseModel, ABC):
         provider-specific shapes that the pipeline cannot express.
         """
 
-        return apply_to_external(cls._normalized_field_mappings(), internal_data)  # type: ignore[no-any-return]
+        return apply_to_external(cls._normalized_field_mappings(), internal_data)
 
     @classmethod
     def from_external_format(cls, external_data: Dict[str, Any]) -> Dict[str, Any]:
         """Convert external API format to internal data format."""
 
-        return apply_from_external(cls._normalized_field_mappings(), external_data)  # type: ignore[no-any-return]
+        return apply_from_external(cls._normalized_field_mappings(), external_data)
 
     @classmethod
     def to_external_query_format(
@@ -1204,7 +1204,7 @@ class AbstractExternalModel(BaseModel, ABC):
             # This is API-specific - override in subclasses
             external_params["order"] = order_by
 
-        return external_params  # type: ignore[no-any-return]
+        return external_params
 
     @staticmethod
     @abstractmethod
@@ -1599,7 +1599,7 @@ class AbstractExternalManager(AbstractBLLManager):
         if self.Model is not None and self.Model.supports_bulk("create"):
             external_items = [self.Model.to_external_format(it) for it in items]
             try:
-                payloads = self.rotation_manager.rotate(  # type: ignore[union-attr]
+                payloads = self.rotation_manager.rotate(
                     self.Model.batch_create_via_provider,
                     items=external_items,
                 )
@@ -1651,7 +1651,7 @@ class AbstractExternalManager(AbstractBLLManager):
                 for it in items
             ]
             try:
-                payloads = self.rotation_manager.rotate(  # type: ignore[union-attr]
+                payloads = self.rotation_manager.rotate(
                     self.Model.batch_update_via_provider,
                     updates=updates,
                 )
@@ -1670,9 +1670,7 @@ class AbstractExternalManager(AbstractBLLManager):
 
         for idx, item in enumerate(items):
             try:
-                updated = self.update(  # type: ignore[attr-defined]
-                    id=item["id"], **(item.get("data") or {})
-                )
+                updated = self.update(id=item["id"], **(item.get("data") or {}))
                 result.successes.append((idx, updated))
             except BaseExternalError as exc:
                 result.failures.append((idx, exc))
@@ -1697,7 +1695,7 @@ class AbstractExternalManager(AbstractBLLManager):
         result = BatchResult()
         if self.Model is not None and self.Model.supports_bulk("delete"):
             try:
-                payloads = self.rotation_manager.rotate(  # type: ignore[union-attr]
+                payloads = self.rotation_manager.rotate(
                     self.Model.batch_delete_via_provider,
                     external_ids=ids,
                 )
@@ -1714,7 +1712,7 @@ class AbstractExternalManager(AbstractBLLManager):
 
         for idx, entity_id in enumerate(ids):
             try:
-                self.delete(id=entity_id)  # type: ignore[attr-defined]
+                self.delete(id=entity_id)
                 result.successes.append((idx, None))
             except BaseExternalError as exc:
                 result.failures.append((idx, exc))

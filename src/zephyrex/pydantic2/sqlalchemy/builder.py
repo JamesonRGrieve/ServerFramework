@@ -8,7 +8,6 @@ from typing import (
     Set,
     Tuple,
     Type,
-    Union,
     get_args,
     get_origin,
     get_type_hints,
@@ -23,6 +22,8 @@ from sqlalchemy.orm import relationship
 from zephyrex.database.AbstractDatabaseEntity import BaseMixin, ImageMixin, UpdateMixin
 from zephyrex.lib.AbstractPydantic2 import default_name_processor
 from zephyrex.lib.Logging import logger
+from zephyrex.lib.TypeUnions import is_optional as is_optional_annotation
+from zephyrex.lib.TypeUnions import non_none_args
 from zephyrex.pydantic2.util import (
     PRIMARY_KEY_FIELD,
     is_reference_field_name,
@@ -46,7 +47,7 @@ def _sanitize_field_name(field_name: str) -> str:
     """
     from zephyrex.lib.AbstractPydantic2 import NameProcessor
 
-    return NameProcessor.sanitize_name(field_name, RESERVED_SQLALCHEMY_NAMES)  # type: ignore[no-any-return]
+    return NameProcessor.sanitize_name(field_name, RESERVED_SQLALCHEMY_NAMES)
 
 
 def clear_registry_cache() -> None:
@@ -159,7 +160,7 @@ def _extract_mixin_classes(pydantic_model: Type[BaseModel]) -> List[Type[Any]]:
     Returns:
         List of SQLAlchemy mixin classes
     """
-    base_classes = []
+    base_classes: List[Type[Any]] = []
 
     # Always include BaseMixin as it provides essential CRUD methods
     base_classes.append(BaseMixin)
@@ -259,17 +260,14 @@ def _create_column_from_field(
     Returns:
         SQLAlchemy Column or None if it should be skipped
     """
-    # Handle Optional types to get the actual type
+    # Handle Optional types (``Optional[X]`` and ``X | None``) to get the
+    # actual type
     actual_field_type: Type[Any] = field_type
-    is_optional: bool = False
-    if get_origin(field_type) is Union:
-        args = get_args(field_type)
-        if type(None) in args:
-            is_optional = True
-            # Extract the actual type from Optional
-            non_none_args = [arg for arg in args if arg is not type(None)]
-            if non_none_args:
-                actual_field_type = non_none_args[0]
+    is_optional: bool = is_optional_annotation(field_type)
+    if is_optional:
+        members = non_none_args(field_type)
+        if members:
+            actual_field_type = members[0]
 
     # Skip relationship fields (fields whose type is another Pydantic model)
     if inspect.isclass(actual_field_type) and issubclass(actual_field_type, BaseModel):
@@ -412,7 +410,7 @@ def _resolve_sqlalchemy_model(
             model_name in normalized_candidates
             or model_name.lower() in normalized_lower
         ):
-            return sqlalchemy_model  # type: ignore[no-any-return]
+            return sqlalchemy_model
 
     return None
 
@@ -785,7 +783,7 @@ def create_sqlalchemy_model(
             pydantic_model, for_generation=True
         )
         if existing_model:
-            return existing_model  # type: ignore[no-any-return]
+            return existing_model
 
         in_progress_set = getattr(
             model_registry, "_sqlalchemy_models_in_progress", None
@@ -797,7 +795,7 @@ def create_sqlalchemy_model(
         if pydantic_model in in_progress_set:
             existing = model_registry.db_models.get(pydantic_model)
             if existing is not None:
-                return existing  # type: ignore[no-any-return]
+                return existing
         else:
             in_progress_set.add(pydantic_model)
     # Note: Global registry fallback removed - all models must use isolated ModelRegistry

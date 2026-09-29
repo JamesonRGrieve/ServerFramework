@@ -612,7 +612,7 @@ def resolve_principal_from_api_key(api_key: Optional[str]) -> Optional[str]:
     for key_var, id_var in candidates:
         configured = env(key_var)
         if compare_api_key(api_key, configured):
-            return env(id_var)  # type: ignore[no-any-return]
+            return env(id_var)
     return None
 
 
@@ -1109,6 +1109,38 @@ class NoOpAnomalyDetector(AnomalyDetector):
 # at app startup from `@rate_limit`-decorated handlers. Key is normalized
 # `path` (FastAPI's templated form, e.g. `/v1/user/{id}`).
 _RATE_LIMIT_REGISTRY: Dict[Tuple[str, str], Tuple[int, int, str]] = {}
+# Templated paths, compiled: the middleware runs before routing resolves the
+# route, so a request path is matched against these patterns.
+_TEMPLATED_RATE_LIMITS: Dict[
+    str, List[Tuple["re.Pattern[str]", Tuple[int, int, str]]]
+] = {}
+
+# Attributes `@rate_limit` stamps on a callable.
+RATE_LIMIT_MARKERS: Tuple[str, ...] = (
+    "_rate_limit_spec",
+    "_rate_limit_count",
+    "_rate_limit_window_seconds",
+    "_rate_limit_scope",
+)
+
+
+def carry_rate_limit(source: Any, target: Any) -> None:
+    """Copy `@rate_limit` metadata from a handler onto the endpoint that
+    serves it, so route discovery sees the policy on the mounted endpoint."""
+    for marker in RATE_LIMIT_MARKERS:
+        if hasattr(source, marker):
+            setattr(target, marker, getattr(source, marker))
+
+
+def _rate_limit_policy(method: str, path: str) -> Optional[Tuple[int, int, str]]:
+    """The policy for a request, by exact path or templated pattern."""
+    policy = _RATE_LIMIT_REGISTRY.get((method, path))
+    if policy is not None:
+        return policy
+    for pattern, templated_policy in _TEMPLATED_RATE_LIMITS.get(method, []):
+        if pattern.match(path):
+            return templated_policy
+    return None
 
 
 def register_rate_limited_route(
@@ -1127,7 +1159,26 @@ def register_rate_limited_route(
             f"register_rate_limited_route: count and window_seconds must be > 0 "
             f"(got count={count}, window_seconds={window_seconds})"
         )
-    _RATE_LIMIT_REGISTRY[(method.upper(), path)] = (count, window_seconds, scope)
+    policy = (count, window_seconds, scope)
+    _RATE_LIMIT_REGISTRY[(method.upper(), path)] = policy
+    if "{" in path:
+        from starlette.routing import compile_path
+
+        pattern = compile_path(path)[0]
+        templated = _TEMPLATED_RATE_LIMITS.setdefault(method.upper(), [])
+        templated[:] = [
+            (p, pol) for p, pol in templated if p.pattern != pattern.pattern
+        ]
+        templated.append((pattern, policy))
+
+
+def reset_rate_limit_counts() -> None:
+    """Forget every request counted so far, keeping the registered policies.
+
+    Test isolation: a test suite drives one app from one client address, so
+    counts from earlier tests would otherwise throttle later ones.
+    """
+    _inmemory_counter.reset()
 
 
 def reset_rate_limit_state() -> None:
@@ -1140,7 +1191,7 @@ def reset_rate_limit_state() -> None:
     does not gate the same path in the next.
 
     The pluggable counter override (`set_rate_limit_counter`, e.g. the Valkey
-    backend wired by the database_memory extension's ``on_load``) is reverted
+    backend wired by the database_memory extension's ``wire_framework_backends``) is reverted
     to ``None`` as well: otherwise resetting only ``_inmemory_counter`` leaves
     a stale/foreign backend active, and enforcement counts bleed across tests
     (an installed backend made ``test_429_after_limit`` under-count and return
@@ -1148,6 +1199,7 @@ def reset_rate_limit_state() -> None:
     """
     global _rate_limit_counter
     _RATE_LIMIT_REGISTRY.clear()
+    _TEMPLATED_RATE_LIMITS.clear()
     _inmemory_counter.reset()
     _rate_limit_counter = None
 
@@ -1232,16 +1284,9 @@ class RateLimitMiddleware:
 
         method = scope_dict.get("method", "").upper()
         path = scope_dict.get("path", "")
-        # Match against templated paths in the registry. The router populates
-        # `scope_dict["route"]` once routing has resolved; before that we walk
-        # the registry. Cheap enough for the typical sub-100-route surface.
-        policy = _RATE_LIMIT_REGISTRY.get((method, path))
-        if policy is None:
-            # Try resolved-route path template if FastAPI has populated it.
-            route = scope_dict.get("route")
-            template = getattr(route, "path", None) if route else None
-            if template:
-                policy = _RATE_LIMIT_REGISTRY.get((method, template))
+        # Middleware runs before routing, so templated routes are matched by
+        # pattern rather than through a resolved route.
+        policy = _rate_limit_policy(method, path)
 
         if policy is None:
             await self.app(scope_dict, receive, send)
@@ -1369,9 +1414,12 @@ def discover_rate_limited_routes(app: Any) -> int:
 
     Called from `build_app` after every router has been mounted.
     """
+    from fastapi.routing import iter_route_contexts
+
     count = 0
-    routes = getattr(app, "routes", None) or []
-    for route in routes:
+    # Included routers stay nested in ``app.routes``; iterate the effective
+    # routes (full paths) rather than the top level.
+    for route in iter_route_contexts(getattr(app, "routes", None) or []):
         endpoint = getattr(route, "endpoint", None)
         if endpoint is None:
             continue

@@ -41,7 +41,7 @@ try:
     _google_available = True
 except ImportError:  # pragma: no cover - optional driver
     _GoogleCredentials = None  # type: ignore[assignment,misc]
-    _google_build = None  # type: ignore[assignment,misc]
+    _google_build = None
     _google_available = False
 
 
@@ -184,7 +184,7 @@ class GoogleProvider(AbstractEmailProvider):
         )
         if validation_error:
             logger.error(validation_error)
-            return validation_error  # type: ignore[no-any-return]
+            return validation_error
         if not _google_available:
             return "Failed to send email: google client not installed"
         bonded = cls.bond_instance(provider_instance)

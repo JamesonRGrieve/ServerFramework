@@ -101,7 +101,7 @@ def fetch_openapi_spec(
         Any ``httpx`` exception when the request fails.
     """
     try:
-        import httpx  # type: ignore[import-not-found]
+        import httpx
     except ImportError as exc:  # pragma: no cover - httpx is a runtime dep
         raise RuntimeError(
             "httpx is required for fetch_openapi_spec; install via pip"

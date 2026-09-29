@@ -486,31 +486,3 @@ class TestPayment_UserAndSessionEndpoints(
         response_data = create_response.json()
         user = response_data.get("user", response_data)
         assert user["external_payment_id"] == "cus_search_test_customer"
-
-    def _generate_jwt_for_user(self, user_data: Dict[str, Any]) -> str:
-        """Generate a JWT token for the given user data for testing purposes."""
-        from zephyrex.logic.BLL_Auth import UserManager
-
-        # Extract user ID and email from various data structures
-        user_id = None
-        email = None
-
-        if "id" in user_data:
-            user_id = user_data["id"]
-            email = user_data.get("email")
-        elif isinstance(user_data, dict) and "user" in user_data:
-            user_data = user_data["user"]
-            user_id = user_data.get("id")
-            email = user_data.get("email")
-
-        if not user_id:
-            raise ValueError(f"Cannot extract user ID from user data: {user_data}")
-
-        if not email:
-            email = f"user_{user_id}@example.com"
-
-        # Generate JWT directly using UserManager static method
-        jwt_token = UserManager.generate_jwt_token(
-            user_id=user_id, email=email, timezone_str="UTC"
-        )
-        return jwt_token  # type: ignore[no-any-return]

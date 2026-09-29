@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Tests for the auth_merge extension.
 
 Covers:
@@ -24,6 +25,7 @@ from zephyrex.extensions.auth_merge.BLL_Auth_Merge import (
     unregister_merge_handler,
 )
 from zephyrex.extensions.auth_merge.EXT_Auth_Merge import EXT_Auth_Merge
+from zephyrex.logic.AbstractLogicManager.manager import CachedRequester
 
 
 class TestCanonicalWiring:
@@ -60,13 +62,10 @@ class TestMergeHandlerRegistry:
     def setup_method(self):
         # Other extensions (auth_notifications, oauth_consumer,
         # auth_api_keys, auth_recovery_questions) register handlers at
-        # ``EXT.on_initialize`` time. When those lifecycle hooks run
-        # earlier in the worker process, the global ``_HANDLERS`` dict
-        # carries the registrations into this test class — and they
-        # crash on ``model_registry=None`` payloads, leaking errors
-        # into ``_run_merge_handlers``'s return. Snapshot and restore
-        # the registry around each test so this class only sees the
-        # handlers it explicitly registers.
+        # ``EXT.on_initialize`` time, i.e. whenever an app loading them is
+        # built earlier in the worker process. Snapshot and restore the
+        # registry around each test so this class only sees the handlers it
+        # explicitly registers.
         from zephyrex.extensions.auth_merge.BLL_Auth_Merge import (
             _HANDLERS,
         )
@@ -109,7 +108,7 @@ class TestMergeHandlerRegistry:
             requester_id="r",
             model_registry=None,
         )
-        errors = _run_merge_handlers(ctx)
+        errors = _run_merge_handlers(ctx, {"test-capture"})
         assert errors == {}
         assert captured["ctx"].initiating_user_id == "i"
         assert captured["ctx"].target_user_id == "t"
@@ -134,7 +133,7 @@ class TestMergeHandlerRegistry:
             requester_id="r",
             model_registry=None,
         )
-        errors = _run_merge_handlers(ctx)
+        errors = _run_merge_handlers(ctx, {"test-fails", "test-succeeds"})
         assert "test-fails" in errors
         assert "boom" in errors["test-fails"]
         assert "test-succeeds" not in errors
@@ -154,7 +153,7 @@ class TestMergeHandlerRegistry:
             requester_id="r",
             model_registry=None,
         )
-        _run_merge_handlers(ctx)
+        _run_merge_handlers(ctx, {"test-remove"})
         assert called["count"] == 0
 
     def test_register_overwrites(self):
@@ -176,9 +175,31 @@ class TestMergeHandlerRegistry:
             requester_id="r",
             model_registry=None,
         )
-        _run_merge_handlers(ctx)
+        _run_merge_handlers(ctx, {"test-same"})
         assert first_called["v"] is False
         assert second_called["v"] is True
+
+    def test_handler_of_extension_not_loaded_is_skipped(self):
+        """The handler table is process-global; a merge in an app that did not
+        load the registering extension must not run its handler."""
+        called = {"loaded": False, "absent": False}
+
+        def loaded(ctx):
+            called["loaded"] = True
+
+        def absent(ctx):
+            called["absent"] = True
+
+        self._register("test-loaded", loaded)
+        self._register("test-absent", absent)
+        ctx = MergeContext(
+            initiating_user_id="i",
+            target_user_id="t",
+            requester_id="r",
+            model_registry=None,
+        )
+        assert _run_merge_handlers(ctx, {"test-loaded"}) == {}
+        assert called == {"loaded": True, "absent": False}
 
 
 class TestParticipatingExtensions:
@@ -229,11 +250,7 @@ class TestAuthorization:
     def _manager_with_requester(self, requester_id: str) -> UserMergeManager:
         manager = UserMergeManager.__new__(UserMergeManager)
         manager.model_registry = None
-
-        class _Stub:
-            id = requester_id
-
-        manager.requester = _Stub()
+        manager.requester = CachedRequester(id=requester_id)
         return manager
 
     def test_non_root_third_party_caller_rejected(self):

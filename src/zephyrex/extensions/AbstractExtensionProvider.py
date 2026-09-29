@@ -24,6 +24,7 @@ from zephyrex.lib.Paths import (
     extensions_dir as _resolve_extensions_dir,
     src_dir as _resolve_src_dir,
 )
+from zephyrex.pydantic2.fastapi.types import CustomRouteConfig
 from zephyrex.pydantic2.registry import classproperty
 from zephyrex.logic.BLL_Providers import ProviderInstanceModel, RotationManager
 
@@ -128,23 +129,15 @@ class ExtensionRegistry(AbstractRegistry):
             router = router_info["router"]
 
         method_name = method.__name__
+        config: CustomRouteConfig
         for config in method._static_route_config:  # type: ignore[attr-defined]
-            # Extract route configuration
-            path = getattr(config, "path", f"/{method_name}")
-            http_method = (
-                getattr(config, "method", "POST").value.lower()  # type: ignore[union-attr]
-                if hasattr(getattr(config, "method", "POST"), "value")
-                else str(getattr(config, "method", "POST")).lower()
-            )
-            summary = getattr(config, "summary", f"{extension_name}.{method_name}")
-            description = getattr(config, "description", method.__doc__)
-
-            # Add the route to the router
+            path = config.path
+            http_method = config.method.value.lower()
             router_method = getattr(router, http_method)
             router_method(
                 path,
-                summary=summary,
-                description=description,
+                summary=config.summary or f"{extension_name}.{method_name}",
+                description=config.description or method.__doc__,
                 response_model=None,  # Let FastAPI infer from return type
             )(method)
 
@@ -306,7 +299,7 @@ class ExtensionRegistry(AbstractRegistry):
         back to the framework default (``<src_dir>/extensions`` or whatever
         ``Paths.set_extensions_root`` has configured globally).
         """
-        return _resolve_extensions_dir(self.extensions_path)  # type: ignore[no-any-return]
+        return _resolve_extensions_dir(self.extensions_path)
 
     def _extension_dir(self, extension_name: str) -> str:
         """Path to a specific extension's directory.
@@ -329,6 +322,41 @@ class ExtensionRegistry(AbstractRegistry):
     def csv(self) -> str:
         """Get CSV string of extension names in dependency order."""
         return ",".join(ext_class.name for ext_class in self.extensions)
+
+    @property
+    def extension_names(self) -> frozenset[str]:
+        """Names of every extension loaded into this registry."""
+        return frozenset(ext_class.name for ext_class in self.extensions)
+
+    def initialize_extensions(self) -> None:
+        """Call ``on_initialize`` on every loaded extension, in dependency
+        order. An extension that returns False cannot run, so the build
+        stops with an error naming it."""
+        from zephyrex import ExtensionLoadError
+
+        for extension_class in self.extensions:
+            if not extension_class.on_initialize():
+                raise ExtensionLoadError(
+                    f"Extension '{extension_class.name}' failed to initialize "
+                    f"(on_initialize returned False); see the log for its reason"
+                )
+
+    def start_extensions(self) -> None:
+        """Call ``on_start`` on every loaded extension, in dependency order."""
+        for extension_class in self.extensions:
+            extension_class.on_start()
+
+    def stop_extensions(self) -> None:
+        """Call ``on_stop`` on every loaded extension, in reverse dependency
+        order. Every extension gets its turn even when an earlier one raises;
+        each failure is logged."""
+        for extension_class in reversed(list(self.extensions)):
+            try:
+                extension_class.on_stop()
+            except Exception:
+                logger.exception(
+                    "Extension '%s' raised in on_stop", extension_class.name
+                )
 
     # Extension names must be safe Python module identifiers — letters,
     # digits, underscores. Anything else (path separators, dots, shell
@@ -638,7 +666,7 @@ class ExtensionRegistry(AbstractRegistry):
             return {}
 
         # Check all dependencies
-        return dependencies.check(self.loaded_extensions)  # type: ignore[no-any-return]
+        return dependencies.check(self.loaded_extensions)
 
     def are_optional_dependencies_met(
         self, extension_class: Type["AbstractStaticExtension"]
@@ -684,22 +712,15 @@ class ExtensionRegistry(AbstractRegistry):
         from zephyrex.lib.Dependencies import EXT_Dependency
 
         # Build dependency graph
-        dependency_graph = {}
-        for ext_name, ext_class in available_extensions.items():
-            deps = []
-            if hasattr(ext_class, "dependencies") and ext_class.dependencies:
-                # Handle both Dependencies object and list of dependencies
-                if hasattr(ext_class.dependencies, "ext"):
-                    # Dependencies object with .ext property
-                    for dep in ext_class.dependencies.ext:
-                        if not dep.optional:  # Only consider required dependencies
-                            deps.append(dep.name)
-                elif hasattr(ext_class.dependencies, "__iter__"):
-                    # Direct list/iterable of EXT_Dependency objects
-                    for dep in ext_class.dependencies:
-                        if isinstance(dep, EXT_Dependency) and not dep.optional:
-                            deps.append(dep.name)
-            dependency_graph[ext_name] = deps
+        # Only required extension dependencies constrain the order.
+        dependency_graph: Dict[str, List[str]] = {
+            ext_name: [
+                declared.name
+                for declared in ext_class.dependencies
+                if isinstance(declared, EXT_Dependency) and not declared.optional
+            ]
+            for ext_name, ext_class in available_extensions.items()
+        }
 
         # Topological sort using Kahn's algorithm
         in_degree = {ext: 0 for ext in dependency_graph}
@@ -1388,9 +1409,6 @@ class AbstractStaticExtensionMeta(ABCMeta):
         # Register all @static_routes upon class definition
         from zephyrex.extensions.AbstractExtensionProvider import ExtensionRegistry
 
-        if name == "EXT_Auth_MFA":
-            logger.debug("hi")
-
         for attr_name in dir(cls):
             attr = getattr(cls, attr_name)
             if hasattr(attr, "_static_route_config"):
@@ -1446,19 +1464,30 @@ class AbstractStaticExtension(
     # Extension metadata (class attributes)
     version: ClassVar[str] = "0.1.0"
 
-    # -- Default lifecycle methods -----------------------------------------
-    # Subclasses override only when they have real work to do (e.g. connect
-    # to Redis, validate env vars, clean up resources).
+    # -- Lifecycle ------------------------------------------------------------
+    # The framework drives these through ``ExtensionRegistry``; subclasses
+    # override only when they have real work to do. Every app build calls them
+    # again, so an override must be safe to repeat.
 
     @classmethod
-    def on_start(cls) -> bool:
-        """Called when the extension starts. Override for real init work."""
+    def on_initialize(cls) -> bool:
+        """Called once per app build, after the extension's BLL/PRV modules
+        and models are imported and before the database is migrated.
+
+        Register hooks and participation here. Return False only when the
+        extension cannot function at all; the app build then fails with an
+        error naming the extension."""
         return True
 
     @classmethod
-    def on_stop(cls) -> bool:
-        """Called when the extension stops. Override for cleanup work."""
-        return True
+    def on_start(cls) -> None:
+        """Called at app startup (FastAPI lifespan), after the worker's
+        database engine is ready and before background services start."""
+
+    @classmethod
+    def on_stop(cls) -> None:
+        """Called at app shutdown (FastAPI lifespan), in reverse load order,
+        before the worker's database engine is closed."""
 
     @classmethod
     def validate_config(cls) -> List[str]:

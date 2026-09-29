@@ -61,7 +61,7 @@ def generate_sbom(metadata: Dict[str, Any]) -> str:
         then, this hand-rolled emission keeps the contract enforceable.
     """
     try:  # pragma: no cover - exercised when the optional dep is installed
-        import cyclonedx  # type: ignore[import-not-found]  # noqa: F401
+        import cyclonedx  # noqa: F401
 
         # If the official library is installed we still emit our hand-rolled
         # JSON; integrating the library's serializer requires constructing

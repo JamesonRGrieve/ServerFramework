@@ -100,7 +100,7 @@ def test_set_error_reporter_rejects_non_subclass():
     """Type discipline — ``set_error_reporter(object())`` is a programmer
     bug; we surface it at install time, not at the first ``report``."""
     with pytest.raises(TypeError):
-        set_error_reporter("not-a-reporter")  # type: ignore[arg-type]
+        set_error_reporter("not-a-reporter")
 
 
 # ----- Context enrichment ---------------------------------------------------
@@ -214,7 +214,7 @@ def test_error_reporter_abc_cannot_be_instantiated_directly():
     """The ABC must not be instantiable — concrete subclasses must
     implement ``report``."""
     with pytest.raises(TypeError):
-        ErrorReporter()  # type: ignore[abstract]
+        ErrorReporter()
 
 
 @pytest.mark.unit
@@ -223,4 +223,4 @@ def test_error_reporter_subclass_must_implement_report():
         pass
 
     with pytest.raises(TypeError):
-        IncompleteReporter()  # type: ignore[abstract]
+        IncompleteReporter()

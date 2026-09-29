@@ -187,7 +187,7 @@ class TestAnomalyDetector:
 
     def test_abc_requires_implementation(self):
         with pytest.raises(TypeError):
-            AnomalyDetector()  # type: ignore[abstract]
+            AnomalyDetector()
 
 
 # ---------------------------------------------------------------------------

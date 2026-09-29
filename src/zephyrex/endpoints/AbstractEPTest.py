@@ -5,7 +5,6 @@ import uuid
 from dataclasses import dataclass
 from enum import Enum
 from itertools import combinations
-from types import UnionType
 from typing import (
     TYPE_CHECKING,
     Annotated,
@@ -44,7 +43,9 @@ from zephyrex.lib.ContentNegotiation import (
     serialize,
 )
 from zephyrex.lib.Environment import env, inflection
+from zephyrex.lib.InboundSecurity import reset_rate_limit_counts
 from zephyrex.lib.Logging import logger
+from zephyrex.lib.TypeUnions import is_union, non_none_args
 from zephyrex.pydantic2.registry import PydanticUtility
 from zephyrex.lib.Scalability import (
     ScalabilityProfile,
@@ -146,7 +147,8 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
     # override these before tests run.
     base_endpoint: str = None  # type: ignore[assignment]
     entity_name: str = None  # type: ignore[assignment]
-    string_field_to_update: str = "name"
+    # None: the entity has no free-form string field to exercise updates with.
+    string_field_to_update: Optional[str] = "name"
     required_fields: List[str] = None  # type: ignore[assignment]
     create_fields: Dict[str, Any] = None  # type: ignore[assignment]
     update_fields: Dict[str, Any] = None  # type: ignore[assignment]
@@ -255,7 +257,7 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
     @property
     def resource_name_plural(self) -> str:
         """Get the pluralized resource name for requests."""
-        return inflection.plural(self.entity_name)  # type: ignore[no-any-return]
+        return inflection.plural(self.entity_name)
 
     def _get_nesting_level(self, operation: str) -> int:
         """Get the nesting level for a given operation, respecting overrides."""
@@ -366,7 +368,7 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
                 AbstractEPTest._annotation_contains_any(arg)
                 for arg in get_args(annotation)
             )
-        if origin is Union:
+        if is_union(annotation):
             return any(
                 AbstractEPTest._annotation_contains_any(arg)
                 for arg in get_args(annotation)
@@ -431,10 +433,8 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
                     return None
                 if origin is dict:
                     return None
-                if origin in {Union, UnionType}:
-                    union_args = [
-                        arg for arg in get_args(annotation) if arg is not type(None)
-                    ]
+                if is_union(annotation):
+                    union_args = non_none_args(annotation)
                     return _resolve_related_model(union_args[0]) if union_args else None
 
             if isinstance(annotation, str):
@@ -4030,14 +4030,9 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
                 if field_name in type_hints:
                     field_type = type_hints[field_name]
 
-                    # Handle Optional[bool] and Union[bool, None]
-                    origin = get_origin(field_type)
-                    if origin is Union or (
-                        hasattr(origin, "__class__") and origin is UnionType
-                    ):
-                        args = get_args(field_type)
-                        # Check if any of the union args is bool (handles Optional[bool])
-                        return bool in args
+                    # Handle Optional[bool] and bool | None
+                    if is_union(field_type):
+                        return bool in get_args(field_type)
 
                     # Direct bool type
                     return field_type is bool
@@ -6023,6 +6018,9 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
 
         def setup(target_n: int) -> None:
             while seeded["count"] < target_n:
+                # Seeding is not the subject; creates through a rate-limited
+                # route (e.g. user registration) must not trip its limit.
+                reset_rate_limit_counts()
                 self._create(
                     server,
                     admin_a.jwt,
@@ -6193,7 +6191,7 @@ class FormatTestMixin:
     def _serialize_fmt(data: Any, fmt: str) -> str:
         """Serialize *data* to the canonical format key (body text only)."""
         body, _ = serialize(data, fmt)
-        return body  # type: ignore[no-any-return]
+        return body
 
     @staticmethod
     def _strip_none_values(data: Any) -> Any:

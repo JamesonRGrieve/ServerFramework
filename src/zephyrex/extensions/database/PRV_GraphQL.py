@@ -29,9 +29,9 @@ try:  # optional driver — guarded so discovery never fails on a missing packag
 
     _gql_available = True
 except ImportError:  # pragma: no cover - optional driver
-    _GqlClient = None  # type: ignore[assignment]
-    _gql = None  # type: ignore[assignment]
-    _RequestsHTTPTransport = None  # type: ignore[assignment]
+    _GqlClient = None
+    _gql = None
+    _RequestsHTTPTransport = None
     _gql_available = False
 
 GRAPHQL_DEFAULT_HOST = "localhost"

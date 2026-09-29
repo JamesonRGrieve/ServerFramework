@@ -7,9 +7,6 @@ from typing import (
     List,
     Optional,
     Type,
-    Union,
-    get_args,
-    get_origin,
     get_type_hints,
 )
 
@@ -19,6 +16,7 @@ from sqlalchemy.ext.declarative import declared_attr
 from sqlalchemy.orm import relationship
 
 from zephyrex.lib.Logging import logger
+from zephyrex.lib.TypeUnions import is_optional
 from zephyrex.pydantic2.util import (
     is_reference_field_name,
     reference_relationship_name,
@@ -221,11 +219,7 @@ class ModelConverter:
             try:
                 # Initialize missing optional fields with None
                 for field_name, field_type in get_type_hints(pydantic_class).items():
-                    if (
-                        field_name not in data
-                        and get_origin(field_type) is Union
-                        and type(None) in get_args(field_type)
-                    ):
+                    if field_name not in data and is_optional(field_type):
                         data[field_name] = None
 
                 # Create Pydantic model instance based on version

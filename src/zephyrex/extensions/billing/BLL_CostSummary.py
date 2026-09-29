@@ -124,7 +124,7 @@ class CostRollupAggregator:
                     tenant_id=tenant_id,
                     provider=provider,
                     ability=ability,
-                    period=period,  # type: ignore[arg-type]
+                    period=period,
                     period_key=period_key,
                     total_cost_usd=bucket.cost,
                     call_count=bucket.count,
