@@ -18,6 +18,7 @@ from zephyrex.lib.Credentials import (
     cache_bust_on_auth_rejection,
     clear_bad,
     invalidate,
+    is_secret_setting,
     is_marked_bad,
     mark_bad,
     redact,
@@ -187,6 +188,31 @@ def test_cache_bust_on_auth_rejection_marks_bad_when_identical(isolated_env):
     with pytest.raises(RuntimeError, match="re-resolved identical"):
         cache_bust_on_auth_rejection(ref)
     assert is_marked_bad(ref)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "SENDGRID_API_KEY",
+        "OPENBAO_SECRET_ID",
+        "OPENBAO_TOKEN",
+        "SMTP_PASSWORD",
+        "SENTRY_DSN",
+        "STRIPE_WEBHOOK_SIGNING_SECRET",
+        "GOOGLE_PRIVATE_KEY",
+        "TLS_CLIENT_CERT",
+        "basic_auth_header",
+    ],
+)
+def test_credential_setting_names_are_secret(name):
+    assert is_secret_setting(name)
+
+
+@pytest.mark.parametrize(
+    "name", ["SENDGRID_FROM_EMAIL", "OPENBAO_ADDR", "OPENBAO_MOUNT_POINT", "REGION"]
+)
+def test_plain_setting_names_are_not_secret(name):
+    assert not is_secret_setting(name)
 
 
 @pytest.fixture

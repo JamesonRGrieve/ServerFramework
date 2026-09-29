@@ -35,6 +35,7 @@ def _validate_name_min_length(instance, entity_label: str = "Name"):
 
 
 from zephyrex.database.DatabaseManager import DatabaseManager
+from zephyrex.lib.CustomRoute import custom_route
 from zephyrex.lib.Environment import env
 from zephyrex.lib.Logging import logger
 from zephyrex.lib.Metrics import get_metrics_backend
@@ -382,6 +383,84 @@ class ProviderModel(
         system: Optional[bool] | None = None
 
 
+class RootProviderSetting(BaseModel):
+    """One environment setting a provider reads. A secret's value is never
+    returned; ``set`` says whether it has one."""
+
+    key: str
+    secret: bool
+    set: bool
+    value: Optional[str] = None
+
+
+class RootProviderStatus(BaseModel):
+    provider: str
+    extension: str
+    configured: bool
+    settings: List[RootProviderSetting]
+
+
+class RootProviderStatusResponse(BaseModel):
+    providers: List[RootProviderStatus]
+
+
+def _provider_env_settings(provider_cls: Any) -> Dict[str, bool]:
+    """Each environment variable a provider reads, mapped to whether its value
+    is a secret. A typed ``Settings`` model (Item 90) is authoritative: its
+    ``SecretStr`` fields are secret. Otherwise the legacy ``_env`` dict names
+    the variables. Either way a credential-like name is also treated as
+    secret, so a mis-typed field can't print its value."""
+    from pydantic import SecretStr
+
+    from zephyrex.lib.Credentials import is_secret_setting
+    from zephyrex.lib.TypeUnions import unwrap_optional
+
+    settings_model = getattr(provider_cls, "Settings", None)
+    env_field_map = getattr(settings_model, "env_field_map", None)
+    if settings_model is not None and callable(env_field_map) and env_field_map():
+        fields = settings_model.model_fields
+        return {
+            env_name: is_secret_setting(env_name)
+            or (
+                field_name in fields
+                and unwrap_optional(fields[field_name].annotation) is SecretStr
+            )
+            for field_name, env_name in env_field_map().items()
+        }
+    legacy_env = getattr(provider_cls, "_env", None) or {}
+    return {key: is_secret_setting(key) for key in dict.keys(legacy_env)}
+
+
+def root_provider_status(
+    extension_providers: Dict[str, List[Any]],
+) -> RootProviderStatusResponse:
+    """How each loaded provider's environment (root) configuration stands."""
+    statuses = []
+    for extension_name, providers in sorted(extension_providers.items()):
+        for provider_cls in providers:
+            settings = []
+            for key, secret in sorted(_provider_env_settings(provider_cls).items()):
+                raw = env(key)
+                value = None if raw is None else str(raw)
+                settings.append(
+                    RootProviderSetting(
+                        key=key,
+                        secret=secret,
+                        set=bool(value and value.strip()),
+                        value=None if secret else value,
+                    )
+                )
+            statuses.append(
+                RootProviderStatus(
+                    provider=provider_cls.name,
+                    extension=extension_name,
+                    configured=provider_cls.is_configured(),
+                    settings=settings,
+                )
+            )
+    return RootProviderStatusResponse(providers=statuses)
+
+
 class ProviderManager(AbstractBLLManager, RouterMixin):
     _model = ProviderModel
 
@@ -419,6 +498,25 @@ class ProviderManager(AbstractBLLManager, RouterMixin):
         self._extensions = None
         self._instances = None
         self._rotations = None
+
+    @custom_route(
+        method="GET",
+        path="/root/status",
+        output_model=RootProviderStatusResponse,
+        authentication_type="jwt",
+        summary="Environment configuration of every loaded provider (root only)",
+    )
+    def root_status_route(self) -> RootProviderStatusResponse:
+        """Which providers are configured from the environment, setting by
+        setting; secrets report only whether they are set."""
+        from zephyrex.database.StaticPermissions import is_root_id
+
+        if not is_root_id(self.requester.id):
+            raise HTTPException(status_code=403, detail="Root only")
+        extension_registry = self.model_registry.extension_registry
+        return root_provider_status(
+            extension_registry.extension_providers if extension_registry else {}
+        )
 
     @property
     def extensions(self) -> "ProviderExtensionManager":
@@ -1512,7 +1610,7 @@ class RotationManager(AbstractBLLManager, RouterMixin):
         masks application-level invalid input.
         """
         try:
-            with self.model_registry.DB.get_session() as session:
+            with self.model_registry.DB.get_session():
                 provider_instance = ProviderInstanceModel.DB(
                     self.model_registry.DB.Base
                 ).get(
@@ -1754,7 +1852,6 @@ class RotationManager(AbstractBLLManager, RouterMixin):
         """
         from fastapi import HTTPException
 
-        last_exception = None
         attempt_index = -1
 
         for rpi in ordered_chain:
@@ -1776,7 +1873,7 @@ class RotationManager(AbstractBLLManager, RouterMixin):
                 continue
             # Get the actual provider instance once per rpi.
             try:
-                with self.model_registry.DB.get_session() as session:
+                with self.model_registry.DB.get_session():
                     provider_instance = ProviderInstanceModel.DB(
                         self.model_registry.DB.Base
                     ).get(
@@ -1794,7 +1891,6 @@ class RotationManager(AbstractBLLManager, RouterMixin):
                         "error": f"lookup failed: {exc}",
                     }
                 )
-                last_exception = exc
                 continue
 
             if not provider_instance:
@@ -2023,7 +2119,6 @@ class RotationManager(AbstractBLLManager, RouterMixin):
                                     base, mx, 0.1, rate_limit_attempt
                                 )
                             # Stay on the same provider; do not advance.
-                            last_exception = exc
                             continue
 
                         if isinstance(exc, Auth):
@@ -2060,7 +2155,6 @@ class RotationManager(AbstractBLLManager, RouterMixin):
                                 },
                             )
                             _failure_already_counted = True
-                            last_exception = exc
                             advance_after_loop = True
                             break
 
@@ -2090,7 +2184,6 @@ class RotationManager(AbstractBLLManager, RouterMixin):
                                 yield self._backoff_delay(
                                     base, mx, jit, transient_attempt
                                 )
-                                last_exception = exc
                                 continue
                             attempted_providers.append(
                                 {
@@ -2111,7 +2204,6 @@ class RotationManager(AbstractBLLManager, RouterMixin):
                                 },
                             )
                             _failure_already_counted = True
-                            last_exception = exc
                             advance_after_loop = True
                             break
 
@@ -2138,7 +2230,6 @@ class RotationManager(AbstractBLLManager, RouterMixin):
                                 "error_class": type(exc).__name__,
                             },
                         )
-                    last_exception = exc
                     advance_after_loop = True
                     break
                 finally:
@@ -2242,7 +2333,7 @@ class RotationManager(AbstractBLLManager, RouterMixin):
         Returns instances in order: parent_id=None first, then their children, etc.
         """
         # Get all rotation provider instances for this rotation
-        with self.model_registry.DB.get_session() as session:
+        with self.model_registry.DB.get_session():
             all_instances = RotationProviderInstanceModel.DB(
                 self.model_registry.DB.Base
             ).list(

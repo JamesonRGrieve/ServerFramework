@@ -359,6 +359,29 @@ def cache_bust_on_auth_rejection(ref: CredentialRef, env: Optional[str] = None) 
 
 # ----- Redaction ------------------------------------------------------------
 
+# Parts of a setting name that mark its value as a credential. Deliberately
+# broad: a false positive only hides a value an admin could read elsewhere,
+# a false negative prints a secret.
+_SECRET_NAME_PARTS = (
+    "KEY",
+    "SECRET",
+    "TOKEN",
+    "PASS",
+    "PRIVATE",
+    "CREDENTIAL",
+    "AUTH",
+    "DSN",
+    "SALT",
+    "CERT",
+)
+
+
+def is_secret_setting(name: str) -> bool:
+    """Whether a configuration setting's value must never be displayed
+    (``SENDGRID_API_KEY``, ``OPENBAO_SECRET_ID``, ``SENTRY_DSN``)."""
+    upper = name.upper()
+    return any(part in upper for part in _SECRET_NAME_PARTS)
+
 
 def register_secret(value: str) -> None:
     """Register a secret value for redaction in log output. Idempotent."""
