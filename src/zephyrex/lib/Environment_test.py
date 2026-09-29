@@ -506,5 +506,14 @@ class TestNearMissEnvVarWarning:
         )
 
 
-if __name__ == "__main__":
-    pytest.main([__file__])
+def test_generated_dev_secrets_are_never_logged(caplog):
+    """A generated ROOT_API_KEY / JWT_SECRET must not reach the logs: log
+    sinks are readable by far more people than the process environment."""
+    with caplog.at_level("WARNING", logger="zephyrex.environment"):
+        settings = AppSettings(ENVIRONMENT="local", ROOT_API_KEY="n0ne", JWT_SECRET="")
+
+    assert settings.ROOT_API_KEY not in ("", "n0ne")
+    assert settings.JWT_SECRET
+    assert "ROOT_API_KEY" in caplog.text
+    assert settings.ROOT_API_KEY not in caplog.text
+    assert settings.JWT_SECRET not in caplog.text

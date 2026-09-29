@@ -133,22 +133,19 @@ class AppSettings(BaseModel):
             generated = secrets.token_urlsafe(32)
             object.__setattr__(self, "JWT_SECRET", generated)
             _env_logger.warning(
-                "JWT_SECRET was empty — generated a random key for %s. "
-                "Set JWT_SECRET explicitly to suppress this warning.",
+                "JWT_SECRET was empty — generated a random key for %s; tokens "
+                "will not survive a restart. Set JWT_SECRET explicitly to "
+                "suppress this warning.",
                 self.ENVIRONMENT,
             )
-            print(
-                "\n⚠️  DEVELOPMENT MODE: JWT_SECRET auto-generated.\n"
-                "   Tokens will NOT survive server restarts.\n"
-                "   Set JWT_SECRET in your environment to fix.\n"
-            )
         if (self.ROOT_API_KEY or "").strip() in ("", "n0ne"):
-            generated = secrets.token_urlsafe(32)
-            object.__setattr__(self, "ROOT_API_KEY", generated)
+            # Never logged: an unknown random key leaves root API-key access
+            # closed until the operator sets one.
+            object.__setattr__(self, "ROOT_API_KEY", secrets.token_urlsafe(32))
             _env_logger.warning(
-                "ROOT_API_KEY was unset or default 'n0ne' — generated: %s. "
-                "Set ROOT_API_KEY explicitly to suppress this warning.",
-                generated,
+                "ROOT_API_KEY was unset or default 'n0ne' — generated an "
+                "unlogged random key, so root API-key access is disabled. "
+                "Set ROOT_API_KEY to use it."
             )
         return self
 
