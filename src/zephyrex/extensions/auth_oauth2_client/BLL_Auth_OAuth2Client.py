@@ -25,6 +25,7 @@ persists the resulting link.
 """
 
 import secrets
+import time
 from typing import Any, ClassVar, Dict, List, Optional, Type
 from urllib.parse import urlencode
 
@@ -36,7 +37,9 @@ from zephyrex.extensions.auth_oauth2_client.Forgejo import ForgejoOAuthProvider
 from zephyrex.extensions.auth_oauth2_client.GitHub import GitHubOAuthProvider
 from zephyrex.extensions.auth_oauth2_client.Google import GoogleOAuthProvider
 from zephyrex.extensions.auth_oauth2_client.Microsoft import MicrosoftOAuthProvider
+from zephyrex.lib.Dependencies import jwt
 from zephyrex.lib.Environment import env
+from zephyrex.lib.ReplayCache import get_replay_cache
 from zephyrex.logic.AbstractLogicManager import (
     AbstractBLLManager,
     ApplicationModel,
@@ -110,6 +113,58 @@ def _require_provider(provider: str) -> Type[Any]:
     if adapter is None:
         raise HTTPException(status_code=404, detail=f"unknown provider: {provider}")
     return adapter
+
+
+# Account-linking ``state``: a signed token binding one callback to the
+# connect call that started it (user, provider, redirect URI), consumed once
+# through the shared replay cache. Its audience keeps it from ever passing
+# as a session token (which also requires ``jti``).
+LINK_STATE_AUDIENCE = "zephyrex:oauth2_client:link_state"
+LINK_STATE_TTL_SECONDS = 600
+_LINK_STATE_ALGORITHM = "HS256"
+
+
+def issue_link_state(user_id: str, provider: str, redirect_uri: str) -> str:
+    now = int(time.time())
+    state: str = jwt.encode(
+        {
+            "sub": user_id,
+            "provider": provider,
+            "redirect_uri": redirect_uri,
+            "nonce": secrets.token_urlsafe(16),
+            "aud": LINK_STATE_AUDIENCE,
+            "iat": now,
+            "exp": now + LINK_STATE_TTL_SECONDS,
+        },
+        env("JWT_SECRET"),
+        algorithm=_LINK_STATE_ALGORITHM,
+    )
+    return state
+
+
+def consume_link_state(state: Optional[str], user_id: str, provider: str) -> str:
+    """The redirect URI a valid, unused ``state`` was issued for; 400 when
+    the state is missing, forged, expired, for another user or provider,
+    or already used."""
+    if not state:
+        raise HTTPException(status_code=400, detail="state is required")
+    try:
+        claims = jwt.decode(
+            state,
+            env("JWT_SECRET"),
+            algorithms=[_LINK_STATE_ALGORITHM],
+            audience=LINK_STATE_AUDIENCE,
+            options={"require": ["sub", "exp", "aud"]},
+        )
+    except jwt.PyJWTError:
+        raise HTTPException(status_code=400, detail="invalid or expired state")
+    if claims.get("sub") != user_id or claims.get("provider") != provider:
+        raise HTTPException(status_code=400, detail="invalid or expired state")
+    if not get_replay_cache().mark_if_unused(
+        f"oauth2_client:link_state:{claims['nonce']}", LINK_STATE_TTL_SECONDS
+    ):
+        raise HTTPException(status_code=400, detail="state already used")
+    return str(claims["redirect_uri"])
 
 
 # ---------------------------------------------------------------------------
@@ -322,14 +377,18 @@ class UserOAuthManager(AbstractBLLManager, RouterMixin):
         if cfg is None:
             raise HTTPException(status_code=404, detail=f"unknown provider: {provider}")
         redirect_uri = env(f"{provider.upper()}_REDIRECT_URI") or env("APP_URI")
+        state = issue_link_state(self.requester.id, provider, redirect_uri)
         params = {
             "client_id": env(cfg["client_id_env"]),
             "redirect_uri": redirect_uri,
             "response_type": "code",
             "scope": cfg["scope"],
-            "state": secrets.token_urlsafe(16),
+            "state": state,
         }
-        return {"authorize_url": f"{_auth_url(cfg)}?{urlencode(params)}"}
+        return {
+            "authorize_url": f"{_auth_url(cfg)}?{urlencode(params)}",
+            "state": state,
+        }
 
     def callback_route(self, provider: str, body: Dict[str, Any]) -> Dict[str, Any]:
         provider = (provider or "").lower()
@@ -337,7 +396,12 @@ class UserOAuthManager(AbstractBLLManager, RouterMixin):
         code = (body or {}).get("code")
         if not code:
             raise HTTPException(status_code=400, detail="code is required")
-        instance = adapter.sso_handler(code, (body or {}).get("redirect_uri"))
+        # The state binds this callback to the connect call that started it:
+        # same user, same provider, the redirect URI the server chose.
+        redirect_uri = consume_link_state(
+            (body or {}).get("state"), self.requester.id, provider
+        )
+        instance = adapter.sso_handler(code, redirect_uri)
         if instance is None:
             raise HTTPException(status_code=401, detail="provider exchange failed")
         info = instance.get_user_info() or {}

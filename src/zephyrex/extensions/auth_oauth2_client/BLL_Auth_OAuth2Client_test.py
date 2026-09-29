@@ -60,13 +60,21 @@ class _FakeInstance:
         }
 
 
-def _fake_adapter(returns_instance=True):
+def _fake_adapter(returns_instance=True, seen_redirects=None):
     inst = _FakeInstance() if returns_instance else None
-    return type(
-        "FakeAdapter",
-        (),
-        {"sso_handler": classmethod(lambda cls, code, redirect_uri=None: inst)},
-    )
+
+    def sso_handler(cls, code, redirect_uri=None):
+        if seen_redirects is not None:
+            seen_redirects.append(redirect_uri)
+        return inst
+
+    return type("FakeAdapter", (), {"sso_handler": classmethod(sso_handler)})
+
+
+def _state(mgr, provider, monkeypatch):
+    """A link state from the connect call, as a browser would carry it."""
+    monkeypatch.setenv("APP_URI", "https://app.example.com/cb")
+    return mgr.connect_route(provider)["state"]
 
 
 class TestUserOAuthSSO:
@@ -102,7 +110,10 @@ class TestUserOAuthSSO:
         monkeypatch.setitem(bll.PROVIDER_REGISTRY, "github", _fake_adapter())
         mgr = _mgr(client_registry)
 
-        result = mgr.callback_route("github", {"code": "auth-code"})
+        result = mgr.callback_route(
+            "github",
+            {"code": "auth-code", "state": _state(mgr, "github", monkeypatch)},
+        )
         assert result["linked"] is True
         assert result["email"] == "sso.user@example.com"
 
@@ -114,7 +125,10 @@ class TestUserOAuthSSO:
         assert "access_token" not in github[0]
 
         # A second callback updates rather than duplicates the link.
-        mgr.callback_route("github", {"code": "auth-code-2"})
+        mgr.callback_route(
+            "github",
+            {"code": "auth-code-2", "state": _state(mgr, "github", monkeypatch)},
+        )
         github = [
             c
             for c in mgr.connections_route()["connections"]
@@ -139,9 +153,90 @@ class TestUserOAuthSSO:
         monkeypatch.setitem(
             bll.PROVIDER_REGISTRY, "amazon", _fake_adapter(returns_instance=False)
         )
+        mgr = _mgr(client_registry)
         with pytest.raises(HTTPException) as exc:
-            _mgr(client_registry).callback_route("amazon", {"code": "bad"})
+            mgr.callback_route(
+                "amazon",
+                {"code": "bad", "state": _state(mgr, "amazon", monkeypatch)},
+            )
         assert exc.value.status_code == 401
+
+
+class TestLinkState:
+    """The callback is bound to the connect call that started it: without
+    that, an attacker can make a victim's browser link the attacker's IdP
+    account to the victim (login CSRF against account linking)."""
+
+    @pytest.fixture
+    def github(self, monkeypatch):
+        from zephyrex.extensions.auth_oauth2_client import (
+            BLL_Auth_OAuth2Client as bll,
+        )
+
+        seen: list = []
+        monkeypatch.setitem(
+            bll.PROVIDER_REGISTRY, "github", _fake_adapter(seen_redirects=seen)
+        )
+        return seen
+
+    def _rejects(self, mgr, body, detail):
+        with pytest.raises(HTTPException) as exc:
+            mgr.callback_route("github", body)
+        assert exc.value.status_code == 400
+        assert exc.value.detail == detail
+
+    def test_connect_returns_the_state_it_put_in_the_url(
+        self, client_registry, monkeypatch
+    ):
+        monkeypatch.setenv("GITHUB_CLIENT_ID", "cid")
+        result = _mgr(client_registry).connect_route("github")
+        assert f"state={result['state']}" in result["authorize_url"]
+
+    def test_missing_state_is_rejected(self, client_registry, github):
+        self._rejects(_mgr(client_registry), {"code": "c"}, "state is required")
+
+    def test_forged_state_is_rejected(self, client_registry, github):
+        self._rejects(
+            _mgr(client_registry),
+            {"code": "c", "state": "not-a-token"},
+            "invalid or expired state",
+        )
+
+    def test_state_is_single_use(self, client_registry, github, monkeypatch):
+        mgr = _mgr(client_registry)
+        state = _state(mgr, "github", monkeypatch)
+        mgr.callback_route("github", {"code": "c", "state": state})
+        self._rejects(mgr, {"code": "c", "state": state}, "state already used")
+
+    def test_state_for_another_provider_is_rejected(
+        self, client_registry, github, monkeypatch
+    ):
+        mgr = _mgr(client_registry)
+        state = _state(mgr, "google", monkeypatch)
+        self._rejects(mgr, {"code": "c", "state": state}, "invalid or expired state")
+
+    def test_state_for_another_user_is_rejected(self, client_registry, github):
+        from zephyrex.extensions.auth_oauth2_client.BLL_Auth_OAuth2Client import (
+            issue_link_state,
+        )
+
+        state = issue_link_state("some-other-user", "github", "https://x/cb")
+        self._rejects(
+            _mgr(client_registry),
+            {"code": "c", "state": state},
+            "invalid or expired state",
+        )
+
+    def test_exchange_uses_the_redirect_uri_the_server_chose(
+        self, client_registry, github, monkeypatch
+    ):
+        mgr = _mgr(client_registry)
+        state = _state(mgr, "github", monkeypatch)
+        mgr.callback_route(
+            "github",
+            {"code": "c", "state": state, "redirect_uri": "https://evil.example/cb"},
+        )
+        assert github == ["https://app.example.com/cb"]
 
 
 class TestOAuth2ClientEndpointsMount:
