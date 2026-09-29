@@ -26,6 +26,7 @@ class ParentEntity(BaseModel):
     is_path: bool = False  # Whether this parent is used in URL paths
     test_class: Any
     nullable: bool = False
+    system: bool = False  # Parent is a system entity, readable only by ROOT
 
     @property
     def path_key(self) -> str:

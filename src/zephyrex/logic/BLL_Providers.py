@@ -494,10 +494,13 @@ class ProviderManager(AbstractBLLManager, RouterMixin):
             session.close()
 
 
-class ProviderExtensionModel(ApplicationModel, UpdateMixinModel, metaclass=ModelMeta):
-    provider_id: str
-    extension_id: str
-
+class ProviderExtensionModel(
+    ApplicationModel,
+    UpdateMixinModel,
+    ProviderModel.Reference,
+    ExtensionModel.Reference,
+    metaclass=ModelMeta,
+):
     # Database metadata for SQLAlchemy generation
     table_comment: ClassVar[str] = (
         "A ProviderExtension represents Provider support for an Extension."
@@ -630,11 +633,12 @@ class ProviderExtensionManager(AbstractBLLManager, RouterMixin):
 
 
 class ProviderExtensionAbilityModel(
-    ApplicationModel, UpdateMixinModel, metaclass=ModelMeta
+    ApplicationModel,
+    UpdateMixinModel,
+    ProviderExtensionModel.Reference,
+    AbilityModel.Reference,
+    metaclass=ModelMeta,
 ):
-    provider_extension_id: str
-    ability_id: str
-
     # Database metadata for SQLAlchemy generation
     table_comment: ClassVar[str] = (
         "A ProviderExtensionAbility represents a ProviderExtension and Ability combination. This allows for a provider to provide partial functionality to an extension, for example SendGrid only provides sending email, but not an inbox."
@@ -1023,9 +1027,11 @@ class ProviderInstanceUsageManager(AbstractBLLManager, RouterMixin):
 
 
 class ProviderInstanceSettingModel(
-    ApplicationModel, UpdateMixinModel, metaclass=ModelMeta
+    ApplicationModel,
+    UpdateMixinModel,
+    ProviderInstanceModel.Reference,
+    metaclass=ModelMeta,
 ):
-    provider_instance_id: str
     key: str
     value: Optional[str] | None = None
 
@@ -2291,18 +2297,16 @@ class RotationProviderInstanceModel(
     ApplicationModel,
     UpdateMixinModel,
     ParentMixinModel,
+    RotationModel.Reference,
+    ProviderInstanceModel.Reference,
     metaclass=ModelMeta,
 ):
-    rotation_id: str
-    provider_instance_id: str
-    permission_references: List[str] = ["rotation"]
-
     # Database metadata for SQLAlchemy generation
     table_comment: ClassVar[str] = (
         "A RotationProviderInstance represents a link between a Rotation and a ProviderInstance. Order is determined by record parentage (NULL parent is first)."
     )
     is_system_entity: ClassVar[bool] = False
-    permission_references: ClassVar[List[str]] = ["rotation"]  # type: ignore[no-redef]
+    permission_references: ClassVar[List[str]] = ["rotation"]
 
     @classmethod
     def seed_data(cls, model_registry=None) -> List[Dict[str, Any]]:

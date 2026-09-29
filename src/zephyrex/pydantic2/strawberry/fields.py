@@ -16,15 +16,11 @@ from strawberry.types import Info as Info
 from zephyrex.pydantic2.manager_contract import ManagerContract
 
 
-def convert_field_name(
-    field_name: Optional[str], use_camelcase: bool = True
-) -> Optional[str]:
-    """Convert field names to camelCase."""
-    if field_name is None:
-        return None
+def convert_field_name(field_name: str) -> str:
+    """The GraphQL (camelCase) name of a Python field name."""
     if field_name in ["id", "__typename"]:
         return field_name
-    return stringcase.camelcase(field_name)  # type: ignore[no-any-return]
+    return str(stringcase.camelcase(field_name))
 
 
 @dataclass

@@ -549,9 +549,7 @@ class TestUtilityFunctions(AbstractPydanticTestMixin):
         # Test special fields that shouldn't be converted
         assert convert_field_name("id") == "id"
         assert convert_field_name("__typename") == "__typename"
-
-        # Test None input
-        assert convert_field_name(None) is None
+        assert convert_field_name("provider_instance_id") == "providerInstanceId"
 
     def test_scalar_type_detection(self):
         """Test scalar type detection via TYPE_MAPPING"""

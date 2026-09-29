@@ -7,6 +7,7 @@ import stringcase
 from zephyrex.lib.Environment import env, inflection
 from zephyrex.lib.Logging import logger
 from zephyrex.pydantic2.strawberry import convert_field_name
+from zephyrex.pydantic2.util import reference_relationship_name
 
 if TYPE_CHECKING:
     from faker import Faker
@@ -101,9 +102,7 @@ class AbstractGraphQLTest:
         """Return standard GQL response fields: id, optional string field, createdAt, updatedAt."""
         fields = ["id", "createdAt", "updatedAt"]
         if self.string_field_to_update:
-            gql_string_field = convert_field_name(
-                self.string_field_to_update, use_camelcase=True
-            )
+            gql_string_field = convert_field_name(self.string_field_to_update)
             if gql_string_field is not None:
                 fields.insert(1, gql_string_field)
         return fields
@@ -379,9 +378,7 @@ class AbstractGraphQLTest:
         target_string_value = string_values[1]
 
         # Build query arguments with multiple fields
-        gql_string_field = convert_field_name(
-            self.string_field_to_update, use_camelcase=True
-        )
+        gql_string_field = convert_field_name(self.string_field_to_update)
         if gql_string_field is not None:
             query_args = [
                 f'id: "{target_entity["id"]}"',
@@ -599,9 +596,7 @@ class AbstractGraphQLTest:
         # Only include string field if it exists
         if self.string_field_to_update:
             # Convert string_field_to_update to camelCase for GraphQL
-            gql_string_field = convert_field_name(
-                self.string_field_to_update, use_camelcase=True
-            )
+            gql_string_field = convert_field_name(self.string_field_to_update)
             if gql_string_field is not None:
                 fields.append(gql_string_field)
 
@@ -679,9 +674,7 @@ class AbstractGraphQLTest:
         # Pagination queries omit updatedAt but include the string field
         field_list = ["id", "createdAt"]
         if self.string_field_to_update:
-            gql_string_field = convert_field_name(
-                self.string_field_to_update, use_camelcase=True
-            )
+            gql_string_field = convert_field_name(self.string_field_to_update)
             if gql_string_field is not None:
                 field_list.insert(1, gql_string_field)
 
@@ -730,9 +723,7 @@ class AbstractGraphQLTest:
         input_data = {}
         if self.string_field_to_update:
             # Convert to camelCase for GraphQL consistency
-            camel_case_field = convert_field_name(
-                self.string_field_to_update, use_camelcase=True
-            )
+            camel_case_field = convert_field_name(self.string_field_to_update)
             input_data[camel_case_field] = f"GQL Test {self.faker.word()}"
 
         # Create parent entities if needed and add their IDs to input
@@ -755,24 +746,20 @@ class AbstractGraphQLTest:
 
             # Convert all payload fields to camelCase and add to input_data
             for key, value in payload.items():
-                camel_case_key = convert_field_name(key, use_camelcase=True)
+                camel_case_key = convert_field_name(key)
                 input_data[camel_case_key] = value
 
             # Add parent IDs to input data (they may not be in the payload)
             for parent_info in self.parent_entities:
                 if parent_info.foreign_key in parent_ids:
                     # Convert snake_case to camelCase for GraphQL
-                    camel_case_key = convert_field_name(
-                        parent_info.foreign_key, use_camelcase=True
-                    )
+                    camel_case_key = convert_field_name(parent_info.foreign_key)
                     # Only add if not already in input_data from payload
                     if camel_case_key not in input_data:
                         input_data[camel_case_key] = parent_ids[parent_info.foreign_key]
                 elif parent_info.name == "team":
                     # Handle team entities specially
-                    camel_case_key = convert_field_name(
-                        parent_info.foreign_key, use_camelcase=True
-                    )
+                    camel_case_key = convert_field_name(parent_info.foreign_key)
                     # Only add if not already in input_data from payload
                     if camel_case_key not in input_data:
                         input_data[camel_case_key] = team_a.id
@@ -785,9 +772,7 @@ class AbstractGraphQLTest:
         # Convert string_field_to_update to camelCase for GraphQL (if it exists)
         gql_string_field = None
         if self.string_field_to_update:
-            gql_string_field = convert_field_name(
-                self.string_field_to_update, use_camelcase=True
-            )
+            gql_string_field = convert_field_name(self.string_field_to_update)
 
         # Build the mutation
         input_fields = []
@@ -870,15 +855,13 @@ class AbstractGraphQLTest:
         # Convert string_field_to_update to camelCase for GraphQL (if it exists)
         gql_string_field = None
         if self.string_field_to_update:
-            gql_string_field = convert_field_name(
-                self.string_field_to_update, use_camelcase=True
-            )
+            gql_string_field = convert_field_name(self.string_field_to_update)
 
         # Build the mutation
         input_fields = []
         for key, value in update_data.items():
             # Convert snake_case field names to camelCase for GraphQL
-            camel_case_key = convert_field_name(key, use_camelcase=True)
+            camel_case_key = convert_field_name(key)
             if isinstance(value, str):
                 input_fields.append(f'{camel_case_key}: "{value}"')
             else:
@@ -1057,951 +1040,78 @@ class AbstractGraphQLTest:
                 not syntax_errors
             ), f"Subscription query has syntax errors: {syntax_errors}"
 
-    def _has_navigation_properties(self) -> bool:
-        """Check if this entity has navigation properties to test."""
-        return bool(self.parent_entities)
+    def _referenced_parents(
+        self, entity: Dict[str, Any]
+    ) -> List[Tuple["ParentEntity", str]]:
+        """Parents this entity references, with the referenced id."""
+        return [
+            (parent, str(entity[parent.foreign_key]))
+            for parent in self.parent_entities
+            if entity.get(parent.foreign_key)
+        ]
 
-    def _has_self_referential_properties(self) -> bool:
-        """Check if this entity has self-referential properties."""
-        if not self.parent_entities:
-            return False
-
-        # Check if any parent entity references the same entity type
-        for parent in self.parent_entities:
-            if (
-                hasattr(parent, "name")
-                and parent.name.lower() == self.entity_name.lower()
-            ):
-                return True
-        return False
-
-    def _get_navigation_property_names(self) -> Dict[str, str]:
-        """Get navigation property names for parent-child relationships."""
-        nav_props: Dict[str, str] = {}
-
-        if not self.parent_entities:
-            return nav_props
-
-        for parent in self.parent_entities:
-            # Parent property name (e.g., "parent", "team", "user")
-            parent_prop = parent.name.lower()
-            nav_props[f"parent_{parent.name}"] = parent_prop
-
-            # Child collection property name (e.g., "children", "posts", "items")
-            if parent.name.lower() == self.entity_name.lower():
-                # Self-referential
-                nav_props["children"] = "children"
-            else:
-                # Parent-child relationship - infer child collection name
-                child_collection = inflection.plural(self.entity_name.lower())
-                nav_props[f"children_{self.entity_name}"] = child_collection
-
-        return nav_props
-
-    def _build_navigation_query_fields(
-        self, include_navigation: bool = True
-    ) -> List[str]:
-        """Build GraphQL query fields including navigation properties."""
-        # Base fields every entity should have
-        base_fields = ["id", "createdAt", "updatedAt"]
-
-        # Add the main string field if it exists
-        if self.string_field_to_update:
-            gql_string_field = convert_field_name(
-                self.string_field_to_update, use_camelcase=True
-            )
-            if gql_string_field is not None:
-                base_fields.insert(1, gql_string_field)
-
-        if not include_navigation or not self._has_navigation_properties():
-            return base_fields
-
-        # Add navigation properties
-        nav_fields = base_fields.copy()
-        nav_props = self._get_navigation_property_names()
-
-        for nav_key, nav_prop in nav_props.items():
-            if nav_key.startswith("parent_"):
-                # Add parent navigation (single object)
-                nav_fields.append(f"""
-                {nav_prop} {{
-                    id
-                    {"name" if nav_prop != "team" else "name"}
-                    createdAt
-                }}""")
-            elif nav_key.startswith("children") or nav_key == "children":
-                # Add children navigation (list)
-                nav_fields.append(f"""
-                {nav_prop} {{
-                    id
-                    {"name" if self.string_field_to_update else "id"}
-                    createdAt
-                }}""")
-
-        return nav_fields
-
-    def test_GQL_query_navigation_properties_parent_to_child(
-        self, server: Any, admin_a: Any, team_a: Any
-    ):
-        """Test GraphQL query navigation from parent to child entities."""
-        if not self._has_navigation_properties():
-            pytest.skip("Entity has no navigation properties to test")
-
-        # Create entities with parent-child relationship
-        parent_entity = self._create(
-            server, admin_a.jwt, admin_a.id, team_a.id, key="nav_parent"
+    def _gql_query(
+        self, server: Any, jwt: str, query: str, *, as_root: bool = False
+    ) -> Dict[str, Any]:
+        """Run ``query``; ``as_root`` for queries touching system entities,
+        which only ROOT may read."""
+        headers = (
+            {"X-API-Key": env("ROOT_API_KEY")}
+            if as_root
+            else self._get_appropriate_headers(jwt)
         )
+        response = server.post("/graphql", json={"query": query}, headers=headers)
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert not body.get("errors"), f"GraphQL errors: {body.get('errors')}"
+        data: Dict[str, Any] = body["data"]
+        return data
 
-        # If this entity has self-referential properties, create a child
-        if self._has_self_referential_properties():
-            # Create child entity referencing the parent
-            child_payload = self.create_payload(
-                name=f"Child {self.faker.word()}",
-                parent_ids={self.parent_entities[0].foreign_key: parent_entity["id"]},
-                team_id=team_a.id,
-            )
-
-            # Get the endpoint for child creation
-            path_parent_ids = {}
-            for parent in self.parent_entities:
-                if parent.path_level in [1, 2] or (
-                    hasattr(parent, "is_path")
-                    and parent.is_path
-                    and parent.path_level is None
-                ):
-                    if parent.name == "team":
-                        path_parent_ids[f"{parent.name}_id"] = team_a.id
-                    elif parent.foreign_key in child_payload:
-                        path_parent_ids[f"{parent.name}_id"] = child_payload[
-                            parent.foreign_key
-                        ]
-
-            child_response = server.post(
-                self.get_create_endpoint(path_parent_ids),
-                json={self.entity_name: child_payload},
-                headers=self._get_appropriate_headers(
-                    admin_a.jwt,
-                    api_key=env("ROOT_API_KEY") if self.system_entity else None,
-                ),
-            )
-
-            if child_response.status_code == 201:
-                self.tracked_entities["nav_child"] = self._assert_entity_in_response(
-                    child_response
-                )
-
-        # Convert entity_name to camelCase for GraphQL field name
-        singular_name = self.entity_name.lower()
-        if "_" in singular_name:
-            parts = singular_name.split("_")
-            singular_name = parts[0] + "".join(word.capitalize() for word in parts[1:])
-
-        # Build query with navigation properties
-        nav_fields = self._build_navigation_query_fields(include_navigation=True)
-        fields_str = "\n                ".join(nav_fields)
-
-        # Build query arguments
-        query_args = [f'id: "{parent_entity["id"]}"']
-
-        if self.parent_entities:
-            for parent_info in self.parent_entities:
-                fk_parts = parent_info.foreign_key.split("_")
-                gql_arg_name = fk_parts[0] + "".join(
-                    word.title() for word in fk_parts[1:]
-                )
-
-                if (
-                    parent_info.foreign_key in parent_entity
-                    and parent_entity[parent_info.foreign_key]
-                ):
-                    query_args.append(
-                        f'{gql_arg_name}: "{parent_entity[parent_info.foreign_key]}"'
-                    )
-
-        query_params_str = ", ".join(query_args)
-
-        query = f"""
-        query {{
-            {singular_name}({query_params_str}) {{
-                {fields_str}
-            }}
-        }}
-        """
-
-        response = server.post(
-            "/graphql",
-            json={"query": query},
-            headers=self._get_appropriate_headers(admin_a.jwt),
+    def test_GQL_navigation_to_parent(self, server: Any, admin_a: Any, team_a: Any):
+        """Each reference resolves to the referenced parent."""
+        entity = self._create(
+            server, admin_a.jwt, admin_a.id, team_a.id, key="gql_nav_to_parent"
         )
+        references = self._referenced_parents(entity)
+        if not references:
+            pytest.skip("Entity references no parent")
 
-        assert response.status_code == 200
-        data = response.json()
-        assert "data" in data, f"No data in response: {json.dumps(data)}"
-
-        if "errors" in data:
-            # Log the query for debugging
-            logger.debug(f"GraphQL Query with errors: {query}")
-            logger.debug(f"GraphQL Response: {json.dumps(data)}")
-
-            # Allow for schema-related errors (navigation properties might not be implemented)
-            error_messages = [error.get("message", "") for error in data["errors"]]
-            schema_errors = any(
-                "field" in msg.lower()
-                and ("not" in msg.lower() or "unknown" in msg.lower())
-                for msg in error_messages
+        field = convert_field_name(self.entity_name)
+        for parent, parent_id in references:
+            nav = convert_field_name(reference_relationship_name(parent.foreign_key))
+            data = self._gql_query(
+                server,
+                admin_a.jwt,
+                f'{{ {field}(id: "{entity["id"]}") {{ id {nav} {{ id }} }} }}',
+                as_root=parent.system,
             )
-            if schema_errors:
-                pytest.skip(
-                    "Navigation properties not yet implemented in schema: "
-                    + "; ".join(error_messages)
-                )
-            else:
-                pytest.fail(f"Unexpected GraphQL errors: {json.dumps(data['errors'])}")
+            assert data[field][nav] is not None, f"{field}.{nav} did not resolve"
+            assert data[field][nav]["id"] == parent_id
 
-        entity_data = data["data"][singular_name]
-        assert entity_data is not None, "Entity not found in GraphQL response"
-        assert (
-            entity_data["id"] == parent_entity["id"]
-        ), "ID mismatch in GraphQL response"
+    def test_GQL_navigation_from_parent(self, server: Any, admin_a: Any, team_a: Any):
+        """Each referenced parent lists this entity in its reverse collection."""
+        entity = self._create(
+            server, admin_a.jwt, admin_a.id, team_a.id, key="gql_nav_from_parent"
+        )
+        references = self._referenced_parents(entity)
+        if not references:
+            pytest.skip("Entity references no parent")
 
-        def test_GQL_query_navigation_properties_child_to_parent(
-            self, server: Any, admin_a: Any, team_a: Any
-        ):
-            """Test GraphQL query navigation from child to parent entities."""
-            if not self._has_navigation_properties():
-                pytest.skip("Entity has no navigation properties to test")
-
-            # Create parent entity first
-            parent_entity = self._create(
-                server, admin_a.jwt, admin_a.id, team_a.id, key="nav_query_parent"
+        collection = convert_field_name(inflection.plural(self.entity_name))
+        for parent, parent_id in references:
+            parent_field = convert_field_name(
+                reference_relationship_name(parent.foreign_key)
             )
-
-            # Create child entity with parent reference (if self-referential)
-            if self._has_self_referential_properties():
-                child_payload = self.create_payload(
-                    name=f"Child {self.faker.word()}",
-                    parent_ids={
-                        self.parent_entities[0].foreign_key: parent_entity["id"]
-                    },
-                    team_id=team_a.id,
-                )
-
-                path_parent_ids = {}
-                for parent in self.parent_entities:
-                    if parent.path_level in [1, 2] or (
-                        hasattr(parent, "is_path")
-                        and parent.is_path
-                        and parent.path_level is None
-                    ):
-                        if parent.name == "team":
-                            path_parent_ids[f"{parent.name}_id"] = team_a.id
-                        elif parent.foreign_key in child_payload:
-                            path_parent_ids[f"{parent.name}_id"] = child_payload[
-                                parent.foreign_key
-                            ]
-
-                child_response = server.post(
-                    self.get_create_endpoint(path_parent_ids),
-                    json={self.entity_name: child_payload},
-                    headers=self._get_appropriate_headers(
-                        admin_a.jwt,
-                        api_key=env("ROOT_API_KEY") if self.system_entity else None,
-                    ),
-                )
-
-                if child_response.status_code != 201:
-                    pytest.skip("Could not create child entity for navigation test")
-
-                child_entity = self._assert_entity_in_response(child_response)
-                self.tracked_entities["nav_query_child"] = child_entity
-            else:
-                # For non-self-referential, the current entity IS the child
-                child_entity = parent_entity
-
-            # Convert entity_name to camelCase for GraphQL field name
-            singular_name = self.entity_name.lower()
-            if "_" in singular_name:
-                parts = singular_name.split("_")
-                singular_name = parts[0] + "".join(
-                    word.capitalize() for word in parts[1:]
-                )
-
-            # Build query with parent navigation properties
-            base_fields = ["id", "createdAt", "updatedAt"]
-            if self.string_field_to_update:
-                gql_string_field = convert_field_name(
-                    self.string_field_to_update, use_camelcase=True
-                )
-                base_fields.insert(1, gql_string_field)
-
-            # Add parent navigation properties
-            nav_props = self._get_navigation_property_names()
-            nav_fields = base_fields.copy()
-
-            for nav_key, nav_prop in nav_props.items():
-                if nav_key.startswith("parent_"):
-                    nav_fields.append(f"""
-                    {nav_prop} {{
-                        id
-                        {"name" if nav_prop != "team" else "name"}
-                        createdAt
-                    }}""")
-
-            fields_str = "\n                ".join(nav_fields)
-
-            # Build query arguments
-            query_args = [f'id: "{child_entity["id"]}"']
-
-            if self.parent_entities:
-                for parent_info in self.parent_entities:
-                    fk_parts = parent_info.foreign_key.split("_")
-                    gql_arg_name = fk_parts[0] + "".join(
-                        word.title() for word in fk_parts[1:]
-                    )
-
-                    if (
-                        parent_info.foreign_key in child_entity
-                        and child_entity[parent_info.foreign_key]
-                    ):
-                        query_args.append(
-                            f'{gql_arg_name}: "{child_entity[parent_info.foreign_key]}"'
-                        )
-
-            query_params_str = ", ".join(query_args)
-
-            query = f"""
-            query {{
-                {singular_name}({query_params_str}) {{
-                    {fields_str}
-                }}
-            }}
-            """
-
-            response = server.post(
-                "/graphql",
-                json={"query": query},
-                headers=self._get_appropriate_headers(admin_a.jwt),
+            data = self._gql_query(
+                server,
+                admin_a.jwt,
+                f'{{ {parent_field}(id: "{parent_id}") {{ id {collection} {{ id }} }} }}',
+                as_root=parent.system,
             )
+            assert data[parent_field] is not None, f"{parent_field} not readable"
+            listed = {child["id"] for child in data[parent_field][collection]}
+            assert entity["id"] in listed, f"{parent_field}.{collection} omits it"
 
-            assert response.status_code == 200
-            data = response.json()
-            assert "data" in data, f"No data in response: {json.dumps(data)}"
-
-            if "errors" in data:
-                error_messages = [error.get("message", "") for error in data["errors"]]
-                schema_errors = any(
-                    "field" in msg.lower()
-                    and ("not" in msg.lower() or "unknown" in msg.lower())
-                    for msg in error_messages
-                )
-                if schema_errors:
-                    pytest.skip("Navigation properties not yet implemented in schema")
-                else:
-                    pytest.fail(
-                        f"Unexpected GraphQL errors: {json.dumps(data['errors'])}"
-                    )
-
-            entity_data = data["data"][singular_name]
-            assert entity_data is not None, "Entity not found in GraphQL response"
-            assert (
-                entity_data["id"] == child_entity["id"]
-            ), "ID mismatch in GraphQL response"
-
-        def test_GQL_query_self_referential_navigation(
-            self, server: Any, admin_a: Any, team_a: Any
-        ):
-            """Test GraphQL query navigation for self-referential properties."""
-            if not self._has_self_referential_properties():
-                pytest.skip("Entity has no self-referential properties to test")
-
-            # Create parent entity
-            parent_entity = self._create(
-                server, admin_a.jwt, admin_a.id, team_a.id, key="self_ref_parent"
-            )
-
-            # Create child entity with self-reference
-            child_payload = self.create_payload(
-                name=f"Child {self.faker.word()}",
-                parent_ids={self.parent_entities[0].foreign_key: parent_entity["id"]},
-                team_id=team_a.id,
-            )
-
-            path_parent_ids = {}
-            for parent in self.parent_entities:
-                if parent.path_level in [1, 2] or (
-                    hasattr(parent, "is_path")
-                    and parent.is_path
-                    and parent.path_level is None
-                ):
-                    if parent.name == "team":
-                        path_parent_ids[f"{parent.name}_id"] = team_a.id
-                    elif parent.foreign_key in child_payload:
-                        path_parent_ids[f"{parent.name}_id"] = child_payload[
-                            parent.foreign_key
-                        ]
-
-            child_response = server.post(
-                self.get_create_endpoint(path_parent_ids),
-                json={self.entity_name: child_payload},
-                headers=self._get_appropriate_headers(
-                    admin_a.jwt,
-                    api_key=env("ROOT_API_KEY") if self.system_entity else None,
-                ),
-            )
-
-            if child_response.status_code != 201:
-                pytest.skip("Could not create child entity for self-referential test")
-
-            child_entity = self._assert_entity_in_response(child_response)
-            self.tracked_entities["self_ref_child"] = child_entity
-
-            # Convert entity_name to camelCase for GraphQL field name
-            singular_name = self.entity_name.lower()
-            if "_" in singular_name:
-                parts = singular_name.split("_")
-                singular_name = parts[0] + "".join(
-                    word.capitalize() for word in parts[1:]
-                )
-
-            # Build query with self-referential navigation properties
-            base_fields = ["id", "createdAt", "updatedAt"]
-            if self.string_field_to_update:
-                gql_string_field = convert_field_name(
-                    self.string_field_to_update, use_camelcase=True
-                )
-                base_fields.insert(1, gql_string_field)
-
-            # Add self-referential navigation fields
-            self_ref_fields = base_fields + [
-                f"""
-                parent {{
-                    id
-                    {gql_string_field if self.string_field_to_update else "id"}
-                    createdAt
-                }}""",
-                f"""
-                children {{
-                    id
-                    {gql_string_field if self.string_field_to_update else "id"}
-                    createdAt
-                }}""",
-            ]
-
-            fields_str = "\n                ".join(self_ref_fields)
-
-            # Query the parent entity (should show child in children collection)
-            query_args = [f'id: "{parent_entity["id"]}"']
-            if self.parent_entities:
-                for parent_info in self.parent_entities:
-                    fk_parts = parent_info.foreign_key.split("_")
-                    gql_arg_name = fk_parts[0] + "".join(
-                        word.title() for word in fk_parts[1:]
-                    )
-
-                    if (
-                        parent_info.foreign_key in parent_entity
-                        and parent_entity[parent_info.foreign_key]
-                    ):
-                        query_args.append(
-                            f'{gql_arg_name}: "{parent_entity[parent_info.foreign_key]}"'
-                        )
-
-            query_params_str = ", ".join(query_args)
-
-            query = f"""
-            query {{
-                {singular_name}({query_params_str}) {{
-                    {fields_str}
-                }}
-            }}
-            """
-
-            response = server.post(
-                "/graphql",
-                json={"query": query},
-                headers=self._get_appropriate_headers(admin_a.jwt),
-            )
-
-            assert response.status_code == 200
-            data = response.json()
-            assert "data" in data, f"No data in response: {json.dumps(data)}"
-
-            if "errors" in data:
-                error_messages = [error.get("message", "") for error in data["errors"]]
-                schema_errors = any(
-                    "field" in msg.lower()
-                    and ("not" in msg.lower() or "unknown" in msg.lower())
-                    for msg in error_messages
-                )
-                if schema_errors:
-                    pytest.skip(
-                        "Self-referential navigation properties not yet implemented in schema"
-                    )
-                else:
-                    pytest.fail(
-                        f"Unexpected GraphQL errors: {json.dumps(data['errors'])}"
-                    )
-
-            entity_data = data["data"][singular_name]
-            assert entity_data is not None, "Entity not found in GraphQL response"
-            assert (
-                entity_data["id"] == parent_entity["id"]
-            ), "ID mismatch in GraphQL response"
-
-            # If navigation properties are implemented, verify the structure
-            if "children" in entity_data and entity_data["children"] is not None:
-                children = entity_data["children"]
-                assert isinstance(children, list), "Children should be a list"
-                child_ids = [child["id"] for child in children]
-                assert (
-                    child_entity["id"] in child_ids
-                ), "Created child should be in parent's children list"
-
-        def test_GQL_mutation_create_with_nested_navigation(
-            self, server: Any, admin_a: Any, team_a: Any
-        ):
-            """Test GraphQL create mutation with nested navigation properties."""
-            if not self._has_navigation_properties():
-                pytest.skip("Entity has no navigation properties to test")
-
-            # Convert entity_name to camelCase for GraphQL mutation name
-            if "_" in self.entity_name:
-                parts = self.entity_name.split("_")
-                camel_case_entity = parts[0] + "".join(
-                    word.capitalize() for word in parts[1:]
-                )
-            else:
-                camel_case_entity = self.entity_name
-
-            mutation_name = (
-                f"create{camel_case_entity[0].upper() + camel_case_entity[1:]}"
-            )
-
-            # Build nested creation input
-            input_data: Dict[str, Any] = {}
-            if self.string_field_to_update:
-                camel_case_field = convert_field_name(
-                    self.string_field_to_update, use_camelcase=True
-                )
-                input_data[camel_case_field] = f"Nested GQL Test {self.faker.word()}"
-
-            # Add parent entities if needed
-            if self.parent_entities:
-                parent_entities_dict, parent_ids, path_parent_ids = (
-                    self._create_parent_entities(
-                        server, admin_a.jwt, admin_a.id, team_a.id, {}
-                    )
-                )
-
-                payload = self.create_payload(
-                    name=f"Nested GQL Test {self.faker.word()}",
-                    parent_ids=parent_ids,
-                    team_id=team_a.id,
-                    minimal=False,
-                    invalid_data=False,
-                )
-
-                for key, value in payload.items():
-                    camel_case_key = convert_field_name(key, use_camelcase=True)
-                    input_data[camel_case_key] = value
-
-                for parent_info in self.parent_entities:
-                    if parent_info.foreign_key in parent_ids:
-                        camel_case_key = convert_field_name(
-                            parent_info.foreign_key, use_camelcase=True
-                        )
-                        if camel_case_key not in input_data:
-                            input_data[camel_case_key] = parent_ids[
-                                parent_info.foreign_key
-                            ]
-                    elif parent_info.name == "team":
-                        camel_case_key = convert_field_name(
-                            parent_info.foreign_key, use_camelcase=True
-                        )
-                        if camel_case_key not in input_data:
-                            input_data[camel_case_key] = team_a.id
-
-            # If this entity supports self-referential relationships, add nested children
-            if self._has_self_referential_properties():
-                # Add nested children array (simplified for testing)
-                children_field = "children"
-                child_input = {}
-                if self.string_field_to_update:
-                    child_field = convert_field_name(
-                        self.string_field_to_update, use_camelcase=True
-                    )
-                    child_input[child_field] = f"Nested Child {self.faker.word()}"
-
-                if child_input:
-                    input_data[children_field] = [child_input]
-
-            headers = self._get_appropriate_headers(
-                admin_a.jwt, api_key=env("ROOT_API_KEY") if self.system_entity else None
-            )
-
-            # Build the mutation
-            input_fields = []
-            for key, value in input_data.items():
-                if key == "children" and isinstance(value, list):
-                    # Handle nested children array
-                    child_items = []
-                    for child in value:
-                        child_fields = []
-                        for child_key, child_value in child.items():
-                            if isinstance(child_value, str):
-                                child_fields.append(f'{child_key}: "{child_value}"')
-                            else:
-                                child_fields.append(f"{child_key}: {child_value}")
-                        child_items.append("{" + ", ".join(child_fields) + "}")
-                    input_fields.append(f'{key}: [{", ".join(child_items)}]')
-                elif isinstance(value, str):
-                    input_fields.append(f'{key}: "{value}"')
-                else:
-                    input_fields.append(f"{key}: {value}")
-
-            input_str = "{" + ", ".join(input_fields) + "}"
-
-            response_fields = self._gql_response_fields()
-
-            # Add navigation fields in response
-            if self._has_self_referential_properties():
-                response_fields.extend(["""
-                    children {
-                        id
-                        name
-                        createdAt
-                    }"""])
-
-            mutation = f"""
-            mutation {{
-                {mutation_name}(input: {input_str}) {{
-                    {chr(10).join("                " + field for field in response_fields)}
-                }}
-            }}
-            """
-
-            response = server.post(
-                "/graphql",
-                json={"query": mutation},
-                headers=headers,
-            )
-
-            assert response.status_code == 200
-            data = response.json()
-            assert "data" in data, f"No data in response: {json.dumps(data)}"
-
-            if "errors" in data:
-                error_messages = [error.get("message", "") for error in data["errors"]]
-                schema_errors = any(
-                    "field" in msg.lower()
-                    and ("not" in msg.lower() or "unknown" in msg.lower())
-                    for msg in error_messages
-                )
-                nested_errors = any(
-                    "input" in msg.lower()
-                    and ("nested" in msg.lower() or "children" in msg.lower())
-                    for msg in error_messages
-                )
-                if schema_errors or nested_errors:
-                    pytest.skip(
-                        "Nested navigation properties not yet implemented in mutations"
-                    )
-                else:
-                    pytest.fail(
-                        f"Unexpected GraphQL errors in nested mutation: {json.dumps(data['errors'])}"
-                    )
-
-            assert (
-                data["data"] is not None
-            ), f"Data is None in response: {json.dumps(data)}"
-            assert (
-                mutation_name in data["data"]
-            ), f"Mutation {mutation_name} not in response"
-
-            result = data["data"][mutation_name]
-            assert result is not None, "Mutation result is None"
-            assert "id" in result, "Created entity missing ID"
-
-        def test_GQL_mutation_update_with_nested_navigation(
-            self, server: Any, admin_a: Any, team_a: Any
-        ):
-            """Test GraphQL update mutation with nested navigation properties."""
-            if not self._has_navigation_properties():
-                pytest.skip("Entity has no navigation properties to test")
-
-            # Create an entity to update
-            entity = self._create(
-                server, admin_a.jwt, admin_a.id, team_a.id, key="nested_update"
-            )
-
-            # Convert entity_name to camelCase for GraphQL mutation name
-            if "_" in self.entity_name:
-                parts = self.entity_name.split("_")
-                camel_case_entity = parts[0] + "".join(
-                    word.capitalize() for word in parts[1:]
-                )
-            else:
-                camel_case_entity = self.entity_name
-
-            mutation_name = (
-                f"update{camel_case_entity[0].upper() + camel_case_entity[1:]}"
-            )
-
-            # Build update data with nested operations
-            update_data = {}
-            if self.string_field_to_update:
-                update_data[self.string_field_to_update] = (
-                    f"Updated Nested {self.faker.word()}"
-                )
-
-            headers = self._get_appropriate_headers(
-                admin_a.jwt, api_key=env("ROOT_API_KEY") if self.system_entity else None
-            )
-
-            # Build the mutation
-            input_fields = []
-            for key, value in update_data.items():
-                camel_case_key = convert_field_name(key, use_camelcase=True)
-                if isinstance(value, str):
-                    input_fields.append(f'{camel_case_key}: "{value}"')
-                else:
-                    input_fields.append(f"{camel_case_key}: {value}")
-
-            input_str = "{" + ", ".join(input_fields) + "}"
-
-            response_fields = self._gql_response_fields()
-
-            mutation = f"""
-            mutation {{
-                {mutation_name}(id: "{entity['id']}", input: {input_str}) {{
-                    {chr(10).join("                " + field for field in response_fields)}
-                }}
-            }}
-            """
-
-            response = server.post(
-                "/graphql",
-                json={"query": mutation},
-                headers=headers,
-            )
-
-            assert response.status_code == 200
-            data = response.json()
-            assert "data" in data, f"No data in response: {json.dumps(data)}"
-
-            if "errors" in data:
-                error_messages = [error.get("message", "") for error in data["errors"]]
-                schema_errors = any(
-                    "field" in msg.lower()
-                    and ("not" in msg.lower() or "unknown" in msg.lower())
-                    for msg in error_messages
-                )
-                if schema_errors:
-                    pytest.skip(
-                        "Navigation properties not yet implemented in update mutations"
-                    )
-                else:
-                    pytest.fail(
-                        f"Unexpected GraphQL errors in nested update: {json.dumps(data['errors'])}"
-                    )
-
-            assert (
-                data["data"] is not None
-            ), f"Data is None in response: {json.dumps(data)}"
-            assert (
-                mutation_name in data["data"]
-            ), f"Mutation {mutation_name} not in response"
-
-            result = data["data"][mutation_name]
-            assert result is not None, "Update mutation result is None"
-            assert result["id"] == entity["id"], "Updated entity ID mismatch"
-
-        def test_GQL_subscription_navigation_properties(
-            self, server: Any, admin_a: Any, team_a: Any
-        ):
-            """Test GraphQL subscriptions with navigation properties."""
-            if not self._has_navigation_properties():
-                pytest.skip("Entity has no navigation properties to test")
-
-            # Convert entity_name to camelCase for GraphQL subscription name
-            if "_" in self.entity_name:
-                parts = self.entity_name.split("_")
-                camel_case_entity = parts[0] + "".join(
-                    word.capitalize() for word in parts[1:]
-                )
-            else:
-                camel_case_entity = self.entity_name
-
-            subscription_name = f"{camel_case_entity}Created"
-
-            # Build subscription with navigation properties
-            base_fields = ["id", "createdAt", "updatedAt"]
-            if self.string_field_to_update:
-                gql_string_field = convert_field_name(
-                    self.string_field_to_update, use_camelcase=True
-                )
-                base_fields.append(gql_string_field)
-
-            # Add navigation properties to subscription
-            nav_fields = base_fields.copy()
-            if self._has_self_referential_properties():
-                nav_fields.extend(
-                    [
-                        """
-                    parent {
-                        id
-                        name
-                        createdAt
-                    }""",
-                        """
-                    children {
-                        id
-                        name
-                        createdAt
-                    }""",
-                    ]
-                )
-
-            fields_str = "\n                ".join(nav_fields)
-
-            subscription = f"""
-            subscription {{
-                {subscription_name} {{
-                    {fields_str}
-                }}
-            }}
-            """
-
-            response = server.post(
-                "/graphql",
-                json={"query": subscription},
-                headers=self._get_appropriate_headers(admin_a.jwt),
-            )
-
-            assert response.status_code in [
-                200,
-                400,
-            ], f"Unexpected status code: {response.status_code}"
-
-            data = response.json()
-            if "errors" in data:
-                error_messages = [error.get("message", "") for error in data["errors"]]
-
-                # Check for syntax errors
-                syntax_errors = [
-                    msg
-                    for msg in error_messages
-                    if "syntax" in msg.lower() or "parse" in msg.lower()
-                ]
-
-                # Check for schema/field errors
-                schema_errors = [
-                    msg
-                    for msg in error_messages
-                    if "field" in msg.lower()
-                    and ("not" in msg.lower() or "unknown" in msg.lower())
-                ]
-
-                if syntax_errors:
-                    pytest.fail(
-                        f"Subscription with navigation properties has syntax errors: {syntax_errors}"
-                    )
-                elif schema_errors:
-                    pytest.skip(
-                        "Navigation properties not yet implemented in subscriptions"
-                    )
-                # Item 76: "WebSocket not supported" is the deferred-feature
-                # signal — subscriptions are gated on Items 13/42/46 per
-                # Framework.md. When that lands, this branch should assert
-                # actual subscription delivery instead of accepting the
-                # WebSocket-not-supported response.
-
-        def test_GQL_comprehensive_navigation_integration(
-            self, server: Any, admin_a: Any, team_a: Any
-        ):
-            """Test comprehensive navigation properties integration across query, mutation, and subscription."""
-            if not self._has_navigation_properties():
-                pytest.skip("Entity has no navigation properties to test")
-
-            logger.debug(
-                f"[INFO] Running comprehensive navigation integration test for {self.entity_name}"
-            )
-
-            # Track test results
-            test_results = {
-                "entity_name": self.entity_name,
-                "has_self_referential": self._has_self_referential_properties(),
-                "navigation_properties": self._get_navigation_property_names(),
-                "query_test": False,
-                "mutation_test": False,
-                "subscription_test": False,
-                "errors": [],
-            }
-
-            try:
-                # Test 1: Query with navigation properties
-                try:
-                    self.test_GQL_query_navigation_properties_parent_to_child(
-                        server, admin_a, team_a
-                    )
-                    test_results["query_test"] = True
-                except Exception as e:
-                    test_results["errors"].append(f"Query test failed: {str(e)}")
-
-                # Test 2: Mutation with navigation properties
-                try:
-                    self.test_GQL_mutation_create_with_nested_navigation(
-                        server, admin_a, team_a
-                    )
-                    test_results["mutation_test"] = True
-                except Exception as e:
-                    test_results["errors"].append(f"Mutation test failed: {str(e)}")
-
-                # Test 3: Subscription with navigation properties
-                try:
-                    self.test_GQL_subscription_navigation_properties(
-                        server, admin_a, team_a
-                    )
-                    test_results["subscription_test"] = True
-                except Exception as e:
-                    test_results["errors"].append(f"Subscription test failed: {str(e)}")
-
-                # Log comprehensive results
-                logger.info(
-                    f"Navigation properties integration test results: {json.dumps(test_results, indent=2)}"
-                )
-
-                # Assert that at least one test passed (allowing for partial implementation)
-                passed_tests = sum(
-                    [
-                        test_results["query_test"],
-                        test_results["mutation_test"],
-                        test_results["subscription_test"],
-                    ]
-                )
-
-                if passed_tests == 0:
-                    pytest.skip(
-                        f"No navigation properties tests passed for {self.entity_name}. This may indicate navigation properties are not yet implemented."
-                    )
-
-                # If we get here, at least one test passed, which is success
-                assert (
-                    passed_tests > 0
-                ), f"At least one navigation properties test should pass for {self.entity_name}"
-
-            except Exception as e:
-                test_results["errors"].append(f"Comprehensive test failed: {str(e)}")
-                logger.error(
-                    f"Comprehensive navigation test failed: {json.dumps(test_results, indent=2)}"
-                )
-                raise
-
-    # ------------------------------------------------------------------ #
-    # GraphQL Security — automatic per-entity
-    # ------------------------------------------------------------------ #
-
-    @pytest.mark.security
     def test_GQL_security_unauthenticated_query(self, server: Any):
         """GQL queries without auth must not return data."""
         singular = self._gql_singular_name

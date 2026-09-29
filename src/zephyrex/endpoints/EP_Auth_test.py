@@ -1823,7 +1823,7 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
         input_data = {}
         for key, value in payload.items():
             if not key.startswith("_"):  # Skip internal test fields
-                camel_case_key = convert_field_name(key, use_camelcase=True)
+                camel_case_key = convert_field_name(key)
                 input_data[camel_case_key] = value
 
         # Use API key for system entities (users are not system entities, but keeping the pattern)
@@ -1832,9 +1832,7 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
         )
 
         # Convert string_field_to_update to camelCase for GraphQL
-        gql_string_field = convert_field_name(
-            self.string_field_to_update, use_camelcase=True
-        )
+        gql_string_field = convert_field_name(self.string_field_to_update)
 
         # Build the mutation
         input_fields = []
@@ -2021,12 +2019,12 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
         update_data = {"display_name": f"Updated GQL {self.faker.word()}"}
 
         # Convert to camelCase for GraphQL
-        gql_string_field = convert_field_name("display_name", use_camelcase=True)
+        gql_string_field = convert_field_name("display_name")
 
         # Build the mutation without an ID parameter
         input_fields = []
         for key, value in update_data.items():
-            camel_case_key = convert_field_name(key, use_camelcase=True)
+            camel_case_key = convert_field_name(key)
             if isinstance(value, str):
                 input_fields.append(f'{camel_case_key}: "{value}"')
             else:

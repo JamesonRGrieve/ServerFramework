@@ -119,7 +119,7 @@ class GraphQLTestMixin:
         test_data = {}
         if self.graphql_config.external_string_field:
             camel_case_field = convert_field_name(
-                self.graphql_config.external_string_field, use_camelcase=True
+                self.graphql_config.external_string_field
             )
             test_data[camel_case_field] = f"External Test {self.faker.word()}"
         return test_data
@@ -129,7 +129,7 @@ class GraphQLTestMixin:
         fields = self.graphql_config.external_graphql_fields.copy()
         if include_string_field and self.graphql_config.external_string_field:
             gql_string_field = convert_field_name(
-                self.graphql_config.external_string_field, use_camelcase=True
+                self.graphql_config.external_string_field
             )
             if gql_string_field not in fields:
                 fields.insert(1, gql_string_field)

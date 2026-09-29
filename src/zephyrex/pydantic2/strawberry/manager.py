@@ -4,6 +4,7 @@ import sys
 from enum import Enum, IntEnum
 from types import ModuleType
 from typing import (
+    Annotated,
     Any,
     AsyncGenerator,
     Callable,
@@ -154,6 +155,14 @@ class GraphQLManager(ErrorHandlerMixin):
 
         # Track types currently being created to prevent infinite recursion
         self._types_being_created: Set[Type[BaseModel]] = set()
+        # Final GraphQL names of the types being created, fixed before their
+        # fields are built so circular references can name them.
+        self._pending_type_names: Dict[Type[BaseModel], str] = {}
+        # Every generated type is published here under its GraphQL name;
+        # circular references resolve through strawberry.lazy against it at
+        # schema-build time, when every type exists.
+        self._types_module = ModuleType(f"{__name__}._generated_{id(self)}")
+        sys.modules[self._types_module.__name__] = self._types_module
 
     def create_schema(self) -> strawberry.Schema:
         """Create complete GraphQL schema from ModelRegistry"""
@@ -405,6 +414,13 @@ class GraphQLManager(ErrorHandlerMixin):
         successful_models: List[str] = []
         failed_models: List[Tuple[str, str, str]] = []
 
+        # Every model's references are registered before any type is built:
+        # a parent's reverse-navigation fields come from its children, and a
+        # parent type built before a child is analyzed would lack them.
+        for relationship in self.model_registry.model_relationships:
+            if relationship and relationship[0] is not None:
+                self._analyze_model_relationships(self._applied_model(relationship[0]))
+
         for relationship in self.model_registry.model_relationships:
             if len(relationship) == 3:
                 model_class, ref_model_class, manager_class = relationship
@@ -590,26 +606,27 @@ class GraphQLManager(ErrorHandlerMixin):
             # Re-raise to be caught by the outer try-catch for proper error isolation
             raise
 
-    def _create_gql_type_from_model(self, model_class: Type[BaseModel]) -> Type:
-        """Create a GraphQL type from a Pydantic model"""
-        # Ensure we are using the registry-applied model (with extensions) when available
+    def _applied_model(self, model_class: Type[BaseModel]) -> Type[BaseModel]:
+        """The registry-applied model (with extension fields) when the
+        registry applies one, else ``model_class``."""
+        apply_fn = getattr(self.model_registry, "apply", None)
+        if not callable(apply_fn):
+            return model_class
         try:
-            if hasattr(self, "model_registry") and self.model_registry:
-                apply_fn = getattr(self.model_registry, "apply", None)
-                if callable(apply_fn):
-                    try:
-                        applied_model = apply_fn(model_class)
-                        # Validate the returned object before using it
-                        if isinstance(applied_model, type) and hasattr(
-                            applied_model, "model_fields"
-                        ):
-                            model_class = applied_model
-                    except Exception:
-                        # If apply fails for any reason, continue with the original model
-                        pass
-        except Exception:
-            # Defensive: if anything unexpected happens, ignore and proceed
-            pass
+            applied_model = apply_fn(model_class)
+        except Exception as e:
+            logger.debug(f"Registry could not apply {model_class.__name__}: {e}")
+            return model_class
+        if isinstance(applied_model, type) and hasattr(applied_model, "model_fields"):
+            return applied_model
+        return model_class
+
+    def _create_gql_type_from_model(self, model_class: Type[BaseModel]) -> Any:
+        """Create a GraphQL type from a Pydantic model.
+
+        Returns the strawberry type, or for a circular reference to a type
+        still being built, a lazy annotation that names it."""
+        model_class = self._applied_model(model_class)
 
         # Check if type already exists in registry
         if model_class in self._type_registry:
@@ -617,26 +634,12 @@ class GraphQLManager(ErrorHandlerMixin):
 
         # Check if we're already creating this type (prevent infinite recursion)
         if model_class in self._types_being_created:
-            # Return a lazy type reference to break circular dependencies
-            type_name = self._get_type_name_for_model(model_class)
-
-            # Use strawberry.lazy to create a forward reference
-            def get_type():
-                # By the time this is called, the type should be in the registry
-                if model_class in self._type_registry:
-                    return self._type_registry[model_class]
-                else:
-                    # Fallback - create a minimal type
-                    @strawberry.type
-                    class MinimalType:
-                        id: Optional[str] = None
-
-                    MinimalType.__name__ = type_name
-                    return MinimalType
-
-            # Return a reference that will be resolved later
-            # Instead of strawberry.lazy, return the actual type from registry
-            return self._type_registry.get(model_class, ANY_SCALAR)
+            # A circular reference: name the type lazily; it is published in
+            # ``_types_module`` once built.
+            return Annotated[
+                self._pending_type_names[model_class],
+                strawberry.lazy(self._types_module.__name__),
+            ]
 
         # Mark this type as being created
         self._types_being_created.add(model_class)
@@ -667,10 +670,6 @@ class GraphQLManager(ErrorHandlerMixin):
                 type_name = f"{extension_name.title()}{base_name}Type"
             else:
                 type_name = f"{base_name}Type"
-
-            annotations, field_name_mappings = self._build_field_annotations(
-                model_class
-            )
 
             # Check if a type with this name already exists
             # This is a global registry to track all type names
@@ -745,7 +744,11 @@ class GraphQLManager(ErrorHandlerMixin):
             self._global_type_names[type_name] = (
                 f"{model_class.__module__}.{model_class.__name__}"
             )
+            self._pending_type_names[model_class] = type_name
 
+            annotations, field_name_mappings = self._build_field_annotations(
+                model_class
+            )
             fields_dict = self._build_type_fields_dict(
                 model_class, annotations, field_name_mappings
             )
@@ -761,6 +764,7 @@ class GraphQLManager(ErrorHandlerMixin):
 
             # Register the type
             self._type_registry[model_class] = gql_type
+            setattr(self._types_module, type_name, gql_type)
 
             logger.debug(
                 f"Created GraphQL type '{type_name}' for model {model_class.__module__}.{model_class.__name__}"
@@ -770,6 +774,7 @@ class GraphQLManager(ErrorHandlerMixin):
         finally:
             # Remove from types being created
             self._types_being_created.discard(model_class)
+            self._pending_type_names.pop(model_class, None)
 
     def _build_field_annotations(
         self, model_class: Type[BaseModel]
@@ -801,7 +806,7 @@ class GraphQLManager(ErrorHandlerMixin):
 
             gql_field_type = self._convert_python_type_to_gql(field_type)  # type: ignore[arg-type]
             # Convert snake_case field names to camelCase for GraphQL (GraphQL convention)
-            gql_field_name = convert_field_name(field_name, use_camelcase=True)
+            gql_field_name = convert_field_name(field_name)
             annotations[gql_field_name] = gql_field_type  # type: ignore[index]
             # Store mapping for resolver if names differ
             if gql_field_name != field_name:
@@ -868,6 +873,20 @@ class GraphQLManager(ErrorHandlerMixin):
                     description=f"List of related {source_model.__name__} objects",
                 )
 
+        # References load the row they point at; the DTO carries only the id.
+        for nav_field, target_model in self._forward_relationships.get(
+            model_class, {}
+        ).items():
+            gql_name = convert_field_name(nav_field)
+            if gql_name not in annotations:
+                continue
+            fields_dict[gql_name] = strawberry.field(
+                resolver=self._create_forward_navigation_resolver(
+                    target_model, nav_field, annotations[gql_name]
+                ),
+                description=f"The related {target_model.__name__}",
+            )
+
         return fields_dict
 
     def _create_input_type_from_model(
@@ -917,7 +936,7 @@ class GraphQLManager(ErrorHandlerMixin):
                 field_type = Optional[field_type]
 
             # Convert snake_case field names to camelCase for GraphQL input types
-            gql_field_name = convert_field_name(field_name, use_camelcase=True)
+            gql_field_name = convert_field_name(field_name)
 
             gql_field_type = self._convert_python_type_to_gql(field_type)
             annotations[gql_field_name] = gql_field_type  # type: ignore[index]
@@ -983,8 +1002,9 @@ class GraphQLManager(ErrorHandlerMixin):
         """Check if a type is already Optional (Union with None)"""
         return _type_introspector.is_optional_type(python_type)  # type: ignore[no-any-return]
 
-    def _convert_python_type_to_gql(self, python_type: Type) -> Type:
-        """Convert Python type to GraphQL type"""
+    def _convert_python_type_to_gql(self, python_type: Type) -> Any:
+        """The GraphQL annotation for a Python type: a strawberry type, a
+        scalar, or a typing form (``Optional``/``List``/lazy) around one."""
         try:
             # Handle Optional types
             if get_origin(python_type) is Union:
@@ -1687,7 +1707,7 @@ class GraphQLManager(ErrorHandlerMixin):
             if not self._is_already_optional(gql_type):
                 gql_type = Optional[gql_type]  # type: ignore[assignment]
             # Convert snake_case field names to camelCase for GraphQL input types
-            gql_field_name = convert_field_name(field_name, use_camelcase=True)
+            gql_field_name = convert_field_name(field_name)
             annotations[gql_field_name] = gql_type  # type: ignore[index]
 
         # Always add at least one field to avoid empty input type error
@@ -1846,7 +1866,7 @@ class GraphQLManager(ErrorHandlerMixin):
         else:
             return f"{base_name}Type"
 
-    def _get_or_create_type(self, model_class: Type[BaseModel]) -> Type:
+    def _get_or_create_type(self, model_class: Type[BaseModel]) -> Any:
         """Get or create a GraphQL type with lazy resolution for circular dependencies."""
         if model_class in self._type_registry:
             return self._type_registry[model_class]
@@ -2039,6 +2059,72 @@ class GraphQLManager(ErrorHandlerMixin):
         loader = RequestDataLoader(batch_load)
         store[cache_key] = loader
         return loader
+
+    def _get_forward_nav_dataloader(
+        self,
+        info: Info,
+        target_model: Type[BaseModel],
+        manager_class: Any,
+        requester_id: str,
+    ) -> "RequestDataLoader":
+        """Get (or lazily build) the per-request DataLoader that loads
+        ``target_model`` rows by id.
+
+        One ``manager.list(id IN (keys))`` per request and target model, so
+        every sibling resolving a reference to the same model shares a batch;
+        rows the requester may not view come back as ``None``.
+        """
+        store = self._reverse_nav_loader_store(info)
+        cache_key = ("forward", target_model.__name__, requester_id)
+        existing = store.get(cache_key)
+        if existing is not None:
+            return existing
+
+        model_registry = self.model_registry
+
+        def batch_load(keys: Sequence[Hashable]) -> List[Any]:
+            from zephyrex.logic.AbstractLogicManager.models import FieldComparison
+
+            key_list = list(keys)
+            manager = manager_class(
+                model_registry=model_registry, requester_id=requester_id
+            )
+            rows = manager.list(
+                filters=[FieldComparison(target_model, "id", "in", key_list)],
+                limit=len(key_list),
+            )
+            by_id = {getattr(row, "id", None): row for row in rows}
+            return [by_id.get(key) for key in key_list]
+
+        loader = RequestDataLoader(batch_load)
+        store[cache_key] = loader
+        return loader
+
+    def _create_forward_navigation_resolver(
+        self,
+        target_model: Type[BaseModel],
+        field_name: str,
+        return_type: Any,
+    ) -> Callable:
+        """Create a resolver that loads the row a reference points at."""
+        manager_ref: "GraphQLManager" = self
+        foreign_key_field = f"{field_name}_id"
+
+        async def resolver(self, info: Info):
+            foreign_key = getattr(self, foreign_key_field, None)
+            if not foreign_key:
+                return None
+            requester_id = manager_ref._get_context_from_info(info).get("requester_id")
+            manager_class = manager_ref._get_manager_for_model(target_model)
+            if not requester_id or manager_class is None:
+                return None
+            loader = manager_ref._get_forward_nav_dataloader(
+                info, target_model, manager_class, requester_id
+            )
+            return await loader.load(foreign_key)
+
+        resolver.__annotations__["return"] = return_type
+        return resolver
 
     def _create_reverse_navigation_resolver(
         self,
