@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-import types
+from dataclasses import dataclass
+from typing import Optional
 
 import pytest
 from fastapi import HTTPException
@@ -9,7 +10,22 @@ from zephyrex.extensions.meta_logging.BLL_Meta_Logging import (
     meta_logging_rate_limiting_hook,
 )
 from zephyrex.lib.InboundSecurity import _inmemory_counter
-from zephyrex.logic.AbstractLogicManager import HookContext, HookTiming
+from zephyrex.logic.AbstractLogicManager import (
+    AbstractBLLManager,
+    HookContext,
+    HookTiming,
+)
+
+
+@dataclass
+class _Requester:
+    id: str
+    email: Optional[str] = None
+
+
+class _QueryManager(AbstractBLLManager):
+    """A manager built without a registry (so no DB lookup); each call to
+    _context builds a fresh one, as each request does."""
 
 
 class TestQueryRateLimit:
@@ -19,13 +35,12 @@ class TestQueryRateLimit:
 
     @staticmethod
     def _context(requester_id: str, method: str = "list") -> HookContext:
-        manager = types.SimpleNamespace(
-            optional_requester=types.SimpleNamespace(id=requester_id)
-        )
+        manager = _QueryManager()
+        manager.requester = _Requester(id=requester_id)
         return HookContext(
             manager=manager,
             method_name=method,
-            args=[],
+            args=(),
             kwargs={},
             timing=HookTiming.BEFORE,
         )
