@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 import warnings
-from typing import Any, List
 from unittest.mock import MagicMock
 
 import pytest
@@ -35,6 +34,7 @@ from zephyrex.extensions.ExternalErrors import (
     silent_drop,
 )
 from zephyrex.logic.Outbox import InMemoryOutboxStore
+from zephyrex.logic.RotationTestDoubles import fake_rotation_manager
 
 from zephyrex.logic import BLL_Providers as _bll_mod  # canonical module reference
 
@@ -122,96 +122,39 @@ def test_validate_manager_constructors_rejects_empty_init():
 # ----- Item 2 hookup tests --------------------------------------------------
 
 
-def _make_rotation_manager_with_fake_instances(instances: List[Any]) -> RotationManager:
-    """Build a RotationManager whose `_get_ordered_rotation_provider_instances`
-    returns the supplied iterable, and whose model lookup returns the same
-    object as the provider_instance dto. Bypasses DB entirely.
-
-    The fake DB lookup honors the `id` kwarg so that skipping a provider
-    (e.g. via auth cooldown) does not desynchronize the lookup queue from
-    the RPI iteration order.
-    """
-    rm = RotationManager(model_registry=None, requester_id="r1")
-    rm.target_id = "rotation-1"
-    rm.requester = MagicMock(id="r1")
-
-    # Replace the loader with a stub that yields fake RPIs.
-    fake_rpis = [
-        MagicMock(provider_instance_id=f"pi-{i}") for i in range(len(instances))
-    ]
-    rm._get_ordered_rotation_provider_instances = lambda: fake_rpis  # type: ignore
-
-    # Map pi-id -> instance so the fake lookup returns the right instance
-    # regardless of which RPIs the rotation actually visits.
-    pi_map: dict = {f"pi-{i}": inst for i, inst in enumerate(instances)}
-
-    # Patch ProviderInstanceModel.DB(...).get to use the fake lookup.
-    # Use the canonical _bll_mod reference (bound at test-file import
-    # time) so the patched class is the same one the OLD wrapped rotate
-    # method resolves through its function globals — even after another
-    # test's `_scoped_import` has swapped sys.modules to a new module
-    # object. Without this, the patch would land on the NEW class while
-    # rotate keeps reading from the OLD class and the DB would not be
-    # stubbed.
-    bll_mod = _bll_mod
-    original_db = bll_mod.ProviderInstanceModel.DB
-
-    class _FakeDB:
-        def __init__(self, *a, **k):
-            pass
-
-        def get(self, *a, **k):
-            pi_id = k.get("id")
-            return pi_map.get(str(pi_id))
-
-    rm.model_registry = MagicMock()
-    rm.model_registry.DB.Base = object()
-    rm.model_registry.DB.get_session.return_value.__enter__ = lambda self_: None
-    rm.model_registry.DB.get_session.return_value.__exit__ = lambda *a: None
-    bll_mod.ProviderInstanceModel.DB = lambda base: _FakeDB()
-    rm._restore_db = lambda: setattr(bll_mod.ProviderInstanceModel, "DB", original_db)
-    return rm
-
-
 @pytest.mark.unit
-def test_invalid_input_error_reraises_immediately():
+def test_invalid_input_error_reraises_immediately(monkeypatch):
     instance = MagicMock(name="prov-A")
     instance.name = "prov-A"
-    rm = _make_rotation_manager_with_fake_instances([instance])
+    rm = fake_rotation_manager(monkeypatch, [instance])
 
     def call(_inst):
         raise InvalidInputExternalError("bad args")
 
-    try:
-        with pytest.raises(InvalidInputExternalError):
-            rm.rotate(call)
-    finally:
-        rm._restore_db()
+    with pytest.raises(InvalidInputExternalError):
+        rm.rotate(call)
 
 
 @pytest.mark.unit
-def test_permanent_error_reraises_immediately():
+def test_permanent_error_reraises_immediately(monkeypatch):
     instance = MagicMock(name="prov-A")
     instance.name = "prov-A"
-    rm = _make_rotation_manager_with_fake_instances([instance])
+    rm = fake_rotation_manager(monkeypatch, [instance])
 
     def call(_inst):
         raise PermanentExternalError("never")
 
-    try:
-        with pytest.raises(PermanentExternalError):
-            rm.rotate(call)
-    finally:
-        rm._restore_db()
+    with pytest.raises(PermanentExternalError):
+        rm.rotate(call)
 
 
 @pytest.mark.unit
-def test_auth_error_advances_to_next_provider():
+def test_auth_error_advances_to_next_provider(monkeypatch):
     a = MagicMock()
     a.name = "prov-A"
     b = MagicMock()
     b.name = "prov-B"
-    rm = _make_rotation_manager_with_fake_instances([a, b])
+    rm = fake_rotation_manager(monkeypatch, [a, b])
 
     seen = []
 
@@ -221,16 +164,13 @@ def test_auth_error_advances_to_next_provider():
             raise AuthExternalError("401")
         return "B-ok"
 
-    try:
-        result = rm.rotate(call)
-        assert result == "B-ok"
-        assert seen == ["prov-A", "prov-B"]
-    finally:
-        rm._restore_db()
+    result = rm.rotate(call)
+    assert result == "B-ok"
+    assert seen == ["prov-A", "prov-B"]
 
 
 @pytest.mark.unit
-def test_transient_error_retries_then_advances():
+def test_transient_error_retries_then_advances(monkeypatch):
     a = MagicMock()
     a.name = "prov-A"
     a.provider_class = type(
@@ -250,7 +190,7 @@ def test_transient_error_retries_then_advances():
     # rotate() does ONE provider_instance lookup per outer for-loop
     # iteration; the inner while-True transient retries reuse that same
     # object. So the queue holds [a, b], not [a, a, a, b].
-    rm = _make_rotation_manager_with_fake_instances([a, b])
+    rm = fake_rotation_manager(monkeypatch, [a, b])
 
     calls = {"a": 0, "b": 0}
 
@@ -261,14 +201,11 @@ def test_transient_error_retries_then_advances():
         calls["b"] += 1
         return "B-ok"
 
-    try:
-        result = rm.rotate(call)
-        assert result == "B-ok"
-        # Initial + 2 retries = 3 attempts on A, then 1 on B.
-        assert calls["a"] == 3
-        assert calls["b"] == 1
-    finally:
-        rm._restore_db()
+    result = rm.rotate(call)
+    assert result == "B-ok"
+    # Initial + 2 retries = 3 attempts on A, then 1 on B.
+    assert calls["a"] == 3
+    assert calls["b"] == 1
 
 
 @pytest.mark.unit
@@ -294,7 +231,7 @@ def test_rate_limit_error_does_not_advance(monkeypatch):
     # rotate() does ONE provider_instance lookup per outer for-loop
     # iteration; rate-limit retries reuse the same object so the queue
     # holds [a, b], not [a, a, b].
-    rm = _make_rotation_manager_with_fake_instances([a, b])
+    rm = fake_rotation_manager(monkeypatch, [a, b])
 
     counter = {"n": 0}
 
@@ -306,35 +243,29 @@ def test_rate_limit_error_does_not_advance(monkeypatch):
             return "A-ok-after-backoff"
         return "B-ok"
 
-    try:
-        result = rm.rotate(call)
-        # Should stay on A and recover.
-        assert result == "A-ok-after-backoff"
-    finally:
-        rm._restore_db()
+    result = rm.rotate(call)
+    # Should stay on A and recover.
+    assert result == "A-ok-after-backoff"
 
 
 @pytest.mark.unit
-def test_bare_exception_advances_for_back_compat():
+def test_bare_exception_advances_for_back_compat(monkeypatch):
     a = MagicMock()
     a.name = "prov-A"
     b = MagicMock()
     b.name = "prov-B"
-    rm = _make_rotation_manager_with_fake_instances([a, b])
+    rm = fake_rotation_manager(monkeypatch, [a, b])
 
     def call(inst):
         if inst.name == "prov-A":
             raise RuntimeError("legacy")
         return "B-ok"
 
-    try:
-        assert rm.rotate(call) == "B-ok"
-    finally:
-        rm._restore_db()
+    assert rm.rotate(call) == "B-ok"
 
 
 @pytest.mark.unit
-def test_auth_cooldown_skips_provider_on_subsequent_rotate():
+def test_auth_cooldown_skips_provider_on_subsequent_rotate(monkeypatch):
     """After an auth failure on prov-A, a second rotate() within the
     cooldown window should skip prov-A and start at prov-B."""
     a = MagicMock()
@@ -342,9 +273,9 @@ def test_auth_cooldown_skips_provider_on_subsequent_rotate():
     b = MagicMock()
     b.name = "prov-B"
     # First rotate sees a, b. Second rotate sees b only because
-    # _make_rotation_manager_with_fake_instances pops as we use them;
+    # fake_rotation_manager pops as we use them;
     # we therefore build two separate RMs but share the cooldown state.
-    rm1 = _make_rotation_manager_with_fake_instances([a, b])
+    rm1 = fake_rotation_manager(monkeypatch, [a, b])
     seen_first: list = []
 
     def call_first(inst):
@@ -353,52 +284,43 @@ def test_auth_cooldown_skips_provider_on_subsequent_rotate():
             raise AuthExternalError("401")
         return "B-ok"
 
-    try:
-        assert rm1.rotate(call_first) == "B-ok"
-        assert seen_first == ["prov-A", "prov-B"]
-    finally:
-        rm1._restore_db()
+    assert rm1.rotate(call_first) == "B-ok"
+    assert seen_first == ["prov-A", "prov-B"]
 
     # Same RPI ids -> same cooldown lookup. New RM but same RPIs.
-    rm2 = _make_rotation_manager_with_fake_instances([a, b])
+    rm2 = fake_rotation_manager(monkeypatch, [a, b])
     seen_second: list = []
 
     def call_second(inst):
         seen_second.append(inst.name)
         return "B-ok"
 
-    try:
-        # The cooldown helper builds RPIs with provider_instance_id=pi-N
-        # by index. Both RMs use the same indexes, so prov-A's pi-0 is in
-        # cooldown. Second rotate should skip pi-0 entirely.
-        assert rm2.rotate(call_second) == "B-ok"
-        assert seen_second == ["prov-B"]
-    finally:
-        rm2._restore_db()
+    # The cooldown helper builds RPIs with provider_instance_id=pi-N
+    # by index. Both RMs use the same indexes, so prov-A's pi-0 is in
+    # cooldown. Second rotate should skip pi-0 entirely.
+    assert rm2.rotate(call_second) == "B-ok"
+    assert seen_second == ["prov-B"]
 
 
 # ----- Item 51 sticky-session tests ----------------------------------------
 
 
 @pytest.mark.unit
-def test_sticky_pin_set_on_first_success():
+def test_sticky_pin_set_on_first_success(monkeypatch):
     """First rotate() with a stickiness key — no prior pin — falls through
     to linear rotation and pins the winning provider."""
     a = MagicMock()
     a.name = "prov-A"
-    rm = _make_rotation_manager_with_fake_instances([a])
-    try:
-        result = rm.rotate(
-            lambda inst: "ok", routing_hint=RoutingHint(stickiness_key="conv-1")
-        )
-        assert result == "ok"
-        assert _bll_mod._sticky_get("conv-1", None) == "pi-0"
-    finally:
-        rm._restore_db()
+    rm = fake_rotation_manager(monkeypatch, [a])
+    result = rm.rotate(
+        lambda inst: "ok", routing_hint=RoutingHint(stickiness_key="conv-1")
+    )
+    assert result == "ok"
+    assert _bll_mod._sticky_get("conv-1", None) == "pi-0"
 
 
 @pytest.mark.unit
-def test_sticky_pin_reused_on_subsequent_rotate():
+def test_sticky_pin_reused_on_subsequent_rotate(monkeypatch):
     """Second rotate() with the same stickiness key honors the pin and
     skips the linear chain — call goes straight to pi-0 even when the
     chain would otherwise enumerate other RPIs."""
@@ -408,32 +330,24 @@ def test_sticky_pin_reused_on_subsequent_rotate():
     b.name = "prov-B"
     # Pin pi-0 (prov-A) up front so the second rotate exercises the
     # pinned-attempt path.
-    rm1 = _make_rotation_manager_with_fake_instances([a, b])
-    try:
-        rm1.rotate(
-            lambda inst: "ok-1", routing_hint=RoutingHint(stickiness_key="conv-2")
-        )
-    finally:
-        rm1._restore_db()
+    rm1 = fake_rotation_manager(monkeypatch, [a, b])
+    rm1.rotate(lambda inst: "ok-1", routing_hint=RoutingHint(stickiness_key="conv-2"))
 
-    rm2 = _make_rotation_manager_with_fake_instances([a, b])
+    rm2 = fake_rotation_manager(monkeypatch, [a, b])
     seen: list = []
 
     def call(inst):
         seen.append(inst.name)
         return "ok-2"
 
-    try:
-        result = rm2.rotate(call, routing_hint=RoutingHint(stickiness_key="conv-2"))
-        assert result == "ok-2"
-        # Pin hit — only prov-A should be visited.
-        assert seen == ["prov-A"]
-    finally:
-        rm2._restore_db()
+    result = rm2.rotate(call, routing_hint=RoutingHint(stickiness_key="conv-2"))
+    assert result == "ok-2"
+    # Pin hit — only prov-A should be visited.
+    assert seen == ["prov-A"]
 
 
 @pytest.mark.unit
-def test_sticky_pin_invalidated_on_pinned_failure_then_falls_through():
+def test_sticky_pin_invalidated_on_pinned_failure_then_falls_through(monkeypatch):
     """When the pinned provider fails (transient/auth/bare), the pin is
     invalidated and the linear chain is recomputed against the surviving
     chain (the failed pin is removed from the head)."""
@@ -442,13 +356,10 @@ def test_sticky_pin_invalidated_on_pinned_failure_then_falls_through():
     b = MagicMock()
     b.name = "prov-B"
     # Pin pi-0 first.
-    rm1 = _make_rotation_manager_with_fake_instances([a, b])
-    try:
-        rm1.rotate(lambda inst: "ok", routing_hint=RoutingHint(stickiness_key="conv-3"))
-    finally:
-        rm1._restore_db()
+    rm1 = fake_rotation_manager(monkeypatch, [a, b])
+    rm1.rotate(lambda inst: "ok", routing_hint=RoutingHint(stickiness_key="conv-3"))
 
-    rm2 = _make_rotation_manager_with_fake_instances([a, b])
+    rm2 = fake_rotation_manager(monkeypatch, [a, b])
     visited: list = []
 
     def call(inst):
@@ -457,19 +368,16 @@ def test_sticky_pin_invalidated_on_pinned_failure_then_falls_through():
             raise AuthExternalError("401 on pinned")
         return "B-ok"
 
-    try:
-        result = rm2.rotate(call, routing_hint=RoutingHint(stickiness_key="conv-3"))
-        assert result == "B-ok"
-        # Pinned A failed → fall-through to surviving chain (B only).
-        assert visited == ["prov-A", "prov-B"]
-        # Pin invalidated; new pin should be B.
-        assert _bll_mod._sticky_get("conv-3", None) == "pi-1"
-    finally:
-        rm2._restore_db()
+    result = rm2.rotate(call, routing_hint=RoutingHint(stickiness_key="conv-3"))
+    assert result == "B-ok"
+    # Pinned A failed → fall-through to surviving chain (B only).
+    assert visited == ["prov-A", "prov-B"]
+    # Pin invalidated; new pin should be B.
+    assert _bll_mod._sticky_get("conv-3", None) == "pi-1"
 
 
 @pytest.mark.unit
-def test_sticky_invalid_input_propagates_through_pin():
+def test_sticky_invalid_input_propagates_through_pin(monkeypatch):
     """`InvalidInputExternalError` from a pinned attempt re-raises rather
     than silently falling through — sticky pinning never masks a 4xx.
     Default rotation has the same semantics; the pin path must match."""
@@ -477,36 +385,27 @@ def test_sticky_invalid_input_propagates_through_pin():
     a.name = "prov-A"
     b = MagicMock()
     b.name = "prov-B"
-    rm1 = _make_rotation_manager_with_fake_instances([a, b])
-    try:
-        rm1.rotate(lambda inst: "ok", routing_hint=RoutingHint(stickiness_key="conv-4"))
-    finally:
-        rm1._restore_db()
+    rm1 = fake_rotation_manager(monkeypatch, [a, b])
+    rm1.rotate(lambda inst: "ok", routing_hint=RoutingHint(stickiness_key="conv-4"))
 
-    rm2 = _make_rotation_manager_with_fake_instances([a, b])
+    rm2 = fake_rotation_manager(monkeypatch, [a, b])
 
     def call(inst):
         raise InvalidInputExternalError("bad payload")
 
-    try:
-        with pytest.raises(InvalidInputExternalError):
-            rm2.rotate(call, routing_hint=RoutingHint(stickiness_key="conv-4"))
-    finally:
-        rm2._restore_db()
+    with pytest.raises(InvalidInputExternalError):
+        rm2.rotate(call, routing_hint=RoutingHint(stickiness_key="conv-4"))
 
 
 @pytest.mark.unit
-def test_sticky_no_routing_hint_no_pin():
+def test_sticky_no_routing_hint_no_pin(monkeypatch):
     """Default behavior is unchanged when no routing hint is supplied —
     no pin is created on success, no pin is consulted on subsequent calls."""
     a = MagicMock()
     a.name = "prov-A"
-    rm = _make_rotation_manager_with_fake_instances([a])
-    try:
-        rm.rotate(lambda inst: "ok")
-        assert len(_bll_mod._STICKY_SESSIONS) == 0
-    finally:
-        rm._restore_db()
+    rm = fake_rotation_manager(monkeypatch, [a])
+    rm.rotate(lambda inst: "ok")
+    assert len(_bll_mod._STICKY_SESSIONS) == 0
 
 
 # ----- Item 48 degradation tests ------------------------------------------
@@ -522,11 +421,11 @@ def _reset_observability_counters():
 
 
 @pytest.mark.unit
-def test_exhausted_chain_fail_fast_raises_http_500():
+def test_exhausted_chain_fail_fast_raises_http_500(monkeypatch):
     a = MagicMock()
     a.name = "prov-A"
     a.provider_class = type("P", (), {"degradation_policy": fail_fast()})
-    rm = _make_rotation_manager_with_fake_instances([a])
+    rm = fake_rotation_manager(monkeypatch, [a])
 
     def call(_inst):
         raise TransientExternalError("503")
@@ -537,18 +436,17 @@ def test_exhausted_chain_fail_fast_raises_http_500():
         transient_max_ms=1,
         transient_jitter=0.0,
     )
-    try:
-        from fastapi import HTTPException
+    from fastapi import HTTPException
 
-        with pytest.raises(HTTPException) as ei:
-            rm.rotate(call)
-        assert ei.value.status_code == 500
-    finally:
-        rm._restore_db()
+    with pytest.raises(HTTPException) as ei:
+        rm.rotate(call)
+    assert ei.value.status_code == 500
 
 
 @pytest.mark.unit
-def test_exhausted_chain_queue_and_retry_returns_sentinel_and_writes_outbox():
+def test_exhausted_chain_queue_and_retry_returns_sentinel_and_writes_outbox(
+    monkeypatch,
+):
     a = MagicMock()
     a.name = "prov-A"
     a.provider_class = type(
@@ -566,30 +464,29 @@ def test_exhausted_chain_queue_and_retry_returns_sentinel_and_writes_outbox():
     )
     store = InMemoryOutboxStore()
     RotationManager.set_outbox_store(store)
-    rm = _make_rotation_manager_with_fake_instances([a])
+    rm = fake_rotation_manager(monkeypatch, [a])
 
     def call(_inst):
         raise TransientExternalError("503")
 
-    try:
-        result = rm.rotate(call, ability="charge.create")
-        assert isinstance(result, QueuedForRetry)
-        assert result.tracking_id
-        assert result.status == "accepted"
-        # Outbox should have one entry.
-        entry = store.find_by_idempotency_key_starts_with = None  # noqa: F841
-        # We didn't expose a "list" helper but enqueue returns the id; verify
-        # by claiming pending.
-        claimed = store.claim_pending(limit=10)
-        assert len(claimed) == 1
-        assert claimed[0].target_provider == "prov-A"
-        assert claimed[0].target_ability == "charge.create"
-    finally:
-        rm._restore_db()
+    result = rm.rotate(call, ability="charge.create")
+    assert isinstance(result, QueuedForRetry)
+    assert result.tracking_id
+    assert result.status == "accepted"
+    # Outbox should have one entry.
+    entry = store.find_by_idempotency_key_starts_with = None  # noqa: F841
+    # We didn't expose a "list" helper but enqueue returns the id; verify
+    # by claiming pending.
+    claimed = store.claim_pending(limit=10)
+    assert len(claimed) == 1
+    assert claimed[0].target_provider == "prov-A"
+    assert claimed[0].target_ability == "charge.create"
 
 
 @pytest.mark.unit
-def test_exhausted_chain_silent_drop_returns_sentinel_and_increments_counter():
+def test_exhausted_chain_silent_drop_returns_sentinel_and_increments_counter(
+    monkeypatch,
+):
     a = MagicMock()
     a.name = "prov-A"
     a.provider_class = type(
@@ -605,46 +502,40 @@ def test_exhausted_chain_silent_drop_returns_sentinel_and_increments_counter():
             ),
         },
     )
-    rm = _make_rotation_manager_with_fake_instances([a])
+    rm = fake_rotation_manager(monkeypatch, [a])
 
     def call(_inst):
         raise TransientExternalError("503")
 
-    try:
-        result = rm.rotate(call, ability="beacon.fire")
-        assert isinstance(result, SilentDropped)
-        assert result.provider == "prov-A"
-        assert result.ability == "beacon.fire"
-        counters = RotationManager.get_silent_drop_counter()
-        assert counters[("prov-A", "beacon.fire")] == 1
-    finally:
-        rm._restore_db()
+    result = rm.rotate(call, ability="beacon.fire")
+    assert isinstance(result, SilentDropped)
+    assert result.provider == "prov-A"
+    assert result.ability == "beacon.fire"
+    counters = RotationManager.get_silent_drop_counter()
+    assert counters[("prov-A", "beacon.fire")] == 1
 
 
 # ----- Item 84 cost-observability test -----------------------------------
 
 
 @pytest.mark.unit
-def test_successful_rotation_with_cost_model_increments_counter():
+def test_successful_rotation_with_cost_model_increments_counter(monkeypatch):
     a = MagicMock()
     a.name = "prov-A"
     a.provider_class = type(
         "P", (), {"cost_model": ConstantCostModel(per_call_usd=Decimal("0.25"))}
     )
-    rm = _make_rotation_manager_with_fake_instances([a])
+    rm = fake_rotation_manager(monkeypatch, [a])
     rm.requester = MagicMock(id="user-1", team_id="team-7")
 
-    try:
-        result = rm.rotate(lambda inst: "ok", ability="charge.create")
-        assert result == "ok"
-        counters = RotationManager.get_cost_counter()
-        assert counters[("team-7", "prov-A", "charge.create")] == Decimal("0.25")
-    finally:
-        rm._restore_db()
+    result = rm.rotate(lambda inst: "ok", ability="charge.create")
+    assert result == "ok"
+    counters = RotationManager.get_cost_counter()
+    assert counters[("team-7", "prov-A", "charge.create")] == Decimal("0.25")
 
 
 @pytest.mark.unit
-def test_cost_model_failure_does_not_break_rotation():
+def test_cost_model_failure_does_not_break_rotation(monkeypatch):
     a = MagicMock()
     a.name = "prov-A"
 
@@ -653,20 +544,19 @@ def test_cost_model_failure_does_not_break_rotation():
             raise RuntimeError("model busted")
 
     a.provider_class = type("P", (), {"cost_model": _Boom()})
-    rm = _make_rotation_manager_with_fake_instances([a])
+    rm = fake_rotation_manager(monkeypatch, [a])
 
-    try:
-        # Cost model raising must NOT fail the rotation call.
-        assert rm.rotate(lambda inst: "ok", ability="x") == "ok"
-    finally:
-        rm._restore_db()
+    # Cost model raising must NOT fail the rotation call.
+    assert rm.rotate(lambda inst: "ok", ability="x") == "ok"
 
 
 # ----- Item 34 — distributed-tracing + provider-call metrics -------------
 
 
 @pytest.mark.unit
-def test_rotation_emits_attempt_spans_and_metrics_for_multi_provider_chain():
+def test_rotation_emits_attempt_spans_and_metrics_for_multi_provider_chain(
+    monkeypatch,
+):
     """Item 34: a 3-provider rotation where the first 2 fail with
     `TransientExternalError` (zero retries configured) and the 3rd
     succeeds should record:
@@ -698,7 +588,7 @@ def test_rotation_emits_attempt_spans_and_metrics_for_multi_provider_chain():
         c.name = "prov-C"
         c.provider_class = type("PC", (), {"rotation_policy": zero_retry_policy})
 
-        rm = _make_rotation_manager_with_fake_instances([a, b, c])
+        rm = fake_rotation_manager(monkeypatch, [a, b, c])
         seen: list = []
 
         def call(inst):
@@ -707,12 +597,9 @@ def test_rotation_emits_attempt_spans_and_metrics_for_multi_provider_chain():
                 raise TransientExternalError("503")
             return "C-ok"
 
-        try:
-            result = rm.rotate(call, ability="charge.create")
-            assert result == "C-ok"
-            assert seen == ["prov-A", "prov-B", "prov-C"]
-        finally:
-            rm._restore_db()
+        result = rm.rotate(call, ability="charge.create")
+        assert result == "C-ok"
+        assert seen == ["prov-A", "prov-B", "prov-C"]
 
         # ----- span tree -------------------------------------------------
         rotation_spans = [s for s in backend.spans if s["name"] == "rotation.rotate"]
@@ -783,7 +670,7 @@ def test_rotation_emits_attempt_spans_and_metrics_for_multi_provider_chain():
 
 
 @pytest.mark.unit
-def test_rotation_emits_exhausted_counter_when_chain_exhausted():
+def test_rotation_emits_exhausted_counter_when_chain_exhausted(monkeypatch):
     """Item 34: when every provider in the chain fails and the
     degradation policy raises HTTPException, `rotation.exhausted_total`
     increments exactly once."""
@@ -806,18 +693,15 @@ def test_rotation_emits_exhausted_counter_when_chain_exhausted():
                 "degradation_policy": fail_fast(),
             },
         )
-        rm = _make_rotation_manager_with_fake_instances([a])
+        rm = fake_rotation_manager(monkeypatch, [a])
 
         def call(_inst):
             raise TransientExternalError("503")
 
-        try:
-            from fastapi import HTTPException
+        from fastapi import HTTPException
 
-            with pytest.raises(HTTPException):
-                rm.rotate(call, ability="x")
-        finally:
-            rm._restore_db()
+        with pytest.raises(HTTPException):
+            rm.rotate(call, ability="x")
 
         exhausted_key = (
             "rotation.exhausted_total",
@@ -829,7 +713,7 @@ def test_rotation_emits_exhausted_counter_when_chain_exhausted():
 
 
 @pytest.mark.unit
-def test_rotation_telemetry_failure_does_not_break_rotation():
+def test_rotation_telemetry_failure_does_not_break_rotation(monkeypatch):
     """Item 34: a misbehaving metrics backend must NEVER fail the
     rotation. Install a backend whose every method raises and assert
     rotation still returns the callable's success value."""
@@ -852,11 +736,8 @@ def test_rotation_telemetry_failure_does_not_break_rotation():
     try:
         a = MagicMock()
         a.name = "prov-A"
-        rm = _make_rotation_manager_with_fake_instances([a])
-        try:
-            assert rm.rotate(lambda inst: "ok", ability="x") == "ok"
-        finally:
-            rm._restore_db()
+        rm = fake_rotation_manager(monkeypatch, [a])
+        assert rm.rotate(lambda inst: "ok", ability="x") == "ok"
     finally:
         reset_metrics_backend()
 
@@ -891,9 +772,9 @@ def _two_providers():
 
 
 @pytest.mark.unit
-def test_arotate_advances_when_an_awaited_attempt_fails():
+def test_arotate_advances_when_an_awaited_attempt_fails(monkeypatch):
     a, b = _two_providers()
-    rm = _make_rotation_manager_with_fake_instances([a, b])
+    rm = fake_rotation_manager(monkeypatch, [a, b])
     seen = []
 
     async def call(inst):
@@ -902,17 +783,14 @@ def test_arotate_advances_when_an_awaited_attempt_fails():
             raise AuthExternalError("401")
         return "B-ok"
 
-    try:
-        assert asyncio.run(rm.arotate(call)) == "B-ok"
-        assert seen == ["prov-A", "prov-B"]
-    finally:
-        rm._restore_db()
+    assert asyncio.run(rm.arotate(call)) == "B-ok"
+    assert seen == ["prov-A", "prov-B"]
 
 
 @pytest.mark.unit
 def test_arotate_retries_transient_failures_without_blocking_the_loop(monkeypatch):
     a, b = _two_providers()
-    rm = _make_rotation_manager_with_fake_instances([a, b])
+    rm = fake_rotation_manager(monkeypatch, [a, b])
     waits = []
 
     async def recording_sleep(seconds):
@@ -932,34 +810,25 @@ def test_arotate_retries_transient_failures_without_blocking_the_loop(monkeypatc
         calls["b"] += 1
         return "B-ok"
 
-    try:
-        assert asyncio.run(rm.arotate(call)) == "B-ok"
-        assert calls == {"a": 3, "b": 1}
-        assert len(waits) == 2
-    finally:
-        rm._restore_db()
+    assert asyncio.run(rm.arotate(call)) == "B-ok"
+    assert calls == {"a": 3, "b": 1}
+    assert len(waits) == 2
 
 
 @pytest.mark.unit
-def test_arotate_reraises_invalid_input_raised_by_the_coroutine():
+def test_arotate_reraises_invalid_input_raised_by_the_coroutine(monkeypatch):
     a, _ = _two_providers()
-    rm = _make_rotation_manager_with_fake_instances([a])
+    rm = fake_rotation_manager(monkeypatch, [a])
 
     async def call(_inst):
         raise InvalidInputExternalError("bad args")
 
-    try:
-        with pytest.raises(InvalidInputExternalError):
-            asyncio.run(rm.arotate(call))
-    finally:
-        rm._restore_db()
+    with pytest.raises(InvalidInputExternalError):
+        asyncio.run(rm.arotate(call))
 
 
 @pytest.mark.unit
-def test_arotate_accepts_a_sync_callable():
+def test_arotate_accepts_a_sync_callable(monkeypatch):
     a, _ = _two_providers()
-    rm = _make_rotation_manager_with_fake_instances([a])
-    try:
-        assert asyncio.run(rm.arotate(lambda inst: inst.name)) == "prov-A"
-    finally:
-        rm._restore_db()
+    rm = fake_rotation_manager(monkeypatch, [a])
+    assert asyncio.run(rm.arotate(lambda inst: inst.name)) == "prov-A"
