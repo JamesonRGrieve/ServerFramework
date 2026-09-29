@@ -264,9 +264,7 @@ class TestAPIKeyEndpoints(ExtensionServerMixin):
         self, server, model_registry, admin_a
     ):
         issued = self._issue(model_registry, admin_a.id)
-        response = server.get(
-            "/v1/user", headers={"X-API-Key": issued.key, **_bearer(issued.key)}
-        )
+        response = server.get("/v1/user", headers={"X-API-Key": issued.key})
         assert response.status_code == 200, response.text
         assert response.json()["user"]["id"] == admin_a.id
 

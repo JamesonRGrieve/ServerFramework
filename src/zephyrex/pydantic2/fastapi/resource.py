@@ -476,7 +476,11 @@ def create_manager_factory(
             if principal:
                 requester_id = principal
             else:
-                auth_header = headers.get("authorization")
+                # Anything else (a JWT, or an issued API key in either
+                # header) is resolved by the auth provider.
+                auth_header = headers.get("authorization") or (
+                    f"Bearer {api_key}" if api_key else None
+                )
                 if auth_header:
                     user = get_auth_provider().auth(
                         model_registry=model_registry,
