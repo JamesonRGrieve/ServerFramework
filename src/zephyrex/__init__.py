@@ -51,7 +51,7 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
-from typing import Any, Dict, Optional, Union
+from typing import TYPE_CHECKING, Any, Dict, Optional, Union
 
 # Item 66 — the sys.path mutation that bridged the legacy top-level
 # package layout (`lib/`, `logic/`, ...) is gone now that Item 60
@@ -59,9 +59,21 @@ from typing import Any, Dict, Optional, Union
 # through the standard package machinery; consumers can run the
 # framework from a zipapp or vendor it without surprise.
 
-# Re-exports. Importing ``app`` triggers ``lib.Logging`` etc., so callers
-# need their environment configured before importing this module.
-from zephyrex.app import build_app, instance  # noqa: E402
+if TYPE_CHECKING:
+    from zephyrex.app import build_app, instance
+
+# ``build_app``/``instance`` are re-exported lazily: importing ``zephyrex.app``
+# configures logging and the environment, which must not happen merely because
+# some submodule (e.g. ``zephyrex.mypy_plugin``) was imported.
+_LAZY_APP_EXPORTS = ("build_app", "instance")
+
+
+def __getattr__(name: str) -> Any:
+    if name in _LAZY_APP_EXPORTS:
+        from zephyrex import app
+
+        return getattr(app, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 class ZephyrexError(Exception):
