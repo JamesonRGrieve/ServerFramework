@@ -18,6 +18,7 @@ from typing import (
     get_args,
     get_origin,
     get_type_hints,
+    overload,
 )
 
 from fastapi import HTTPException
@@ -205,6 +206,16 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
     # Instance and class-level access via descriptor. Instances receive registry-bound models,
     # while class-level access returns the raw model for validation helpers (e.g., Model.Create).
     Model = _BoundModelDescriptor()
+
+    @property
+    def _caches_entities(self) -> bool:
+        """Whether entities go through the entity cache: unless the manager
+        opts out, or its model has write-only fields (``Field(exclude=True)``)
+        — a cached dump omits them, so a cache hit would return an entity
+        without the secret its readers need."""
+        return not self._cache_disabled and not any(
+            field.exclude for field in self.Model.model_fields.values()
+        )
 
     @property
     def requester(self) -> Requester:
@@ -1271,8 +1282,16 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
         """Override this method to add validation logic for entity search."""
         pass
 
-    def create(self, **kwargs) -> Union[ModelT, List[ModelT]]:
-        """Create one or more entities."""
+    @overload
+    def create(
+        self, *, entities: List[Dict[str, Any]], **kwargs: Any
+    ) -> List[ModelT]: ...
+
+    @overload
+    def create(self, **kwargs: Any) -> ModelT: ...
+
+    def create(self, **kwargs: Any) -> Union[ModelT, List[ModelT]]:
+        """Create one entity, or one per item of ``entities``."""
         # Handle single entity or list of entities
         if "entities" in kwargs and isinstance(kwargs["entities"], list):
             entities = kwargs.pop("entities")
@@ -1376,7 +1395,7 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
         )
 
         cache = _entity_cache
-        if cache is not None and not self._cache_disabled and entity is not None:
+        if cache is not None and self._caches_entities and entity is not None:
             try:
                 dto_dict = (
                     entity.model_dump(mode="json")
@@ -1433,7 +1452,7 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
         cache = _entity_cache
         if (
             cache is not None
-            and not self._cache_disabled
+            and self._caches_entities
             and entity_id
             and not include
             and not fields
@@ -1488,7 +1507,7 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
 
         if (
             cache is not None
-            and not self._cache_disabled
+            and self._caches_entities
             and entity_id
             and not include
             and not fields
@@ -1827,7 +1846,7 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
         )
 
         cache = _entity_cache
-        if cache is not None and not self._cache_disabled:
+        if cache is not None and self._caches_entities:
             try:
                 table = self.DB.__tablename__
                 old_index_vals = {
@@ -1896,7 +1915,7 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
     def delete(self, id: str) -> None:
         """Delete an entity by ID."""
         cache = _entity_cache
-        if cache is not None and not self._cache_disabled:
+        if cache is not None and self._caches_entities:
             try:
                 old = self.get(id=id)
                 old_index_vals = {

@@ -65,6 +65,33 @@ class TestSensitiveAnswerField:
     write-only, so no serialization (REST response, entity cache) carries
     it, while verification still reads the attribute."""
 
+    def test_get_returns_the_question_without_the_answer(self, server, admin_a):
+        """Over HTTP: the response is re-validated against the model, which
+        a required write-only field would fail (422)."""
+        headers = {"Authorization": f"Bearer {admin_a.jwt}"}
+        created = server.post(
+            "/v1/user/recovery-questions",
+            json={
+                "user_recovery_question": {
+                    "user_id": admin_a.id,
+                    "question": "First pet?",
+                    "answer": "Rex",
+                }
+            },
+            headers=headers,
+        )
+        assert created.status_code == 201, created.text
+        question_id = created.json()["user_recovery_question"]["id"]
+
+        fetched = server.get(
+            f"/v1/user/recovery-questions/{question_id}", headers=headers
+        )
+
+        assert fetched.status_code == 200, fetched.text
+        body = fetched.json()["user_recovery_question"]
+        assert body["question"] == "First pet?"
+        assert "answer" not in body
+
     def test_answer_hash_is_never_serialized(self):
         question = UserRecoveryQuestionModel.model_construct(
             id="q1", user_id="u1", question="First pet?", answer="$2b$12$hash"

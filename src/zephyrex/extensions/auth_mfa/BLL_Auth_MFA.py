@@ -146,7 +146,10 @@ class MultifactorMethodModel(
     identifier: Optional[str] = Field(
         None, description="Phone number for SMS or backup email"
     )
-    totp_secret: Optional[str] = Field(None, description="Secret key for TOTP method")
+    # Write-only: the (encrypted) shared secret is never returned.
+    totp_secret: Optional[str] = Field(
+        None, exclude=True, description="Secret key for TOTP method (write-only)"
+    )
     totp_algorithm: str = Field("SHA1", description="TOTP algorithm")
     totp_digits: int = Field(6, description="Number of digits in TOTP code")
     totp_period: int = Field(30, description="TOTP code validity period in seconds")
@@ -577,8 +580,9 @@ class MultifactorMethodManager(AbstractBLLManager, RouterMixin):
 
         if method.method_type == MultifactorMethodType.TOTP:
             # H-1 — secret is Fernet-encrypted at rest; decrypt for the
-            # verification math, never re-store the cleartext.
-            ok = self.verify_totp_code(
+            # verification math, never re-store the cleartext. A TOTP method
+            # without a secret can never verify.
+            ok = bool(method.totp_secret) and self.verify_totp_code(
                 decrypt_totp_secret(method.totp_secret),
                 code,
                 method.totp_algorithm,
@@ -606,8 +610,14 @@ class MultifactorRecoveryCodeModel(
     MultifactorMethodModel.Reference,  # type: ignore[name-defined]
     metaclass=ModelMeta,
 ):
-    code_hash: str = Field(..., description="Hashed recovery code")
-    code_salt: str = Field(..., description="Salt for the recovery code")
+    # Write-only: recovery codes are low-entropy; their hashes never leave.
+    # Optional because responses never carry them (see api_key).
+    code_hash: Optional[str] = Field(
+        None, exclude=True, description="Hashed recovery code (write-only)"
+    )
+    code_salt: Optional[str] = Field(
+        None, exclude=True, description="Salt for the recovery code (write-only)"
+    )
     is_used: bool = Field(False, description="Whether this recovery code has been used")
     used_at: Optional[datetime] = Field(
         None, description="When this recovery code was used"
@@ -722,27 +732,11 @@ class MultifactorRecoveryCodeManager(AbstractBLLManager):
         )
 
         for recovery_code in recovery_codes:
-            code_hash = (
-                recovery_code.get("code_hash")
-                if isinstance(recovery_code, dict)
-                else recovery_code.code_hash
-            )
-            code_salt = (
-                recovery_code.get("code_salt")
-                if isinstance(recovery_code, dict)
-                else recovery_code.code_salt
-            )
-
-            # Verify the code
-            if bcrypt.checkpw(code.encode(), code_hash.encode()):  # type: ignore[union-attr]
-                # Mark as used using the manager's update method
-                recovery_id = (
-                    recovery_code.get("id")
-                    if isinstance(recovery_code, dict)
-                    else recovery_code.id
-                )
+            if recovery_code.code_hash and bcrypt.checkpw(
+                code.encode(), recovery_code.code_hash.encode()
+            ):
                 self.update(
-                    recovery_id,
+                    recovery_code.id,
                     is_used=True,
                     used_at=datetime.now(timezone.utc),
                 )

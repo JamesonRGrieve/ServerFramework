@@ -59,9 +59,11 @@ class UserRecoveryQuestionModel(
     # H-3 — the bcrypt hash of the answer must NEVER appear in any
     # response. Recovery answers have low entropy and crack offline, so the
     # field is write-only: excluded from every serialization and from
-    # GraphQL types; verification reads the attribute.
-    answer: str = Field(
-        ...,
+    # GraphQL types; verification reads the attribute. Optional because a
+    # response never carries it: REST re-validates responses against this
+    # model, and a required write-only field would fail that.
+    answer: Optional[str] = Field(
+        None,
         exclude=True,
         description="Hashed answer to recovery question (write-only)",
     )
@@ -144,7 +146,7 @@ class UserRecoveryQuestionManager(AbstractBLLManager, RouterMixin):
             model_registry=self.model_registry,
             id=question_id,
         )
-        if not question:
+        if not question or not question.answer:
             self._verify_lockout_tracker.record_failure(actor_key, flow)
             return False
         normalized_answer = _normalize_answer(answer)
