@@ -65,6 +65,15 @@ def _resolve_provider_name(provider_class: Any, *, warn_missing: bool = False) -
     return name
 
 
+def root_rotation_name(extension_name: str) -> str:
+    """Canonical name of an extension's root rotation: each underscore-separated
+    part PascalCased (``auth_mfa`` -> ``Root_Auth_Mfa``). The single source for
+    the rotation seeder, the rotation/provider-instance link seeder and
+    ``AbstractStaticExtension.root``."""
+    parts = (stringcase.pascalcase(part) for part in extension_name.split("_"))
+    return f"Root_{'_'.join(parts)}"
+
+
 def _get_extension_registry(model_registry: Any) -> Any | None:
     """Return the ``ExtensionRegistry`` from *model_registry*, or ``None``
     when it is absent or empty.  Replaces the 3-line guard that was
@@ -1042,10 +1051,7 @@ class RotationModel(
                 logger.debug(f"Using ExtensionRegistry for root rotation discovery")
 
                 # Create a root rotation for each extension that has providers
-                for (
-                    ext_name,
-                    ext_class,
-                ) in extension_registry._extension_name_map.items():
+                for ext_name in extension_registry._extension_name_map:
                     try:
                         # Check if this extension has any providers
                         if (
@@ -1057,23 +1063,7 @@ class RotationModel(
                             )
                             continue
 
-                        # Get the extension's friendly name if available
-                        if (
-                            hasattr(ext_class, "friendly_name")
-                            and ext_class.friendly_name
-                        ):
-                            friendly_name = ext_class.friendly_name
-                        else:
-                            # Generate friendly name from extension name
-                            friendly_name = stringcase.titlecase(ext_name)
-
-                        # Create rotation name preserving underscores and proper capitalization
-                        # Convert extension name parts to PascalCase individually
-                        parts = ext_name.split("_")
-                        capitalized_parts = [
-                            stringcase.pascalcase(part) for part in parts
-                        ]
-                        rotation_name = f"Root_{'_'.join(capitalized_parts)}"
+                        rotation_name = root_rotation_name(ext_name)
 
                         rotation_data = {
                             "name": rotation_name,
@@ -2230,33 +2220,9 @@ class RotationProviderInstanceModel(
                                 )
                                 continue
 
-                            # Get or generate friendly names for consistent naming
-                            # For provider
-                            if (
-                                hasattr(prv_class, "friendly_name")
-                                and prv_class.friendly_name
-                            ):
-                                provider_friendly_name = prv_class.friendly_name
-                            else:
-                                provider_friendly_name = stringcase.titlecase(
-                                    provider_name
-                                )
-
-                            # For extension (need to get the extension class)
-                            ext_class = extension_registry._extension_name_map.get(
-                                ext_name
-                            )
-                            if (
-                                ext_class
-                                and hasattr(ext_class, "friendly_name")
-                                and ext_class.friendly_name
-                            ):
-                                ext_friendly_name = ext_class.friendly_name
-                            else:
-                                ext_friendly_name = stringcase.titlecase(ext_name)
-
-                            # Create rotation name using PascalCase of extension name
-                            rotation_name = f"Root_{stringcase.pascalcase(ext_name)}"
+                            # Must match the rotation seeder's name exactly, or
+                            # the link never resolves for multi-word extensions.
+                            rotation_name = root_rotation_name(ext_name)
 
                             # Create instance name using PascalCase of provider name
                             instance_name = (

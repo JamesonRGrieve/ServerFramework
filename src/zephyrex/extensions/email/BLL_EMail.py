@@ -295,26 +295,8 @@ def send_invitation_email_hook(manager, entity, create_args=None):
 
         # Extract invitation data
         if hasattr(entity, "invitation") and entity.invitation.code:
-            # This is a code-based invitation
-            # invitation_link = (
-            #     f"{env('APP_URI')}/?invitation_code={entity.code}?email={entity.email}"
-            # )
-
-            # Look for invitation invitees to get email addresses
-            # if hasattr(manager, "Invitee_manager"):
-            # invitee_manager = manager.Invitee_manager
             try:
-
-                # invitees = manager.list(invitation_id=entity.id)
-
-                # for invitee in invitees:
                 if hasattr(entity, "email") and entity.email:
-                    # Send invitation email asynchronously
-                    import asyncio
-
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-
                     from zephyrex.extensions.email.EXT_EMail import EXT_EMail
 
                     ext_instance = EXT_EMail()
@@ -327,22 +309,6 @@ def send_invitation_email_hook(manager, entity, create_args=None):
                         "Initialized EXT_EMail instance for invitation email"
                         f" link : {invitation_link}"
                     )
-
-                    # get rotation manager for the email's specific rotation
-                    try:
-                        from zephyrex.logic.BLL_Providers import RotationManager
-
-                        email_rotation_manager = RotationManager(
-                            requester_id=manager.requester.id,
-                            model_registry=getattr(manager, "model_registry", None),
-                        )
-
-                        rotation = email_rotation_manager.get(name="Root_Email")
-                        email_rotation_manager.target_id = rotation.id
-
-                        EXT_EMail.root = email_rotation_manager
-                    except Exception as e:
-                        logger.error(f"Failed to set up email rotation manager: {e}")
 
                     ext_instance.send_invitation_email(
                         entity=entity,

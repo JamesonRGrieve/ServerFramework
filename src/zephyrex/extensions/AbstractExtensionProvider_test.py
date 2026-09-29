@@ -436,6 +436,35 @@ class TestAbstractExtensionProvider:
         # Should work - abilities on providers are abstract abilities
         assert "provider_ability" in TestProviderWithAbility.abilities
 
+    def test_ability_registration_does_not_leak_into_the_parent(self):
+        """A subclass declaring no ``_abilities`` of its own used to share its
+        parent's set, so registering an ability wrote it into the parent and
+        every sibling."""
+
+        class ParentProvider(AbstractStaticProvider):
+            name: ClassVar[str] = "leak_parent"
+            description: ClassVar[str] = "Parent provider"
+            _abilities: ClassVar[Set[str]] = {"parent_ability"}
+
+            @classmethod
+            def bond_instance(cls, instance):
+                return MockProviderInstance(instance)
+
+        class ChildProvider(ParentProvider):
+            name: ClassVar[str] = "leak_child"
+
+            @staticmethod
+            @ability(name="child_only_ability")
+            def child_only_ability():
+                return "child"
+
+        class SiblingProvider(ParentProvider):
+            name: ClassVar[str] = "leak_sibling"
+
+        assert ChildProvider.abilities >= {"parent_ability", "child_only_ability"}
+        assert "child_only_ability" not in ParentProvider.abilities
+        assert "child_only_ability" not in SiblingProvider.abilities
+
     def test_hook_decorator(self):
         """Test hook decorator functionality."""
         result = TestExtension.test_hook_handler()
@@ -495,12 +524,18 @@ class TestAbstractExtensionProvider:
         abilities.add("new_ability")
         assert "new_ability" not in TestProvider._abilities
 
-    def test_seed_data_generation(self):
-        """Test seed data generation for rotation provider instances."""
-        # Without a real database connection, this should return empty list
-        seed_data = TestExtension.get_rotation_provider_instances_seed_data()
-        assert isinstance(seed_data, list)
-        assert len(seed_data) == 0  # No DB available, so empty list
+    def test_seed_data_is_empty_before_any_app_is_built(self, monkeypatch):
+        """With no attached registry there is no database to read links from."""
+        from zephyrex.pydantic2.registry import ModelRegistry
+
+        monkeypatch.setattr(ModelRegistry, "_attached", None)
+        assert TestExtension.get_rotation_provider_instances_seed_data() == []
+
+    def test_root_is_none_before_any_app_is_built(self, monkeypatch):
+        from zephyrex.pydantic2.registry import ModelRegistry
+
+        monkeypatch.setattr(ModelRegistry, "_attached", None)
+        assert TestExtension.root is None
 
     def test_inheritance_functionality(self):
         """Test ability and hook inheritance."""

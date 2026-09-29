@@ -2,6 +2,7 @@ import inspect
 from datetime import time
 from typing import (
     Any,
+    ClassVar,
     Dict,
     List,
     Optional,
@@ -50,6 +51,8 @@ class ModelRegistry(AbstractRegistry):
     1. Bind phase: Models are registered but not processed
     2. Commit phase: All models are processed, dependencies resolved, and schemas generated
     """
+
+    _attached: ClassVar[Optional["ModelRegistry"]] = None
 
     def __init__(
         self,
@@ -1802,14 +1805,28 @@ class ModelRegistry(AbstractRegistry):
 
         logger.debug("Cleared model registry")
 
+    def bind_app(self, app) -> None:
+        """Make this the registry ``app`` serves (``app.state.model_registry``)
+        and the process's attached registry (see ``attached``)."""
+        self.app = app
+        app.state.model_registry = self
+        ModelRegistry._attached = self
+
+    @classmethod
+    def attached(cls) -> Optional["ModelRegistry"]:
+        """The registry of the most recently bound app, or ``None`` before any
+        app is built. Only static, request-less APIs (e.g.
+        ``AbstractStaticExtension.root``) should resolve through this; code
+        with a request uses ``request.app.state.model_registry``."""
+        return ModelRegistry._attached
+
     def attach_to_app(self, app) -> None:
         """Attach this registry to a FastAPI app instance.
 
         Args:
             app: FastAPI application instance
         """
-        self.app = app
-        app.state.model_registry = self
+        self.bind_app(app)
 
         # Include any generated routers
         for router in self.ep_routers:

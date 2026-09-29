@@ -547,29 +547,23 @@ class AbstractEXTTest(AbstractTest, ExtensionServerMixin):
         assert isinstance(providers, list), "Providers should be a list"
         # Providers list may be empty in test environment, which is acceptable
 
-    def test_get_rotation_provider_instances_seed_data(self):
-        """Test get_rotation_provider_instances_seed_data method."""
+    def test_get_rotation_provider_instances_seed_data(self, isolated_extension_server):
+        """Every seed row links this extension's root rotation to a provider
+        instance."""
         if not self.extension_class:
             pytest.skip("extension_class not defined")
 
-        try:
-            seed_data = self.extension_class.get_rotation_provider_instances_seed_data()
-            assert isinstance(seed_data, list), "Seed data should be a list"
-
-            for item in seed_data:
-                assert isinstance(
-                    item, dict
-                ), "Each seed data item should be a dictionary"
-                # Check for common seed data fields
-                if item:  # Only validate non-empty items
-                    assert any(
-                        key in item for key in ["name", "provider_name", "type"]
-                    ), "Seed data should contain expected fields"
-        except Exception as e:
-            # Method may not be implemented in all extensions
-            logger.debug(
-                f"get_rotation_provider_instances_seed_data not implemented: {e}"
-            )
+        isolated_extension_server(self.extension_class.name)
+        seed_data = self.extension_class.get_rotation_provider_instances_seed_data()
+        assert isinstance(seed_data, list), "Seed data should be a list"
+        if seed_data:
+            root = self.extension_class.root
+            assert root is not None, "seed rows exist, so the root rotation must"
+        for item in seed_data:
+            assert set(item) == {"rotation_id", "provider_instance_id", "parent_id"}
+            assert item["rotation_id"] == root.target_id
+            assert item["provider_instance_id"]
+            assert item["parent_id"] is None
 
     # Factory method for creating test configurations
     @classmethod

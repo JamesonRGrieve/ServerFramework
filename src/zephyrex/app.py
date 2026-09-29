@@ -1383,7 +1383,7 @@ def build_app(model_registry: ModelRegistry):
                         pass
                 return response
 
-    app.state.model_registry = model_registry
+    model_registry.bind_app(app)
     app.state.draining = False
     app.state.federation_report = federation_report
 

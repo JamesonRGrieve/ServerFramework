@@ -358,6 +358,17 @@ class AbstractPRVTest(AbstractTest):
         if not self._should_run_test(test_type):
             pytest.skip(f"Test type {test_type.value} not configured to run")
 
+    def _parent_root_rotation(self):
+        """The provider's extension root RotationManager. The extension_server
+        fixture has built and seeded an app, so an extension that ships this
+        provider must resolve a root rotation; None is a defect, not a skip."""
+        parent_extension = self.provider_class.extension
+        root_rotation = parent_extension.root
+        assert (
+            root_rotation is not None
+        ), f"{parent_extension.__name__}.root did not resolve its root rotation"
+        return root_rotation
+
     @pytest.mark.parametrize(
         "test_type",
         sorted(
@@ -510,15 +521,8 @@ class AbstractPRVTest(AbstractTest):
         if not self.provider_class or not hasattr(self.provider_class, "extension"):
             pytest.skip("provider_class or extension not defined")
 
-        parent_extension = self.provider_class.extension
-        assert hasattr(
-            parent_extension, "root"
-        ), "Parent extension must have root property"
-
-        root_rotation = parent_extension.root
-        if root_rotation is None:
-            pytest.skip("Root rotation manager not available in test environment")
-
+        root_rotation = self._parent_root_rotation()
+        assert root_rotation.target_id, "root must target the extension's rotation"
         assert hasattr(
             root_rotation, "rotate"
         ), "Rotation manager must have rotate method"
@@ -546,15 +550,10 @@ class AbstractPRVTest(AbstractTest):
         if not self.provider_class or not hasattr(self.provider_class, "extension"):
             pytest.skip("provider_class or extension not defined")
 
-        parent_extension = self.provider_class.extension
-        try:
-            root_rotation = parent_extension.root
-            assert root_rotation is not None
-            logger.debug(
-                f"Testing error scenario: {scenario_name} - {scenario_description}"
-            )
-        except Exception as e:
-            logger.debug(f"Error scenario '{scenario_name}' handled: {str(e)}")
+        self._parent_root_rotation()
+        logger.debug(
+            f"Testing error scenario: {scenario_name} - {scenario_description}"
+        )
 
     def test_performance_benchmarks(self, extension_server, extension_db):
         """Test provider performance."""
@@ -567,11 +566,12 @@ class AbstractPRVTest(AbstractTest):
             pytest.skip("provider_class or extension not defined")
 
         parent_extension = self.provider_class.extension
+        # An earlier test in this worker may already have warmed the cache;
+        # clear it so the first lookup really is the uncached path.
+        parent_extension._root_rotation_cache = None
 
         start_time = time.time()
-        root_rotation_1 = parent_extension.root
-        if root_rotation_1 is None:
-            pytest.skip("Root rotation manager not available in test environment")
+        root_rotation_1 = self._parent_root_rotation()
         clean_lookup_time = time.time() - start_time
 
         start_time = time.time()
@@ -597,8 +597,7 @@ class AbstractPRVTest(AbstractTest):
             pytest.skip("provider_class or extension not defined")
 
         parent_extension = self.provider_class.extension
-        if parent_extension.root is None:
-            pytest.skip("Root rotation manager not available in test environment")
+        self._parent_root_rotation()
 
         def access_root_rotation():
             return parent_extension.root

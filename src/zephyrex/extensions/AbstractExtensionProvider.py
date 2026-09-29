@@ -7,7 +7,7 @@ from inspect import getmembers, isfunction
 from time import monotonic
 from typing import Any, Callable, ClassVar, Dict, List, Optional, Set, Tuple, Type
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException, status
 from ordered_set import OrderedSet
 from pydantic import BaseModel
 
@@ -15,7 +15,6 @@ try:
     import pytest
 except ImportError:
     pytest = None  # type: ignore[assignment]
-import stringcase
 
 from zephyrex.lib.Dependencies import Dependencies
 from zephyrex.lib.Environment import AbstractRegistry, env
@@ -32,7 +31,6 @@ try:
     from sqlalchemy import select
 
     from zephyrex.database.DatabaseManager import DatabaseManager
-    from zephyrex.lib.Environment import inflection
 except ImportError:
     # Handle case where these modules might not be available during testing
     # Removed inflect_engine - using shared inflection from Environment
@@ -439,7 +437,6 @@ class ExtensionRegistry(AbstractRegistry):
             # Try to load the dependency extension
             try:
                 # Import the dependency extension module
-                src_dir = _resolve_src_dir()
                 dep_module_pattern = os.path.join(
                     self._extension_dir(dep_name), "EXT_*.py"
                 )
@@ -523,9 +520,6 @@ class ExtensionRegistry(AbstractRegistry):
                         )
                         continue
 
-                # Get the source directory to make the pattern absolute
-                src_dir = _resolve_src_dir()
-
                 # Find both BLL and PRV files in the extension directory.
                 # Use ``_extension_dir`` so an external extensions root
                 # (set via ``extensions_path``) is honored.
@@ -547,16 +541,7 @@ class ExtensionRegistry(AbstractRegistry):
                         if file_path.endswith("_test.py"):
                             continue
 
-                        # Convert file path to module name
-                        relative_path = os.path.relpath(file_path, src_dir)
-                        module_path = (
-                            relative_path.replace("/", ".")
-                            .replace("\\", ".")
-                            .replace(".py", "")
-                        )
-
                         logger.debug(f"Processing {file_type} file: {file_path}")
-                        logger.debug(f"Module path: {module_path}")
 
                         try:
                             # Item 61: Use load_extension_module so out-of-tree
@@ -566,7 +551,9 @@ class ExtensionRegistry(AbstractRegistry):
                             module = load_extension_module(
                                 self._extensions_root(), extension_name, file_stem
                             )
-                            logger.debug(f"Successfully imported module: {module_path}")
+                            logger.debug(
+                                f"Successfully imported module: {module.__name__}"
+                            )
 
                             # Process the module to find models
                             for attr_name in dir(module):
@@ -621,12 +608,10 @@ class ExtensionRegistry(AbstractRegistry):
                                     )
 
                         except ImportError as import_err:
-                            logger.debug(
-                                f"Could not import {module_path}: {import_err}"
-                            )
+                            logger.debug(f"Could not import {file_path}: {import_err}")
                         except Exception as module_err:
                             logger.debug(
-                                f"Error processing module {module_path}: {module_err}"
+                                f"Error processing module {file_path}: {module_err}"
                             )
 
             except Exception as e:
@@ -901,10 +886,8 @@ class ExtensionRegistry(AbstractRegistry):
     ):
         """Discover and track providers from an extension."""
         import glob
-        import importlib
         import inspect
         import os
-        import sys
 
         from zephyrex.extensions.ExtensionLoader import load_extension_module
         from zephyrex.lib.Logging import logger
@@ -912,8 +895,6 @@ class ExtensionRegistry(AbstractRegistry):
         extension_name = extension_class.name
         providers = []
 
-        # Get the source directory and the (possibly overridden) extension root
-        src_dir = _resolve_src_dir()
         extension_dir = self._extension_dir(extension_name)
 
         # Find PRV_*.py files
@@ -924,10 +905,6 @@ class ExtensionRegistry(AbstractRegistry):
             if prv_file.endswith("_test.py"):
                 continue
 
-            # Convert to module name
-            relative_path = os.path.relpath(prv_file, src_dir)
-            module_path = relative_path.replace(os.sep, ".").replace(".py", "")
-
             try:
                 # Item 61: load via spec_from_file_location helper so
                 # out-of-tree extensions resolve correctly.
@@ -936,18 +913,17 @@ class ExtensionRegistry(AbstractRegistry):
                     self._extensions_root(), extension_name, file_stem
                 )
 
-                # Find provider classes
+                # Providers defined in this module (not ones it imports). The
+                # comparison must use the loaded module's own name: the
+                # package lives under ``zephyrex.*``, so a name derived from a
+                # path relative to the source dir never matches.
                 for attr_name in dir(module):
                     attr = getattr(module, attr_name)
                     if (
                         inspect.isclass(attr)
-                        and hasattr(attr, "__module__")
-                        and attr.__module__ == module_path
-                        and hasattr(
-                            AbstractStaticProvider, "__name__"
-                        )  # Check it exists first
+                        and attr.__module__ == module.__name__
                         and issubclass(attr, AbstractStaticProvider)
-                        and attr != AbstractStaticProvider
+                        and attr is not AbstractStaticProvider
                     ):
                         providers.append(attr)
 
@@ -989,7 +965,7 @@ class ExtensionRegistry(AbstractRegistry):
                             )
 
             except Exception as e:
-                logger.error(f"Error importing provider module {module_path}: {e}")
+                logger.error(f"Error importing provider module {prv_file}: {e}")
 
         self.extension_providers[extension_name] = providers
         logger.debug(f"Total providers for {extension_name}: {len(providers)}")
@@ -1059,9 +1035,13 @@ class AbstractStaticExtensionSystemComponent(ABC):
         ]:
             return
 
-        # Initialize class-specific attributes if not already set
-        if not hasattr(cls, "_abilities"):
-            cls._abilities = set()
+        # Give every class its own abilities set. ``_abilities`` is always
+        # inherited, so without this a subclass that declares none shares its
+        # ancestor's set and ability registration below writes into it,
+        # leaking one extension's abilities into every sibling. Copying keeps
+        # the inherited abilities visible.
+        if "_abilities" not in cls.__dict__:
+            cls._abilities = set(cls._abilities)
 
         # Item 37: validate that Settings/EnvSchema, when declared, are BaseModel.
         for attr_name in ("Settings", "EnvSchema"):
@@ -1546,7 +1526,6 @@ class AbstractStaticExtension(
 
             # Get extension directory through Paths so a global
             # ``set_extensions_root`` override is honored.
-            src_dir = _resolve_src_dir()
             extensions_root = _resolve_extensions_dir()
             extension_dir = os.path.join(extensions_root, cls.name)
             extension_scope = f"zephyrex.extensions.{cls.name}"
@@ -1612,90 +1591,38 @@ class AbstractStaticExtension(
 
         return cls._providers
 
-    _root_rotation_cache: Optional[RotationManager] = None
+    _root_rotation_cache: ClassVar[Optional[RotationManager]] = None
 
     @classproperty
     def root(cls) -> Optional[RotationManager]:
+        """The RotationManager targeting this extension's root rotation.
+
+        Built against the attached app's model registry (extensions are static,
+        so there is no request to take one from) and cached per registry.
+        ``None`` before any app is built, or when the extension has no root
+        rotation because it has no providers.
         """
-        Get the Root RotationManager for this extension.
-        Each extension gets its own root rotation based on its name.
-        Uses proper caching with _root_rotation_cache attribute.
-        """
-        try:
-            # Check cache first
-            if cls._root_rotation_cache is not None:
-                return cls._root_rotation_cache
+        from zephyrex.logic.BLL_Providers import root_rotation_name
+        from zephyrex.pydantic2.registry import ModelRegistry
 
-            from zephyrex.database.DatabaseManager import DatabaseManager
-            from zephyrex.logic.BLL_Providers import RotationManager
-
-            # Try to get database manager from environment
-            db_manager = None
-            try:
-                # First try to get from app state if available
-                import sys
-
-                app_module = sys.modules.get("app")
-                if (
-                    app_module
-                    and hasattr(app_module, "app")
-                    and hasattr(app_module.app, "state")
-                ):
-                    if hasattr(app_module.app.state, "DB"):
-                        db_manager = (
-                            app_module.app.state.model_registry.database_manager
-                        )
-            except (AttributeError, ImportError) as e:
-                logger.debug(
-                    "root rotation: cannot reach app.state.model_registry "
-                    "for extension %s: %s",
-                    cls.name,
-                    e,
-                )
-
-            # If not available from app state, try singleton pattern (backward compatibility)
-            if not db_manager and hasattr(DatabaseManager, "get_instance"):
-                db_manager = DatabaseManager.get_instance()
-
-            if not db_manager:
-                logger.debug(
-                    f"No database manager available for root rotation of extension {cls.name}"
-                )
-                return None
-
-            # Check if database is properly initialized
-            if (
-                not hasattr(db_manager, "engine_config")
-                or db_manager.engine_config is None
-            ):
-                logger.debug(
-                    f"Database engine not initialized, cannot access root rotation for extension {cls.name}"
-                )
-                return None
-
-            # Create rotation manager with database manager
-            rotation_manager = RotationManager(
-                requester_id=env("ROOT_ID"), db_manager=db_manager
-            )
-
-            # Get or create the root rotation for this extension
-            root_rotation = rotation_manager.get(
-                name=f"Root_{cls.name}", created_by_user_id=env("ROOT_ID")
-            )
-
-            if root_rotation:
-                rotation_manager.target_id = root_rotation.id
-                cls._root_rotation_cache = rotation_manager
-                return rotation_manager
-            else:
-                logger.warning(f"Could not find root rotation for extension {cls.name}")
-                return None
-
-        except Exception as e:
-            logger.debug(
-                f"Cannot retrieve root rotation for extension {cls.name} (likely during discovery): {e}"
-            )
+        registry = ModelRegistry.attached()
+        if registry is None:
             return None
+        cached = cls._root_rotation_cache
+        if cached is not None and cached.model_registry is registry:
+            return cached
+
+        manager = RotationManager(model_registry=registry, requester_id=env("ROOT_ID"))
+        try:
+            rotation = manager.get(name=root_rotation_name(cls.name))
+        except HTTPException as e:
+            if e.status_code != status.HTTP_404_NOT_FOUND:
+                raise
+            logger.debug("Extension %s has no root rotation", cls.name)
+            return None
+        manager.target_id = rotation.id
+        cls._root_rotation_cache = manager
+        return manager
 
     @classmethod
     def _discover_static_hooks(cls) -> None:
@@ -1925,7 +1852,7 @@ class AbstractStaticExtension(
                     # Also check if it inherits from AbstractExternalModel
                     elif obj.__module__ == module.__name__:
                         try:
-                            from zephyrex.pydantic2.registry import (
+                            from zephyrex.extensions.AbstractExternalModel import (
                                 AbstractExternalModel,
                             )
 
@@ -1936,9 +1863,8 @@ class AbstractStaticExtension(
                                 and not inspect.isabstract(obj)
                             ):
                                 models.add(obj)
-                        except (TypeError, ImportError) as e:
-                            # `issubclass` raises TypeError on non-class objects;
-                            # ImportError if AbstractExternalModel is unavailable.
+                        except TypeError as e:
+                            # `issubclass` raises TypeError on non-class objects.
                             logger.debug(
                                 "model discovery: %r failed external-model "
                                 "subclass check: %s",
@@ -1953,119 +1879,69 @@ class AbstractStaticExtension(
 
     @classmethod
     def get_rotation_provider_instances_seed_data(cls) -> List[Dict[str, Any]]:
-        """Get rotation provider instance seed data for this extension class."""
-        try:
-            from zephyrex.logic.BLL_Extensions import ExtensionModel
-            from zephyrex.logic.BLL_Providers import (
-                ProviderExtensionModel,
-                ProviderInstanceModel,
-                RotationModel,
-            )
+        """Seed rows linking this extension's root rotation to every instance
+        of its providers.
 
-            # Get SQLAlchemy models
-            Extension = ExtensionModel.DB
-            ProviderExtension = ProviderExtensionModel.DB
-            ProviderInstance = ProviderInstanceModel.DB
-            Rotation = RotationModel.DB
+        Empty before an app is built (no attached registry) or while the
+        extension record or its root rotation does not exist yet.
+        """
+        from zephyrex.logic.BLL_Extensions import ExtensionModel
+        from zephyrex.logic.BLL_Providers import (
+            ProviderExtensionModel,
+            ProviderInstanceModel,
+            RotationModel,
+            root_rotation_name,
+        )
+        from zephyrex.pydantic2.registry import ModelRegistry
 
-            seed_data = []
-
-            # Get database manager
-            db_manager = None
-            try:
-                from zephyrex.database.DatabaseManager import DatabaseManager
-
-                if hasattr(DatabaseManager, "get_instance"):
-                    db_manager = DatabaseManager.get_instance()
-            except (ImportError, AttributeError) as e:
-                logger.debug(
-                    "seed-data generation: DatabaseManager singleton "
-                    "unavailable: %s",
-                    e,
-                )
-
-            if not db_manager:
-                logger.warning("No database manager available for seed data generation")
-                return []
-
-            session = get_session(db_manager)
-            if not session:
-                logger.warning("No database session available")
-                return []
-
-            try:
-                # Find extension record
-                stmt = select(Extension).where(Extension.name == cls.name)
-                extension_record = session.execute(stmt).scalar_one_or_none()
-
-                if not extension_record:
-                    logger.warning(f"Extension record not found for {cls.name}")
-                    return []
-
-                # Find root rotation for this extension
-                root_id = env("ROOT_ID")
-                stmt = (
-                    select(Rotation)
-                    .where(
-                        Rotation.extension_id == str(extension_record.id),
-                        Rotation.created_by_user_id == root_id,
-                    )
-                    .limit(1)
-                )
-                root_rotation = session.execute(stmt).scalar_one_or_none()
-
-                if not root_rotation:
-                    extension_name_plural = inflection.plural(cls.name)
-                    rotation_name = (
-                        f"Root_{stringcase.capitalcase(extension_name_plural)}"
-                    )
-
-                    stmt = (
-                        select(Rotation)
-                        .where(
-                            Rotation.name == rotation_name,
-                            Rotation.created_by_user_id == root_id,
-                        )
-                        .limit(1)
-                    )
-                    root_rotation = session.execute(stmt).scalar_one_or_none()
-
-                if not root_rotation:
-                    logger.debug(f"No root rotation found for extension {cls.name}")
-                    return []
-
-                # Find associated providers
-                stmt = select(ProviderExtension).where(
-                    ProviderExtension.extension_id == extension_record.id
-                )
-                provider_extensions = session.execute(stmt).scalars().all()
-
-                for provider_extension in provider_extensions:
-                    stmt = select(ProviderInstance).where(
-                        ProviderInstance.provider_id == provider_extension.provider_id
-                    )
-                    provider_instances = session.execute(stmt).scalars().all()
-
-                    for instance in provider_instances:
-                        seed_data.append(
-                            {
-                                "rotation_id": str(root_rotation.id),
-                                "provider_instance_id": str(instance.id),
-                                "parent_id": None,
-                            }
-                        )
-
-            finally:
-                if session:
-                    session.close()
-
-            return seed_data
-
-        except Exception as e:
-            logger.error(
-                f"Error generating rotation provider instance seed data for extension {cls.name}: {e}"
-            )
+        registry = ModelRegistry.attached()
+        if registry is None:
             return []
+        base = registry.DB.manager.Base
+        Extension = ExtensionModel.DB(base)
+        ProviderExtension = ProviderExtensionModel.DB(base)
+        ProviderInstance = ProviderInstanceModel.DB(base)
+        Rotation = RotationModel.DB(base)
+
+        session = registry.DB.session()
+        try:
+            extension_record = session.execute(
+                select(Extension).where(Extension.name == cls.name)
+            ).scalar_one_or_none()
+            if extension_record is None:
+                return []
+
+            root_rotation = session.execute(
+                select(Rotation).where(
+                    Rotation.extension_id == extension_record.id,
+                    Rotation.name == root_rotation_name(cls.name),
+                )
+            ).scalar_one_or_none()
+            if root_rotation is None:
+                return []
+
+            provider_ids = select(ProviderExtension.provider_id).where(
+                ProviderExtension.extension_id == extension_record.id
+            )
+            instances = (
+                session.execute(
+                    select(ProviderInstance).where(
+                        ProviderInstance.provider_id.in_(provider_ids)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            return [
+                {
+                    "rotation_id": str(root_rotation.id),
+                    "provider_instance_id": str(instance.id),
+                    "parent_id": None,
+                }
+                for instance in instances
+            ]
+        finally:
+            session.close()
 
     @classmethod
     def register_hook(
