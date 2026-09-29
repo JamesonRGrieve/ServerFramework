@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """
 Tests for PRV_InfluxDB provider.
 
@@ -7,16 +8,17 @@ calls or the rotation/transport layer are tagged
 against a real InfluxDB instance when ``INFLUXDB_URL`` + ``INFLUXDB_TOKEN``
 are set, and auto-xfail otherwise (Item 15).
 
-Tests of pure-utility behavior (config-dict shape, validate_config logic
-on a real config dict, classification metadata) are tagged
-``@pytest.mark.unit`` and may locally import ``unittest.mock`` for
-isolation per AGENTS.md.
+Connection settings resolve from real provider instances of a built database
+app. Tests that toggle whether a client library is installed are tagged
+``@pytest.mark.unit`` and swap the module's driver flag with ``monkeypatch``.
 """
 
 import pytest
 
-from zephyrex.extensions.database.PRV_InfluxDB import PRV_InfluxDB
+from zephyrex.extensions.database import PRV_InfluxDB as influx_module
 from zephyrex.extensions.database.EXT_Database import EXT_Database
+from zephyrex.extensions.database.PRV_InfluxDB import PRV_InfluxDB
+from zephyrex.extensions.ExternalErrors import TransientExternalError
 
 
 class TestPRVInfluxDBMetadata:
@@ -69,150 +71,169 @@ class TestPRVInfluxDBMetadata:
         assert isinstance(info["abilities"], list)
 
 
-class TestPRVInfluxDBBondInstance:
-    """Pure-utility tests for ``bond_instance`` config-dict storage.
+class TestPRVInfluxDBConnectionConfig:
+    """``connection_config``: the instance's token and settings win, the
+    environment fills the rest."""
 
-    These exercise the deterministic in-memory config bookkeeping that
-    runs before any SDK call. No real SDK is invoked; tagged
-    ``@pytest.mark.unit`` per AGENTS.md so the local mock import is
-    permitted.
-    """
+    def test_connection_config_v2(self, provider_instance, set_env):
+        set_env("INFLUXDB_VERSION", "2")
+        set_env("INFLUXDB_URL", "http://env:8086")
+        set_env("INFLUXDB_TOKEN", "env_token")
+        set_env("INFLUXDB_ORG", "env_org")
+        set_env("INFLUXDB_BUCKET", "env_bucket")
+        instance = provider_instance(
+            PRV_InfluxDB,
+            api_key="test_token",
+            settings={
+                "influxdb_url": "http://localhost:8086",
+                "influxdb_org": "test_org",
+                "bucket": "test_bucket",
+            },
+        )
+
+        config = PRV_InfluxDB.connection_config(instance)
+
+        assert config["influxdb_version"] == "2"
+        assert config["influxdb_url"] == "http://localhost:8086"
+        assert config["influxdb_token"] == "test_token"
+        assert config["influxdb_org"] == "test_org"
+        assert config["influxdb_bucket"] == "test_bucket"
+
+    def test_connection_config_v2_env_fallback(self, provider_instance, set_env):
+        set_env("INFLUXDB_VERSION", "2")
+        set_env("INFLUXDB_URL", "http://env:8086")
+        set_env("INFLUXDB_TOKEN", "env_token")
+        set_env("INFLUXDB_ORG", "env_org")
+        set_env("INFLUXDB_BUCKET", "env_bucket")
+
+        config = PRV_InfluxDB.connection_config(provider_instance(PRV_InfluxDB))
+
+        assert config["influxdb_url"] == "http://env:8086"
+        assert config["influxdb_token"] == "env_token"
+        assert config["influxdb_org"] == "env_org"
+        assert config["influxdb_bucket"] == "env_bucket"
+
+    def test_model_name_never_names_the_bucket(self, provider_instance, set_env):
+        # The generic seed gives Root_InfluxDB model_name="InfluxDB"; that is
+        # an AI model name column, not a bucket.
+        set_env("INFLUXDB_VERSION", "2")
+        set_env("INFLUXDB_BUCKET", "env_bucket")
+        seeded_style = provider_instance(PRV_InfluxDB, model_name="InfluxDB")
+
+        config = PRV_InfluxDB.connection_config(seeded_style)
+
+        assert config["influxdb_bucket"] == "env_bucket"
+
+    def test_connection_config_v1(self, provider_instance, set_env):
+        set_env("INFLUXDB_VERSION", "2")
+        instance = provider_instance(
+            PRV_InfluxDB,
+            api_key="test_pass",
+            model_name="InfluxDB",
+            settings={
+                "influxdb_version": "1",
+                "database_host": "localhost",
+                "database_port": "8086",
+                "database_name": "test_db",
+                "database_username": "test_user",
+            },
+        )
+
+        config = PRV_InfluxDB.connection_config(instance)
+
+        assert config["influxdb_version"] == "1"
+        assert config["database_host"] == "localhost"
+        assert config["database_port"] == 8086
+        assert config["database_name"] == "test_db"
+        assert config["database_username"] == "test_user"
+        assert config["database_password"] == "test_pass"
 
     @pytest.mark.unit
-    def test_bond_instance_v2(self):
-        """Test bonding with InfluxDB 2.x configuration."""
-        from unittest.mock import patch
+    async def test_v2_missing_library_raises_transient(
+        self, provider_instance, monkeypatch
+    ):
+        monkeypatch.setattr(influx_module, "has_influxdb2", False)
+        instance = provider_instance(PRV_InfluxDB, settings={"influxdb_version": "2"})
 
-        config = {
-            "influxdb_version": "2",
-            "influxdb_url": "http://localhost:8086",
-            "influxdb_token": "test_token",
-            "influxdb_org": "test_org",
-            "influxdb_bucket": "test_bucket",
-        }
-
-        with patch("zephyrex.extensions.database.PRV_InfluxDB.has_influxdb2", True):
-            PRV_InfluxDB.bond_instance(config)
-
-            assert PRV_InfluxDB._connection_config["influxdb_version"] == "2"
-            assert (
-                PRV_InfluxDB._connection_config["influxdb_url"]
-                == "http://localhost:8086"
-            )
-            assert PRV_InfluxDB._connection_config["influxdb_token"] == "test_token"
+        with pytest.raises(TransientExternalError, match="influxdb-client"):
+            await PRV_InfluxDB.execute_query(instance, "buckets()")
 
     @pytest.mark.unit
-    def test_bond_instance_v1(self):
-        """Test bonding with InfluxDB 1.x configuration."""
-        from unittest.mock import MagicMock, patch
+    async def test_v1_missing_library_raises_transient(
+        self, provider_instance, monkeypatch
+    ):
+        monkeypatch.setattr(influx_module, "influxdb", None)
+        instance = provider_instance(PRV_InfluxDB, settings={"influxdb_version": "1"})
 
-        config = {
-            "influxdb_version": "1",
-            "database_host": "localhost",
-            "database_port": "8086",
-            "database_name": "test_db",
-            "database_username": "test_user",
-            "database_password": "test_pass",
-        }
-
-        with patch("zephyrex.extensions.database.PRV_InfluxDB.influxdb", MagicMock()):
-            PRV_InfluxDB.bond_instance(config)
-
-            assert PRV_InfluxDB._connection_config["influxdb_version"] == "1"
-            assert PRV_InfluxDB._connection_config["database_host"] == "localhost"
-            assert PRV_InfluxDB._connection_config["database_name"] == "test_db"
+        with pytest.raises(TransientExternalError, match="influxdb package"):
+            await PRV_InfluxDB.execute_query(instance, "SHOW DATABASES")
 
     @pytest.mark.unit
-    def test_bond_instance_v2_missing_library(self):
-        """Test bonding with InfluxDB 2.x when library is missing."""
-        from unittest.mock import patch
+    async def test_v2_missing_configuration_raises_transient(
+        self, provider_instance, monkeypatch, set_env
+    ):
+        monkeypatch.setattr(influx_module, "has_influxdb2", True)
+        set_env("INFLUXDB_URL", "")
+        set_env("INFLUXDB_ORG", "")
+        instance = provider_instance(
+            PRV_InfluxDB,
+            api_key="test_token",
+            settings={"influxdb_version": "2"},
+        )
 
-        config = {"influxdb_version": "2"}
+        with pytest.raises(TransientExternalError) as raised:
+            await PRV_InfluxDB.execute_query(instance, "buckets()")
 
-        with patch("zephyrex.extensions.database.PRV_InfluxDB.has_influxdb2", False):
-            with pytest.raises(
-                ImportError, match="InfluxDB 2.x client library not installed"
-            ):
-                PRV_InfluxDB.bond_instance(config)
-
-    @pytest.mark.unit
-    def test_bond_instance_v1_missing_library(self):
-        """Test bonding with InfluxDB 1.x when library is missing."""
-        from unittest.mock import patch
-
-        config = {"influxdb_version": "1"}
-
-        with patch("zephyrex.extensions.database.PRV_InfluxDB.influxdb", None):
-            with pytest.raises(
-                ImportError, match="InfluxDB 1.x client library not installed"
-            ):
-                PRV_InfluxDB.bond_instance(config)
+        assert "influxdb_url" in raised.value.message
+        assert "influxdb_org" in raised.value.message
 
 
 class TestPRVInfluxDBValidateConfig:
-    """Pure-utility tests for the synchronous ``validate_config`` method.
-
-    These exercise input validation on a config dict — they don't talk to
-    a live InfluxDB. Tagged ``@pytest.mark.unit`` per AGENTS.md.
-    """
+    """``validate_config`` checks the environment-configured connection."""
 
     @pytest.mark.unit
-    def test_validate_config_v2_missing_fields(self):
+    def test_validate_config_v2_missing_fields(self, monkeypatch, set_env):
         """validate_config flags missing required InfluxDB 2.x fields."""
-        from unittest.mock import patch
+        monkeypatch.setattr(influx_module, "has_influxdb2", True)
+        set_env("INFLUXDB_VERSION", "2")
+        set_env("INFLUXDB_URL", "")
+        set_env("INFLUXDB_TOKEN", "test_token")
+        set_env("INFLUXDB_ORG", "")
+        set_env("INFLUXDB_BUCKET", "test_bucket")
 
-        config = {
-            "influxdb_version": "2",
-            "influxdb_url": "",  # Missing
-            "influxdb_token": "test_token",
-            "influxdb_org": "",  # Missing
-            "influxdb_bucket": "test_bucket",
-        }
-        PRV_InfluxDB._connection_config = config
+        issues = PRV_InfluxDB.validate_config()
 
-        with patch("zephyrex.extensions.database.PRV_InfluxDB.has_influxdb2", True):
-            issues = PRV_InfluxDB.validate_config()
-
-            assert len(issues) >= 2
-            issue_text = " ".join(issues).lower()
-            assert "influxdb url not configured" in issue_text
-            assert "influxdb org not configured" in issue_text
+        assert len(issues) >= 2
+        issue_text = " ".join(issues).lower()
+        assert "influxdb url not configured" in issue_text
+        assert "influxdb org not configured" in issue_text
 
     @pytest.mark.unit
-    def test_validate_config_v1_missing_fields(self):
+    def test_validate_config_v1_missing_fields(self, monkeypatch, set_env):
         """validate_config flags missing required InfluxDB 1.x fields."""
-        from unittest.mock import MagicMock, patch
+        monkeypatch.setattr(influx_module, "influxdb", object())
+        set_env("INFLUXDB_VERSION", "1")
+        set_env("DATABASE_HOST", "")
+        set_env("DATABASE_NAME", "test_db")
+        set_env("DATABASE_USERNAME", "")
+        set_env("DATABASE_PASSWORD", "test_pass")
 
-        config = {
-            "influxdb_version": "1",
-            "database_host": "",  # Missing
-            "database_name": "test_db",
-            "database_username": "",  # Missing
-            "database_password": "test_pass",
-        }
-        PRV_InfluxDB._connection_config = config
+        issues = PRV_InfluxDB.validate_config()
 
-        with patch("zephyrex.extensions.database.PRV_InfluxDB.influxdb", MagicMock()):
-            issues = PRV_InfluxDB.validate_config()
-
-            assert len(issues) >= 2
-            issue_text = " ".join(issues).lower()
-            assert "database host not configured" in issue_text
-            assert "database username not configured" in issue_text
+        assert len(issues) >= 2
+        issue_text = " ".join(issues).lower()
+        assert "database host not configured" in issue_text
+        assert "database username not configured" in issue_text
 
     @pytest.mark.unit
-    def test_validate_config_missing_libraries(self):
+    def test_validate_config_missing_libraries(self, monkeypatch, set_env):
         """validate_config flags missing client libraries."""
-        from unittest.mock import patch
+        monkeypatch.setattr(influx_module, "has_influxdb2", False)
+        set_env("INFLUXDB_VERSION", "2")
 
-        config = {"influxdb_version": "2"}
-        PRV_InfluxDB._connection_config = config
+        issues = PRV_InfluxDB.validate_config()
 
-        with patch("zephyrex.extensions.database.PRV_InfluxDB.has_influxdb2", False):
-            issues = PRV_InfluxDB.validate_config()
-
-            assert len(issues) > 0
-            assert any("2.x client library not installed" in issue for issue in issues)
+        assert any("2.x client library not installed" in issue for issue in issues)
 
 
 class TestPRVInfluxDBLive:
@@ -224,75 +245,64 @@ class TestPRVInfluxDBLive:
     credentials marks them xfail rather than failing hard.
     """
 
+    @pytest.fixture
+    def live_instance(self, provider_instance, sandbox_credentials_for):
+        creds = sandbox_credentials_for("influxdb")
+
+        def _create(bucket=None, org=None):
+            settings = {"influxdb_version": "2", "influxdb_url": creds["INFLUXDB_URL"]}
+            if org:
+                settings["influxdb_org"] = org
+            if bucket:
+                settings["bucket"] = bucket
+            return provider_instance(
+                PRV_InfluxDB, api_key=creds["INFLUXDB_TOKEN"], settings=settings
+            )
+
+        return _create
+
     @pytest.mark.external_api(provider="influxdb")
     @pytest.mark.asyncio
-    async def test_execute_sql_alias(self, sandbox_credentials_for):
+    async def test_execute_sql_alias(self, live_instance):
         """``execute_sql`` is an alias for ``execute_query``."""
-        creds = sandbox_credentials_for("influxdb")
-        config = {
-            "influxdb_version": "2",
-            "influxdb_url": creds["INFLUXDB_URL"],
-            "influxdb_token": creds["INFLUXDB_TOKEN"],
-        }
-        PRV_InfluxDB.bond_instance(config)
         result = await PRV_InfluxDB.execute_sql(
-            'from(bucket:"_monitoring") |> range(start: -1h) |> limit(n:1)'
+            live_instance(),
+            'from(bucket:"_monitoring") |> range(start: -1h) |> limit(n:1)',
         )
         assert isinstance(result, str)
         # A live query returns key=value rows or the explicit empty-result
-        # marker -- never a connect/execute error string (which is also a str).
+        # marker; failures raise typed errors.
         assert result.strip(), result
         assert "error" not in result.lower(), result
 
     @pytest.mark.external_api(provider="influxdb")
     @pytest.mark.asyncio
-    async def test_get_schema_v2(self, sandbox_credentials_for):
+    async def test_get_schema_v2(self, live_instance):
         """Schema retrieval against a live InfluxDB 2.x bucket."""
-        creds = sandbox_credentials_for("influxdb")
-        config = {
-            "influxdb_version": "2",
-            "influxdb_url": creds["INFLUXDB_URL"],
-            "influxdb_token": creds["INFLUXDB_TOKEN"],
-            "influxdb_bucket": "_monitoring",
-        }
-        PRV_InfluxDB.bond_instance(config)
-        result = await PRV_InfluxDB.get_schema()
+        result = await PRV_InfluxDB.get_schema(live_instance(bucket="_monitoring"))
         assert isinstance(result, str)
         # The schema must name the introspected bucket and list its
-        # measurements -- an empty or error schema string would fail here.
+        # measurements -- an empty schema string would fail here.
         assert "_monitoring" in result, result
         assert "measurements" in result.lower(), result
 
     @pytest.mark.external_api(provider="influxdb")
     @pytest.mark.asyncio
-    async def test_chat_with_db_v2(self, sandbox_credentials_for):
+    async def test_chat_with_db_v2(self, live_instance):
         """Natural-language guidance for a live InfluxDB 2.x instance."""
-        creds = sandbox_credentials_for("influxdb")
-        config = {
-            "influxdb_version": "2",
-            "influxdb_url": creds["INFLUXDB_URL"],
-            "influxdb_token": creds["INFLUXDB_TOKEN"],
-        }
-        PRV_InfluxDB.bond_instance(config)
-        result = await PRV_InfluxDB.chat_with_db("Show me recent measurements")
+        result = await PRV_InfluxDB.chat_with_db(
+            live_instance(bucket="_monitoring"), "Show me recent measurements"
+        )
         assert "natural language query" in result.lower()
         assert "flux" in result.lower()
 
     @pytest.mark.external_api(provider="influxdb")
     @pytest.mark.asyncio
-    async def test_write_data_v2(self, sandbox_credentials_for):
+    async def test_write_data_v2(self, live_instance):
         """Data write against a live InfluxDB 2.x bucket."""
-        creds = sandbox_credentials_for("influxdb")
-        config = {
-            "influxdb_version": "2",
-            "influxdb_url": creds["INFLUXDB_URL"],
-            "influxdb_token": creds["INFLUXDB_TOKEN"],
-            "influxdb_bucket": "_monitoring",
-            "influxdb_org": "_test_org",
-        }
-        PRV_InfluxDB.bond_instance(config)
-        result = await PRV_InfluxDB.write_data("temperature,sensor=1 value=23.5")
+        result = await PRV_InfluxDB.write_data(
+            live_instance(bucket="_monitoring", org="_test_org"),
+            "temperature,sensor=1 value=23.5",
+        )
         assert isinstance(result, str)
-        # The write must signal success -- a silently-failed write that returned
-        # an error string (also a str) would otherwise pass unnoticed.
         assert "written successfully" in result.lower(), result

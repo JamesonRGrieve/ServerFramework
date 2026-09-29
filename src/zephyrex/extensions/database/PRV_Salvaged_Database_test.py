@@ -3,9 +3,10 @@
 
 Covers the six providers salvaged from the pre-zephyrex AGInfrastructure fork
 and rewritten into the static ``AbstractDatabaseExtensionProvider`` format:
-PostgreSQL, MySQL, MariaDB, MSSQL, MongoDB, GraphQL. No live database or driver
-is required — the tests exercise metadata, classification, config validation,
-and the graceful no-connection paths.
+PostgreSQL, MySQL, MariaDB, MSSQL, MongoDB, GraphQL. No live database is
+required — the tests exercise metadata, classification, instance-first
+connection settings, config validation, and the typed failures raised when a
+provider cannot connect (which is what lets the rotation fail over).
 """
 
 import inspect
@@ -14,6 +15,7 @@ import pytest
 
 from zephyrex.extensions.database.EXT_Database import (
     AbstractDatabaseExtensionProvider,
+    DatabaseConnection,
 )
 from zephyrex.extensions.database.PRV_GraphQL import PRV_GraphQL
 from zephyrex.extensions.database.PRV_MariaDB import PRV_MariaDB
@@ -21,6 +23,10 @@ from zephyrex.extensions.database.PRV_MongoDB import PRV_MongoDB
 from zephyrex.extensions.database.PRV_MSSQL import PRV_MSSQL
 from zephyrex.extensions.database.PRV_MySQL import PRV_MySQL
 from zephyrex.extensions.database.PRV_Postgres import PRV_Postgres
+from zephyrex.extensions.ExternalErrors import (
+    InvalidInputExternalError,
+    TransientExternalError,
+)
 
 # (provider class, expected db_type, expected classification)
 RELATIONAL = [
@@ -35,6 +41,30 @@ NON_RELATIONAL = [
 ]
 ALL = RELATIONAL + NON_RELATIONAL
 ALL_IDS = [c.__name__ for c, _, _ in ALL]
+# Providers whose settings name a networked database server.
+SERVER_PROVIDERS = [PRV_Postgres, PRV_MySQL, PRV_MariaDB, PRV_MSSQL, PRV_MongoDB]
+# An address nothing listens on: connecting fails fast.
+UNREACHABLE_HOST = "127.0.0.1"
+UNREACHABLE_PORT = "1"
+
+
+@pytest.fixture
+def unreachable_instance(provider_instance):
+    """An instance of ``cls`` pointed at a closed local port."""
+
+    def _create(cls):
+        return provider_instance(
+            cls,
+            api_key="secret",
+            settings={
+                "database_name": "appdb",
+                "database_host": UNREACHABLE_HOST,
+                "database_port": UNREACHABLE_PORT,
+                "graphql_endpoint": f"http://{UNREACHABLE_HOST}:{UNREACHABLE_PORT}/graphql",
+            },
+        )
+
+    return _create
 
 
 @pytest.mark.parametrize("cls,db_type,classification", ALL, ids=ALL_IDS)
@@ -65,91 +95,240 @@ class TestSalvagedDatabaseProviderConformance:
         issues = cls.validate_config()
         assert isinstance(issues, list)
 
-    def test_bond_instance_accepts_config(self, cls, db_type, classification):
-        # Should never raise on a plain dict, even with no real credentials.
-        cls.bond_instance({"database_host": "", "database_name": ""})
-        assert isinstance(cls._connection_config, dict)
-
-    async def test_execute_sql_graceful_without_connection(
-        self, cls, db_type, classification
+    def test_bond_instance_resolves_the_instance(
+        self, cls, db_type, classification, unreachable_instance
     ):
-        cls.bond_instance({})
-        result = await cls.execute_sql("SELECT 1")
-        assert isinstance(result, str)
-        lowered = result.lower()
-        # The message must signal the actual state, not a fabricated success: a
-        # relational provider with no connection reports the connect failure; a
-        # non-relational provider redirects SQL to its native query verb. A stub
-        # returning any other constant string fails here.
-        if classification == "relational":
-            assert "error connecting" in lowered, result
-        else:
-            assert "does not support sql" in lowered, result
+        instance = unreachable_instance(cls)
 
-    async def test_get_schema_graceful_without_connection(
-        self, cls, db_type, classification
+        connection = cls.bond_instance(instance)
+
+        assert isinstance(connection, DatabaseConnection)
+        assert connection.model is instance
+        assert connection.config == cls.connection_config(instance)
+
+    async def test_get_schema_unreachable_raises_transient(
+        self, cls, db_type, classification, unreachable_instance
     ):
-        cls.bond_instance({})
-        result = await cls.get_schema()
-        assert isinstance(result, str)
-        # Without a connection every provider reports the connect failure, never
-        # an empty string that a no-op stub would return.
-        assert "error connecting" in result.lower(), result
+        # Missing driver or closed port: either way the provider cannot serve
+        # this instance, so the rotation must fail over, never read an error
+        # string as a schema.
+        with pytest.raises(TransientExternalError) as raised:
+            await cls.get_schema(unreachable_instance(cls))
+        assert raised.value.provider == cls.name
 
-    async def test_chat_with_db_returns_string(self, cls, db_type, classification):
-        cls.bond_instance({})
-        request = "show me everything"
-        result = await cls.chat_with_db(request)
-        assert isinstance(result, str)
-        # chat_with_db echoes the NL request verbatim, embeds the schema, and
-        # appends guidance pointing at an execute_* verb. A constant-string stub
-        # would carry none of these.
-        assert f'query: "{request}"' in result, result
-        assert "execute_" in result, result
+    async def test_chat_with_db_unreachable_raises_transient(
+        self, cls, db_type, classification, unreachable_instance
+    ):
+        # chat_with_db embeds the schema; a failed schema fetch must fail
+        # over rather than be embedded in the reply.
+        with pytest.raises(TransientExternalError):
+            await cls.chat_with_db(unreachable_instance(cls), "show me everything")
 
 
-class TestRelationalExecuteQuery:
+class TestServerConnectionConfig:
+    """Instance values win over env; env fills what the instance leaves out."""
+
+    @pytest.mark.parametrize("cls", SERVER_PROVIDERS, ids=lambda c: c.__name__)
+    def test_instance_values_win_over_env(self, cls, provider_instance, set_env):
+        set_env("DATABASE_HOST", "env-host")
+        set_env("DATABASE_PORT", "1111")
+        set_env("DATABASE_USERNAME", "env-user")
+        set_env("DATABASE_PASSWORD", "env-password")
+        set_env("DATABASE_NAME", "env_db")
+        instance = provider_instance(
+            cls,
+            api_key="instance-password",
+            settings={
+                "database_host": "instance-host",
+                "database_port": "2222",
+                "database_name": "instance_db",
+                "database_username": "instance-user",
+            },
+        )
+
+        config = cls.connection_config(instance)
+
+        assert config["database_host"] == "instance-host"
+        assert config["database_port"] == 2222
+        assert config["database_name"] == "instance_db"
+        assert config["database_username"] == "instance-user"
+        assert config["database_password"] == "instance-password"
+
+    @pytest.mark.parametrize("cls", SERVER_PROVIDERS, ids=lambda c: c.__name__)
+    def test_env_fallback(self, cls, provider_instance, set_env):
+        set_env("DATABASE_HOST", "env-host")
+        set_env("DATABASE_PORT", "1111")
+        set_env("DATABASE_USERNAME", "env-user")
+        set_env("DATABASE_PASSWORD", "env-password")
+        set_env("DATABASE_NAME", "env_db")
+        instance = provider_instance(cls)
+
+        config = cls.connection_config(instance)
+
+        assert config["database_host"] == "env-host"
+        assert config["database_port"] == 1111
+        assert config["database_name"] == "env_db"
+        assert config["database_username"] == "env-user"
+        assert config["database_password"] == "env-password"
+
+    @pytest.mark.parametrize("cls", SERVER_PROVIDERS, ids=lambda c: c.__name__)
+    def test_model_name_never_names_the_database(self, cls, provider_instance, set_env):
+        # The generic seed gives Root_* instances model_name=<provider name>;
+        # that is an AI model name column, not a database name.
+        set_env("DATABASE_NAME", "env_db")
+        seeded_style = provider_instance(cls, model_name=cls.name)
+
+        assert cls.connection_config(seeded_style)["database_name"] == "env_db"
+
+        set_env("DATABASE_NAME", "")
+        assert cls.connection_config(seeded_style)["database_name"] is None
+
+    def test_seeded_postgres_instance_ignores_model_name(
+        self, provider_instance, set_env
+    ):
+        set_env("DATABASE_NAME", "appdb")
+        seeded_style = provider_instance(
+            PRV_Postgres,
+            model_name="PostgreSQL",
+            settings={"database_host": "db.internal"},
+        )
+
+        config = PRV_Postgres.bond_instance(seeded_style).config
+
+        assert config["database_name"] == "appdb"
+        assert "PostgreSQL" not in config.values()
+
+    def test_non_numeric_port_is_a_configuration_failure(
+        self, provider_instance, set_env
+    ):
+        instance = provider_instance(PRV_Postgres, settings={"database_port": "abc"})
+
+        with pytest.raises(TransientExternalError, match="port is not a number"):
+            PRV_Postgres.connection_config(instance)
+
+    def test_mssql_odbc_driver_setting(self, provider_instance, set_env):
+        set_env("MSSQL_ODBC_DRIVER", "ODBC Driver 17 for SQL Server")
+        instance = provider_instance(PRV_MSSQL, settings={"odbc_driver": "FreeTDS"})
+
+        assert PRV_MSSQL.connection_config(instance)["odbc_driver"] == "FreeTDS"
+        assert (
+            PRV_MSSQL.connection_config(provider_instance(PRV_MSSQL))["odbc_driver"]
+            == "ODBC Driver 17 for SQL Server"
+        )
+
+    def test_mongodb_connection_string_setting(self, provider_instance, set_env):
+        set_env("MONGODB_CONNECTION_STRING", "mongodb://env-host/envdb")
+        instance = provider_instance(
+            PRV_MongoDB, settings={"connection_string": "mongodb://instance/db"}
+        )
+
+        assert (
+            PRV_MongoDB.connection_config(instance)["connection_string"]
+            == "mongodb://instance/db"
+        )
+
+    def test_graphql_bearer_token_from_the_instance(self, provider_instance, set_env):
+        set_env("GRAPHQL_API_KEY", "env-token")
+        instance = provider_instance(
+            PRV_GraphQL,
+            api_key="instance-token",
+            settings={"graphql_endpoint": "https://api.example/graphql"},
+        )
+
+        config = PRV_GraphQL.connection_config(instance)
+
+        assert config["graphql_endpoint"] == "https://api.example/graphql"
+        assert config["graphql_headers"]["Authorization"] == "Bearer instance-token"
+
+    def test_graphql_endpoint_built_from_env_host(self, provider_instance, set_env):
+        set_env("GRAPHQL_ENDPOINT", "")
+        set_env("DATABASE_HOST", "gql-host")
+        set_env("DATABASE_PORT", "4001")
+
+        config = PRV_GraphQL.connection_config(provider_instance(PRV_GraphQL))
+
+        assert config["graphql_endpoint"] == "http://gql-host:4001/graphql"
+
+
+class TestRelationalFailures:
     @pytest.mark.parametrize("cls", [c for c, _, _ in RELATIONAL])
-    async def test_execute_query_aliases_execute_sql(self, cls):
-        cls.bond_instance({})
-        # The aliasing IS the contract: execute_query must produce byte-identical
-        # output to execute_sql for the same query. A broken alias that diverged
-        # (or a stub) fails here where an isinstance check would not.
-        query = "SELECT 1"
-        via_query = await cls.execute_query(query)
-        via_sql = await cls.execute_sql(query)
-        assert isinstance(via_query, str)
-        assert via_query == via_sql
+    async def test_execute_sql_unreachable_raises_transient(
+        self, cls, unreachable_instance
+    ):
+        with pytest.raises(TransientExternalError) as raised:
+            await cls.execute_sql(unreachable_instance(cls), "SELECT 1")
+        assert raised.value.provider == cls.name
 
     @pytest.mark.parametrize("cls", [c for c, _, _ in RELATIONAL])
-    async def test_write_data_requires_insert(self, cls):
-        cls.bond_instance({})
-        result = await cls.write_data("not an insert statement")
-        assert isinstance(result, str)
-        assert "INSERT" in result
+    async def test_unconfigured_database_raises_transient(
+        self, cls, provider_instance, set_env
+    ):
+        set_env("DATABASE_HOST", "")
+        instance = provider_instance(cls, settings={"database_name": "appdb"})
+
+        with pytest.raises(TransientExternalError):
+            await cls.execute_sql(instance, "SELECT 1")
+
+    @pytest.mark.parametrize("cls", [c for c, _, _ in RELATIONAL])
+    async def test_execute_query_aliases_execute_sql(self, cls, unreachable_instance):
+        # The aliasing IS the contract: execute_query must fail exactly as
+        # execute_sql does for the same instance and query.
+        instance = unreachable_instance(cls)
+        with pytest.raises(TransientExternalError) as via_sql:
+            await cls.execute_sql(instance, "SELECT 1")
+        with pytest.raises(TransientExternalError) as via_query:
+            await cls.execute_query(instance, "SELECT 1")
+        assert str(via_query.value) == str(via_sql.value)
+
+    @pytest.mark.parametrize("cls", [c for c, _, _ in RELATIONAL])
+    async def test_write_data_requires_insert(self, cls, unreachable_instance):
+        with pytest.raises(InvalidInputExternalError, match="INSERT"):
+            await cls.write_data(unreachable_instance(cls), "not an insert statement")
 
 
-class TestDocumentAndGraphRedirectSql:
-    async def test_mongodb_execute_sql_redirects(self):
-        PRV_MongoDB.bond_instance({})
-        result = await PRV_MongoDB.execute_sql("SELECT 1")
-        assert "does not support SQL" in result
+class TestDocumentAndGraphRefuseSql:
+    @pytest.mark.parametrize("cls", [PRV_MongoDB, PRV_GraphQL])
+    async def test_execute_sql_is_refused(self, cls, unreachable_instance):
+        with pytest.raises(InvalidInputExternalError, match="does not support SQL"):
+            await cls.execute_sql(unreachable_instance(cls), "SELECT 1")
 
-    async def test_graphql_execute_sql_redirects(self):
-        PRV_GraphQL.bond_instance({})
-        result = await PRV_GraphQL.execute_sql("SELECT 1")
-        assert "does not support SQL" in result
+    async def test_mongodb_execute_query_rejects_bad_json(self, unreachable_instance):
+        # The envelope is validated before connecting, so a bad one is the
+        # caller's error whether or not the server is reachable.
+        with pytest.raises(InvalidInputExternalError, match="valid JSON"):
+            await PRV_MongoDB.execute_query(
+                unreachable_instance(PRV_MongoDB), "this is not json"
+            )
 
-    async def test_mongodb_execute_query_rejects_bad_json(self):
-        PRV_MongoDB.bond_instance({"database_host": "localhost"})
-        # pymongo may be absent (connection error) OR present (JSON error) —
-        # either way the call returns a string, never raises.
-        result = await PRV_MongoDB.execute_query("this is not json")
-        assert isinstance(result, str)
+    async def test_mongodb_execute_query_requires_a_collection(
+        self, unreachable_instance
+    ):
+        with pytest.raises(InvalidInputExternalError, match="collection"):
+            await PRV_MongoDB.execute_query(
+                unreachable_instance(PRV_MongoDB), '{"operation": "find"}'
+            )
+
+    async def test_mongodb_execute_query_rejects_unknown_operations(
+        self, unreachable_instance
+    ):
+        with pytest.raises(InvalidInputExternalError, match="unsupported operation"):
+            await PRV_MongoDB.execute_query(
+                unreachable_instance(PRV_MongoDB),
+                '{"collection": "users", "operation": "drop"}',
+            )
+
+    async def test_mongodb_valid_envelope_unreachable_raises_transient(
+        self, unreachable_instance
+    ):
+        with pytest.raises(TransientExternalError):
+            await PRV_MongoDB.execute_query(
+                unreachable_instance(PRV_MongoDB),
+                '{"collection": "users", "operation": "find"}',
+            )
 
 
 class TestDriverGuards:
-    """Providers must degrade gracefully when the optional driver is absent."""
+    """Providers must report what is missing when nothing is configured."""
 
     def test_mariadb_shares_mysql_driver(self):
         # DRY: MariaDB is a metadata override of the MySQL provider.
@@ -157,8 +336,21 @@ class TestDriverGuards:
         assert PRV_MariaDB.db_type == "mariadb"
 
     @pytest.mark.parametrize("cls", [c for c, _, _ in ALL])
-    def test_validate_config_reports_missing_driver_or_config(self, cls):
+    def test_validate_config_reports_missing_driver_or_config(self, cls, set_env):
         # With nothing configured, validate_config must surface at least one
         # issue (missing driver and/or missing host) rather than claim healthy.
-        cls.bond_instance({})
+        for name in ("DATABASE_HOST", "DATABASE_NAME", "GRAPHQL_ENDPOINT"):
+            set_env(name, "")
+        set_env("MONGODB_CONNECTION_STRING", "")
         assert len(cls.validate_config()) >= 1
+
+    @pytest.mark.parametrize("cls", SERVER_PROVIDERS, ids=lambda c: c.__name__)
+    def test_validate_config_names_the_missing_settings(self, cls, set_env):
+        set_env("DATABASE_HOST", "")
+        set_env("DATABASE_NAME", "")
+        set_env("MONGODB_CONNECTION_STRING", "")
+
+        issues = " ".join(cls.validate_config()).lower()
+
+        assert "host" in issues
+        assert "database name not configured" in issues

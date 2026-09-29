@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Fake database provider for offline-CI testing (Item 72).
 
 A minimal real provider that satisfies the
@@ -14,12 +15,13 @@ pillar holds.
 
 from __future__ import annotations
 
-from typing import Any, ClassVar, Dict, List
+from typing import Any, ClassVar, Dict, List, Optional
 
 from zephyrex.extensions.database.EXT_Database import (
     AbstractDatabaseExtensionProvider,
     EXT_Database,
 )
+from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 
 
 class PRV_Fake_Database(AbstractDatabaseExtensionProvider):
@@ -50,31 +52,41 @@ class PRV_Fake_Database(AbstractDatabaseExtensionProvider):
     last_data: str = ""
 
     @classmethod
-    def bond_instance(cls, config: Dict[str, Any]) -> None:
-        """No-op bond_instance — the fake provider has no real backend."""
-        cls._config = dict(config)
+    def connection_config(
+        cls, instance: Optional[ProviderInstanceModel]
+    ) -> Dict[str, Any]:
+        """The fake provider has no backend to configure."""
+        return {}
 
     @classmethod
-    async def execute_sql(cls, query: str, **kwargs) -> str:
+    async def execute_sql(
+        cls, instance: ProviderInstanceModel, query: str, **kwargs: Any
+    ) -> str:
         cls.executed_queries.append(query)
         return f"fake-sql:{query}"
 
     @classmethod
-    async def get_schema(cls, **kwargs) -> str:
+    async def get_schema(cls, instance: ProviderInstanceModel, **kwargs: Any) -> str:
         return "CREATE TABLE fake_table (id INTEGER PRIMARY KEY, value TEXT);"
 
     @classmethod
-    async def chat_with_db(cls, request: str, **kwargs) -> str:
+    async def chat_with_db(
+        cls, instance: ProviderInstanceModel, request: str, **kwargs: Any
+    ) -> str:
         cls.last_request = request
         return f"fake-chat:{request}"
 
     @classmethod
-    async def execute_query(cls, query: str, **kwargs) -> str:
+    async def execute_query(
+        cls, instance: ProviderInstanceModel, query: str, **kwargs: Any
+    ) -> str:
         cls.executed_queries.append(query)
         return f"fake-query:{query}"
 
     @classmethod
-    async def write_data(cls, data: str, **kwargs) -> str:
+    async def write_data(
+        cls, instance: ProviderInstanceModel, data: str, **kwargs: Any
+    ) -> str:
         cls.last_data = data
         return f"fake-write:{data}"
 

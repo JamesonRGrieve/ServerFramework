@@ -49,23 +49,44 @@ The extension categorizes databases into the following types:
 The Database extension uses the Provider Rotation System to manage multiple database connections:
 
 ### Abstract Provider
+
+Providers are static. Every ability receives the rotated
+`ProviderInstanceModel` first and connects with that instance's settings:
+
 ```python
-class AbstractProvider_Database(AbstractStaticProvider):
-    """Abstract provider for database operations."""
-    extension_type: ClassVar[str] = "database"
-    
+class AbstractDatabaseExtensionProvider(AbstractStaticProvider):
+    @classmethod
+    def bond_instance(cls, instance) -> DatabaseConnection:
+        # DatabaseConnection(instance, cls.connection_config(instance))
+
+    @classmethod
     @abstractmethod
-    @ability("execute_sql")
-    async def execute_sql(self, query: str, **kwargs) -> str:
-        """Execute SQL query - must be implemented by concrete providers."""
-        pass
-        
-    @abstractmethod  
-    @ability("get_schema")
-    async def get_schema(self, **kwargs) -> str:
-        """Get database schema - must be implemented by concrete providers."""
-        pass
+    def connection_config(cls, instance) -> Dict[str, Any]:
+        # instance column, else instance setting, else env (resolve_setting)
+
+    @classmethod
+    @abstractmethod
+    async def execute_sql(cls, instance, query: str, **kwargs) -> str: ...
+    # likewise get_schema, chat_with_db, execute_query, write_data
 ```
+
+Where an instance keeps its connection settings. The root instances are
+created by the generic provider seed; configure them through instance settings
+or the environment. `model_name` is an AI model name and is never read as a
+database name or bucket.
+
+| Provider | `api_key` | Instance settings (env fallback) |
+|----------|-----------|----------------------------------|
+| SQLite | database file | `database_file` (`DATABASE_FILE`) |
+| PostgreSQL, MySQL, MariaDB, MSSQL, MongoDB | password | `database_host`, `database_port`, `database_name`, `database_username` (`DATABASE_*`); MSSQL `odbc_driver`; MongoDB `connection_string` |
+| InfluxDB | 2.x token / 1.x password | `influxdb_version`, `influxdb_url`, `influxdb_org`, `bucket` (`INFLUXDB_*`); 1.x `database_host`, `database_name`, … (`DATABASE_*`) |
+| GraphQL | bearer token | `graphql_endpoint`, `graphql_headers` (JSON), `database_host`, `database_port`, … |
+
+Failures raise typed errors from `ExternalErrors`: a missing driver, missing
+configuration or failed connection raises `TransientExternalError` (the
+rotation retries, then fails over to the next instance); a statement the
+database rejects raises `InvalidInputExternalError` (surfaced to the caller,
+no failover).
 
 ### Concrete Providers
 
@@ -117,21 +138,12 @@ The Database extension provides the following abilities through the Provider Rot
 ### Usage Examples
 
 ```python
-# Execute SQL using rotation system
-result = await EXT_Database.root.rotate(
-    EXT_Database.execute_sql,
-    query="SELECT * FROM users WHERE active = true"
-)
-
-# Get database schema
-schema = await EXT_Database.root.rotate(
-    EXT_Database.get_schema
-)
-
-# Natural language query
-response = await EXT_Database.root.rotate(
-    EXT_Database.chat_with_db,
-    request="Show me all users who signed up last month"
+# Each ability runs on the root rotation's instances in order, failing over
+# on TransientExternalError.
+result = await EXT_Database.execute_sql("SELECT * FROM users WHERE active = true")
+schema = await EXT_Database.get_schema()
+response = await EXT_Database.chat_with_db(
+    "Show me all users who signed up last month"
 )
 ```
 

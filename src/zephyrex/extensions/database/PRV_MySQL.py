@@ -2,16 +2,18 @@
 """MySQL database provider (Provider Rotation System, static).
 
 Ported from the pre-zephyrex AGInfrastructure MySQL provider into the current
-static ``AbstractDatabaseExtensionProvider`` format.
+static ``AbstractDatabaseExtensionProvider`` format. The rotated instance
+carries the password in ``api_key``; host, port, database name and username
+come from its settings, each falling back to the ``DATABASE_*`` environment.
 """
 
-from typing import Any, ClassVar, Dict, List
+from typing import Any, ClassVar, Dict, List, Optional
 
 from zephyrex.extensions.database.EXT_Database import (
+    SQL_CHAT_GUIDANCE,
     AbstractDatabaseExtensionProvider as AbstractDatabaseProvider,
 )
-from zephyrex.lib.Environment import env
-from zephyrex.lib.Logging import logger
+from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 
 try:  # optional driver — guarded so discovery never fails on a missing package
     import mysql.connector as _mysql_connector
@@ -20,6 +22,8 @@ try:  # optional driver — guarded so discovery never fails on a missing packag
 except ImportError:  # pragma: no cover - optional driver
     _mysql_connector = None  # type: ignore[assignment]
     _mysql_available = False
+
+MYSQL_DEFAULT_PORT = 3306
 
 
 class PRV_MySQL(AbstractDatabaseProvider):
@@ -30,7 +34,7 @@ class PRV_MySQL(AbstractDatabaseProvider):
     description: ClassVar[str] = "MySQL relational database provider"
     db_type: ClassVar[str] = "mysql"
 
-    _driver_available: bool = _mysql_available
+    _driver_available: ClassVar[bool] = _mysql_available
 
     _env: ClassVar[Dict[str, Any]] = {
         "DATABASE_HOST": "",
@@ -42,111 +46,51 @@ class PRV_MySQL(AbstractDatabaseProvider):
 
     _abilities = {"database", "sql", "data_storage", "relational_db"}
 
-    _connection_config: Dict[str, Any] = {}
+    @classmethod
+    def connection_config(
+        cls, instance: Optional[ProviderInstanceModel]
+    ) -> Dict[str, Any]:
+        return cls.server_config(instance, MYSQL_DEFAULT_PORT)
 
     @classmethod
-    def bond_instance(cls, config: Dict[str, Any]) -> None:
-        """Configure the provider from a config dict (falls back to env)."""
-        try:
-            port_raw = config.get("database_port") or env("DATABASE_PORT") or 3306
-            cls._connection_config = {
-                **config,
-                "database_host": config.get("database_host") or env("DATABASE_HOST"),
-                "database_port": int(port_raw),
-                "database_name": config.get("database_name") or env("DATABASE_NAME"),
-                "database_username": (
-                    config.get("database_username") or env("DATABASE_USERNAME")
-                ),
-                "database_password": (
-                    config.get("database_password") or env("DATABASE_PASSWORD")
-                ),
-            }
-            logger.debug(
-                "%s provider bonded with host: %s",
-                cls.name,
-                cls._connection_config.get("database_host"),
-            )
-        except Exception as e:
-            logger.error(f"Failed to configure {cls.name} provider: {e}")
-            raise
-
-    @classmethod
-    def _get_connection(cls):
-        """Open a mysql.connector connection using the bonded configuration."""
-        if not cls._driver_available:
-            logger.error("mysql-connector-python package not available")
-            return None
-        cfg = cls._connection_config
+    def _get_connection(cls, config: Dict[str, Any]) -> Any:
+        """Open a mysql.connector connection with the resolved configuration."""
+        cls.require_driver(cls._driver_available, "mysql-connector-python")
+        cls.require_config(config, "database_host", "database_name")
         try:
             return _mysql_connector.connect(
-                host=cfg.get("database_host"),
-                port=cfg.get("database_port", 3306),
-                database=cfg.get("database_name"),
-                user=cfg.get("database_username"),
-                password=cfg.get("database_password"),
+                host=config["database_host"],
+                port=config["database_port"],
+                database=config["database_name"],
+                user=config["database_username"],
+                password=config["database_password"],
             )
-        except Exception as e:
-            logger.error(f"Error connecting to {cls.name} Database: {e}")
-            return None
+        except Exception as exc:
+            raise cls.connection_failed(exc) from exc
 
     @classmethod
-    async def execute_sql(cls, query: str, **kwargs) -> str:
+    async def execute_sql(
+        cls, instance: ProviderInstanceModel, query: str, **kwargs: Any
+    ) -> str:
         """Execute a SQL query and return the result as a string / CSV."""
-        try:
-            if "```sql" in query:
-                query = query.split("```sql")[1].split("```")[0]
-            query = query.replace("```", "").replace("\n", " ").strip()
-            logger.debug(f"Executing {cls.name} query: {query}")
-
-            connection = cls._get_connection()
-            if not connection:
-                return f"Error connecting to {cls.name} Database"
-
-            cursor = connection.cursor()
-            try:
-                cursor.execute(query)
-                if cursor.description is None:
-                    connection.commit()
-                    return (
-                        "Query executed successfully. "
-                        f"{cursor.rowcount} rows affected."
-                    )
-                rows = cursor.fetchall()
-                if not rows:
-                    return "Query executed successfully. No rows returned."
-                if len(rows) == 1 and len(rows[0]) == 1:
-                    return str(rows[0][0])
-                column_names = [desc[0] for desc in cursor.description]
-                parts = [",".join(f'"{c}"' for c in column_names)]
-                parts.extend(",".join(f'"{v}"' for v in row) for row in rows)
-                return "\n".join(parts) + "\n"
-            finally:
-                cursor.close()
-                connection.close()
-        except Exception as e:
-            logger.error(f"Error executing {cls.name} query: {e}")
-            return f"Error executing SQL query: {str(e)}"
+        connection = cls._get_connection(cls.bond_instance(instance).config)
+        return cls.run_sql(connection, query)
 
     @classmethod
-    async def get_schema(cls, **kwargs) -> str:
+    async def get_schema(cls, instance: ProviderInstanceModel, **kwargs: Any) -> str:
         """Introspect table definitions from information_schema."""
+        config = cls.bond_instance(instance).config
+        connection = cls._get_connection(config)
+        table_columns: Dict[str, List[str]] = {}
         try:
-            connection = cls._get_connection()
-            if not connection:
-                return f"Error connecting to {cls.name} Database"
-            db_name = cls._connection_config.get("database_name") or env(
-                "DATABASE_NAME"
-            )
             cursor = connection.cursor()
-            sql_export: List[str] = []
             try:
                 cursor.execute(
                     "SELECT table_name, column_name, data_type, is_nullable, "
                     "column_default FROM information_schema.columns "
                     "WHERE table_schema = %s ORDER BY table_name, ordinal_position;",
-                    (db_name,),
+                    (config["database_name"],),
                 )
-                table_columns: Dict[str, List[str]] = {}
                 for table_name, col, dtype, nullable, default in cursor.fetchall():
                     piece = f"{col} {dtype}"
                     if default is not None:
@@ -154,49 +98,40 @@ class PRV_MySQL(AbstractDatabaseProvider):
                     if nullable == "NO":
                         piece += " NOT NULL"
                     table_columns.setdefault(table_name, []).append(piece)
-                for table_name, cols in table_columns.items():
-                    sql_export.append(
-                        f"CREATE TABLE `{table_name}` (" + ", ".join(cols) + ");"
-                    )
-                result = "\n\n".join(sql_export)
-                return result if result.strip() else "No schema information available"
             finally:
                 cursor.close()
-                connection.close()
-        except Exception as e:
-            logger.error(f"Error getting {cls.name} schema: {e}")
-            return f"Error getting database schema: {str(e)}"
+        except Exception as exc:
+            raise cls.query_failed(exc, "schema query") from exc
+        finally:
+            connection.close()
+        result = "\n\n".join(
+            f"CREATE TABLE `{table_name}` (" + ", ".join(cols) + ");"
+            for table_name, cols in table_columns.items()
+        )
+        return result if result.strip() else "No schema information available"
 
     @classmethod
-    async def chat_with_db(cls, request: str, **kwargs) -> str:
+    async def chat_with_db(
+        cls, instance: ProviderInstanceModel, request: str, **kwargs: Any
+    ) -> str:
         """Return the schema plus guidance (no bundled NL-to-SQL model here)."""
-        schema = await cls.get_schema(**kwargs)
-        return (
-            f'Natural language query: "{request}"\n\n'
-            f"Database schema:\n{schema}\n\n"
-            "Convert your request to SQL and use execute_sql to run it."
-        )
+        return await cls.schema_guidance(instance, request, SQL_CHAT_GUIDANCE, **kwargs)
 
     @classmethod
     def validate_config(cls) -> List[str]:
-        """Return a list of configuration problems (empty when healthy)."""
-        issues: List[str] = []
-        if not cls._driver_available:
-            issues.append("mysql-connector-python driver not installed")
-        if not (cls._connection_config.get("database_host") or env("DATABASE_HOST")):
-            issues.append(f"{cls.name} host not configured")
-        if not (cls._connection_config.get("database_name") or env("DATABASE_NAME")):
-            issues.append(f"{cls.name} database name not configured")
-        return issues
+        """Configuration problems of the environment-configured database."""
+        return cls.server_config_issues(cls._driver_available, "mysql-connector-python")
 
     @classmethod
-    async def execute_query(cls, query: str, **kwargs) -> str:
+    async def execute_query(
+        cls, instance: ProviderInstanceModel, query: str, **kwargs: Any
+    ) -> str:
         """Provider-specific query alias (identical to execute_sql here)."""
-        return await cls.execute_sql(query, **kwargs)
+        return await cls.execute_sql(instance, query, **kwargs)
 
     @classmethod
-    async def write_data(cls, data: str, **kwargs) -> str:
+    async def write_data(
+        cls, instance: ProviderInstanceModel, data: str, **kwargs: Any
+    ) -> str:
         """Write data via an INSERT statement."""
-        if data.strip().upper().startswith("INSERT"):
-            return await cls.execute_sql(data, **kwargs)
-        return f"Data writing for {cls.name} requires INSERT SQL statements"
+        return await cls.insert_data(instance, data, **kwargs)

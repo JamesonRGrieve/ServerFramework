@@ -1,20 +1,45 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 from abc import abstractmethod
-from typing import Any, ClassVar, Dict, List, Optional, Set, Type
+from typing import Any, ClassVar, Dict, List, Optional, Sequence, Set, Type
 
 from fastapi import HTTPException
 
 from zephyrex.extensions.AbstractExtensionProvider import (
+    AbstractProviderInstance,
     AbstractStaticExtension,
     AbstractStaticProvider,
     ability,
 )
+from zephyrex.extensions.ExternalErrors import (
+    InvalidInputExternalError,
+    TransientExternalError,
+)
 from zephyrex.lib.Dependencies import Dependencies, PIP_Dependency
 from zephyrex.lib.Logging import logger
+from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 from zephyrex.pydantic2.registry import classproperty
+
+SQL_CHAT_GUIDANCE = "Convert your request to SQL and use execute_sql to run it."
+
+
+class DatabaseConnection(AbstractProviderInstance):
+    """A bonded database provider instance: the rotated instance and the
+    connection settings resolved for it."""
+
+    def __init__(self, instance: ProviderInstanceModel, config: Dict[str, Any]) -> None:
+        super().__init__(instance)
+        self.config = config
 
 
 class AbstractDatabaseExtensionProvider(AbstractStaticProvider):
-    """Abstract base class for database service providers."""
+    """Abstract base class for database service providers.
+
+    Providers are static; the connection settings belong to the rotated
+    ``ProviderInstanceModel`` each ability receives. Failures raise the typed
+    external errors so the rotation can tell a provider outage
+    (``TransientExternalError``: fail over) from a bad statement
+    (``InvalidInputExternalError``: surface to the caller).
+    """
 
     extension: ClassVar[Optional[Type[AbstractStaticExtension]]] = None
 
@@ -37,24 +62,256 @@ class AbstractDatabaseExtensionProvider(AbstractStaticProvider):
     _env: ClassVar[Dict[str, Any]] = {}  # Override in subclasses
 
     @classmethod
-    @abstractmethod
-    def bond_instance(cls, config: Dict[str, Any]) -> None:
-        """Configure the provider with the given configuration."""
+    def bond_instance(cls, instance: ProviderInstanceModel) -> DatabaseConnection:
+        """Bond ``instance`` with the connection settings resolved for it."""
+        return DatabaseConnection(instance, cls.connection_config(instance))
 
     @classmethod
     @abstractmethod
-    async def execute_sql(cls, query: str, **kwargs) -> str:
+    def connection_config(
+        cls, instance: Optional[ProviderInstanceModel]
+    ) -> Dict[str, Any]:
+        """The connection settings for ``instance``: its own fields and
+        settings first, the environment as fallback. ``None`` resolves from
+        the environment alone (configuration checks have no instance)."""
+
+    @classmethod
+    @abstractmethod
+    async def execute_sql(
+        cls, instance: ProviderInstanceModel, query: str, **kwargs: Any
+    ) -> str:
         """Execute a custom SQL query in the database."""
 
     @classmethod
     @abstractmethod
-    async def get_schema(cls, **kwargs) -> str:
+    async def get_schema(cls, instance: ProviderInstanceModel, **kwargs: Any) -> str:
         """Get the schema of the database."""
 
     @classmethod
     @abstractmethod
-    async def chat_with_db(cls, request: str, **kwargs) -> str:
+    async def chat_with_db(
+        cls, instance: ProviderInstanceModel, request: str, **kwargs: Any
+    ) -> str:
         """Chat with the database using natural language query."""
+
+    @classmethod
+    @abstractmethod
+    async def execute_query(
+        cls, instance: ProviderInstanceModel, query: str, **kwargs: Any
+    ) -> str:
+        """Execute a database-specific query (SQL, InfluxQL/Flux, MongoDB, GraphQL)."""
+
+    @classmethod
+    @abstractmethod
+    async def write_data(
+        cls, instance: ProviderInstanceModel, data: str, **kwargs: Any
+    ) -> str:
+        """Write data to the database."""
+
+    # -- Connection-setting resolution ---------------------------------------
+
+    @classmethod
+    def resolve_setting(
+        cls,
+        instance: Optional[ProviderInstanceModel],
+        key: str,
+        env_var: Optional[str] = None,
+        *,
+        field: Optional[str] = None,
+        default: Optional[str] = None,
+    ) -> Optional[str]:
+        """The first non-empty of: the instance's ``field`` column, the
+        instance's ``key`` setting, the ``env_var`` environment value, and
+        ``default``."""
+        if instance is not None:
+            if field is not None:
+                value = getattr(instance, field)
+                if value:
+                    return str(value)
+            setting = instance.get_setting(key)
+            if setting:
+                return setting
+        if env_var is not None:
+            env_value = cls.get_env_value(env_var)
+            if env_value:
+                return str(env_value)
+        return default
+
+    @classmethod
+    def resolve_port(
+        cls,
+        instance: Optional[ProviderInstanceModel],
+        env_var: str,
+        default: int,
+    ) -> int:
+        """The ``database_port`` setting (see :meth:`resolve_setting`) as an
+        integer."""
+        raw = cls.resolve_setting(instance, "database_port", env_var)
+        if raw is None:
+            return default
+        try:
+            return int(raw)
+        except ValueError as exc:
+            raise TransientExternalError(
+                f"{cls.friendly_name} port is not a number",
+                provider=cls.name,
+                cause=exc,
+            ) from exc
+
+    @classmethod
+    def server_config(
+        cls, instance: Optional[ProviderInstanceModel], default_port: int
+    ) -> Dict[str, Any]:
+        """Settings of a networked database server: the password is the
+        instance's ``api_key``; host, port, database name and username are
+        instance settings; each falls back to ``DATABASE_*``. ``model_name``
+        is an AI model name and never names a database."""
+        return {
+            "database_host": cls.resolve_setting(
+                instance, "database_host", "DATABASE_HOST"
+            ),
+            "database_port": cls.resolve_port(instance, "DATABASE_PORT", default_port),
+            "database_name": cls.resolve_setting(
+                instance, "database_name", "DATABASE_NAME"
+            ),
+            "database_username": cls.resolve_setting(
+                instance, "database_username", "DATABASE_USERNAME"
+            ),
+            "database_password": cls.resolve_setting(
+                instance, "database_password", "DATABASE_PASSWORD", field="api_key"
+            ),
+        }
+
+    @classmethod
+    def server_config_issues(cls, driver_available: bool, package: str) -> List[str]:
+        """What is missing to reach the environment-configured server."""
+        issues: List[str] = []
+        if not driver_available:
+            issues.append(f"{package} driver not installed")
+        config = cls.connection_config(None)
+        if not config["database_host"]:
+            issues.append(f"{cls.name} host not configured")
+        if not config["database_name"]:
+            issues.append(f"{cls.name} database name not configured")
+        return issues
+
+    # -- Typed failures -------------------------------------------------------
+
+    @classmethod
+    def require_driver(cls, available: bool, package: str) -> None:
+        """Fail over when the provider's driver package is not installed."""
+        if not available:
+            raise TransientExternalError(
+                f"{package} package not installed", provider=cls.name
+            )
+
+    @classmethod
+    def require_config(cls, config: Dict[str, Any], *keys: str) -> None:
+        """Fail over when any of ``keys`` is not configured."""
+        missing = [key for key in keys if not config.get(key)]
+        if missing:
+            raise TransientExternalError(
+                f"{cls.friendly_name} is not configured: missing {', '.join(missing)}",
+                provider=cls.name,
+            )
+
+    @classmethod
+    def connection_failed(cls, exc: Exception) -> TransientExternalError:
+        """The error for a failed connection attempt. Only the exception type
+        is logged: driver messages can echo connection strings."""
+        logger.warning("%s connection failed: %s", cls.name, type(exc).__name__)
+        return TransientExternalError(
+            f"Error connecting to {cls.friendly_name}", provider=cls.name, cause=exc
+        )
+
+    @classmethod
+    def query_failed(
+        cls, exc: Exception, operation: str = "SQL query"
+    ) -> InvalidInputExternalError:
+        """The error for a statement the database rejected."""
+        logger.warning("%s rejected a %s: %s", cls.name, operation, exc)
+        return InvalidInputExternalError(
+            f"Error executing {operation}: {exc}", provider=cls.name, cause=exc
+        )
+
+    # -- DB-API statement execution ------------------------------------------
+
+    @staticmethod
+    def clean_sql(query: str) -> str:
+        """Strip a Markdown ```sql fence and fold the statement onto one line."""
+        if "```sql" in query:
+            query = query.split("```sql")[1].split("```")[0]
+        return query.replace("```", "").replace("\n", " ").strip()
+
+    @staticmethod
+    def format_rows(column_names: Sequence[str], rows: Sequence[Sequence[Any]]) -> str:
+        """A result set as text: a lone value bare, otherwise quoted CSV."""
+        if not rows:
+            return "Query executed successfully. No rows returned."
+        if len(rows) == 1 and len(rows[0]) == 1:
+            return str(rows[0][0])
+        parts = [",".join(f'"{column}"' for column in column_names)]
+        parts.extend(",".join(f'"{value}"' for value in row) for row in rows)
+        return "\n".join(parts) + "\n"
+
+    @classmethod
+    def run_sql(cls, connection: Any, query: str, **cursor_kwargs: Any) -> str:
+        """Run ``query`` on an open DB-API ``connection`` and close it.
+
+        A statement that returns no result set is committed and reported by
+        its row count. A statement the database rejects raises
+        ``InvalidInputExternalError``.
+        """
+        query = cls.clean_sql(query)
+        logger.debug("Executing %s query: %s", cls.name, query)
+        try:
+            cursor = connection.cursor(**cursor_kwargs)
+            try:
+                cursor.execute(query)
+                if cursor.description is None:
+                    connection.commit()
+                    return (
+                        f"Query executed successfully. {cursor.rowcount} rows affected."
+                    )
+                rows = cursor.fetchall()
+                column_names = [desc[0] for desc in cursor.description]
+            finally:
+                cursor.close()
+        except Exception as exc:
+            raise cls.query_failed(exc) from exc
+        finally:
+            connection.close()
+        return cls.format_rows(column_names, rows)
+
+    @classmethod
+    async def insert_data(
+        cls, instance: ProviderInstanceModel, data: str, **kwargs: Any
+    ) -> str:
+        """``write_data`` for SQL providers: ``data`` must be an INSERT."""
+        if not data.strip().upper().startswith("INSERT"):
+            raise InvalidInputExternalError(
+                f"Data writing for {cls.name} requires INSERT SQL statements",
+                provider=cls.name,
+            )
+        return await cls.execute_sql(instance, data, **kwargs)
+
+    @classmethod
+    async def schema_guidance(
+        cls,
+        instance: ProviderInstanceModel,
+        request: str,
+        guidance: str,
+        schema_label: str = "Database schema",
+        **kwargs: Any,
+    ) -> str:
+        """``chat_with_db`` without a bundled NL model: the schema plus how to
+        run a query."""
+        schema = await cls.get_schema(instance, **kwargs)
+        return (
+            f'Natural language query: "{request}"\n\n'
+            f"{schema_label}:\n{schema}\n\n"
+            f"{guidance}"
+        )
 
     @classmethod
     def get_db_type(cls) -> str:
@@ -157,7 +414,9 @@ class EXT_Database(AbstractStaticExtension):
     - Integration with multiple database providers via rotation system
 
     Usage:
-        # Executes on the first healthy provider of the root rotation
+        # Executes on the first healthy provider instance of the root
+        # rotation; each provider implements it taking the rotated instance:
+        #     async def execute_sql(cls, instance, query, **kwargs) -> str
         result = await EXT_Database.execute_sql("SELECT * FROM users")
     """
 
@@ -296,16 +555,15 @@ class EXT_Database(AbstractStaticExtension):
     @classmethod
     async def _rotate_provider(cls, method_name: str, *args: Any, **kwargs: Any) -> Any:
         """Run ``method_name`` on the provider serving each rotated instance,
-        with failover. Database providers are configured from the
-        environment, so their methods take no instance argument."""
+        with failover. The provider method receives the rotated
+        ``ProviderInstanceModel`` first and connects with its settings; a
+        ``TransientExternalError`` fails over to the next instance."""
         root = cls.root
         if root is None:
             raise HTTPException(
                 status_code=503, detail="No database provider is configured"
             )
-        return await root.arotate(
-            cls.provider_call(method_name, pass_instance=False), *args, **kwargs
-        )
+        return await root.arotate(cls.provider_call(method_name), *args, **kwargs)
 
     @classmethod
     @ability("execute_sql")
@@ -431,120 +689,6 @@ class EXT_Database(AbstractStaticExtension):
     def sys_dependencies(cls):
         """Get system dependencies for backward compatibility."""
         return cls.dependencies.sys
-
-    @classmethod
-    def get_seed_data(cls) -> List[Dict[str, Any]]:
-        """
-        Return seed data for database providers and instances.
-        """
-        from zephyrex.lib.Environment import env
-
-        providers_data = []
-        instances_data = []
-
-        # SQLite Provider
-        if env("DATABASE_TYPE") == "sqlite" and env("DATABASE_FILE"):
-            providers_data.append(
-                {
-                    "name": "SQLite",
-                    "friendly_name": "SQLite Database",
-                    "system": True,
-                }
-            )
-            instances_data.append(
-                {
-                    "name": "Root_SQLite",
-                    "_provider_name": "SQLite",
-                    "api_key": env("DATABASE_FILE"),  # Store file path in api_key
-                    "enabled": True,
-                }
-            )
-            logger.debug("Registering SQLite provider via database extension")
-
-        # InfluxDB Provider
-        if all(
-            [
-                env("INFLUXDB_URL"),
-                env("INFLUXDB_TOKEN"),
-                env("INFLUXDB_ORG"),
-                env("INFLUXDB_BUCKET"),
-            ]
-        ):
-            providers_data.append(
-                {
-                    "name": "InfluxDB",
-                    "friendly_name": "InfluxDB Time Series Database",
-                    "system": True,
-                }
-            )
-            instances_data.append(
-                {
-                    "name": "Root_InfluxDB",
-                    "_provider_name": "InfluxDB",
-                    "api_key": env("INFLUXDB_TOKEN"),
-                    "model_name": env("INFLUXDB_BUCKET"),
-                    "enabled": True,
-                }
-            )
-            logger.debug("Registering InfluxDB provider via database extension")
-
-        # PostgreSQL Provider
-        if all(
-            [
-                env("DATABASE_TYPE") == "postgresql",
-                env("DATABASE_HOST"),
-                env("DATABASE_NAME"),
-                env("DATABASE_USERNAME"),
-                env("DATABASE_PASSWORD"),
-            ]
-        ):
-            providers_data.append(
-                {
-                    "name": "PostgreSQL",
-                    "friendly_name": "PostgreSQL Database",
-                    "system": True,
-                }
-            )
-            instances_data.append(
-                {
-                    "name": "Root_PostgreSQL",
-                    "_provider_name": "PostgreSQL",
-                    "api_key": env("DATABASE_PASSWORD"),
-                    "model_name": env("DATABASE_NAME"),
-                    "enabled": True,
-                }
-            )
-            logger.debug("Registering PostgreSQL provider via database extension")
-
-        # MySQL Provider
-        if all(
-            [
-                env("DATABASE_TYPE") == "mysql",
-                env("DATABASE_HOST"),
-                env("DATABASE_NAME"),
-                env("DATABASE_USERNAME"),
-                env("DATABASE_PASSWORD"),
-            ]
-        ):
-            providers_data.append(
-                {
-                    "name": "MySQL",
-                    "friendly_name": "MySQL Database",
-                    "system": True,
-                }
-            )
-            instances_data.append(
-                {
-                    "name": "Root_MySQL",
-                    "_provider_name": "MySQL",
-                    "api_key": env("DATABASE_PASSWORD"),
-                    "model_name": env("DATABASE_NAME"),
-                    "enabled": True,
-                }
-            )
-            logger.debug("Registering MySQL provider via database extension")
-
-        return providers_data + instances_data
 
     @classmethod
     def check_health(cls) -> Dict[str, Any]:

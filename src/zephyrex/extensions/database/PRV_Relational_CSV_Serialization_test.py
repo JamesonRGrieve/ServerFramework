@@ -110,7 +110,7 @@ def _point_at_real_sqlite(
     the serialization under test runs unmodified on real result rows.
     """
 
-    def _fake_get_connection():
+    def _fake_get_connection(config):
         return _SqliteConnAdapter(sqlite3.connect(db_path))
 
     monkeypatch.setattr(
@@ -128,20 +128,21 @@ def _point_at_real_sqlite(
         )
 
 
-async def _execute(
-    monkeypatch,
-    provider_cls: type[AbstractDatabaseExtensionProvider],
-    db_path: str,
-    query: str,
-) -> str:
-    if provider_cls is PRV_SQLite:
-        provider_cls.bond_instance({"database_file": db_path})
-    else:
-        _point_at_real_sqlite(monkeypatch, provider_cls, db_path)
-    # ``execute_sql`` is contractually ``-> str`` (EXT_Database base); the
-    # provider base chain is opaque to mypy, so narrow at this boundary.
-    result: str = await provider_cls.execute_sql(query)
-    return result
+@pytest.fixture
+def execute(provider_instance, demo_db, monkeypatch):
+    """Run a query through ``provider_cls.execute_sql`` against the demo DB."""
+
+    async def _execute(
+        provider_cls: type[AbstractDatabaseExtensionProvider], query: str
+    ) -> str:
+        if provider_cls is PRV_SQLite:
+            instance = provider_instance(provider_cls, api_key=demo_db)
+        else:
+            instance = provider_instance(provider_cls)
+            _point_at_real_sqlite(monkeypatch, provider_cls, demo_db)
+        return await provider_cls.execute_sql(instance, query)
+
+    return _execute
 
 
 @pytest.mark.unit
@@ -150,17 +151,15 @@ class TestRelationalCsvByteIdentity:
     """The list-join rewrite must reproduce the prior bytes exactly."""
 
     async def test_multi_row_multi_column_is_byte_identical(
-        self, provider_cls, demo_db, monkeypatch
+        self, provider_cls, execute
     ):
-        out = await _execute(monkeypatch, provider_cls, demo_db, QUERY_MULTI_ROW)
+        out = await execute(provider_cls, QUERY_MULTI_ROW)
         assert out == EXPECTED_MULTI_ROW
 
-    async def test_single_cell_scalar_special_case(
-        self, provider_cls, demo_db, monkeypatch
-    ):
-        out = await _execute(monkeypatch, provider_cls, demo_db, QUERY_SINGLE_CELL)
+    async def test_single_cell_scalar_special_case(self, provider_cls, execute):
+        out = await execute(provider_cls, QUERY_SINGLE_CELL)
         assert out == EXPECTED_SINGLE_CELL
 
-    async def test_empty_result_message(self, provider_cls, demo_db, monkeypatch):
-        out = await _execute(monkeypatch, provider_cls, demo_db, QUERY_EMPTY)
+    async def test_empty_result_message(self, provider_cls, execute):
+        out = await execute(provider_cls, QUERY_EMPTY)
         assert out == EXPECTED_EMPTY

@@ -1,19 +1,24 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """
 InfluxDB database provider for AGInfrastructure.
-Provides InfluxDB time-series database connectivity through the Provider Rotation System.
-Fully static implementation compatible with the Provider Rotation System.
-Supports both InfluxDB 1.x and 2.x APIs.
+Provides InfluxDB time-series database connectivity through the Provider
+Rotation System. Supports both InfluxDB 1.x and 2.x APIs.
+
+The rotated instance carries the credential in ``api_key`` (the 2.x token, or
+the 1.x password); everything else, including the 2.x ``bucket`` and the 1.x
+``database_name``, comes from its settings, each falling back to the
+environment.
 """
 
 import json
-from datetime import datetime
 from typing import Any, ClassVar, Dict, List, Optional
 
 from zephyrex.extensions.database.EXT_Database import (
     AbstractDatabaseExtensionProvider as AbstractDatabaseProvider,
 )
-from zephyrex.lib.Environment import env
+from zephyrex.extensions.ExternalErrors import TransientExternalError
 from zephyrex.lib.Logging import logger
+from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 
 try:
     import influxdb
@@ -34,6 +39,21 @@ except ImportError:
     influxdb_client = None
     InfluxDBClient2 = None
     SYNCHRONOUS = None
+
+INFLUXDB_DEFAULT_VERSION = "2"
+INFLUXDB_DEFAULT_PORT = 8086
+INFLUXDB_V2_REQUIRED = (
+    "influxdb_url",
+    "influxdb_token",
+    "influxdb_org",
+    "influxdb_bucket",
+)
+INFLUXDB_V1_REQUIRED = (
+    "database_host",
+    "database_name",
+    "database_username",
+    "database_password",
+)
 
 
 class PRV_InfluxDB(AbstractDatabaseProvider):
@@ -77,303 +97,219 @@ class PRV_InfluxDB(AbstractDatabaseProvider):
         "time_series_db",
     }
 
-    # Class-level connection configuration
-    _connection_config: Dict[str, Any] = {}
-
     @classmethod
-    def bond_instance(cls, config: Dict[str, Any]) -> None:
-        """
-        Configure the InfluxDB provider with the given configuration.
-        This is called once during provider initialization.
-        """
-        try:
-            # Determine InfluxDB version
-            influxdb_version = config.get("influxdb_version") or env(
-                "INFLUXDB_VERSION", "2"
+    def connection_config(
+        cls, instance: Optional[ProviderInstanceModel]
+    ) -> Dict[str, Any]:
+        influxdb_version = cls.resolve_setting(
+            instance,
+            "influxdb_version",
+            "INFLUXDB_VERSION",
+            default=INFLUXDB_DEFAULT_VERSION,
+        )
+        config: Dict[str, Any] = {
+            "influxdb_version": influxdb_version,
+            "database_host": cls.resolve_setting(
+                instance, "database_host", "DATABASE_HOST"
+            ),
+            "database_port": cls.resolve_port(
+                instance, "DATABASE_PORT", INFLUXDB_DEFAULT_PORT
+            ),
+        }
+        if influxdb_version == "2":
+            config.update(
+                {
+                    "influxdb_url": cls.resolve_setting(
+                        instance, "influxdb_url", "INFLUXDB_URL"
+                    ),
+                    "influxdb_token": cls.resolve_setting(
+                        instance, "influxdb_token", "INFLUXDB_TOKEN", field="api_key"
+                    ),
+                    "influxdb_org": cls.resolve_setting(
+                        instance, "influxdb_org", "INFLUXDB_ORG"
+                    ),
+                    "influxdb_bucket": cls.resolve_setting(
+                        instance, "bucket", "INFLUXDB_BUCKET"
+                    ),
+                }
             )
-
-            # Common configuration
-            cls._connection_config = {
-                "influxdb_version": influxdb_version,
-                "database_host": config.get("database_host")
-                or env("DATABASE_HOST", "localhost"),
-                "database_port": int(
-                    config.get("database_port") or env("DATABASE_PORT", "8086")
-                ),
-                **config,
-            }
-
-            if influxdb_version == "2":
-                # InfluxDB 2.x configuration
-                cls._connection_config.update(
-                    {
-                        "influxdb_url": config.get("influxdb_url")
-                        or env("INFLUXDB_URL"),
-                        "influxdb_token": config.get("influxdb_token")
-                        or env("INFLUXDB_TOKEN"),
-                        "influxdb_org": config.get("influxdb_org")
-                        or env("INFLUXDB_ORG"),
-                        "influxdb_bucket": config.get("influxdb_bucket")
-                        or env("INFLUXDB_BUCKET"),
-                    }
-                )
-
-                if not has_influxdb2:
-                    raise ImportError("InfluxDB 2.x client library not installed")
-
-            else:
-                # InfluxDB 1.x configuration
-                cls._connection_config.update(
-                    {
-                        "database_name": config.get("database_name")
-                        or env("DATABASE_NAME"),
-                        "database_username": config.get("database_username")
-                        or env("DATABASE_USERNAME"),
-                        "database_password": config.get("database_password")
-                        or env("DATABASE_PASSWORD"),
-                    }
-                )
-
-                if not influxdb:
-                    raise ImportError("InfluxDB 1.x client library not installed")
-
-            logger.debug(f"InfluxDB {influxdb_version}.x provider bonded successfully")
-
-        except Exception as e:
-            logger.error(f"Failed to configure InfluxDB provider: {e}")
-            raise
+        else:
+            config.update(
+                {
+                    "database_name": cls.resolve_setting(
+                        instance, "database_name", "DATABASE_NAME"
+                    ),
+                    "database_username": cls.resolve_setting(
+                        instance, "database_username", "DATABASE_USERNAME"
+                    ),
+                    "database_password": cls.resolve_setting(
+                        instance,
+                        "database_password",
+                        "DATABASE_PASSWORD",
+                        field="api_key",
+                    ),
+                }
+            )
+        return config
 
     @classmethod
-    def _get_connection(cls):
-        """Get a connection to the InfluxDB database."""
+    def _get_connection(cls, config: Dict[str, Any]) -> Any:
+        """A client for the resolved configuration, verified reachable."""
+        if config["influxdb_version"] == "2":
+            cls.require_driver(has_influxdb2, "influxdb-client")
+            cls.require_config(config, "influxdb_url", "influxdb_token", "influxdb_org")
+            try:
+                client = InfluxDBClient2(
+                    url=config["influxdb_url"],
+                    token=config["influxdb_token"],
+                    org=config["influxdb_org"],
+                )
+                reachable = client.ping()
+            except Exception as exc:
+                raise cls.connection_failed(exc) from exc
+            if not reachable:
+                client.close()
+                raise TransientExternalError(
+                    f"Error connecting to {cls.friendly_name}", provider=cls.name
+                )
+            return client
+
+        cls.require_driver(influxdb is not None, "influxdb")
+        cls.require_config(config, "database_host")
         try:
-            config = cls._connection_config
-            influxdb_version = config.get("influxdb_version", "2")
-
-            if influxdb_version == "2":
-                # InfluxDB 2.x connection
-                if not has_influxdb2:
-                    logger.error("InfluxDB 2.x client library not available")
-                    return None
-
-                url = config.get("influxdb_url")
-                token = config.get("influxdb_token")
-                org = config.get("influxdb_org")
-
-                if not all([url, token, org]):
-                    logger.error("InfluxDB 2.x connection parameters missing")
-                    return None
-
-                return InfluxDBClient2(url=url, token=token, org=org)
-
-            else:
-                # InfluxDB 1.x connection
-                if not influxdb:
-                    logger.error("InfluxDB 1.x client library not available")
-                    return None
-
-                host = config.get("database_host", "localhost")
-                port = config.get("database_port", 8086)
-                username = config.get("database_username")
-                password = config.get("database_password")
-                database = config.get("database_name")
-
-                return InfluxDBClient(
-                    host=host,
-                    port=port,
-                    username=username,
-                    password=password,
-                    database=database,
-                )
-
-        except Exception as e:
-            logger.error(f"Error connecting to InfluxDB: {e}")
-            return None
+            client = InfluxDBClient(
+                host=config["database_host"],
+                port=config["database_port"],
+                username=config["database_username"],
+                password=config["database_password"],
+                database=config["database_name"],
+            )
+            client.ping()
+        except Exception as exc:
+            raise cls.connection_failed(exc) from exc
+        return client
 
     @classmethod
-    async def execute_sql(cls, query: str, **kwargs) -> str:
+    async def execute_sql(
+        cls, instance: ProviderInstanceModel, query: str, **kwargs: Any
+    ) -> str:
         """Execute an InfluxQL or Flux query."""
-        return await cls.execute_query(query, **kwargs)
+        return await cls.execute_query(instance, query, **kwargs)
+
+    @staticmethod
+    def _format_points(points: List[Dict[str, Any]]) -> str:
+        output_lines = [
+            ", ".join(f"{key}={value}" for key, value in point.items())
+            for point in points
+            if point
+        ]
+        return (
+            "\n".join(output_lines)
+            if output_lines
+            else "Query executed successfully. No data returned."
+        )
 
     @classmethod
-    async def execute_query(cls, query: str, **kwargs) -> str:
+    async def execute_query(
+        cls, instance: ProviderInstanceModel, query: str, **kwargs: Any
+    ) -> str:
         """Execute a database-specific query (InfluxQL for 1.x, Flux for 2.x)."""
+        if "```" in query:
+            # Extract the query from a Markdown code block.
+            for part in query.split("```"):
+                if "from(" in part or "SELECT" in part.upper():
+                    query = part.strip()
+                    break
+        query = query.strip()
+        logger.debug("Executing InfluxDB query: %s", query)
+
+        config = cls.bond_instance(instance).config
+        client = cls._get_connection(config)
         try:
-            # Clean up query format
-            if "```" in query:
-                # Extract query from code blocks
-                parts = query.split("```")
-                for part in parts:
-                    if "from(" in part or "SELECT" in part.upper():
-                        query = part.strip()
-                        break
-
-            query = query.strip()
-            logger.debug(f"Executing InfluxDB query: {query}")
-
-            client = cls._get_connection()
-            if not client:
-                return "Error connecting to InfluxDB"
-
-            config = cls._connection_config
-            influxdb_version = config.get("influxdb_version", "2")
-
-            try:
-                if influxdb_version == "2":
-                    # InfluxDB 2.x - use Flux query
-                    query_api = client.query_api()
-                    bucket = config.get("influxdb_bucket")
-
-                    # If query doesn't specify bucket, add default bucket reference
-                    if "from(bucket:" not in query and bucket:
-                        query = (
-                            f'from(bucket:"{bucket}") |> {query}'
-                            if not query.startswith("from(")
-                            else query
-                        )
-
-                    result = query_api.query(query)
-
-                    # Format results
-                    output_lines = []
-                    for table in result:
-                        for record in table.records:
-                            values = []
-                            for key, value in record.values.items():
-                                if key.startswith("_"):
-                                    continue
-                                values.append(f"{key}={value}")
-                            if values:
-                                output_lines.append(", ".join(values))
-
-                    return (
-                        "\n".join(output_lines)
-                        if output_lines
-                        else "Query executed successfully. No data returned."
-                    )
-
-                else:
-                    # InfluxDB 1.x - use InfluxQL
-                    result = client.query(query)
-
-                    # Format results
-                    output_lines = []
-                    for series in result:
-                        for point in series:
-                            values = []
-                            for key, value in point.items():
-                                values.append(f"{key}={value}")
-                            output_lines.append(", ".join(values))
-
-                    return (
-                        "\n".join(output_lines)
-                        if output_lines
-                        else "Query executed successfully. No data returned."
-                    )
-
-            finally:
-                if hasattr(client, "close"):
-                    client.close()
-
-        except Exception as e:
-            logger.error(f"Error executing InfluxDB query: {e}")
-            return f"Error executing query: {str(e)}"
+            if config["influxdb_version"] == "2":
+                bucket = config["influxdb_bucket"]
+                # Scope a bare pipeline to the configured bucket.
+                if (
+                    "from(bucket:" not in query
+                    and bucket
+                    and not query.startswith("from(")
+                ):
+                    query = f'from(bucket:"{bucket}") |> {query}'
+                points = [
+                    {
+                        key: value
+                        for key, value in record.values.items()
+                        if not key.startswith("_")
+                    }
+                    for table in client.query_api().query(query)
+                    for record in table.records
+                ]
+            else:
+                points = [
+                    dict(point) for series in client.query(query) for point in series
+                ]
+        except Exception as exc:
+            raise cls.query_failed(exc, "InfluxDB query") from exc
+        finally:
+            client.close()
+        return cls._format_points(points)
 
     @classmethod
-    async def get_schema(cls, **kwargs) -> str:
+    async def get_schema(cls, instance: ProviderInstanceModel, **kwargs: Any) -> str:
         """Get the schema of the InfluxDB database."""
+        config = cls.bond_instance(instance).config
+        if config["influxdb_version"] == "2":
+            cls.require_config(config, "influxdb_bucket")
+        client = cls._get_connection(config)
         try:
-            logger.debug("Getting InfluxDB database schema")
+            if config["influxdb_version"] == "2":
+                bucket = config["influxdb_bucket"]
+                measurements_query = f"""
+                import "influxdata/influxdb/schema"
+                schema.measurements(bucket: "{bucket}")
+                """
+                schema_info = [f"InfluxDB 2.x Bucket: {bucket}", "Measurements:"]
+                for table in client.query_api().query(measurements_query):
+                    for record in table.records:
+                        if record.get_value():
+                            schema_info.append(f"  - {record.get_value()}")
+                return "\n".join(schema_info)
 
-            client = cls._get_connection()
-            if not client:
-                return "Error connecting to InfluxDB"
-
-            config = cls._connection_config
-            influxdb_version = config.get("influxdb_version", "2")
-
-            try:
-                if influxdb_version == "2":
-                    # InfluxDB 2.x - list measurements and fields
-                    query_api = client.query_api()
-                    bucket = config.get("influxdb_bucket")
-
-                    if not bucket:
-                        return "No bucket configured for InfluxDB 2.x"
-
-                    # Get measurements
-                    measurements_query = f"""
-                    import "influxdata/influxdb/schema"
-                    schema.measurements(bucket: "{bucket}")
-                    """
-
-                    result = query_api.query(measurements_query)
-                    measurements = []
-                    for table in result:
-                        for record in table.records:
-                            if hasattr(record, "get_value") and record.get_value():
-                                measurements.append(record.get_value())
-
-                    schema_info = [f"InfluxDB 2.x Bucket: {bucket}"]
-                    schema_info.append("Measurements:")
-                    for measurement in measurements:
-                        schema_info.append(f"  - {measurement}")
-
-                    return "\n".join(schema_info)
-
-                else:
-                    # InfluxDB 1.x - show measurements and series
-                    measurements_result = client.query("SHOW MEASUREMENTS")
-
-                    schema_info = [
-                        f"InfluxDB 1.x Database: {config.get('database_name', 'N/A')}"
-                    ]
-                    schema_info.append("Measurements:")
-
-                    for series in measurements_result:
-                        for point in series:
-                            if "name" in point:
-                                measurement = point["name"]
-                                schema_info.append(f"  - {measurement}")
-
-                                # Get field keys for this measurement
-                                try:
-                                    fields_result = client.query(
-                                        f'SHOW FIELD KEYS FROM "{measurement}"'
-                                    )
-                                    for field_series in fields_result:
-                                        for field_point in field_series:
-                                            if "fieldKey" in field_point:
-                                                schema_info.append(
-                                                    f"    Field: {field_point['fieldKey']} ({field_point.get('fieldType', 'unknown')})"
-                                                )
-                                except Exception:
-                                    pass
-
-                    return "\n".join(schema_info)
-
-            finally:
-                if hasattr(client, "close"):
-                    client.close()
-
-        except Exception as e:
-            logger.error(f"Error getting InfluxDB schema: {e}")
-            return f"Error getting database schema: {str(e)}"
+            schema_info = [
+                f"InfluxDB 1.x Database: {config['database_name'] or 'N/A'}",
+                "Measurements:",
+            ]
+            for series in client.query("SHOW MEASUREMENTS"):
+                for point in series:
+                    if "name" not in point:
+                        continue
+                    measurement = point["name"]
+                    schema_info.append(f"  - {measurement}")
+                    for field_series in client.query(
+                        f'SHOW FIELD KEYS FROM "{measurement}"'
+                    ):
+                        for field_point in field_series:
+                            if "fieldKey" in field_point:
+                                schema_info.append(
+                                    f"    Field: {field_point['fieldKey']} "
+                                    f"({field_point.get('fieldType', 'unknown')})"
+                                )
+            return "\n".join(schema_info)
+        except Exception as exc:
+            raise cls.query_failed(exc, "schema query") from exc
+        finally:
+            client.close()
 
     @classmethod
-    async def chat_with_db(cls, request: str, **kwargs) -> str:
+    async def chat_with_db(
+        cls, instance: ProviderInstanceModel, request: str, **kwargs: Any
+    ) -> str:
         """Chat with InfluxDB using natural language query."""
-        try:
-            # Get the schema for context
-            schema = await cls.get_schema(**kwargs)
+        schema = await cls.get_schema(instance, **kwargs)
+        influxdb_version = cls.bond_instance(instance).config["influxdb_version"]
+        query_language = "Flux" if influxdb_version == "2" else "InfluxQL"
 
-            config = cls._connection_config
-            influxdb_version = config.get("influxdb_version", "2")
-
-            # Return basic guidance since we don't have AI service integration in static context
-            query_language = "Flux" if influxdb_version == "2" else "InfluxQL"
-
-            return f"""Natural language query: "{request}"
+        return f"""Natural language query: "{request}"
 
 Database schema:
 {schema}
@@ -382,127 +318,75 @@ To query this InfluxDB {influxdb_version}.x database, you need to write {query_l
 
 {query_language} Query Guidelines:
 """ + (
-                """
+            """
 - Use Flux syntax: from(bucket:"your_bucket") |> range(start: -1h) |> filter(fn: (r) => r._measurement == "measurement_name")
 - Time ranges: range(start: -1h), range(start: -1d), range(start: -1w)
 - Filters: filter(fn: (r) => r._field == "field_name")
 - Aggregations: aggregateWindow(every: 1m, fn: mean)
 """
-                if influxdb_version == "2"
-                else """
+            if influxdb_version == "2"
+            else """
 - Use InfluxQL syntax: SELECT field FROM measurement WHERE time > now() - 1h
 - Time ranges: WHERE time > now() - 1h, WHERE time > now() - 1d
 - Filters: WHERE tag_name = 'value'
 - Aggregations: SELECT MEAN(field) FROM measurement GROUP BY time(1m)
 """
-            )
-
-        except Exception as e:
-            logger.error(f"Error in InfluxDB chat_with_db: {e}")
-            return f"Error processing natural language query: {str(e)}"
+        )
 
     @classmethod
-    async def write_data(cls, data: str, **kwargs) -> str:
-        """Write data to the InfluxDB database."""
+    async def write_data(
+        cls, instance: ProviderInstanceModel, data: str, **kwargs: Any
+    ) -> str:
+        """Write data to the InfluxDB database: line protocol, or (1.x) JSON
+        points."""
+        logger.debug("Writing data to InfluxDB: %s...", data[:100])
+        config = cls.bond_instance(instance).config
+        if config["influxdb_version"] == "2":
+            cls.require_config(config, "influxdb_bucket", "influxdb_org")
+        client = cls._get_connection(config)
         try:
-            logger.debug(f"Writing data to InfluxDB: {data[:100]}...")
+            if config["influxdb_version"] == "2":
+                client.write_api(write_options=SYNCHRONOUS).write(
+                    bucket=config["influxdb_bucket"],
+                    org=config["influxdb_org"],
+                    record=data,
+                )
+                return "Data written successfully to InfluxDB 2.x"
 
-            client = cls._get_connection()
-            if not client:
-                return "Error connecting to InfluxDB"
-
-            config = cls._connection_config
-            influxdb_version = config.get("influxdb_version", "2")
-
-            try:
-                if influxdb_version == "2":
-                    # InfluxDB 2.x - use line protocol
-                    write_api = client.write_api(write_options=SYNCHRONOUS)
-                    bucket = config.get("influxdb_bucket")
-                    org = config.get("influxdb_org")
-
-                    if not bucket or not org:
-                        return "Bucket or organization not configured for InfluxDB 2.x"
-
-                    write_api.write(bucket=bucket, org=org, record=data)
-                    return "Data written successfully to InfluxDB 2.x"
-
-                else:
-                    # InfluxDB 1.x - use line protocol or JSON
-                    if data.strip().startswith("[") or data.strip().startswith("{"):
-                        # JSON format
-                        json_data = json.loads(data)
-                        client.write_points(json_data)
-                    else:
-                        # Line protocol format
-                        client.write_points_from_dataframe(data)
-
-                    return "Data written successfully to InfluxDB 1.x"
-
-            finally:
-                if hasattr(client, "close"):
-                    client.close()
-
-        except Exception as e:
-            logger.error(f"Error writing data to InfluxDB: {e}")
-            return f"Error writing data: {str(e)}"
+            if data.strip().startswith(("[", "{")):
+                client.write_points(json.loads(data))
+            else:
+                client.write_points(data.splitlines(), protocol="line")
+            return "Data written successfully to InfluxDB 1.x"
+        except Exception as exc:
+            raise cls.query_failed(exc, "InfluxDB write") from exc
+        finally:
+            client.close()
 
     @classmethod
     def validate_config(cls) -> List[str]:
-        """Validate the InfluxDB provider configuration."""
+        """Validate the environment-configured InfluxDB connection."""
+        config = cls.connection_config(None)
         issues = []
+        if config["influxdb_version"] == "2":
+            version_label = "InfluxDB 2.x"
+            required = INFLUXDB_V2_REQUIRED
+            driver_available = has_influxdb2
+        else:
+            version_label = "InfluxDB 1.x"
+            required = INFLUXDB_V1_REQUIRED
+            driver_available = influxdb is not None
+        if not driver_available:
+            issues.append(f"{version_label} client library not installed")
+        issues.extend(
+            f"{version_label} {field.replace('_', ' ')} not configured"
+            for field in required
+            if not config.get(field)
+        )
 
-        try:
-            config = cls._connection_config
-            influxdb_version = config.get("influxdb_version", "2")
-
-            if influxdb_version == "2":
-                # InfluxDB 2.x validation
-                required_fields = [
-                    "influxdb_url",
-                    "influxdb_token",
-                    "influxdb_org",
-                    "influxdb_bucket",
-                ]
-                for field in required_fields:
-                    if not config.get(field):
-                        issues.append(
-                            f"InfluxDB 2.x {field.replace('_', ' ')} not configured"
-                        )
-
-                if not has_influxdb2:
-                    issues.append("InfluxDB 2.x client library not installed")
-
-            else:
-                # InfluxDB 1.x validation
-                required_fields = [
-                    "database_host",
-                    "database_name",
-                    "database_username",
-                    "database_password",
-                ]
-                for field in required_fields:
-                    if not config.get(field):
-                        issues.append(
-                            f"InfluxDB 1.x {field.replace('_', ' ')} not configured"
-                        )
-
-                if not influxdb:
-                    issues.append("InfluxDB 1.x client library not installed")
-
-            # Test connection if no configuration issues
-            if not issues:
-                try:
-                    client = cls._get_connection()
-                    if client:
-                        if hasattr(client, "close"):
-                            client.close()
-                    else:
-                        issues.append("Cannot establish InfluxDB connection")
-                except Exception as e:
-                    issues.append(f"InfluxDB connection test failed: {e}")
-
-        except Exception as e:
-            issues.append(f"InfluxDB configuration validation error: {e}")
-
+        if not issues:
+            try:
+                cls._get_connection(config).close()
+            except TransientExternalError as e:
+                issues.append(f"InfluxDB connection test failed: {e}")
         return issues

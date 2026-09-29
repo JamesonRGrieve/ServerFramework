@@ -2,17 +2,19 @@
 """PostgreSQL database provider (Provider Rotation System, static).
 
 Ported from the pre-zephyrex AGInfrastructure PostgreSQL provider into the
-current static ``AbstractDatabaseExtensionProvider`` format. Supports standard
-relational access plus optional pgvector similarity search.
+current static ``AbstractDatabaseExtensionProvider`` format. The rotated
+instance carries the password in ``api_key``; host, port, database name and
+username come from its settings, each falling back to the ``DATABASE_*``
+environment.
 """
 
-from typing import Any, ClassVar, Dict, List
+from typing import Any, ClassVar, Dict, List, Optional
 
 from zephyrex.extensions.database.EXT_Database import (
+    SQL_CHAT_GUIDANCE,
     AbstractDatabaseExtensionProvider as AbstractDatabaseProvider,
 )
-from zephyrex.lib.Environment import env
-from zephyrex.lib.Logging import logger
+from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 
 try:  # optional driver — guarded so discovery never fails on a missing package
     import psycopg2
@@ -22,6 +24,8 @@ try:  # optional driver — guarded so discovery never fails on a missing packag
 except ImportError:  # pragma: no cover - optional driver
     psycopg2 = None  # type: ignore[assignment]
     _psycopg2_available = False
+
+POSTGRES_DEFAULT_PORT = 5432
 
 
 class PRV_Postgres(AbstractDatabaseProvider):
@@ -50,103 +54,44 @@ class PRV_Postgres(AbstractDatabaseProvider):
         "vector_db",
     }
 
-    _connection_config: Dict[str, Any] = {}
+    @classmethod
+    def connection_config(
+        cls, instance: Optional[ProviderInstanceModel]
+    ) -> Dict[str, Any]:
+        return cls.server_config(instance, POSTGRES_DEFAULT_PORT)
 
     @classmethod
-    def bond_instance(cls, config: Dict[str, Any]) -> None:
-        """Configure the provider from a config dict (falls back to env)."""
-        try:
-            port_raw = config.get("database_port") or env("DATABASE_PORT") or 5432
-            cls._connection_config = {
-                **config,
-                "database_host": config.get("database_host") or env("DATABASE_HOST"),
-                "database_port": int(port_raw),
-                "database_name": config.get("database_name") or env("DATABASE_NAME"),
-                "database_username": (
-                    config.get("database_username") or env("DATABASE_USERNAME")
-                ),
-                "database_password": (
-                    config.get("database_password") or env("DATABASE_PASSWORD")
-                ),
-                "has_vector_extension": bool(config.get("has_vector_extension", False)),
-            }
-            logger.debug(
-                "PostgreSQL provider bonded with host: %s",
-                cls._connection_config.get("database_host"),
-            )
-        except Exception as e:
-            logger.error(f"Failed to configure PostgreSQL provider: {e}")
-            raise
-
-    @classmethod
-    def _get_connection(cls):
-        """Open a psycopg2 connection using the bonded configuration."""
-        if not _psycopg2_available:
-            logger.error("psycopg2 package not available")
-            return None
-        cfg = cls._connection_config
+    def _get_connection(cls, config: Dict[str, Any]) -> Any:
+        """Open a psycopg2 connection with the resolved configuration."""
+        cls.require_driver(_psycopg2_available, "psycopg2")
+        cls.require_config(config, "database_host", "database_name")
         try:
             return psycopg2.connect(
-                host=cfg.get("database_host"),
-                dbname=cfg.get("database_name"),
-                port=cfg.get("database_port", 5432),
-                user=cfg.get("database_username"),
-                password=cfg.get("database_password"),
+                host=config["database_host"],
+                dbname=config["database_name"],
+                port=config["database_port"],
+                user=config["database_username"],
+                password=config["database_password"],
             )
-        except Exception as e:
-            logger.error(f"Error connecting to PostgreSQL Database: {e}")
-            return None
+        except Exception as exc:
+            raise cls.connection_failed(exc) from exc
 
     @classmethod
-    async def execute_sql(cls, query: str, **kwargs) -> str:
+    async def execute_sql(
+        cls, instance: ProviderInstanceModel, query: str, **kwargs: Any
+    ) -> str:
         """Execute a SQL query and return the result as a string / CSV."""
-        try:
-            if "```sql" in query:
-                query = query.split("```sql")[1].split("```")[0]
-            query = query.replace("```", "").replace("\n", " ").strip()
-            logger.debug(f"Executing PostgreSQL query: {query}")
-
-            connection = cls._get_connection()
-            if not connection:
-                return "Error connecting to PostgreSQL Database"
-
-            cursor = connection.cursor(cursor_factory=psycopg2.extras.DictCursor)
-            try:
-                cursor.execute(query)
-                if cursor.description is None:
-                    # Non-SELECT statement
-                    connection.commit()
-                    return (
-                        "Query executed successfully. "
-                        f"{cursor.rowcount} rows affected."
-                    )
-                rows = cursor.fetchall()
-                if not rows:
-                    return "Query executed successfully. No rows returned."
-                if len(rows) == 1 and len(rows[0]) == 1:
-                    return str(rows[0][0])
-                column_names = [desc[0] for desc in cursor.description]
-                parts = [",".join(f'"{c}"' for c in column_names)]
-                parts.extend(",".join(f'"{v}"' for v in row) for row in rows)
-                return "\n".join(parts) + "\n"
-            finally:
-                cursor.close()
-                connection.close()
-        except Exception as e:
-            logger.error(f"Error executing PostgreSQL query: {e}")
-            return f"Error executing SQL query: {str(e)}"
+        connection = cls._get_connection(cls.bond_instance(instance).config)
+        return cls.run_sql(connection, query, cursor_factory=psycopg2.extras.DictCursor)
 
     @classmethod
-    async def get_schema(cls, **kwargs) -> str:
+    async def get_schema(cls, instance: ProviderInstanceModel, **kwargs: Any) -> str:
         """Introspect table definitions and foreign-key relations."""
+        connection = cls._get_connection(cls.bond_instance(instance).config)
+        sql_export: List[str] = []
+        key_relations: List[str] = []
         try:
-            connection = cls._get_connection()
-            if not connection:
-                return "Error connecting to PostgreSQL Database"
-
             cursor = connection.cursor(cursor_factory=psycopg2.extras.DictCursor)
-            sql_export: List[str] = []
-            key_relations: List[str] = []
             try:
                 cursor.execute(
                     "SELECT schema_name FROM information_schema.schemata "
@@ -190,71 +135,51 @@ class PRV_Postgres(AbstractDatabaseProvider):
                         """,
                         (schema_name,),
                     )
-                    table_columns: Dict[str, List[Dict[str, Any]]] = {}
+                    table_columns: Dict[str, List[str]] = {}
                     for row in cursor.fetchall():
-                        table_columns.setdefault(row["table_name"], []).append(
-                            {
-                                "column_name": row["column_name"],
-                                "data_type": row["data_type"],
-                                "column_default": row["column_default"],
-                                "is_nullable": row["is_nullable"],
-                            }
-                        )
-                    for table_name, columns in table_columns.items():
-                        parts = []
-                        for col in columns:
-                            piece = f"{col['column_name']} {col['data_type']}"
-                            if col["column_default"]:
-                                piece += f" DEFAULT {col['column_default']}"
-                            if col["is_nullable"] == "NO":
-                                piece += " NOT NULL"
-                            parts.append(piece)
+                        piece = f"{row['column_name']} {row['data_type']}"
+                        if row["column_default"]:
+                            piece += f" DEFAULT {row['column_default']}"
+                        if row["is_nullable"] == "NO":
+                            piece += " NOT NULL"
+                        table_columns.setdefault(row["table_name"], []).append(piece)
+                    for table_name, parts in table_columns.items():
                         sql_export.append(
                             f'CREATE TABLE "{schema_name}"."{table_name}" ('
                             + ", ".join(parts)
                             + ");"
                         )
-                result = "\n\n".join(sql_export + key_relations)
-                return result if result.strip() else "No schema information available"
             finally:
                 cursor.close()
-                connection.close()
-        except Exception as e:
-            logger.error(f"Error getting PostgreSQL schema: {e}")
-            return f"Error getting database schema: {str(e)}"
+        except Exception as exc:
+            raise cls.query_failed(exc, "schema query") from exc
+        finally:
+            connection.close()
+        result = "\n\n".join(sql_export + key_relations)
+        return result if result.strip() else "No schema information available"
 
     @classmethod
-    async def chat_with_db(cls, request: str, **kwargs) -> str:
+    async def chat_with_db(
+        cls, instance: ProviderInstanceModel, request: str, **kwargs: Any
+    ) -> str:
         """Return the schema plus guidance (no bundled NL-to-SQL model here)."""
-        schema = await cls.get_schema(**kwargs)
-        return (
-            f'Natural language query: "{request}"\n\n'
-            f"Database schema:\n{schema}\n\n"
-            "Convert your request to SQL and use execute_sql to run it."
-        )
+        return await cls.schema_guidance(instance, request, SQL_CHAT_GUIDANCE, **kwargs)
 
     @classmethod
     def validate_config(cls) -> List[str]:
-        """Return a list of configuration problems (empty when healthy)."""
-        issues: List[str] = []
-        if not _psycopg2_available:
-            issues.append("psycopg2 driver not installed")
-        host = cls._connection_config.get("database_host") or env("DATABASE_HOST")
-        if not host:
-            issues.append("PostgreSQL host not configured")
-        name = cls._connection_config.get("database_name") or env("DATABASE_NAME")
-        if not name:
-            issues.append("PostgreSQL database name not configured")
-        return issues
+        """Configuration problems of the environment-configured database."""
+        return cls.server_config_issues(_psycopg2_available, "psycopg2")
 
     @classmethod
-    async def execute_query(cls, query: str, **kwargs) -> str:
+    async def execute_query(
+        cls, instance: ProviderInstanceModel, query: str, **kwargs: Any
+    ) -> str:
         """Provider-specific query alias (identical to execute_sql here)."""
-        return await cls.execute_sql(query, **kwargs)
+        return await cls.execute_sql(instance, query, **kwargs)
 
     @classmethod
-    async def write_data(cls, data: str, **kwargs) -> str:
+    async def write_data(
+        cls, instance: ProviderInstanceModel, data: str, **kwargs: Any
+    ) -> str:
         """Write data via an INSERT statement."""
-        if data.strip().upper().startswith("INSERT"):
-            return await cls.execute_sql(data, **kwargs)
-        return "Data writing for PostgreSQL requires INSERT SQL statements"
+        return await cls.insert_data(instance, data, **kwargs)

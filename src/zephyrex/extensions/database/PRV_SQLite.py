@@ -1,18 +1,27 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """
 SQLite database provider for AGInfrastructure.
 Provides SQLite database connectivity through the Provider Rotation System.
-Fully static implementation compatible with the Provider Rotation System.
+The database file is the rotated instance's ``api_key`` (else its
+``database_file`` setting, else ``DATABASE_FILE``).
 """
 
 import os
 import sqlite3
-from typing import Any, ClassVar, Dict, List
+from typing import Any, ClassVar, Dict, List, Optional
 
 from zephyrex.extensions.database.EXT_Database import (
     AbstractDatabaseExtensionProvider as AbstractDatabaseProvider,
 )
-from zephyrex.lib.Environment import env
-from zephyrex.lib.Logging import logger
+from zephyrex.extensions.ExternalErrors import TransientExternalError
+from zephyrex.logic.BLL_Providers import ProviderInstanceModel
+
+SQLITE_CHAT_GUIDANCE = """To implement natural language querying, you would need to:
+1. Parse the request to understand the intent
+2. Map the request to SQL based on the schema
+3. Execute the generated SQL query
+
+For now, please convert your request to SQL manually and use the execute_sql method."""
 
 
 class PRV_SQLite(AbstractDatabaseProvider):
@@ -45,319 +54,118 @@ class PRV_SQLite(AbstractDatabaseProvider):
         "relational_db",
     }
 
-    # Class-level connection configuration
-    _connection_config: Dict[str, Any] = {}
+    @classmethod
+    def connection_config(
+        cls, instance: Optional[ProviderInstanceModel]
+    ) -> Dict[str, Any]:
+        return {
+            "database_file": cls.resolve_setting(
+                instance, "database_file", "DATABASE_FILE", field="api_key"
+            )
+        }
 
     @classmethod
-    def bond_instance(cls, config: Dict[str, Any]) -> None:
-        """
-        Configure the SQLite provider with the given configuration.
-        This is called once during provider initialization.
-        """
+    def _get_connection(cls, config: Dict[str, Any]) -> sqlite3.Connection:
+        """Open the configured database file, creating its directory."""
+        cls.require_config(config, "database_file")
+        database_file = config["database_file"]
         try:
-            # Extract database file from config
-            database_file = config.get("database_file") or env("DATABASE_FILE")
-
-            if not database_file:
-                # Create default database file if not specified
-                conversation_name = config.get("conversation_name", "default")
-                conversation_dir = config.get("conversation_directory", ".")
-                # If a POSIX-style directory was provided (contains '/') prefer
-                # to preserve the exact string so tests that expect forward
-                # slashes (e.g. '/tmp/...') remain stable on Windows.
-                if "/" in conversation_dir and os.path.sep != "/":
-                    database_file = f"{conversation_dir}/{conversation_name}.db"
-                else:
-                    database_file = os.path.join(
-                        conversation_dir, f"{conversation_name}.db"
-                    )
-
-            # Store configuration
-            cls._connection_config = {"database_file": database_file, **config}
-
-            # Ensure the directory exists for the database file
-            if database_file:
-                db_dir = os.path.dirname(database_file)
-                if db_dir and not os.path.exists(db_dir):
-                    try:
-                        os.makedirs(db_dir, exist_ok=True)
-                        logger.debug(f"Created directory for SQLite database: {db_dir}")
-                    except OSError as e:
-                        logger.warning(
-                            f"Could not create directory for SQLite database: {e}"
-                        )
-
-            logger.debug(f"SQLite provider bonded with database file: {database_file}")
-
-        except Exception as e:
-            logger.error(f"Failed to configure SQLite provider: {e}")
-            raise
-
-    @classmethod
-    def _get_connection(cls):
-        """Get a connection to the SQLite database."""
-        try:
-            database_file = cls._connection_config.get("database_file")
-            if not database_file:
-                logger.error("No database file configured for SQLite connection")
-                return None
-
-            # Ensure the directory exists
             db_dir = os.path.dirname(database_file)
-            if db_dir and not os.path.exists(db_dir):
+            if db_dir:
                 os.makedirs(db_dir, exist_ok=True)
-
             connection = sqlite3.connect(database_file)
-            # Enable dictionary cursor by default
-            connection.row_factory = sqlite3.Row
-            return connection
-
-        except Exception as e:
-            logger.error(f"Error connecting to SQLite Database: {e}")
-            return None
+        except (OSError, sqlite3.Error) as exc:
+            raise cls.connection_failed(exc) from exc
+        connection.row_factory = sqlite3.Row
+        return connection
 
     @classmethod
-    async def execute_sql(cls, query: str, **kwargs) -> str:
+    async def execute_sql(
+        cls, instance: ProviderInstanceModel, query: str, **kwargs: Any
+    ) -> str:
         """Execute a custom SQL query in the SQLite database."""
-        try:
-            # Clean up query format
-            if "```sql" in query:
-                query = query.split("```sql")[1].split("```")[0]
-            query = query.replace("\n", " ").strip()
-
-            logger.debug(f"Executing SQLite query: {query}")
-
-            connection = cls._get_connection()
-            if not connection:
-                return "Error connecting to SQLite Database"
-
-            cursor = connection.cursor()
-
-            try:
-                cursor.execute(query)
-
-                # Classify write-vs-read on the presence of a result set,
-                # matching the sibling relational providers (Postgres/MySQL/
-                # MSSQL). ``cursor.description`` is ``None`` only for statements
-                # that return no result set (INSERT/UPDATE/DELETE/DDL); any
-                # row-returning statement — a plain SELECT, a ``WITH`` CTE,
-                # ``PRAGMA``, or ``EXPLAIN`` — populates it. Keying on the
-                # ``SELECT`` keyword misclassified those non-SELECT reads as
-                # writes and committed them while returning "0 rows affected".
-                if cursor.description is None:
-                    # Non-row-returning statement (INSERT, UPDATE, DELETE, DDL)
-                    connection.commit()
-                    affected_rows = cursor.rowcount
-                    return (
-                        f"Query executed successfully. {affected_rows} rows affected."
-                    )
-
-                rows = cursor.fetchall()
-
-                # If no rows returned
-                if not rows:
-                    return "Query executed successfully. No rows returned."
-
-                # If there is only 1 row and 1 column, return the value as a string
-                if len(rows) == 1 and len(rows[0]) == 1:
-                    return str(rows[0][0])
-
-                # If there is more than 1 column and at least 1 row, return it as a CSV format
-                # Build column heading
-                column_names = [desc[0] for desc in cursor.description]
-                column_headings = [f'"{col}"' for col in column_names]
-                parts = [",".join(column_headings)]
-
-                # Add data rows
-                parts.extend(
-                    ",".join(f'"{row[i]}"' for i in range(len(column_names)))
-                    for row in rows
-                )
-
-                return "\n".join(parts) + "\n"
-
-            finally:
-                cursor.close()
-                connection.close()
-
-        except Exception as e:
-            logger.error(f"Error executing SQLite query: {e}")
-            return f"Error executing SQL query: {str(e)}"
+        connection = cls._get_connection(cls.bond_instance(instance).config)
+        return cls.run_sql(connection, query)
 
     @classmethod
-    async def get_schema(cls, **kwargs) -> str:
+    async def get_schema(cls, instance: ProviderInstanceModel, **kwargs: Any) -> str:
         """Get the schema of the SQLite database."""
+        connection = cls._get_connection(cls.bond_instance(instance).config)
+        schemas: List[str] = []
+        key_relations: List[str] = []
+        index_schemas: List[str] = []
         try:
-            logger.debug("Getting SQLite database schema")
-
-            connection = cls._get_connection()
-            if not connection:
-                return "Error connecting to SQLite Database"
-
             cursor = connection.cursor()
-            schemas = []
-            key_relations = []
-            index_schemas = []
+            # Tables, excluding SQLite's internal ones.
+            cursor.execute(
+                "SELECT name, sql FROM sqlite_master "
+                "WHERE type='table' AND name NOT LIKE 'sqlite_%';"
+            )
+            for table_name, create_table_sql in cursor.fetchall():
+                if create_table_sql:
+                    schemas.append(f"{create_table_sql};")
+                cursor.execute(f"PRAGMA foreign_key_list('{table_name}');")
+                for fk in cursor.fetchall():
+                    key_relations.append(
+                        f"-- {table_name}.{fk['from']} can be joined with "
+                        f"{fk['table']}.{fk['to']}"
+                    )
+            cursor.execute(
+                "SELECT sql FROM sqlite_master "
+                "WHERE type='index' AND name NOT LIKE 'sqlite_%';"
+            )
+            # Automatic indexes carry no SQL.
+            index_schemas.extend(f"{row[0]};" for row in cursor.fetchall() if row[0])
+        except sqlite3.Error as exc:
+            raise cls.query_failed(exc, "schema query") from exc
+        finally:
+            connection.close()
 
-            try:
-                # Get all tables (excluding SQLite internal tables)
-                cursor.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%';"
-                )
-                tables = cursor.fetchall()
-
-                # Get schema for each table
-                for table_info in tables:
-                    table_name = table_info[0]
-                    try:
-                        # Get the CREATE TABLE statement (parameterized — defense
-                        # in depth even though ``table_name`` comes from
-                        # ``sqlite_master`` itself).
-                        cursor.execute(
-                            "SELECT sql FROM sqlite_master WHERE type='table' AND name=?;",
-                            (table_name,),
-                        )
-                        create_table_result = cursor.fetchone()
-                        if create_table_result and create_table_result[0]:
-                            create_table_sql = str(create_table_result[0])
-                            schemas.append(create_table_sql + ";")
-
-                        # Get foreign key relationships
-                        cursor.execute(f"PRAGMA foreign_key_list('{table_name}');")
-                        foreign_keys = cursor.fetchall()
-
-                        for fk in foreign_keys:
-                            try:
-                                # Handle both tuple and dictionary-like access
-                                if hasattr(fk, "__getitem__") and not isinstance(
-                                    fk, str
-                                ):
-                                    try:
-                                        from_col = fk["from"] if "from" in fk else fk[3]
-                                        to_col = fk["to"] if "to" in fk else fk[4]
-                                        ref_table = (
-                                            fk["table"] if "table" in fk else fk[2]
-                                        )
-                                    except (KeyError, IndexError, TypeError):
-                                        from_col = fk[3]
-                                        to_col = fk[4]
-                                        ref_table = fk[2]
-
-                                    key_relations.append(
-                                        f"-- {table_name}.{from_col} can be joined with {ref_table}.{to_col}"
-                                    )
-                            except Exception:
-                                continue
-
-                    except Exception as e:
-                        logger.error(
-                            f"Error getting schema for table {table_name}: {e}"
-                        )
-                        continue
-
-                # Get indexes
-                cursor.execute(
-                    "SELECT name, tbl_name, sql FROM sqlite_master WHERE type='index' AND name NOT LIKE 'sqlite_%';"
-                )
-                indexes = cursor.fetchall()
-
-                for idx in indexes:
-                    if idx[2]:  # Some internal indexes might not have SQL
-                        index_sql = str(idx[2])
-                        index_schemas.append(index_sql + ";")
-
-            finally:
-                connection.close()
-
-            # Return combined schema
-            result = "\n\n".join(schemas + index_schemas + key_relations)
-            return result if result.strip() else "No schema information available"
-
-        except Exception as e:
-            logger.error(f"Error getting SQLite database schema: {e}")
-            return f"Error getting database schema: {str(e)}"
+        result = "\n\n".join(schemas + index_schemas + key_relations)
+        return result if result.strip() else "No schema information available"
 
     @classmethod
-    async def chat_with_db(cls, request: str, **kwargs) -> str:
+    async def chat_with_db(
+        cls, instance: ProviderInstanceModel, request: str, **kwargs: Any
+    ) -> str:
         """Chat with the SQLite database using natural language query."""
-        try:
-            # Get the schema for the database
-            schema = await cls.get_schema(**kwargs)
-
-            # For now, return a basic response since we don't have ApiClient in static context
-            # This could be enhanced with a static AI service integration
-            return f"""Natural language query: "{request}"
-
-Database schema:
-{schema}
-
-To implement natural language querying, you would need to:
-1. Parse the request to understand the intent
-2. Map the request to SQL based on the schema
-3. Execute the generated SQL query
-
-For now, please convert your request to SQL manually and use the execute_sql method."""
-
-        except Exception as e:
-            logger.error(f"Error in SQLite chat_with_db: {e}")
-            return f"Error processing natural language query: {str(e)}"
+        return await cls.schema_guidance(
+            instance, request, SQLITE_CHAT_GUIDANCE, **kwargs
+        )
 
     @classmethod
     def validate_config(cls) -> List[str]:
-        """Validate the SQLite provider configuration."""
+        """Validate the environment-configured SQLite database file."""
+        database_file = cls.connection_config(None)["database_file"]
+        if not database_file:
+            return ["SQLite database file not provided"]
+
         issues = []
-
-        try:
-            database_file = cls._connection_config.get("database_file") or env(
-                "DATABASE_FILE"
-            )
-
-            if not database_file:
-                issues.append("SQLite database file not provided")
-                return issues
-
-            # Check if the directory is writable (for creating the database if it doesn't exist)
-            db_dir = os.path.dirname(database_file) if database_file else ""
-            if db_dir and not os.path.exists(db_dir):
-                try:
-                    os.makedirs(db_dir, exist_ok=True)
-                except OSError as e:
-                    issues.append(f"Cannot create directory for SQLite database: {e}")
-
-            # Check if we can write to the directory
-            if db_dir and not os.access(db_dir, os.W_OK):
-                issues.append(f"Directory not writable for SQLite database: {db_dir}")
-
-            # Test connection
+        db_dir = os.path.dirname(database_file)
+        if db_dir and not os.path.exists(db_dir):
             try:
-                connection = cls._get_connection()
-                if connection:
-                    connection.close()
-                else:
-                    issues.append("Cannot establish SQLite database connection")
-            except Exception as e:
+                os.makedirs(db_dir, exist_ok=True)
+            except OSError as e:
+                issues.append(f"Cannot create directory for SQLite database: {e}")
+        if db_dir and not os.access(db_dir, os.W_OK):
+            issues.append(f"Directory not writable for SQLite database: {db_dir}")
+        if not issues:
+            try:
+                cls._get_connection({"database_file": database_file}).close()
+            except TransientExternalError as e:
                 issues.append(f"SQLite connection test failed: {e}")
-
-        except Exception as e:
-            issues.append(f"SQLite configuration validation error: {e}")
-
         return issues
 
     @classmethod
-    async def execute_query(cls, query: str, **kwargs) -> str:
+    async def execute_query(
+        cls, instance: ProviderInstanceModel, query: str, **kwargs: Any
+    ) -> str:
         """Execute a database-specific query (alias for execute_sql for SQLite)."""
-        return await cls.execute_sql(query, **kwargs)
+        return await cls.execute_sql(instance, query, **kwargs)
 
     @classmethod
-    async def write_data(cls, data: str, **kwargs) -> str:
-        """Write data to SQLite database (convert to INSERT statement)."""
-        try:
-            # This is a simplified implementation
-            # In practice, you'd want to parse the data format and create proper INSERT statements
-            if data.strip().upper().startswith("INSERT"):
-                return await cls.execute_sql(data, **kwargs)
-            else:
-                return "Data writing for SQLite requires INSERT SQL statements"
-        except Exception as e:
-            logger.error(f"Error writing data to SQLite: {e}")
-            return f"Error writing data: {str(e)}"
+    async def write_data(
+        cls, instance: ProviderInstanceModel, data: str, **kwargs: Any
+    ) -> str:
+        """Write data to the SQLite database (an INSERT statement)."""
+        return await cls.insert_data(instance, data, **kwargs)

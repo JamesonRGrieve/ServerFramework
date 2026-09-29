@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """
 Tests for EXT_Database extension (Item 72 — no mocks).
 
@@ -5,15 +6,16 @@ These tests exercise the real `AbstractDatabaseExtensionProvider`
 contract via `PRV_Fake_Database`, a real-class fake (not a mock) that
 satisfies the provider interface with deterministic in-memory state.
 The previous version patched `EXT_Database.root.rotate(...)` — that
-violated AGENTS.md's no-BLL-mocks pillar and is removed. The remaining
-test verifies the same behavior by calling the provider's methods
-directly, which is the actual unit of work the rotation system
-delegates to.
+violated AGENTS.md's no-BLL-mocks pillar and is removed. Provider methods
+are called directly with a real provider instance, and the failover tests
+drive a real rotation of SQLite instances.
 """
 
 from __future__ import annotations
 
-from typing import Dict, List
+import uuid
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional
 
 import pytest
 
@@ -27,7 +29,17 @@ from zephyrex.extensions.database.EXT_Database import (
     EXT_Database,
 )
 from zephyrex.extensions.database.PRV_Fake_Database import PRV_Fake_Database
-from zephyrex.pydantic2.registry import classproperty
+from zephyrex.extensions.database.PRV_SQLite import PRV_SQLite
+from zephyrex.extensions.ExternalErrors import InvalidInputExternalError
+from zephyrex.lib.Environment import env
+from zephyrex.logic.BLL_Providers import (
+    ProviderInstanceModel,
+    RotationManager,
+    RotationModel,
+    RotationProviderInstanceManager,
+    RotationProviderInstanceModel,
+)
+from zephyrex.pydantic2.registry import ModelRegistry, classproperty
 
 
 class ConcreteDatabaseProvider(AbstractDatabaseExtensionProvider):
@@ -57,32 +69,50 @@ class ConcreteDatabaseProvider(AbstractDatabaseExtensionProvider):
     extension = EXT_Database
 
     @classmethod
-    def bond_instance(cls, config: Dict[str, any]) -> None:  # type: ignore[valid-type]
-        cls._config = config
+    def connection_config(
+        cls, instance: Optional[ProviderInstanceModel]
+    ) -> Dict[str, Any]:
+        return {"url": cls.resolve_setting(instance, "url", "TEST_DATABASE_URL")}
 
     @classmethod
-    async def execute_sql(cls, query: str, **kwargs) -> str:
+    async def execute_sql(
+        cls, instance: ProviderInstanceModel, query: str, **kwargs: Any
+    ) -> str:
         return f"Test SQL executed: {query}"
 
     @classmethod
-    async def get_schema(cls, **kwargs) -> str:
+    async def get_schema(cls, instance: ProviderInstanceModel, **kwargs: Any) -> str:
         return "CREATE TABLE test_table (id INTEGER PRIMARY KEY, name TEXT);"
 
     @classmethod
-    async def chat_with_db(cls, request: str, **kwargs) -> str:
+    async def chat_with_db(
+        cls, instance: ProviderInstanceModel, request: str, **kwargs: Any
+    ) -> str:
         return f"Test chat response for: {request}"
 
     @classmethod
-    async def execute_query(cls, query: str, **kwargs) -> str:
+    async def execute_query(
+        cls, instance: ProviderInstanceModel, query: str, **kwargs: Any
+    ) -> str:
         return f"Test query executed: {query}"
 
     @classmethod
-    async def write_data(cls, data: str, **kwargs) -> str:
+    async def write_data(
+        cls, instance: ProviderInstanceModel, data: str, **kwargs: Any
+    ) -> str:
         return f"Test data written: {data}"
 
     @classmethod
     def validate_config(cls) -> List[str]:
         return []
+
+
+@pytest.fixture
+def fake_instance(
+    provider_instance: Callable[..., ProviderInstanceModel],
+) -> ProviderInstanceModel:
+    """A real provider instance of the fake database provider."""
+    return provider_instance(PRV_Fake_Database)
 
 
 @pytest.fixture(autouse=True)
@@ -233,33 +263,37 @@ class TestEXTDatabase(ExtensionServerMixin):
     # exercised by integration tests that boot a real ModelRegistry.
 
     @pytest.mark.asyncio
-    async def test_provider_execute_sql(self):
-        result = await PRV_Fake_Database.execute_sql("SELECT * FROM test")
+    async def test_provider_execute_sql(self, fake_instance):
+        result = await PRV_Fake_Database.execute_sql(
+            fake_instance, "SELECT * FROM test"
+        )
         assert result == "fake-sql:SELECT * FROM test"
         assert "SELECT * FROM test" in PRV_Fake_Database.executed_queries
 
     @pytest.mark.asyncio
-    async def test_provider_get_schema(self):
-        result = await PRV_Fake_Database.get_schema()
+    async def test_provider_get_schema(self, fake_instance):
+        result = await PRV_Fake_Database.get_schema(fake_instance)
         assert "CREATE TABLE" in result
 
     @pytest.mark.asyncio
-    async def test_provider_chat_with_db(self):
-        result = await PRV_Fake_Database.chat_with_db("Show me all users")
+    async def test_provider_chat_with_db(self, fake_instance):
+        result = await PRV_Fake_Database.chat_with_db(
+            fake_instance, "Show me all users"
+        )
         assert result == "fake-chat:Show me all users"
         assert PRV_Fake_Database.last_request == "Show me all users"
 
     @pytest.mark.asyncio
-    async def test_provider_execute_query(self):
+    async def test_provider_execute_query(self, fake_instance):
         result = await PRV_Fake_Database.execute_query(
-            "FROM bucket |> range(start: -1h)"
+            fake_instance, "FROM bucket |> range(start: -1h)"
         )
         assert result.startswith("fake-query:")
 
     @pytest.mark.asyncio
-    async def test_provider_write_data(self):
+    async def test_provider_write_data(self, fake_instance):
         result = await PRV_Fake_Database.write_data(
-            '{"measurement": "test", "value": 1}'
+            fake_instance, '{"measurement": "test", "value": 1}'
         )
         assert result.startswith("fake-write:")
         assert PRV_Fake_Database.last_data == '{"measurement": "test", "value": 1}'
@@ -329,15 +363,149 @@ class TestAbstractDatabaseExtensionProvider:
         assert isinstance(info["abilities"], list)
 
     @pytest.mark.asyncio
-    async def test_provider_methods(self):
-        result = await ConcreteDatabaseProvider.execute_sql("SELECT 1")
+    async def test_provider_methods(self, fake_instance):
+        result = await ConcreteDatabaseProvider.execute_sql(fake_instance, "SELECT 1")
         assert "Test SQL executed" in result
 
-        schema = await ConcreteDatabaseProvider.get_schema()
+        schema = await ConcreteDatabaseProvider.get_schema(fake_instance)
         assert "CREATE TABLE" in schema
 
-        chat_response = await ConcreteDatabaseProvider.chat_with_db("test request")
+        chat_response = await ConcreteDatabaseProvider.chat_with_db(
+            fake_instance, "test request"
+        )
         assert "Test chat response" in chat_response
+
+    def test_bond_instance_carries_the_resolved_config(self, provider_instance):
+        instance = provider_instance(
+            PRV_Fake_Database, settings={"url": "test://db.example:1234/instance"}
+        )
+
+        connection = ConcreteDatabaseProvider.bond_instance(instance)
+
+        assert connection.model is instance
+        assert connection.config == {"url": "test://db.example:1234/instance"}
+
+
+class TestConnectionSettingResolution:
+    """``resolve_setting``: instance field, then setting, then env, then default."""
+
+    def test_instance_field_wins(self, provider_instance, set_env):
+        set_env("DATABASE_PASSWORD", "from-env")
+        instance = provider_instance(
+            PRV_Fake_Database,
+            api_key="from-field",
+            settings={"database_password": "from-setting"},
+        )
+
+        assert (
+            AbstractDatabaseExtensionProvider.resolve_setting(
+                instance, "database_password", "DATABASE_PASSWORD", field="api_key"
+            )
+            == "from-field"
+        )
+
+    def test_setting_wins_over_env(self, provider_instance, set_env):
+        set_env("DATABASE_PASSWORD", "from-env")
+        instance = provider_instance(
+            PRV_Fake_Database, settings={"database_password": "from-setting"}
+        )
+
+        assert (
+            AbstractDatabaseExtensionProvider.resolve_setting(
+                instance, "database_password", "DATABASE_PASSWORD", field="api_key"
+            )
+            == "from-setting"
+        )
+
+    def test_env_fallback_then_default(self, provider_instance, set_env):
+        instance = provider_instance(PRV_Fake_Database)
+        set_env("DATABASE_PASSWORD", "from-env")
+        resolve = AbstractDatabaseExtensionProvider.resolve_setting
+
+        assert (
+            resolve(instance, "database_password", "DATABASE_PASSWORD", field="api_key")
+            == "from-env"
+        )
+        set_env("DATABASE_PASSWORD", "")
+        assert (
+            resolve(
+                instance,
+                "database_password",
+                "DATABASE_PASSWORD",
+                field="api_key",
+                default="fallback",
+            )
+            == "fallback"
+        )
+
+
+@pytest.fixture
+def rotation_over(provider_instance) -> Any:
+    """A rotation that tries the given instances in order."""
+    registry = ModelRegistry.attached()
+    assert registry is not None
+    root_id = env("ROOT_ID")
+
+    def _build(*instances: ProviderInstanceModel) -> RotationManager:
+        rotation_manager = RotationManager(
+            model_registry=registry, requester_id=root_id
+        )
+        rotation = RotationModel.model_validate(
+            rotation_manager.create(
+                name=f"database_failover_{uuid.uuid4().hex}",
+                description="Database provider failover test rotation",
+            ),
+            from_attributes=True,
+        )
+        links = RotationProviderInstanceManager(
+            model_registry=registry, requester_id=root_id
+        )
+        parent_id = None
+        for instance in instances:
+            link = RotationProviderInstanceModel.model_validate(
+                links.create(
+                    rotation_id=rotation.id,
+                    provider_instance_id=instance.id,
+                    parent_id=parent_id,
+                ),
+                from_attributes=True,
+            )
+            parent_id = link.id
+        rotation_manager.target_id = rotation.id
+        return rotation_manager
+
+    return _build
+
+
+class TestDatabaseRotationFailover:
+    """Typed provider errors drive the rotation: an unreachable database
+    fails over, a rejected statement surfaces to the caller."""
+
+    async def test_unreachable_instance_fails_over_to_the_next(
+        self, provider_instance, rotation_over, tmp_path: Path, monkeypatch
+    ):
+        # A directory is not an openable database file.
+        unreachable = provider_instance(PRV_SQLite, api_key=str(tmp_path))
+        reachable = provider_instance(PRV_SQLite, api_key=str(tmp_path / "ok.db"))
+        rotation = rotation_over(unreachable, reachable)
+        # EXT_Database.root serves the cached rotation for its registry.
+        monkeypatch.setattr(EXT_Database, "_root_rotation_cache", rotation)
+
+        assert await EXT_Database.execute_sql("SELECT 42;") == "42"
+
+    async def test_rejected_statement_is_not_retried_elsewhere(
+        self, provider_instance, rotation_over, tmp_path: Path, monkeypatch
+    ):
+        first = provider_instance(PRV_SQLite, api_key=str(tmp_path / "first.db"))
+        second = provider_instance(PRV_SQLite, api_key=str(tmp_path / "second.db"))
+        monkeypatch.setattr(
+            EXT_Database, "_root_rotation_cache", rotation_over(first, second)
+        )
+
+        with pytest.raises(InvalidInputExternalError):
+            await EXT_Database.execute_sql("NOT A STATEMENT;")
+        # The second instance was never tried, so its file was never created.
+        assert not (tmp_path / "second.db").exists()
 
     def test_provider_metadata_attributes(self):
         assert hasattr(ConcreteDatabaseProvider, "name")
@@ -389,8 +557,8 @@ class TestPRVFakeDatabase:
         assert PRV_Fake_Database.last_data == ""
 
     @pytest.mark.asyncio
-    async def test_provider_records_queries(self):
+    async def test_provider_records_queries(self, fake_instance):
         PRV_Fake_Database.reset()
-        await PRV_Fake_Database.execute_sql("SELECT 1")
-        await PRV_Fake_Database.execute_query("SELECT 2")
+        await PRV_Fake_Database.execute_sql(fake_instance, "SELECT 1")
+        await PRV_Fake_Database.execute_query(fake_instance, "SELECT 2")
         assert PRV_Fake_Database.executed_queries == ["SELECT 1", "SELECT 2"]
