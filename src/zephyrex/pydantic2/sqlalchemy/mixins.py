@@ -1,6 +1,8 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 from datetime import datetime
 from typing import (
     Any,
+    ClassVar,
     Dict,
     List,
     Optional,
@@ -22,6 +24,7 @@ from zephyrex.pydantic2.util import (
     reference_relationship_name,
     reference_target_model_name,
 )
+from zephyrex.pydantic2.manager_contract import ManagerContract
 
 
 # Search model for string fields
@@ -287,6 +290,10 @@ class DatabaseMixin:
         with db_manager.get_session() as db:
             users = db.query(User).all()
     """
+
+    # The BLL manager serving this model, bound after the manager is defined
+    # (``UserModel.Manager = UserManager``); router generation reads it.
+    Manager: ClassVar[Optional[Type[ManagerContract]]] = None
 
     @classmethod
     def DB(cls, declarative_base):

@@ -95,25 +95,12 @@ def register_route(
         )
         return
 
-    # Check if BaseModel is accessible and not a property
-    if not hasattr(manager_class, "BaseModel"):
+    base_model = getattr(manager_class, "Model", None)
+    if base_model is None:
         logger.error(
-            f"Manager class {manager_class.__name__} does not have BaseModel attribute. Route type: {route_type}. Available attributes: {[attr for attr in dir(manager_class) if not attr.startswith('_')]}"
+            f"Manager class {manager_class.__name__} has no Model. Route type: {route_type}. Skipping route registration."
         )
         return
-
-    if isinstance(getattr(type(manager_class), "BaseModel", None), property):
-        # BaseModel is a property, we need to get the actual model
-        try:
-            # Try to access the property to get the actual model
-            base_model = manager_class.BaseModel
-        except Exception as e:
-            logger.error(
-                f"Could not access BaseModel property on {manager_class.__name__}: {e}. Skipping route registration."
-            )
-            return
-    else:
-        base_model = manager_class.BaseModel
 
     bound_base_model = base_model
     if model_registry and hasattr(model_registry, "apply"):
@@ -131,7 +118,7 @@ def register_route(
         # manager_property is only ever set together with child_manager_class
         # by the nested-resource caller (see register_custom_route below).
         assert child_manager_class is not None
-        child_base_model = child_manager_class.BaseModel
+        child_base_model = child_manager_class.Model
         if model_registry and hasattr(model_registry, "apply"):
             try:
                 child_base_model = model_registry.apply(child_base_model)
@@ -146,9 +133,6 @@ def register_route(
             return
         network_model: "NetworkModelProtocol" = child_base_model.Network
         target_model = child_base_model
-        # network_model: Type[BaseModel] = model_registry.apply(
-        #     child_manager_class.BaseModel
-        # ).Network
     else:
         resource_name = stringcase.snakecase(
             manager_class.__name__.replace("Manager", "")

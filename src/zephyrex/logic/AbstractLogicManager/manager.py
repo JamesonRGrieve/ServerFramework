@@ -26,7 +26,7 @@ from sqlalchemy import and_
 from sqlalchemy.orm import Session, joinedload
 
 from zephyrex.lib.Logging import logger
-from zephyrex.pydantic2.registry import classproperty, obj_to_dict
+from zephyrex.pydantic2.registry import obj_to_dict
 from zephyrex.pydantic2.fastapi import AuthType, CustomRouteSpec, RouteType
 
 from zephyrex.logic.AbstractLogicManager.hooks import (
@@ -205,10 +205,6 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
     # Instance and class-level access via descriptor. Instances receive registry-bound models,
     # while class-level access returns the raw model for validation helpers (e.g., Model.Create).
     Model = _BoundModelDescriptor()
-
-    @classproperty
-    def BaseModel(cls):
-        return cls.Model
 
     @property
     def requester(self) -> Requester:

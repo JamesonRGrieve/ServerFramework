@@ -506,22 +506,22 @@ class ModelRegistry(AbstractRegistry):
                             elif (
                                 inspect.isclass(attr)
                                 and attr_name.endswith("Manager")
-                                and hasattr(attr, "BaseModel")
-                                and hasattr(attr.BaseModel, "__bases__")
+                                and hasattr(attr, "Model")
+                                and hasattr(attr.Model, "__bases__")
                                 and any(
                                     base.__name__ == "BaseModel"
-                                    for base in attr.BaseModel.__mro__
+                                    for base in attr.Model.__mro__
                                 )
                             ):
                                 # This is a manager class with a Pydantic model - bind the model
                                 try:
-                                    self.bind(attr.BaseModel)
+                                    self.bind(attr.Model)
                                     logger.debug(
-                                        f"Bound model {attr.BaseModel.__name__} from manager {attr.__name__} in {module_name}"
+                                        f"Bound model {attr.Model.__name__} from manager {attr.__name__} in {module_name}"
                                     )
                                 except Exception as e:
                                     logger.debug(
-                                        f"Could not bind model {attr.BaseModel.__name__} from manager {attr.__name__}: {e}"
+                                        f"Could not bind model {attr.Model.__name__} from manager {attr.__name__}: {e}"
                                     )
                 except Exception as e:
                     logger.error(f"Error processing module {module_name}: {e}")
@@ -1504,7 +1504,7 @@ class ModelRegistry(AbstractRegistry):
                     and attr is not RouterMixin
                     and hasattr(attr, "Router")
                     and attr.__module__ == module_name
-                    and getattr(attr, "BaseModel", None) is not None
+                    and getattr(attr, "Model", None) is not None
                 ):
                     key = (attr.__module__, attr.__qualname__)
                     if key not in seen:
@@ -1569,10 +1569,10 @@ class ModelRegistry(AbstractRegistry):
                                 if attr.__module__ == module_name:
                                     try:
                                         # Get the model used by this manager
-                                        base_model = getattr(attr, "BaseModel", None)
+                                        base_model = getattr(attr, "Model", None)
                                         if base_model is None:
                                             logger.debug(
-                                                f"Skipping {attr_name} - no BaseModel attribute"
+                                                f"Skipping {attr_name} - no Model attribute"
                                             )
                                             continue
                                         model = self.apply(base_model)

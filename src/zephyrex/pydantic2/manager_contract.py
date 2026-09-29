@@ -1,18 +1,16 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Structural contract for RouterMixin-tagged BLL managers (issue #221).
+"""Structural contract for the BLL managers the generation engine drives.
 
 The generation engine (``pydantic2.fastapi`` / ``pydantic2.strawberry``)
-introspects a manager *class* to emit REST/GraphQL. It annotated that class as
-``Type[logic.AbstractLogicManager.AbstractBLLManager]``, which forced the
-generation layer to import upward into ``logic/`` — the last remaining
-``lib/ -> logic/`` coupling issue #221 set out to remove.
+introspects a manager *class* to emit REST/GraphQL and calls its CRUD methods.
+Annotating that as ``Type[logic.AbstractLogicManager.AbstractBLLManager]``
+would make the generation layer import upward into ``logic/``, so the engine
+annotates with these protocols instead; every ``AbstractBLLManager`` subclass
+satisfies ``ManagerContract`` structurally, with no inheritance or import.
 
-``ManagerContract`` is a :class:`typing.Protocol` capturing exactly the
-class-level surface the engine reads off a manager class (``BaseModel`` /
-``Model`` / ``Router`` / ``example_overrides`` / ``register``) plus
-construction. Every ``AbstractBLLManager`` subclass satisfies it *structurally*
-— no inheritance, no import — so the generation layer annotates with
-``Type[ManagerContract]`` and no longer reaches into ``logic/``.
+Capabilities only some managers have are separate: routing comes from
+``RouterMixin`` (checked with ``issubclass``), and ``SelfScopedManagerContract``
+marks the one entity that is the requester itself.
 """
 
 from __future__ import annotations
@@ -21,13 +19,33 @@ from typing import Any, ClassVar, Protocol
 
 
 class ManagerContract(Protocol):
-    """The manager-class surface consumed by the generation engine."""
+    """The manager surface consumed by the generation engine."""
 
-    BaseModel: ClassVar[Any]
-    Model: ClassVar[Any]
-    Router: ClassVar[Any]
+    Model: Any
     example_overrides: ClassVar[Any]
 
-    def register(self, *args: Any, **kwargs: Any) -> Any: ...
-
     def __init__(self, *args: Any, **kwargs: Any) -> None: ...
+
+    def create(self, *args: Any, **kwargs: Any) -> Any: ...
+
+    def get(self, *args: Any, **kwargs: Any) -> Any: ...
+
+    def list(self, *args: Any, **kwargs: Any) -> Any: ...
+
+    def search(self, *args: Any, **kwargs: Any) -> Any: ...
+
+    def update(self, *args: Any, **kwargs: Any) -> Any: ...
+
+    def delete(self, *args: Any, **kwargs: Any) -> Any: ...
+
+    def batch_update(self, *args: Any, **kwargs: Any) -> Any: ...
+
+    def batch_delete(self, *args: Any, **kwargs: Any) -> Any: ...
+
+
+class SelfScopedManagerContract(ManagerContract, Protocol):
+    """A manager whose entity is the requester (the User): it is created by
+    registration, and updates and deletes act on the requester, not an id."""
+
+    @staticmethod
+    def register(*args: Any, **kwargs: Any) -> Any: ...

@@ -48,10 +48,8 @@ class AbstractBLLTest(AbstractTest):
         Returns:
             The model class from the manager
         """
-        if hasattr(cls, "class_under_test") and hasattr(
-            cls.class_under_test, "BaseModel"
-        ):
-            return cls.class_under_test.BaseModel  # type: ignore[no-any-return]
+        if hasattr(cls, "class_under_test") and hasattr(cls.class_under_test, "Model"):
+            return cls.class_under_test.Model  # type: ignore[no-any-return]
         return None
 
     @staticmethod
@@ -773,28 +771,26 @@ class AbstractBLLTest(AbstractTest):
 
         # Pattern 1: Session-like entities (user_id must equal requester)
         if (
-            hasattr(self.class_under_test, "BaseModel")
-            and hasattr(self.class_under_test.BaseModel, "__name__")
-            and "Session" in self.class_under_test.BaseModel.__name__
+            hasattr(self.class_under_test, "Model")
+            and hasattr(self.class_under_test.Model, "__name__")
+            and "Session" in self.class_under_test.Model.__name__
         ):
             entity_data["user_id"] = admin_a.id
             return entity_data
 
         # Pattern 2: Metadata-like entities (need user_id OR team_id)
         if (
-            hasattr(self.class_under_test, "BaseModel")
-            and hasattr(self.class_under_test.BaseModel, "__name__")
-            and "Metadata" in self.class_under_test.BaseModel.__name__
+            hasattr(self.class_under_test, "Model")
+            and hasattr(self.class_under_test.Model, "__name__")
+            and "Metadata" in self.class_under_test.Model.__name__
         ):
             if not entity_data.get("user_id") and not entity_data.get("team_id"):
                 entity_data["user_id"] = admin_a.id
             return entity_data
 
         # Pattern 3: Entities with required user_id but no ownership rules
-        if hasattr(self.class_under_test, "BaseModel"):
-            model_create_class = getattr(
-                self.class_under_test.BaseModel, "Create", None
-            )
+        if hasattr(self.class_under_test, "Model"):
+            model_create_class = getattr(self.class_under_test.Model, "Create", None)
             if model_create_class:
                 # Check if user_id is required in Create model
                 if (

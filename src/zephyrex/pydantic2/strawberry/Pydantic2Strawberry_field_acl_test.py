@@ -19,7 +19,6 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import MagicMock
 
-import pytest
 from pydantic import BaseModel, Field
 
 from zephyrex.lib.FieldACL import requires
@@ -50,17 +49,8 @@ class _FakeRequester:
         return name in self._granted
 
 
-class _FakeManagerWithBaseModel:
-    """Mirrors core BLL managers (``BaseModel`` ClassVar)."""
-
-    BaseModel = _Sensitive
-
-    def __init__(self, requester):
-        self.requester = requester
-
-
-class _FakeManagerWithModel:
-    """Mirrors extension managers (``Model`` ClassVar)."""
+class _FakeManager:
+    """Mirrors BLL managers (``Model`` on the class)."""
 
     Model = _Sensitive
 
@@ -69,12 +59,12 @@ class _FakeManagerWithModel:
 
 
 class _FakeManagerNoRequester:
-    BaseModel = _Sensitive
+    Model = _Sensitive
     requester = None
 
 
-def _make_manager(granted: set[str], cls=_FakeManagerWithBaseModel):
-    return cls(_FakeRequester(granted))
+def _make_manager(granted: set[str]):
+    return _FakeManager(_FakeRequester(granted))
 
 
 def _make_graphql_manager() -> Any:
@@ -92,7 +82,7 @@ def _make_graphql_manager() -> Any:
 # ---------------------------------------------------------------------------
 
 
-def test_apply_field_acl_strips_disallowed_fields_on_basemodel_manager():
+def test_apply_field_acl_strips_disallowed_fields():
     """A requester without ``auth.user.read_ssn`` sees the SSN field
     stripped from the GraphQL resolver result."""
     gm = _make_graphql_manager()
@@ -186,7 +176,7 @@ def test_apply_field_acl_no_op_when_model_has_no_restricted_fields():
     gm = _make_graphql_manager()
 
     class _Manager:
-        BaseModel = _OpenModel
+        Model = _OpenModel
         requester = _FakeRequester(set())
 
     obj = _OpenModel(id=1, name="open")
@@ -194,20 +184,8 @@ def test_apply_field_acl_no_op_when_model_has_no_restricted_fields():
     assert result is obj
 
 
-def test_apply_field_acl_handles_extension_manager_model_attribute():
-    """Extension managers expose ``Model`` rather than ``BaseModel``; the
-    helper consults both."""
-    gm = _make_graphql_manager()
-    manager = _make_manager(set(), cls=_FakeManagerWithModel)
-    user = _Sensitive(id=1, name="Alice", ssn="111", salary=100.0)
-
-    result = gm._apply_field_acl(manager, user)
-    assert "ssn" not in result
-
-
 def test_apply_field_acl_no_op_when_manager_has_no_model_attribute():
-    """A manager that exposes neither ``BaseModel`` nor ``Model`` is a
-    pass-through (defensive — the helper cannot know which fields are
+    """A manager that exposes no ``Model`` is a pass-through (defensive — the helper cannot know which fields are
     restricted without a model class)."""
     gm = _make_graphql_manager()
 

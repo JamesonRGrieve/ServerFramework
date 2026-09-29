@@ -31,7 +31,10 @@ from zephyrex.lib.AbstractPydantic2 import ErrorHandlerMixin
 from zephyrex.lib.Environment import inflection
 from zephyrex.lib.Logging import logger
 from zephyrex.pydantic2.registry import ModelRegistry
-from zephyrex.pydantic2.manager_contract import ManagerContract
+from zephyrex.pydantic2.manager_contract import (
+    ManagerContract,
+    SelfScopedManagerContract,
+)
 from zephyrex.pydantic2.util import (
     is_reference_field_name,
     reference_relationship_name,
@@ -487,16 +490,11 @@ class GraphQLManager(ErrorHandlerMixin):
 
         try:
             # Apply model registry to get extension-enhanced version
-            # Handle both core managers (BaseModel) and extension managers (Model)
-            base_model: Optional[Type[BaseModel]] = None
-            if hasattr(manager_class, "BaseModel"):
-                base_model = manager_class.BaseModel
-            elif hasattr(manager_class, "Model"):
-                base_model = manager_class.Model
-            else:
-                logger.error(
-                    f"Manager {manager_class.__name__} has neither BaseModel nor Model attribute"
-                )
+            base_model: Optional[Type[BaseModel]] = getattr(
+                manager_class, "Model", None
+            )
+            if base_model is None:
+                logger.error(f"Manager {manager_class.__name__} has no Model")
                 return
 
             try:
@@ -1113,7 +1111,7 @@ class GraphQLManager(ErrorHandlerMixin):
         resolver code paths work end-to-end with and without ABAC.
 
         The model class for the ACL lookup is derived from
-        ``manager.BaseModel`` / ``manager.Model`` (the same source
+        the manager class's ``Model`` (the same source
         ``_generate_components_for_model`` consults). The helper lazy-
         imports the FieldACL primitives to keep the GraphQL stack
         importable even if the FieldACL module is absent in a stripped
@@ -1131,11 +1129,7 @@ class GraphQLManager(ErrorHandlerMixin):
         if has_perm is None:
             return result
 
-        model_cls: Optional[Type[BaseModel]] = None
-        if hasattr(manager, "BaseModel"):
-            model_cls = manager.BaseModel
-        elif hasattr(manager, "Model"):
-            model_cls = manager.Model
+        model_cls: Optional[Type[BaseModel]] = getattr(type(manager), "Model", None)
         if model_cls is None:
             return result
 
@@ -1155,7 +1149,7 @@ class GraphQLManager(ErrorHandlerMixin):
     ) -> None:
         """Add a query resolver for getting a single item"""
         # Special handling for user queries - users can only query themselves
-        if "User" in manager_class.__name__:
+        if self._is_self_scoped(manager_class):
 
             async def user_resolver(info: Info, **kwargs: Optional[str]) -> return_type:  # type: ignore[valid-type]
                 try:
@@ -1211,7 +1205,7 @@ class GraphQLManager(ErrorHandlerMixin):
     ) -> None:
         """Add a query resolver for listing items with filtering and pagination"""
         # Special handling for user list queries
-        if "User" in manager_class.__name__:
+        if self._is_self_scoped(manager_class):
 
             async def user_list_resolver(
                 teamId: Optional[str] = None,
@@ -1294,15 +1288,19 @@ class GraphQLManager(ErrorHandlerMixin):
             self._query_fields[field_name] = _versioned_field(resolver, manager_class)
 
     @staticmethod
-    def _is_user_manager(manager_class: Type[ManagerContract]) -> bool:
+    def _is_self_scoped(
+        manager_class: Type[ManagerContract],
+    ) -> TypeGuard[Type[SelfScopedManagerContract]]:
         """Whether a manager uses the self-scoped User mutation flow.
 
-        User managers route create through ``manager_class.register`` and drop
-        the ``id`` argument on update/delete (a user acts only on itself). The
-        three CRUD mutation resolvers branch on this single predicate rather
-        than each re-testing the class name inline.
+        The User manager routes create through ``manager_class.register`` and
+        drops the ``id`` argument on update/delete (a user acts only on
+        itself). Registration is what identifies it: managers whose names
+        merely contain "User" (UserTeam, UserCredential, ...) act on the row
+        the caller names. The lookup skips the metaclass, whose
+        ``ABCMeta.register`` every abstract manager inherits.
         """
-        return "User" in manager_class.__name__
+        return any("register" in vars(base) for base in manager_class.__mro__)
 
     def _authenticated_manager(
         self, manager_class: Type[ManagerContract], info: Info
@@ -1379,18 +1377,10 @@ class GraphQLManager(ErrorHandlerMixin):
                 data = self._convert_input_to_dict(input)
 
                 # Call manager.create with same signature as REST API
-                # Special-case User creation which uses a register flow
-                if self._is_user_manager(manager_class):
-                    # Use the static register method on the manager class to perform registration
-                    try:
-                        result = manager_class.register(
-                            data, model_registry=self.model_registry
-                        )
-                    except TypeError:
-                        # Fallback to pass kwargs style if the register signature expects named args
-                        result = manager_class.register(
-                            registration_data=data, model_registry=self.model_registry
-                        )
+                if self._is_self_scoped(manager_class):
+                    result = manager_class.register(
+                        data, model_registry=self.model_registry
+                    )
                 else:
                     result = manager.create(**data)
 
@@ -1417,7 +1407,7 @@ class GraphQLManager(ErrorHandlerMixin):
     ) -> None:
         """Add a mutation resolver for updating items"""
         # Special handling for user update mutations - users can only update themselves
-        if self._is_user_manager(manager_class):
+        if self._is_self_scoped(manager_class):
 
             async def user_update_resolver(
                 input: input_type, info: Info  # type: ignore[valid-type]
@@ -1426,14 +1416,7 @@ class GraphQLManager(ErrorHandlerMixin):
                     manager, requester_id = self._authenticated_manager(
                         manager_class, info
                     )
-                    logger.info(f"GraphQL update input: {input}")
-                    logger.info(f"GraphQL update input type: {type(input)}")
-                    logger.info(
-                        f"GraphQL update input dict: {input.__dict__ if hasattr(input, '__dict__') else 'No __dict__'}"  # type: ignore[attr-defined]
-                    )
                     data = self._convert_input_to_dict(input)
-
-                    logger.info(f"GraphQL update data: {data}")
 
                     # For users, always update the requester (no ID parameter allowed)
                     result = manager.update(requester_id, **data)
@@ -1484,7 +1467,7 @@ class GraphQLManager(ErrorHandlerMixin):
     ) -> None:
         """Add a mutation resolver for deleting items"""
         # Special handling for user delete mutations - users can only delete themselves
-        if self._is_user_manager(manager_class):
+        if self._is_self_scoped(manager_class):
 
             async def user_delete_resolver(info: Info) -> bool:
                 try:

@@ -794,10 +794,10 @@ def discover_bll_managers_for_testing(
                         isinstance(attr, type)
                         and attr_name.endswith("Manager")
                         and not attr_name.startswith("_")
-                        and hasattr(attr, "BaseModel")
+                        and hasattr(attr, "Model")
                     ):
-                        # Check if the BaseModel inherits from ApplicationModel
-                        model_class = attr.BaseModel
+                        # Check if the model inherits from ApplicationModel
+                        model_class = attr.Model
                         if hasattr(model_class, "__mro__"):
                             # Check if ApplicationModel is in the inheritance chain
                             has_base_mixin = any(

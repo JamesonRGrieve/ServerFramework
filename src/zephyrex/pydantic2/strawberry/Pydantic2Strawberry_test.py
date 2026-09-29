@@ -148,9 +148,9 @@ class ParentManager:
 
 
 class _BoundMockManager:
-    """A manager the GraphQL emitter can introspect (carries ``BaseModel``)."""
+    """A manager the GraphQL emitter can introspect (carries ``Model``)."""
 
-    BaseModel = MockTestModel
+    Model = MockTestModel
 
     def __init__(self, requester_id: str, model_registry: Any):
         self.requester_id = requester_id
@@ -352,7 +352,7 @@ class TestSchemaManager(AbstractPydanticTestMixin):
         """GraphQL schema should expose query fields even without registry bindings."""
 
         class DummyManager:
-            BaseModel = MockTestModel
+            Model = MockTestModel
 
             def __init__(self, requester_id: str, model_registry: Any):
                 self.requester_id = requester_id
@@ -640,7 +640,7 @@ class TestIntegrationWithModelRegistry(AbstractGraphQLTestMixin):
                 tag: Optional[str] = None
 
         class IsolatedManager(_BoundMockManager):
-            BaseModel = IsolatedModel
+            Model = IsolatedModel
 
             def get(self, id, include=None, fields=None):  # type: ignore[override]
                 return IsolatedModel(id=id, tag="t")
@@ -692,7 +692,7 @@ class TestProgrammaticSchemaGeneration(AbstractGraphQLTestMixin):
                 dynamic_field: Optional[str] = None
 
         class DynamicManager(_BoundMockManager):
-            BaseModel = DynamicModel
+            Model = DynamicModel
 
             def get(self, id, include=None, fields=None):  # type: ignore[override]
                 return DynamicModel(id=id, dynamic_field="x")

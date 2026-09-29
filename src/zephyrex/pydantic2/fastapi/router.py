@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -20,6 +21,7 @@ from .types import (
     CustomRouteSpec,
     HTTPMethod,
     NestedResourceConfig,
+    RouterMixin,
     RouteType,
 )
 from .query import get_request_info
@@ -69,11 +71,9 @@ def create_router_from_manager(
         getattr(manager_class, "route_auth_overrides", None) or {}
     )
 
-    # System entity auto-configuration: if BaseModel.is_system_entity=True,
+    # System entity auto-configuration: if Model.is_system_entity=True,
     # automatically require API key authentication for write operations
-    base_model = getattr(manager_class, "BaseModel", None) or getattr(
-        manager_class, "_model", None
-    )
+    base_model = getattr(manager_class, "Model", None)
     is_system_entity = (
         getattr(base_model, "is_system_entity", False) if base_model else False
     )
@@ -495,8 +495,7 @@ def generate_routers_from_model_registry(model_registry) -> Dict[str, APIRouter]
             manager_class: Type["ManagerContract"] = model_class.Manager
             manager_name: str = manager_class.__name__
 
-            # Check if it has RouterMixin (Router method)
-            if hasattr(manager_class, "Router"):
+            if issubclass(manager_class, RouterMixin):
                 try:
                     router: APIRouter = manager_class.Router(model_registry)
                     routers[manager_name] = router
