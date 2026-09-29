@@ -341,6 +341,15 @@ def _build_graphql_resolver(
 
     resolver.__name__ = method_name
     resolver.__qualname__ = f"{manager_cls.__name__}.{method_name}"
+    # Under postponed annotations the signatures above store the literal
+    # strings "spec.input_model"/"spec.output_model", which Strawberry resolves
+    # against this module's globals, where `spec` does not exist. Give it the
+    # real types.
+    resolved = dict(resolver.__annotations__)
+    resolved["return"] = spec.output_model
+    if "input" in resolved:
+        resolved["input"] = spec.input_model
+    resolver.__annotations__ = resolved
     return resolver
 
 

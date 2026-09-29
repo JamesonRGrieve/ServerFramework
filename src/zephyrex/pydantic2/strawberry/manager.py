@@ -1,3 +1,4 @@
+import inspect
 import json
 import sys
 from enum import Enum, IntEnum
@@ -14,6 +15,7 @@ from typing import (
     Set,
     Tuple,
     Type,
+    TypeGuard,
     Union,
     get_args,
     get_origin,
@@ -58,6 +60,15 @@ _UNSET: Any = object()
 # reverse field within one request reuses one DataLoader, so their loads
 # coalesce into a single batched ``manager.list(<fk> IN (...))`` query.
 _REVERSE_NAV_LOADER_KEY: str = "_reverse_nav_dataloaders"
+
+
+def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
+    """A Pydantic model class that is not itself a Strawberry type."""
+    return (
+        isinstance(candidate, type)
+        and issubclass(candidate, BaseModel)
+        and not hasattr(candidate, "__strawberry_definition__")
+    )
 
 
 class GraphQLManager(ErrorHandlerMixin):
@@ -241,12 +252,78 @@ class GraphQLManager(ErrorHandlerMixin):
         Subscriptions are wrapped with ``strawberry.subscription``; queries
         and mutations with ``strawberry.field``.
         """
-        resolver = contribution.resolver
+        resolver = self._with_strawberry_types(contribution.resolver)
         if contribution.kind == FieldKind.SUBSCRIPTION:
             return strawberry.subscription(
                 resolver, description=contribution.description
             )
         return strawberry.field(resolver, description=contribution.description)
+
+    def _with_strawberry_types(
+        self, resolver: Callable[..., Any]
+    ) -> Callable[..., Any]:
+        """Let a contributed resolver declare plain Pydantic models.
+
+        Contributions such as ``@custom_route`` methods type their ``input``
+        and return value with Pydantic models, which Strawberry rejects
+        ("Unexpected type"), failing the whole schema build. This wraps such
+        a resolver with Strawberry types generated from those models: the
+        incoming input is validated back into the Pydantic model, and the
+        Pydantic result satisfies the generated output type attribute by
+        attribute. Resolvers already typed for Strawberry pass through.
+        """
+        hints = dict(getattr(resolver, "__annotations__", {}))
+        declared_input = hints.get("input")
+        declared_output = hints.get("return")
+        input_model = (
+            declared_input if _is_plain_pydantic_model(declared_input) else None
+        )
+        output_model = (
+            declared_output if _is_plain_pydantic_model(declared_output) else None
+        )
+        if input_model is None and output_model is None:
+            return resolver
+
+        parameters = [
+            inspect.Parameter(
+                "info", inspect.Parameter.POSITIONAL_OR_KEYWORD, annotation=Info
+            )
+        ]
+        annotations: Dict[str, Any] = {"info": Info}
+        for name, parameter in inspect.signature(resolver).parameters.items():
+            if name == "info" or parameter.kind is inspect.Parameter.VAR_KEYWORD:
+                continue
+            annotation = hints.get(name, parameter.annotation)
+            if name == "input" and input_model is not None:
+                annotation = self._create_input_type_from_model(input_model, "Input")
+            parameters.append(parameter.replace(annotation=annotation))
+            annotations[name] = annotation
+        return_type = (
+            self._create_gql_type_from_model(output_model)
+            if output_model is not None
+            else declared_output
+        )
+        annotations["return"] = return_type
+
+        async def typed_resolver(info: Info, **kwargs: Any) -> Any:
+            if input_model is not None and kwargs.get("input") is not None:
+                kwargs["input"] = input_model.model_validate(
+                    strawberry.asdict(kwargs["input"])
+                )
+            result = resolver(info=info, **kwargs)
+            if inspect.isawaitable(result):
+                result = await result
+            return result
+
+        typed_resolver.__signature__ = inspect.Signature(  # type: ignore[attr-defined]
+            parameters, return_annotation=return_type
+        )
+        typed_resolver.__annotations__ = annotations
+        typed_resolver.__name__ = resolver.__name__
+        typed_resolver.__qualname__ = getattr(
+            resolver, "__qualname__", resolver.__name__
+        )
+        return typed_resolver
 
     def _on_contributions_changed(self) -> None:
         """Subscriber callback for registry mutations.
