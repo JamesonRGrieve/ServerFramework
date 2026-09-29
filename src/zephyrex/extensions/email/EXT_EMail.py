@@ -1087,6 +1087,8 @@ def iter_configured_email_providers(
     env_source = env_map if env_map is not None else os.environ
     configured: List[Type[AbstractEmailProvider]] = []
     for provider_cls in EXT_EMail.providers:
+        if not issubclass(provider_cls, AbstractEmailProvider):
+            continue
         settings_cls = getattr(provider_cls, "Settings", None)
         if settings_cls is None or not isinstance(settings_cls, type):
             continue
@@ -1497,8 +1499,8 @@ class EXT_EMail(AbstractStaticExtension):
     async def send_email(cls, recipient: str, subject: str, body: str, **kwargs) -> str:
         """Send email via rotation system."""
         if cls.root:
-            return await cls.root.rotate(  # type: ignore[no-any-return]
-                AbstractEmailProvider.send_email,
+            return await cls.root.arotate(  # type: ignore[no-any-return]
+                cls.provider_call("send_email"),
                 recipient=recipient,
                 subject=subject,
                 body=body,
@@ -1512,8 +1514,8 @@ class EXT_EMail(AbstractStaticExtension):
     ) -> List[Dict[str, Any]]:
         """Get emails via rotation system."""
         if cls.root:
-            return await cls.root.rotate(  # type: ignore[no-any-return]
-                AbstractEmailProvider.get_emails,
+            return await cls.root.arotate(  # type: ignore[no-any-return]
+                cls.provider_call("get_emails"),
                 folder_name=folder_name,
                 max_emails=max_emails,
                 **kwargs,
@@ -1526,8 +1528,8 @@ class EXT_EMail(AbstractStaticExtension):
     ) -> str:
         """Create draft email via rotation system."""
         if cls.root:
-            return await cls.root.rotate(  # type: ignore[no-any-return]
-                AbstractEmailProvider.create_draft_email,
+            return await cls.root.arotate(  # type: ignore[no-any-return]
+                cls.provider_call("create_draft_email"),
                 recipient=recipient,
                 subject=subject,
                 body=body,
@@ -1541,8 +1543,8 @@ class EXT_EMail(AbstractStaticExtension):
     ) -> List[Dict[str, Any]]:
         """Search emails via rotation system."""
         if cls.root:
-            return await cls.root.rotate(  # type: ignore[no-any-return]
-                AbstractEmailProvider.search_emails,
+            return await cls.root.arotate(  # type: ignore[no-any-return]
+                cls.provider_call("search_emails"),
                 query=query,
                 folder_name=folder_name,
                 max_emails=max_emails,
@@ -1554,9 +1556,9 @@ class EXT_EMail(AbstractStaticExtension):
     async def reply_to_email(cls, email_id: str, body: str, **kwargs) -> str:
         """Reply to email via rotation system."""
         if cls.root:
-            return await cls.root.rotate(  # type: ignore[no-any-return]
-                AbstractEmailProvider.reply_to_email,
-                email_id=email_id,
+            return await cls.root.arotate(  # type: ignore[no-any-return]
+                cls.provider_call("reply_to_email"),
+                message_id=email_id,
                 body=body,
                 **kwargs,
             )
@@ -1566,8 +1568,8 @@ class EXT_EMail(AbstractStaticExtension):
     async def delete_email(cls, email_id: str, **kwargs) -> str:
         """Delete email via rotation system."""
         if cls.root:
-            return await cls.root.rotate(  # type: ignore[no-any-return]
-                AbstractEmailProvider.delete_email, email_id=email_id, **kwargs
+            return await cls.root.arotate(  # type: ignore[no-any-return]
+                cls.provider_call("delete_email"), message_id=email_id, **kwargs
             )
         return "Email extension not configured for rotation"
 
@@ -1575,8 +1577,8 @@ class EXT_EMail(AbstractStaticExtension):
     async def process_attachments(cls, email_id: str, **kwargs) -> List[Dict[str, Any]]:
         """Process email attachments via rotation system."""
         if cls.root:
-            return await cls.root.rotate(  # type: ignore[no-any-return]
-                AbstractEmailProvider.process_attachments, email_id=email_id, **kwargs
+            return await cls.root.arotate(  # type: ignore[no-any-return]
+                cls.provider_call("process_attachments"), message_id=email_id, **kwargs
             )
         return []
 
@@ -1587,44 +1589,30 @@ class EXT_EMail(AbstractStaticExtension):
         Hook to send invitation email after invitation is created.
         This demonstrates how extensions can hook into core functionality.
         """
+        from zephyrex.logic.AbstractLogicManager import _fire_and_forget
+
         try:
-            # Use the rotation system to send the email
-            if cls.root:
-                result = cls.root.rotate(
-                    provider_callback,
+            root = cls.root
+            if root is None:
+                return
+            # Sent in the background so invitation creation never waits on
+            # (or fails with) the mail provider; failover happens inside the
+            # task, attempt by attempt.
+            _fire_and_forget(
+                root.arotate(
+                    cls.provider_call("send_email"),
                     recipient=entity.email,
                     subject=f"You've been invited to {entity.invitation.team.name}",
                     body=f"""You've been invited to join {entity.invitation.team.name}.
-                    
+
                     Click here to accept: {env('FRONTEND_URL')}/accept-invitation?code={entity.invitation.code}&email={entity.email}&team={entity.invitation.team.name}
-                    
+
                     This invitation expires in 7 days.""",
                 )
-                logger.info(f"Invitation email sent to {entity.email}")
-                return result
+            )
+            logger.info(f"Invitation email queued for {entity.email}")
         except Exception as e:
-            logger.error(f"Failed to send invitation email: {e}")
-            # Don't fail the invitation creation if email fails
-            pass
-
-
-def provider_callback(provider_instance, **kwargs):
-    """
-    Callback method for provider instances.
-    This can be used to handle provider-specific logic.
-    """
-
-    from zephyrex.logic.AbstractLogicManager import _fire_and_forget
-
-    providers = EXT_EMail.providers
-    for provider in providers:
-        if provider.name.lower() == provider_instance.model_name.lower():
-            coro = provider.send_email(provider_instance, **kwargs)
-            _fire_and_forget(coro)
-
-    logger.debug(f"Provider callback called for {provider_instance.name}")
-    # Implement provider-specific logic here
-    return {"status": "success", "message": "Callback executed successfully"}
+            logger.error(f"Failed to queue invitation email: {e}")
 
 
 AbstractEmailProvider.extension = EXT_EMail

@@ -4,7 +4,7 @@ Owns the unified `metadata` table. Hooks let core BLL_Auth talk to the
 extension without importing it.
 """
 
-from typing import Any, ClassVar, Dict, List, Optional, Type
+from typing import Any, ClassVar, Dict, List, Optional
 
 from zephyrex.extensions.AbstractExtensionProvider import (
     AbstractStaticExtension,
@@ -121,12 +121,6 @@ class MetadataExtension(AbstractStaticExtension):
         "Free-form key/value metadata for users and teams (Scope #3)"
     )
     extension_dependencies: ClassVar[List[str]] = []
-
-    @classmethod
-    def models(cls) -> List[Type]:
-        from zephyrex.extensions.metadata.BLL_Metadata import MetadataModel
-
-        return [MetadataModel]
 
     @classmethod
     def on_load(cls) -> None:

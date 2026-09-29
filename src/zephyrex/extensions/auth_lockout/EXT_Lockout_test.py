@@ -15,8 +15,6 @@ import os
 os.environ.setdefault("JWT_SECRET", "x" * 32)
 os.environ.setdefault("PYTEST_CURRENT_TEST", "auth_lockout_test")
 
-import pytest
-from fastapi import HTTPException
 
 from zephyrex.extensions.auth_lockout.BLL_Lockout import (
     FailedLoginAttemptManager,
@@ -47,7 +45,7 @@ class TestExtensionLifecycle:
             BLL_Auth._lockout_hooks[k] = v
 
     def test_models_returns_failed_login_model(self):
-        assert FailedLoginAttemptModel in AuthLockoutExtension.models()
+        assert FailedLoginAttemptModel in AuthLockoutExtension.models
 
     def test_on_load_populates_every_hook(self):
         AuthLockoutExtension.on_load()

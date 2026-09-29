@@ -6,7 +6,7 @@ APP_EXTENSIONS without modifying core.
 """
 
 from datetime import datetime, timezone
-from typing import Any, ClassVar, Dict, List, Optional, Type
+from typing import Any, ClassVar, Dict, List, Optional
 
 from zephyrex.extensions.AbstractExtensionProvider import (
     AbstractStaticExtension,
@@ -204,15 +204,6 @@ class AuthInvitationsExtension(AbstractStaticExtension):
         "Team invitation workflow with role assignment (Scope #4)"
     )
     extension_dependencies: ClassVar[List[str]] = []
-
-    @classmethod
-    def models(cls) -> List[Type]:
-        from zephyrex.extensions.auth_invitations.BLL_Invitations import (
-            InvitationModel,
-            InviteeModel,
-        )
-
-        return [InvitationModel, InviteeModel]
 
     @classmethod
     def on_load(cls) -> None:

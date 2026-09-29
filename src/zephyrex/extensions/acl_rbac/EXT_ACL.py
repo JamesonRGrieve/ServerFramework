@@ -5,7 +5,7 @@ Owns the per-record ACL grant table. Hooks let core code (notably
 without importing this module directly.
 """
 
-from typing import Any, ClassVar, List, Optional, Type
+from typing import Any, ClassVar, List, Optional
 
 from zephyrex.extensions.AbstractExtensionProvider import (
     AbstractStaticExtension,
@@ -66,12 +66,6 @@ class AclRbacExtension(AbstractStaticExtension):
         "Per-record ACL with the canonical 6-verb shape (Scope #5)"
     )
     extension_dependencies: ClassVar[List[str]] = []
-
-    @classmethod
-    def models(cls) -> List[Type]:
-        from zephyrex.extensions.acl_rbac.BLL_ACL import PermissionModel
-
-        return [PermissionModel]
 
     @classmethod
     def on_load(cls) -> None:

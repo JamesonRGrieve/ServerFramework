@@ -64,7 +64,7 @@ class TestExtensionLifecycle:
             BLL_Auth._metadata_hooks[k] = v
 
     def test_models_returns_metadata_model(self):
-        assert MetadataModel in MetadataExtension.models()
+        assert MetadataModel in MetadataExtension.models
 
     def test_on_load_populates_every_hook(self):
         MetadataExtension.on_load()

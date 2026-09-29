@@ -121,7 +121,7 @@ class TestExtensionLifecycle:
             BLL_Auth._acl_hooks[k] = v
 
     def test_models_returns_permission_model(self):
-        assert PermissionModel in AclRbacExtension.models()
+        assert PermissionModel in AclRbacExtension.models
 
     def test_on_load_populates_every_hook(self):
         AclRbacExtension.on_load()

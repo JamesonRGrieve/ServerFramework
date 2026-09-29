@@ -4,7 +4,7 @@ Registers the `FailedLoginAttempt` model and wires `UserManager.login` hooks
 that consult the per-user threshold + record failures into the durable table.
 """
 
-from typing import ClassVar, List, Type
+from typing import ClassVar, List
 
 from zephyrex.extensions.AbstractExtensionProvider import (
     AbstractStaticExtension,
@@ -41,14 +41,6 @@ class AuthLockoutExtension(AbstractStaticExtension):
         "Persisted failed-login records and per-user lockout policy"
     )
     extension_dependencies: ClassVar[List[str]] = []
-
-    @classmethod
-    def models(cls) -> List[Type]:
-        from zephyrex.extensions.auth_lockout.BLL_Lockout import (
-            FailedLoginAttemptModel,
-        )
-
-        return [FailedLoginAttemptModel]
 
     @classmethod
     def on_load(cls) -> None:

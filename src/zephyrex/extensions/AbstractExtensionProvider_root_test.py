@@ -61,6 +61,36 @@ def test_root_is_rebuilt_when_a_different_registry_is_attached(email_registry):
     assert root.model_registry is email_registry
 
 
+@pytest.fixture
+def configured_email_registry(isolated_extension_server, monkeypatch):
+    """An email app whose SendGrid provider is configured, so the seeders
+    create its root instance and link it into Root_Email."""
+    monkeypatch.setenv("SENDGRID_API_KEY", "SG.test-key")
+    monkeypatch.setenv("SENDGRID_FROM_EMAIL", "noreply@example.com")
+    isolated_extension_server("email")
+    EXT_EMail._root_rotation_cache = None
+    yield ModelRegistry.attached()
+    EXT_EMail._root_rotation_cache = None
+
+
+def test_rotation_reaches_the_concrete_provider(configured_email_registry):
+    """Rotations used to receive abstract base methods (running the stub,
+    not the provider) or, for async abilities, un-awaited coroutines that
+    bypassed failover. provider_call resolves each rotated instance to its
+    concrete provider class, and arotate awaits the result inside the
+    attempt."""
+    import asyncio
+
+    root = EXT_EMail.root
+    assert root is not None
+
+    result = asyncio.run(
+        root.arotate(EXT_EMail.provider_call("get_platform_name", pass_instance=False))
+    )
+
+    assert result == "SendGrid"
+
+
 def test_root_is_none_for_an_extension_with_no_root_rotation(email_registry):
     from zephyrex.extensions.metadata.EXT_Metadata import MetadataExtension
 

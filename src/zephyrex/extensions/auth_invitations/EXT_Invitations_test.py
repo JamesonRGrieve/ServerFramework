@@ -68,7 +68,7 @@ class TestExtensionLifecycle:
             BLL_Auth._invitation_hooks[k] = v
 
     def test_models_lists_invitation_and_invitee(self):
-        models = AuthInvitationsExtension.models()
+        models = AuthInvitationsExtension.models
         assert InvitationModel in models
         assert InviteeModel in models
 

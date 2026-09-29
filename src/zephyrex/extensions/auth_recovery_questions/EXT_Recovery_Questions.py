@@ -1,6 +1,6 @@
 """auth_recovery_questions extension definition."""
 
-from typing import ClassVar, List, Type
+from typing import ClassVar, List
 
 from zephyrex.extensions.AbstractExtensionProvider import (
     AbstractStaticExtension,
@@ -13,14 +13,6 @@ class AuthRecoveryQuestionsExtension(AbstractStaticExtension):
         "Per-user security questions for account recovery (extracted from core)"
     )
     extension_dependencies: ClassVar[List[str]] = []
-
-    @classmethod
-    def models(cls) -> List[Type]:
-        from zephyrex.extensions.auth_recovery_questions.BLL_Recovery_Questions import (
-            UserRecoveryQuestionModel,
-        )
-
-        return [UserRecoveryQuestionModel]
 
     @classmethod
     def on_initialize(cls) -> bool:

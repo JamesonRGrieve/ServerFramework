@@ -13,7 +13,7 @@ now lives in the separate ``auth_oauth2_server`` extension. Opt-in via
 ``APP_EXTENSIONS``; not loaded by default.
 """
 
-from typing import ClassVar, List, Type
+from typing import ClassVar, List
 
 from zephyrex.extensions.AbstractExtensionProvider import AbstractStaticExtension
 
@@ -26,13 +26,3 @@ class EXT_Auth_OAuth2Client(AbstractStaticExtension):
         "to a user account (connect / callback / disconnect)"
     )
     extension_dependencies: ClassVar[List[str]] = []
-
-    @classmethod
-    def models(cls) -> List[Type]:
-        from zephyrex.extensions.auth_oauth2_client.BLL_Auth_OAuth2Client import (
-            OAuthExternalScopeModel,
-            OAuthProviderModel,
-            UserOAuthModel,
-        )
-
-        return [UserOAuthModel, OAuthProviderModel, OAuthExternalScopeModel]

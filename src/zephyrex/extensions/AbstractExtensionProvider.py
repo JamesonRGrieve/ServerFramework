@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from inspect import getmembers, isfunction
 from time import monotonic
+from types import ModuleType
 from typing import Any, Callable, ClassVar, Dict, List, Optional, Set, Tuple, Type
 
 from fastapi import APIRouter, HTTPException, status
@@ -158,10 +159,8 @@ class ExtensionRegistry(AbstractRegistry):
         extensions_path: Optional[str] = None,
     ):
         import glob
-        import importlib
         import inspect
         import os
-        import sys
 
         from zephyrex.lib.Logging import logger
 
@@ -339,7 +338,6 @@ class ExtensionRegistry(AbstractRegistry):
 
     def register_extension(self, extension_class: Type["AbstractStaticExtension"]):
         """Register a static extension class and automatically handle recursive dependencies."""
-        import inspect
 
         from zephyrex.lib.Logging import logger
 
@@ -394,10 +392,8 @@ class ExtensionRegistry(AbstractRegistry):
     def _register_dependencies(self, extension_class: Type["AbstractStaticExtension"]):
         """Recursively register all dependencies of an extension."""
         import glob
-        import importlib
         import inspect
         import os
-        import sys
 
         from zephyrex.lib.Dependencies import EXT_Dependency
         from zephyrex.lib.Logging import logger
@@ -494,9 +490,7 @@ class ExtensionRegistry(AbstractRegistry):
     def discover_extension_models(self, extension_names: List[str]):
         """Discover and register extension models from the specified extensions, filtering by extension type."""
         import glob
-        import importlib
         import os
-        import sys
 
         from zephyrex.extensions.ExtensionLoader import load_extension_module
         from zephyrex.lib.Logging import logger
@@ -658,7 +652,7 @@ class ExtensionRegistry(AbstractRegistry):
         Returns:
             bool: True if all optional extension dependencies are satisfied
         """
-        from zephyrex.lib.Dependencies import Dependencies, EXT_Dependency
+        from zephyrex.lib.Dependencies import Dependencies
 
         # Get dependencies from the extension
         dependencies = getattr(extension_class, "dependencies", None)
@@ -750,7 +744,6 @@ class ExtensionRegistry(AbstractRegistry):
             Dict mapping dependency names to installation success status
         """
         import importlib
-        import os
 
         from zephyrex.lib.Dependencies import Dependencies
         from zephyrex.lib.Logging import logger
@@ -1430,16 +1423,21 @@ class AbstractStaticExtension(
     Discovery and functionality should be accessible through class methods.
 
     Example usage for system tasks:
-        # Send MFA email using the email extension's root rotation
-        EXT_Email.root.rotate(EXT_Email.send_email)
+        # Send an email through the email extension's root rotation: each
+        # attempt calls send_email on the concrete provider serving that
+        # provider instance, failing over to the next on error.
+        await EXT_EMail.root.arotate(
+            EXT_EMail.provider_call("send_email"),
+            recipient="user@example.com", subject="Hi", body="...",
+        )
 
-        # The send_email method would be implemented as:
-        @staticmethod
-        def send_email(provider_instance):
-            # provider_instance is a ProviderInstanceModel with api_key, model_name, etc.
-            # Use provider_instance.api_key, provider_instance.model_name for configuration
-            # Access settings via provider_instance.setting manager if needed
-            pass
+        # Providers implement it taking the rotated ProviderInstanceModel:
+        @classmethod
+        async def send_email(cls, provider_instance, recipient, subject, body):
+            ...
+
+    Use ``root.rotate`` only for synchronous callables; an async callable
+    under ``rotate`` would bypass failover.
     """
 
     # Extension metadata (class attributes)
@@ -1502,98 +1500,73 @@ class AbstractStaticExtension(
         # Discover and register hooks from this class
         cls._discover_static_hooks()
 
-    _providers: ClassVar[List[Type]] = []
+    _providers: ClassVar[List[Type[AbstractStaticProvider]]] = []
+
+    @classmethod
+    def _load_component_modules(cls, prefix: str) -> Tuple[List[ModuleType], bool]:
+        """Load this extension's ``{prefix}*.py`` modules (tests excluded).
+
+        Returns the modules and whether the scan is partial: a module still
+        mid-import (discovery triggered re-entrantly by a module-level import)
+        exposes only the classes defined above its current import point, so it
+        is skipped and the caller must not cache the result.
+        """
+        import glob
+        import os
+
+        from zephyrex.extensions.ExtensionLoader import load_extension_module
+
+        # Through Paths so a global ``set_extensions_root`` override is honored.
+        extensions_root = _resolve_extensions_dir()
+        pattern = os.path.join(extensions_root, cls.name, f"{prefix}*.py")
+        modules: List[ModuleType] = []
+        partial = False
+        for path in sorted(glob.glob(pattern)):
+            if path.endswith("_test.py"):
+                continue
+            module_name = os.path.basename(path)[: -len(".py")]
+            try:
+                module = load_extension_module(extensions_root, cls.name, module_name)
+            except Exception as e:
+                logger.error(f"Failed to import extension module {module_name}: {e}")
+                continue
+            spec = getattr(module, "__spec__", None)
+            if spec is not None and getattr(spec, "_initializing", False):
+                partial = True
+                continue
+            modules.append(module)
+        return modules, partial
 
     @classproperty
-    def providers(cls) -> List[Type]:
-        """
-        Auto-discover all providers in this extension's folder.
-        Cached after first access.
-        """
-        if not cls._providers:
-            import glob
-            import importlib
-            import inspect
-            import os
+    @classmethod
+    def providers(cls) -> List[Type[AbstractStaticProvider]]:
+        """The provider classes defined in this extension's PRV_ modules.
+        Cached after the first complete scan."""
+        # This class's own cache only; an inherited one lists a base class's
+        # providers.
+        cached: List[Type[AbstractStaticProvider]] = cls.__dict__.get("_providers", [])
+        if cached:
+            return cached
 
-            from zephyrex.extensions.ExtensionLoader import load_extension_module
+        import inspect
 
-            providers = []
-            # Set when a PRV_ module is observed mid-import (its ``.providers``
-            # was read re-entrantly). The result is then returned but NOT cached
-            # so the next access recomputes it once every module has finished.
-            partial = False
-
-            # Get extension directory through Paths so a global
-            # ``set_extensions_root`` override is honored.
-            extensions_root = _resolve_extensions_dir()
-            extension_dir = os.path.join(extensions_root, cls.name)
-            extension_scope = f"zephyrex.extensions.{cls.name}"
-
-            # Find all PRV files
-            prv_files = glob.glob(os.path.join(extension_dir, "PRV_*.py"))
-
-            for prv_file in prv_files:
-                if prv_file.endswith("_test.py"):
-                    continue
-                module_name = os.path.basename(prv_file)[:-3]  # Remove .py
-                try:
-                    # Item 61: load via spec_from_file_location for
-                    # out-of-tree compatibility.
-                    module = load_extension_module(
-                        extensions_root, cls.name, module_name
-                    )
-
-                    # A module still mid-import (e.g. discovery was triggered
-                    # re-entrantly by an EXT_* module-level import evaluating
-                    # this classproperty) exposes only the classes defined above
-                    # its current import point — scanning it now would silently
-                    # drop the provider it defines lower down. Skip it and flag
-                    # the result incomplete so it is not cached.
-                    _spec = getattr(module, "__spec__", None)
-                    if _spec is not None and getattr(_spec, "_initializing", False):
-                        partial = True
-                        continue
-
-                    # Find provider classes in the module
-                    for name, obj in inspect.getmembers(module, inspect.isclass):
-                        # Check if it's a provider class (inherits from AbstractStaticProvider)
-                        if obj.__module__ == module.__name__:
-                            try:
-                                from zephyrex.extensions.AbstractExtensionProvider import (
-                                    AbstractStaticProvider,
-                                )
-
-                                if (
-                                    issubclass(obj, AbstractStaticProvider)
-                                    and obj != AbstractStaticProvider
-                                ):
-                                    providers.append(obj)
-                            except TypeError as e:
-                                # `issubclass` raises TypeError when `obj` is
-                                # not a class (e.g. instance/value attribute).
-                                logger.debug(
-                                    "provider discovery: %r failed issubclass check (%s); "
-                                    "falling back to _is_provider attribute",
-                                    obj,
-                                    e,
-                                )
-                                # Also check for _is_provider attribute as fallback
-                                if hasattr(obj, "_is_provider") and obj._is_provider:
-                                    providers.append(obj)
-                except Exception as e:
-                    logger.error(f"Failed to import provider module {module_name}: {e}")
-
-            if partial:
-                # Do not cache an incomplete scan; recompute on next access.
-                return providers
+        modules, partial = cls._load_component_modules("PRV_")
+        providers: List[Type[AbstractStaticProvider]] = [
+            obj
+            for module in modules
+            for _, obj in inspect.getmembers(module, inspect.isclass)
+            if obj.__module__ == module.__name__
+            and issubclass(obj, AbstractStaticProvider)
+            and obj is not AbstractStaticProvider
+        ]
+        if not partial:
             cls._providers = providers
-
-        return cls._providers
+        return providers
 
     _root_rotation_cache: ClassVar[Optional[RotationManager]] = None
 
     @classproperty
+    @classmethod
     def root(cls) -> Optional[RotationManager]:
         """The RotationManager targeting this extension's root rotation.
 
@@ -1708,9 +1681,10 @@ class AbstractStaticExtension(
 
     # ability decorator has been moved to module level
 
-    _types_cache: Optional[Set[ExtensionType]] = None
+    _types_cache: ClassVar[Optional[Set[ExtensionType]]] = None
 
     @classproperty
+    @classmethod
     def types(cls) -> Set[ExtensionType]:
         """
         Get the types of this extension based on its components.
@@ -1719,17 +1693,18 @@ class AbstractStaticExtension(
         Returns:
             Set of ExtensionType enums
         """
-        if cls._types_cache is not None:
-            return cls._types_cache
+        # This class's own cache only; see ``models``.
+        cached: Optional[Set[ExtensionType]] = cls.__dict__.get("_types_cache")
+        if cached is not None:
+            return cached
 
-        types = set()
+        types: Set[ExtensionType] = set()
 
         import glob
         import os
 
         # Get extension directory through Paths so a global
         # ``set_extensions_root`` override is honored.
-        src_dir = _resolve_src_dir()
         extension_dir = os.path.join(_resolve_extensions_dir(), cls.name)
 
         # Check for endpoints
@@ -1796,86 +1771,106 @@ class AbstractStaticExtension(
         cls._types_cache = types
         return types
 
-    _models_cache: Optional[Set[Type]] = None
+    _models_cache: ClassVar[Optional[Set[Type]]] = None
 
     @classproperty
+    @classmethod
     def models(cls) -> Set[Type]:
-        """
-        Get all core models (BLL with DatabaseMixin and external) for this extension.
-        Cached after first access.
+        """The models this extension contributes: the tables its BLL_ modules
+        define and the external models its PRV_ modules define. Cached after
+        the first complete scan."""
+        # This class's own cache only; an inherited one lists a base class's
+        # models.
+        cached: Optional[Set[Type]] = cls.__dict__.get("_models_cache")
+        if cached is not None:
+            return cached
 
-        Returns:
-            Set of model classes from BLL files (with DatabaseMixin) and external models from PRV files
-        """
-        if cls._models_cache is not None:
-            return cls._models_cache
-
-        models = set()
-
-        import glob
-        import importlib
         import inspect
-        import os
 
-        from zephyrex.extensions.ExtensionLoader import load_extension_module
+        from zephyrex.extensions.AbstractExternalModel import AbstractExternalModel
+        from zephyrex.pydantic2.sqlalchemy.mixins import DatabaseMixin
 
-        src_dir = _resolve_src_dir()
-        extensions_root = _resolve_extensions_dir()
-        extension_dir = os.path.join(extensions_root, cls.name)
-        extension_scope = f"zephyrex.extensions.{cls.name}"
+        models: Set[Type] = set()
+        bll_modules, bll_partial = cls._load_component_modules("BLL_")
+        for module in bll_modules:
+            for _, obj in inspect.getmembers(module, inspect.isclass):
+                # @extension_model classes add fields to another extension's
+                # table rather than defining one.
+                if (
+                    obj.__module__ == module.__name__
+                    and issubclass(obj, DatabaseMixin)
+                    and not getattr(obj, "_is_extension_model", False)
+                ):
+                    models.add(obj)
 
-        for bll_file in glob.glob(os.path.join(extension_dir, "BLL_*.py")):
-            module_name = os.path.basename(bll_file)[:-3]  # Remove .py
-            try:
-                # Item 61: out-of-tree-compatible loader.
-                module = load_extension_module(extensions_root, cls.name, module_name)
-                for name, obj in inspect.getmembers(module, inspect.isclass):
-                    # Check if it's a BLL model with DatabaseMixin (has .DB property)
-                    if (
-                        hasattr(obj, "DB")
-                        and obj.__module__ == module.__name__
-                        and hasattr(obj.DB, "__tablename__")
-                    ):
-                        models.add(obj)
-            except Exception as e:
-                logger.debug(f"Failed to import {module_name}: {e}")
+        prv_modules, prv_partial = cls._load_component_modules("PRV_")
+        for module in prv_modules:
+            for _, obj in inspect.getmembers(module, inspect.isclass):
+                if getattr(obj, "_is_extension_model", False) or (
+                    obj.__module__ == module.__name__
+                    and issubclass(obj, AbstractExternalModel)
+                    and not inspect.isabstract(obj)
+                ):
+                    models.add(obj)
 
-        for prv_file in glob.glob(os.path.join(extension_dir, "PRV_*.py")):
-            module_name = os.path.basename(prv_file)[:-3]  # Remove .py
-            try:
-                # Item 61: out-of-tree-compatible loader.
-                module = load_extension_module(extensions_root, cls.name, module_name)
-                for name, obj in inspect.getmembers(module, inspect.isclass):
-                    # Check if it's an external model
-                    if hasattr(obj, "_is_extension_model") and obj._is_extension_model:
-                        models.add(obj)
-                    # Also check if it inherits from AbstractExternalModel
-                    elif obj.__module__ == module.__name__:
-                        try:
-                            from zephyrex.extensions.AbstractExternalModel import (
-                                AbstractExternalModel,
-                            )
-
-                            # Only add concrete subclasses, not the abstract base class itself
-                            if (
-                                issubclass(obj, AbstractExternalModel)
-                                and obj is not AbstractExternalModel
-                                and not inspect.isabstract(obj)
-                            ):
-                                models.add(obj)
-                        except TypeError as e:
-                            # `issubclass` raises TypeError on non-class objects.
-                            logger.debug(
-                                "model discovery: %r failed external-model "
-                                "subclass check: %s",
-                                obj,
-                                e,
-                            )
-            except Exception as e:
-                logger.debug(f"Failed to import {module_name}: {e}")
-
-        cls._models_cache = models
+        if not (bll_partial or prv_partial):
+            cls._models_cache = models
         return models
+
+    @classmethod
+    def provider_class_for(
+        cls, provider_instance: ProviderInstanceModel
+    ) -> Type["AbstractStaticProvider"]:
+        """The provider class (among this extension's providers) that serves
+        ``provider_instance``, matched through its Provider row's name.
+
+        Raises LookupError when no provider of this extension serves it; in a
+        rotation that advances to the next provider instance.
+        """
+        from zephyrex.logic.BLL_Providers import ProviderModel, _resolve_provider_name
+        from zephyrex.pydantic2.registry import ModelRegistry
+
+        registry = ModelRegistry.attached()
+        if registry is None:
+            raise LookupError("No app registry attached to resolve providers")
+        provider = ProviderModel.DB(registry.DB.manager.Base).get(
+            requester_id=env("ROOT_ID"),
+            model_registry=registry,
+            return_type="dto",
+            override_dto=ProviderModel,
+            id=provider_instance.provider_id,
+        )
+        if provider is not None:
+            for candidate in cls.providers:
+                if _resolve_provider_name(candidate) == provider.name:
+                    return candidate
+        raise LookupError(
+            f"{cls.__name__} has no provider serving instance {provider_instance.id}"
+        )
+
+    @classmethod
+    def provider_call(
+        cls, method_name: str, *, pass_instance: bool = True
+    ) -> Callable[..., Any]:
+        """A rotation callable that invokes ``method_name`` on the concrete
+        provider class serving each rotated instance.
+
+        Passing an abstract base method (``AbstractEmailProvider.send_email``)
+        to a rotation would run the abstract stub, not the provider's
+        implementation. ``pass_instance=False`` is for providers whose methods
+        are configured from the environment and take no instance.
+        """
+
+        def call(
+            provider_instance: ProviderInstanceModel, *args: Any, **kwargs: Any
+        ) -> Any:
+            method = getattr(cls.provider_class_for(provider_instance), method_name)
+            if pass_instance:
+                return method(provider_instance, *args, **kwargs)
+            return method(*args, **kwargs)
+
+        call.__name__ = method_name
+        return call
 
     @classmethod
     def get_rotation_provider_instances_seed_data(cls) -> List[Dict[str, Any]]:

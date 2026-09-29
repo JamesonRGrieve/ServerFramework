@@ -27,6 +27,7 @@ from zephyrex.extensions.database.EXT_Database import (
     EXT_Database,
 )
 from zephyrex.extensions.database.PRV_Fake_Database import PRV_Fake_Database
+from zephyrex.pydantic2.registry import classproperty
 
 
 class ConcreteDatabaseProvider(AbstractDatabaseExtensionProvider):
@@ -92,87 +93,30 @@ def _reset_fake_provider():
     PRV_Fake_Database.reset()
 
 
-def _install_provider_list(provider_list):
-    """Install a real provider list on EXT_Database via a descriptor shim.
-
-    EXT_Database has a `classproperty` named ``providers`` (no-arg
-    accessor) but several call sites within the framework call it as
-    ``cls.providers()``. To make tests robust against both shapes without
-    modifying EXT_Database (parallel agent scope), install a real
-    callable-descriptor that returns the list whether the consumer calls
-    it as a property or as a function.
-
-    Returns the original descriptor so the fixture can restore it. This
-    is **not a mock** — it's a small real class that satisfies both
-    access patterns.
-    """
-
-    class _CallableList(list):
-        def __call__(self):  # noqa: D401 - small real callable
-            return list(self)
-
-    real_list = _CallableList(provider_list)
-
-    class _Descriptor:
-        def __get__(self, _instance, _owner):
-            return real_list
-
-        def __set__(self, _instance, value):
-            real_list[:] = list(value)
-
-    original = type(EXT_Database).__dict__.get("providers")
-    type(EXT_Database).providers = _Descriptor()  # type: ignore[attr-defined]
-    return original
-
-
-def _restore_provider_descriptor(original):
-    if original is None:
-        try:
-            del type(EXT_Database).providers
-        except AttributeError:
-            pass
-    else:
-        type(EXT_Database).providers = original  # type: ignore[attr-defined]
+def _use_providers(monkeypatch, provider_list):
+    """Make ``EXT_Database.providers`` return exactly ``provider_list``
+    instead of scanning the extension directory."""
+    monkeypatch.setattr(
+        EXT_Database, "providers", classproperty(lambda _cls: list(provider_list))
+    )
 
 
 @pytest.fixture
-def fake_only_providers():
+def fake_only_providers(monkeypatch):
     """Install [PRV_Fake_Database] as the active provider list (real, not mocked)."""
-    original_cache = EXT_Database._providers
-    EXT_Database._providers = [PRV_Fake_Database]
-    original_descriptor = _install_provider_list([PRV_Fake_Database])
-    try:
-        yield
-    finally:
-        _restore_provider_descriptor(original_descriptor)
-        EXT_Database._providers = original_cache
+    _use_providers(monkeypatch, [PRV_Fake_Database])
 
 
 @pytest.fixture
-def both_providers():
+def both_providers(monkeypatch):
     """Install both real fake providers as the active provider list."""
-    original_cache = EXT_Database._providers
-    providers_list = [PRV_Fake_Database, ConcreteDatabaseProvider]
-    EXT_Database._providers = list(providers_list)
-    original_descriptor = _install_provider_list(providers_list)
-    try:
-        yield
-    finally:
-        _restore_provider_descriptor(original_descriptor)
-        EXT_Database._providers = original_cache
+    _use_providers(monkeypatch, [PRV_Fake_Database, ConcreteDatabaseProvider])
 
 
 @pytest.fixture
-def no_providers():
+def no_providers(monkeypatch):
     """Install an empty provider list."""
-    original_cache = EXT_Database._providers
-    EXT_Database._providers = []
-    original_descriptor = _install_provider_list([])
-    try:
-        yield
-    finally:
-        _restore_provider_descriptor(original_descriptor)
-        EXT_Database._providers = original_cache
+    _use_providers(monkeypatch, [])
 
 
 class TestEXTDatabase(ExtensionServerMixin):

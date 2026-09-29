@@ -1,6 +1,8 @@
 from abc import abstractmethod
 from typing import Any, ClassVar, Dict, List, Optional, Set, Type
 
+from fastapi import HTTPException
+
 from zephyrex.extensions.AbstractExtensionProvider import (
     AbstractStaticExtension,
     AbstractStaticProvider,
@@ -155,11 +157,8 @@ class EXT_Database(AbstractStaticExtension):
     - Integration with multiple database providers via rotation system
 
     Usage:
-        # Execute SQL using rotation system
-        result = await EXT_Database.root.rotate(
-            EXT_Database.execute_sql,
-            query="SELECT * FROM users"
-        )
+        # Executes on the first healthy provider of the root rotation
+        result = await EXT_Database.execute_sql("SELECT * FROM users")
     """
 
     # Extension metadata (class attributes)
@@ -169,9 +168,6 @@ class EXT_Database(AbstractStaticExtension):
     description: ClassVar[str] = (
         "Database extension providing comprehensive database connectivity via Provider Rotation System"
     )
-
-    # Provider discovery - cache for providers
-    _providers: ClassVar[List[Type]] = []
 
     # Environment variables exposed by the extension
     _env: ClassVar[Dict[str, Any]] = {
@@ -265,18 +261,6 @@ class EXT_Database(AbstractStaticExtension):
         "vector": ["postgres", "postgresql"],  # Postgres with pgvector extension
     }
 
-    @classproperty
-    def providers(cls) -> List[Type]:
-        """
-        Auto-discover all database providers in this extension's folder.
-        Cached after first access.
-        """
-        if not cls._providers:
-            # Use parent class's provider discovery implementation
-            # This replaces the deprecated scoped_import usage
-            cls._providers = super().providers
-        return cls._providers
-
     @classmethod
     def get_default_port(cls, database_type: str) -> int:
         """
@@ -303,7 +287,7 @@ class EXT_Database(AbstractStaticExtension):
         abilities = cls._abilities.copy()
 
         # Add provider-specific abilities
-        for provider_class in cls.providers():
+        for provider_class in cls.providers:
             if hasattr(provider_class, "_abilities"):
                 abilities.update(provider_class._abilities)
 
@@ -315,57 +299,49 @@ class EXT_Database(AbstractStaticExtension):
         return ability in cls.get_abilities()
 
     @classmethod
+    async def _rotate_provider(cls, method_name: str, *args: Any, **kwargs: Any) -> Any:
+        """Run ``method_name`` on the provider serving each rotated instance,
+        with failover. Database providers are configured from the
+        environment, so their methods take no instance argument."""
+        root = cls.root
+        if root is None:
+            raise HTTPException(
+                status_code=503, detail="No database provider is configured"
+            )
+        return await root.arotate(
+            cls.provider_call(method_name, pass_instance=False), *args, **kwargs
+        )
+
+    @classmethod
     @ability("execute_sql")
     async def execute_sql(cls, query: str, **kwargs) -> str:
-        """
-        Execute a custom SQL query in the database.
-        Uses provider rotation for failover.
-        """
-        return await cls.root.rotate(  # type: ignore[no-any-return]
-            lambda provider: provider.execute_sql(query, **kwargs)
-        )
+        """Execute a custom SQL query in the database, with provider failover."""
+        return str(await cls._rotate_provider("execute_sql", query, **kwargs))
 
     @classmethod
     @ability("get_schema")
     async def get_schema(cls, **kwargs) -> str:
-        """
-        Get the schema of the database.
-        Uses provider rotation for failover.
-        """
-        return await cls.root.rotate(lambda provider: provider.get_schema(**kwargs))  # type: ignore[no-any-return]
+        """Get the schema of the database, with provider failover."""
+        return str(await cls._rotate_provider("get_schema", **kwargs))
 
     @classmethod
     @ability("chat_with_db")
     async def chat_with_db(cls, request: str, **kwargs) -> str:
-        """
-        Chat with the database using natural language query.
-        Uses provider rotation for failover.
-        """
-        return await cls.root.rotate(  # type: ignore[no-any-return]
-            lambda provider: provider.chat_with_db(request, **kwargs)
-        )
+        """Chat with the database in natural language, with provider failover."""
+        return str(await cls._rotate_provider("chat_with_db", request, **kwargs))
 
     @classmethod
     @ability("execute_query")
     async def execute_query(cls, query: str, **kwargs) -> str:
-        """
-        Execute a database-specific query (e.g., InfluxQL, Flux, MongoDB query).
-        Uses provider rotation for failover.
-        """
-        return await cls.root.rotate(  # type: ignore[no-any-return]
-            lambda provider: provider.execute_query(query, **kwargs)
-        )
+        """Execute a database-specific query (e.g. InfluxQL, Flux, MongoDB),
+        with provider failover."""
+        return str(await cls._rotate_provider("execute_query", query, **kwargs))
 
     @classmethod
     @ability("write_data")
     async def write_data(cls, data: str, **kwargs) -> str:
-        """
-        Write data to the database (for time-series databases like InfluxDB).
-        Uses provider rotation for failover.
-        """
-        return await cls.root.rotate(  # type: ignore[no-any-return]
-            lambda provider: provider.write_data(data, **kwargs)
-        )
+        """Write data (e.g. to a time-series database), with provider failover."""
+        return str(await cls._rotate_provider("write_data", data, **kwargs))
 
     @classmethod
     def get_database_classifications(
@@ -388,7 +364,7 @@ class EXT_Database(AbstractStaticExtension):
     def get_provider_names(cls) -> Set[str]:
         """Return available database provider names."""
         provider_names = set()
-        for provider_class in cls.providers():
+        for provider_class in cls.providers:
             if hasattr(provider_class, "name"):
                 provider_names.add(provider_class.name)
         return provider_names
@@ -399,14 +375,6 @@ class EXT_Database(AbstractStaticExtension):
         Called during application startup.
         """
         logger.debug("Database extension startup hook called")
-
-        # Import the BLL hooks module to register them
-        try:
-            from zephyrex.extensions.database import BLL_Database
-
-            logger.debug("Database extension seed injection hooks registered")
-        except ImportError:
-            logger.debug("No BLL_Database hooks module found")
 
     @classmethod
     def on_shutdown(cls):
@@ -423,11 +391,11 @@ class EXT_Database(AbstractStaticExtension):
         issues = []
 
         # Check if any provider is available
-        if not cls.providers():
+        if not cls.providers:
             issues.append("No database providers available")
 
         # Validate provider-specific configurations
-        for provider_class in cls.providers():
+        for provider_class in cls.providers:
             if hasattr(provider_class, "validate_config"):
                 provider_issues = provider_class.validate_config()
                 if provider_issues:
@@ -596,7 +564,7 @@ class EXT_Database(AbstractStaticExtension):
 
         try:
             # Check each configured provider
-            for provider_class in cls.providers():
+            for provider_class in cls.providers:
                 provider_name = getattr(provider_class, "name", "Unknown")
 
                 try:

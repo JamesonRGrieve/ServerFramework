@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Tests for ExtensionLoader (Item 61)."""
 
 from __future__ import annotations
@@ -32,8 +33,12 @@ def out_of_tree_extension(tmp_path: Path) -> Path:
 
 
 def _cleanup(extension_name: str, file_stem: str) -> None:
+    import zephyrex.extensions
+
     sys.modules.pop(f"zephyrex_ext_{extension_name}_{file_stem}", None)
     sys.modules.pop(f"zephyrex.extensions.{extension_name}.{file_stem}", None)
+    sys.modules.pop(f"zephyrex.extensions.{extension_name}", None)
+    vars(zephyrex.extensions).pop(extension_name, None)
 
 
 def test_load_extension_module_registers_under_both_names(out_of_tree_extension):
@@ -47,6 +52,21 @@ def test_load_extension_module_registers_under_both_names(out_of_tree_extension)
             sys.modules["zephyrex_ext_fakeext_BLL_Fake"]
             is sys.modules["zephyrex.extensions.fakeext.BLL_Fake"]
         )
+    finally:
+        _cleanup("fakeext", "BLL_Fake")
+
+
+def test_loaded_module_is_importable_by_its_dotted_name(out_of_tree_extension):
+    """``import zephyrex.extensions.<ext>.<file> as m`` resolves through the
+    parent packages' attributes; a leaf registered only in sys.modules made
+    that statement fail with "cannot import name '<ext>'"."""
+    _cleanup("fakeext", "BLL_Fake")
+    try:
+        mod = load_extension_module(out_of_tree_extension, "fakeext", "BLL_Fake")
+
+        import zephyrex.extensions.fakeext.BLL_Fake as imported
+
+        assert imported is mod
     finally:
         _cleanup("fakeext", "BLL_Fake")
 

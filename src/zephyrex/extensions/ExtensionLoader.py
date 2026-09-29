@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Helper for loading extension modules from arbitrary filesystem locations.
 
 Item 61 (out-of-tree extension import support).
@@ -41,6 +42,32 @@ def _synthesized_name(extension_name: str, file_stem: str) -> str:
 def _legacy_name(extension_name: str, file_stem: str) -> str:
     """Return the package-style name used by intra-extension imports."""
     return f"zephyrex.extensions.{extension_name}.{file_stem}"
+
+
+def _extension_package(extension_name: str, extension_dir: Path) -> ModuleType:
+    """The ``zephyrex.extensions.<extension>`` package, bound on its parent.
+
+    ``import zephyrex.extensions.<ext>.<file> as m`` resolves each dotted
+    segment as an attribute of the one before it, so a module registered only
+    in ``sys.modules`` is unreachable that way. Bundled extensions import
+    their real package; an out-of-tree one gets a package over its directory.
+    """
+    import zephyrex.extensions
+
+    name = f"zephyrex.extensions.{extension_name}"
+    package = sys.modules.get(name)
+    if package is None:
+        try:
+            package = importlib.import_module(name)
+        except ModuleNotFoundError as e:
+            if e.name != name:
+                raise
+            package = ModuleType(name)
+            package.__path__ = [str(extension_dir)]
+            package.__package__ = name
+            sys.modules[name] = package
+    setattr(zephyrex.extensions, extension_name, package)
+    return package
 
 
 def load_extension_module(
@@ -107,6 +134,7 @@ def load_extension_module(
             f"(extension={extension_name!r}, file_stem={file_stem!r})"
         )
 
+    package = _extension_package(extension_name, file_path.parent)
     module = importlib.util.module_from_spec(spec)
     # Register under BOTH names BEFORE exec_module so that any intra-extension
     # import inside the module body resolves against this same instance rather
@@ -123,6 +151,7 @@ def load_extension_module(
         sys.modules.pop(legacy, None)
         raise
 
+    setattr(package, file_stem, module)
     return module
 
 

@@ -7,7 +7,7 @@ wires the four ``_session_hooks`` consumed by core ``UserManager``:
 core JWTs are stateless and the per-user "sessions" surface is absent.
 """
 
-from typing import ClassVar, List, Type
+from typing import ClassVar, List
 
 from zephyrex.extensions.AbstractExtensionProvider import (
     AbstractStaticExtension,
@@ -21,14 +21,6 @@ class AuthSessionExtension(AbstractStaticExtension):
         "device-pairing pending-state."
     )
     extension_dependencies: ClassVar[List[str]] = []
-
-    @classmethod
-    def models(cls) -> List[Type]:
-        from zephyrex.extensions.auth_session.BLL_Session import (
-            SessionModel,
-        )
-
-        return [SessionModel]
 
     @classmethod
     def on_load(cls) -> None:

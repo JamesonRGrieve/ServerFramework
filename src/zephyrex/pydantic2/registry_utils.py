@@ -1,15 +1,19 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 import inspect
 import json
 from datetime import date, datetime, time
 from enum import Enum
 from typing import (
     Any,
+    Callable,
     Dict,
+    Generic,
     List,
     Optional,
     Set,
     Tuple,
     Type,
+    TypeVar,
     Union,
     get_args,
     get_origin,
@@ -38,12 +42,23 @@ from zephyrex.pydantic2.util import (
     reference_relationship_name,
 )
 
+_T = TypeVar("_T")
 
-class classproperty:
-    def __init__(self, func):
+
+class classproperty(Generic[_T]):
+    """A read-only property computed from the class it is accessed on.
+
+    Wrap a ``classmethod`` when the body writes class attributes: type
+    checkers read a bare function's first parameter as an instance, so
+    assigning a ``ClassVar`` through it is rejected.
+    """
+
+    def __init__(self, func: "classmethod[Any, [], _T] | Callable[[Any], _T]") -> None:
         self.func = func
 
-    def __get__(self, instance, owner):
+    def __get__(self, instance: object, owner: type) -> _T:
+        if isinstance(self.func, classmethod):
+            return self.func.__get__(instance, owner)()
         return self.func(owner)
 
 
