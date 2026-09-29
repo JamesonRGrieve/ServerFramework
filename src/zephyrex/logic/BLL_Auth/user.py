@@ -50,6 +50,9 @@ from zephyrex.logic.BLL_Auth._shared import (
 # A compact JWT is three base64url segments joined by two ``.`` separators.
 _JWT_SEPARATOR_COUNT = 2
 
+# User fields only root may change (see UserManager.update).
+ACCOUNT_STATE_FIELDS = frozenset({"active", "mfa_count"})
+
 
 class UserModel(
     ApplicationModel.Optional,
@@ -439,16 +442,18 @@ class UserManager(AbstractBLLManager, RouterMixin):
                 429: {"description": "Too many failed login attempts"},
             },
         },
-        # {
-        #     "path": "",
-        #     "method": "post",
-        #     "function": "register",
-        #     "auth_type": AuthType.NONE,
-        #     "summary": "Register a new user",
-        #     "description": "Registers a new user.",
-        #     "response_model": "UserModel.ResponseSingle",
-        #     "status_code": 201,
-        # },
+        {
+            "path": "/logout",
+            "method": "post",
+            "function": "logout",
+            # The method authenticates the presented token itself: the
+            # token, not a resolved requester, is what logout ends.
+            "auth_type": AuthType.NONE,
+            "is_static": True,
+            "summary": "End the current session",
+            "description": "Revokes the session the presented JWT belongs to.",
+            "status_code": 204,
+        },
         {
             "path": "",
             "method": "get",
@@ -699,6 +704,18 @@ class UserManager(AbstractBLLManager, RouterMixin):
 
     def update(self, id: str, **kwargs):
         """Update a user with optional metadata"""
+        from zephyrex.database.StaticPermissions import is_root_id
+
+        # Account state is administrative: a user who could set their own
+        # ``active`` or ``mfa_count`` could re-enable a disabled account or
+        # switch off their MFA requirement.
+        administrative = sorted(ACCOUNT_STATE_FIELDS & kwargs.keys())
+        if administrative and not is_root_id(self.requester.id):
+            raise HTTPException(
+                status_code=403,
+                detail=f"Only root may set {', '.join(administrative)}",
+            )
+
         # Extract metadata fields (non-model fields)
         metadata_fields = {}
         model_fields = {}
@@ -1028,7 +1045,7 @@ class UserManager(AbstractBLLManager, RouterMixin):
     @staticmethod
     def auth(
         model_registry,
-        authorization: str = Header(None),
+        authorization: Optional[str] = Header(None),
         request: Request | RequestInfo | Dict[str, Any] | None = None,
     ) -> UserModel:
         """Authenticate a user from Authorization header"""
@@ -1218,6 +1235,26 @@ class UserManager(AbstractBLLManager, RouterMixin):
     class UserLoginModel(BaseModel):
         email: str = Field(..., description="User's email or username")
         password: str = Field(..., description="User's password")
+
+    @staticmethod
+    def logout(authorization: Optional[str], model_registry: Any) -> None:
+        """Revoke the session the presented JWT belongs to.
+
+        The token is authenticated first, so a missing, invalid, expired or
+        already-revoked token is a 401. Without the auth_session extension
+        tokens are stateless and expire on their own; there is nothing
+        server-side to revoke."""
+        UserManager.auth(model_registry=model_registry, authorization=authorization)
+        token = (authorization or "").removeprefix("Bearer ").strip()
+        try:
+            session_key = UserManager._decode_jwt(token)["jti"]
+        except jwt.PyJWTError:
+            raise HTTPException(
+                status_code=400, detail="Logout ends a JWT session, not an API key"
+            )
+        revoke = _session_hooks["revoke_session_key"]
+        if revoke is not None:
+            revoke(session_key=session_key, model_registry=model_registry)
 
     @staticmethod
     @rate_limit(DEFAULT_AUTH_RATE_LIMIT, scope="ip")
@@ -1639,8 +1676,6 @@ class UserManager(AbstractBLLManager, RouterMixin):
 
         if target_id == self.requester.id:
             current_model = self.Model.DB(self.model_registry.DB.manager.Base)
-
-            self.update(id=self.requester.id, active=True)
             deleted_user = current_model.delete(
                 requester_id=self.requester.id,
                 model_registry=self.model_registry,

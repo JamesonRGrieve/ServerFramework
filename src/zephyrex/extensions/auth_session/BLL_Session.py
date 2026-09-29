@@ -573,6 +573,30 @@ def session_manager_factory(
     )
 
 
+def revoke_session_key(*, session_key: str, model_registry: Any) -> None:
+    """Revoke the session a token's ``jti`` names (logout). The caller has
+    already authenticated that token, which is the authority to end it;
+    rows are minted as ROOT, so the update runs as ROOT (see
+    ``SessionManager.revoke_session``)."""
+    SessionDB = SessionModel.DB(model_registry.DB.manager.Base)
+    session = SessionDB.get(
+        requester_id=env("ROOT_ID"),
+        model_registry=model_registry,
+        session_key=session_key,
+        return_type="dto",
+        override_dto=SessionModel,
+    )
+    if session is None:
+        return
+    SessionDB.update(
+        requester_id=env("ROOT_ID"),
+        model_registry=model_registry,
+        id=session.id,
+        new_properties={"revoked": True, "is_active": False},
+    )
+    _invalidate_session_cache(session_key)
+
+
 def revoke_user_sessions(
     *, user_id: str, requester_id: str, model_registry: Any
 ) -> int:
@@ -591,6 +615,7 @@ __all__ = [
     "enforce_not_revoked",
     "session_manager_factory",
     "revoke_user_sessions",
+    "revoke_session_key",
 ]
 
 
@@ -610,6 +635,7 @@ def register_hooks() -> None:
         enforce_not_revoked=enforce_not_revoked,
         manager_factory=session_manager_factory,
         revoke_user_sessions=revoke_user_sessions,
+        revoke_session_key=revoke_session_key,
     )
 
 

@@ -334,6 +334,7 @@ _session_hooks: dict = {
     "enforce_not_revoked": None,  # (payload, model_registry, db) -> None | raises
     "manager_factory": None,  # (*, requester_id, target_id, target_team_id, model_registry) -> manager
     "revoke_user_sessions": None,  # (*, user_id, requester_id, model_registry) -> int
+    "revoke_session_key": None,  # (*, session_key, model_registry) -> None
 }
 
 
@@ -343,6 +344,7 @@ def register_session_hooks(
     enforce_not_revoked=None,
     manager_factory=None,
     revoke_user_sessions=None,
+    revoke_session_key=None,
 ) -> None:
     """Called when ``auth_session.BLL_Session`` is imported.
 
@@ -354,6 +356,7 @@ def register_session_hooks(
         ("enforce_not_revoked", enforce_not_revoked),
         ("manager_factory", manager_factory),
         ("revoke_user_sessions", revoke_user_sessions),
+        ("revoke_session_key", revoke_session_key),
     ):
         if fn is not None:
             _session_hooks[name] = fn

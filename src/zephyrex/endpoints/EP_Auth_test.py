@@ -1022,6 +1022,72 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
         self._assert_response_status(response, 200, "PUT", endpoint, payload)
         self._assert_entity_in_response(response, "display_name", display_name)
 
+    @pytest.mark.parametrize(
+        "field, value", [("active", True), ("active", False), ("mfa_count", 0)]
+    )
+    def test_PUT_403_account_state_is_root_only(
+        self, server: Any, field: str, value: Any
+    ) -> None:
+        """A user cannot set their own ``active`` or ``mfa_count``: that would
+        let them re-enable a disabled account or drop their MFA requirement."""
+        from conftest import create_user
+
+        test_user = create_user(
+            server=server,
+            email=f"state_test_{uuid.uuid4().hex[:8]}@example.com",
+            password="testpassword",
+            first_name="State",
+            last_name="Test",
+        )
+        headers = self._get_appropriate_headers(test_user.jwt)
+        before = server.get("/v1/user", headers=headers).json()["user"]
+
+        response = server.put(
+            "/v1/user", json={"user": {field: value}}, headers=headers
+        )
+        assert response.status_code == 403, response.text
+        assert field in response.json()["detail"]
+
+        after = server.get("/v1/user", headers=headers).json()["user"]
+        assert after["active"] == before["active"]
+        assert after["mfa_count"] == before["mfa_count"]
+
+    def _isolated_user(self, server: Any, prefix: str) -> Any:
+        from conftest import create_user
+
+        return create_user(
+            server=server,
+            email=f"{prefix}_{uuid.uuid4().hex[:8]}@example.com",
+            password="testpassword",
+            first_name="Isolated",
+            last_name="User",
+        )
+
+    def test_POST_204_logout_revokes_only_the_presented_session(
+        self, server: Any
+    ) -> None:
+        user = self._isolated_user(server, "logout")
+        other_session = generate_jwt_for_user(
+            {"id": user.id, "email": user.email}, server=server
+        )
+        headers = self._get_appropriate_headers(user.jwt)
+
+        response = server.post("/v1/user/logout", headers=headers)
+        assert response.status_code == 204, response.text
+
+        after = server.get("/v1/user", headers=headers)
+        assert after.status_code == 401
+        assert after.json()["detail"] == "Session has been revoked"
+
+        # The user's other session is untouched.
+        other = server.get(
+            "/v1/user", headers=self._get_appropriate_headers(other_session)
+        )
+        assert other.status_code == 200, other.text
+
+    def test_POST_401_logout_without_a_token(self, server: Any) -> None:
+        assert server.post("/v1/user/logout").status_code == 401
+
     def test_PATCH_200_password(self, server: Any, db: Any) -> Dict[str, Any]:  # type: ignore[return]
         """Test updating user password with isolated user."""
 
@@ -1102,7 +1168,6 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
             "user": {
                 "email": "not_an_email",  # Invalid email format
                 "display_name": 12345,  # Number instead of string
-                "mfa_count": "not_a_number",  # String instead of number
             }
         }
 
