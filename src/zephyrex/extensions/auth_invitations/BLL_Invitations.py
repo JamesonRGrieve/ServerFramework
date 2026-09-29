@@ -196,6 +196,16 @@ class InvitationManager(AbstractBLLManager, RouterMixin):
             "status_code": 200,
         }
     ]
+    # Who an invitation went to and whether each accepted or declined:
+    # GET /v1/invitation/{invitation_id}/invitee.
+    nested_resources: ClassVar[Dict[str, Any]] = {
+        "invitee": {
+            "child_resource_name": "invitee",
+            "manager_property": "invitees",
+            "child_manager_class": lambda: InviteeManager,
+            "routes_to_register": ["list"],
+        },
+    }
 
     def __init__(
         self,
@@ -212,18 +222,18 @@ class InvitationManager(AbstractBLLManager, RouterMixin):
             model_registry=model_registry,
             parent=parent,
         )
-        self._Invitee_manager = None
+        self._invitees = None
 
     @property
-    def Invitee_manager(self):
-        if self._Invitee_manager is None:
-            self._Invitee_manager = InviteeManager(
+    def invitees(self):
+        if self._invitees is None:
+            self._invitees = InviteeManager(
                 requester_id=self.requester.id,
                 target_team_id=self.target_team_id,
                 parent=self,
                 model_registry=self.model_registry,
             )
-        return self._Invitee_manager
+        return self._invitees
 
     def create_validation(self, entity):
         if entity.team_id and not entity.role_id:
@@ -279,9 +289,9 @@ class InvitationManager(AbstractBLLManager, RouterMixin):
             # email exactly as before.
             existing_invitees: set[str] = set()
             if existing_invitations:
-                InviteeDB = self.Invitee_manager.DB
+                InviteeDB = self.invitees.DB
                 invitation_ids = [inv.id for inv in existing_invitations]
-                existing_invitee_rows = self.Invitee_manager.list(
+                existing_invitee_rows = self.invitees.list(
                     filters=[InviteeDB.invitation_id.in_(invitation_ids)],
                     deleted_at=None,
                     declined_at=None,
@@ -353,7 +363,7 @@ class InvitationManager(AbstractBLLManager, RouterMixin):
                 f"User lookup for invitee {email!r} failed: {e.detail}", exc_info=True
             )
 
-        invitee = self.Invitee_manager.create(
+        invitee = self.invitees.create(
             invitation_id=invitation_id,
             email=email.lower().strip(),
             user_id=user_id,
@@ -434,7 +444,7 @@ class InvitationManager(AbstractBLLManager, RouterMixin):
         if patch_data.invitation_code:
             try:
                 if patch_data.action and patch_data.action.lower() == "decline":
-                    result = self.Invitee_manager.decline_invitation(
+                    result = self.invitees.decline_invitation(
                         patch_data.invitation_code
                     )
                     return {
@@ -444,7 +454,7 @@ class InvitationManager(AbstractBLLManager, RouterMixin):
                         "role_id": result.get("role_id"),
                     }
                 else:
-                    result = self.Invitee_manager.accept_invitation(
+                    result = self.invitees.accept_invitation(
                         patch_data.invitation_code, user_id
                     )
                     return {
@@ -463,7 +473,7 @@ class InvitationManager(AbstractBLLManager, RouterMixin):
 
         elif patch_data.invitee_id:
             try:
-                invitee = self.Invitee_manager.get(id=patch_data.invitee_id)
+                invitee = self.invitees.get(id=patch_data.invitee_id)
                 user_manager = UserManager(
                     requester_id=env("ROOT_ID"), model_registry=self.model_registry
                 )
@@ -490,7 +500,7 @@ class InvitationManager(AbstractBLLManager, RouterMixin):
                         )
 
                 if patch_data.action and patch_data.action.lower() == "decline":
-                    self.Invitee_manager.update(
+                    self.invitees.update(
                         id=invitee.id,
                         declined_at=datetime.now(timezone.utc),
                         user_id=user_id,
@@ -503,7 +513,7 @@ class InvitationManager(AbstractBLLManager, RouterMixin):
                             "role_id": invitation.role_id,
                         }
 
-                self.Invitee_manager.update(
+                self.invitees.update(
                     id=invitee.id,
                     accepted_at=datetime.now(timezone.utc),
                     user_id=user_id,
@@ -557,7 +567,7 @@ class InvitationManager(AbstractBLLManager, RouterMixin):
             )
 
     def accept_invitation(self, code: str, user_id: str) -> Dict[str, Any]:
-        return self.Invitee_manager.accept_invitation(code, user_id)  # type: ignore[no-any-return]
+        return self.invitees.accept_invitation(code, user_id)  # type: ignore[no-any-return]
 
     def patch_invitation_endpoint(
         self, id: str, body: Dict[str, Any]

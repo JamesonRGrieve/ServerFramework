@@ -1419,7 +1419,7 @@ class TestInvitationManager(AbstractBLLTest):
 
         assert invitation is not None
 
-        Invitee = manager.Invitee_manager.get(invitation_id=invitation.id)
+        Invitee = manager.invitees.get(invitation_id=invitation.id)
 
         assert Invitee is not None
         assert Invitee.created_by_user_id == admin_a.id
@@ -1448,7 +1448,7 @@ class TestInvitationManager(AbstractBLLTest):
 
         assert invitation is not None
 
-        Invitee = manager.Invitee_manager.get(invitation_id=invitation.id)
+        Invitee = manager.invitees.get(invitation_id=invitation.id)
 
         assert Invitee is not None
         assert Invitee.created_by_user_id == admin_a.id
@@ -1605,7 +1605,7 @@ class TestInvitationManager(AbstractBLLTest):
         assert invitee_result["invitation_code"] == invitation.code
 
         # Get the invitee ID for accepting via invitee_id
-        invitees = manager.Invitee_manager.list(
+        invitees = manager.invitees.list(
             email=existing_user.email, invitation_id=invitation.id
         )
         assert len(invitees) == 1
@@ -1664,7 +1664,7 @@ class TestInvitationManager(AbstractBLLTest):
         )
         # Attempt to list invitees with a bad invitation ID
         with pytest.raises(HTTPException) as exc_info:
-            manager.Invitee_manager.list(invitation_id=str(uuid.uuid4()))
+            manager.invitees.list(invitation_id=str(uuid.uuid4()))
 
     def test_invitation_acceptance_at_registration_time_comprehensive(
         self, server, model_registry

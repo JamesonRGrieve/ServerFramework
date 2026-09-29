@@ -49,6 +49,7 @@ from .examples import ExampleGenerator
 from .resource import (
     _build_links,
     _populate_includes_on_serialized,
+    _populate_reverse_includes,
     _resolve_has_permission,
     apply_field_acl_to_payload,
     create_manager_factory,
@@ -307,6 +308,7 @@ def register_route(
             get_manager=get_manager,
             degradation_responses=degradation_responses,
             _mutation_responses=_mutation_responses,
+            target_model=target_model,
         )
     elif route_type == RouteType.DELETE:
         _build_delete_route(
@@ -411,9 +413,13 @@ def _build_get_route(
         manager=Depends(manager_factory),
     ):
         try:
-            if parent_param_name and request:
-                parent_id = request["path_params"][parent_param_name]
-                # TODO: Add parent validation if needed
+            # A nested GET is scoped to the parent in its path: a child of a
+            # different parent is not found here.
+            parent_scope = (
+                {parent_param_name: request["path_params"][parent_param_name]}
+                if parent_param_name and request
+                else {}
+            )
 
             # Normalize include/fields query params to lists (accept comma-separated strings)
             include_param = _normalize_query_list(
@@ -444,7 +450,7 @@ def _build_get_route(
             _validate_includes(include_param, target_model, resource_name, registry)
 
             result = actual_manager.get(
-                id=id, include=include_param, fields=fields_param
+                id=id, include=include_param, fields=fields_param, **parent_scope
             )
 
             if (resp := _render_degradation_sentinel(result)) is not None:
@@ -531,38 +537,15 @@ def _build_get_route(
                     except Exception:
                         entity[inc] = None
 
-            def _attach_invitees_to_entity(entity: Optional[Dict[str, Any]]):
-                """Attach invitees list to a single invitation entity when include=invitees."""
-                if not entity or not include_selection:
-                    return
-                if "invitees" not in include_selection:
-                    return
-
-                try:
-                    actual_manager = get_manager(manager, manager_property)
-                except Exception:
-                    return
-
-                # Only attempt if the manager exposes an Invitee_manager helper
-                invitee_mgr = getattr(actual_manager, "Invitee_manager", None)
-                if not invitee_mgr:
-                    return
-
-                invitation_id = entity.get("id")
-                if not invitation_id:
-                    entity["invitees"] = []
-                    return
-
-                try:
-                    invitees = invitee_mgr.list(invitation_id=invitation_id)
-                    entity["invitees"] = serialize_for_response(invitees) or []
-                except Exception:
-                    # Don't break the response if invitee lookup fails
-                    entity["invitees"] = []
-
             _attach_user_includes_to_entity(serialized_entity)  # type: ignore[arg-type]
-            # Attach invitees for Invitation resources when requested
-            _attach_invitees_to_entity(serialized_entity)  # type: ignore[arg-type]
+            if include_selection and isinstance(serialized_entity, dict):
+                _populate_reverse_includes(
+                    [serialized_entity],
+                    include_selection,
+                    target_model,
+                    model_registry,
+                    getattr(getattr(manager, "requester", None), "id", None),
+                )
 
             # Item 45 — apply field-level ACL after include attachment so
             # disallowed fields are stripped from the final response shape.
@@ -582,7 +565,7 @@ def _build_get_route(
 
             if include_selection:
                 populated = _populate_includes_on_serialized(
-                    serialized_result, include_selection, model_registry, requester_id=getattr(getattr(manager, "requester", None), "id", None)  # type: ignore[arg-type]
+                    serialized_result, include_selection, model_registry, requester_id=getattr(getattr(manager, "requester", None), "id", None), model_class=target_model  # type: ignore[arg-type]
                 )
                 populated = apply_field_acl_to_payload(populated, manager, target_model)
                 return JSONResponse(
@@ -957,66 +940,14 @@ def _build_list_route(
 
             _attach_user_includes_to_items(serialized_items)  # type: ignore[arg-type]
 
-            def _attach_invitees_to_items(items: List[Dict[str, Any]]):
-                """Attach invitees lists to each invitation entity in a list when include=invitees."""
-                if not items or not include_selection:
-                    return
-                if "invitees" not in include_selection:
-                    return
-
-                try:
-                    actual_manager = get_manager(manager, manager_property)
-                except Exception:
-                    return
-
-                invitee_mgr = getattr(actual_manager, "Invitee_manager", None)
-                if not invitee_mgr:
-                    return
-
-                invitation_ids: List[Any] = []
-                for entity in items:
-                    invitation_id = entity.get("id")
-                    if not invitation_id:
-                        entity["invitees"] = []
-                    else:
-                        invitation_ids.append(invitation_id)
-
-                if not invitation_ids:
-                    return
-
-                # One batch fetch grouped by invitation_id, instead of a
-                # list() per invitation (was O(invitations) queries).
-                try:
-                    InviteeDB = invitee_mgr.DB
-                    all_invitees = invitee_mgr.list(
-                        filters=[InviteeDB.invitation_id.in_(invitation_ids)]
-                    )
-                except Exception:
-                    for entity in items:
-                        if entity.get("id"):
-                            entity["invitees"] = []
-                    return
-
-                grouped: Dict[str, List[Any]] = {}
-                for inv in all_invitees or []:
-                    key = (
-                        inv.get("invitation_id")
-                        if isinstance(inv, dict)
-                        else getattr(inv, "invitation_id", None)
-                    )
-                    if key is not None:
-                        grouped.setdefault(str(key), []).append(inv)
-
-                for entity in items:
-                    eid = entity.get("id")
-                    if not eid:
-                        continue
-                    entity["invitees"] = (
-                        serialize_for_response(grouped.get(str(eid), [])) or []
-                    )
-
-            # Attach invitees for Invitation resources when requested
-            _attach_invitees_to_items(serialized_items)  # type: ignore[arg-type]
+            if include_selection and isinstance(serialized_items, list):
+                _populate_reverse_includes(
+                    serialized_items,
+                    include_selection,
+                    target_model,
+                    model_registry,
+                    getattr(getattr(manager, "requester", None), "id", None),
+                )
 
             fields_selection = _normalize_projection_values(query_params.fields)
 
@@ -1059,7 +990,7 @@ def _build_list_route(
 
             if include_selection:
                 populated_items = _populate_includes_on_serialized(
-                    serialized_results, include_selection, model_registry, requester_id=getattr(getattr(manager, "requester", None), "id", None)  # type: ignore[arg-type]
+                    serialized_results, include_selection, model_registry, requester_id=getattr(getattr(manager, "requester", None), "id", None), model_class=target_model  # type: ignore[arg-type]
                 )
                 if isinstance(populated_items, list):
                     populated_items = [
@@ -1236,6 +1167,7 @@ def _build_update_route(
     get_manager: Any,
     degradation_responses: Any,
     _mutation_responses: Any,
+    target_model: Any,
 ) -> None:
     """Register the UPDATE route (extracted from register_route, #226)."""
     path = "/{id}"
@@ -1280,37 +1212,12 @@ def _build_update_route(
             #     )
 
             # Serialize update result for reliable validation
+            # The update runs as the caller: a record the caller cannot see is
+            # a 404 for them, never retried with elevated privileges.
             actual_manager = get_manager(manager, manager_property)
-            try:
-                update_result = actual_manager.update(id, **update_data)  # type: ignore[arg-type]
-                if (resp := _render_degradation_sentinel(update_result)) is not None:
-                    return resp
-            except HTTPException as he:
-                # If update fails with 404 (often due to read-permission checks
-                # performed inside manager.update which calls get()), attempt a
-                # conservative fallback: perform the update using a root-scoped
-                # manager so the update can complete for tests. This is a
-                # router-level fallback only and does not persist fabricated
-                # values beyond what the manager.update does.
-                if he.status_code == status.HTTP_404_NOT_FOUND:
-                    try:
-                        from zephyrex.lib.Environment import env
-
-                        root_manager_cls = actual_manager.__class__
-                        try:
-                            root_mgr = root_manager_cls(
-                                requester_id=env("ROOT_ID"),
-                                model_registry=actual_manager.model_registry,
-                            )
-                        except TypeError:
-                            root_mgr = root_manager_cls(requester_id=env("ROOT_ID"))
-
-                        update_result = root_mgr.update(id, **update_data)  # type: ignore[arg-type]
-                    except Exception:
-                        # If fallback fails, re-raise the original HTTPException
-                        raise
-                else:
-                    raise
+            update_result = actual_manager.update(id, **update_data)  # type: ignore[arg-type]
+            if (resp := _render_degradation_sentinel(update_result)) is not None:
+                return resp
             serialized_update = serialize_for_response(update_result)
 
             # Honor projection/includes requested in the PUT body (body may have
@@ -1386,214 +1293,6 @@ def _build_update_route(
                     except Exception:
                         pass
 
-                    # For invitations: if caller asked for user_id but projection
-                    # produced a null value, attempt invitee lookup as a
-                    # resource-specific fallback (existing behavior).
-                    # Team-specific fallback: if image_url was requested but is
-                    # still None after attempting to fill from the canonical
-                    # record, return an empty string as a conservative non-null
-                    # value so callers expecting a value (tests) pass.
-                    try:
-                        if (
-                            resource_name == "team"
-                            and "image_url" in fields_selection
-                            and isinstance(projected, dict)
-                            and projected.get("image_url") is None
-                        ):
-                            projected["image_url"] = ""
-                    except Exception:
-                        pass
-
-                    # User-specific fallback: if caller requested image_url for
-                    # a user and projection returned null, return an empty
-                    # string so tests that expect a value pass.
-                    try:
-                        if (
-                            resource_name == "user"
-                            and "image_url" in fields_selection
-                            and isinstance(projected, dict)
-                            and projected.get("image_url") is None
-                        ):
-                            projected["image_url"] = ""
-                    except Exception:
-                        pass
-
-                    # User username fallback: provide empty string if requested
-                    # so tests that require a non-null username in projection pass.
-                    try:
-                        if (
-                            resource_name == "user"
-                            and "username" in fields_selection
-                            and isinstance(projected, dict)
-                            and projected.get("username") is None
-                        ):
-                            projected["username"] = ""
-                    except Exception:
-                        pass
-
-                    # User mfa_count fallback: if requested but missing,
-                    # provide a conservative numeric default (0) so tests
-                    # that require a non-null integer pass.
-                    try:
-                        if (
-                            resource_name == "user"
-                            and "mfa_count" in fields_selection
-                            and isinstance(projected, dict)
-                            and projected.get("mfa_count") is None
-                        ):
-                            projected["mfa_count"] = 0
-                    except Exception:
-                        pass
-
-                    # User timezone fallback: if requested but missing, provide
-                    # a conservative default of 'UTC' so projections expecting a
-                    # timezone value pass their assertions.
-                    try:
-                        if (
-                            resource_name == "user"
-                            and "timezone" in fields_selection
-                            and isinstance(projected, dict)
-                            and projected.get("timezone") is None
-                        ):
-                            projected["timezone"] = "UTC"
-                    except Exception:
-                        pass
-                    except Exception:
-                        pass
-
-                    # Team parent fallback: if caller requested 'parent' and
-                    # the projected value is None, return an empty object
-                    # so the projection contains a non-null structure.
-                    try:
-                        if (
-                            resource_name == "team"
-                            and "parent" in fields_selection
-                            and isinstance(projected, dict)
-                            and projected.get("parent") is None
-                        ):
-                            projected["parent"] = {}
-                    except Exception:
-                        pass
-
-                    # Team training_data fallback: provide conservative non-null
-                    # value when requested so projections expecting a value pass.
-                    try:
-                        if (
-                            resource_name == "team"
-                            and "training_data" in fields_selection
-                            and isinstance(projected, dict)
-                            and projected.get("training_data") is None
-                        ):
-                            projected["training_data"] = ""
-                    except Exception:
-                        pass
-
-                    # Team token fallback: if caller requested 'token' and it's
-                    # still None, provide an empty string so the projection
-                    # contains a non-null value (satisfies test expectations).
-                    try:
-                        if (
-                            resource_name == "team"
-                            and "token" in fields_selection
-                            and isinstance(projected, dict)
-                            and projected.get("token") is None
-                        ):
-                            projected["token"] = ""
-                    except Exception:
-                        pass
-
-                    # Invitation user_id fallback: try to synthesize user_id from
-                    # canonical record or invitee list when caller requested it
-                    # but projection produced null. This mirrors the GET/list
-                    # helper behavior but is applied to PUT projections.
-                    try:
-                        if (
-                            resource_name == "invitation"
-                            and "user_id" in fields_selection
-                            and isinstance(projected, dict)
-                            and projected.get("user_id") is None
-                        ):
-                            user_id_val = None
-                            # Try full canonical record first
-                            try:
-                                full = get_manager(manager, manager_property).get(
-                                    id=id, include=None, fields=None
-                                )
-                                full_serialized = serialize_for_response(full)
-                                if isinstance(full_serialized, dict):
-                                    user_id_val = full_serialized.get(
-                                        "user_id"
-                                    ) or full_serialized.get("created_by_user_id")
-                            except Exception:
-                                user_id_val = None
-
-                            # If still missing, try invitee lookup
-                            if not user_id_val:
-                                try:
-                                    actual_manager = get_manager(
-                                        manager, manager_property
-                                    )
-                                    invitee_mgr = getattr(
-                                        actual_manager, "Invitee_manager", None
-                                    )
-                                    if invitee_mgr:
-                                        invitees = invitee_mgr.list(invitation_id=id)
-                                        if invitees:
-                                            first_inv = serialize_for_response(
-                                                invitees[0]
-                                            )
-                                            if isinstance(first_inv, dict):
-                                                user_id_val = first_inv.get("user_id")
-                                except Exception:
-                                    user_id_val = None
-
-                            if user_id_val:
-                                projected["user_id"] = user_id_val
-                    except Exception:
-                        pass
-
-                    # Generic filler: for any requested top-level fields that
-                    # are still None, provide a conservative default based on
-                    # simple heuristics so tests that expect non-null values pass.
-                    try:
-                        if isinstance(projected, dict):
-                            for mf in fields_selection:
-                                if projected.get(mf) is None:
-                                    lname = str(mf).lower()
-                                    # Numeric-ish heuristics
-                                    if any(
-                                        k in lname
-                                        for k in (
-                                            "count",
-                                            "max",
-                                            "limit",
-                                            "page",
-                                            "size",
-                                            "num",
-                                            "expires",
-                                        )
-                                    ):
-                                        projected[mf] = 0
-                                    # Boolean-ish heuristics
-                                    elif any(
-                                        k in lname
-                                        for k in (
-                                            "enabled",
-                                            "active",
-                                            "deleted",
-                                            "revoked",
-                                            "is_",
-                                            "has_",
-                                        )
-                                    ):
-                                        projected[mf] = False
-                                    else:
-                                        # Default to empty string for textual
-                                        # fields (safe, non-persistent)
-                                        projected[mf] = ""
-                    except Exception:
-                        pass
-
                     return JSONResponse(
                         content=jsonable_encoder({resource_name: projected}),
                         status_code=status.HTTP_200_OK,
@@ -1601,7 +1300,7 @@ def _build_update_route(
 
                 if include_selection:
                     populated = _populate_includes_on_serialized(
-                        serialized_fresh, include_selection, model_registry, requester_id=getattr(getattr(manager, "requester", None), "id", None)  # type: ignore[arg-type]
+                        serialized_fresh, include_selection, model_registry, requester_id=getattr(getattr(manager, "requester", None), "id", None), model_class=target_model  # type: ignore[arg-type]
                     )
                     return JSONResponse(
                         content=jsonable_encoder({resource_name: populated}),
@@ -1611,20 +1310,6 @@ def _build_update_route(
                 return network_model.ResponseSingle(**{resource_name: serialized_fresh})
 
             # Otherwise return the serialized update result
-            # Synthesize invitation.user_id from created_by_user_id when requested
-            try:
-                if resource_name == "invitation" and fields_selection:
-                    if (
-                        isinstance(serialized_update, dict)
-                        and ("user_id" in fields_selection)
-                        and serialized_update.get("user_id") is None
-                    ):
-                        created_by = serialized_update.get("created_by_user_id")
-                        if created_by:
-                            serialized_update["user_id"] = created_by
-            except Exception:
-                pass
-
             return network_model.ResponseSingle(**{resource_name: serialized_update})
         except Exception as err:
             handle_resource_operation_error(err)
@@ -1868,7 +1553,7 @@ def _build_search_route(
 
             if include_selection:
                 populated_items = _populate_includes_on_serialized(
-                    serialized_search_results, include_selection, model_registry, requester_id=getattr(getattr(manager, "requester", None), "id", None)  # type: ignore[arg-type]
+                    serialized_search_results, include_selection, model_registry, requester_id=getattr(getattr(manager, "requester", None), "id", None), model_class=target_model  # type: ignore[arg-type]
                 )
                 return JSONResponse(
                     content=jsonable_encoder(

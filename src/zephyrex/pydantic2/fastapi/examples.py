@@ -427,7 +427,6 @@ class ExampleGenerator:
 
         # Get model classes using introspection
         response_single_cls = getattr(network_model_cls, "ResponseSingle", None)
-        response_plural_cls = getattr(network_model_cls, "ResponsePlural", None)
         post_cls = getattr(network_model_cls, "POST", None)
         put_cls = getattr(network_model_cls, "PUT", None)
         search_cls = getattr(network_model_cls, "SEARCH", None)

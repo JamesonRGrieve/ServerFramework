@@ -322,7 +322,7 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
             self._register_search_transformers()
             return
 
-        from zephyrex.logic.BLL_Auth import TeamModel, UserModel
+        from zephyrex.logic.BLL_Auth import UserModel
 
         cache = _entity_cache
         if cache is not None:
@@ -335,7 +335,6 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
             except Exception:
                 pass
 
-        Team = TeamModel.DB(self.model_registry.DB.manager.Base)
         User = UserModel.DB(self.model_registry.DB.manager.Base)
 
         session = self.model_registry.DB.session()
@@ -1044,11 +1043,9 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
         Returns:
             List of SQLAlchemy joinedload options
         """
-        """Generate join loads based on specified include fields."""
         from sqlalchemy.orm import RelationshipProperty
 
         joins = []
-        invalid_includes = []
         valid_relationships = []
 
         # Collect all valid relationships - try multiple detection methods
@@ -1442,14 +1439,22 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
         """
         from fastapi import status
 
+        from zephyrex.database.StaticPermissions import is_root_id
+
         entity_id = kwargs.get("id")
         cache = _entity_cache
+        # The cache holds rows without their access rules, so it may answer
+        # only a lookup whose outcome cannot depend on who asks: root reading
+        # by id alone. Anyone else, or any extra filter (a nested route's
+        # parent scope), goes through the permission-filtered query.
         if (
             cache is not None
             and self._caches_entities
             and entity_id
             and not include
             and not fields
+            and set(kwargs) <= {"id", "hook_processed"}
+            and is_root_id(self.requester.id)
         ):
             try:
                 cached = _cache_sync_run(

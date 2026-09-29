@@ -2105,9 +2105,7 @@ class UserManager(AbstractBLLManager, RouterMixin):
             invitation_dict = obj_to_dict(invitation)
             invitees_dict = []
             if invitation.user_id is None:
-                invitees = invitation_manager.Invitee_manager.list(
-                    invitation_id=invitation.id
-                )
+                invitees = invitation_manager.invitees.list(invitation_id=invitation.id)
                 for invitee in invitees:
                     if invitee.user_id != user_id:
                         continue

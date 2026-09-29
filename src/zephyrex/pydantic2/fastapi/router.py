@@ -222,51 +222,6 @@ def create_router_from_manager(
         # Proceed with using child_manager_class
         logger.debug(f"Using child manager class: {child_manager_class}")
 
-        # Get the child manager class by following the property
-        # Check if it's a property on the class itself
-        # attr_value = getattr(manager_class, manager_property, None)
-        # if isinstance(attr_value, property):
-        #     try:
-        #         from typing import get_type_hints
-
-        #         # Use type hints to determine the return type of the property
-        #         type_hints = get_type_hints(manager_class)
-        #         child_manager_class = type_hints.get(manager_property)
-        #         if child_manager_class is None:
-        #             raise ValueError(
-        #                 f"No type hint found for property {manager_property}"
-        #             )
-        #     except Exception as e:
-        #         logger.warning(
-        #             f"Failed to retrieve child manager class for property {manager_property} on {manager_class.__name__}: {e}"
-        #         )
-        #         continue
-        # elif attr_value is None:
-        #     logger.warning(
-        #         f"Manager property {manager_property} not found on {manager_class.__name__} for nested resource {child_resource_name}"
-        #     )
-        #     continue
-        # elif hasattr(attr_value, "__class__") and isinstance(
-        #     attr_value.__class__, type
-        # ):
-        #     # This is an instance, get its class
-        #     child_manager_class = attr_value.__class__
-        # elif isinstance(attr_value, type):
-        #     # This is already a class
-        #     child_manager_class = attr_value
-        # else:
-        #     logger.warning(
-        #         f"Could not determine manager class for nested resource {child_resource_name}. Got {type(attr_value)}: {attr_value}"
-        #     )
-        #     continue
-
-        # # Verify child_manager_class is actually a class
-        # if not isinstance(child_manager_class, type):
-        #     logger.error(
-        #         f"child_manager_class is {type(child_manager_class)}, not a class type. Value: {child_manager_class}. Skipping nested resource {child_resource_name}"
-        #     )
-        #     continue
-
         # Create nested router
         nested_prefix = f"/{{{resource_name}_id}}/{child_resource_name}"
         nested_router = APIRouter(prefix=nested_prefix, tags=tags)  # type: ignore[arg-type]
@@ -437,27 +392,13 @@ def generate_routers_from_model_registry(model_registry) -> Dict[str, APIRouter]
             manager_class: Type["ManagerContract"] = model_class.Manager
             manager_name: str = manager_class.__name__
 
+            # REST exposure is opt-in: only RouterMixin managers get routes.
+            # A manager without it is internal (InviteeManager is reached
+            # through its invitation, not as /v1/invitee). A router that fails
+            # to build fails the app build rather than vanishing from the API.
             if issubclass(manager_class, RouterMixin):
-                try:
-                    router: APIRouter = manager_class.Router(model_registry)
-                    routers[manager_name] = router
-                    logger.info(f"Generated router for {manager_name}")
-                except Exception as e:
-                    import traceback
-
-                    logger.error(
-                        f"Failed to generate router for {manager_name}: {traceback.format_exc()}"
-                    )
-            else:
-                try:
-                    router = create_router_from_manager(manager_class, model_registry)
-                    if router and router.routes:
-                        routers[manager_name] = router
-                        logger.info(f"Generated router for {manager_name}")
-                except Exception as e:
-                    logger.debug(
-                        f"Could not auto-generate router for {manager_name}: {e}"
-                    )
+                routers[manager_name] = manager_class.Router(model_registry)
+                logger.info(f"Generated router for {manager_name}")
         else:
             logger.debug(f"Model {model_name} does not have a Manager attribute")
 

@@ -2938,6 +2938,60 @@ class TestInvitationEndpoints(AbstractEPTest):
         assert invitation["code"] is not None
         assert len(invitation["code"]) == 8  # Auto-generated codes are 8 characters
 
+    def _invite(self, server: Any, admin: Any, team: Any, emails: List[str]) -> str:
+        response = server.post(
+            f"/v1/team/{team.id}/invitation",
+            json={
+                "invitation": {
+                    "team_id": team.id,
+                    "role_id": env("USER_ROLE_ID"),
+                    "email": emails,
+                }
+            },
+            headers=self._get_appropriate_headers(admin.jwt),
+        )
+        assert response.status_code == 201, response.text
+        invitation_id: str = self._extract_invitation_from_response(response)["id"]
+        return invitation_id
+
+    def test_GET_200_invitation_invitees(
+        self, server: Any, admin_a: Any, team_a: Any
+    ) -> None:
+        """A team admin sees who an invitation went to and each one's state."""
+        suffix = uuid.uuid4().hex[:8]
+        emails = [f"invitee1_{suffix}@example.com", f"invitee2_{suffix}@example.com"]
+        invitation_id = self._invite(server, admin_a, team_a, emails)
+
+        response = server.get(
+            f"/v1/invitation/{invitation_id}/invitee",
+            headers=self._get_appropriate_headers(admin_a.jwt),
+        )
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert "invitees" in body, body
+        invitees = body["invitees"]
+        assert sorted(i["email"] for i in invitees) == sorted(emails)
+        for invitee in invitees:
+            assert invitee["invitation_id"] == invitation_id
+            assert invitee["accepted_at"] is None
+            assert invitee["declined_at"] is None
+
+    def test_GET_invitation_invitees_hidden_from_other_teams(
+        self, server: Any, admin_a: Any, team_a: Any, admin_b: Any
+    ) -> None:
+        suffix = uuid.uuid4().hex[:8]
+        invitation_id = self._invite(
+            server, admin_a, team_a, [f"private_{suffix}@example.com"]
+        )
+
+        response = server.get(
+            f"/v1/invitation/{invitation_id}/invitee",
+            headers=self._get_appropriate_headers(admin_b.jwt),
+        )
+        assert response.status_code in (403, 404) or (
+            response.status_code == 200 and response.json()["invitees"] == []
+        ), response.text
+
     def test_POST_422_team_invitation_missing_role(
         self, server: Any, admin_a: Any, team_a: Any
     ) -> None:

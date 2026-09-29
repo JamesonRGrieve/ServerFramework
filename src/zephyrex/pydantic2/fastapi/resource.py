@@ -318,19 +318,15 @@ def _populate_user_includes(
     a single permission-filtered batch fetch (no per-row query). A value that is
     absent or empty (``{}`` from an unloaded relationship) is (re)resolved from
     the sibling ``*_id``; a genuinely-loaded nested object is left untouched. A
-    user the requester cannot view resolves to ``None``."""
-    if not user_includes or not items:
+    user the requester cannot view resolves to ``None``; without a requester
+    (a public route) nothing is resolved."""
+    if not user_includes or not items or requester_id is None:
         return
     from zephyrex.lib.AuthProvider import get_auth_provider
-    from zephyrex.lib.Environment import env
 
-    try:
-        user_mgr = get_auth_provider()(
-            requester_id=requester_id or env("ROOT_ID"),
-            model_registry=model_registry,
-        )
-    except Exception:
-        return
+    user_mgr = get_auth_provider()(
+        requester_id=requester_id, model_registry=model_registry
+    )
 
     needed: List[Any] = []
     seen: set = set()
@@ -366,17 +362,61 @@ def _populate_user_includes(
             item[inc] = user_map.get(str(uid)) if uid else None
 
 
+def _populate_reverse_includes(
+    items: List[Dict[str, Any]],
+    include_selection: List[str],
+    model_class: Type[BaseModel],
+    model_registry: Any,
+    requester_id: Optional[str],
+) -> None:
+    """Resolve reverse-relationship includes (``invitation?include=invitees``)
+    in place: one permission-filtered query per requested relation, children
+    grouped onto their parent by the foreign key. Children the requester may
+    not view are absent; without a requester (a public route) nothing is
+    resolved."""
+    from zephyrex.pydantic2.fastapi.query import inverse_relations
+
+    if requester_id is None:
+        return
+    relations = inverse_relations(model_class, model_registry)
+    parent_ids = [item["id"] for item in items if item.get("id")]
+    for include_key in include_selection:
+        relation = relations.get(include_key)
+        if relation is None:
+            continue
+        child_model, fk_field, is_collection = relation
+        children: List[Dict[str, Any]] = []
+        if parent_ids:
+            ChildDB = child_model.DB(model_registry.DB.manager.Base)  # type: ignore[attr-defined]
+            children = ChildDB.list(
+                requester_id=requester_id,
+                model_registry=model_registry,
+                filters=[getattr(ChildDB, fk_field).in_(parent_ids)],
+                return_type="dict",
+            )
+        by_parent: Dict[Any, List[Dict[str, Any]]] = {}
+        for child in children:
+            by_parent.setdefault(child.get(fk_field), []).append(child)
+        for item in items:
+            grouped = by_parent.get(item.get("id"), [])
+            item[include_key] = (
+                grouped if is_collection else (grouped[0] if grouped else None)
+            )
+
+
 def _populate_includes_on_serialized(
     serialized: Union[Dict[str, Any], List[Dict[str, Any]]],
     include_selection: Optional[List[str]],
     model_registry: Any,
     requester_id: Optional[str] = None,
+    model_class: Optional[Type[BaseModel]] = None,
 ) -> Union[Dict[str, Any], List[Dict[str, Any]]]:
     """Populate requested include navigation properties on already-serialized data.
 
     ``*_user`` / ``user`` includes are resolved to the actual user through a
     single permission-filtered batch fetch (fixing the empty-``{}`` result and
-    avoiding a per-row N+1). Any other requested include key that is still
+    avoiding a per-row N+1). Reverse relationships of ``model_class`` are
+    batch-loaded the same way. Any other requested include key that is still
     missing gets an empty placeholder (plural -> ``[]``, singular -> ``{}``) so
     the navigation key is always present in the response.
     """
@@ -395,6 +435,10 @@ def _populate_includes_on_serialized(
 
     user_includes = [k for k in include_selection if k == "user" or k.endswith("_user")]
     _populate_user_includes(items, user_includes, model_registry, requester_id)
+    if model_class is not None:
+        _populate_reverse_includes(
+            items, include_selection, model_class, model_registry, requester_id
+        )
 
     for item in items:
         for include_key in include_selection:

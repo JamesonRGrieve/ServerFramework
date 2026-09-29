@@ -266,7 +266,7 @@ class TestInvitationCreateDedupBatching(ExtensionServerMixin):
         with InvitationManager(
             requester_id=admin_a.id, model_registry=model_registry
         ) as mgr:
-            invitee_mgr = mgr.Invitee_manager
+            invitee_mgr = mgr.invitees
             calls = {"n": 0}
             original_list = invitee_mgr.list
 

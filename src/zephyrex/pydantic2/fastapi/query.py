@@ -292,35 +292,34 @@ def _get_valid_includes_for_model(
             elif isinstance(extra, str):
                 valid_includes.add(extra)
 
-    # Magic: Discover inverse relationships via model registry scanning
-    if model_registry and hasattr(model_registry, "bound_models"):
-        # Get this model's name in snake_case (e.g., TeamModel -> team)
-        model_name = model_class.__name__
-        if model_name.endswith("Model"):
-            model_name = model_name[:-5]  # Remove 'Model' suffix
-        model_name_snake = stringcase.snakecase(model_name)
-        fk_pattern = f"{model_name_snake}_id"
-
-        # Scan all bound models for foreign keys pointing to this model
-        for bound_model in model_registry.bound_models:
-            if bound_model is model_class:
-                continue  # Skip self
-            if not hasattr(bound_model, "model_fields"):
-                continue
-
-            for field_name in bound_model.model_fields.keys():
-                if field_name == fk_pattern:
-                    # Found a model with FK to this model - add as valid include
-                    other_model_name = bound_model.__name__
-                    if other_model_name.endswith("Model"):
-                        other_model_name = other_model_name[:-5]
-                    other_name_snake = stringcase.snakecase(other_model_name)
-                    # Add plural form (e.g., InviteeModel -> invitees)
-                    valid_includes.add(inflection.plural(other_name_snake))
-                    # Also add singular form
-                    valid_includes.add(other_name_snake)
-
+    valid_includes.update(inverse_relations(model_class, model_registry))
     return valid_includes
+
+
+def inverse_relations(
+    model_class: Type[BaseModel], model_registry: Optional[Any]
+) -> Dict[str, Tuple[Type[BaseModel], str, bool]]:
+    """Reverse relationships of ``model_class``: include name ->
+    ``(child model, foreign-key field on the child, is_collection)``.
+
+    A bound model with a ``<model>_id`` field points at ``model_class``, so
+    ``InviteeModel.invitation_id`` makes ``invitees`` (a collection) and
+    ``invitee`` (a single child) includes of ``InvitationModel``. The
+    foreign-key name follows the column convention (``stringcase``).
+    """
+    if model_registry is None or not hasattr(model_registry, "bound_models"):
+        return {}
+    fk_field = f"{stringcase.snakecase(model_class.__name__.removesuffix('Model'))}_id"
+    relations: Dict[str, Tuple[Type[BaseModel], str, bool]] = {}
+    for bound_model in model_registry.bound_models:
+        if bound_model is model_class or fk_field not in getattr(
+            bound_model, "model_fields", {}
+        ):
+            continue
+        child_name = stringcase.snakecase(bound_model.__name__.removesuffix("Model"))
+        relations[inflection.plural(child_name)] = (bound_model, fk_field, True)
+        relations[child_name] = (bound_model, fk_field, False)
+    return relations
 
 
 def _validate_includes(
@@ -393,10 +392,6 @@ def create_query_model_dependency(
 
     accepts_list_cache = {
         field_name: _type_accepts_list(field_info.annotation)
-        for field_name, field_info in model_fields.items()
-    }
-    accepts_str_cache = {
-        field_name: _type_accepts_str(field_info.annotation)
         for field_name, field_info in model_fields.items()
     }
 

@@ -943,6 +943,7 @@ class TestCompleteWorkflow:
         # Create manager and router
         manager = TestManager()
         router = create_router_from_manager(TestManager, model_registry)
+        assert router.routes
 
         # Test data flow through manager
         # Create

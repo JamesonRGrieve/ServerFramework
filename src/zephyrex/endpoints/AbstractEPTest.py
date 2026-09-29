@@ -2226,12 +2226,19 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
                 actual_value == expected_value
             ), f"Field '{field_name}' should have value '{expected_value}', got '{actual_value}'"
         else:
-            # If the field wasn't in the update data, just verify it exists and has some value,
-            assert updated_entity[field_name] is not None or field_name in [
-                "parent_id",
-                "expires_at",
-                "team",
-            ], f"Field '{field_name}' should have a value or be an allowed nullable field"
+            # A field the update didn't touch is projected as stored: the
+            # response carries the record's actual value (null included),
+            # never a stand-in.
+            stored = server.get(
+                self.get_detail_endpoint(entity_id, path_parent_ids),
+                headers=self._get_appropriate_headers(admin_a.jwt, api_key),
+            )
+            assert stored.status_code == 200, stored.text
+            stored_value = stored.json()[self.entity_name].get(field_name)
+            assert updated_entity[field_name] == stored_value, (
+                f"Field '{field_name}' projected as {updated_entity[field_name]!r}, "
+                f"stored as {stored_value!r}"
+            )
 
     # @pytest.mark.dependency(depends=["test_POST_201"])
     def test_PUT_400(self, server: Any, admin_a: Any, team_a: Any):
