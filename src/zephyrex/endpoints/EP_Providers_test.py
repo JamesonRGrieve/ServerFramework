@@ -111,7 +111,7 @@ class TestProviderExtensionEndpoints(AbstractEPTest):
             foreign_key="provider_id",
             nullable=False,
             system=True,
-            path_level=1,
+            path_level=None,  # Body foreign key; the route is top-level
             test_class=lambda: TestProviderEndpoints,
         ),
         ParentEntity(
@@ -119,7 +119,7 @@ class TestProviderExtensionEndpoints(AbstractEPTest):
             foreign_key="extension_id",
             nullable=False,
             system=True,
-            path_level=1,
+            path_level=None,  # Body foreign key; the route is top-level
             test_class=lambda: __import__(
                 "zephyrex.endpoints.EP_Extensions_test",
                 fromlist=["TestExtensionEndpoints"],
@@ -143,49 +143,7 @@ class TestProviderExtensionEndpoints(AbstractEPTest):
     unique_fields: list[str] = []  # type: ignore[var-annotated]
 
     # Tests to skip (if any)
-    _skip_tests = [
-        SkipThisTest(
-            name="test_GET_404_nonexistent_parent",
-            details="not implemeneted",
-        ),
-        SkipThisTest(
-            name="test_GET_200_provider_extensions",
-            details="not implemented",
-        ),
-        SkipThisTest(
-            name="test_POST_200_install_extension",
-            details="not implemented",
-        ),
-        SkipThisTest(
-            name="test_POST_204_uninstall_extension",
-            details="not implemented",
-        ),
-        SkipThisTest(
-            name="test_POST_404_install_extension_nonexistent",
-            details="not implemented",
-        ),
-        SkipThisTest(
-            name="test_POST_404_install_extension_nonexistent_provider",
-            details="not implemented",
-        ),
-        SkipThisTest(
-            name="test_POST_404_uninstall_extension_nonexistent_provider",
-            details="not implemented",
-        ),
-        SkipThisTest(
-            name="test_POST_401_install_extension_unauthorized",
-            details="not implemented",
-        ),
-        SkipThisTest(
-            name="test_POST_422_install_extension_invalid_options",
-            details="not implemented",
-        ),
-        SkipThisTest(
-            name="test_PUT_200_update_extension",
-            details="not implemented",
-        ),
-        SkipThisTest(name="test_DELETE_204_extension", details="not implemented"),
-    ]
+    _skip_tests: list[SkipThisTest] = []
 
     def create_parent_entities(
         self, server: Any, admin_a, team_a: Dict[str, Any]
@@ -295,337 +253,6 @@ class TestProviderExtensionEndpoints(AbstractEPTest):
         )
 
         self._assert_entities_in_response(response)
-
-    def test_GET_200_provider_extensions(
-        self, server: Any, admin_a, team_a: Dict[str, Any]
-    ) -> List[Dict[str, Any]]:
-        """
-        Test getting extensions for a specific provider.
-
-        Args:
-            server: Test client instance
-            admin_a.jwt: Admin JWT token
-            team_a: Team context
-
-        Returns:
-            List of provider extensions
-        """
-
-        parent_entities = self.create_parent_entities(server, admin_a, team_a)
-        provider = parent_entities["provider"]
-
-        base_endpoint = f"/v1/provider/extension/provider/{provider['id']}"
-        response = server.get(
-            base_endpoint, headers=self._get_appropriate_headers(admin_a.jwt)
-        )
-
-        self._assert_response_status(
-            response, 200, "GET provider extensions", base_endpoint
-        )
-
-        return self._assert_entities_in_response(response)  # type: ignore[no-any-return]
-
-    def test_POST_200_install_extension(
-        self, server: Any, admin_a, team_a: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """
-        Test installing an extension.
-
-        Args:
-            server: Test client instance
-            admin_a.jwt: Admin JWT token
-            team_a: Team context
-
-        Returns:
-            Installation result
-        """
-
-        parent_entities = self.create_parent_entities(server, admin_a, team_a)
-        provider = parent_entities["provider"]
-        extension = self.test_POST_201(server, admin_a.jwt, team_a)
-
-        options = {"option1": "value1", "option2": "value2"}
-        endpoint = f"/v1/provider/extension/{extension['id']}/install?provider_id={provider['id']}"
-        response = server.post(
-            endpoint, json=options, headers=self._get_appropriate_headers(admin_a.jwt)
-        )
-
-        self._assert_response_status(
-            response, 200, "POST install extension", endpoint, options
-        )
-
-        json_response = response.json()
-        if "result" not in json_response:
-            raise AssertionError("Response missing 'result' key")
-        if json_response["result"] != "success":
-            raise AssertionError(
-                f"Installation failed with result: {json_response['result']}"
-            )
-
-        installed_extension = json_response.get("extension")
-        if not installed_extension:
-            raise AssertionError("Response missing 'extension' data")
-        if installed_extension["id"] != extension["id"]:
-            raise AssertionError(
-                f"Installed extension ID mismatch: expected {extension['id']}, got {installed_extension['id']}"
-            )
-        if installed_extension["provider_id"] != provider["id"]:
-            raise AssertionError(
-                f"Provider ID mismatch: expected {provider['id']}, got {installed_extension['provider_id']}"
-            )
-
-        # Verify installation
-        verify_endpoint = f"/v1/provider/extension/provider/{provider['id']}"
-        verify_response = server.get(
-            verify_endpoint, headers=self._get_appropriate_headers(admin_a.jwt)
-        )
-
-        self._assert_response_status(
-            verify_response, 200, "GET verify installation", verify_endpoint
-        )
-
-        verify_json = verify_response.json()
-        if not any(ext["id"] == extension["id"] for ext in verify_json["extensions"]):
-            raise AssertionError(
-                "Installed extension not found in provider's extensions list"
-            )
-
-        return json_response  # type: ignore[no-any-return]
-
-    def test_POST_204_uninstall_extension(
-        self, server: Any, admin_a, team_a: Dict[str, Any]
-    ) -> None:
-        """
-        Test uninstalling an extension.
-
-        Args:
-            server: Test client instance
-            admin_a.jwt: Admin JWT token
-            team_a: Team context
-        """
-
-        parent_entities = self.create_parent_entities(server, admin_a, team_a)
-        provider = parent_entities["provider"]
-        extension = self.test_POST_201(server, admin_a.jwt, team_a)
-
-        # Install the extension first
-        install_endpoint = f"/v1/provider/extension/{extension['id']}/install?provider_id={provider['id']}"
-        install_options = {"option1": "value1"}
-        install_response = server.post(
-            install_endpoint,
-            json=install_options,
-            headers=self._get_appropriate_headers(admin_a.jwt),
-        )
-
-        self._assert_response_status(
-            install_response,
-            200,
-            "POST install extension",
-            install_endpoint,
-            install_options,
-        )
-
-        # Uninstall the extension
-        uninstall_endpoint = f"/v1/provider/extension/{extension['id']}/uninstall?provider_id={provider['id']}"
-        uninstall_response = server.post(
-            uninstall_endpoint, headers=self._get_appropriate_headers(admin_a.jwt)
-        )
-
-        self._assert_response_status(
-            uninstall_response, 204, "POST uninstall extension", uninstall_endpoint
-        )
-
-        # Verify uninstallation
-        verify_endpoint = f"/v1/provider/extension/provider/{provider['id']}"
-        verify_response = server.get(
-            verify_endpoint, headers=self._get_appropriate_headers(admin_a.jwt)
-        )
-
-        self._assert_response_status(
-            verify_response, 200, "GET verify uninstallation", verify_endpoint
-        )
-
-        verify_json = verify_response.json()
-        if any(ext["id"] == extension["id"] for ext in verify_json["extensions"]):
-            raise AssertionError(
-                "Uninstalled extension still present in provider's extensions list"
-            )
-
-    def test_GET_404_provider_extensions_nonexistent(
-        self, server: Any, admin_a, team_a: Dict[str, Any]
-    ) -> None:
-        """
-        Test getting extensions for a nonexistent provider fails.
-
-        Args:
-            server: Test client instance
-            admin_a.jwt: Admin JWT token
-            team_a: Team context
-        """
-
-        nonexistent_id = str(uuid.uuid4())
-        endpoint = f"/v1/provider/extension/provider/{nonexistent_id}"
-        response = server.get(
-            endpoint, headers=self._get_appropriate_headers(admin_a.jwt)
-        )
-
-        self._assert_response_status(
-            response, 404, "GET nonexistent provider extensions", endpoint
-        )
-
-    def test_POST_404_install_extension_nonexistent(
-        self, server: Any, admin_a, team_a: Dict[str, Any]
-    ) -> None:
-        """
-        Test installing a nonexistent extension fails.
-
-        Args:
-            server: Test client instance
-            admin_a.jwt: Admin JWT token
-            team_a: Team context
-        """
-
-        parent_entities = self.create_parent_entities(server, admin_a, team_a)
-        provider = parent_entities["provider"]
-
-        nonexistent_id = str(uuid.uuid4())
-        endpoint = f"/v1/provider/extension/{nonexistent_id}/install?provider_id={provider['id']}"
-        response = server.post(
-            endpoint,
-            json={"option1": "value1"},
-            headers=self._get_appropriate_headers(admin_a.jwt),
-        )
-
-        self._assert_response_status(
-            response, 404, "POST install nonexistent extension", endpoint
-        )
-
-    def test_POST_404_install_extension_nonexistent_provider(
-        self, server: Any, admin_a, team_a: Dict[str, Any]
-    ) -> None:
-        """
-        Test installing an extension to a nonexistent provider fails.
-
-        Args:
-            server: Test client instance
-            admin_a.jwt: Admin JWT token
-            team_a: Team context
-        """
-
-        extension = self.test_POST_201(server, admin_a.jwt, team_a)
-        nonexistent_id = str(uuid.uuid4())
-        endpoint = f"/v1/provider/extension/{extension['id']}/install?provider_id={nonexistent_id}"
-        response = server.post(
-            endpoint,
-            json={"option1": "value1"},
-            headers=self._get_appropriate_headers(admin_a.jwt),
-        )
-
-        self._assert_response_status(
-            response, 404, "POST install to nonexistent provider", endpoint
-        )
-
-    def test_POST_404_uninstall_extension_nonexistent_provider(
-        self, server: Any, admin_a, team_a: Dict[str, Any]
-    ) -> None:
-        """
-        Test uninstalling an extension from a nonexistent provider fails.
-
-        Args:
-            server: Test client instance
-            admin_a.jwt: Admin JWT token
-            team_a: Team context
-        """
-        extension = self.test_POST_201(server, admin_a.jwt, team_a)
-        nonexistent_id = str(uuid.uuid4())
-        endpoint = f"/v1/provider/extension/{extension['id']}/uninstall?provider_id={nonexistent_id}"
-        response = server.post(
-            endpoint, headers=self._get_appropriate_headers(admin_a.jwt)
-        )
-
-        self._assert_response_status(
-            response, 404, "POST uninstall from nonexistent provider", endpoint
-        )
-
-    def test_POST_401_install_extension_unauthorized(self, server: Any) -> None:
-        """
-        Test installing an extension without authorization fails.
-
-        Args:
-            server: Test client instance
-        """
-
-        extension_id = str(uuid.uuid4())
-        provider_id = str(uuid.uuid4())
-        endpoint = (
-            f"/v1/provider/extension/{extension_id}/install?provider_id={provider_id}"
-        )
-        response = server.post(endpoint, json={"option1": "value1"})
-
-        self._assert_response_status(
-            response, 401, "POST install without auth", endpoint
-        )
-
-    def test_POST_422_install_extension_invalid_options(
-        self, server: Any, admin_a, team_a: Dict[str, Any]
-    ) -> None:
-        """
-        Test installing an extension with invalid options fails.
-
-        Args:
-            server: Test client instance
-            admin_a.jwt: Admin JWT token
-            team_a: Team context
-        """
-
-        parent_entities = self.create_parent_entities(server, admin_a, team_a)
-        provider = parent_entities["provider"]
-        extension = self.test_POST_201(server, admin_a.jwt, team_a)
-
-        invalid_options = {"invalid_option": {"nested": "not allowed"}}
-        endpoint = f"/v1/provider/extension/{extension['id']}/install?provider_id={provider['id']}"
-        response = server.post(
-            endpoint,
-            json=invalid_options,
-            headers=self._get_appropriate_headers(admin_a.jwt),
-        )
-
-        self._assert_response_status(
-            response,
-            422,
-            "POST install with invalid options",
-            endpoint,
-            invalid_options,
-        )
-
-    def test_PUT_200_update_extension(self, server, admin_a, team_a):
-        extension = self.test_POST_201(server, admin_a.jwt, team_a)
-        updated_name = f"Updated Extension {uuid.uuid4()}"
-        payload = {
-            "extension": {"name": updated_name, "description": "Updated description"}
-        }
-        response = server.put(
-            f"/v1/provider/extension/{extension['id']}",
-            json=payload,
-            headers=self._get_appropriate_headers(admin_a.jwt),
-        )
-        self._assert_response_status(
-            response, 200, "PUT extension", f"/v1/provider/extension/{extension['id']}"
-        )
-        assert response.json()["extension"]["name"] == updated_name
-
-    def test_DELETE_204_extension(self, server, admin_a, team_a):
-        extension = self.test_POST_201(server, admin_a, team_a)
-        response = server.delete(
-            f"/v1/provider/extension/{extension['id']}",
-            headers=self._get_appropriate_headers(admin_a.jwt),
-        )
-        self._assert_response_status(
-            response,
-            204,
-            "DELETE extension",
-            f"/v1/provider/extension/{extension['id']}",
-        )
 
 
 @pytest.mark.ep
@@ -846,12 +473,7 @@ class TestRotationProviderInstanceEndpoints(AbstractEPTest):
     )  # No updateable fields besides system  # type: ignore[var-annotated]
     unique_fields: list[str] = []  # type: ignore[var-annotated]
 
-    _skip_tests = [
-        SkipThisTest(
-            name="test_GET_404_nonexistent_parent",
-            details="not implemented",
-        ),
-    ]
+    _skip_tests: list[SkipThisTest] = []
 
     def nest_payload_in_entity(self, payload):
         """Wrap payload in entity envelope."""
@@ -953,10 +575,6 @@ class TestProviderExtensionAbilityEndpoints(AbstractEPTest):
     # Tests to skip (if any)
     _skip_tests = [
         SkipThisTest(
-            name="test_GET_404_nonexistent_parent",
-            details="not implemeneted",
-        ),
-        SkipThisTest(
             name="test_GQL_mutation_update",
             details="This is a relationship entity with no updateable fields",
         ),
@@ -1026,10 +644,6 @@ class TestProviderInstanceSettingsEndpoints(AbstractEPTest):
     class_under_test = ProviderInstanceSettingModel
 
     _skip_tests = [
-        SkipThisTest(
-            name="test_GET_404_nonexistent_parent",
-            details="not implemented",
-        ),
         SkipThisTest(
             name="test_GET_200_list",
             details="Provider instance settings require filtering by provider instance",

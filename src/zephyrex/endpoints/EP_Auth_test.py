@@ -673,7 +673,7 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
         ),
         SkipThisTest(
             name="test_GET_200_list",
-            details="Not implemented yet",
+            details="User entity does not have a standard LIST endpoint",
         ),
         SkipThisTest(
             name="test_GET_200_filter",

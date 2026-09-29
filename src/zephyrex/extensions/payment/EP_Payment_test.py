@@ -99,16 +99,8 @@ class TestPayment_UserAndSessionEndpoints(
             details="Users cannot be batch created",
         ),
         SkipThisTest(
-            name="test_POST_200_authorize_body",
-            details="Not implemented yet",
-        ),
-        SkipThisTest(
-            name="test_POST_201_header",
-            details="Not implemented yet",
-        ),
-        SkipThisTest(
             name="test_GET_200_list",
-            details="Not implemented yet",
+            details="User entity does not have a standard LIST endpoint",
         ),
         SkipThisTest(
             name="test_GET_422_list_fields_invalid",

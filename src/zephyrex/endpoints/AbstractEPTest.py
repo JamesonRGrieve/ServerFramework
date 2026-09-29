@@ -1013,27 +1013,21 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
                 "All non-nullable parents are path parents - cannot test null values in URL paths"
             )
 
-        # Create parent IDs with nulls for non-nullable parents
-        parent_ids: Dict[str, Optional[str]] = {}
-        path_parent_ids: Dict[str, str] = {}
-        for parent in self.parent_entities:
-            if not parent.nullable:
-                parent_ids[parent.foreign_key] = None
-                # None string is used later during endpoint creation
-                path_parent_ids[f"{parent.name}_id"] = "None"
-
-        # Create the payload. `parent_ids` intentionally carries `None` for
-        # each non-nullable parent under test here, so it is passed through
-        # a cast: `create_payload` is typed for the common (non-null) case,
-        # but at runtime it simply forwards these values into the request
-        # payload for the server to reject.
+        # Path parents stay real (a missing path parent is a 404, not a body
+        # validation error); each non-nullable body parent is sent as null.
+        _, real_parent_ids, path_parent_ids = self._create_parent_entities(
+            server, admin_a.jwt, admin_a.id, team_a.id, {}
+        )
         payload = {
             self.entity_name: self.create_payload(
                 name=f"Test {self.faker.word()}",
-                parent_ids=cast(Dict[str, str], parent_ids),
+                parent_ids=real_parent_ids,
                 team_id=team_a.id,
             )
         }
+        for parent in non_nullable_parents:
+            if not (parent.path_level in [1, 2] or parent.is_path):
+                payload[self.entity_name][parent.foreign_key] = None
 
         # Make the request
         response = server.post(
@@ -2055,14 +2049,8 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
             ):
                 path_parent_ids[f"{parent.name}_id"] = str(uuid.uuid4())
 
-        # Try to find the parent id in the detail endpoint - this should return 404
-        # NOTE: `path_parent_ids` is passed positionally into `resource_id`
-        # here (the intended `parent_ids` slot is left at its default).
-        # This predates this typing pass; preserved as-is (out of scope for
-        # a types-only change) since correcting the call would change what
-        # URL is requested and could alter the test's pass/fail outcome.
         response = server.get(
-            self.get_detail_endpoint(path_parent_ids),  # type: ignore[arg-type]
+            self.get_list_endpoint(path_parent_ids),
             headers=self._get_appropriate_headers(admin_a.jwt),
         )
 
