@@ -1012,9 +1012,10 @@ class AbstractStaticExtensionSystemComponent(ABC):
         """Return the abilities this extension/provider offers."""
         return cls._abilities.copy()
 
-    def has_ability(self, ability: str) -> bool:
+    @classmethod
+    def has_ability(cls, ability: str) -> bool:
         """Check whether this extension/provider has a specific ability."""
-        return ability in self._abilities
+        return ability in cls.get_abilities()
 
     def __init_subclass__(cls, **kwargs):
         """Automatically register abilities when extension class is defined."""

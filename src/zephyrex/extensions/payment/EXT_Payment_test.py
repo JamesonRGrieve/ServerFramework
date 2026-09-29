@@ -168,11 +168,6 @@ class ConcretePaymentProvider(AbstractPaymentProvider):
         return "TestPayment"
 
     @classmethod
-    def has_ability(cls, ability: str) -> bool:
-        """Check if provider has a specific ability."""
-        return super().has_ability(ability)  # type: ignore[no-any-return]
-
-    @classmethod
     def services(cls) -> List[str]:
         """Return list of services provided by this provider."""
         return ["payment", "billing", "subscription", "commerce"]
@@ -570,11 +565,6 @@ class ConcretePaymentProvider(AbstractPaymentProvider):  # type: ignore[no-redef
         return "TestPayment"
 
     @classmethod
-    def has_ability(cls, ability: str) -> bool:
-        """Check if provider has a specific ability."""
-        return super().has_ability(ability)  # type: ignore[no-any-return]
-
-    @classmethod
     def services(cls) -> List[str]:
         """Return list of services provided by this provider."""
         return ["payment", "billing", "subscription", "commerce"]
@@ -642,11 +632,7 @@ class TestAbstractPaymentProvider:
     @classmethod
     def _check_stripe_configured(cls) -> bool:
         """Check if Stripe is configured in environment."""
-        try:
-            stripe_key = env("STRIPE_SECRET_KEY")
-            return stripe_key and stripe_key != ""  # type: ignore[no-any-return]
-        except Exception:
-            return False
+        return bool(env("STRIPE_SECRET_KEY"))
 
     @pytest.fixture
     def skip_if_no_stripe_config(self):

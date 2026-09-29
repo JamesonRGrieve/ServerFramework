@@ -179,12 +179,6 @@ class AbstractPaymentProvider(AbstractStaticProvider):
             "currency": currency,
         }
 
-    @classmethod
-    @abstractmethod
-    def bond_instance(cls, instance: ProviderInstanceModel) -> AbstractProviderInstance:
-        """Bond a provider instance for API operations."""
-        pass
-
     # Abstract abilities - must be implemented by providers
     @classmethod
     @abstractmethod

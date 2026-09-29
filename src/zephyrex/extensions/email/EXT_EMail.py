@@ -1339,11 +1339,6 @@ class EXT_EMail(AbstractStaticExtension):
         return abilities
 
     @classmethod
-    def has_ability(cls, ability: str) -> bool:
-        """Check if this extension has a specific ability."""
-        return ability in cls.get_abilities()
-
-    @classmethod
     def register_ability(cls, ability: str):
         """Register a new ability with this extension."""
         cls._abilities.add(ability)

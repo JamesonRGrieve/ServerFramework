@@ -294,11 +294,6 @@ class EXT_Database(AbstractStaticExtension):
         return abilities
 
     @classmethod
-    def has_ability(cls, ability: str) -> bool:
-        """Check if this extension has a specific ability."""
-        return ability in cls.get_abilities()
-
-    @classmethod
     async def _rotate_provider(cls, method_name: str, *args: Any, **kwargs: Any) -> Any:
         """Run ``method_name`` on the provider serving each rotated instance,
         with failover. Database providers are configured from the
