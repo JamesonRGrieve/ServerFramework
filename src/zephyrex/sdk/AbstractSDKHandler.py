@@ -559,9 +559,17 @@ class AbstractSDKHandler(ABC):
         endpoint: str,
         params: Optional[Dict[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
+        resource_name: str = "resource",
     ) -> Dict[str, Any]:
-        """Make a GET request."""
-        return self._request("GET", endpoint, query_params=params, headers=headers)
+        """Make a GET request. ``resource_name`` labels errors (e.g. which
+        resource a 404 refers to)."""
+        return self._request(
+            "GET",
+            endpoint,
+            query_params=params,
+            headers=headers,
+            resource_name=resource_name,
+        )
 
     def post(
         self,
