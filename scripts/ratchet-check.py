@@ -73,7 +73,9 @@ def _count_mypy_errors() -> int:
 
 def _count_black_violations() -> int:
     result = subprocess.run(
-        [sys.executable, "-m", "black", "--check", "--quiet", "src/zephyrex/"],
+        # No --quiet: it suppresses the "would reformat" lines counted below,
+        # which made this metric read 0 regardless of the tree.
+        [sys.executable, "-m", "black", "--check", "src/zephyrex/"],
         capture_output=True,
         text=True,
         timeout=60,

@@ -1925,7 +1925,9 @@ class AbstractStaticExtension(
                     # Also check if it inherits from AbstractExternalModel
                     elif obj.__module__ == module.__name__:
                         try:
-                            from zephyrex.pydantic2.registry import AbstractExternalModel
+                            from zephyrex.pydantic2.registry import (
+                                AbstractExternalModel,
+                            )
 
                             # Only add concrete subclasses, not the abstract base class itself
                             if (
