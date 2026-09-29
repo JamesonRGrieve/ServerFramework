@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 
 import pytest
 from faker import Faker
+from fastapi import HTTPException
 
 from zephyrex.AbstractTest import ParentEntity
 from zephyrex.database.AbstractDBTest import AbstractDBTest
@@ -87,6 +88,22 @@ class TestUser(AbstractDBTest):
         retrieved = self._get_user_as(team_user.id, isolated_user.id)
         assert retrieved is not None, "Real account is not visible for VIEW"
         assert retrieved["id"] == isolated_user.id, "Retrieved wrong user"
+
+    @pytest.mark.parametrize("system_id_var", ["ROOT_ID", "SYSTEM_ID", "TEMPLATE_ID"])
+    def test_system_accounts_are_not_visible(
+        self, server, model_registry, system_id_var
+    ):
+        """The system accounts are excluded from the users-table VIEW rule; the
+        generic grant on SYSTEM-created rows (which is how they are seeded)
+        must not expose them either."""
+        self._server = server
+        self.model_registry = model_registry
+        self.ensure_model(server)
+        user = create_user(server, email=generate_test_email("no_system_accounts"))
+
+        with pytest.raises(HTTPException) as denied:
+            self._get_user_as(user.id, env(system_id_var))
+        assert denied.value.status_code == 404
 
     def test_team_based_user_visibility(self, server, model_registry):
         """Members of the same team can see each other."""

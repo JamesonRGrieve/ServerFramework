@@ -1456,9 +1456,11 @@ def generate_permission_filter(
                 ]:
                     return false()
 
+    # The users table has its own complete VIEW rule (section 5); the system
+    # accounts are SYSTEM-created, so this grant would expose them.
     if hasattr(
         resource_db_cls, "created_by_user_id"
-    ) and resource_db_cls.__tablename__ not in ["invitations", "Invitees"]:
+    ) and resource_db_cls.__tablename__ not in ["invitations", "Invitees", "users"]:
         # SYSTEM_ID-created records: viewable by all (grant); EDIT/DELETE restricted
         # to ROOT_ID and SYSTEM_ID via the universal-deny return below.
         if required_permission_level == PermissionType.VIEW:
