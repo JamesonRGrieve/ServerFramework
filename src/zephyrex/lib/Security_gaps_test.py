@@ -2357,27 +2357,31 @@ class TestDeepAuditTarTraversal:
 class TestDeepAuditOAuthTiming:
     @pytest.mark.security
     def test_oauth_client_secret_comparison_is_constant_time(self):
-        """OAuth client_secret comparison must use hmac.compare_digest."""
-        try:
-            from zephyrex.extensions.auth_oauth2_client.EXT_Auth_OAuth2Client import (
-                EXT_Auth_OAuth2Client,
-            )
-            import inspect
+        """OAuth client_secret comparison must use hmac.compare_digest.
 
-            source = inspect.getsource(EXT_Auth_OAuth2Client)
-            lines = source.split("\n")
-            for i, line in enumerate(lines):
+        Reads the extension's source files from disk rather than via
+        inspect.getsource on an imported class, which depends on how (and
+        under which module name) the class was loaded in this worker."""
+        from pathlib import Path
+
+        import zephyrex.extensions.auth_oauth2_client as package
+
+        sources = [
+            path
+            for path in Path(next(iter(package.__path__))).glob("*.py")
+            if not path.name.endswith("_test.py")
+        ]
+        assert sources
+        for path in sources:
+            for number, line in enumerate(path.read_text().splitlines(), 1):
                 stripped = line.strip()
-                if "client_secret" in stripped and (
+                if (
                     "!= client_secret" in stripped or "== client_secret" in stripped
-                ):
-                    if "compare_digest" not in stripped:
-                        assert False, (
-                            f"Line {i}: client_secret compared with ==/!= "
-                            "instead of hmac.compare_digest — timing oracle"
-                        )
-        except ImportError:
-            pytest.skip("auth_oauth2_client extension not available")
+                ) and "compare_digest" not in stripped:
+                    pytest.fail(
+                        f"{path.name}:{number}: client_secret compared with ==/!= "
+                        "instead of hmac.compare_digest (timing oracle)"
+                    )
 
 
 class TestDeepAuditPagination:
