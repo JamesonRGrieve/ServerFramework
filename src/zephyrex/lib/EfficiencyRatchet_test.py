@@ -96,7 +96,10 @@ class TestRatchetScalingIntegration:
                 if i not in acc:  # O(len(acc)) each iteration -> O(n^2)
                     acc.append(i)
 
-        ER.ratchet_scaling("demo_quad", quadratic, sizes=[300, 600, 1200])
+        # Sizes large enough that the O(n^2) C-level scans dwarf the O(n)
+        # Python loop overhead; at a few hundred elements the two are close
+        # and a loaded machine could fit an exponent near 1.
+        ER.ratchet_scaling("demo_quad", quadratic, sizes=[1000, 2000, 4000])
         assert ER._load()["scaling:demo_quad"] > 1.5
 
     def test_detects_linear(self):
