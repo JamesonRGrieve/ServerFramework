@@ -6,6 +6,7 @@ acceptable per AGENTS.md `@pytest.mark.unit`.
 
 from __future__ import annotations
 
+import asyncio
 import warnings
 from typing import Any, List
 from unittest.mock import MagicMock
@@ -858,3 +859,107 @@ def test_rotation_telemetry_failure_does_not_break_rotation():
             rm._restore_db()
     finally:
         reset_metrics_backend()
+
+
+# ---------------------------------------------------------------------------
+# arotate: async callables get the same policy
+#
+# Every async ability (database, email) used to ``await rm.rotate(...)``:
+# the sync rotation returned the un-run coroutine as the "successful" result,
+# so a provider failing inside it escaped retry and failover entirely.
+# ---------------------------------------------------------------------------
+
+
+def _two_providers():
+    a = MagicMock()
+    a.name = "prov-A"
+    a.provider_class = type(
+        "P",
+        (),
+        {
+            "rotation_policy": RotationPolicy(
+                transient_max_retries=2,
+                transient_base_ms=1,
+                transient_max_ms=1,
+                transient_jitter=0.0,
+            )
+        },
+    )
+    b = MagicMock()
+    b.name = "prov-B"
+    return a, b
+
+
+@pytest.mark.unit
+def test_arotate_advances_when_an_awaited_attempt_fails():
+    a, b = _two_providers()
+    rm = _make_rotation_manager_with_fake_instances([a, b])
+    seen = []
+
+    async def call(inst):
+        seen.append(inst.name)
+        if inst.name == "prov-A":
+            raise AuthExternalError("401")
+        return "B-ok"
+
+    try:
+        assert asyncio.run(rm.arotate(call)) == "B-ok"
+        assert seen == ["prov-A", "prov-B"]
+    finally:
+        rm._restore_db()
+
+
+@pytest.mark.unit
+def test_arotate_retries_transient_failures_without_blocking_the_loop(monkeypatch):
+    a, b = _two_providers()
+    rm = _make_rotation_manager_with_fake_instances([a, b])
+    waits = []
+
+    async def recording_sleep(seconds):
+        waits.append(seconds)
+
+    def blocking_sleep(_seconds):
+        raise AssertionError("arotate blocked the event loop with time.sleep")
+
+    monkeypatch.setattr(_bll_mod.asyncio, "sleep", recording_sleep)
+    monkeypatch.setattr(_bll_mod.time, "sleep", blocking_sleep)
+    calls = {"a": 0, "b": 0}
+
+    async def call(inst):
+        if inst.name == "prov-A":
+            calls["a"] += 1
+            raise TransientExternalError("503")
+        calls["b"] += 1
+        return "B-ok"
+
+    try:
+        assert asyncio.run(rm.arotate(call)) == "B-ok"
+        assert calls == {"a": 3, "b": 1}
+        assert len(waits) == 2
+    finally:
+        rm._restore_db()
+
+
+@pytest.mark.unit
+def test_arotate_reraises_invalid_input_raised_by_the_coroutine():
+    a, _ = _two_providers()
+    rm = _make_rotation_manager_with_fake_instances([a])
+
+    async def call(_inst):
+        raise InvalidInputExternalError("bad args")
+
+    try:
+        with pytest.raises(InvalidInputExternalError):
+            asyncio.run(rm.arotate(call))
+    finally:
+        rm._restore_db()
+
+
+@pytest.mark.unit
+def test_arotate_accepts_a_sync_callable():
+    a, _ = _two_providers()
+    rm = _make_rotation_manager_with_fake_instances([a])
+    try:
+        assert asyncio.run(rm.arotate(lambda inst: inst.name)) == "prov-A"
+    finally:
+        rm._restore_db()

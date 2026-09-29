@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import inspect
 import random
 import time
@@ -7,7 +8,19 @@ import uuid
 import warnings
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Any, ClassVar, Dict, Iterator, List, Literal, Optional, Tuple
+from typing import (
+    Any,
+    Callable,
+    ClassVar,
+    Dict,
+    Generator,
+    Iterator,
+    List,
+    Literal,
+    Optional,
+    Tuple,
+    Union,
+)
 
 import stringcase
 from fastapi import HTTPException
@@ -63,6 +76,77 @@ def _resolve_provider_name(provider_class: Any, *, warn_missing: bool = False) -
             name,
         )
     return name
+
+
+@dataclass(frozen=True)
+class _CallProvider:
+    """Rotation step: call the rotated callable with this provider instance.
+    The driver sends back the result or throws the raised exception into the
+    step generator, where the rotation policy handles it."""
+
+    provider_instance: Any
+    args: tuple
+    kwargs: Dict[str, Any]
+
+
+@dataclass(frozen=True)
+class _Wait:
+    """Rotation step: back off for ``seconds`` before continuing."""
+
+    seconds: float
+
+
+RotationSteps = Generator[Union[_CallProvider, _Wait], Any, Any]
+
+
+def _drive_rotation(steps: RotationSteps, callable_func: Callable[..., Any]) -> Any:
+    """Run rotation steps synchronously (``RotationManager.rotate``)."""
+    try:
+        step = next(steps)
+        while True:
+            if isinstance(step, _Wait):
+                time.sleep(step.seconds)
+                step = steps.send(None)
+                continue
+            try:
+                result = callable_func(
+                    step.provider_instance, *step.args, **step.kwargs
+                )
+            except Exception as exc:
+                step = steps.throw(exc)
+            else:
+                step = steps.send(result)
+    except StopIteration as done:
+        return done.value
+
+
+async def _adrive_rotation(
+    steps: RotationSteps, callable_func: Callable[..., Any]
+) -> Any:
+    """Run rotation steps on the event loop (``RotationManager.arotate``).
+
+    The callable's awaitable is awaited inside the attempt, so a failing
+    coroutine is retried/advanced by the rotation policy, and backoff waits
+    do not block the loop."""
+    try:
+        step = next(steps)
+        while True:
+            if isinstance(step, _Wait):
+                await asyncio.sleep(step.seconds)
+                step = steps.send(None)
+                continue
+            try:
+                result = callable_func(
+                    step.provider_instance, *step.args, **step.kwargs
+                )
+                if inspect.isawaitable(result):
+                    result = await result
+            except Exception as exc:
+                step = steps.throw(exc)
+            else:
+                step = steps.send(result)
+    except StopIteration as done:
+        return done.value
 
 
 def root_rotation_name(extension_name: str) -> str:
@@ -613,7 +697,7 @@ class ProviderInstanceModel(
     NameMixinModel,
     UserModel.Reference.Optional,
     TeamModel.Reference.Optional,
-    ProviderModel.Reference,  # type: ignore[name-defined]
+    ProviderModel.Reference,
     metaclass=ModelMeta,
 ):
     model_name: Optional[str] | None = None
@@ -1039,7 +1123,6 @@ class RotationModel(
     @classmethod
     def seed_data(cls, model_registry=None) -> List[Dict[str, Any]]:
         """Create root rotations for each discovered extension."""
-        from zephyrex.lib.Environment import inflection
 
         try:
             logger.debug("Creating root rotations for seeding...")
@@ -1361,15 +1444,15 @@ class RotationManager(AbstractBLLManager, RouterMixin):
             return str(user_id)
         return "unknown"
 
-    def _backoff_sleep(
+    def _backoff_delay(
         self, base_ms: int, max_ms: int, jitter: float, attempt: int
-    ) -> None:
+    ) -> _Wait:
         """Exponential backoff with jitter; honors `max_ms` ceiling."""
         delay_ms = min(max_ms, base_ms * (2 ** max(0, attempt - 1)))
         if jitter > 0:
             factor = 1.0 + random.uniform(-jitter, jitter)
             delay_ms = max(0.0, delay_ms * factor)
-        time.sleep(delay_ms / 1000.0)
+        return _Wait(delay_ms / 1000.0)
 
     def _sticky_pin_usable(self, rpi) -> bool:
         """Item 51: a pinned RPI is usable iff it is not under an active
@@ -1380,8 +1463,10 @@ class RotationManager(AbstractBLLManager, RouterMixin):
             return True
         return time.monotonic() >= cooldown_expires
 
-    def _attempt_pinned(self, rpi, callable_func, args, kwargs):
-        """Item 51: run `callable_func` against the pinned RPI exactly once.
+    def _attempt_pinned(
+        self, rpi, args, kwargs
+    ) -> Generator[_CallProvider, Any, Tuple[Any, bool]]:
+        """Item 51: run the rotated callable against the pinned RPI exactly once.
 
         Returns ``(result, succeeded)`` so the caller can refresh the
         sticky pin TTL on success or fall through to the surviving-chain
@@ -1406,7 +1491,7 @@ class RotationManager(AbstractBLLManager, RouterMixin):
         if not provider_instance:
             return None, False
         try:
-            result = callable_func(provider_instance, *args, **kwargs)
+            result = yield _CallProvider(provider_instance, args, kwargs)
             return result, True
         except Exception as exc:
             policy_mod = self._load_rotation_policy_module()
@@ -1459,7 +1544,26 @@ class RotationManager(AbstractBLLManager, RouterMixin):
 
         Raises:
             HTTPException: If all providers fail, includes list of attempted providers
+
+        For a callable that returns an awaitable, use :meth:`arotate`: this
+        synchronous driver would return the un-run coroutine as the
+        "successful" result, so its failures would escape the policy.
         """
+        return _drive_rotation(self._rotation_steps(args, kwargs), callable_func)
+
+    async def arotate(self, callable_func, *args, **kwargs):
+        """:meth:`rotate` for async callables.
+
+        Each attempt's awaitable is awaited inside the attempt, so failures
+        raised while it runs get the same retry/advance/re-raise policy as
+        synchronous ones, and backoff waits yield to the event loop.
+        """
+        return await _adrive_rotation(self._rotation_steps(args, kwargs), callable_func)
+
+    def _rotation_steps(self, args, kwargs) -> RotationSteps:
+        """The rotation itself, as steps for a driver to execute (see
+        :class:`_CallProvider` / :class:`_Wait`), so the sync and async entry
+        points share one implementation of the policy."""
         from fastapi import HTTPException
 
         # Item 51 — extract sticky-session controls before passing kwargs through.
@@ -1531,8 +1635,8 @@ class RotationManager(AbstractBLLManager, RouterMixin):
                     None,
                 )
                 if pinned_rpi is not None and self._sticky_pin_usable(pinned_rpi):
-                    pin_result, pin_succeeded = self._attempt_pinned(
-                        pinned_rpi, callable_func, args, kwargs
+                    pin_result, pin_succeeded = yield from self._attempt_pinned(
+                        pinned_rpi, args, kwargs
                     )
                     if pin_succeeded:
                         # Refresh TTL on success.
@@ -1552,7 +1656,7 @@ class RotationManager(AbstractBLLManager, RouterMixin):
                     # Unhealthy or vanished pin — drop and fall through.
                     _sticky_invalidate(sticky_key, ability)
 
-        attempted_providers = []
+        attempted_providers: List[Dict[str, Any]] = []
         attempted_provider_instances: List[Any] = []
         policy_mod = self._load_rotation_policy_module()
 
@@ -1573,18 +1677,19 @@ class RotationManager(AbstractBLLManager, RouterMixin):
             rotate_span_cm = None
 
         try:
-            return self._rotate_chain(
-                callable_func,
-                args,
-                kwargs,
-                ordered_chain=ordered_chain,
-                ability=ability,
-                sticky_key=sticky_key,
-                policy_mod=policy_mod,
-                attempted_providers=attempted_providers,
-                attempted_provider_instances=attempted_provider_instances,
-                metrics=metrics,
-                usd_quota=usd_quota,
+            return (
+                yield from self._rotate_chain(
+                    args,
+                    kwargs,
+                    ordered_chain=ordered_chain,
+                    ability=ability,
+                    sticky_key=sticky_key,
+                    policy_mod=policy_mod,
+                    attempted_providers=attempted_providers,
+                    attempted_provider_instances=attempted_provider_instances,
+                    metrics=metrics,
+                    usd_quota=usd_quota,
+                )
             )
         finally:
             if rotate_span_cm is not None:
@@ -1595,7 +1700,6 @@ class RotationManager(AbstractBLLManager, RouterMixin):
 
     def _rotate_chain(
         self,
-        callable_func,
         args,
         kwargs,
         *,
@@ -1607,7 +1711,7 @@ class RotationManager(AbstractBLLManager, RouterMixin):
         attempted_provider_instances,
         metrics,
         usd_quota=None,
-    ):
+    ) -> RotationSteps:
         """Item 34 — extracted body of `rotate()` so the parent
         rotation span (and the attempt-span / metrics emissions) can
         wrap the chain-walk without re-indenting the whole method.
@@ -1731,7 +1835,7 @@ class RotationManager(AbstractBLLManager, RouterMixin):
                                 ability=str(ability or "unknown"),
                                 period=str(getattr(usd_quota, "period", "unknown")),
                             )
-                    result = callable_func(provider_instance, *args, **kwargs)
+                    result = yield _CallProvider(provider_instance, args, kwargs)
                     # Success metrics — Item 34. Emission is best-effort.
                     elapsed_ms = (time.monotonic() - attempt_started_at) * 1000.0
                     _safe_metric(
@@ -1836,17 +1940,12 @@ class RotationManager(AbstractBLLManager, RouterMixin):
                 except Exception as exc:
                     # Item 84 — USD-cap pre-check refusal must surface
                     # immediately (operator-visible quota error), not get
-                    # absorbed by the back-compat advance path. The quota
-                    # module lives in an optional extension; degrade
-                    # gracefully if it isn't installed.
-                    try:
-                        from zephyrex.extensions.quota.BLL_Quota import (
-                            QuotaExhaustedError as _QE,
-                        )
-                    except ImportError:
-                        _QE = None  # type: ignore[assignment]
+                    # absorbed by the back-compat advance path.
+                    from zephyrex.extensions.quota.BLL_Quota import (
+                        QuotaExhaustedError,
+                    )
 
-                    if _QE is not None and isinstance(exc, _QE):
+                    if isinstance(exc, QuotaExhaustedError):
                         raise
                     # Item 34 — emit per-attempt failure counter. Skip
                     # rate-limit (we stay on the same provider, the
@@ -1882,9 +1981,11 @@ class RotationManager(AbstractBLLManager, RouterMixin):
                             )
                             wait = getattr(exc, "retry_after_seconds", None)
                             if wait is not None:
-                                time.sleep(float(wait))
+                                yield _Wait(float(wait))
                             else:
-                                self._backoff_sleep(base, mx, 0.1, rate_limit_attempt)
+                                yield self._backoff_delay(
+                                    base, mx, 0.1, rate_limit_attempt
+                                )
                             # Stay on the same provider; do not advance.
                             last_exception = exc
                             continue
@@ -1950,7 +2051,9 @@ class RotationManager(AbstractBLLManager, RouterMixin):
                                     if policy
                                     else 0.1
                                 )
-                                self._backoff_sleep(base, mx, jit, transient_attempt)
+                                yield self._backoff_delay(
+                                    base, mx, jit, transient_attempt
+                                )
                                 last_exception = exc
                                 continue
                             attempted_providers.append(
@@ -2078,9 +2181,9 @@ class RotationManager(AbstractBLLManager, RouterMixin):
                 str(getattr(first_pi, "name", "unknown")) if first_pi else "unknown"
             )
             ability_name = str(ability or "unknown")
-            key = (provider_name, ability_name)
-            RotationManager._silent_drop_counter[key] = (
-                RotationManager._silent_drop_counter.get(key, 0) + 1
+            drop_key = (provider_name, ability_name)
+            RotationManager._silent_drop_counter[drop_key] = (
+                RotationManager._silent_drop_counter.get(drop_key, 0) + 1
             )
             logger.warning(
                 "provider_silent_drop provider=%s ability=%s rotation=%s "
@@ -2174,7 +2277,6 @@ class RotationProviderInstanceModel(
     @classmethod
     def seed_data(cls, model_registry=None) -> List[Dict[str, Any]]:
         """Create links between root rotations and provider instances."""
-        from zephyrex.lib.Environment import inflection
 
         try:
             logger.debug(
