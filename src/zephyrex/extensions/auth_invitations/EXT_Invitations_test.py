@@ -81,7 +81,7 @@ class TestImportRegistersHooks:
             "apply_to_user",
             "invitation_manager_factory",
             "invitee_manager_factory",
-            "list_invitees_for_user",
+            "pending_invitations_for_user",
             "invitation_db_class",
             "invitee_db_class",
         ):

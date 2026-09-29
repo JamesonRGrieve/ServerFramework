@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Canonical invitation/invitee models and managers (Scope #4 — moved from core).
 
 Owns:
@@ -19,6 +20,7 @@ from zephyrex.lib.DateTimeUtils import ensure_utc
 
 from fastapi import HTTPException, status
 from pydantic import Field, model_validator
+from sqlalchemy import or_
 
 from zephyrex.lib.Environment import env
 from zephyrex.lib.Logging import logger
@@ -41,6 +43,84 @@ from zephyrex.logic.BLL_Auth import (
     UserModel,
     UserTeamManager,
 )
+
+
+def _expired(expires_at: Optional[datetime]) -> bool:
+    return expires_at is not None and ensure_utc(expires_at) < datetime.now(
+        timezone.utc
+    )
+
+
+def _assert_unexpired(invitation: Any) -> None:
+    if _expired(invitation.expires_at):
+        raise HTTPException(status_code=410, detail="Invitation has expired")
+
+
+def _assert_redeemable(invitation: Any, model_registry: Any) -> None:
+    """410 when the invitation expired or its uses are spent."""
+    _assert_unexpired(invitation)
+    if invitation.max_uses is None:
+        return
+    InviteeDB = InviteeModel.DB(model_registry.DB.manager.Base)
+    used_count = InviteeDB.count(
+        requester_id=env("ROOT_ID"),
+        model_registry=model_registry,
+        invitation_id=invitation.id,
+        filters=[InviteeDB.accepted_at.isnot(None)],
+    )
+    if used_count >= invitation.max_uses:
+        raise HTTPException(
+            status_code=410, detail="Invitation has reached maximum usage limit"
+        )
+
+
+def _live(model: Any, model_registry: Any, not_found: str, **match: Any) -> Any:
+    """The unrevoked ``model`` row matching ``match``, else 404. Read as
+    root, which would otherwise see revoked rows: the caller's right to act
+    on it is checked by the caller (a code in hand, a matching email)."""
+    db_cls = model.DB(model_registry.DB.manager.Base)
+    row = db_cls.get(
+        requester_id=env("ROOT_ID"),
+        model_registry=model_registry,
+        filters=[db_cls.deleted_at.is_(None)],
+        allow_nonexistent=True,
+        return_type="dto",
+        override_dto=model,
+        **match,
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail=not_found)
+    return row
+
+
+def _invitation_by_code(code: str, model_registry: Any) -> "InvitationModel":
+    invitation: InvitationModel = _live(
+        InvitationModel, model_registry, "Invalid invitation code", code=code
+    )
+    return invitation
+
+
+def _grant_membership(
+    *,
+    requester_id: str,
+    user_id: str,
+    team_id: str,
+    role_id: str,
+    model_registry: Any,
+) -> str:
+    """Put the user on the team with the invited role, re-enabling an
+    existing membership; returns the membership id."""
+    user_team_manager = UserTeamManager(
+        requester_id=requester_id, target_id=user_id, model_registry=model_registry
+    )
+    existing = user_team_manager.list(user_id=user_id, team_id=team_id)
+    if existing:
+        user_team_manager.update(id=existing[0].id, role_id=role_id, enabled=True)
+        return str(existing[0].id)
+    created = user_team_manager.create(
+        user_id=user_id, team_id=team_id, role_id=role_id, enabled=True
+    )
+    return str(created.id)
 
 
 class InvitationModel(
@@ -73,8 +153,8 @@ class InvitationModel(
             None, description="Maximum number of uses allowed"
         )
         expires_at: Optional[datetime] = Field(None, description="Expiration date/time")
-        email: Optional[str] = Field(
-            None, description="Email address of the invitee (if known)"
+        email: Optional[Union[str, List[str]]] = Field(
+            None, description="Email address(es) of the invitee(s) (if known)"
         )
 
         @model_validator(mode="after")
@@ -473,7 +553,14 @@ class InvitationManager(AbstractBLLManager, RouterMixin):
 
         elif patch_data.invitee_id:
             try:
-                invitee = self.invitees.get(id=patch_data.invitee_id)
+                # The matching email is what entitles the caller to answer:
+                # the row may predate their account, so it is read as root.
+                invitee = _live(
+                    InviteeModel,
+                    self.model_registry,
+                    "Invitation not found",
+                    id=patch_data.invitee_id,
+                )
                 user_manager = UserManager(
                     requester_id=env("ROOT_ID"), model_registry=self.model_registry
                 )
@@ -491,29 +578,31 @@ class InvitationManager(AbstractBLLManager, RouterMixin):
                     raise HTTPException(
                         status_code=409, detail="Invitation was previously declined"
                     )
-                invitation = self.get(id=invitee.invitation_id)
-                if invitation.expires_at:
-                    expires_at = ensure_utc(invitation.expires_at)
-                    if expires_at < datetime.now(timezone.utc):
-                        raise HTTPException(
-                            status_code=410, detail="Invitation has expired"
-                        )
+                invitation = _live(
+                    InvitationModel,
+                    self.model_registry,
+                    "Invitation not found",
+                    id=invitee.invitation_id,
+                )
+                _assert_unexpired(invitation)
+                answer = InviteeManager(
+                    requester_id=env("ROOT_ID"), model_registry=self.model_registry
+                )
 
                 if patch_data.action and patch_data.action.lower() == "decline":
-                    self.invitees.update(
+                    answer.update(
                         id=invitee.id,
                         declined_at=datetime.now(timezone.utc),
                         user_id=user_id,
                     )
-                    if invitation.team_id and invitation.role_id:
-                        return {
-                            "success": True,
-                            "message": "Invitation declined successfully via invitee ID",
-                            "team_id": invitation.team_id,
-                            "role_id": invitation.role_id,
-                        }
+                    return {
+                        "success": True,
+                        "message": "Invitation declined successfully via invitee ID",
+                        "team_id": invitation.team_id,
+                        "role_id": invitation.role_id,
+                    }
 
-                self.invitees.update(
+                answer.update(
                     id=invitee.id,
                     accepted_at=datetime.now(timezone.utc),
                     user_id=user_id,
@@ -521,30 +610,13 @@ class InvitationManager(AbstractBLLManager, RouterMixin):
 
                 user_team_id = None
                 if invitation.team_id and invitation.role_id:
-                    user_team_manager = UserTeamManager(
+                    user_team_id = _grant_membership(
                         requester_id=env("ROOT_ID"),
-                        target_id=user.id,
-                        model_registry=self.model_registry,
-                    )
-                    existing_memberships = user_team_manager.list(
                         user_id=user_id,
                         team_id=invitation.team_id,
+                        role_id=invitation.role_id,
+                        model_registry=self.model_registry,
                     )
-                    if existing_memberships:
-                        user_team = user_team_manager.update(
-                            id=existing_memberships[0].id,
-                            role_id=invitation.role_id,
-                            enabled=True,
-                        )
-                        user_team_id = existing_memberships[0].id
-                    else:
-                        user_team = user_team_manager.create(
-                            user_id=user_id,
-                            team_id=invitation.team_id,
-                            role_id=invitation.role_id,
-                            enabled=True,
-                        )
-                        user_team_id = user_team.id
 
                 return {
                     "success": True,
@@ -576,8 +648,23 @@ class InvitationManager(AbstractBLLManager, RouterMixin):
         if not patch_data:
             raise HTTPException(status_code=400, detail="Missing invitation data")
         patch_model = InvitationModel.Patch(**patch_data)
-        result = self.patch_invitation_unified(patch_model, self.requester.id)
-        return result
+        # The code or invitee must belong to the invitation in the path.
+        if self._invitation_id_for(patch_model) != id:
+            raise HTTPException(status_code=404, detail="Invitation not found")
+        return self.patch_invitation_unified(patch_model, self.requester.id)
+
+    def _invitation_id_for(self, patch_data: "InvitationModel.Patch") -> str:
+        if patch_data.invitation_code:
+            return str(
+                _invitation_by_code(patch_data.invitation_code, self.model_registry).id
+            )
+        invitee = _live(
+            InviteeModel,
+            self.model_registry,
+            "Invitation not found",
+            id=patch_data.invitee_id,
+        )
+        return str(invitee.invitation_id)
 
 
 class InviteeModel(
@@ -637,32 +724,8 @@ class InviteeManager(AbstractBLLManager):
             )
 
     def accept_invitation_by_email(self, code: str, email: str) -> Dict[str, Any]:
-        invitation = InvitationModel.DB(self.model_registry.DB.manager.Base).get(
-            requester_id=env("ROOT_ID"),
-            model_registry=self.model_registry,
-            code=code,
-            return_type="dto",
-            override_dto=InvitationModel,
-        )
-        if not invitation:
-            raise HTTPException(status_code=404, detail="Invalid invitation code")
-        if invitation.expires_at:
-            expires_at = ensure_utc(invitation.expires_at)
-            if expires_at < datetime.now(timezone.utc):
-                raise HTTPException(status_code=410, detail="Invitation has expired")
-        if invitation.max_uses is not None:
-            InviteeDB = InviteeModel.DB(self.model_registry.DB.manager.Base)
-            used_count = InviteeDB.count(
-                requester_id=env("ROOT_ID"),
-                model_registry=self.model_registry,
-                invitation_id=invitation.id,
-                filters=[InviteeDB.accepted_at.isnot(None)],
-            )
-            if used_count >= invitation.max_uses:
-                raise HTTPException(
-                    status_code=410,
-                    detail="Invitation has reached maximum usage limit",
-                )
+        invitation = _invitation_by_code(code, self.model_registry)
+        _assert_redeemable(invitation, self.model_registry)
 
         existing_invitees = InviteeModel.DB(self.model_registry.DB.manager.Base).list(
             requester_id=env("ROOT_ID"),
@@ -687,15 +750,8 @@ class InviteeManager(AbstractBLLManager):
         }
 
     def decline_invitation(self, code: str) -> Dict[str, Any]:
-        invitation = InvitationModel.DB(self.model_registry.DB.manager.Base).get(
-            requester_id=env("ROOT_ID"),
-            model_registry=self.model_registry,
-            code=code,
-            return_type="dto",
-            override_dto=InvitationModel,
-        )
-        if not invitation:
-            raise HTTPException(status_code=404, detail="Invalid invitation code")
+        invitation = _invitation_by_code(code, self.model_registry)
+        _assert_unexpired(invitation)
         user = UserModel.DB(self.model_registry.DB.manager.Base).get(
             requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
@@ -735,32 +791,15 @@ class InviteeManager(AbstractBLLManager):
         }
 
     def accept_invitation(self, code: str, user_id: str) -> Dict[str, Any]:
-        invitation = InvitationModel.DB(self.model_registry.DB.manager.Base).get(
-            requester_id=env("ROOT_ID"),
-            model_registry=self.model_registry,
-            code=code,
-            return_type="dto",
-            override_dto=InvitationModel,
-        )
-        if not invitation:
-            raise HTTPException(status_code=404, detail="Invalid invitation code")
-        if invitation.expires_at:
-            expires_at = ensure_utc(invitation.expires_at)
-            if expires_at < datetime.now(timezone.utc):
-                raise HTTPException(status_code=410, detail="Invitation has expired")
-        if invitation.max_uses is not None:
-            InviteeDB = InviteeModel.DB(self.model_registry.DB.manager.Base)
-            used_count = InviteeDB.count(
-                requester_id=env("ROOT_ID"),
-                model_registry=self.model_registry,
-                invitation_id=invitation.id,
-                filters=[InviteeDB.accepted_at.isnot(None)],
+        invitation = _invitation_by_code(code, self.model_registry)
+        _assert_redeemable(invitation, self.model_registry)
+        # Only team invitations carry a code (see InvitationManager.create).
+        if not (
+            invitation.team_id and invitation.role_id and invitation.created_by_user_id
+        ):
+            raise HTTPException(
+                status_code=409, detail="Invitation grants no team membership"
             )
-            if used_count >= invitation.max_uses:
-                raise HTTPException(
-                    status_code=410,
-                    detail="Invitation has reached maximum usage limit",
-                )
         user = UserModel.DB(self.model_registry.DB.manager.Base).get(
             requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
@@ -799,34 +838,18 @@ class InviteeManager(AbstractBLLManager):
                 user_id=user_id,
             )
 
-        user_team_manager = UserTeamManager(
+        user_team_id = _grant_membership(
             requester_id=invitation.created_by_user_id,
-            target_id=user_id,
-            model_registry=self.model_registry,
-        )
-        existing_team_membership = user_team_manager.list(
             user_id=user_id,
             team_id=invitation.team_id,
+            role_id=invitation.role_id,
+            model_registry=self.model_registry,
         )
-        if existing_team_membership:
-            user_team = user_team_manager.update(
-                id=existing_team_membership[0].id,
-                role_id=invitation.role_id,
-                enabled=True,
-            )
-        else:
-            user_team = user_team_manager.create(
-                user_id=user_id,
-                team_id=invitation.team_id,
-                role_id=invitation.role_id,
-                enabled=True,
-            )
-
         return {
             "success": True,
             "team_id": invitation.team_id,
             "role_id": invitation.role_id,
-            "user_team_id": user_team.id,
+            "user_team_id": user_team_id,
         }
 
 
@@ -850,9 +873,7 @@ def _lookup_by_id(invitation_id: str, model_registry):
         )
         .first()
     )
-    if inv is None:
-        return None
-    if inv.expires_at and ensure_utc(inv.expires_at) < datetime.now(timezone.utc):
+    if inv is None or _expired(inv.expires_at):
         return None
     return {
         "id": inv.id,
@@ -873,9 +894,7 @@ def _lookup_by_code(invitation_code: str, model_registry):
         )
         .first()
     )
-    if inv is None:
-        return None
-    if inv.expires_at and ensure_utc(inv.expires_at) < datetime.now(timezone.utc):
+    if inv is None or _expired(inv.expires_at):
         return None
     return {
         "id": inv.id,
@@ -917,27 +936,13 @@ def _apply_to_user(invitation, user_id, model_registry):
             )
 
     if invitation.get("team_id") and invitation.get("role_id"):
-        user_team_manager = UserTeamManager(
+        _grant_membership(
             requester_id=env("ROOT_ID"),
-            target_id=user_id,
+            user_id=user_id,
+            team_id=invitation["team_id"],
+            role_id=invitation["role_id"],
             model_registry=model_registry,
         )
-        existing = user_team_manager.list(
-            user_id=user_id, team_id=invitation["team_id"]
-        )
-        if existing:
-            user_team_manager.update(
-                id=existing[0].id,
-                role_id=invitation["role_id"],
-                enabled=True,
-            )
-        else:
-            user_team_manager.create(
-                user_id=user_id,
-                team_id=invitation["team_id"],
-                role_id=invitation["role_id"],
-                enabled=True,
-            )
 
 
 def _invitation_manager_factory(requester_id, target_team_id, model_registry, **kw):
@@ -958,26 +963,90 @@ def _invitee_manager_factory(requester_id, target_id, model_registry, **kw):
     )
 
 
-def _list_invitees_for_user(user_id, email, model_registry):
-    InviteeDB = InviteeModel.DB(model_registry.DB.manager.Base)
-    filters = {"user_id": user_id}
-    if email:
-        filters["email"] = email.lower().strip()
-    items = InviteeDB.list(
-        requester_id=env("ROOT_ID"),
-        model_registry=model_registry,
-        **filters,
+def _pending_invitations_for_user(
+    user_id: str, email: Optional[str], model_registry: Any
+) -> List[Dict[str, Any]]:
+    """Invitations awaiting this user's answer: unrevoked, unexpired, and
+    addressed to them directly or by email. An email invitee row counts
+    whether it matches the user or only their address, so invitations sent
+    before they registered are included. Each item carries its ``team`` and
+    ``role`` and, for email invitations, the user's pending ``invitees``
+    rows. Reads run as root, which sees revoked rows, so they are excluded
+    explicitly."""
+    if not model_registry.is_model_bound(InvitationModel):
+        return []
+    Base = model_registry.DB.manager.Base
+    InvitationDB = InvitationModel.DB(Base)
+    InviteeDB = InviteeModel.DB(Base)
+    root_id = env("ROOT_ID")
+
+    def rows(db_cls: Any, *filters: Any, **kwargs: Any) -> List[Dict[str, Any]]:
+        found: List[Dict[str, Any]] = db_cls.list(
+            requester_id=root_id,
+            model_registry=model_registry,
+            filters=[db_cls.deleted_at.is_(None), *filters],
+            **kwargs,
+        )
+        return found
+
+    addressed = (
+        or_(InviteeDB.user_id == user_id, InviteeDB.email == email.lower().strip())
+        if email
+        else InviteeDB.user_id == user_id
     )
-    return [
-        {
-            "id": inv.id,
-            "invitation_id": inv.invitation_id,
-            "email": inv.email,
-            "accepted_at": inv.accepted_at,
-            "declined_at": inv.declined_at,
-        }
-        for inv in (items or [])
+    invitee_rows = rows(InviteeDB, addressed)
+    answered = {
+        row["invitation_id"]
+        for row in invitee_rows
+        if row["accepted_at"] or row["declined_at"]
+    }
+    pending_by_invitation: Dict[str, List[Dict[str, Any]]] = {}
+    for row in invitee_rows:
+        if not (row["accepted_at"] or row["declined_at"]):
+            pending_by_invitation.setdefault(row["invitation_id"], []).append(
+                {**row, "status": "pending"}
+            )
+    direct_ids = {row["id"] for row in rows(InvitationDB, user_id=user_id)}
+    invitation_ids = (set(pending_by_invitation) | direct_ids) - answered
+    if not invitation_ids:
+        return []
+
+    invitations = [
+        invitation.model_dump(mode="json")
+        for invitation in InvitationDB.list(
+            requester_id=root_id,
+            model_registry=model_registry,
+            filters=[
+                InvitationDB.deleted_at.is_(None),
+                InvitationDB.id.in_(invitation_ids),
+            ],
+            return_type="dto",
+            override_dto=InvitationModel,
+        )
+        if not _expired(invitation.expires_at)
     ]
+    team_ids = {i["team_id"] for i in invitations if i["team_id"]}
+    role_ids = {i["role_id"] for i in invitations if i["role_id"]}
+    TeamDB = TeamModel.DB(Base)
+    RoleDB = RoleModel.DB(Base)
+    teams = (
+        {t["id"]: t for t in rows(TeamDB, TeamDB.id.in_(team_ids))} if team_ids else {}
+    )
+    roles = (
+        {r["id"]: r for r in rows(RoleDB, RoleDB.id.in_(role_ids))} if role_ids else {}
+    )
+
+    pending = []
+    for invitation in invitations:
+        item = {
+            **invitation,
+            "team": teams.get(invitation["team_id"]),
+            "role": roles.get(invitation["role_id"]),
+        }
+        if invitation["id"] in pending_by_invitation:
+            item["invitees"] = pending_by_invitation[invitation["id"]]
+        pending.append(item)
+    return pending
 
 
 def _invitation_db_class(declarative_base):
@@ -1001,7 +1070,7 @@ try:
         apply_to_user=_apply_to_user,
         invitation_manager_factory=_invitation_manager_factory,
         invitee_manager_factory=_invitee_manager_factory,
-        list_invitees_for_user=_list_invitees_for_user,
+        pending_invitations_for_user=_pending_invitations_for_user,
         invitation_db_class=_invitation_db_class,
         invitee_db_class=_invitee_db_class,
     )

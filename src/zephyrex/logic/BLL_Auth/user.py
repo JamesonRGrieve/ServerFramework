@@ -536,9 +536,10 @@ class UserManager(AbstractBLLManager, RouterMixin):
             "path": "/invitation",
             "method": "get",
             "function": "list_invitations_for_user",
-            "summary": "list invitations for user",
-            "description": "list invitations for user",
-            "response_model": "Dict[str, str]",
+            "summary": "Invitations awaiting the caller's answer",
+            "description": "Pending, unexpired, unrevoked invitations addressed "
+            "to the caller directly or by email, with team and role.",
+            "response_model": "Dict[str, Any]",
             "status_code": 200,
         },
     ]
@@ -2162,63 +2163,19 @@ class UserManager(AbstractBLLManager, RouterMixin):
 
         return user  # type: ignore[no-any-return]
 
-    def list_invitations_for_user(self):
-        """List all invitations for the requesting user. Routed through the
-        auth_invitations extension hook (Scope #4); returns an empty list
-        when the extension is not loaded."""
-        factory = _invitation_hooks["invitation_manager_factory"]
-        if factory is None:
+    def list_invitations_for_user(self) -> Dict[str, List[Dict[str, Any]]]:
+        """Invitations awaiting the caller's answer (see the auth_invitations
+        ``pending_invitations_for_user`` hook); none without the extension.
+        Direct invitations also carry the caller as ``user``."""
+        pending_for = _invitation_hooks["pending_invitations_for_user"]
+        if pending_for is None:
             return {"invitations": []}
-
-        invitation_manager = factory(
-            requester_id=env("ROOT_ID"),
-            target_team_id=None,
-            model_registry=self.model_registry,
-        )
-
-        invitations = invitation_manager.list(include=["invitation"])
-        invitations_dict = []
-        user_id = self.requester.id
-        user = self.get(id=user_id)
-
-        from zephyrex.pydantic2.registry import obj_to_dict
-        from zephyrex.logic.BLL_Auth.team import TeamManager
-        from zephyrex.logic.BLL_Auth.role import RoleManager
-
+        user = self.get(id=self.requester.id)
+        invitations = pending_for(user.id, user.email, self.model_registry)
         for invitation in invitations:
-            if invitation.team_id:
-                team_manager = TeamManager(
-                    requester_id=env("ROOT_ID"), model_registry=self.model_registry
-                )
-                invitation.team = team_manager.get(id=invitation.team_id)
-            if invitation.role_id:
-                role_manager = RoleManager(
-                    requester_id=env("ROOT_ID"), model_registry=self.model_registry
-                )
-                invitation.role = role_manager.get(id=invitation.role_id)
-
-            invitation_dict = obj_to_dict(invitation)
-            invitees_dict = []
-            if invitation.user_id is None:
-                invitees = invitation_manager.invitees.list(invitation_id=invitation.id)
-                for invitee in invitees:
-                    if invitee.user_id != user_id:
-                        continue
-                    invitee_dict = obj_to_dict(invitee)
-                    invitee_dict["status"] = (
-                        "declined"
-                        if invitee.declined_at
-                        else "accepted" if invitee.accepted_at else "pending"
-                    )
-                    invitees_dict.append(invitee_dict)
-                if invitees_dict:
-                    invitation_dict["invitees"] = invitees_dict
-            elif invitation.user_id == user_id:
-                invitation_dict["user"] = user
-
-            if invitation.user_id == user_id or invitees_dict:
-                invitations_dict.append(invitation_dict)
-        return {"invitations": invitations_dict}
+            if invitation["user_id"] == user.id:
+                invitation["user"] = user
+        return {"invitations": invitations}
 
 
 class UserCredentialModel(

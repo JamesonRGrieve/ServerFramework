@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """
 Email extension business logic - integrates the configured email providers
 (SendGrid, Stalwart, SMTP2go) into the core Provider system.
@@ -5,10 +6,8 @@ Email extension business logic - integrates the configured email providers
 
 import os
 
-from zephyrex.extensions.auth_invitations.BLL_Invitations import InviteeManager
 from zephyrex.lib.Environment import env
 from zephyrex.lib.Logging import logger
-from zephyrex.logic.AbstractLogicManager import HookTiming, hook_bll
 
 
 # Item 90 — provider discovery is now driven by each PRV_ class's typed
@@ -282,10 +281,10 @@ def _is_sendgrid_configured() -> bool:
     return bool(api_key and api_key != "" and from_email and from_email != "")
 
 
-def send_invitation_email_hook(manager, entity, create_args=None):
+def send_invitation_email_hook(manager, entity):
     """
-    Hook to send invitation emails after an invitation is created.
-    Only sends email if email extension is available and SendGrid is configured.
+    Send the invitation email for a newly added invitee; called by
+    ``InvitationManager.add_invitee``. Only sends when SendGrid is configured.
     """
     try:
         # Check if SendGrid is configured
@@ -328,8 +327,3 @@ def send_invitation_email_hook(manager, entity, create_args=None):
 
     except Exception as e:
         logger.error(f"Error in invitation email hook: {e}")
-
-
-hook_bll(InviteeManager.create, timing=HookTiming.AFTER, priority=5)(
-    send_invitation_email_hook
-)

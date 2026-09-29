@@ -3337,9 +3337,7 @@ class TestInvitationEndpoints(AbstractEPTest):
             )
 
             # Verify the error message indicates the invitation was not found
-            error_response = response.json()
-            assert "detail" in error_response
-            assert "could not find" in error_response["detail"].lower()
+            assert response.json()["detail"] == "Invalid invitation code"
         finally:
             pass  # No need to close db here as it's managed by the fixture
 
@@ -3685,6 +3683,209 @@ class TestInvitationEndpoints(AbstractEPTest):
         # Verify user was NOT added to any team (since invitation was invalid)
         # We can't easily check this via API without listing all teams,
         # but the important thing is that user creation succeeded
+
+    def _invitation(
+        self, server: Any, admin: Any, team: Any, **fields: Any
+    ) -> Dict[str, Any]:
+        """A team invitation created over REST with extra ``fields``."""
+        response = server.post(
+            f"/v1/team/{team.id}/invitation",
+            json={
+                "invitation": {
+                    "team_id": team.id,
+                    "role_id": env("USER_ROLE_ID"),
+                    **fields,
+                }
+            },
+            headers=self._get_appropriate_headers(admin.jwt),
+        )
+        assert response.status_code == 201, response.text
+        return self._extract_invitation_from_response(response)
+
+    def _invitee_id(self, server: Any, invitation_id: str, email: str) -> str:
+        from zephyrex.extensions.auth_invitations.BLL_Invitations import InviteeModel
+
+        model_registry = server.app.state.model_registry
+        rows = InviteeModel.DB(model_registry.DB.manager.Base).list(
+            requester_id=env("ROOT_ID"),
+            model_registry=model_registry,
+            invitation_id=invitation_id,
+            email=email,
+        )
+        assert len(rows) == 1, rows
+        return str(rows[0]["id"])
+
+    def _patch(self, server: Any, user: Any, invitation_id: str, **body: Any) -> Any:
+        return server.patch(
+            f"/v1/invitation/{invitation_id}",
+            json={"invitation": body},
+            headers=self._get_appropriate_headers(user.jwt),
+        )
+
+    def _revoke(self, server: Any, admin: Any, team: Any, invitation_id: str) -> None:
+        from zephyrex.extensions.auth_invitations.BLL_Invitations import (
+            InvitationManager,
+        )
+
+        InvitationManager(
+            requester_id=admin.id,
+            target_team_id=team.id,
+            model_registry=server.app.state.model_registry,
+        ).delete(id=invitation_id)
+
+    def test_GET_user_invitations_lists_only_pending_ones_for_the_caller(
+        self, server: Any, admin_a: Any, team_a: Any
+    ) -> None:
+        """Pending, unexpired, unrevoked invitations addressed to the caller,
+        including one sent before they registered."""
+        from conftest import create_user
+        from zephyrex.testing.factories import create_team
+
+        # One team per case: an email can hold one pending invitation per
+        # team and role.
+        teams = [
+            create_team(server, admin_a.id, name=f"Invites {case}")
+            for case in ("pending", "revoked", "expired", "declined")
+        ]
+        pending_team, revoked_team, expired_team, declined_team = teams
+        email = f"pending_{uuid.uuid4().hex[:8]}@example.com"
+        pending = self._invitation(server, admin_a, pending_team, email=[email])
+        revoked = self._invitation(server, admin_a, revoked_team, email=[email])
+        self._invitation(
+            server,
+            admin_a,
+            expired_team,
+            email=[email],
+            expires_at="2000-01-01T00:00:00Z",
+        )
+        declined = self._invitation(server, admin_a, declined_team, email=[email])
+        self._invitation(
+            server,
+            admin_a,
+            pending_team,
+            email=[f"someone_else_{uuid.uuid4().hex[:8]}@example.com"],
+        )
+        user = create_user(server, email=email)
+        self._revoke(server, admin_a, revoked_team, revoked["id"])
+        declined_response = self._patch(
+            server,
+            user,
+            declined["id"],
+            invitee_id=self._invitee_id(server, declined["id"], email),
+            action="decline",
+        )
+        assert declined_response.status_code == 200, declined_response.text
+
+        response = server.get(
+            "/v1/user/invitation", headers=self._get_appropriate_headers(user.jwt)
+        )
+        assert response.status_code == 200, response.text
+        invitations = response.json()["invitations"]
+        assert [i["id"] for i in invitations] == [pending["id"]]
+        (listed,) = invitations
+        assert listed["team"]["name"] == pending_team.name
+        assert listed["role"]["id"] == env("USER_ROLE_ID")
+        assert [(i["email"], i["status"]) for i in listed["invitees"]] == [
+            (email, "pending")
+        ]
+
+    def test_PATCH_404_code_of_another_invitation(
+        self, server: Any, admin_a: Any, team_a: Any
+    ) -> None:
+        from conftest import create_user
+
+        target = self._create_team_invitation_auto_code(server, admin_a, team_a)
+        other = self._create_team_invitation_auto_code(server, admin_a, team_a)
+        user = create_user(server)
+
+        response = self._patch(
+            server, user, target["id"], invitation_code=other["code"]
+        )
+        assert response.status_code == 404, response.text
+        assert self._patch(
+            server, user, target["id"], invitation_code=target["code"]
+        ).status_code == (200)
+
+    def test_PATCH_404_invitee_of_another_invitation(
+        self, server: Any, admin_a: Any, team_a: Any
+    ) -> None:
+        from conftest import create_user
+
+        email = f"crossed_{uuid.uuid4().hex[:8]}@example.com"
+        target = self._create_team_invitation_auto_code(server, admin_a, team_a)
+        other = self._invitation(server, admin_a, team_a, email=[email])
+        user = create_user(server, email=email)
+
+        response = self._patch(
+            server,
+            user,
+            target["id"],
+            invitee_id=self._invitee_id(server, other["id"], email),
+        )
+        assert response.status_code == 404, response.text
+
+    def test_PATCH_declining_an_app_level_invitation_does_not_accept_it(
+        self, server: Any, admin_a: Any
+    ) -> None:
+        from conftest import create_user
+
+        email = f"app_level_{uuid.uuid4().hex[:8]}@example.com"
+        created = server.post(
+            "/v1/invitation",
+            json={"invitation": {"email": [email]}},
+            headers=self._get_appropriate_headers(admin_a.jwt),
+        )
+        assert created.status_code == 201, created.text
+        invitation_id = self._extract_invitation_from_response(created)["id"]
+        user = create_user(server, email=email)
+        invitee_id = self._invitee_id(server, invitation_id, email)
+
+        response = self._patch(
+            server, user, invitation_id, invitee_id=invitee_id, action="decline"
+        )
+        assert response.status_code == 200, response.text
+        assert "declined" in response.json()["message"]
+        from zephyrex.extensions.auth_invitations.BLL_Invitations import InviteeModel
+
+        model_registry = server.app.state.model_registry
+        invitee = InviteeModel.DB(model_registry.DB.manager.Base).get(
+            requester_id=env("ROOT_ID"), model_registry=model_registry, id=invitee_id
+        )
+        assert invitee["declined_at"] is not None
+        assert invitee["accepted_at"] is None
+
+    def test_PATCH_410_declining_an_expired_code(
+        self, server: Any, admin_a: Any, team_a: Any
+    ) -> None:
+        from conftest import create_user
+
+        expired = self._invitation(
+            server, admin_a, team_a, expires_at="2000-01-01T00:00:00Z"
+        )
+        response = self._patch(
+            server,
+            create_user(server),
+            expired["id"],
+            invitation_code=expired["code"],
+            action="decline",
+        )
+        assert response.status_code == 410, response.text
+
+    def test_PATCH_404_accepting_a_revoked_code(
+        self, server: Any, admin_a: Any, team_a: Any
+    ) -> None:
+        from conftest import create_user
+
+        invitation = self._create_team_invitation_auto_code(server, admin_a, team_a)
+        self._revoke(server, admin_a, team_a, invitation["id"])
+
+        response = self._patch(
+            server,
+            create_user(server),
+            invitation["id"],
+            invitation_code=invitation["code"],
+        )
+        assert response.status_code == 404, response.text
 
     def _extract_invitation_from_response(self, response: Any) -> Dict[str, Any]:
         """Extract invitation data from response, handling different response formats."""

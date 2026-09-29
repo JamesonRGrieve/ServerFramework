@@ -23,7 +23,7 @@ _invitation_hooks: dict = {
     "apply_to_user": None,  # (invitation_dict, user_id, model_registry) -> None
     "invitation_manager_factory": None,  # (requester_id, target_team_id, model_registry, **kw) -> manager
     "invitee_manager_factory": None,  # (requester_id, target_id, model_registry, **kw) -> manager
-    "list_invitees_for_user": None,  # (user_id, email, model_registry) -> List[dict]
+    "pending_invitations_for_user": None,  # (user_id, email, model_registry) -> List[dict]
     "invitation_db_class": None,  # (declarative_base) -> SA model
     "invitee_db_class": None,  # (declarative_base) -> SA model
 }
@@ -36,7 +36,7 @@ def register_invitation_hooks(
     apply_to_user=None,
     invitation_manager_factory=None,
     invitee_manager_factory=None,
-    list_invitees_for_user=None,
+    pending_invitations_for_user=None,
     invitation_db_class=None,
     invitee_db_class=None,
 ) -> None:
@@ -46,7 +46,7 @@ def register_invitation_hooks(
         ("apply_to_user", apply_to_user),
         ("invitation_manager_factory", invitation_manager_factory),
         ("invitee_manager_factory", invitee_manager_factory),
-        ("list_invitees_for_user", list_invitees_for_user),
+        ("pending_invitations_for_user", pending_invitations_for_user),
         ("invitation_db_class", invitation_db_class),
         ("invitee_db_class", invitee_db_class),
     ):
