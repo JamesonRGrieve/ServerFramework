@@ -868,30 +868,6 @@ def build_app(model_registry: ModelRegistry):
             },
         )
 
-    @app.exception_handler(TypeError)
-    async def type_error_handler(request: Request, exc: TypeError):
-        logger.debug(f"TypeError in request handler: {exc}")
-        return JSONResponse(
-            status_code=422,
-            content={
-                "detail": _error_envelope(
-                    "Invalid request body format", code="invalid_body"
-                )
-            },
-        )
-
-    @app.exception_handler(AttributeError)
-    async def attribute_error_handler(request: Request, exc: AttributeError):
-        logger.debug(f"AttributeError in request handler: {exc}")
-        return JSONResponse(
-            status_code=422,
-            content={
-                "detail": _error_envelope(
-                    "Invalid request body format", code="invalid_body"
-                )
-            },
-        )
-
     from zephyrex.lib.AdvisoryLock import LockTimeoutError
 
     @app.exception_handler(LockTimeoutError)

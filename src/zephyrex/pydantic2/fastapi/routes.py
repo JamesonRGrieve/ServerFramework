@@ -2089,21 +2089,29 @@ def register_custom_route(
             # Handle request body for POST/PUT/PATCH
             if request.method in ["POST", "PUT", "PATCH"]:
                 raw_body = await request.body()
+                # An absent body is an empty object: the method decides
+                # whether it needs fields (registration can use Basic auth).
+                body: Any = {}
                 if raw_body:
                     try:
                         body = json.loads(raw_body)
                     except json.JSONDecodeError:
                         raise HTTPException(status_code=400, detail="Invalid JSON body")
+                if not isinstance(body, dict):
+                    raise HTTPException(
+                        status_code=422,
+                        detail="Request body must be a JSON object",
+                    )
 
-                    # Map body to expected parameters
-                    if "registration_data" in sig.parameters:
-                        method_args["registration_data"] = body.get("user", body)
-                    elif "login_data" in sig.parameters:
-                        method_args["login_data"] = body.get("auth", body)
-                    elif "body" in sig.parameters:
-                        method_args["body"] = body
-                    else:
-                        method_args.update(body)
+                # Map body to expected parameters
+                if "registration_data" in sig.parameters:
+                    method_args["registration_data"] = body.get("user", body)
+                elif "login_data" in sig.parameters:
+                    method_args["login_data"] = body.get("auth", body)
+                elif "body" in sig.parameters:
+                    method_args["body"] = body
+                else:
+                    method_args.update(body)
 
             # Add path parameters
             method_args.update(dict(request.path_params))

@@ -566,11 +566,6 @@ def handle_resource_operation_error(err: Exception) -> None:
         if isinstance(err.detail, str):
             err.detail = _error_envelope(err.detail)  # type: ignore[assignment]
         raise err
-    elif isinstance(err, (TypeError, AttributeError, KeyError)):
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=_error_envelope("Invalid request body format", code="invalid_body"),
-        )
 
     try:
         from zephyrex.extensions.ExternalErrors import TransientExternalError
