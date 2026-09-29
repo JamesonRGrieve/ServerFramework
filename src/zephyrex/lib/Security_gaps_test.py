@@ -764,12 +764,12 @@ class TestPrototypePollutionStructural:
         """Mutable defaults must not persist between requests."""
         r1 = server.post(
             "/v1/team",
-            json={"team": {"name": "req1", "encryption_salt": "s1"}},
+            json={"team": {"name": "req1"}},
             headers={"Authorization": f"Bearer {admin_a.jwt}"},
         )
         r2 = server.post(
             "/v1/team",
-            json={"team": {"name": "req2", "encryption_salt": "s2"}},
+            json={"team": {"name": "req2"}},
             headers={"Authorization": f"Bearer {admin_a.jwt}"},
         )
         # Both creates must succeed and the second must NOT inherit the first
@@ -817,7 +817,7 @@ class TestUnicodeAdvanced:
         """Bidirectional control characters must not appear in security identifiers."""
         response = server.post(
             "/v1/team",
-            json={"team": {"name": "‮edoc‬", "encryption_salt": "x"}},
+            json={"team": {"name": "‮edoc‬"}},
             headers={"Authorization": f"Bearer {admin_a.jwt}"},
         )
         assert response.status_code != 500
@@ -875,7 +875,7 @@ class TestTransactionBoundaries:
         """A failed mutation must not leave partial state."""
         response = server.post(
             "/v1/team",
-            json={"team": {"name": "", "encryption_salt": "x"}},
+            json={"team": {"name": ""}},
             headers={"Authorization": f"Bearer {admin_a.jwt}"},
         )
         assert response.status_code != 500
@@ -886,12 +886,12 @@ class TestTransactionBoundaries:
         name = f"unique_test_{uuid.uuid4().hex[:6]}"
         server.post(
             "/v1/team",
-            json={"team": {"name": name, "encryption_salt": "x"}},
+            json={"team": {"name": name}},
             headers={"Authorization": f"Bearer {admin_a.jwt}"},
         )
         r2 = server.post(
             "/v1/team",
-            json={"team": {"name": name, "encryption_salt": "x"}},
+            json={"team": {"name": name}},
             headers={"Authorization": f"Bearer {admin_a.jwt}"},
         )
         assert r2.status_code != 500
@@ -1306,12 +1306,12 @@ class TestDatabaseSecurity:
         headers = {"Authorization": f"Bearer {admin_a.jwt}"}
         server.post(
             "/v1/team",
-            json={"team": {"name": name, "encryption_salt": "x"}},
+            json={"team": {"name": name}},
             headers=headers,
         )
         r2 = server.post(
             "/v1/team",
-            json={"team": {"name": name, "encryption_salt": "x"}},
+            json={"team": {"name": name}},
             headers=headers,
         )
         if r2.status_code >= 400:
@@ -1543,7 +1543,7 @@ class TestTeamLifecycleAdvanced:
         name = f"lifecycle_{uuid.uuid4().hex[:6]}"
         r1 = server.post(
             "/v1/team",
-            json={"team": {"name": name, "encryption_salt": "x"}},
+            json={"team": {"name": name}},
             headers=headers,
         )
         if r1.status_code not in (200, 201):
@@ -1552,7 +1552,7 @@ class TestTeamLifecycleAdvanced:
         server.delete(f"/v1/team/{team1_id}", headers=headers)
         r2 = server.post(
             "/v1/team",
-            json={"team": {"name": name, "encryption_salt": "x"}},
+            json={"team": {"name": name}},
             headers=headers,
         )
         if r2.status_code in (200, 201):
@@ -2010,7 +2010,7 @@ class TestRemainingCorpusGaps:
         """SVG with scripts must not execute."""
         response = server.post(
             "/v1/team",
-            json={"team": {"name": '<svg onload="alert(1)">', "encryption_salt": "x"}},
+            json={"team": {"name": '<svg onload="alert(1)">'}},
             headers={"Authorization": f"Bearer {admin_a.jwt}"},
         )
         if response.status_code in (200, 201):
@@ -2231,7 +2231,7 @@ class TestCodeAuditWebhookReplay:
         """Webhook replay error must not include timing details."""
         response = server.post(
             "/v1/team",
-            json={"team": {"name": "webhook_test", "encryption_salt": "x"}},
+            json={"team": {"name": "webhook_test"}},
             headers={"Authorization": f"Bearer {admin_a.jwt}"},
         )
         assert response.status_code != 500
@@ -2501,7 +2501,7 @@ class TestFastAPIExceptionHandlerMasking:
         """Internal TypeError must not be silently converted to 422."""
         response = server.post(
             "/v1/team",
-            json={"team": {"name": "test", "encryption_salt": "x"}},
+            json={"team": {"name": "test"}},
             headers={"Authorization": f"Bearer {admin_a.jwt}"},
         )
         # `!= 500 or != 422` was a tautology (a status is never both). The intent

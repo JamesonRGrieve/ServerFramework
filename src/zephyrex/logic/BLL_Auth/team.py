@@ -1,4 +1,3 @@
-import secrets
 from typing import Any, ClassVar, Dict, List, Optional, Type
 
 from fastapi import HTTPException
@@ -35,12 +34,6 @@ class TeamModel(
 ):
     Manager: ClassVar[Type["TeamManager"]] = None  # type: ignore[assignment]
     description: Optional[str] = Field(None, description="Team description")
-    encryption_salt: Optional[str] = Field(
-        ..., description="Per-team salt for row-level encryption of team data"
-    )
-    # TODO remove these two fields
-    token: Optional[str] = Field(None, description="Team token")
-    training_data: Optional[str] = Field(None, description="Training data for team")
 
     # Database metadata for SQLAlchemy generation
     table_comment: ClassVar[str] = "Teams to which users can belong"
@@ -49,7 +42,6 @@ class TeamModel(
             "id": "FFFFFFFF-FFFF-FFFF-0000-FFFFFFFFFFFF",
             "name": "System",
             "parent_id": None,
-            "encryption_salt": "",
         }
     ]
 
@@ -122,9 +114,6 @@ class TeamModel(
         BaseModel, NameMixinModel, ParentMixinModel.Optional, ImageMixinModel.Optional
     ):
         description: Optional[str] = Field(None, description="Team description")
-        encryption_salt: Optional[str] = Field(
-            None, description="Per-team salt for row-level encryption of team data"
-        )
 
         @field_validator("name")
         @classmethod
@@ -138,8 +127,6 @@ class TeamModel(
         ImageMixinModel.Optional,
     ):
         description: Optional[str] = Field(None, description="Team description")
-        token: Optional[str] = Field(None, description="Team token")
-        training_data: Optional[str] = Field(None, description="Training data for team")
 
         @field_validator("name")
         @classmethod
@@ -353,10 +340,6 @@ class TeamManager(AbstractBLLManager, RouterMixin):
                 model_fields[key] = value
             else:
                 metadata_fields[key] = value
-
-        # Mint a per-team salt if the caller did not supply one.
-        if "encryption_salt" not in model_fields:
-            model_fields["encryption_salt"] = secrets.token_hex(32)
 
         # Create the team first
         team = super().create(**model_fields)

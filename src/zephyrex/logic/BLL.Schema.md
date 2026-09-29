@@ -194,14 +194,11 @@ Security monitoring and lockout enforcement.
 ## Team Management
 
 ### TeamModel
-Hierarchical team structure with encryption support.
+Hierarchical team structure.
 
 **Fields:**
 - `name`: Optional[str] - Human-readable team name (from NameMixinModel)
 - `description`: Optional[str] - Team purpose description
-- `encryption_salt`: Optional[str] - Per-team salt for row-level encryption of team data
-- `token`: Optional[str] - Team token
-- `training_data`: Optional[str] - Training data for team
 - `parent_id`: Optional[str] - Parent team reference (from ParentMixinModel)
 - `image_url`: Optional[str] - Team image (from ImageMixinModel)
 

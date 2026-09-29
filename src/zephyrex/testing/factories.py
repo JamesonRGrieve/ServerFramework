@@ -112,7 +112,6 @@ def create_team(server, user_id, name="Test Team", parent_id=None):
         override_dto=TeamModel,
         name=name,
         description=faker.catch_phrase(),
-        encryption_salt=faker.uuid4(),
         created_by_user_id=user_id,
         parent_id=parent_id,
     )

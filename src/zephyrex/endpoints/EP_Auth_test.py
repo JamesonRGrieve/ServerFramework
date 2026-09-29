@@ -71,7 +71,6 @@ class TestTeamEndpoints(AbstractEPTest):
     create_fields = {
         "name": lambda: f"Test Team {pytest.faker.company()}",  # type: ignore[attr-defined]
         "description": lambda: f"Test team description {pytest.faker.uuid4()}",  # type: ignore[attr-defined]
-        "encryption_salt": "test_key",
     }
     update_fields = {
         "name": "Updated Team",
@@ -105,7 +104,6 @@ class TestTeamEndpoints(AbstractEPTest):
             return {
                 "name": name,
                 "description": f"Description for {name}",
-                "encryption_salt": "test_key",
             }
 
     def test_GET_404_team_users_bad_team_id(self, server: Any, admin_a):
@@ -239,7 +237,6 @@ class TestTeamEndpoints(AbstractEPTest):
             "team": {
                 "name": f"Permissions Test Team {faker.Faker().uuid4()[:8]}",
                 "description": "A team for testing permissions isolation",
-                "encryption_salt": f"test_key_{faker.Faker().uuid4()[:8]}",
             }
         }
 

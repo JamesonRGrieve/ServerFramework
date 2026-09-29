@@ -558,10 +558,9 @@ class TestTeamManager(AbstractBLLTest):
     create_fields = {
         "name": f"Test Team {faker.word()}",
         "description": faker.sentence(),
-        "encryption_salt": faker.uuid4(),
         # Seed the user-settable image URL so its search-operator coverage runs
-        # instead of skipping. (token / training_data are server-managed and
-        # parent_id is an FK requiring a target, so they stay unset.)
+        # instead of skipping. (parent_id is an FK requiring a target, so it
+        # stays unset.)
         "image_url": "https://example.com/team.png",
     }
     update_fields = {

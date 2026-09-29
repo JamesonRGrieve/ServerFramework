@@ -290,7 +290,6 @@ class TestTeam(AbstractDBTest):
     create_fields = {
         "name": "Test TeamModel",
         "description": "Test TeamModel description",
-        "encryption_salt": "test_key",
     }
     update_fields = {
         "name": "Updated TeamModel",

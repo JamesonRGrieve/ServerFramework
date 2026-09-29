@@ -27,5 +27,5 @@ def test_create_ignores_columns_outside_the_create_model(server, admin_a):
     team_id = created.json()["team"]["id"]
 
     team = server.get(f"/v1/team/{team_id}", headers=headers).json()["team"]
-    assert team["token"] is None
-    assert team["training_data"] is None
+    assert "token" not in team
+    assert "training_data" not in team
