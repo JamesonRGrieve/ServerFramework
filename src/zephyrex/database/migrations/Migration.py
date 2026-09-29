@@ -235,36 +235,36 @@ class MigrationManager:
         wanted = set(extensions)
         return [n for n in full_order if n in wanted]
 
+    def table_ownership_rows(self, extensions):
+        """``(table, owner_or_core, extenders_csv_or_-)`` for every table of a
+        registry committed with ``extensions``, sorted by table name."""
+        registry = self._commit_standalone_registry(extensions)
+        metadata = registry.database_manager.Base.metadata
+        rows = []
+        for table_name in sorted(metadata.tables):
+            table = metadata.tables[table_name]
+            owner = self.env_is_table_owned_by_extension(table) or "core"
+            extenders = self.env_table_extenders(table)
+            rows.append((table_name, owner, ",".join(extenders) if extenders else "-"))
+        return rows
+
     def audit_table_ownership(self) -> bool:
-        """Print a tab-separated audit of table → owner → extenders.
-
-        Boots the model registry (so info dict is populated) and walks
-        Base.metadata.tables. One line per table:
-            <table_name>\\t<owner_or_core>\\t<extenders_csv_or_->
-
-        Returns True on success.
-        """
+        """Log a tab-separated audit of table → owner → extenders for the
+        extensions in APP_EXTENSIONS. Returns True on success."""
+        extensions = [
+            name.strip()
+            for name in os.environ.get("APP_EXTENSIONS", "").split(",")
+            if name.strip()
+        ]
         try:
-            from zephyrex.logic import (
-                BLL_Auth,
-                BLL_Extensions,
-                BLL_Providers,
-            )  # noqa: F401
-            from zephyrex.pydantic2.registry import ModelRegistry, Base
-
-            ModelRegistry().commit(extensions=os.environ.get("APP_EXTENSIONS", ""))
-
-            logger.info("table\towner\textenders")
-            for table_name in sorted(Base.metadata.tables.keys()):
-                table = Base.metadata.tables[table_name]
-                owner = self.env_is_table_owned_by_extension(table) or "core"
-                extenders = self.env_table_extenders(table)
-                ext_col = ",".join(extenders) if extenders else "-"
-                logger.info(f"{table_name}\t{owner}\t{ext_col}")
-            return True
+            rows = self.table_ownership_rows(extensions)
         except Exception as e:
             logger.error(f"audit-ownership failed: {e}", exc_info=True)
             return False
+        logger.info("table\towner\textenders")
+        for table_name, owner, extenders in rows:
+            logger.info(f"{table_name}\t{owner}\t{extenders}")
+        return True
 
     @staticmethod
     def _is_core_table_extended_by_extension(table, extension_name):
@@ -276,7 +276,9 @@ class MigrationManager:
         return extension_name in (table.info or {}).get("extensions", set())
 
     @staticmethod
-    def env_include_object(object, name, type_, reflected, compare_to, base=None):
+    def env_include_object(
+        object, name, type_, reflected, compare_to, alembic_context=None
+    ):
         """Filter objects for inclusion in an autogenerate run.
 
         Resolution rule (Item 24):
@@ -291,8 +293,9 @@ class MigrationManager:
 
         from zephyrex.lib.Environment import env
 
+        config = alembic_context.config if alembic_context is not None else None
         extension_name = (
-            base.config.attributes.get("extension") if base and base.config else None
+            config.attributes.get("extension") if config is not None else None
         ) or env("ALEMBIC_EXTENSION")
 
         owner = MigrationManager.env_is_table_owned_by_extension(object)
@@ -412,6 +415,9 @@ class MigrationManager:
         self.paths = self._setup_python_path()
         self.current_extension = None
         self.configured_extensions = self._get_configured_extensions()
+        # Extensions an upgrade found without migration files; their tables
+        # are created from models by create_unmigrated_extension_tables().
+        self.unmigrated_extensions: list = []
 
         # Set test mode from parameter (no auto-detection)
         self.test_mode = test_mode
@@ -861,31 +867,58 @@ class MigrationManager:
             )
             return True
 
-        # Standalone path: bootstrap a registry against an isolated Base.
-        from zephyrex.database.DatabaseManager import DatabaseManager
-
-        ModelRegistry.from_scoped_import(
-            file_type="BLL",
-            scopes=[
-                "logic",
-                f"{self.extensions_dir_name}.{extension_name}",
-            ],
-        )
-        registry = ModelRegistry()
         try:
-            db_prefix = self.db_info.get("name", "") if self.db_info else ""
-            db_mgr = DatabaseManager(db_prefix=db_prefix)
-            registry.database_manager = db_mgr
-            db_mgr.Base._model_registry = registry
-            registry.commit()
+            self._model_registry = self._commit_standalone_registry([extension_name])
         except Exception as e:
             logger.warning(
                 f"Could not commit a standalone registry for {extension_name}: {e}",
                 exc_info=True,
             )
             return False
-        self._model_registry = registry
         return True
+
+    def create_unmigrated_extension_tables(self) -> None:
+        """Create the tables owned by the extensions the last upgrade found
+        without migration files.
+
+        Must run after the registry has created its SQLAlchemy models
+        (``ModelRegistry._create_sqlalchemy_models``): migrations run before
+        that, when the extensions' tables are not in the metadata yet.
+        """
+        if not self.unmigrated_extensions:
+            return
+        db_manager = self._model_registry.DB.manager
+        wanted = set(self.unmigrated_extensions)
+        tables = [
+            table
+            for table in db_manager.Base.metadata.sorted_tables
+            if table.info.get("extension") in wanted
+        ]
+        db_manager.Base.metadata.create_all(
+            bind=db_manager._setup_engine, tables=tables
+        )
+        logger.debug(
+            f"Created {len(tables)} table(s) from models for extensions "
+            f"without migrations: {sorted(wanted)}"
+        )
+
+    def _commit_standalone_registry(self, extensions):
+        """Commit a registry for ``extensions`` (a list of names) against its
+        own DatabaseManager/Base, built exactly as the app builds one, for CLI
+        and fixture callers that run without a booted app.
+
+        A bare ``ModelRegistry()`` binds no models, so it committed empty
+        metadata; the app's factory binds core and the extensions' models."""
+        from zephyrex.app import create_registry_with_db_manager
+        from zephyrex.database.DatabaseManager import DatabaseManager
+
+        extensions_csv = ",".join(extensions)
+        db_prefix = self.db_info.get("name", "") if self.db_info else ""
+        db_mgr = DatabaseManager(db_prefix=db_prefix)
+        registry = create_registry_with_db_manager(db_mgr, extensions_csv)
+        db_mgr.Base._model_registry = registry
+        registry.commit(extensions=extensions_csv)
+        return registry
 
     def run_extension_migration(
         self, extension_name, command, target="head", auto=True
@@ -935,9 +968,8 @@ class MigrationManager:
             alembic_command.revision(cfg, **kwargs)
             return True
         except Exception as e:
-            logger.error(
-                f"Alembic revision for extension {extension_name} failed: {e}",
-                exc_info=True,
+            logger.opt(exception=True).error(
+                f"Alembic revision for extension {extension_name} failed: {e}"
             )
             return False
 
@@ -1479,129 +1511,34 @@ class {class_name}(Base):
                 )
 
                 # Resolve where this extension's revision files live (honors
-                # test_versions_root override).
-                versions_dir = self._resolve_extension_versions_dir(ext_name)
-
-                if versions_dir.exists():
-                    extension_migrations.append((ext_name, versions_dir))
-                else:
-                    # Directory structure needs to be created
-                    success, dir_path = self.ensure_extension_versions_directory(
-                        ext_name
-                    )
-                    if success:
-                        extension_migrations.append((ext_name, dir_path))
+                # test_versions_root override). Never created here: running
+                # migrations must not write into the (possibly read-only)
+                # installed package.
+                extension_migrations.append(
+                    (ext_name, self._resolve_extension_versions_dir(ext_name))
+                )
 
             failed_extensions = []
             for extension_name, versions_dir in extension_migrations:
                 logger.debug(f"Running migrations for extension: {extension_name}")
 
-                # Check if the versions directory actually exists and has migration files
-                if not versions_dir.exists():
-                    # No versions directory exists - need to create initial migration for upgrade
-                    if command == "upgrade":
-                        extension_dir = self._extension_source_dir(extension_name)
-                        db_model_files = list(extension_dir.glob("BLL_*.py"))
-
-                        if db_model_files:
-                            logger.debug(
-                                f"Creating initial migration for extension {extension_name}"
-                            )
-                            created = self.create_extension_migration(
-                                extension_name, "Initial migration", auto=True
-                            )
-                            if not created:
-                                logger.info(
-                                    f"Auto-migration unavailable for {extension_name}; "
-                                    f"falling back to create_all for initial tables."
-                                )
-                                try:
-                                    if self._model_registry and hasattr(
-                                        self._model_registry, "DB"
-                                    ):
-                                        engine = (
-                                            self._model_registry.DB.manager._setup_engine
-                                        )
-                                        if engine is not None:
-                                            self._model_registry.DB.manager.Base.metadata.create_all(
-                                                bind=engine
-                                            )
-                                            logger.info(
-                                                f"Created tables for {extension_name} via create_all"
-                                            )
-                                            continue
-                                except Exception as fallback_err:
-                                    logger.warning(
-                                        f"create_all fallback also failed for {extension_name}: {fallback_err}"
-                                    )
-                                failed_extensions.append(extension_name)
-                                continue
-                        else:
-                            logger.debug(
-                                f"Skipping migration for extension {extension_name} as no BLL_*.py files found."
-                            )
-                            continue
-                    else:
-                        # For other commands like downgrade/history, skip if no versions exist
-                        logger.debug(
-                            f"Skipping '{command}' for extension {extension_name} as no migrations exist."
-                        )
-                        continue
-
-                # Re-check if versions dir exists after potential creation attempt
-                if not versions_dir.exists():
-                    logger.warning(
-                        f"Versions directory {versions_dir} still not found for extension {extension_name}, skipping."
-                    )
-                    failed_extensions.append(extension_name)
-                    continue
-
-                # Check if there are any migration files in the versions directory
-                migration_files = list(versions_dir.glob("*.py"))
-                migration_files = [
-                    f for f in migration_files if f.name != "__init__.py"
-                ]
+                migration_files = (
+                    [f for f in versions_dir.glob("*.py") if f.name != "__init__.py"]
+                    if versions_dir.exists()
+                    else []
+                )
 
                 if not migration_files:
-                    # No migration files found - create one if it's an upgrade command
+                    # An extension that ships no migrations gets its tables
+                    # straight from its models, once the registry has built
+                    # them (see create_unmigrated_extension_tables). Boot never
+                    # autogenerates a revision: that wrote files into the
+                    # package, and ran before the models were in the metadata,
+                    # so it produced empty revisions stamping the extension as
+                    # needing no tables.
                     if command == "upgrade":
-                        logger.debug(
-                            f"No migration files found for extension {extension_name}, creating initial migration"
-                        )
-                        created = self.create_extension_migration(
-                            extension_name, "Initial migration", auto=True
-                        )
-                        if not created:
-                            logger.info(
-                                f"Auto-migration unavailable for {extension_name}; "
-                                f"falling back to create_all."
-                            )
-                            try:
-                                if self._model_registry and hasattr(
-                                    self._model_registry, "DB"
-                                ):
-                                    engine = (
-                                        self._model_registry.DB.manager._setup_engine
-                                    )
-                                    if engine is not None:
-                                        self._model_registry.DB.manager.Base.metadata.create_all(
-                                            bind=engine
-                                        )
-                                        logger.info(
-                                            f"Created tables for {extension_name} via create_all"
-                                        )
-                                        continue
-                            except Exception as fallback_err:
-                                logger.warning(
-                                    f"create_all fallback also failed for {extension_name}: {fallback_err}"
-                                )
-                            failed_extensions.append(extension_name)
-                            continue
-                    else:
-                        logger.debug(
-                            f"No migration files found for extension {extension_name}, skipping {command}."
-                        )
-                        continue
+                        self.unmigrated_extensions.append(extension_name)
+                    continue
 
                 # Now run the migration command for this extension
                 # For upgrade --all, we want to ensure all pending migrations are applied

@@ -858,6 +858,7 @@ class ModelRegistry(AbstractRegistry):
             "1",
             "yes",
         )
+        migration_manager = None
         if not run_migrations:
             logger.info("RUN_MIGRATIONS=false — skipping automatic migrations")
         else:
@@ -898,6 +899,11 @@ class ModelRegistry(AbstractRegistry):
 
         # Phase 3: Create SQLAlchemy models
         self._create_sqlalchemy_models()
+
+        # Extensions shipping no migrations get their tables from the models
+        # just created (they are not in the metadata while migrations run).
+        if migration_manager is not None:
+            migration_manager.create_unmigrated_extension_tables()
 
         # Phase 4: Generate routers
         self._generate_routers()

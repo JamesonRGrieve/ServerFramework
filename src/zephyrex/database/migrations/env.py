@@ -262,9 +262,11 @@ if config.config_file_name:
 
 
 def include_object(object, name, type_, reflected, compare_to):
-    """Filter tables based on migration context."""
+    """Filter tables based on migration context. Passes alembic's ``context``
+    (whose config carries the extension being migrated), not the declarative
+    Base: Base has no ``config``, which crashed every extension autogenerate."""
     return MigrationManager.env_include_object(
-        object, name, type_, reflected, compare_to, Base
+        object, name, type_, reflected, compare_to, context
     )
 
 

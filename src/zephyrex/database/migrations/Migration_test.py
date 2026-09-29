@@ -582,6 +582,37 @@ def test_compute_migration_order_cycle_error_names_extensions(
 
 
 @pytest.mark.migration
+def test_table_ownership_rows_attribute_tables_to_core_and_extensions(
+    tmp_path, monkeypatch
+):
+    """The audit imported a `Base` that zephyrex.pydantic2.registry never
+    exported, so it always failed. It now commits a standalone registry and
+    reports each table's owner."""
+    from zephyrex.database.migrations.Migration import MigrationManager
+    from zephyrex.pydantic2.sqlalchemy import prepare_test_registry
+
+    monkeypatch.setenv("DATABASE_PATH", str(tmp_path))
+    prepare_test_registry()
+    mgr = MigrationManager(
+        test_mode=True,
+        custom_db_info={
+            "type": "sqlite",
+            "name": "test.audit_ownership",
+            "url": f"sqlite:///{tmp_path}/test.audit_ownership.database.db",
+            "file_path": str(tmp_path / "test.audit_ownership.database.db"),
+        },
+    )
+
+    rows = {
+        table: (owner, ext)
+        for table, owner, ext in mgr.table_ownership_rows(["metadata"])
+    }
+
+    assert rows["metadata"][0] == "metadata"
+    assert rows["users"][0] == "core"
+
+
+@pytest.mark.migration
 def test_audit_ownership_cli_lists_tables():
     """Item 24's audit CLI: subcommand prints tab-separated rows for every
     table with owner column ('core' or extension name) and extenders column
