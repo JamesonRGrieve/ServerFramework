@@ -192,27 +192,27 @@ def ratchet_scaling(
     Choose ``sizes`` (≥3 recommended, geometrically spaced e.g. 100/200/400/800)
     large enough that the scaling work dominates timer noise; bump ``iterations``
     for fast inner work. Each size is timed ``repeats`` times and the fastest
-    kept. Pairs with :func:`ratchet` — use both on a hot,
-    input-scaling function: one guards constant factor, one guards order of growth.
+    kept; the repeats are interleaved (every round times every size), so a
+    stretch of contention on the core costs one sample of each size rather
+    than every sample of one size. Pairs with :func:`ratchet` — use both on a
+    hot, input-scaling function: one guards constant factor, one guards order
+    of growth.
     """
     if len(sizes) < 2:
         raise ValueError("ratchet_scaling needs at least two sizes")
     mhz = _read_mhz()
-    xs: list[float] = []
-    ys: list[float] = []
-    for n in sizes:
-        samples = []
-        for _ in range(repeats):
-            # CPU time, not wall time: the fit is about how the work grows,
-            # and wall time also counts every other process competing for
-            # the core (e.g. the other xdist workers), which flattens it.
-            start = time.process_time()
+    samples: dict[int, list[float]] = {n: [] for n in sizes}
+    for _ in range(repeats):
+        for n in sizes:
+            # This thread's CPU time: wall time also counts every other
+            # process competing for the core (the other xdist workers), and
+            # process CPU time every other thread in this process.
+            start = time.thread_time()
             for _ in range(iterations):
                 run(n)
-            samples.append((time.process_time() - start) / iterations)
-        elapsed = min(samples)
-        xs.append(math.log(n))
-        # Floor the normalized time so a sub-microsecond sample can't produce a
-        # nonsense log; callers are told to size the work above noise regardless.
-        ys.append(math.log(max(elapsed * mhz, 1e-9)))
+            samples[n].append((time.thread_time() - start) / iterations)
+    xs = [math.log(n) for n in sizes]
+    # Floor the normalized time so a sub-microsecond sample can't produce a
+    # nonsense log; callers are told to size the work above noise regardless.
+    ys = [math.log(max(min(samples[n]) * mhz, 1e-9)) for n in sizes]
     _check_scaling(f"scaling:{key}", _lstsq_slope(xs, ys), margin)

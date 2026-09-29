@@ -74,14 +74,17 @@ class TestRatchetScalingIntegration:
         """A preempted first sample must not skew the fit: with a scripted
         clock whose first sample per size is a 100-unit outlier and whose other
         samples are linear in n, the recorded exponent is the linear one."""
+        # Samples arrive round by round (each round times every size); the
+        # first round is the outlier for every size.
         durations = []
-        for n in (1, 2, 4):
-            durations += [100.0] + [float(n)] * (ER.DEFAULT_SCALING_REPEATS - 1)
+        for round_index in range(ER.DEFAULT_SCALING_REPEATS):
+            for n in (1, 2, 4):
+                durations.append(100.0 if round_index == 0 else float(n))
         ticks = [0.0]
         for d in durations:
             ticks += [ticks[-1], ticks[-1] + d]
         clock = iter(ticks[1:])
-        monkeypatch.setattr(ER.time, "process_time", lambda: next(clock))
+        monkeypatch.setattr(ER.time, "thread_time", lambda: next(clock))
         monkeypatch.setattr(ER, "_read_mhz", lambda: 1.0)
 
         ER.ratchet_scaling("demo_repeats", lambda n: None, sizes=[1, 2, 4])
@@ -101,6 +104,34 @@ class TestRatchetScalingIntegration:
         # and a loaded machine could fit an exponent near 1.
         ER.ratchet_scaling("demo_quad", quadratic, sizes=[1000, 2000, 4000])
         assert ER._load()["scaling:demo_quad"] > 1.5
+
+    def test_a_contention_burst_is_discarded_for_every_size(self, monkeypatch):
+        """Sizes are measured interleaved (each repeat times every size), so a
+        burst of contention costs one sample of each size and the per-size
+        minimum discards it. Measured size-by-size, the same burst lands on
+        every sample of the first size and bends the fit."""
+        sizes = [1, 2, 4]
+        # A burst as long as one size's full set of repeats: sequential
+        # measurement gives it every sample of the first size.
+        burst_calls = ER.DEFAULT_SCALING_REPEATS
+        state: dict[str, float] = {"calls": 0, "now": 0.0, "pending": 0.0}
+
+        def run(n: int) -> None:
+            slowdown = 10.0 if state["calls"] < burst_calls else 1.0
+            state["pending"] = n * slowdown
+            state["calls"] += 1
+
+        def clock() -> float:
+            state["now"] += state["pending"]
+            state["pending"] = 0.0
+            return state["now"]
+
+        monkeypatch.setattr(ER.time, "thread_time", clock)
+        monkeypatch.setattr(ER, "_read_mhz", lambda: 1.0)
+
+        ER.ratchet_scaling("demo_burst", run, sizes=sizes)
+
+        assert ER._load()["scaling:demo_burst"] == pytest.approx(1.0)
 
     def test_detects_linear(self):
         # O(n): the same dedup done with a set.

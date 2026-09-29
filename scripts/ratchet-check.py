@@ -33,6 +33,24 @@ def _save_baseline(data: dict) -> None:
     BASELINE_FILE.write_text(json.dumps(data, indent=2) + "\n")
 
 
+def judge(old: int | None, current: int, direction: str, force: bool) -> str:
+    """How ``current`` moves a baseline of ``old``: ``seed`` (no baseline
+    yet), ``improved``, ``unchanged``, ``regression``, or ``forced`` (a
+    regression accepted by ``--update``, for a baseline that legitimately
+    moved, e.g. tests of a removed field).
+
+    ``direction`` is ``increase`` when higher is better, else ``decrease``.
+    """
+    if old is None:
+        return "seed"
+    if current == old:
+        return "unchanged"
+    better = current > old if direction == "increase" else current < old
+    if better:
+        return "improved"
+    return "forced" if force else "regression"
+
+
 def _count_collected_tests() -> int:
     result = subprocess.run(
         [sys.executable, "-m", "pytest", "src/", "--co", "-q", "-n0"] + IGNORES,
@@ -43,6 +61,7 @@ def _count_collected_tests() -> int:
     for line in result.stdout.splitlines():
         if "tests collected" in line or "test collected" in line:
             import re
+
             m = re.search(r"(\d+)\s+tests?\s+collected", line)
             if m:
                 return int(m.group(1))
@@ -57,8 +76,11 @@ def _count_mypy_errors() -> int:
     # to Any, hiding real errors and inventing spurious no-any-return ones.
     result = subprocess.run(
         [
-            sys.executable, "-m", "mypy",
-            "-p", "zephyrex",
+            sys.executable,
+            "-m",
+            "mypy",
+            "-p",
+            "zephyrex",
             "--ignore-missing-imports",
             "--no-error-summary",
         ],
@@ -92,7 +114,12 @@ def main() -> int:
     checks = [
         ("test_count_minimum", _count_collected_tests, "increase", "tests collected"),
         ("mypy_error_maximum", _count_mypy_errors, "decrease", "mypy errors"),
-        ("black_reformattable_maximum", _count_black_violations, "decrease", "black violations"),
+        (
+            "black_reformattable_maximum",
+            _count_black_violations,
+            "decrease",
+            "black violations",
+        ),
     ]
 
     for key, measure_fn, direction, label in checks:
@@ -103,34 +130,15 @@ def main() -> int:
             continue
 
         old = baseline.get(key)
-        if old is None:
+        verdict = judge(old, current, direction, force=update_mode)
+        if verdict == "regression":
+            symbol = "<" if direction == "increase" else ">"
+            failures.append(f"{label}: {current} {symbol} baseline {old} (regression)")
+            continue
+        if verdict != "unchanged":
             baseline[key] = current
             updated = True
-            print(f"[ratchet] SEED {label}: {current}")
-            continue
-
-        if direction == "increase":
-            if current < old:
-                failures.append(
-                    f"{label}: {current} < baseline {old} (regression)"
-                )
-            elif current > old:
-                baseline[key] = current
-                updated = True
-                print(f"[ratchet] OK {label}: {old} -> {current} (improved)")
-            else:
-                print(f"[ratchet] OK {label}: unchanged at {current}")
-        else:
-            if current > old:
-                failures.append(
-                    f"{label}: {current} > baseline {old} (regression)"
-                )
-            elif current < old:
-                baseline[key] = current
-                updated = True
-                print(f"[ratchet] OK {label}: {old} -> {current} (improved)")
-            else:
-                print(f"[ratchet] OK {label}: unchanged at {current}")
+        print(f"[ratchet] {verdict.upper()} {label}: {old} -> {current}")
 
     if updated or update_mode:
         _save_baseline(baseline)
