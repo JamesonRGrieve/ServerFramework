@@ -18,16 +18,24 @@ os.environ.setdefault("SEED_DATA", "false")
 
 @pytest.fixture(scope="module")
 def client_registry(tmp_path_factory):
+    """An app with only auth_oauth2_client. Follows the conftest server
+    contract: prepare_test_registry() first, so an earlier suite's
+    @extension_model mutations (e.g. payment's UserModel columns) are undone
+    before this app builds its schema; env changes are scoped to the module."""
+    from zephyrex.app import instance
+    from zephyrex.pydantic2.sqlalchemy import prepare_test_registry
+
     tmp = tmp_path_factory.mktemp("oauth2_client_bll")
     worker = os.environ.get("PYTEST_XDIST_WORKER", "main")
-    os.environ["DATABASE_NAME"] = f"oauth2_client_bll_{worker}_{os.getpid()}"
-    os.environ["DATABASE_PATH"] = str(tmp)
-    from zephyrex.app import instance
-
-    app = instance(
-        extensions="auth_oauth2_client", db_prefix=f"oauth2cli.{worker}.{os.getpid()}"
-    )
-    return app.state.model_registry
+    with pytest.MonkeyPatch.context() as env_patch:
+        env_patch.setenv("DATABASE_NAME", f"oauth2_client_bll_{worker}_{os.getpid()}")
+        env_patch.setenv("DATABASE_PATH", str(tmp))
+        prepare_test_registry()
+        app = instance(
+            extensions="auth_oauth2_client",
+            db_prefix=f"oauth2cli.{worker}.{os.getpid()}",
+        )
+        yield app.state.model_registry
 
 
 def _mgr(registry):

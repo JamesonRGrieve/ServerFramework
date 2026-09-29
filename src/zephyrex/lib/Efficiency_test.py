@@ -33,16 +33,6 @@ def _worker_db_prefix(label: str) -> str:
     return f"bench.{label}.{worker}.{os.getpid()}"
 
 
-def _reset_registry():
-    from zephyrex.pydantic2.sqlalchemy import (
-        clear_registry_cache,
-        reset_extension_system,
-    )
-
-    clear_registry_cache()
-    reset_extension_system()
-
-
 class TestBootPerformance:
     def test_instance_boot(self, tmp_path):
         ratchet_subprocess(
@@ -66,14 +56,15 @@ _mhz = (_mhz_before + _read_mhz()) / 2.0
 
 
 class TestModelRegistryPerformance:
-    def test_registry_commit(self, tmp_path):
-        os.environ["DATABASE_NAME"] = f"bench_registry_{os.getpid()}"
-        os.environ["DATABASE_PATH"] = str(tmp_path)
+    def test_registry_commit(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("DATABASE_NAME", f"bench_registry_{os.getpid()}")
+        monkeypatch.setenv("DATABASE_PATH", str(tmp_path))
         from zephyrex.database.DatabaseManager import DatabaseManager
         from zephyrex.pydantic2.registry import ModelRegistry
+        from zephyrex.pydantic2.sqlalchemy import prepare_test_registry
 
         def commit():
-            _reset_registry()
+            prepare_test_registry()
             db_mgr = DatabaseManager(db_prefix=_worker_db_prefix("reg"))
             registry = ModelRegistry()
             registry.database_manager = db_mgr
@@ -140,16 +131,18 @@ class TestRequestLatency:
     @pytest.fixture(scope="class")
     @classmethod
     def client(cls, tmp_path_factory):
-        tmp = tmp_path_factory.mktemp("bench_latency")
-        os.environ["DATABASE_NAME"] = f"bench_latency_{os.getpid()}"
-        os.environ["DATABASE_PATH"] = str(tmp)
-        os.environ["SEED_DATA"] = "true"
-        _reset_registry()
         from starlette.testclient import TestClient
         from zephyrex.app import instance
+        from zephyrex.pydantic2.sqlalchemy import prepare_test_registry
 
-        app = instance(extensions="", db_prefix=_worker_db_prefix("lat"))
-        return TestClient(app)
+        tmp = tmp_path_factory.mktemp("bench_latency")
+        with pytest.MonkeyPatch.context() as env_patch:
+            env_patch.setenv("DATABASE_NAME", f"bench_latency_{os.getpid()}")
+            env_patch.setenv("DATABASE_PATH", str(tmp))
+            env_patch.setenv("SEED_DATA", "true")
+            prepare_test_registry()
+            app = instance(extensions="", db_prefix=_worker_db_prefix("lat"))
+            yield TestClient(app)
 
     def test_openapi_generation(self, client):
         ratchet(

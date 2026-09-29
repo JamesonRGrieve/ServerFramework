@@ -87,22 +87,16 @@ class TestRouteInventory:
     @pytest.fixture(scope="class")
     @classmethod
     def app(cls, tmp_path_factory):
-        tmp = tmp_path_factory.mktemp("inventory")
-        os.environ["DATABASE_NAME"] = f"inventory_{os.getpid()}"
-        os.environ["DATABASE_PATH"] = str(tmp)
-
-        from zephyrex.pydantic2.sqlalchemy import (
-            clear_registry_cache,
-            reset_extension_system,
-        )
-
-        clear_registry_cache()
-        reset_extension_system()
-
         from zephyrex.app import instance
+        from zephyrex.pydantic2.sqlalchemy import prepare_test_registry
 
+        tmp = tmp_path_factory.mktemp("inventory")
         worker = os.environ.get("PYTEST_XDIST_WORKER", "main")
-        return instance(extensions="", db_prefix=f"inv.{worker}.{os.getpid()}")
+        with pytest.MonkeyPatch.context() as env_patch:
+            env_patch.setenv("DATABASE_NAME", f"inventory_{os.getpid()}")
+            env_patch.setenv("DATABASE_PATH", str(tmp))
+            prepare_test_registry()
+            yield instance(extensions="", db_prefix=f"inv.{worker}.{os.getpid()}")
 
     @pytest.mark.security
     def test_no_debug_endpoints_serve_real_data(self, app):
