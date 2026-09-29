@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Per-request cost audit emitter (Item 84).
 
 Bridges the rotation-system cost callback into the meta-logging audit
@@ -79,9 +80,8 @@ def make_cost_audit_emitter(
     The returned callable:
       1. Constructs an ``AuditLogModel.Create`` with
          ``action="provider_cost"`` and ``resource_type="provider"``.
-      2. Persists via ``audit_log_manager_factory().log_audit_event(...)``
-         (sync or async — the result is not awaited; failures are
-         logged at WARNING level and never raised).
+      2. Persists it via ``audit_log_manager_factory().log_audit_event(...)``;
+         failures are logged at WARNING level and never raised.
       3. Carries the full payload in ``additional_data`` so a regulator
          can reconstruct spend per tenant from the audit log alone.
     """
@@ -123,42 +123,9 @@ def make_cost_audit_emitter(
                 additional_data=additional_data,
             )
 
-            manager = audit_log_manager_factory()
-            log_method = getattr(manager, "log_audit_event", None)
-            if log_method is None:
-                logger.warning(
-                    "cost_audit_emitter: audit manager has no log_audit_event method"
-                )
-                return
-            try:
-                result = log_method(create)
-                # If the manager returns a coroutine, fire-and-forget via
-                # the running loop; if no loop is running, schedule a new
-                # one only when explicitly safe. Failures here are
-                # absorbed identically to sync failures.
-                import asyncio
-
-                if asyncio.iscoroutine(result):
-                    try:
-                        loop = asyncio.get_event_loop()
-                        if loop.is_running():
-                            asyncio.ensure_future(result)
-                        else:
-                            loop.run_until_complete(result)
-                    except RuntimeError:
-                        # No event loop available; synchronously execute
-                        # the coroutine in a fresh loop and discard.
-                        try:
-                            asyncio.run(result)
-                        except Exception as inner:  # noqa: BLE001
-                            logger.warning(
-                                "cost_audit_emitter: coroutine drain failed: %s",
-                                inner,
-                            )
-            except Exception as inner:  # noqa: BLE001
-                logger.warning("cost_audit_emitter: log_audit_event failed: %s", inner)
-        except Exception as outer:  # noqa: BLE001
-            logger.warning("cost_audit_emitter: emission failed: %s", outer)
+            audit_log_manager_factory().log_audit_event(create)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("cost_audit_emitter: emission failed: %s", exc)
 
     return emit
 
