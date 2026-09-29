@@ -3,7 +3,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, Set, Type, TypeVar
+from typing import Any, Dict, Set, Type
 
 import pytest
 
@@ -26,8 +26,6 @@ from zephyrex.extensions.AbstractExtensionProvider import AbstractStaticExtensio
 from zephyrex.lib.Dependencies import Dependencies
 from zephyrex.lib.Environment import env
 from zephyrex.lib.Logging import logger
-
-T = TypeVar("T", bound=AbstractStaticExtension)
 
 
 class ExtensionTestType(str, Enum):
@@ -69,7 +67,7 @@ class ExtensionTestConfig:
 class ExtensionServerMixin:
     """Simplified mixin for extension server fixtures."""
 
-    extension_class: Type[T] | None = None  # type: ignore[valid-type]
+    extension_class: Type[AbstractStaticExtension] | None = None
 
     @pytest.fixture(scope="module")
     def server(self):
@@ -117,16 +115,12 @@ class ExtensionServerMixin:
         ordered = [extension_name] + dep_names
         names = ordered + [c for c in CORE_COMPANION_EXTENSIONS if c not in ordered]
         extension_list = ",".join(names)
-        try:
-            from zephyrex.app import instance
+        # No try/except: a server that fails to build is a failing suite, not
+        # a skipped one (this used to hide whole extensions' test modules).
+        from zephyrex.app import instance
 
-            app = instance(db_prefix=test_db_prefix, extensions=extension_list)
-            client = TestClient(app)
-            yield client
-        except ImportError as e:
-            pytest.skip(f"FastAPI dependencies not available: {e}")
-        except Exception as e:
-            pytest.skip(f"Server setup failed: {e}")
+        app = instance(db_prefix=test_db_prefix, extensions=extension_list)
+        yield TestClient(app)
 
     @pytest.fixture(scope="module")
     def admin_a(self, server):
@@ -189,7 +183,7 @@ class AbstractEXTTest(AbstractTest, ExtensionServerMixin):
     hard-coded test methods.
     """
 
-    extension_class: Type[T] | None = None  # type: ignore[valid-type]
+    extension_class: Type[AbstractStaticExtension] | None = None
     test_config: ExtensionTestConfig = ExtensionTestConfig()
 
     @classmethod
@@ -338,6 +332,26 @@ class AbstractEXTTest(AbstractTest, ExtensionServerMixin):
         assert len(bound_models) > 0, "Registry should have bound models"
         assert model_registry.is_committed(), "Registry should be committed"
 
+    def _root_rotation(self, server, *, cold: bool = False):
+        """This extension's root RotationManager, resolved against this suite's
+        own app (another fixture may have built and attached a different one).
+
+        Only an extension that ships no providers legitimately has no root
+        rotation; for any other, ``None`` is a defect, not a skip.
+        """
+        extension = self.extension_class
+        assert extension is not None, "extension_class not defined"
+        if not extension.providers:
+            pytest.skip(f"{extension.name} ships no providers")
+        server.app.state.model_registry.bind_app(server.app)
+        if cold:
+            extension._root_rotation_cache = None
+        root_rotation = extension.root
+        assert (
+            root_rotation is not None
+        ), f"{extension.__name__}.root did not resolve its root rotation"
+        return root_rotation
+
     def test_rotation_system(self, server):
         """Test rotation system functionality."""
         self._skip_if_not_configured(ExtensionTestType.ROTATION)
@@ -348,10 +362,8 @@ class AbstractEXTTest(AbstractTest, ExtensionServerMixin):
         if not self.extension_class:
             pytest.skip("extension_class not defined")
 
-        root_rotation = self.extension_class.root
-        if root_rotation is None:
-            pytest.skip("Root rotation manager not available in test environment")
-
+        root_rotation = self._root_rotation(server)
+        assert root_rotation.target_id, "root must target the extension's rotation"
         assert hasattr(
             root_rotation, "rotate"
         ), "Rotation manager must have rotate method"
@@ -367,17 +379,10 @@ class AbstractEXTTest(AbstractTest, ExtensionServerMixin):
         if not self.extension_class:
             pytest.skip("extension_class not defined")
 
-        # Clear cache
-        if hasattr(self.extension_class, "_root_rotation_cache"):
-            delattr(self.extension_class, "_root_rotation_cache")
-
         # Measure clean lookup
         start_time = time.time()
-        root_rotation_1 = self.extension_class.root
+        root_rotation_1 = self._root_rotation(server, cold=True)
         clean_lookup_time = time.time() - start_time
-
-        if root_rotation_1 is None:
-            pytest.skip("Root rotation manager not available in test environment")
 
         # Measure cached lookup
         start_time = time.time()
@@ -402,8 +407,7 @@ class AbstractEXTTest(AbstractTest, ExtensionServerMixin):
         if not self.extension_class:
             pytest.skip("extension_class not defined")
 
-        if self.extension_class.root is None:
-            pytest.skip("Root rotation manager not available in test environment")
+        self._root_rotation(server)
 
         def access_root_property():
             return self.extension_class.root
@@ -440,21 +444,15 @@ class AbstractEXTTest(AbstractTest, ExtensionServerMixin):
         if not self.extension_class:
             pytest.skip("extension_class not defined")
 
-        # Clear cache
-        if hasattr(self.extension_class, "_root_rotation_cache"):
-            delattr(self.extension_class, "_root_rotation_cache")
-
         num_accesses = self.test_config.performance_thresholds["performance_iterations"]
-        access_times = []
+        start_time = time.time()
+        self._root_rotation(server, cold=True)
+        access_times = [time.time() - start_time]
 
-        for i in range(num_accesses):
+        for _ in range(num_accesses - 1):
             start_time = time.time()
-            root_rotation = self.extension_class.root
-            access_time = time.time() - start_time
-            access_times.append(access_time)
-
-            if i == 0 and root_rotation is None:
-                pytest.skip("Root rotation manager not available in test environment")
+            self.extension_class.root
+            access_times.append(time.time() - start_time)
 
         first_access_time = access_times[0]
         avg_cached_time = sum(access_times[1:]) / (num_accesses - 1)
@@ -547,18 +545,17 @@ class AbstractEXTTest(AbstractTest, ExtensionServerMixin):
         assert isinstance(providers, list), "Providers should be a list"
         # Providers list may be empty in test environment, which is acceptable
 
-    def test_get_rotation_provider_instances_seed_data(self, isolated_extension_server):
+    def test_get_rotation_provider_instances_seed_data(self, server):
         """Every seed row links this extension's root rotation to a provider
         instance."""
         if not self.extension_class:
             pytest.skip("extension_class not defined")
 
-        isolated_extension_server(self.extension_class.name)
+        server.app.state.model_registry.bind_app(server.app)
         seed_data = self.extension_class.get_rotation_provider_instances_seed_data()
         assert isinstance(seed_data, list), "Seed data should be a list"
         if seed_data:
-            root = self.extension_class.root
-            assert root is not None, "seed rows exist, so the root rotation must"
+            root = self._root_rotation(server)
         for item in seed_data:
             assert set(item) == {"rotation_id", "provider_instance_id", "parent_id"}
             assert item["rotation_id"] == root.target_id

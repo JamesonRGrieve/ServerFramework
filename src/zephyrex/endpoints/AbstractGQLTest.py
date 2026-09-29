@@ -1251,7 +1251,10 @@ class AbstractGraphQLTest:
                 for msg in error_messages
             )
             if schema_errors:
-                pytest.skip("Navigation properties not yet implemented in schema")
+                pytest.skip(
+                    "Navigation properties not yet implemented in schema: "
+                    + "; ".join(error_messages)
+                )
             else:
                 pytest.fail(f"Unexpected GraphQL errors: {json.dumps(data['errors'])}")
 

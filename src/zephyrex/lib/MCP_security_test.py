@@ -14,35 +14,29 @@ import pytest
 os.environ.setdefault("JWT_SECRET", "test-jwt-secret-32-bytes-or-more-aaaaaa")
 os.environ.setdefault("DATABASE_TYPE", "sqlite")
 os.environ.setdefault("SEED_DATA", "false")
-os.environ.setdefault("MCP", "true")
 
 
 @pytest.fixture(scope="module")
 def mcp_app(tmp_path_factory):
-    tmp = tmp_path_factory.mktemp("mcp_sec")
-    os.environ["DATABASE_NAME"] = f"mcp_sec_{os.getpid()}"
-    os.environ["DATABASE_PATH"] = str(tmp)
-    os.environ["MCP"] = "true"
-
-    from zephyrex.lib.Environment import refresh_settings
-    from zephyrex.pydantic2.sqlalchemy import (
-        clear_registry_cache,
-        reset_extension_system,
-    )
-
-    refresh_settings()
-    clear_registry_cache()
-    reset_extension_system()
-    from zephyrex.pydantic2.strawberry import reset_gql_contribution_registry
-
-    reset_gql_contribution_registry()
-
+    """An MCP-enabled app. MCP and the DB location are enabled only for this
+    module: setting them process-wide (at import, i.e. during collection) made
+    every app in every worker boot with MCP mounted."""
     from zephyrex.app import instance
+    from zephyrex.lib.Environment import refresh_settings
+    from zephyrex.pydantic2.sqlalchemy import prepare_test_registry
 
+    tmp = tmp_path_factory.mktemp("mcp_sec")
     worker = os.environ.get("PYTEST_XDIST_WORKER", "main")
-    app = instance(extensions="", db_prefix=f"mcp.sec.{worker}.{os.getpid()}")
-    assert hasattr(app.state, "mcp"), "MCP failed to mount"
-    return app
+    with pytest.MonkeyPatch.context() as env_patch:
+        env_patch.setenv("DATABASE_NAME", f"mcp_sec_{os.getpid()}")
+        env_patch.setenv("DATABASE_PATH", str(tmp))
+        env_patch.setenv("MCP", "true")
+        refresh_settings()
+        prepare_test_registry()
+        app = instance(extensions="", db_prefix=f"mcp.sec.{worker}.{os.getpid()}")
+        assert hasattr(app.state, "mcp"), "MCP failed to mount"
+        yield app
+    refresh_settings()
 
 
 @pytest.fixture(scope="module")
