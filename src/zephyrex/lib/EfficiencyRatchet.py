@@ -29,6 +29,12 @@ DEFAULT_TOLERANCE = 0.15
 # timing noise yet well below a true order-of-growth regression.
 DEFAULT_SCALING_MARGIN = 0.35
 
+# Timed samples per input size; the fastest is kept. A single sample lets one
+# scheduler preemption (routine under xdist) inflate a small-size timing and
+# flatten the fitted exponent. The minimum is the least-noisy estimate of the
+# work itself, since noise only ever adds time.
+DEFAULT_SCALING_REPEATS = 5
+
 
 def _read_mhz() -> float:
     """CPU base frequency in MHz — stable across P-states and turbo.
@@ -172,6 +178,7 @@ def ratchet_scaling(
     sizes: Sequence[int],
     margin: float = DEFAULT_SCALING_MARGIN,
     iterations: int = 1,
+    repeats: int = DEFAULT_SCALING_REPEATS,
 ) -> None:
     """Ratchet the empirical big-O *exponent* of ``run`` across input ``sizes``.
 
@@ -184,7 +191,8 @@ def ratchet_scaling(
 
     Choose ``sizes`` (≥3 recommended, geometrically spaced e.g. 100/200/400/800)
     large enough that the scaling work dominates timer noise; bump ``iterations``
-    for fast inner work. Pairs with :func:`ratchet` — use both on a hot,
+    for fast inner work. Each size is timed ``repeats`` times and the fastest
+    kept. Pairs with :func:`ratchet` — use both on a hot,
     input-scaling function: one guards constant factor, one guards order of growth.
     """
     if len(sizes) < 2:
@@ -193,10 +201,13 @@ def ratchet_scaling(
     xs: list[float] = []
     ys: list[float] = []
     for n in sizes:
-        start = time.perf_counter()
-        for _ in range(iterations):
-            run(n)
-        elapsed = (time.perf_counter() - start) / iterations
+        samples = []
+        for _ in range(repeats):
+            start = time.perf_counter()
+            for _ in range(iterations):
+                run(n)
+            samples.append((time.perf_counter() - start) / iterations)
+        elapsed = min(samples)
         xs.append(math.log(n))
         # Floor the normalized time so a sub-microsecond sample can't produce a
         # nonsense log; callers are told to size the work above noise regardless.

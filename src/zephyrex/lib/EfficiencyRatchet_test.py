@@ -70,6 +70,24 @@ class TestRatchetScalingIntegration:
     def _tmp_baseline(self, tmp_path, monkeypatch):
         monkeypatch.setattr(ER, "BASELINE_FILE", tmp_path / ".efficiency-baseline.json")
 
+    def test_keeps_the_fastest_repeat_per_size(self, monkeypatch):
+        """A preempted first sample must not skew the fit: with a scripted
+        clock whose first sample per size is a 100-unit outlier and whose other
+        samples are linear in n, the recorded exponent is the linear one."""
+        durations = []
+        for n in (1, 2, 4):
+            durations += [100.0] + [float(n)] * (ER.DEFAULT_SCALING_REPEATS - 1)
+        ticks = [0.0]
+        for d in durations:
+            ticks += [ticks[-1], ticks[-1] + d]
+        clock = iter(ticks[1:])
+        monkeypatch.setattr(ER.time, "perf_counter", lambda: next(clock))
+        monkeypatch.setattr(ER, "_read_mhz", lambda: 1.0)
+
+        ER.ratchet_scaling("demo_repeats", lambda n: None, sizes=[1, 2, 4])
+
+        assert ER._load()["scaling:demo_repeats"] == pytest.approx(1.0)
+
     def test_detects_quadratic(self):
         # O(n^2): membership scan against a growing list inside a loop.
         def quadratic(n: int) -> None:
