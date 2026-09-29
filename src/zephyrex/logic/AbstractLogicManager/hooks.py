@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+import functools
 import inspect
 from enum import Enum
 from typing import (
@@ -15,7 +17,6 @@ from typing import (
 import numpy as np
 
 from zephyrex.lib.ClassMembers import instance_methods
-from zephyrex.lib.InboundSecurity import RATE_LIMIT_MARKERS
 from zephyrex.lib.Logging import logger
 
 if TYPE_CHECKING:
@@ -928,20 +929,11 @@ def wrap_method_with_hooks(
 
         return result
 
-    # Preserve method metadata
-    wrapped_method.__name__ = method_name
-    wrapped_method.__doc__ = original_method.__doc__
+    # Look like the raw method: name, docs, framework-decorator markers
+    # (``@custom_route``, ``@rate_limit``; router/SDK discovery walks
+    # ``vars(manager_cls)``) and, through ``__wrapped__``, its signature, which
+    # the route layer reads to decide what to pass (``include``, ``fields``).
+    functools.update_wrapper(wrapped_method, original_method)
     wrapped_method._original_method = original_method  # type: ignore[attr-defined]
-    # Forward framework-decorator markers so router/SDK/test discovery
-    # walking ``vars(manager_cls)`` finds the same metadata as on the
-    # raw method. Without this, ``@custom_route`` and ``@rate_limit``
-    # tags vanish through hook wrapping and the route never registers.
-    for marker in (
-        "__custom_route_spec__",
-        "_static_route_config",
-        *RATE_LIMIT_MARKERS,
-    ):
-        if hasattr(original_method, marker):
-            setattr(wrapped_method, marker, getattr(original_method, marker))
 
     return wrapped_method

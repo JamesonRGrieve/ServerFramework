@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any, ClassVar, Dict, List, Optional, Type, Union
+from typing import Any, ClassVar, Dict, List, Optional, Set, Type, Union
 
 from fastapi import HTTPException
 
@@ -279,59 +279,48 @@ class UserTeamManager(AbstractBLLManager, RouterMixin):
             **search_params,
         )
 
-        if not records:
-            return records
+        return self.embed_related(records, {"team", "role"})
 
-        def _get_attr(record, attr):
-            if isinstance(record, dict):
-                return record.get(attr)
-            return getattr(record, attr, None)
+    def _related_managers(self) -> Dict[str, Any]:
+        from zephyrex.logic.BLL_Auth.user import UserManager
 
-        def _set_attr(record, attr, value):
-            if isinstance(record, dict):
-                record[attr] = value
-            else:
-                setattr(record, attr, value)
+        return {"user": UserManager, "team": TeamManager, "role": RoleManager}
 
-        team_ids = {
-            team_id
-            for team_id in (_get_attr(record, "team_id") for record in records)
-            if team_id
-        }
-        role_ids = {
-            role_id
-            for role_id in (_get_attr(record, "role_id") for record in records)
-            if role_id
-        }
-
-        team_map: Dict[str, Any] = {}
-        role_map: Dict[str, Any] = {}
-
-        if team_ids:
-            team_manager = TeamManager(
-                requester_id=self.requester.id,
-                model_registry=self.model_registry,
+    def embed_related(self, records: List[Any], relations: Set[str]) -> List[Any]:
+        """Attach each record's ``relations`` (of user, team, role), loaded
+        with one ``id IN`` query per relation under the requester's own
+        permissions. Unknown relation names are a 400."""
+        managers = self._related_managers()
+        unknown = relations - set(managers)
+        if unknown:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot include {', '.join(sorted(unknown))}",
             )
-            teams = team_manager.list(filters=[team_manager.DB.id.in_(team_ids)])
-            team_map = {team.id: team for team in teams}
 
-        if role_ids:
-            role_manager = RoleManager(
-                requester_id=self.requester.id,
-                model_registry=self.model_registry,
+        def field(record: Any, name: str) -> Any:
+            if isinstance(record, dict):
+                return record.get(name)
+            return getattr(record, name, None)
+
+        for relation in relations:
+            ids = {field(r, f"{relation}_id") for r in records} - {None}
+            if not ids:
+                continue
+            manager = managers[relation](
+                requester_id=self.requester.id, model_registry=self.model_registry
             )
-            roles = role_manager.list(filters=[role_manager.DB.id.in_(role_ids)])
-            role_map = {role.id: role for role in roles}
-
-        for record in records:
-            team_id = _get_attr(record, "team_id")
-            if team_id and team_id in team_map:
-                _set_attr(record, "team", team_map[team_id])
-
-            role_id = _get_attr(record, "role_id")
-            if role_id and role_id in role_map:
-                _set_attr(record, "role", role_map[role_id])
-
+            by_id = {
+                row.id: row for row in manager.list(filters=[manager.DB.id.in_(ids)])
+            }
+            for record in records:
+                related = by_id.get(field(record, f"{relation}_id"))
+                if related is None:
+                    continue
+                if isinstance(record, dict):
+                    record[relation] = related
+                else:
+                    setattr(record, relation, related)
         return records
 
     def update(

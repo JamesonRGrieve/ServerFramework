@@ -464,21 +464,17 @@ class TeamManager(AbstractBLLManager, RouterMixin):
             results = mgr.search({"team_id": {"value": self.target_team_id}}) or []
             return {row.key: row.value for row in results}
 
-    def get_team_users(self, id: str):
-        """Get users belonging to a team (custom route method)"""
-        from zephyrex.logic.BLL_Auth.user import UserManager
-
-        result = self.user_teams.list(team_id=id, include=["users"])
-        user_manager = UserManager(
-            self.requester.id, model_registry=self.model_registry
-        )
-
-        for record in result:
-            if record.user is None:
-                user = user_manager.get(id=record.user_id)
-                record.user = user
-
-        return {"user_teams": result}
+    def get_team_users(
+        self, id: str, include: Optional[List[str]] = None
+    ) -> Dict[str, List[Any]]:
+        """GET /v1/team/{id}/user — the team's memberships, each with its
+        ``user`` and ``role``; ``?include=team`` adds the team."""
+        memberships = self.user_teams.list(team_id=id)
+        return {
+            "user_teams": self.user_teams.embed_related(
+                memberships, {"user", "role", *(include or [])}
+            )
+        }
 
     def patch_role(self, team_id: str, user_id: str, body: Dict[str, Any]):
         """Update a user's role within a team (custom route method)"""

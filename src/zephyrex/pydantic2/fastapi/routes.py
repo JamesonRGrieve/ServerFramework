@@ -1693,6 +1693,39 @@ def _build_batch_delete_route(
             handle_resource_operation_error(err)
 
 
+_BODY_METHODS = frozenset({"POST", "PUT", "PATCH"})
+# Comma-separated query parameters forwarded to custom-route methods that
+# declare them: ``?include=user,role&fields=id,name``.
+_LIST_QUERY_PARAMS = ("fields", "include")
+
+
+async def _json_body(request: Request) -> Any:
+    """The decoded JSON body. An absent body is an empty object: the method
+    decides whether it needs fields (registration can use Basic auth)."""
+    raw_body = await request.body()
+    if not raw_body:
+        return {}
+    try:
+        return json.loads(raw_body)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+
+def _list_query_args(request: Request, signature: Any) -> Dict[str, List[str]]:
+    args: Dict[str, List[str]] = {}
+    for name in _LIST_QUERY_PARAMS:
+        if name not in signature.parameters:
+            continue
+        values = [
+            value.strip()
+            for value in (request.query_params.get(name) or "").split(",")
+            if value.strip()
+        ]
+        if values:
+            args[name] = values
+    return args
+
+
 def register_custom_route(
     router: APIRouter,
     custom_route: CustomRouteConfig,
@@ -1772,17 +1805,11 @@ def register_custom_route(
             if "cls" in sig.parameters and "cls" not in method_args:
                 method_args["cls"] = manager_class
 
+            method_args.update(_list_query_args(request, sig))
+
             # Handle request body for POST/PUT/PATCH
-            if request.method in ["POST", "PUT", "PATCH"]:
-                raw_body = await request.body()
-                # An absent body is an empty object: the method decides
-                # whether it needs fields (registration can use Basic auth).
-                body: Any = {}
-                if raw_body:
-                    try:
-                        body = json.loads(raw_body)
-                    except json.JSONDecodeError:
-                        raise HTTPException(status_code=400, detail="Invalid JSON body")
+            if request.method in _BODY_METHODS:
+                body = await _json_body(request)
                 if not isinstance(body, dict):
                     raise HTTPException(
                         status_code=422,
@@ -1827,24 +1854,13 @@ def register_custom_route(
             # Extract path parameters
             path_params = dict(request.path_params)
 
-            # Build method arguments, including query params for methods that accept them
-            method_args = dict(path_params)
+            method_args = {
+                **path_params,
+                **_list_query_args(request, inspect.signature(method_func)),
+            }
 
-            # Check if method accepts 'fields' parameter and extract from query params
-            sig = inspect.signature(method_func)
-            if "fields" in sig.parameters:
-                fields_raw = request.query_params.get("fields")
-                if fields_raw:
-                    # Handle comma-separated or repeated params
-                    fields_list = [
-                        f.strip() for f in fields_raw.split(",") if f.strip()
-                    ]
-                    method_args["fields"] = fields_list if fields_list else None
-
-            # Handle request body for POST/PUT/PATCH
-            if request.method in ["POST", "PUT", "PATCH"]:
-                body = await request.json()
-                result = method_func(**method_args, body=body)
+            if request.method in _BODY_METHODS:
+                result = method_func(**method_args, body=await _json_body(request))
             else:
                 result = method_func(**method_args)
 

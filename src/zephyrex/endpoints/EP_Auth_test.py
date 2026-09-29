@@ -141,6 +141,47 @@ class TestTeamEndpoints(AbstractEPTest):
         assert "user" in record, "'user' should be in 'user_teams' list"
         assert record["user"], "'user' should not be None"
 
+    def test_GET_team_users_embed_user_and_role_and_honour_include(
+        self, server: Any
+    ) -> None:
+        from conftest import create_user
+        from zephyrex.testing.factories import add_user_to_team, create_team
+
+        owner = create_user(server)
+        member = create_user(server)
+        team = create_team(server, owner.id, name=f"Members {uuid.uuid4().hex[:8]}")
+        add_user_to_team(server, member.id, team.id, env("USER_ROLE_ID"))
+        endpoint = f"/v1/team/{team.id}/user"
+
+        # A plain member sees every membership with its user and role.
+        response = server.get(
+            endpoint, headers=self._get_appropriate_headers(member.jwt)
+        )
+        assert response.status_code == 200, response.text
+        rows = {row["user_id"]: row for row in response.json()["user_teams"]}
+        assert set(rows) == {owner.id, member.id}
+        for user in (owner, member):
+            row = rows[user.id]
+            assert row["user"]["email"] == user.email
+            assert row["role"]["id"] == row["role_id"]
+            assert row["role"]["name"]
+            assert row.get("team") is None
+        assert rows[member.id]["role_id"] == env("USER_ROLE_ID")
+
+        with_team = server.get(
+            f"{endpoint}?include=team",
+            headers=self._get_appropriate_headers(member.jwt),
+        )
+        assert with_team.status_code == 200, with_team.text
+        for row in with_team.json()["user_teams"]:
+            assert row["team"]["name"] == team.name
+
+        unknown = server.get(
+            f"{endpoint}?include=secrets",
+            headers=self._get_appropriate_headers(member.jwt),
+        )
+        assert unknown.status_code == 400, unknown.text
+
     def _get_team_users(
         self, server: Any, admin_a: Any, team_a: Any
     ) -> List[Dict[str, Any]]:
