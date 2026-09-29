@@ -48,6 +48,7 @@ from .types import (
     RouteType as RouteType,
     HTTPMethod as HTTPMethod,
     CustomRouteConfig as CustomRouteConfig,
+    CustomRouteSpec as CustomRouteSpec,
     NestedResourceConfig as NestedResourceConfig,
     static_route as static_route,
     RouterMixin as RouterMixin,

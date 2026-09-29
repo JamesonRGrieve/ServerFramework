@@ -9,6 +9,7 @@ from typing import (
     List,
     Optional,
     Protocol,
+    Sequence,
     Type,
     TypeVar,
 )
@@ -88,6 +89,11 @@ class CustomRouteConfig:
     is_static: bool = False
 
 
+# Managers may declare custom routes as CustomRouteConfig or as the equivalent
+# dict literal; the router normalizes dicts at registration time.
+CustomRouteSpec = CustomRouteConfig | Dict[str, Any]
+
+
 @dataclass
 class NestedResourceConfig:
     """Configuration for a nested resource."""
@@ -161,7 +167,7 @@ class RouterMixin:
     auth_type: ClassVar[AuthType] = AuthType.JWT
     routes_to_register: ClassVar[Optional[List[RouteType]]] = None
     route_auth_overrides: ClassVar[Dict[RouteType, AuthType]] = {}
-    custom_routes: ClassVar[List[CustomRouteConfig]] = []
+    custom_routes: ClassVar[Sequence[CustomRouteSpec]] = []
     nested_resources: ClassVar[Dict[str, NestedResourceConfig]] = {}
     example_overrides: ClassVar[Dict[str, Dict[str, Any]]] = {}
 

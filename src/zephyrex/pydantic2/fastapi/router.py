@@ -5,6 +5,7 @@ from typing import (
     Dict,
     List,
     Optional,
+    Sequence,
     Type,
 )
 
@@ -16,6 +17,7 @@ from zephyrex.lib.Logging import logger
 from .types import (
     AuthType,
     CustomRouteConfig,
+    CustomRouteSpec,
     HTTPMethod,
     NestedResourceConfig,
     RouteType,
@@ -61,7 +63,9 @@ def create_router_from_manager(
     routes_to_register: Optional[List[RouteType]] = getattr(
         manager_class, "routes_to_register", None
     )
-    route_auth_overrides: Dict[RouteType, AuthType] = (
+    # Copy: the system-entity defaults below must not leak into the manager's
+    # class-level dict (shared by every subclass that inherits it).
+    route_auth_overrides: Dict[RouteType, AuthType] = dict(
         getattr(manager_class, "route_auth_overrides", None) or {}
     )
 
@@ -86,7 +90,7 @@ def create_router_from_manager(
             if write_route not in route_auth_overrides:
                 route_auth_overrides[write_route] = AuthType.API_KEY
 
-    custom_routes: List[CustomRouteConfig] = (
+    custom_routes: Sequence[CustomRouteSpec] = (
         getattr(manager_class, "custom_routes", None) or []
     )
     nested_resources: Dict[str, NestedResourceConfig] = (

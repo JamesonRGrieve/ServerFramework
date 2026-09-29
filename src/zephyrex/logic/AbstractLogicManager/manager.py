@@ -9,6 +9,7 @@ from typing import (
     Generic,
     List,
     Optional,
+    Sequence,
     Set,
     TypeVar,
     Union,
@@ -24,7 +25,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from zephyrex.lib.Logging import logger
 from zephyrex.pydantic2.registry import classproperty, obj_to_dict
-from zephyrex.pydantic2.fastapi import AuthType
+from zephyrex.pydantic2.fastapi import AuthType, CustomRouteSpec, RouteType
 
 from zephyrex.logic.AbstractLogicManager.hooks import (
     HookRegistry,
@@ -164,9 +165,9 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
 
     # Router configuration - can be overridden by subclasses
     endpoint_config: ClassVar[Dict[str, Any]] = {}
-    custom_routes: ClassVar[List[Dict[str, Any]]] = []
+    custom_routes: ClassVar[Sequence[CustomRouteSpec]] = []
     nested_resources: ClassVar[Dict[str, Any]] = {}
-    route_auth_overrides: ClassVar[Dict[str, AuthType]] = {}
+    route_auth_overrides: ClassVar[Dict[RouteType, AuthType]] = {}
 
     # Manager factory configuration - can be overridden by subclasses
     factory_params: ClassVar[List[str]] = ["target_id", "target_team_id"]

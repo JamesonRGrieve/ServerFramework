@@ -996,10 +996,10 @@ class ExtensionRegistry(AbstractRegistry):
 
 
 class AbstractStaticExtensionSystemComponent(ABC):
-    name: str = "abstract"
-    description: str = "Abstract extension base class"
+    name: ClassVar[str] = "abstract"
+    description: ClassVar[str] = "Abstract extension base class"
     # Environment variables that this extension needs
-    _env: Dict[str, Any] = {}
+    _env: ClassVar[Dict[str, Any]] = {}
 
     @classmethod
     def get_env_value(cls, key: str, default: Any = None) -> Any:
@@ -1018,10 +1018,10 @@ class AbstractStaticExtensionSystemComponent(ABC):
     EnvSchema: ClassVar[Optional[Type[BaseModel]]] = None
 
     # Unified dependencies of this extension using the Dependencies class
-    dependencies: Dependencies = Dependencies([])
+    dependencies: ClassVar[Dependencies] = Dependencies([])
 
     # Hooks registered by this extension
-    _hooks: Dict[HookPath, List[Callable]] = {}
+    _hooks: ClassVar[Dict[HookPath, List[Callable]]] = {}
 
     @classproperty
     def root(cls) -> Any:
@@ -1032,7 +1032,7 @@ class AbstractStaticExtensionSystemComponent(ABC):
         return cls._hooks.copy()  # type: ignore[return-value]
 
     # Abilities of this extension
-    _abilities: Set[str] = set()
+    _abilities: ClassVar[Set[str]] = set()
 
     @classproperty
     def abilities(cls) -> Set[str]:
@@ -1463,7 +1463,7 @@ class AbstractStaticExtension(
     """
 
     # Extension metadata (class attributes)
-    version: str = "0.1.0"
+    version: ClassVar[str] = "0.1.0"
 
     # -- Default lifecycle methods -----------------------------------------
     # Subclasses override only when they have real work to do (e.g. connect
@@ -1522,7 +1522,7 @@ class AbstractStaticExtension(
         # Discover and register hooks from this class
         cls._discover_static_hooks()
 
-    _providers: List[Type] = []
+    _providers: ClassVar[List[Type]] = []
 
     @classproperty
     def providers(cls) -> List[Type]:

@@ -573,6 +573,27 @@ class TestRouterCreation:
         # Check that static route was created
         assert any("/static" in path for path in paths)
 
+    def test_system_entity_defaults_do_not_mutate_manager_overrides(
+        self, model_registry
+    ):
+        """System-entity API_KEY defaults are applied to a copy, never written
+        back into the manager's class-level ``route_auth_overrides``."""
+
+        class SystemTestModel(TestModel):
+            is_system_entity: ClassVar[bool] = True
+
+        declared = {RouteType.GET: AuthType.NONE}
+
+        class SystemTestManager(TestManager):
+            __test__ = False
+            _model = SystemTestModel
+            route_auth_overrides = declared
+
+        create_router_from_manager(SystemTestManager, model_registry)
+
+        assert SystemTestManager.route_auth_overrides is declared
+        assert declared == {RouteType.GET: AuthType.NONE}
+
     # Item 39: route prefix derives from RouterMixin.version when no
     # explicit prefix is set, and every endpoint is tagged with its
     # owning manager so the deprecation/sunset middleware can read
