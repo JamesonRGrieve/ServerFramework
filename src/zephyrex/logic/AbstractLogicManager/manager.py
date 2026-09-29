@@ -1347,14 +1347,10 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
                 )
 
     def _create_single_entity(self, **kwargs) -> Any:
-        """Create a single entity."""
-        # Store original kwargs to preserve hook modifications
-        # NOTE: server-controlled audit fields are stripped before this copy
-        # so hooks cannot accidentally re-introduce a client-supplied id or
-        # spoofed created_by_user_id.
+        """Create a single entity from the fields its Create model accepts;
+        anything else in ``kwargs`` never reaches the row."""
         self._strip_server_controlled_fields(kwargs)
         self._enforce_caller_owned_fields(kwargs)
-        original_kwargs = kwargs.copy()
 
         args = self.model_registry.apply(self.Model).Create(**kwargs)
         self.create_validation(args)
@@ -1365,19 +1361,6 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
             for k, v in args.model_dump(exclude_unset=True).items()
             if v is not None or k == "user_id"  # Keep user_id even if None
         }
-
-        # **CRITICAL**: Preserve hook-modified arguments that may not be in the Pydantic schema
-        # This ensures attributes like 'hook_processed' added by hooks are preserved
-        for key, value in original_kwargs.items():
-            if key not in create_args and not hasattr(
-                self.model_registry.apply(self.Model).Create, key
-            ):
-                # Skip hook-related parameters that shouldn't be passed to database
-                if key in ["hook_processed"]:
-                    continue
-                # Only add if it's not already in create_args and not a valid Pydantic field
-                # This preserves hook additions while avoiding conflicts
-                create_args[key] = value
 
         # Check if the database class has a user_id column and add target_id if it does
         # Only add user_id if it wasn't explicitly set in the original kwargs
