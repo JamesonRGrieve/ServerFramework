@@ -55,6 +55,7 @@ PROBE = textwrap.dedent("""
     reveal_type(OwnerModel.Optional)
     reveal_type(OwnerModel.Search)
     reveal_type(PlainRecord)
+    reveal_type(ItemInstanceModel.Reference().item_instance_id)
     """)
 
 MYPY_CONFIG = textwrap.dedent("""
@@ -118,6 +119,11 @@ class TestReferenceFamily:
         reveals = mypy_run["reveals"]
         assert reveals[3] == "probe.ItemInstanceModel | None"
         assert reveals[4] == "probe.ItemInstanceModel | None"
+
+    def test_reference_inherits_the_foreign_key_from_id(self, mypy_run):
+        """``Reference`` subclasses ``Reference.ID`` at runtime; a model that
+        mixes in ``X.Reference`` must see ``x_id`` as well as ``x``."""
+        assert mypy_run["reveals"][8] == "str"
 
     def test_reference_is_usable_as_a_base(self, mypy_run):
         assert not any("not defined" in e for e in mypy_run["errors"])

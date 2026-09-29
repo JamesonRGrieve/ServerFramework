@@ -134,6 +134,9 @@ def _add_reference_family(
 
     reference.bases = [Instance(id_info, [])]
     reference.names[field_name] = _field_node(reference, field_name, model_type)
+    # calculate_mro returns a class's existing MRO unchanged; drop the
+    # object-only one computed at creation so the ID base is linearized.
+    reference.mro = []
     calculate_mro(reference)
     _add_class(
         api,

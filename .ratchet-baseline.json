@@ -1,5 +1,5 @@
 {
-  "test_count_minimum": 12959,
-  "mypy_error_maximum": 254,
+  "test_count_minimum": 12967,
+  "mypy_error_maximum": 220,
   "black_reformattable_maximum": 0
 }
