@@ -14,6 +14,7 @@ from typing import (
 
 import numpy as np
 
+from zephyrex.lib.ClassMembers import instance_methods
 from zephyrex.lib.InboundSecurity import RATE_LIMIT_MARKERS
 from zephyrex.lib.Logging import logger
 
@@ -758,13 +759,9 @@ def discover_hookable_methods(manager_class: Type["AbstractBLLManager"]) -> List
     """
     hookable_methods = []
 
-    for name, method in inspect.getmembers(manager_class, predicate=inspect.isfunction):
+    for name, method in instance_methods(manager_class):
         # Skip private methods and special methods
-        if name.startswith("_") or name.startswith("__"):
-            continue
-
-        # Skip class methods and static methods
-        if isinstance(method, (classmethod, staticmethod)):
+        if name.startswith("_"):
             continue
 
         # Check if it's an instance method

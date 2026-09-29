@@ -351,10 +351,10 @@ def test_register_post_emits_mutation():
 
     mutations = reg.resolve_fields(FieldKind.MUTATION)
     queries = reg.resolve_fields(FieldKind.QUERY)
-    assert "promote" in mutations
-    assert "promote" not in queries
-    assert mutations["promote"].return_type is PromoteOut
-    assert mutations["promote"].args == {"input": PromoteIn}
+    assert "manager_a_promote" in mutations
+    assert "manager_a_promote" not in queries
+    assert mutations["manager_a_promote"].return_type is PromoteOut
+    assert mutations["manager_a_promote"].args == {"input": PromoteIn}
 
 
 def test_register_get_emits_query():
@@ -366,9 +366,9 @@ def test_register_get_emits_query():
     reg = GraphQLContributionRegistry()
     register_custom_routes_to_graphql(ManagerB, contribution_registry=reg)
     queries = reg.resolve_fields(FieldKind.QUERY)
-    assert "list_items" in queries
-    assert queries["list_items"].return_type is FetchOut
-    assert queries["list_items"].args == {}
+    assert "manager_b_list_items" in queries
+    assert queries["manager_b_list_items"].return_type is FetchOut
+    assert queries["manager_b_list_items"].args == {}
 
 
 def test_explicit_graphql_kind_query_for_post():
@@ -385,8 +385,8 @@ def test_explicit_graphql_kind_query_for_post():
 
     reg = GraphQLContributionRegistry()
     register_custom_routes_to_graphql(ManagerC, contribution_registry=reg)
-    assert "search" in reg.resolve_fields(FieldKind.QUERY)
-    assert "search" not in reg.resolve_fields(FieldKind.MUTATION)
+    assert "manager_c_search" in reg.resolve_fields(FieldKind.QUERY)
+    assert "manager_c_search" not in reg.resolve_fields(FieldKind.MUTATION)
 
 
 def test_expose_in_excluding_graphql_skips_registration():
@@ -421,7 +421,7 @@ def test_expose_in_graphql_explicit_registers():
 
     reg = GraphQLContributionRegistry()
     register_custom_routes_to_graphql(ManagerE, contribution_registry=reg)
-    assert "run" in reg.resolve_fields(FieldKind.MUTATION)
+    assert "manager_e_run" in reg.resolve_fields(FieldKind.MUTATION)
 
 
 def test_resolver_invokes_method_and_coerces_dict_to_output_model():
@@ -441,7 +441,7 @@ def test_resolver_invokes_method_and_coerces_dict_to_output_model():
         manager_factory=lambda info=None: ManagerF(),
         contribution_registry=reg,
     )
-    contribution = reg.resolve_fields(FieldKind.MUTATION)["promote"]
+    contribution = reg.resolve_fields(FieldKind.MUTATION)["manager_f_promote"]
     payload = PromoteIn(target_id="u1", role="admin")
     result = _run(contribution.resolver(info=None, input=payload))
     assert isinstance(result, PromoteOut)
@@ -466,7 +466,7 @@ def test_resolver_passes_through_model_instance():
         manager_factory=lambda info=None: ManagerG(),
         contribution_registry=reg,
     )
-    contribution = reg.resolve_fields(FieldKind.MUTATION)["demote"]
+    contribution = reg.resolve_fields(FieldKind.MUTATION)["manager_g_demote"]
     result = _run(contribution.resolver(info=None, input=DemoteIn(target_id="u1")))
     assert isinstance(result, DemoteOut)
     assert result.ok is True
@@ -492,6 +492,27 @@ def test_register_is_idempotent_for_repeated_calls():
     assert len(mutations) == 1
 
 
+def test_reset_registry_receives_the_routes_again():
+    """The process-wide registry is reset between apps by clearing its
+    contents; the next app's schema must still get every route."""
+
+    class ManagerR:
+        @custom_route(
+            method="POST",
+            path="/promote",
+            input_model=PromoteIn,
+            output_model=PromoteOut,
+        )
+        def promote(self, body):
+            return None
+
+    reg = GraphQLContributionRegistry()
+    assert register_custom_routes_to_graphql(ManagerR, contribution_registry=reg) == 1
+    reg.reset()
+    assert register_custom_routes_to_graphql(ManagerR, contribution_registry=reg) == 1
+    assert "manager_r_promote" in reg.resolve_fields(FieldKind.MUTATION)
+
+
 def test_get_resolver_with_no_input_model():
     class ManagerI:
         @custom_route(method="GET", path="/things", output_model=FetchOut)
@@ -504,7 +525,7 @@ def test_get_resolver_with_no_input_model():
         manager_factory=lambda info=None: ManagerI(),
         contribution_registry=reg,
     )
-    contribution = reg.resolve_fields(FieldKind.QUERY)["list_things"]
+    contribution = reg.resolve_fields(FieldKind.QUERY)["manager_i_list_things"]
     result = _run(contribution.resolver(info=None))
     assert isinstance(result, FetchOut)
     assert result.items == ["x"]
@@ -525,7 +546,7 @@ def test_register_uses_method_description_or_summary():
 
     reg = GraphQLContributionRegistry()
     register_custom_routes_to_graphql(ManagerJ, contribution_registry=reg)
-    contribution = reg.resolve_fields(FieldKind.MUTATION)["promote"]
+    contribution = reg.resolve_fields(FieldKind.MUTATION)["manager_j_promote"]
     assert contribution.description == "Detailed description"
 
 
@@ -543,7 +564,7 @@ def test_register_uses_summary_when_description_absent():
 
     reg = GraphQLContributionRegistry()
     register_custom_routes_to_graphql(ManagerK, contribution_registry=reg)
-    contribution = reg.resolve_fields(FieldKind.MUTATION)["promote"]
+    contribution = reg.resolve_fields(FieldKind.MUTATION)["manager_k_promote"]
     assert contribution.description == "Promote a user"
 
 
@@ -576,8 +597,8 @@ def test_multiple_routes_on_one_manager_register_independently():
     assert n == 3
     mutations = reg.resolve_fields(FieldKind.MUTATION)
     queries = reg.resolve_fields(FieldKind.QUERY)
-    assert {"promote", "demote"} == set(mutations.keys())
-    assert "list_things" in queries
+    assert {"manager_l_promote", "manager_l_demote"} == set(mutations.keys())
+    assert "manager_l_list_things" in queries
 
 
 # ---------------------------------------------------------------------------

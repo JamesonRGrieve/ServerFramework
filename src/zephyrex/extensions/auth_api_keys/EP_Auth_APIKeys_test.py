@@ -29,9 +29,8 @@ from zephyrex.lib.Environment import env
 from zephyrex.logic.BLL_Auth import UserManager, _api_key_hooks
 
 API_KEYS = "/v1/auth/api-keys"
-# The framework derives the request/response envelope key by snake-casing the
-# model name, so ``APIKeyModel`` is wrapped as ``a_p_i_key``.
-SEARCH_BODY_KEY = "a_p_i_key"
+# The envelope key is the model's wire name, acronyms kept whole.
+SEARCH_BODY_KEY = "api_key"
 
 
 def _bearer(credential: str) -> Dict[str, str]:

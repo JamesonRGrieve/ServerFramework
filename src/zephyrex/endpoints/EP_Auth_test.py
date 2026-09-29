@@ -681,6 +681,19 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
             name="test_DELETE_404_other_user",
             details="Users and sessions are not retrievable by ID.",
         ),
+        *[
+            SkipThisTest(
+                name=name,
+                details="Users are not updatable by ID; PUT /v1/user updates "
+                "the caller (see test_PUT_ignores_audit_fields_on_self).",
+            )
+            for name in (
+                "test_PUT_200_fields",
+                "test_PUT_422_plural_with_singular",
+                "test_PUT_422_singular_with_plural",
+                "test_PUT_ignores_audit_fields_in_body",
+            )
+        ],
         SkipThisTest(
             name="test_POST_201_batch",
             details="Users cannot be batch created",
@@ -1051,6 +1064,34 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
         after = server.get("/v1/user", headers=headers).json()["user"]
         assert after["active"] == before["active"]
         assert after["mfa_count"] == before["mfa_count"]
+
+    def test_PUT_ignores_audit_fields_on_self(self, server: Any) -> None:
+        """Mass-assignment denial on the self route: audit fields and ``id``
+        in the body never reach the user row."""
+        user = self._isolated_user(server, "audit_self")
+        headers = self._get_appropriate_headers(user.jwt)
+        before = server.get("/v1/user", headers=headers).json()["user"]
+
+        attacker = str(uuid.uuid4())
+        response = server.put(
+            "/v1/user",
+            json={
+                "user": {
+                    "id": attacker,
+                    "created_by_user_id": attacker,
+                    "updated_by_user_id": attacker,
+                    "created_at": "1999-01-01T00:00:00+00:00",
+                    "display_name": "Audit Self",
+                }
+            },
+            headers=headers,
+        )
+        assert response.status_code in (200, 422), response.text
+
+        after = server.get("/v1/user", headers=headers).json()["user"]
+        for field in ("id", "created_by_user_id", "created_at"):
+            assert after[field] == before[field], field
+        assert after["updated_by_user_id"] != attacker
 
     def _isolated_user(self, server: Any, prefix: str) -> Any:
         from conftest import create_user

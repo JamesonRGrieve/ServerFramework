@@ -30,6 +30,7 @@ from pydantic import ValidationError, create_model
 from zephyrex.lib.Environment import inflection
 from zephyrex.lib.InboundSecurity import carry_rate_limit
 from zephyrex.lib.Logging import logger
+from zephyrex.pydantic2.util import manager_resource_name
 
 from .types import AuthType, CustomRouteConfig, RouteType
 from .query import (
@@ -138,9 +139,7 @@ def register_route(
         network_model: "NetworkModelProtocol" = child_base_model.Network
         target_model = child_base_model
     else:
-        resource_name = stringcase.snakecase(
-            manager_class.__name__.replace("Manager", "")
-        )
+        resource_name = manager_resource_name(manager_class)
         resource_name_plural = inflection.plural(resource_name)
         if not hasattr(bound_base_model, "Network"):
             logger.error(
@@ -2129,10 +2128,7 @@ def register_custom_route(
                 custom_route.response_model, str
             ):
                 if "ResponseSingle" in custom_route.response_model:
-                    resource_name = stringcase.snakecase(
-                        manager_class.__name__.replace("Manager", "")
-                    )
-                    return {resource_name: result}
+                    return {manager_resource_name(manager_class): result}
 
             return result
 
@@ -2175,10 +2171,7 @@ def register_custom_route(
                 custom_route.response_model, str
             ):
                 if "ResponseSingle" in custom_route.response_model:
-                    resource_name = stringcase.snakecase(
-                        manager_class.__name__.replace("Manager", "")
-                    )
-                    return {resource_name: result}
+                    return {manager_resource_name(manager_class): result}
 
             return result
 

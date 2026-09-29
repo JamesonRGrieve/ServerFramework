@@ -1142,7 +1142,7 @@ class TestEmailUpdateValidation:
 
     def test_invalid_email_rejected_on_update(self, server, admin_a):
         response = server.put(
-            f"/v1/user/{admin_a.id}",
+            "/v1/user",
             json={"user": {"email": "not-an-email"}},
             headers={"Authorization": f"Bearer {admin_a.jwt}"},
         )

@@ -473,23 +473,14 @@ class GraphQLManager(ErrorHandlerMixin):
         """Item 40 GraphQL half: project ``@custom_route`` methods into the
         contribution registry so they appear in the merged Query/Mutation.
 
-        Defensive — any failure during registration is logged but never
-        breaks CRUD generation, mirroring the REST-side hook.
+        A mis-declared route fails the build, as it does on the REST side,
+        rather than silently disappearing from the schema.
         """
-        try:
-            from zephyrex.lib.CustomRoute import (
-                register_custom_routes_to_graphql,
-            )
+        from zephyrex.lib.CustomRoute import register_custom_routes_to_graphql
 
-            register_custom_routes_to_graphql(
-                manager_class,
-                contribution_registry=self._contributions,
-            )
-        except Exception as exc:  # pragma: no cover - defensive
-            logger.debug(
-                f"Item 40 GraphQL custom-route registration skipped for "
-                f"{getattr(manager_class, '__name__', manager_class)}: {exc}"
-            )
+        register_custom_routes_to_graphql(
+            manager_class, contribution_registry=self._contributions
+        )
 
     def _generate_components_for_model(
         self, model_class: Type[BaseModel], manager_class: Type[ManagerContract]

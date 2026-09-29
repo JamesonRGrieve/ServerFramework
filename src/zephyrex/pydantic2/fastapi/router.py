@@ -10,10 +10,14 @@ from typing import (
     Type,
 )
 
+import inspect
+
 import stringcase
 from fastapi import APIRouter, Request
 
+from zephyrex.lib.ClassMembers import decorated_functions
 from zephyrex.lib.Logging import logger
+from zephyrex.pydantic2.util import manager_resource_name
 
 from .types import (
     AuthType,
@@ -46,9 +50,7 @@ def create_router_from_manager(
         FastAPI router with generated endpoints
     """
     # Extract configuration from manager class
-    resource_name: str = stringcase.snakecase(
-        manager_class.__name__.replace("Manager", "")
-    )
+    resource_name = manager_resource_name(manager_class)
 
     # Get configuration from ClassVars. Item 39: when the manager declares
     # a non-default ``version`` and no explicit ``prefix``, derive the
@@ -111,17 +113,9 @@ def create_router_from_manager(
             RouteType.BATCH_UPDATE,
             RouteType.BATCH_DELETE,
         ]
-    # If a manager explicitly set an empty list but explicitly *overrides*
-    # the inherited ``update`` method (common for user/current-user
-    # managers), register at least the UPDATE route so
-    # PUT /v1/<resource>/{id} exists and doesn't 404. Inheriting
-    # ``update`` from ``AbstractBLLManager`` is no longer sufficient —
-    # otherwise managers that legitimately want zero CRUD routes (e.g.
-    # action-only managers behind ``@custom_route``) would silently get
-    # a write surface they never asked for and never gated.
-    elif isinstance(routes_to_register, list) and len(routes_to_register) == 0:
-        if "update" in getattr(manager_class, "__dict__", {}):
-            routes_to_register = [RouteType.UPDATE]
+    # An explicit empty list means no CRUD routes at all: action-only
+    # managers (magic link, device pairing, the current-user surface) must
+    # not grow a PUT /{id} write surface they never declared.
 
     # Create main router
     router = APIRouter(prefix=prefix, tags=tags)  # type: ignore[arg-type]
@@ -150,19 +144,18 @@ def create_router_from_manager(
         )
 
     # Register custom routes from decorated methods
-    import inspect
-
-    for name, method in inspect.getmembers(manager_class, predicate=inspect.isfunction):
-        if hasattr(method, "_static_route_config"):
-            for route_config in method._static_route_config:
-                register_custom_route(
-                    router=router,
-                    custom_route=route_config,
-                    manager_factory=create_manager_factory(
-                        manager_class, model_registry, auth_type
-                    ),
-                    manager_class=manager_class,
-                )
+    for _, _, route_configs in decorated_functions(
+        manager_class, "_static_route_config"
+    ):
+        for route_config in route_configs:
+            register_custom_route(
+                router=router,
+                custom_route=route_config,
+                manager_factory=create_manager_factory(
+                    manager_class, model_registry, auth_type
+                ),
+                manager_class=manager_class,
+            )
 
     # Typed @custom_route methods. A mis-declared route fails the build
     # rather than silently disappearing from the API.

@@ -3,7 +3,6 @@ from __future__ import annotations
 from abc import ABC, ABCMeta, abstractmethod
 from datetime import datetime, timezone
 from enum import Enum
-from inspect import getmembers, isfunction
 from time import monotonic
 from types import ModuleType
 from typing import Any, Callable, ClassVar, Dict, List, Optional, Set, Tuple, Type
@@ -17,6 +16,7 @@ try:
 except ImportError:
     pytest = None  # type: ignore[assignment]
 
+from zephyrex.lib.ClassMembers import decorated_functions
 from zephyrex.lib.Dependencies import Dependencies
 from zephyrex.lib.Environment import AbstractRegistry, env
 from zephyrex.lib.Logging import logger
@@ -825,53 +825,43 @@ class ExtensionRegistry(AbstractRegistry):
         extension_name = extension_class.name
         abilities = []
 
-        # Get meta abilities from methods decorated with @ability in the extension class
-        for name, method in inspect.getmembers(
-            extension_class, predicate=inspect.isfunction
-        ):
-            if hasattr(method, "_ability_info"):
-                ability_info = method._ability_info
-                abilities.append(
-                    {
-                        "name": ability_info["name"],
-                        "meta": True,  # Extension-level abilities are always meta
-                        "extension_name": extension_name,
-                        "type": "meta",
-                    }
-                )
-                logger.debug(
-                    f"Found meta ability {ability_info['name']} for extension {extension_name}"
-                )
+        # Meta abilities: methods decorated with @ability on the extension class
+        for _, _, ability_info in decorated_functions(extension_class, "_ability_info"):
+            abilities.append(
+                {
+                    "name": ability_info["name"],
+                    "meta": True,
+                    "extension_name": extension_name,
+                    "type": "meta",
+                }
+            )
+            logger.debug(
+                f"Found meta ability {ability_info['name']} for extension {extension_name}"
+            )
 
-        # Check for inner AbstractProvider class and its abstract abilities
-        if hasattr(extension_class, "AbstractProvider") or hasattr(
-            extension_class, "__dict__"
-        ):
-            # Look for inner classes that define abstract abilities
-            for attr_name, attr_value in extension_class.__dict__.items():
-                if (
-                    inspect.isclass(attr_value)
-                    and "Abstract" in attr_name
-                    and "Provider" in attr_name
+        # Abstract abilities: inner Abstract*Provider classes
+        for attr_name, attr_value in extension_class.__dict__.items():
+            if (
+                inspect.isclass(attr_value)
+                and "Abstract" in attr_name
+                and "Provider" in attr_name
+            ):
+                for _, _, ability_info in decorated_functions(
+                    attr_value, "_ability_info"
                 ):
-                    # Found abstract provider class, scan its abilities
-                    for method_name, method in inspect.getmembers(
-                        attr_value, predicate=inspect.isfunction
-                    ):
-                        if hasattr(method, "_ability_info"):
-                            ability_info = method._ability_info
-                            abilities.append(
-                                {
-                                    "name": ability_info["name"],
-                                    "meta": False,  # Provider abilities are not meta
-                                    "extension_name": extension_name,
-                                    "type": "abstract",
-                                    "provider_class": attr_name,
-                                }
-                            )
-                            logger.debug(
-                                f"Found abstract ability {ability_info['name']} in {attr_name} for extension {extension_name}"
-                            )
+                    abilities.append(
+                        {
+                            "name": ability_info["name"],
+                            "meta": False,
+                            "extension_name": extension_name,
+                            "type": "abstract",
+                            "provider_class": attr_name,
+                        }
+                    )
+                    logger.debug(
+                        f"Found abstract ability {ability_info['name']} in "
+                        f"{attr_name} for extension {extension_name}"
+                    )
 
         # Also check the _abilities set for any additional abilities
         if hasattr(extension_class, "_abilities") and extension_class._abilities:
@@ -946,18 +936,16 @@ class ExtensionRegistry(AbstractRegistry):
                             provider_abilities = []
 
                             # Check decorated methods
-                            for name, method in inspect.getmembers(
-                                attr, predicate=inspect.isfunction
+                            for _, _, ability_info in decorated_functions(
+                                attr, "_ability_info"
                             ):
-                                if hasattr(method, "_ability_info"):
-                                    ability_info = method._ability_info
-                                    provider_abilities.append(
-                                        {
-                                            "name": ability_info["name"],
-                                            "provider_class": attr,
-                                            "extension_name": extension_name,
-                                        }
-                                    )
+                                provider_abilities.append(
+                                    {
+                                        "name": ability_info["name"],
+                                        "provider_class": attr,
+                                        "extension_name": extension_name,
+                                    }
+                                )
 
                             # Check _abilities set
                             for ability_name in attr._abilities:
@@ -1100,33 +1088,25 @@ class AbstractStaticExtensionSystemComponent(ABC):
     @classmethod
     def _discover_static_abilities_with_validation(cls) -> None:
         """Discover and register static ability methods."""
-        for name, method in getmembers(cls, predicate=isfunction):
-            if hasattr(method, "_ability_info"):
-                ability_info = method._ability_info
-                ability_name = ability_info["name"]
+        # Meta abilities are only on extensions, not providers.
+        is_extension = any(
+            base.__name__ == "AbstractStaticExtension" for base in cls.__mro__
+        )
+        is_provider = any(
+            "Provider" in base.__name__ and base.__name__ != "AbstractStaticExtension"
+            for base in cls.__mro__
+        )
+        is_meta = is_extension and not is_provider
+        is_abstract = "Abstract" in cls.__name__
 
-                # Determine if this is a meta ability based on class hierarchy
-                is_extension = any(
-                    base.__name__ == "AbstractStaticExtension" for base in cls.__mro__
-                )
-                is_provider = any(
-                    "Provider" in base.__name__
-                    and base.__name__ != "AbstractStaticExtension"
-                    for base in cls.__mro__
-                )
-
-                # Meta abilities are only on extensions, not providers
-                is_meta = is_extension and not is_provider
-
-                # Store the computed meta status
-                ability_info["meta"] = is_meta
-                ability_info["abstract"] = "Abstract" in cls.__name__
-
-                cls._abilities.add(ability_name)
-                logger.debug(
-                    f"Registered static ability {ability_name} -> {method.__name__} "
-                    f"(meta={is_meta}, abstract={ability_info.get('abstract', False)})"
-                )
+        for _, method, ability_info in decorated_functions(cls, "_ability_info"):
+            ability_info["meta"] = is_meta
+            ability_info["abstract"] = is_abstract
+            cls._abilities.add(ability_info["name"])
+            logger.debug(
+                f"Registered static ability {ability_info['name']} -> "
+                f"{method.__name__} (meta={is_meta}, abstract={is_abstract})"
+            )
 
     @classmethod
     def _register_env_vars(cls) -> None:
@@ -1632,15 +1612,10 @@ class AbstractStaticExtension(
     @classmethod
     def _discover_static_hooks(cls) -> None:
         """Discover and register static hook methods in the extension class."""
-        for name, method in getmembers(cls, predicate=isfunction):
-            if hasattr(method, "_hook_info"):
-                for hook_path in method._hook_info:
-                    if hook_path not in cls._hooks:
-                        cls._hooks[hook_path] = []
-                    cls._hooks[hook_path].append(method)
-                    logger.debug(
-                        f"Registered static hook {hook_path} -> {method.__name__}"
-                    )
+        for _, method, hook_paths in decorated_functions(cls, "_hook_info"):
+            for hook_path in hook_paths:
+                cls._hooks.setdefault(hook_path, []).append(method)
+                logger.debug(f"Registered static hook {hook_path} -> {method.__name__}")
 
     @classmethod
     def _inherit_parent_abilities(cls) -> None:

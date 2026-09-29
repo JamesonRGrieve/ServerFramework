@@ -27,6 +27,7 @@ from zephyrex.lib.AbstractPydantic2 import CacheManager
 from zephyrex.lib.Environment import AbstractRegistry, env
 from zephyrex.lib.Logging import logger
 from zephyrex.lib.TypeUnions import is_union, non_none_args
+from zephyrex.pydantic2.util import wire_resource_name
 from zephyrex.pydantic2.scoped_importer import ScopedModuleImporter
 from zephyrex.pydantic2.registry_utils import (
     BaseNetworkModel as BaseNetworkModel,
@@ -155,17 +156,13 @@ class ModelRegistry(AbstractRegistry):
         """
         from typing import List, Optional, get_origin
 
-        import stringcase
         from pydantic import BaseModel, Field
 
         from zephyrex.lib.Environment import inflection
         from zephyrex.lib.Logging import logger
 
         # Get the model name for the network fields (snake_case)
-        model_name = model.__name__
-        if model_name.endswith("Model"):
-            model_name = model_name[:-5]  # Remove 'Model' suffix
-        field_name = stringcase.snakecase(model_name)
+        field_name = wire_resource_name(model.__name__, "Model")
         logger.debug(f"_generate_network_class: model={model}, field_name={field_name}")
 
         # Create the Network class statically

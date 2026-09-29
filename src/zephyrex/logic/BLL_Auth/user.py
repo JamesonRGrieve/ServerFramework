@@ -1664,7 +1664,10 @@ class UserManager(AbstractBLLManager, RouterMixin):
 
     def update_current_user(self, body: Dict[str, Any]):
         """Update the current user's profile."""
-        user_data = body.get("user", {})
+        user_data = dict(body.get("user", {}))
+        # The caller is the target; identity and audit fields in the body are
+        # never theirs to set (and ``id`` would collide with the target id).
+        self._strip_server_controlled_fields(user_data)
         updated_user = self.update(id=self.requester.id, **user_data)
         if hasattr(updated_user, "model_dump"):
             return updated_user.model_dump()

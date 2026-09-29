@@ -32,7 +32,6 @@ from typing import (
     List,
     Mapping,
     Optional,
-    Set,
     Tuple,
     Type,
 )
@@ -379,11 +378,9 @@ def register_custom_routes(router, manager_cls) -> int:
 # GraphQL emission (Item 40 GraphQL half + Item 46 contribution-registry hook)
 # ---------------------------------------------------------------------------
 
-# Registrations are tracked per (manager_cls, method_name) so repeated calls
-# during schema rebuilds are idempotent. The contribution registry's identity
-# check on resolvers requires the same callable object across registrations,
-# which is what this set guarantees.
-_GRAPHQL_REGISTERED: Set[Tuple[type, str]] = set()
+# One resolver object per (manager, method): the contribution registry treats
+# re-registration of the same callable as identical, and registration is
+# skipped when the registry already holds it.
 _GRAPHQL_RESOLVER_CACHE: Dict[Tuple[type, str], Callable[..., Any]] = {}
 
 
@@ -506,6 +503,15 @@ def _coerce_output(result: Any, output_model: Optional[Type[BaseModel]]) -> Any:
     return result
 
 
+def graphql_field_name(manager_cls: type, method_name: str) -> str:
+    """A custom route's root field: the manager's resource plus the method,
+    so two managers' ``request_route`` methods can share one schema
+    (``magic_link_request`` / ``device_pairing_request``)."""
+    from zephyrex.pydantic2.util import manager_resource_name
+
+    return f"{manager_resource_name(manager_cls)}_{method_name.removesuffix('_route')}"
+
+
 def register_custom_routes_to_graphql(
     manager_cls: type,
     manager_factory: Optional[Callable[..., Any]] | None = None,
@@ -542,9 +548,6 @@ def register_custom_routes_to_graphql(
             continue
 
         cache_key = (manager_cls, method_name)
-        if cache_key in _GRAPHQL_REGISTERED:
-            continue
-
         resolver = _GRAPHQL_RESOLVER_CACHE.get(cache_key)
         if resolver is None:
             resolver = _build_graphql_resolver(
@@ -554,36 +557,33 @@ def register_custom_routes_to_graphql(
 
         kind_str = _infer_graphql_kind(spec)
         kind = FieldKind.QUERY if kind_str == "query" else FieldKind.MUTATION
-
-        registry.register_field(
-            FieldContribution(
-                extension_name=extension_name,
-                kind=kind,
-                name=method_name,
-                resolver=resolver,
-                return_type=spec.output_model,
-                args=(
-                    {"input": spec.input_model} if spec.input_model is not None else {}
-                ),
-                description=spec.description or spec.summary,
-                namespace=False,
-                priority=50,
-            )
+        contribution = FieldContribution(
+            extension_name=extension_name,
+            kind=kind,
+            name=graphql_field_name(manager_cls, method_name),
+            resolver=resolver,
+            return_type=spec.output_model,
+            args=({"input": spec.input_model} if spec.input_model is not None else {}),
+            description=spec.description or spec.summary,
+            namespace=False,
+            priority=50,
         )
-        _GRAPHQL_REGISTERED.add(cache_key)
+
+        # Idempotent per registry, judged by what the registry holds: the
+        # process-wide registry is reset between apps and tests by clearing
+        # its contents, so a separate "already registered" record goes stale.
+        held = registry.fields(kind).get(contribution.emitted_name, [])
+        if any(existing.resolver is resolver for existing in held):
+            continue
+
+        registry.register_field(contribution)
         registered += 1
 
     return registered
 
 
 def reset_graphql_registrations() -> None:
-    """Test helper -- clear the per-process registration cache.
-
-    Pair with ``Pydantic2Strawberry.reset_gql_contribution_registry`` when a
-    test needs to re-register the same ``@custom_route`` after wiping the
-    contribution registry.
-    """
-    _GRAPHQL_REGISTERED.clear()
+    """Test helper -- forget every cached resolver."""
     _GRAPHQL_RESOLVER_CACHE.clear()
 
 
