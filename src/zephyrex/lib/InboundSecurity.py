@@ -97,13 +97,7 @@ def _peer_is_trusted_proxy(peer_host: Optional[str]) -> bool:
     return False
 
 
-try:
-    from zephyrex.lib.Logging import logger
-except ImportError:  # pragma: no cover — fallback for very-early bootstrap
-    import logging
-
-    logger = logging.getLogger(__name__)
-
+from zephyrex.lib.Logging import logger
 
 __all__ = [
     "CORSPolicyError",

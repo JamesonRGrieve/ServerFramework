@@ -64,11 +64,11 @@ try:
 except ImportError:
     from backports.zoneinfo import ZoneInfo  # type: ignore[no-redef]
 
-from loguru import logger
+from loguru import logger as _loguru_logger
 
 from zephyrex.lib.Environment import env
 
-logger.remove()
+_loguru_logger.remove()
 
 log_level = env("LOG_LEVEL")
 server_timezone = env("TZ")
@@ -169,7 +169,77 @@ def _redaction_patcher(record):
     record["message"] = _scrub_string(record.get("message", ""))
 
 
-logger = logger.patch(_redaction_patcher)
+class StdlibCompatibleLogger:
+    """The framework logger: loguru, plus the stdlib calling conventions the
+    Python standard prescribes.
+
+    Loguru formats with ``str.format``, so ``logger.info("user %s", uid)``
+    printed a literal ``%s`` and dropped ``uid``, and it files an
+    ``exc_info=True`` keyword under ``extra`` instead of attaching the
+    traceback. Here ``%``-style arguments are rendered and ``exc_info``
+    attaches the exception; ``{}``-style calls, keyword extras, and every
+    other loguru method behave exactly as in loguru. Records keep the
+    caller's location (``opt(depth=...)`` skips this wrapper).
+    """
+
+    # Frames between the caller and loguru's log(): _emit and the level method.
+    _WRAPPER_DEPTH = 2
+
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+
+    def _emit(self, level: Any, message: Any, args: tuple, kwargs: dict) -> None:
+        exc_info = kwargs.pop("exc_info", None)
+        target = self._inner.opt(depth=self._WRAPPER_DEPTH, exception=exc_info or None)
+        if args and isinstance(message, str) and "%" in message:
+            try:
+                message, args = message % args, ()
+            except (TypeError, ValueError):
+                # A "{}"-style message that merely contains a "%"; let
+                # loguru format it.
+                pass
+        target.log(level, message, *args, **kwargs)
+
+    def log(self, level: Any, message: Any, *args: Any, **kwargs: Any) -> None:
+        self._emit(level, message, args, kwargs)
+
+    def trace(self, message: Any, *args: Any, **kwargs: Any) -> None:
+        self._emit("TRACE", message, args, kwargs)
+
+    def debug(self, message: Any, *args: Any, **kwargs: Any) -> None:
+        self._emit("DEBUG", message, args, kwargs)
+
+    def info(self, message: Any, *args: Any, **kwargs: Any) -> None:
+        self._emit("INFO", message, args, kwargs)
+
+    def success(self, message: Any, *args: Any, **kwargs: Any) -> None:
+        self._emit("SUCCESS", message, args, kwargs)
+
+    def warning(self, message: Any, *args: Any, **kwargs: Any) -> None:
+        self._emit("WARNING", message, args, kwargs)
+
+    def error(self, message: Any, *args: Any, **kwargs: Any) -> None:
+        self._emit("ERROR", message, args, kwargs)
+
+    def critical(self, message: Any, *args: Any, **kwargs: Any) -> None:
+        self._emit("CRITICAL", message, args, kwargs)
+
+    def exception(self, message: Any, *args: Any, **kwargs: Any) -> None:
+        kwargs.setdefault("exc_info", True)
+        self._emit("ERROR", message, args, kwargs)
+
+    def bind(self, **kwargs: Any) -> "StdlibCompatibleLogger":
+        return StdlibCompatibleLogger(self._inner.bind(**kwargs))
+
+    def patch(self, patcher: Any) -> "StdlibCompatibleLogger":
+        return StdlibCompatibleLogger(self._inner.patch(patcher))
+
+    def __getattr__(self, name: str) -> Any:
+        # add/remove/level/opt/contextualize/... are loguru's own.
+        return getattr(self._inner, name)
+
+
+logger = StdlibCompatibleLogger(_loguru_logger.patch(_redaction_patcher))
 
 
 def format_with_timezone(record):

@@ -97,3 +97,59 @@ def test_log_redacts_password_in_message_string(captured_log_output):
         "Logger emitted a literal password embedded in message text. "
         "lib/Logging.py needs a regex-based scrubber for inline secrets."
     )
+
+
+@pytest.fixture
+def captured_records():
+    """Collect loguru records (message, function, exception) from a sink."""
+    records = []
+    sink_id = loguru_logger.add(
+        lambda message: records.append(message.record), level="DEBUG"
+    )
+    try:
+        yield records
+    finally:
+        loguru_logger.remove(sink_id)
+
+
+class TestStdlibCallingConventions:
+    """Loguru alone printed "%s" literally and dropped the argument (122 call
+    sites), and filed exc_info under extra instead of attaching the
+    traceback (22 call sites)."""
+
+    def test_percent_style_arguments_are_rendered(self, captured_records):
+        logger.warning("user %s failed %d times (%d%%)", "alice", 3, 50)
+        assert captured_records[-1]["message"] == "user alice failed 3 times (50%)"
+
+    def test_brace_style_arguments_still_work(self, captured_records):
+        logger.info("user {} failed {} times", "alice", 3)
+        assert captured_records[-1]["message"] == "user alice failed 3 times"
+
+    def test_percent_formatted_message_keeps_literal_braces(self, captured_records):
+        logger.info("payload {raw} for %s", "alice")
+        assert captured_records[-1]["message"] == "payload {raw} for alice"
+
+    def test_exc_info_attaches_the_traceback(self, captured_records):
+        try:
+            raise ValueError("boom")
+        except ValueError:
+            logger.error("failed: %s", "op", exc_info=True)
+        exception = captured_records[-1]["exception"]
+        assert exception is not None and exception.type is ValueError
+        assert "exc_info" not in captured_records[-1]["extra"]
+
+    def test_records_keep_the_callers_location(self, captured_records):
+        logger.info("where am I")
+        assert (
+            captured_records[-1]["function"] == "test_records_keep_the_callers_location"
+        )
+
+    def test_bound_logger_keeps_the_conventions(self, captured_records):
+        logger.bind(request="r1").info("bound %s", "value")
+        record = captured_records[-1]
+        assert record["message"] == "bound value"
+        assert record["extra"]["request"] == "r1"
+
+    def test_percent_arguments_are_still_redacted(self, captured_records):
+        logger.info("login with password=%s", "CANARY-PW-424242")
+        assert "CANARY-PW-424242" not in captured_records[-1]["message"]
