@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Custom-route contract for non-CRUD endpoints (Item 40).
 
 Authors apply ``@custom_route`` to methods on ``RouterMixin``-tagged managers
@@ -18,6 +19,8 @@ schema-build time.
 from __future__ import annotations
 
 import inspect
+import json
+import re
 from dataclasses import dataclass
 from enum import Enum
 from typing import (
@@ -27,14 +30,42 @@ from typing import (
     FrozenSet,
     Iterable,
     List,
+    Mapping,
     Optional,
     Set,
     Tuple,
     Type,
 )
 
-from fastapi import HTTPException, Request
-from pydantic import BaseModel
+from fastapi import HTTPException, Request, status
+from pydantic import BaseModel, TypeAdapter
+
+from zephyrex.pydantic2.fastapi.resource import (
+    create_manager_factory,
+    handle_resource_operation_error,
+)
+from zephyrex.pydantic2.fastapi.types import AuthType
+
+# HTTP verbs whose request carries the route's ``input_model`` body.
+_BODY_METHODS: FrozenSet[str] = frozenset({"POST", "PUT", "PATCH"})
+# A tagged method receives the validated input model under this parameter.
+_BODY_PARAMETER = "body"
+# ``{name}`` / ``{name:converter}`` placeholders in a route path.
+_PATH_PARAMETER_PATTERN = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)(?::[^}]*)?\}")
+# ``authentication_type`` spellings that are not ``AuthType`` values. A
+# "session" route requires the same signed-in bearer credential as "jwt".
+_AUTH_TYPE_ALIASES: Mapping[str, AuthType] = {"session": AuthType.JWT}
+
+
+def resolve_auth_type(authentication_type: str) -> AuthType:
+    """Map a ``@custom_route`` ``authentication_type`` to its ``AuthType``.
+
+    Raises ``ValueError`` for a spelling that names no authentication mode.
+    """
+    alias = _AUTH_TYPE_ALIASES.get(authentication_type)
+    if alias is not None:
+        return alias
+    return AuthType(authentication_type)
 
 
 class ExposeIn(str, Enum):
@@ -60,6 +91,11 @@ class CustomRouteSpec:
     graphql_kind: Optional[str] | None = None
     summary: Optional[str] | None = None
     description: Optional[str] | None = None
+
+    @property
+    def auth_type(self) -> AuthType:
+        """The authentication mode REST dispatch enforces for this route."""
+        return resolve_auth_type(self.authentication_type)
 
 
 def custom_route(
@@ -100,6 +136,13 @@ def custom_route(
                 f"@custom_route on {func.__qualname__}: output_model is required "
                 f"to preserve typed contract (use a Pydantic model)"
             )
+        try:
+            resolve_auth_type(spec.authentication_type)
+        except ValueError:
+            raise ValueError(
+                f"@custom_route on {func.__qualname__}: unknown "
+                f"authentication_type {spec.authentication_type!r}"
+            ) from None
         func.__custom_route_spec__ = spec
         return func
 
@@ -138,6 +181,172 @@ class AbstractActionEndpoint:
     tags: Optional[List[str]] | None = None
 
 
+def _authored_method(func: Callable[..., Any]) -> Callable[..., Any]:
+    """The method as its author wrote it, beneath any hook wrapper.
+
+    Every public ``AbstractBLLManager`` method is replaced by a hook wrapper
+    whose signature is ``(self, *args, **kwargs)``; the authored method is
+    kept on its ``_original_method``, so that is what gets introspected.
+    """
+    authored: Callable[..., Any] = getattr(func, "_original_method", func)
+    return authored
+
+
+def _route_parameters(func: Callable[..., Any]) -> Mapping[str, inspect.Parameter]:
+    """The parameters a tagged method declares, minus ``self`` and varargs."""
+    parameters = inspect.signature(_authored_method(func), eval_str=True).parameters
+    return {
+        name: parameter
+        for index, (name, parameter) in enumerate(parameters.items())
+        if not (index == 0 and name == "self")
+        and parameter.kind
+        not in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+    }
+
+
+def _type_adapter(parameter: inspect.Parameter) -> TypeAdapter[Any]:
+    annotation = (
+        str if parameter.annotation is inspect.Parameter.empty else parameter.annotation
+    )
+    return TypeAdapter(annotation)
+
+
+@dataclass(frozen=True)
+class _RouteBinding:
+    """How one tagged method's parameters are filled from an HTTP request.
+
+    Path placeholders bind to same-named parameters; the validated
+    ``input_model`` binds to ``body`` or, when the method takes no ``body``,
+    its declared fields splat onto same-named parameters (the input model is
+    the writability gate, so a parameter naming a privileged column is never
+    reachable unless the model declares it); every other parameter binds
+    from the query string. Path and query values are validated against the
+    parameter's annotation.
+    """
+
+    input_model: Optional[Type[BaseModel]]
+    path_params: Mapping[str, TypeAdapter[Any]]
+    query_params: Mapping[str, Tuple[TypeAdapter[Any], bool]]
+    takes_body: bool
+    body_fields: FrozenSet[str]
+
+    @classmethod
+    def build(
+        cls, manager_cls: type, method_name: str, spec: CustomRouteSpec
+    ) -> "_RouteBinding":
+        parameters = _route_parameters(getattr(manager_cls, method_name))
+        qualname = f"{manager_cls.__name__}.{method_name}"
+        placeholders = _PATH_PARAMETER_PATTERN.findall(spec.path)
+        missing = [name for name in placeholders if name not in parameters]
+        if missing:
+            raise TypeError(
+                f"@custom_route {qualname}: path {spec.path!r} names "
+                f"{missing} but the method declares no such parameters"
+            )
+        input_model = spec.input_model if spec.method in _BODY_METHODS else None
+        takes_body = _BODY_PARAMETER in parameters
+        if takes_body and input_model is None:
+            raise TypeError(
+                f"@custom_route {qualname}: the method takes '{_BODY_PARAMETER}' "
+                f"but a {spec.method} route with input_model="
+                f"{spec.input_model!r} carries no request body"
+            )
+        body_fields: FrozenSet[str] = frozenset()
+        if input_model is not None and not takes_body:
+            body_fields = frozenset(input_model.model_fields) & frozenset(parameters)
+        bound_elsewhere = set(placeholders) | body_fields | {_BODY_PARAMETER}
+        return cls(
+            input_model=input_model,
+            path_params={
+                name: _type_adapter(parameters[name]) for name in placeholders
+            },
+            query_params={
+                name: (
+                    _type_adapter(parameter),
+                    parameter.default is inspect.Parameter.empty,
+                )
+                for name, parameter in parameters.items()
+                if name not in bound_elsewhere
+            },
+            takes_body=takes_body,
+            body_fields=body_fields,
+        )
+
+    async def arguments(self, request: Request) -> Dict[str, Any]:
+        """Validated keyword arguments for the tagged method."""
+        arguments: Dict[str, Any] = {
+            name: adapter.validate_python(request.path_params[name])
+            for name, adapter in self.path_params.items()
+        }
+        for name, (adapter, required) in self.query_params.items():
+            value = request.query_params.get(name)
+            if value is not None:
+                arguments[name] = adapter.validate_python(value)
+            elif required:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail=f"Missing required query parameter '{name}'",
+                )
+        if self.input_model is not None:
+            body = await self._read_body(request, self.input_model)
+            if self.takes_body:
+                arguments[_BODY_PARAMETER] = body
+            else:
+                fields = body.model_dump()
+                arguments.update({name: fields[name] for name in self.body_fields})
+        return arguments
+
+    @staticmethod
+    async def _read_body(request: Request, input_model: Type[BaseModel]) -> BaseModel:
+        raw = await request.body()
+        try:
+            payload = json.loads(raw) if raw else {}
+        except json.JSONDecodeError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid JSON body"
+            ) from None
+        return input_model.model_validate(payload)
+
+
+def _make_rest_endpoint(
+    manager_cls: type, method_name: str, spec: CustomRouteSpec
+) -> Callable[..., Any]:
+    """Build the FastAPI handler dispatching one ``@custom_route`` method.
+
+    The manager is built for the route's declared ``authentication_type``
+    (not the manager class's), so a public route runs without credentials
+    and an authenticated route answers 401 without them. The method is
+    invoked through its bound hook wrapper so registered hooks fire, and an
+    ``async`` method's result is awaited. Failures map to HTTP responses the
+    same way CRUD routes map them.
+    """
+    binding = _RouteBinding.build(manager_cls, method_name, spec)
+    auth_type = spec.auth_type
+
+    # ``request: Request`` resolves against this module's globals under
+    # ``from __future__ import annotations``, so ``Request`` is imported at
+    # module level (a function-local import breaks OpenAPI generation).
+    async def endpoint(request: Request) -> Any:
+        try:
+            manager = create_manager_factory(
+                manager_cls,
+                getattr(request.app.state, "model_registry", None),
+                auth_type,
+            )(request=request)
+            arguments = await binding.arguments(request)
+            result = getattr(manager, method_name)(**arguments)
+            if inspect.isawaitable(result):
+                result = await result
+            output = _coerce_output(result, spec.output_model)
+            if isinstance(output, BaseModel):
+                return output.model_dump()
+            return output
+        except Exception as err:
+            handle_resource_operation_error(err)
+
+    return endpoint
+
+
 def register_custom_routes(
     router, manager_cls, manager_factory: Optional[Callable] | None = None
 ) -> int:
@@ -146,87 +355,17 @@ def register_custom_routes(
     Additive: each tagged method becomes a typed FastAPI route on the supplied
     router. Returns the number of routes registered.
 
-    ``manager_factory`` is an optional callable producing a bound manager
-    instance. When omitted, methods are called as classmethods/staticmethods
-    or against a freshly-instantiated manager (best-effort).
+    Each route builds its manager for its own declared authentication type
+    (see ``_make_rest_endpoint``), so ``manager_factory`` -- a factory bound
+    to the manager class's auth, passed by ``create_router_from_manager`` --
+    is not used for dispatch.
     """
-    # ``Request`` must be importable from this module's globals: under
-    # ``from __future__ import annotations`` FastAPI resolves the endpoint's
-    # ``request: Request`` annotation string there, and a function-local import
-    # left it an unresolved ForwardRef, which broke OpenAPI generation (and so
-    # MCP mounting) for every app registering a custom route.
     registered = 0
     for method_name, spec in iter_custom_routes(manager_cls):
         if ExposeIn.REST not in spec.expose_in and ExposeIn.ALL not in spec.expose_in:
             continue
 
-        bound_method = getattr(manager_cls, method_name)
-
-        def _make_endpoint(_bound_method, _spec, _method_name):
-            async def endpoint(request: Request):
-                method_args = dict(request.path_params)
-
-                if _spec.input_model is not None and request.method in (
-                    "POST",
-                    "PUT",
-                    "PATCH",
-                ):
-                    raw = await request.body()
-                    if raw:
-                        import json as _json
-
-                        try:
-                            payload = _json.loads(raw)
-                        except _json.JSONDecodeError:
-                            raise HTTPException(
-                                status_code=400, detail="Invalid JSON body"
-                            )
-                        validated = _spec.input_model.model_validate(payload)
-                        method_args["body"] = validated
-
-                if manager_factory is not None:
-                    instance = manager_factory(request=request)
-                    func = getattr(instance, _method_name)
-                    sig = inspect.signature(func)
-                    accepted = {
-                        k: v for k, v in method_args.items() if k in sig.parameters
-                    }
-                    if "body" in method_args and "body" not in sig.parameters:
-                        # Splat validated body fields into method kwargs, but
-                        # ONLY for fields the input model declares — i.e. the
-                        # network model is the writability gate. Without this
-                        # check, a manager method whose signature happens to
-                        # name a privileged column (is_admin, role, etc.)
-                        # would silently accept that column from any request
-                        # whose Pydantic input contained it.
-                        body = method_args["body"]
-                        if hasattr(body, "model_dump"):
-                            allowed = set(
-                                getattr(_spec.input_model, "model_fields", {}).keys()
-                            )
-                            for k, v in body.model_dump().items():
-                                if k in sig.parameters and k in allowed:
-                                    accepted[k] = v
-                    result = func(**accepted)
-                else:
-                    sig = inspect.signature(_bound_method)
-                    accepted = {
-                        k: v for k, v in method_args.items() if k in sig.parameters
-                    }
-                    result = _bound_method(**accepted)
-
-                if _spec.output_model is not None:
-                    if isinstance(result, _spec.output_model):
-                        return result.model_dump()
-                    if isinstance(result, dict):
-                        return _spec.output_model.model_validate(result).model_dump()
-                    if hasattr(result, "model_dump"):
-                        return result.model_dump()
-                return result
-
-            return endpoint
-
-        endpoint = _make_endpoint(bound_method, spec, method_name)
+        endpoint = _make_rest_endpoint(manager_cls, method_name, spec)
         route_method = getattr(router, spec.method.lower())
         route_method(
             spec.path,
@@ -284,7 +423,7 @@ def _build_graphql_resolver(
     natively.
     """
     bound_method = getattr(manager_cls, method_name)
-    method_sig = inspect.signature(bound_method)
+    method_sig = inspect.signature(_authored_method(bound_method))
 
     def _instantiate_manager(info: Any) -> Any:
         if manager_factory is not None:
@@ -356,8 +495,8 @@ def _build_graphql_resolver(
 def _coerce_output(result: Any, output_model: Optional[Type[BaseModel]]) -> Any:
     """Normalize a tagged-method result into an ``output_model`` instance.
 
-    Mirrors the REST helper's coercion rules: model instances pass through,
-    dicts get validated, anything else is returned untouched (the resolver's
+    Shared by the REST endpoint and the GraphQL resolver: model instances
+    pass through, dicts get validated, anything else is returned untouched (the resolver's
     declared return type is the contract; Strawberry surfaces type mismatches
     as schema errors).
     """

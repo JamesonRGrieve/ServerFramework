@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Tests for the @custom_route contract (Item 40)."""
 
 from __future__ import annotations
@@ -21,8 +22,10 @@ from zephyrex.lib.CustomRoute import (
     register_custom_routes,
     register_custom_routes_to_graphql,
     reset_graphql_registrations,
+    resolve_auth_type,
     write_test_scaffold,
 )
+from zephyrex.pydantic2.fastapi.types import AuthType
 from zephyrex.pydantic2.strawberry import (
     FieldKind,
     GraphQLContributionRegistry,
@@ -205,6 +208,42 @@ def test_custom_route_full_options():
     assert spec.graphql_kind == "mutation"
     assert spec.summary == "Promote a user"
     assert spec.description == "Promotes a user to a higher role."
+    assert spec.auth_type is AuthType.API_KEY
+
+
+@pytest.mark.parametrize(
+    ("authentication_type", "expected"),
+    [
+        ("session", AuthType.JWT),
+        ("jwt", AuthType.JWT),
+        ("none", AuthType.NONE),
+        ("api_key", AuthType.API_KEY),
+        ("basic", AuthType.BASIC),
+    ],
+)
+def test_resolve_auth_type(authentication_type, expected):
+    assert resolve_auth_type(authentication_type) is expected
+
+
+def test_default_authentication_requires_a_signed_in_requester():
+    @custom_route(method="GET", path="/me", output_model=FetchOut)
+    def me(self):
+        return None
+
+    assert get_custom_route_spec(me).auth_type is AuthType.JWT
+
+
+def test_unknown_authentication_type_raises():
+    with pytest.raises(ValueError, match="unknown authentication_type 'cookie'"):
+
+        @custom_route(
+            method="GET",
+            path="/x",
+            output_model=FetchOut,
+            authentication_type="cookie",
+        )
+        def fetch(self):
+            return None
 
 
 def test_abstract_action_endpoint_supports_decorator():

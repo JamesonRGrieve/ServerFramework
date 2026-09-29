@@ -310,13 +310,18 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
             self._register_search_transformers()
             return
 
-        if not requester_id:
-            raise HTTPException(status_code=400, detail="requester_id is required")
-
         if not model_registry.is_committed():
             raise ValueError(
                 f"model_registry is required to be defined and committed in {self.__class__.__name__}."
             )
+
+        # A public (AuthType.NONE) route builds its manager without a
+        # requester: ``optional_requester`` is None and ``requester`` raises.
+        # Authenticated routes never get here without one — the manager
+        # factory answers 401 first.
+        if not requester_id:
+            self._register_search_transformers()
+            return
 
         from zephyrex.logic.BLL_Auth import TeamModel, UserModel
 
