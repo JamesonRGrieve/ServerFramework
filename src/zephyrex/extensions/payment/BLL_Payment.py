@@ -1,11 +1,9 @@
 import os
-from typing import Any, Optional
+from typing import Optional
 
 from fastapi import HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy.orm import Session
 
-from zephyrex.database.DatabaseManager import DatabaseManager
 from zephyrex.extensions.payment.PRV_Stripe_Payment import (
     Stripe_CustomerManager,
     Stripe_CustomerModel,
@@ -51,88 +49,14 @@ class Payment_UserModel(BaseModel):
 # when it imports extension modules - no need for immediate application
 
 
-def get_or_create_payment_customer(
-    self,
-    user_id: str,
-    email: Optional[str] = None,
-    name: Optional[str] = None,
-) -> dict:
-    """
-    Get or create a payment customer for a user.
-    This is properly injected as an instance method.
+def _customer_manager(requester_id: str) -> Stripe_CustomerManager:
+    """A Stripe customer manager routed through the payment extension's root
+    rotation (external managers take a rotation, not a model registry)."""
+    from zephyrex.extensions.payment.EXT_Payment import EXT_Payment
 
-    Args:
-        self: The UserManager instance
-        user_id: ID of the user
-        email: User's email (optional, will get from user if not provided)
-        name: User's name (optional, will get from user if not provided)
-
-    Returns:
-        Dict containing customer information
-
-    Raises:
-        HTTPException: If user not found or customer creation fails
-    """
-    try:
-        user = self.get(id=user_id)
-
-        if hasattr(user, "external_payment_id") and user.external_payment_id:
-            return {
-                "customer_id": user.external_payment_id,
-                "created": False,
-                "user_id": user_id,
-            }
-
-        customer_email = email or user.email
-        customer_name = (
-            name or user.display_name or f"{user.first_name} {user.last_name}".strip()
-        )
-
-        # Create Stripe customer manager with proper parameters
-        stripe_customer_manager = Stripe_CustomerManager(
-            requester_id=user_id,
-            db_manager=self.db_manager,
-            db=self.db,
-            model_registry=getattr(self, "model_registry", None),
-        )
-
-        # Use the standard create method with proper field names
-        customer = stripe_customer_manager.create(
-            email=customer_email,
-            name=customer_name,
-            metadata={"user_id": user_id},
-        )
-
-        if customer and hasattr(customer, "id"):
-            # Update user with the Stripe customer ID
-            self.update(id=user_id, external_payment_id=customer.id)
-
-            logger.info(f"Created Stripe customer {customer.id} for user {user_id}")
-
-            return {
-                "customer_id": customer.id,
-                "created": True,
-                "user_id": user_id,
-            }
-        else:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Failed to create payment customer: No customer returned",
-            )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(
-            f"Error getting or creating payment customer for user {user_id}: {e}"
-        )
-        raise HTTPException(
-            status_code=500, detail="Failed to get or create payment customer"
-        )
-
-
-# Properly inject as an instance method
-UserManager.get_or_create_payment_customer = get_or_create_payment_customer
+    return Stripe_CustomerManager(
+        requester_id=requester_id, rotation_manager=EXT_Payment.root
+    )
 
 
 @hook_bll(UserManager.login, timing="after")
@@ -142,10 +66,12 @@ def validate_subscription_on_login(context: HookContext):
     Throws HTTP 402 Payment Required if subscription is inactive.
     Updated to work with the Provider Rotation System.
     """
-    # Skip validation for system users
-    if context.kwargs.get("login_data", {}).get("email") == os.environ.get(
-        "ROOT_EMAIL"
-    ):
+    # Skip validation for the root user. Both sides must be set: with
+    # ROOT_EMAIL unset, a login whose data carries no email compared
+    # None == None and bypassed the subscription check entirely.
+    root_email = os.environ.get("ROOT_EMAIL")
+    login_email = context.kwargs.get("login_data", {}).get("email")
+    if root_email and login_email == root_email:
         return
 
     # Skip if subscription validation is disabled
@@ -160,21 +86,9 @@ def validate_subscription_on_login(context: HookContext):
 
         user_id = result["id"]
 
-        # Get the database manager from the original manager context
-        db_manager = context.manager.db_manager
-        db = context.kwargs.get("db") or context.manager.db
-
-        # Create user manager with proper parameters
         try:
             user_manager = UserManager(
-                requester_id=user_id,
-                db_manager=db_manager,
-                db=db,
-                model_registry=(
-                    context.manager.model_registry
-                    if hasattr(context.manager, "model_registry")
-                    else None
-                ),
+                model_registry=context.manager.model_registry, requester_id=user_id
             )
             user = user_manager.get(id=user_id)
         except HTTPException as e:
@@ -217,27 +131,24 @@ def validate_subscription_on_login(context: HookContext):
 
 
 def get_user_payment_info(
-    self, user_id: str, requester_id: Optional[str] = None
+    manager: UserManager, user_id: str, requester_id: Optional[str] = None
 ) -> dict:
     """
     Get comprehensive payment information for a user.
-    This is properly implemented as an instance method.
 
     Args:
-        self: The UserManager instance
+        manager: A UserManager bound to the caller's registry
         user_id: ID of the user to get payment info for
-        requester_id: ID of the requesting user (optional, uses self.requester.id if not provided)
+        requester_id: ID of the requesting user (defaults to the manager's requester)
 
     Returns:
         Dict containing payment information
     """
     try:
-        # Use the requester_id from the manager if not provided
-        actual_requester_id = requester_id or self.requester.id
+        actual_requester_id = requester_id or manager.requester.id
 
-        user = self.get(id=user_id)
+        user = manager.get(id=user_id)
 
-        # Get basic user info
         payment_info = {
             "user_id": user_id,
             "has_payment_setup": False,
@@ -245,21 +156,14 @@ def get_user_payment_info(
             "stripe_customer": None,
         }
 
-        # Check if user has payment setup
         if hasattr(user, "external_payment_id") and user.external_payment_id:
             payment_info["has_payment_setup"] = True
             payment_info["external_payment_id"] = user.external_payment_id
 
-            # Try to get Stripe customer details
             try:
-                stripe_manager = Stripe_CustomerManager(
-                    requester_id=actual_requester_id,
-                    db_manager=self.db_manager,
-                    db=self.db,
-                    model_registry=getattr(self, "model_registry", None),
+                customer = _customer_manager(actual_requester_id).get(
+                    id=user.external_payment_id
                 )
-                # Use the standard get method with proper parameter
-                customer = stripe_manager.get(id=user.external_payment_id)
                 payment_info["stripe_customer"] = customer
             except Exception as e:
                 logger.warning(f"Failed to get Stripe customer for user {user_id}: {e}")
@@ -273,32 +177,25 @@ def get_user_payment_info(
         )
 
 
-# Properly inject as an instance method
-UserManager.get_user_payment_info = get_user_payment_info
-
-
 def get_user_subscription_status(
-    self, user_id: str, requester_id: Optional[str] = None
+    manager: UserManager, user_id: str, requester_id: Optional[str] = None
 ) -> dict:
     """
     Get subscription status for a user via Provider Rotation System.
-    This is properly implemented as an instance method.
 
     Args:
-        self: The UserManager instance
+        manager: A UserManager bound to the caller's registry
         user_id: ID of the user
-        requester_id: ID of the requesting user (optional, uses self.requester.id if not provided)
+        requester_id: ID of the requesting user (defaults to the manager's requester)
 
     Returns:
         Dict containing subscription status
     """
     try:
-        # Use the requester_id from the manager if not provided
-        actual_requester_id = requester_id or self.requester.id
+        actual_requester_id = requester_id or manager.requester.id
 
-        # Get user payment info
-        payment_info = self.get_user_payment_info(
-            user_id=user_id, requester_id=actual_requester_id
+        payment_info = get_user_payment_info(
+            manager, user_id=user_id, requester_id=actual_requester_id
         )
 
         if not payment_info["has_payment_setup"]:
@@ -314,7 +211,7 @@ def get_user_subscription_status(
         try:
             from zephyrex.extensions.payment.EXT_Payment import EXT_Payment
 
-            rotation_manager = getattr(EXT_Payment, "root", None)
+            rotation_manager = EXT_Payment.root
             if rotation_manager is None:
                 logger.warning(
                     "Payment extension root rotation unavailable; "
@@ -349,7 +246,3 @@ def get_user_subscription_status(
     except Exception as e:
         logger.error(f"Error getting subscription status for user {user_id}: {e}")
         return {"status": "unknown", "error": str(e)}
-
-
-# Properly inject as an instance method
-UserManager.get_user_subscription_status = get_user_subscription_status

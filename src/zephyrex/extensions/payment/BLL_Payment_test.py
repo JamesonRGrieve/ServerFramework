@@ -75,36 +75,79 @@ class TestPayment_UserManager(CoreUserManagerTests, ExtensionServerMixin):
 
         assert "status" in subscription_status
 
-    def test_subscription_validation_hook_bypass(self, admin_a, team_a):
-        """Test that subscription validation hook bypasses for system users - verifies hook logic works correctly"""
-        # This test ensures the hook logic works correctly for bypass scenarios
-        # using a real HookContext (per AGENTS.md no-mock pillar).
+    @pytest.mark.parametrize(
+        "provider_status, blocked", [("inactive", True), ("active", False)]
+    )
+    def test_login_hook_enforces_the_provider_subscription_status(
+        self, server, admin_a, team_a, monkeypatch, provider_status, blocked
+    ):
+        """A user with a payment customer is refused login (402) exactly when
+        the payment provider reports the subscription inactive. The provider
+        call is the external boundary, so only it is substituted."""
+        from fastapi import HTTPException
 
-        # Test root user bypass
-        root_email = env("ROOT_EMAIL")
-        if root_email:
-            # Simulate login context for root user
-            from zephyrex.extensions.payment.BLL_Payment import (
-                validate_subscription_on_login,
-            )
-            from zephyrex.logic.AbstractLogicManager import HookContext, HookTiming
+        from zephyrex.extensions.payment import BLL_Payment
+        from zephyrex.logic.AbstractLogicManager import HookContext, HookTiming
 
-            # Build a real HookContext for the bypass scenario. The hook
-            # should examine kwargs/result and short-circuit for root.
-            real_context = HookContext(
-                manager=None,
-                method_name="login",
-                args=[],
-                kwargs={"login_data": {"email": root_email}},
-                timing=HookTiming.AFTER,
-            )
-            real_context.set_result({"id": env("ROOT_ID")})
+        self._create(admin_a.id, team_a.id, f"login_{provider_status}", server=server)
+        user = self.tracked_entities[f"login_{provider_status}"]
+        manager = self.class_under_test(
+            requester_id=admin_a.id,
+            target_team_id=team_a.id,
+            model_registry=server.app.state.model_registry,
+        )
+        assert manager.get(id=user.id).external_payment_id, "precondition"
+        seen = {}
 
-            # This should not raise an exception (bypass)
-            try:
-                validate_subscription_on_login(real_context)
-                # If we get here, the bypass worked
-                assert True
-            except Exception:
-                # Hook should bypass for root user
-                assert False, "Subscription validation should bypass for root user"
+        def provider_status_for(user_manager, user_id, requester_id=None):
+            seen["user_id"] = user_id
+            return {"status": provider_status}
+
+        monkeypatch.setattr(
+            BLL_Payment, "get_user_subscription_status", provider_status_for
+        )
+        # ``result`` is the method's return value an AFTER hook reads;
+        # ``set_result`` would instead set an override and leave it None.
+        context = HookContext(
+            manager=manager,
+            method_name="login",
+            args=[],
+            kwargs={"login_data": {"email": user.email}},
+            result={"id": user.id},
+            timing=HookTiming.AFTER,
+        )
+
+        if blocked:
+            with pytest.raises(HTTPException) as exc:
+                BLL_Payment.validate_subscription_on_login(context)
+            assert exc.value.status_code == 402
+        else:
+            BLL_Payment.validate_subscription_on_login(context)
+        assert seen["user_id"] == user.id
+
+    def test_subscription_validation_hook_bypass(self, monkeypatch):
+        """The root user's login is never subscription-checked: even with the
+        provider reporting inactive, it is not blocked and the provider is
+        never consulted."""
+        from zephyrex.extensions.payment import BLL_Payment
+        from zephyrex.logic.AbstractLogicManager import HookContext, HookTiming
+
+        root_email = "root@example.com"
+        monkeypatch.setenv("ROOT_EMAIL", root_email)
+
+        def provider_must_not_be_called(*args, **kwargs):
+            raise AssertionError("root login consulted the payment provider")
+
+        monkeypatch.setattr(
+            BLL_Payment, "get_user_subscription_status", provider_must_not_be_called
+        )
+        context = HookContext(
+            manager=None,
+            method_name="login",
+            args=[],
+            kwargs={"login_data": {"email": root_email}},
+            result={"id": env("ROOT_ID")},
+            timing=HookTiming.AFTER,
+        )
+
+        BLL_Payment.validate_subscription_on_login(context)
