@@ -1620,14 +1620,7 @@ class AbstractExternalManager(AbstractBLLManager):
         # Fallback loop.
         for idx, item in enumerate(items):
             try:
-                created = (
-                    self.create(**item)
-                    if hasattr(self, "create")
-                    else self.DB.create(  # type: ignore[attr-defined]
-                        requester_id=self.requester_id, **item
-                    )
-                )
-                result.successes.append((idx, created))
+                result.successes.append((idx, self.create(**item)))
             except BaseExternalError as exc:
                 result.failures.append((idx, exc))
             except HTTPException as exc:

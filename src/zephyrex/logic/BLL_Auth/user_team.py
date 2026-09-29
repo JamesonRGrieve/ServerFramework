@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any, ClassVar, Dict, List, Optional, Type
+from typing import Any, ClassVar, Dict, List, Optional, Type, Union
 
 from fastapi import HTTPException
 
@@ -235,8 +235,8 @@ class UserTeamManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef
 
     def get(
         self,
-        include: Optional[List[str]] | None = None,
-        fields: Optional[List[str]] = [],
+        include: Optional[Union[List[str], str]] = None,
+        fields: Optional[Union[List[str], str]] = None,
         **kwargs,
     ) -> Any:
         """Get a user-team with optional included relationships."""
@@ -253,14 +253,15 @@ class UserTeamManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef
 
     def search(
         self,
-        include: Optional[List[str]] | None = None,
-        fields: Optional[List[str]] | None = None,
+        include: Optional[Union[List[str], str]] = None,
+        fields: Optional[Union[List[str], str]] = None,
         sort_by: Optional[str] | None = None,
         sort_order: Optional[str] = "asc",
         filters: Optional[List[Any]] | None = None,
         limit: Optional[int] | None = None,
         offset: Optional[int] | None = None,
         page: Optional[int] | None = None,
+        page_size: Optional[int] | None = None,
         pageSize: Optional[int] | None = None,
         **search_params,
     ) -> List[Any]:
@@ -273,6 +274,7 @@ class UserTeamManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef
             limit=limit,
             offset=offset,
             page=page,
+            page_size=page_size,
             pageSize=pageSize,
             **search_params,
         )

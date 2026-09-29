@@ -797,10 +797,11 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
 
         self._assert_response_status(response, 201, "POST", endpoint, payload)
 
-        # Store for cleanup
-        response_data = response.json()
-        if "user" in response_data:
-            self._created_entities.append(("user", response_data["user"]["id"]))
+        # Registration returns the created user itself (not enveloped).
+        created = response.json()
+        assert created["id"]
+        assert created["email"] == user_data["email"]
+        assert "password" not in created and "password_hash" not in created
 
     def test_POST_201_minimal(self, server: Any, admin_a: Any, team_a: Any):
         """Test creating a new user with minimal data through the registration endpoint."""
@@ -819,10 +820,11 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
 
         self._assert_response_status(response, 201, "POST", endpoint, payload)
 
-        # Store for cleanup
-        response_data = response.json()
-        if "user" in response_data:
-            self._created_entities.append(("user", response_data["user"]["id"]))
+        # Registration returns the created user itself (not enveloped).
+        created = response.json()
+        assert created["id"]
+        assert created["email"] == user_data["email"]
+        assert "password" not in created and "password_hash" not in created
 
     def test_POST_201_header(
         self,

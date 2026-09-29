@@ -13,7 +13,7 @@ importing this module directly.
 import secrets
 import string
 from datetime import datetime, timezone
-from typing import Any, ClassVar, Dict, List, Optional, Type
+from typing import Any, ClassVar, Dict, List, Optional, Type, Union
 
 from zephyrex.lib.DateTimeUtils import ensure_utc
 
@@ -396,8 +396,8 @@ class InvitationManager(AbstractBLLManager, RouterMixin):
 
     def get(
         self,
-        include: Optional[List[str]] = None,
-        fields: Optional[List[str]] = [],
+        include: Optional[Union[List[str], str]] = None,
+        fields: Optional[Union[List[str], str]] = None,
         **kwargs,
     ) -> Any:
         options = []

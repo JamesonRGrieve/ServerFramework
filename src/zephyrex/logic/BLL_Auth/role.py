@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any, ClassVar, Dict, List, Optional, Type
+from typing import Any, ClassVar, Dict, List, Optional, Type, Union
 
 from fastapi import HTTPException
 
@@ -186,7 +186,7 @@ class RoleManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef]
     # routes_to_register defaults to None, which includes all routes
     auth_dependency: ClassVar[Optional[str]] = "get_role_manager"
 
-    def delete(self, id: str | None = None, **kwargs: Any):
+    def delete(self, id: str) -> None:
         """Delete a role and reparent its UserTeam assignments.
 
         Without this override, deleting a role would orphan every
@@ -201,19 +201,17 @@ class RoleManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef]
             silently dropping the assignments would let previously-
             authorized users keep their tokens but lose all permissions.
         """
-        target_id = id
-        if not target_id:
-            return super().delete(id=target_id, **kwargs)
-
         role = self.DB.get(
             requester_id=self.requester.id,
             model_registry=self.model_registry,
-            id=target_id,
+            id=id,
             return_type="dto",
             override_dto=RoleModel,
         )
         if role is None:
-            return super().delete(id=target_id, **kwargs)
+            # Not found (or not visible): the base delete reports it.
+            super().delete(id=id)
+            return
 
         from zephyrex.logic.BLL_Auth.user_team import UserTeamModel, UserTeamManager
 
@@ -221,7 +219,7 @@ class RoleManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef]
         affected = ut_db.list(
             requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
-            role_id=target_id,
+            role_id=id,
             return_type="dto",
             override_dto=UserTeamModel,
         )
@@ -244,7 +242,7 @@ class RoleManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef]
             for ut in affected:
                 ut_manager.update(id=ut.id, role_id=role.parent_id)
 
-        return super().delete(id=target_id, **kwargs)
+        super().delete(id=id)
 
     def _register_search_transformers(self):
         self.register_search_transformer("is_system", self._transform_is_system_search)
@@ -257,8 +255,8 @@ class RoleManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef]
 
     def get(
         self,
-        include: Optional[List[str]] | None = None,
-        fields: Optional[List[str]] = [],
+        include: Optional[Union[List[str], str]] = None,
+        fields: Optional[Union[List[str], str]] = None,
         **kwargs,
     ) -> Any:
         """Get a role with optional included relationships. Returns 404 if not found."""

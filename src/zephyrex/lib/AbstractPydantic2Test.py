@@ -189,6 +189,17 @@ class MockSimpleModel(ApplicationModel):
             class Optional:
                 simple_id: Optional[str] | None = None
 
+    class Create(BaseModel):
+        title: str = Field(..., description="Simple title field")
+        count: int = Field(0, description="Simple count field")
+
+    class Update(BaseModel):
+        title: Optional[str] = Field(None, description="Simple title field")
+        count: Optional[int] = Field(None, description="Simple count field")
+
+    class Search(BaseModel):
+        title: Optional[str] = Field(None, description="Title search")
+
 
 class MockRelationshipModel(
     ApplicationModel,
@@ -209,109 +220,18 @@ class MockRelationshipModel(
             class Optional:
                 relationship_id: Optional[str] | None = None
 
+    class Create(BaseModel):
+        name: str = Field(..., description="Relationship model name")
+        comprehensive_id: str = Field(
+            ..., description="Reference to comprehensive model"
+        )
+        simple_id: Optional[str] = Field(None, description="Reference to simple model")
 
-# Add Create, Update, and Search classes to mock models BEFORE NetworkModel classes
-MockComprehensiveModel.Create = type(  # type: ignore[assignment, misc]
-    "Create",
-    (BaseModel,),
-    {
-        "name": Field(..., description="Required name field"),
-        "friendly_name": Field(None, description="Optional friendly name"),
-        "enabled": Field(True, description="Whether this entity is enabled"),
-        "__annotations__": {
-            "name": str,
-            "friendly_name": Optional[str],
-            "enabled": bool,
-        },
-    },
-)
+    class Update(BaseModel):
+        name: Optional[str] = Field(None, description="Relationship model name")
 
-MockComprehensiveModel.Update = type(  # type: ignore[assignment, misc]
-    "Update",
-    (BaseModel,),
-    {
-        "name": Field(None, description="Required name field"),
-        "friendly_name": Field(None, description="Optional friendly name"),
-        "enabled": Field(None, description="Whether this entity is enabled"),
-        "__annotations__": {
-            "name": Optional[str],
-            "friendly_name": Optional[str],
-            "enabled": Optional[bool],
-        },
-    },
-)
-
-MockComprehensiveModel.Search = type(  # type: ignore[assignment, misc]
-    "Search",
-    (BaseModel,),
-    {
-        "name": Field(None, description="Name search"),
-        "enabled": Field(None, description="Enabled filter"),
-        "__annotations__": {"name": Optional[str], "enabled": Optional[bool]},
-    },
-)
-
-MockSimpleModel.Create = type(
-    "Create",
-    (BaseModel,),
-    {
-        "title": Field(..., description="Simple title field"),
-        "count": Field(0, description="Simple count field"),
-        "__annotations__": {"title": str, "count": int},
-    },
-)
-
-MockSimpleModel.Update = type(
-    "Update",
-    (BaseModel,),
-    {
-        "title": Field(None, description="Simple title field"),
-        "count": Field(None, description="Simple count field"),
-        "__annotations__": {"title": Optional[str], "count": Optional[int]},
-    },
-)
-
-MockSimpleModel.Search = type(
-    "Search",
-    (BaseModel,),
-    {
-        "title": Field(None, description="Title search"),
-        "__annotations__": {"title": Optional[str]},
-    },
-)
-
-MockRelationshipModel.Create = type(
-    "Create",
-    (BaseModel,),
-    {
-        "name": Field(..., description="Relationship model name"),
-        "comprehensive_id": Field(..., description="Reference to comprehensive model"),
-        "simple_id": Field(None, description="Reference to simple model"),
-        "__annotations__": {
-            "name": str,
-            "comprehensive_id": str,
-            "simple_id": Optional[str],
-        },
-    },
-)
-
-MockRelationshipModel.Update = type(
-    "Update",
-    (BaseModel,),
-    {
-        "name": Field(None, description="Relationship model name"),
-        "__annotations__": {"name": Optional[str]},
-    },
-)
-
-MockRelationshipModel.Search = type(
-    "Search",
-    (BaseModel,),
-    {
-        "name": Field(None, description="Name search"),
-        "__annotations__": {"name": Optional[str]},
-    },
-)
+    class Search(BaseModel):
+        name: Optional[str] = Field(None, description="Name search")
 
 
 # Mock NetworkModel classes for endpoint generation testing

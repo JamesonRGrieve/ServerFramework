@@ -9,7 +9,7 @@ swallowed error with metric, argument mutation, result override, etc.).
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Union
 from unittest.mock import MagicMock
 
 import pytest
@@ -39,19 +39,26 @@ class HookTestManager(AbstractBLLManager):
         super().__init__()
         self.call_log = []
 
-    def create(self, **kwargs: Any) -> Dict[str, Any]:
+    # Same signatures as AbstractBLLManager; results are plain dicts the
+    # hook assertions inspect.
+    def create(self, **kwargs: Any) -> Any:
         self.call_log.append("create")
         return {"created": True, **kwargs}
 
-    def update(self, **kwargs: Any) -> Dict[str, Any]:
+    def update(self, id: str, **kwargs: Any) -> Any:
         self.call_log.append("update")
-        return {"updated": True, **kwargs}
+        return {"updated": True, "id": id, **kwargs}
 
-    def delete(self, **kwargs: Any) -> Dict[str, Any]:
+    def delete(self, id: str) -> Any:
         self.call_log.append("delete")
         return {"deleted": True}
 
-    def get(self, **kwargs: Any) -> Dict[str, Any]:
+    def get(
+        self,
+        include: Optional[Union[List[str], str]] = None,
+        fields: Optional[Union[List[str], str]] = None,
+        **kwargs: Any,
+    ) -> Any:
         self.call_log.append("get")
         return {"item": "found"}
 
@@ -309,6 +316,7 @@ def test_before_hook_modifies_arguments():
 @pytest.mark.unit
 def test_after_hook_modifies_result():
     def enrich_result(ctx: HookContext) -> None:
+        assert isinstance(ctx.result, dict)
         ctx.set_result({**ctx.result, "enriched": True})
 
     _register_hook_on_class(

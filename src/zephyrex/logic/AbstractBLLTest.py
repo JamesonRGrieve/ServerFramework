@@ -1,5 +1,5 @@
 import re
-from typing import List, Optional, Type, Any, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Type
 
 import pytest
 
@@ -541,7 +541,7 @@ class AbstractBLLTest(AbstractTest):
             target_team_id=team_id,
             model_registry=model_registry,
         )
-        search_params = {self.unique_fields[0]: {"inc": search_term}}
+        search_params: Dict[str, Any] = {self.unique_fields[0]: {"inc": search_term}}
         self.tracked_entities["search_result"] = manager.search(**search_params)
 
     def _create_parent_entities_for_search(self, requester_id, team_id, model_registry):
@@ -831,7 +831,7 @@ class AbstractBLLTest(AbstractTest):
             target_team_id=team_id,
             model_registry=model_registry,
         )
-        update_data = self.update_fields.copy()
+        update_data = self._update_fields.copy()
         entity_id = self.tracked_entities["update"].id
         self.tracked_entities["update_result"] = manager.update(
             id=entity_id, **update_data
@@ -870,10 +870,10 @@ class AbstractBLLTest(AbstractTest):
         if (
             hasattr(self, "unique_fields")
             and self.unique_fields
-            and any(field in self.update_fields for field in self.unique_fields)
+            and any(field in self._update_fields for field in self.unique_fields)
         ):
             field_to_check = next(
-                field for field in self.unique_fields if field in self.update_fields
+                field for field in self.unique_fields if field in self._update_fields
             )
             for i, entity in enumerate(entities):
                 expected_value = f"Batch Updated {i}"
@@ -886,7 +886,7 @@ class AbstractBLLTest(AbstractTest):
         else:
             # For entities without name-like fields, verify they were updated with the update_fields
             for entity in entities:
-                for field, value in self.update_fields.items():
+                for field, value in self._update_fields.items():
                     assert hasattr(
                         entity, field
                     ), f"{assertion_index}: Field {field} missing from entity"
@@ -911,15 +911,17 @@ class AbstractBLLTest(AbstractTest):
         )
         items = []
         for i, key in enumerate(["batch_1", "batch_2", "batch_3"]):
-            update_data = self.update_fields.copy()
+            update_data = self._update_fields.copy()
             # If we have unique fields that can be updated, use the batch update pattern
             if (
                 hasattr(self, "unique_fields")
                 and self.unique_fields
-                and any(field in self.update_fields for field in self.unique_fields)
+                and any(field in self._update_fields for field in self.unique_fields)
             ):
                 field_to_update = next(
-                    field for field in self.unique_fields if field in self.update_fields
+                    field
+                    for field in self.unique_fields
+                    if field in self._update_fields
                 )
                 update_data[field_to_update] = f"Batch Updated {i}"
 

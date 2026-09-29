@@ -236,17 +236,15 @@ class AbstractDBTest(AbstractTest):
             )
         try:
             model_registry = self._get_model_registry()
-            permission = create_permission_hook(
-                requester_id=self.ROOT_ID,
+            permission: Dict[str, Any] = create_permission_hook(
+                requester_id=env("ROOT_ID"),
                 model_registry=model_registry,
                 return_type="dict",
                 **permission_data,
             )
             if permission:
-                self.tracked_entities.append(
-                    {"id": permission["id"], "resource_id": entity_id}
-                )
-            return permission  # type: ignore[no-any-return]
+                self.tracked_entities[f"permission_{permission['id']}"] = permission
+            return permission
         except Exception as e:
             error_msg = (
                 f"{self.sqlalchemy_model.__name__}: Failed to create "
@@ -1020,8 +1018,6 @@ class AbstractDBTest(AbstractTest):
                     f"Got: {actual_value}"
                 )
 
-    default_update_data = {"name": "Updated Name", "description": "Updated Description"}
-
     def _CRUD_update(
         self,
         return_type: str = "dict",
@@ -1031,11 +1027,7 @@ class AbstractDBTest(AbstractTest):
     ):
         # Use provided update_data or fall back to default update data
         if update_data is None:
-            update_data = (
-                self.update_fields.copy()
-                if hasattr(self, "update_fields")
-                else self.default_update_data.copy()
-            )
+            update_data = self._update_fields.copy()
 
         # Resolve any callable values in the update data
         resolved_data = {}

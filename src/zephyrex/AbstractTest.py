@@ -295,11 +295,27 @@ class AbstractTest:
 
         return data
 
+    @property
+    def _create_fields(self) -> Dict[str, Any]:
+        """``create_fields``, which setup requires every subclass to define."""
+        assert (
+            self.create_fields is not None
+        ), f"{self.__class__.__name__}: create_fields must be defined"
+        return self.create_fields
+
+    @property
+    def _update_fields(self) -> Dict[str, Any]:
+        """``update_fields``, which setup requires every subclass to define."""
+        assert (
+            self.update_fields is not None
+        ), f"{self.__class__.__name__}: update_fields must be defined"
+        return self.update_fields
+
     def build_entities(
         self,
         server,
         user_id: str = "",
-        team_id: str = "",
+        team_id: Optional[str] = None,
         count=1,
         unique_fields: List[str] | None = None,
     ):
@@ -307,13 +323,13 @@ class AbstractTest:
         unique_fields = unique_fields or []
 
         for i in range(count):
-            entity_data = self.create_fields.copy()  # type: ignore[union-attr]
-            for field in self.create_fields:  # type: ignore[union-attr]
-                if callable(self.create_fields[field]):  # type: ignore[index]
-                    entity_data[field] = self.create_fields[field]()  # type: ignore[index]
+            entity_data = self._create_fields.copy()
+            for field in self._create_fields:
+                if callable(self._create_fields[field]):
+                    entity_data[field] = self._create_fields[field]()
             # Handle multiple unique fields
             for field in unique_fields:
-                if field in self.create_fields:  # type: ignore[operator]
+                if field in self._create_fields:
                     base_value = entity_data[field]
                     if field == "email":
                         random_part = "".join(

@@ -159,8 +159,7 @@ class ExtensionManager(AbstractBLLManager, RouterMixin):
             target_team_id=target_team_id,
             model_registry=model_registry,
         )
-        # Initialize ability manager to None
-        self._abilities = None
+        self._abilities: Optional["AbilityManager"] = None
 
     @property
     def abilities(self) -> "AbilityManager":
@@ -171,13 +170,13 @@ class ExtensionManager(AbstractBLLManager, RouterMixin):
             AbilityManager instance
         """
         if self._abilities is None:
-            self._abilities = AbilityManager(  # type: ignore[assignment]
-                requester_id=self.requester_id,
+            self._abilities = AbilityManager(
+                requester_id=self.requester.id,
                 target_id=self.target_id,
                 target_team_id=self.target_team_id,
                 model_registry=self.model_registry,
             )
-        return self._abilities  # type: ignore[return-value]
+        return self._abilities
 
     @staticmethod
     def list_runtime_extensions() -> List[str]:
