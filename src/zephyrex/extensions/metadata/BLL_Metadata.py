@@ -15,7 +15,6 @@ from typing import Any, ClassVar, Dict, List, Optional, Type
 from fastapi import HTTPException
 from pydantic import Field
 
-from zephyrex.lib.Logging import logger
 from zephyrex.pydantic2.registry import BaseModel
 from zephyrex.logic.AbstractLogicManager import (
     AbstractBLLManager,
@@ -27,8 +26,8 @@ from zephyrex.logic.AbstractLogicManager import (
 
 
 class MetadataModel(
-    ApplicationModel.Optional,
-    UpdateMixinModel.Optional,
+    ApplicationModel,
+    UpdateMixinModel,
     metaclass=ModelMeta,
 ):
     Manager: ClassVar[Type["MetadataManager"]] = None  # type: ignore[assignment]
@@ -69,6 +68,32 @@ class MetadataManager(AbstractBLLManager):
                 status_code=400, detail="Either user_id or team_id must be provided"
             )
 
+    def _preference_rows(
+        self, key: str, user_id: Optional[str], team_id: Optional[str]
+    ) -> List[MetadataModel]:
+        """The rows holding ``key`` for exactly this user and/or team.
+
+        A user's own preference excludes rows the system created for them
+        (ROOT/SYSTEM seeded values), which the user overrides rather than
+        edits.
+        """
+        from zephyrex.lib.Environment import env
+
+        owner: Dict[str, Any] = {}
+        if user_id:
+            owner["user_id"] = user_id
+        if team_id:
+            owner["team_id"] = team_id
+        rows = self.search(key=key, **owner)
+        if user_id and not team_id:
+            system_ids = {env("ROOT_ID"), env("SYSTEM_ID")}
+            rows = [
+                row
+                for row in rows
+                if getattr(row, "created_by_user_id", None) not in system_ids
+            ]
+        return rows
+
     def set_preference(
         self,
         key: str,
@@ -82,40 +107,8 @@ class MetadataManager(AbstractBLLManager):
                 status_code=400, detail="Either user_id or team_id is required"
             )
 
-        search_params = {"key": {"value": key}}
-        if user_id:
-            search_params["user_id"] = {"value": user_id}
-        if team_id:
-            search_params["team_id"] = {"value": team_id}
-
-        existing = self.search(search_params)
-
-        exact_matches = []
-        if existing:
-            for record in existing:
-                matches_user = (user_id is None) or (
-                    getattr(record, "user_id", None) == user_id
-                )
-                matches_team = (team_id is None) or (
-                    getattr(record, "team_id", None) == team_id
-                )
-                matches_key = record.key == key
-                if matches_user and matches_team and matches_key:
-                    exact_matches.append(record)
-
-        # Filter out system-created records when setting user preferences
-        if exact_matches and user_id and not team_id:
-            from zephyrex.lib.Environment import env
-
-            user_owned_records = []
-            for record in exact_matches:
-                created_by = getattr(record, "created_by_user_id", None)
-                created_by_system = created_by in [env("ROOT_ID"), env("SYSTEM_ID")]
-                if not created_by_system:
-                    user_owned_records.append(record)
-            exact_matches = user_owned_records
-
-        if exact_matches and len(exact_matches) > 0:
+        exact_matches = self._preference_rows(key, user_id, team_id)
+        if exact_matches:
             record = exact_matches[0]
             if user_id and not team_id:
                 with MetadataManager(
@@ -144,44 +137,8 @@ class MetadataManager(AbstractBLLManager):
         self, key: str, user_id: Optional[str] = None, team_id: Optional[str] = None
     ) -> Optional[str]:
         """Get a metadata preference value"""
-        search_params = {"key": {"value": key}}
-        if user_id:
-            search_params["user_id"] = {"value": user_id}
-        if team_id:
-            search_params["team_id"] = {"value": team_id}
-
-        results = self.search(search_params)
-
-        exact_matches = []
-        if results:
-            for record in results:
-                matches_user = (user_id is None) or (
-                    getattr(record, "user_id", None) == user_id
-                )
-                matches_team = (team_id is None) or (
-                    getattr(record, "team_id", None) == team_id
-                )
-                matches_key = record.key == key
-                if matches_user and matches_team and matches_key:
-                    exact_matches.append(record)
-
-        if exact_matches and user_id and not team_id:
-            from zephyrex.lib.Environment import env
-
-            user_owned_records = []
-            for record in exact_matches:
-                created_by_system = getattr(record, "created_by_user_id", None) in [
-                    env("ROOT_ID"),
-                    env("SYSTEM_ID"),
-                ]
-                if not created_by_system:
-                    user_owned_records.append(record)
-            exact_matches = user_owned_records
-
-        if exact_matches and len(exact_matches) > 0:
-            return exact_matches[0].value  # type: ignore[no-any-return]
-
-        return None
+        exact_matches = self._preference_rows(key, user_id, team_id)
+        return exact_matches[0].value if exact_matches else None
 
 
 class TeamMetadataManager(MetadataManager):
@@ -229,7 +186,7 @@ class UserMetadataManager(MetadataManager):
         if not self.target_user_id:
             raise HTTPException(status_code=400, detail="User ID is required")
 
-        results = self.search({"user_id": {"value": self.target_user_id}})
+        results = self.search(user_id=self.target_user_id)
 
         preferences = {}
         for metadata in results:

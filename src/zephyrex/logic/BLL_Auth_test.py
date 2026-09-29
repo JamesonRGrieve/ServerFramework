@@ -881,6 +881,39 @@ class TestMetadataManager(AbstractBLLTest):
         value = mgr.get_preference("nonexistent", user_id=test_user.id)
         assert value is None
 
+    def test_preferences_are_the_target_users_own(self, server, model_registry):
+        """A user's preferences never include another user's rows, even for
+        a requester (ROOT) who can see every row."""
+
+        def register(label: str):
+            suffix = uuid.uuid4().hex[:8]
+            return UserManager.register(
+                {
+                    "email": f"test_metadata_{label}_{suffix}@example.com",
+                    "username": f"test_metadata_{label}_{suffix}",
+                    "password": "TestPass123!",
+                },
+                model_registry,
+            )
+
+        user_a, user_b = register("a"), register("b")
+        key_a, key_b = f"only_a_{uuid.uuid4().hex}", f"only_b_{uuid.uuid4().hex}"
+        MetadataManager(
+            requester_id=user_a.id, model_registry=model_registry
+        ).set_preference(key_a, "a", user_id=user_a.id)
+        MetadataManager(
+            requester_id=user_b.id, model_registry=model_registry
+        ).set_preference(key_b, "b", user_id=user_b.id)
+
+        preferences = UserMetadataManager(
+            requester_id=env("ROOT_ID"),
+            target_id=user_a.id,
+            model_registry=model_registry,
+        ).get_preferences()
+
+        assert preferences[key_a] == "a"
+        assert key_b not in preferences
+
 
 class TestUserTeamManager(AbstractBLLTest):
     class_under_test = UserTeamManager
