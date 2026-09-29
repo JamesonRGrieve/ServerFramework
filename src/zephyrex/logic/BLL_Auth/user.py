@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any, ClassVar, Dict, List, Optional, Type, cast
@@ -39,11 +40,15 @@ from zephyrex.logic.BLL_Auth._shared import (
     PasswordlessGrantRegistry,
     _BCRYPT_ROUNDS,
     _DUMMY_BCRYPT_HASH,
+    _api_key_hooks,
     _invitation_hooks,
     _lockout_hooks,
     _metadata_hooks,
     _session_hooks,
 )
+
+# A compact JWT is three base64url segments joined by two ``.`` separators.
+_JWT_SEPARATOR_COUNT = 2
 
 
 class UserModel(
@@ -992,10 +997,39 @@ class UserManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef]
         return unicodedata.normalize("NFKC", identifier).lower().strip()
 
     @staticmethod
+    def _resolve_issued_api_key(
+        model_registry: Any, candidates: tuple[Optional[str], ...]
+    ) -> Optional[str]:
+        """Resolve the first issued API key among ``candidates`` to its user id.
+
+        Dispatches through ``_api_key_hooks["resolve_principal"]`` (registered
+        by the auth_api_keys extension); returns ``None`` when the extension is
+        not loaded or no candidate is a live user-bound key. JWT-shaped values
+        are skipped: an issued key is opaque (no ``.`` separators), so a JWT
+        can never match and hashing it would cost a lookup on every request.
+        """
+        resolve_principal = _api_key_hooks["resolve_principal"]
+        if resolve_principal is None:
+            return None
+        seen: set[str] = set()
+        for candidate in candidates:
+            if (
+                not candidate
+                or candidate in seen
+                or candidate.count(".") >= _JWT_SEPARATOR_COUNT
+            ):
+                continue
+            seen.add(candidate)
+            user_id = resolve_principal(candidate, model_registry)
+            if user_id is not None:
+                return user_id
+        return None
+
+    @staticmethod
     def auth(
         model_registry,
         authorization: str = Header(None),
-        request: Dict | None = None,
+        request: Request | RequestInfo | Dict[str, Any] | None = None,
     ) -> UserModel:
         """Authenticate a user from Authorization header"""
         if isinstance(request, dict):
@@ -1003,8 +1037,8 @@ class UserManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef]
         # bypass auth for user registration
         if (
             request
-            and str(request.url).endswith("/v1/user")  # type: ignore[attr-defined]
-            and request.method == "POST"  # type: ignore[attr-defined]
+            and str(request.url).endswith("/v1/user")
+            and request.method == "POST"
         ):
             return None  # type: ignore[return-value]
 
@@ -1031,8 +1065,8 @@ class UserManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef]
                 elif isinstance(client_obj, dict) and "host" in client_obj:
                     peer_host = client_obj["host"]
             ip = resolve_client_ip(request, peer_host=peer_host)
-            host = request.headers.get("Host")  # type: ignore[attr-defined]
-            scheme = request.headers.get("X-Forwarded-Proto", "http")  # type: ignore[attr-defined]
+            host = request.headers.get("Host")
+            scheme = request.headers.get("X-Forwarded-Proto", "http")
             if host:
                 server = f"{scheme}://{host}"
         db_manager = model_registry.DB
@@ -1058,9 +1092,7 @@ class UserManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef]
                     resolve_principal_from_api_key,
                 )
 
-                api_key_header = (
-                    request.headers.get("X-API-Key") if request else None  # type: ignore[attr-defined]
-                )
+                api_key_header = request.headers.get("X-API-Key") if request else None
                 principal = resolve_principal_from_api_key(api_key_header)
                 if not principal and token:
                     principal = resolve_principal_from_api_key(token)
@@ -1070,6 +1102,28 @@ class UserManager(AbstractBLLManager, RouterMixin):  # type: ignore[no-redef]
                         .filter(UserModel.DB(db_manager.Base).id == principal)
                         .first()
                     )
+
+                # Keys issued by the auth_api_keys extension, consulted only
+                # after the env-configured keys. A matching issued key binds
+                # the request to the key's owning user; an unknown, revoked,
+                # expired, or team-only key falls through to the JWT path,
+                # which rejects it as an invalid token.
+                issued_key_user_id = UserManager._resolve_issued_api_key(
+                    model_registry, (api_key_header, token)
+                )
+                if issued_key_user_id is not None:
+                    key_user: Optional[UserModel] = (
+                        db.query(UserModel.DB(db_manager.Base))
+                        .filter(UserModel.DB(db_manager.Base).id == issued_key_user_id)
+                        .first()
+                    )
+                    if key_user is None:
+                        raise HTTPException(status_code=401, detail="Invalid API key")
+                    if not key_user.active:
+                        raise HTTPException(
+                            status_code=403, detail="User account is disabled"
+                        )
+                    return key_user
 
                 try:
                     payload = UserManager._decode_jwt(token)

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 import os
 import re
 import uuid
@@ -25,6 +26,12 @@ from zephyrex.logic.BLL_Auth import (
     UserModel,
     UserRecoveryQuestionModel,
     UserTeamModel,
+)
+from zephyrex.testing.factories import (
+    add_user_to_team,
+    create_team,
+    create_user,
+    generate_test_email,
 )
 
 faker = Faker()
@@ -57,84 +64,44 @@ class TestUser(AbstractDBTest):
         "last_name": "Name",
     }
     unique_fields = ["email"]
-    # def test_get_with_permission(self):
-    #     """Test retrieving a UserModel entity with explicit permission."""
-    #     # UserModel entities have a different permission model than other entities
 
-    #     # Skip specific assertion - UserModel entities have different visibility rules
-    #     # that make the "no visibility by default" assertion inappropriate
-    #     pytest.skip(
-    #         "UserModel entities have TeamModel-based visibility rules that differ from other entities"
-    #     )
+    def _get_user_as(self, requester_id: str, user_id: str):
+        return UserModel.DB(self.model_registry.DB.manager.Base).get(
+            requester_id=requester_id,
+            model_registry=self.model_registry,
+            return_type="dict",
+            id=user_id,
+        )
 
-    # def test_user_specific_permissions(self):
-    #     """Test UserModel-specific permission behavior that takes into account their unique visibility model."""
-    #     # Create a TeamModel for this test to isolate permissions
-    #     test_team_id = self._create_or_get_team(
-    #         f"perm_test_team_{self.test_instance_id}"
-    #     )
+    def test_real_accounts_visible_without_shared_team(self, server, model_registry):
+        """Every real account is VIEW-visible to an authenticated user, even
+        with no shared team, so identifiers surfaced through related entities
+        resolve (StaticPermissions' users-table rule)."""
+        self._server = server
+        self.model_registry = model_registry
+        self.ensure_model(server)
+        team_user = create_user(server, email=generate_test_email("perm_team_user"))
+        create_team(server, team_user.id, name="Permission Test Team")
+        isolated_user = create_user(server, email=generate_test_email("perm_isolated"))
 
-    #     # Create a UserModel in this TeamModel
-    #     team_user_data = self._get_unique_entity_data()
-    #     team_user = self.create_test_entity(return_type="dict", **team_user_data)
-    #     self._setup_team_membership(team_user["id"], test_team_id, "UserModel")
+        retrieved = self._get_user_as(team_user.id, isolated_user.id)
+        assert retrieved is not None, "Real account is not visible for VIEW"
+        assert retrieved["id"] == isolated_user.id, "Retrieved wrong user"
 
-    #     # Create an isolated UserModel not in any TeamModel
-    #     isolated_user_data = self._get_unique_entity_data()
-    #     isolated_user = self.create_test_entity(
-    #         return_type="dict", **isolated_user_data
-    #     )
+    def test_team_based_user_visibility(self, server, model_registry):
+        """Members of the same team can see each other."""
+        self._server = server
+        self.model_registry = model_registry
+        self.ensure_model(server)
+        team_user = create_user(server, email=generate_test_email("visibility_a"))
+        team = create_team(server, team_user.id, name="Visibility Test Team")
+        other_user = create_user(server, email=generate_test_email("visibility_b"))
+        add_user_to_team(server, other_user.id, team.id, env("USER_ROLE_ID"))
 
-    #     # TeamModel UserModel should not be able to see isolated UserModel
-    #     # (no TeamModel relationship connects them)
-    #     team_user_retrieved = self.object_under_test.get(
-    #         team_user["id"], model_registry, return_type="dict", id=isolated_user["id"]
-    #     )
+        retrieved = self._get_user_as(other_user.id, team_user.id)
+        assert retrieved is not None, "Team member cannot see another team member"
+        assert retrieved["id"] == team_user.id, "Retrieved wrong user"
 
-    #     assert (
-    #         team_user_retrieved is None
-    #     ), f"TeamModel UserModel can see isolated UserModel without permission"
-
-    #     # Grant VIEW permission
-    #     self.grant_permission(team_user["id"], isolated_user["id"], PermissionType.VIEW)
-
-    #     # Now TeamModel UserModel should be able to see isolated UserModel
-    #     team_user_retrieved_with_perm = self.object_under_test.get(
-    #         team_user["id"], model_registry, return_type="dict", id=isolated_user["id"]
-    #     )
-
-    #     assert (
-    #         team_user_retrieved_with_perm is not None
-    #     ), f"TeamModel UserModel cannot see isolated UserModel with permission"
-    #     assert (
-    #         team_user_retrieved_with_perm["id"] == isolated_user["id"]
-    #     ), f"Retrieved wrong entity"
-
-    # def test_team_based_user_visibility(self):
-    #     """Test that users can see other users in their teams."""
-    #     # Create users in the same TeamModel
-    #     team_id = self._create_or_get_team("visibility_test_team")
-
-    #     # Create a UserModel in the TeamModel
-    #     team_user_data = self._get_unique_entity_data()
-    #     team_user = self.create_test_entity(return_type="dict", **team_user_data)
-
-    #     # Add both users to the same TeamModel
-    #     self._setup_team_membership(team_user["id"], team_id, "UserModel")
-    #     self._setup_team_membership(self.other_user_id, team_id, "UserModel")
-
-    #     # The other UserModel should be able to see the TeamModel UserModel
-    #     other_retrieved = self.object_under_test.get(
-    #         self.other_user_id, model_registry, return_type="dict", id=team_user["id"]
-    #     )
-
-    #     assert (
-    #         other_retrieved is not None
-    #     ), f"{self.object_under_test.__name__}: TeamModel member cannot see other TeamModel members"
-    #     assert (
-    #         other_retrieved["id"] == team_user["id"]
-    #     ), f"{self.object_under_test.__name__}: Retrieved wrong entity"
-    # @pytest.mark.dependency()
     @pytest.mark.parametrize("return_type", sorted(["dict", "db", "model"]))
     def test_CRUD_create(
         self, db, server, model_registry, admin_a, team_a, return_type

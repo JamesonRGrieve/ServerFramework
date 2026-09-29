@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """API-key authentication BLL.
 
 Owns ``APIKeyModel`` plus the issue/validate/revoke/rotate flow. Keys are
@@ -12,14 +13,16 @@ Endpoint surface: CRUD via ``RouterMixin`` is restricted to read/list/search
 plus DELETE (revocation). Issue and rotate are surfaced through
 ``@custom_route`` because the raw key never persists — the issuance flow
 must run server-side and return the secret exactly once. ``key_hash`` is
-not in any client-facing input model: see ``APIKeyModel.Create``.
+not in any client-facing input model (see ``APIKeyModel.Create``) and is
+write-only on output. Issued keys authenticate requests as their owning
+user through core's ``_api_key_hooks["resolve_principal"]``.
 """
 
 import hashlib
 import hmac
 import secrets
 from datetime import datetime, timezone
-from typing import ClassVar, List, Optional, Type
+from typing import Any, ClassVar, List, Optional, Type
 
 from zephyrex.lib.DateTimeUtils import ensure_utc
 
@@ -42,6 +45,8 @@ from zephyrex.logic.BLL_Auth import (
     RoleModel,
     TeamModel,
     UserModel,
+    register_api_key_hooks,
+    require_team_membership,
 )
 
 
@@ -65,7 +70,14 @@ class APIKeyModel(
 
     Manager: ClassVar[Type["APIKeyManager"]] = None  # type: ignore[assignment]
     name: str = Field(..., description="Human-readable label for this key")
-    key_hash: str = Field(..., description="SHA-256 hex digest of the issued key")
+    # Write-only: excluded from every serialization (GET/LIST/SEARCH bodies
+    # and GraphQL types). Server code reads the attribute directly. Optional
+    # on the model because REST responses re-validate the serialized record,
+    # which never carries it; the column itself is NOT NULL and always set
+    # by ``_mint_key``.
+    key_hash: Optional[str] = Field(
+        None, exclude=True, description="SHA-256 hex digest of the issued key"
+    )
     last_used_at: Optional[datetime] = Field(
         None, description="When the key was most recently presented and accepted"
     )
@@ -186,10 +198,7 @@ class APIKeyManager(AbstractBLLManager, RouterMixin):
         team_id: Optional[str],
     ) -> None:
         """Caller must be acting on themselves (user_id == requester) or be
-        ROOT_ID. Team-scoped issuance requires either ROOT_ID or a real
-        membership check; that is delegated to the ``UserTeamManager``
-        once available, and conservatively rejects unauthenticated
-        cross-tenant issuance until then."""
+        ROOT_ID. Team-scoped keys additionally require team membership."""
         from zephyrex.database.StaticPermissions import is_root_id
 
         if is_root_id(self.requester.id):
@@ -197,27 +206,21 @@ class APIKeyManager(AbstractBLLManager, RouterMixin):
         if user_id is not None and user_id != self.requester.id:
             raise HTTPException(
                 status_code=403,
-                detail="Cannot issue an API key for another user",
+                detail="Cannot act on another user's API key",
             )
         if team_id is not None:
-            try:
-                from zephyrex.logic.BLL_Auth import UserTeamModel
-            except ImportError:
-                raise HTTPException(
-                    status_code=403,
-                    detail="Team-scoped API-key issuance requires team membership",
-                )
-            UTDB = UserTeamModel.DB(self.model_registry.DB.manager.Base)
-            if not UTDB.exists(
-                requester_id=env("ROOT_ID"),
-                model_registry=self.model_registry,
-                user_id=self.requester.id,
-                team_id=team_id,
-            ):
-                raise HTTPException(
-                    status_code=403,
-                    detail="Caller is not a member of the target team",
-                )
+            require_team_membership(self.requester.id, team_id, self.model_registry)
+
+    def _assert_can_assign_role(self, role_id: Optional[str]) -> None:
+        """Only ROOT_ID may bind a role to a key. A caller-chosen role would
+        let any user mint a credential carrying a role they do not hold."""
+        from zephyrex.database.StaticPermissions import is_root_id
+
+        if role_id is not None and not is_root_id(self.requester.id):
+            raise HTTPException(
+                status_code=403,
+                detail="Only root may assign a role to an API key",
+            )
 
     def issue_key(
         self,
@@ -230,6 +233,24 @@ class APIKeyManager(AbstractBLLManager, RouterMixin):
         if user_id is None and team_id is None:
             user_id = self.requester.id
         self._assert_can_act_on(user_id, team_id)
+        self._assert_can_assign_role(role_id)
+        return self._mint_key(
+            name=name,
+            user_id=user_id,
+            team_id=team_id,
+            role_id=role_id,
+            expires_at=expires_at,
+        )
+
+    def _mint_key(
+        self,
+        name: str,
+        user_id: Optional[str],
+        team_id: Optional[str],
+        role_id: Optional[str],
+        expires_at: Optional[datetime],
+    ) -> APIKeyIssueResponse:
+        """Generate and persist a key. Callers authorize before minting."""
         raw = secrets.token_urlsafe(32)
         key_hash = _hash_key(raw)
         record = self.DB.create(
@@ -305,43 +326,8 @@ class APIKeyManager(AbstractBLLManager, RouterMixin):
         return self.rotate_key(body.key_id)
 
     def validate_key(self, raw: str) -> Optional[APIKeyModel]:
-        """Resolve ``raw`` to an active API key record, or return None.
-
-        Constant-time comparison after a hash-indexed lookup defeats
-        timing attacks even though the hash is the canonical lookup key.
-        """
-        if not raw:
-            return None
-        candidate_hash = _hash_key(raw)
-        KeyDB = APIKeyModel.DB(self.model_registry.DB.manager.Base)
-        rows = (
-            KeyDB.list(
-                requester_id=env("ROOT_ID"),
-                model_registry=self.model_registry,
-                filters=[
-                    KeyDB.key_hash == candidate_hash,
-                    KeyDB.is_revoked == False,  # noqa: E712
-                ],
-                return_type="dto",
-                override_dto=APIKeyModel,
-            )
-            or []
-        )
-        now = datetime.now(timezone.utc)
-        for record in rows:
-            if record.expires_at is not None:
-                expires_at = ensure_utc(record.expires_at)
-                if expires_at < now:
-                    continue
-            if hmac.compare_digest(record.key_hash, candidate_hash):
-                KeyDB.update(
-                    requester_id=env("ROOT_ID"),
-                    model_registry=self.model_registry,
-                    id=record.id,
-                    new_properties={"last_used_at": now},
-                )
-                return record  # type: ignore[no-any-return]
-        return None
+        """Resolve ``raw`` to an active API key record, or return None."""
+        return validate_api_key(raw, self.model_registry)
 
     def delete(self, id: str):
         """DELETE on this resource is soft-revoke, not hard-delete: API
@@ -364,8 +350,12 @@ class APIKeyManager(AbstractBLLManager, RouterMixin):
         if existing is None:
             raise HTTPException(status_code=404, detail="API key not found")
         self._assert_can_act_on(existing.user_id, existing.team_id)
+        # Authorization is the ownership check above. The write runs as
+        # ROOT_ID because a key root issued on a user's behalf is a
+        # ROOT-created row, and its owner must still be able to revoke (and
+        # therefore rotate) it.
         return KeyDB.update(  # type: ignore[no-any-return]
-            requester_id=self.requester.id,
+            requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
             id=key_id,
             new_properties={"is_revoked": True},
@@ -387,7 +377,10 @@ class APIKeyManager(AbstractBLLManager, RouterMixin):
         if existing is None:
             raise HTTPException(status_code=404, detail="API key not found")
         self._assert_can_act_on(existing.user_id, existing.team_id)
-        new = self.issue_key(
+        # The replacement carries the existing key's scope unchanged, so a
+        # role that root bound at issuance survives an owner's rotation
+        # without the owner being able to choose a role themselves.
+        new = self._mint_key(
             name=existing.name,
             user_id=existing.user_id,
             team_id=existing.team_id,
@@ -399,6 +392,75 @@ class APIKeyManager(AbstractBLLManager, RouterMixin):
 
 
 APIKeyModel.Manager = APIKeyManager
+
+
+def validate_api_key(raw: str, model_registry: Any) -> Optional[APIKeyModel]:
+    """Resolve ``raw`` to an active (unrevoked, unexpired) key record, or None.
+
+    Stamps ``last_used_at`` on a match. Constant-time comparison after a
+    hash-indexed lookup defeats timing attacks even though the hash is the
+    canonical lookup key.
+    """
+    if not raw:
+        return None
+    candidate_hash = _hash_key(raw)
+    KeyDB = APIKeyModel.DB(model_registry.DB.manager.Base)
+    rows: List[APIKeyModel] = (
+        KeyDB.list(
+            requester_id=env("ROOT_ID"),
+            model_registry=model_registry,
+            filters=[
+                KeyDB.key_hash == candidate_hash,
+                KeyDB.is_revoked == False,  # noqa: E712
+            ],
+            return_type="dto",
+            override_dto=APIKeyModel,
+        )
+        or []
+    )
+    now = datetime.now(timezone.utc)
+    for record in rows:
+        if record.expires_at is not None and ensure_utc(record.expires_at) < now:
+            continue
+        if record.key_hash is not None and hmac.compare_digest(
+            record.key_hash, candidate_hash
+        ):
+            KeyDB.update(
+                requester_id=env("ROOT_ID"),
+                model_registry=model_registry,
+                id=record.id,
+                new_properties={"last_used_at": now},
+            )
+            return record
+    return None
+
+
+def resolve_api_key_principal(raw: str, model_registry: Any) -> Optional[str]:
+    """``_api_key_hooks["resolve_principal"]`` implementation.
+
+    Returns the ``user_id`` a live issued key authenticates as. Team-only
+    keys (no ``user_id``) authenticate no user and resolve to None.
+
+    The hook is process-global while extensions are loaded per app, so an
+    app whose registry does not bind ``APIKeyModel`` (the extension is not
+    on its APP_EXTENSIONS) has no issued keys and resolves nothing.
+    """
+    if not model_registry.is_model_bound(APIKeyModel):
+        return None
+    record = validate_api_key(raw, model_registry)
+    return record.user_id if record is not None else None
+
+
+def register_api_key_auth() -> None:
+    """Wire issued-key authentication into core ``UserManager.auth``."""
+    register_api_key_hooks(resolve_principal=resolve_api_key_principal)
+
+
+# Registered at import time: the extension loader imports this module when
+# ``auth_api_keys`` is on APP_EXTENSIONS, which is the extension's load path
+# (same pattern as auth_session / metadata). ``EXT_Auth_APIKeys.on_initialize``
+# re-registers idempotently.
+register_api_key_auth()
 
 
 # ---------------------------------------------------------------------------

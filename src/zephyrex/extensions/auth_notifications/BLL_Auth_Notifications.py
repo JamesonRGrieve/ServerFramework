@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """User notifications BLL.
 
 Two tables:
@@ -28,6 +29,7 @@ from zephyrex.logic.AbstractLogicManager import (
 from zephyrex.logic.BLL_Auth import (
     TeamModel,
     UserModel,
+    require_team_membership,
 )
 
 
@@ -146,6 +148,16 @@ class NotificationManager(AbstractBLLManager, RouterMixin):
     # ``user_id`` (the recipient) cannot be impersonated. ROOT/SYSTEM
     # bypass for system-issued broadcasts.
     _CALLER_OWNED_FIELDS: ClassVar[tuple] = ("user_id",)
+
+    def create_validation(self, entity: NotificationModel.Create) -> None:
+        """A team-scoped notification is broadcast to that team's members, so
+        only a member may address one; ROOT/SYSTEM bypass for system-issued
+        broadcasts, matching ``_CALLER_OWNED_FIELDS``."""
+        from zephyrex.database.StaticPermissions import is_system_id
+
+        if entity.team_id is None or is_system_id(self.requester.id):
+            return
+        require_team_membership(self.requester.id, entity.team_id, self.model_registry)
 
 
 class UserNotificationManager(AbstractBLLManager, RouterMixin):

@@ -148,7 +148,7 @@ class MagicLinkManager(AbstractBLLManager, RouterMixin):
 
     def _resolve_user_by_email(self, email: str) -> Optional[UserModel]:
         UserDB = UserModel.DB(self.model_registry.DB.manager.Base)
-        users = UserDB.list(
+        users: List[UserModel] = UserDB.list(
             requester_id=env("ROOT_ID"),
             model_registry=self.model_registry,
             filters=[

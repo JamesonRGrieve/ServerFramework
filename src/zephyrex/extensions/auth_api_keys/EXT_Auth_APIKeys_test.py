@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Tests for the auth_api_keys extension.
 
 Covers: canonical wiring, hashing/constant-time comparison, security
@@ -12,13 +13,11 @@ os.environ.setdefault("PYTEST_CURRENT_TEST", "auth_api_keys_test")
 
 import hashlib
 
-import pytest
-from fastapi import HTTPException
-
 from zephyrex.extensions.auth_api_keys.BLL_Auth_APIKeys import (
     APIKeyManager,
     APIKeyModel,
     _hash_key,
+    resolve_api_key_principal,
 )
 from zephyrex.extensions.auth_api_keys.EXT_Auth_APIKeys import (
     EXT_Auth_APIKeys,
@@ -65,6 +64,9 @@ class TestSecurityPosture:
         assert "is_revoked" not in fields
         assert "last_used_at" not in fields
 
+    def test_key_hash_is_write_only(self):
+        assert APIKeyModel.model_fields["key_hash"].exclude is True
+
     def test_update_schema_does_not_expose_revocation_or_timestamps(self):
         fields = set(APIKeyModel.Update.model_fields.keys())
         assert "is_revoked" not in fields
@@ -86,6 +88,12 @@ class TestSecurityPosture:
 class TestLifecycle:
     def test_on_initialize_returns_true(self):
         assert EXT_Auth_APIKeys.on_initialize() is True
+
+    def test_on_initialize_registers_core_api_key_resolver(self):
+        from zephyrex.logic.BLL_Auth import _api_key_hooks
+
+        EXT_Auth_APIKeys.on_initialize()
+        assert _api_key_hooks["resolve_principal"] is resolve_api_key_principal
 
     def test_validate_config_returns_list(self):
         assert isinstance(EXT_Auth_APIKeys.validate_config(), list)

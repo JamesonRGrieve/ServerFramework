@@ -387,13 +387,14 @@ class TestLoginViaGrant:
 
         def validator(payload: _DemoGrantPayload) -> UserModel:
             called_with["payload"] = payload
-            return UserModel.DB(model_registry.DB.manager.Base).get(
+            user: UserModel = UserModel.DB(model_registry.DB.manager.Base).get(
                 requester_id=env("ROOT_ID"),
                 model_registry=model_registry,
                 id=payload.user_id,
                 return_type="dto",
                 override_dto=UserModel,
             )
+            return user
 
         PasswordlessGrantRegistry.register("demo_grant", validator)
 

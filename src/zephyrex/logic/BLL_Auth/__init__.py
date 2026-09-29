@@ -1,6 +1,8 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 from zephyrex.logic.BLL_Auth._shared import (
     _BCRYPT_ROUNDS as _BCRYPT_ROUNDS,
     _acl_hooks as _acl_hooks,
+    _api_key_hooks as _api_key_hooks,
     _invitation_hooks as _invitation_hooks,
     _lockout_hooks as _lockout_hooks,
     _metadata_hooks as _metadata_hooks,
@@ -14,12 +16,14 @@ from zephyrex.logic.BLL_Auth._shared import (
     PendingSessionError as PendingSessionError,
     UserIdGrantPayload as UserIdGrantPayload,
     register_acl_hooks as register_acl_hooks,
+    register_api_key_hooks as register_api_key_hooks,
     register_invitation_hooks as register_invitation_hooks,
     register_lockout_hooks as register_lockout_hooks,
     register_metadata_hooks as register_metadata_hooks,
     register_pii_hooks as register_pii_hooks,
     register_registry_hooks as register_registry_hooks,
     register_session_hooks as register_session_hooks,
+    require_team_membership as require_team_membership,
     reset_session_hooks as reset_session_hooks,
 )
 from zephyrex.logic.BLL_Auth.user import (

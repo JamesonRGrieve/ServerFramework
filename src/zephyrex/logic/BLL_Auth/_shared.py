@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 import base64 as _b64
 import hmac
 import secrets
@@ -113,15 +114,14 @@ class OneTimeTokenMixin(BaseModel):
         """
         import hashlib
 
-        key_material = env("FRAMEWORK_FERNET_KEY") or env("JWT_SECRET") or ""
+        key_material: str = env("FRAMEWORK_FERNET_KEY") or env("JWT_SECRET") or ""
         if not key_material:
             raise ValueError(
                 "Cannot compute HMAC fingerprint: neither "
                 "FRAMEWORK_FERNET_KEY nor JWT_SECRET is set"
             )
-        key_material = key_material.encode("utf-8")
         return hmac.new(
-            key_material, raw_code.encode("utf-8"), hashlib.sha256
+            key_material.encode("utf-8"), raw_code.encode("utf-8"), hashlib.sha256
         ).hexdigest()
 
     def verify(self, submitted_code: str) -> bool:
@@ -220,18 +220,19 @@ class PasswordlessGrantRegistry:
     populate this at load time with a callable that maps a grant payload to
     the resolved ``UserModel``. ``UserManager.login_via_grant`` dispatches
     here without knowing the grant kinds.
+
+    Each validator takes its own grant's payload model, so validators are
+    typed by their result only: the grant type selects the payload.
     """
 
-    _validators: ClassVar[Dict[str, Callable[[BaseModel], "UserModel"]]] = {}
+    _validators: ClassVar[Dict[str, Callable[..., "UserModel"]]] = {}
 
     @classmethod
-    def register(
-        cls, grant_type: str, validator: Callable[[BaseModel], "UserModel"]
-    ) -> None:
+    def register(cls, grant_type: str, validator: Callable[..., "UserModel"]) -> None:
         cls._validators[grant_type] = validator
 
     @classmethod
-    def get(cls, grant_type: str) -> Callable[[BaseModel], "UserModel"]:
+    def get(cls, grant_type: str) -> Callable[..., "UserModel"]:
         if grant_type not in cls._validators:
             raise KeyError(
                 f"No passwordless grant validator registered for grant_type={grant_type!r}"
@@ -284,7 +285,7 @@ def make_user_id_grant_validator(
         from zephyrex.logic.BLL_Auth.user import UserModel
 
         UserDB = UserModel.DB(payload.model_registry.DB.manager.Base)
-        user = UserDB.get(
+        user: Optional[UserModel] = UserDB.get(
             requester_id=env("ROOT_ID"),
             model_registry=payload.model_registry,
             id=payload.user_id,
@@ -356,6 +357,60 @@ def register_session_hooks(
     ):
         if fn is not None:
             _session_hooks[name] = fn
+
+
+def require_team_membership(
+    requester_id: str, team_id: str, model_registry: Any
+) -> None:
+    """Raise 403 unless ``requester_id`` is ROOT_ID or an enabled member of
+    ``team_id`` (a disabled membership grants nothing, as in StaticPermissions).
+
+    The shared gate for managers that let a caller scope a record to a team:
+    naming a team the caller does not belong to would plant data in (or mint
+    credentials for) a tenant they have no standing in.
+    """
+    from zephyrex.database.StaticPermissions import is_root_id
+    from zephyrex.logic.BLL_Auth.user_team import UserTeamModel
+
+    if is_root_id(requester_id):
+        return
+    if not UserTeamModel.DB(model_registry.DB.manager.Base).exists(
+        requester_id=env("ROOT_ID"),
+        model_registry=model_registry,
+        user_id=requester_id,
+        team_id=team_id,
+        enabled=True,
+    ):
+        raise HTTPException(
+            status_code=403, detail="Caller is not a member of the target team"
+        )
+
+
+# auth_api_keys extension hooks — populated when the extension's BLL module is
+# imported. ``UserManager.auth`` consults ``resolve_principal`` after the three
+# env-configured keys (ROOT/SYSTEM/TEMPLATE) fail to match, so keys issued by
+# the extension authenticate requests without core importing the extension.
+# When the extension is not loaded, only the env keys authenticate.
+_api_key_hooks: Dict[str, Optional[Callable[[str, Any], Optional[str]]]] = {
+    "resolve_principal": None,  # (raw_key, model_registry) -> Optional[user_id]
+}
+
+
+def register_api_key_hooks(
+    *,
+    resolve_principal: Optional[Callable[[str, Any], Optional[str]]] = None,
+) -> None:
+    """Called by the ``auth_api_keys`` extension when its BLL module loads.
+
+    ``resolve_principal(raw_key, model_registry)`` returns the ``user_id``
+    an issued key authenticates as, or ``None`` when the key is unknown,
+    revoked, or expired. A key issued without a ``user_id`` (a team-only
+    key) authenticates no user, so the resolver returns ``None`` for it:
+    a request carrying such a key is rejected like any other unknown
+    credential rather than being bound to an arbitrary principal.
+    """
+    if resolve_principal is not None:
+        _api_key_hooks["resolve_principal"] = resolve_principal
 
 
 def reset_session_hooks() -> None:
