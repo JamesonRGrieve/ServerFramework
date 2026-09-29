@@ -5,7 +5,7 @@ Ported from the pre-zephyrex AGInfrastructure MSSQL provider into the current
 static ``AbstractDatabaseExtensionProvider`` format.
 """
 
-from typing import Any, Dict, List
+from typing import Any, ClassVar, Dict, List
 
 from zephyrex.extensions.database.EXT_Database import (
     AbstractDatabaseExtensionProvider as AbstractDatabaseProvider,
@@ -25,12 +25,12 @@ except ImportError:  # pragma: no cover - optional driver
 class PRV_MSSQL(AbstractDatabaseProvider):
     """Microsoft SQL Server database provider (static, rotation-compatible)."""
 
-    name: str = "MSSQL"
-    friendly_name: str = "Microsoft SQL Server"
-    description: str = "Microsoft SQL Server relational database provider"
-    db_type: str = "mssql"
+    name: ClassVar[str] = "MSSQL"
+    friendly_name: ClassVar[str] = "Microsoft SQL Server"
+    description: ClassVar[str] = "Microsoft SQL Server relational database provider"
+    db_type: ClassVar[str] = "mssql"
 
-    _env: Dict[str, Any] = {
+    _env: ClassVar[Dict[str, Any]] = {
         "DATABASE_HOST": "",
         "DATABASE_PORT": "1433",
         "DATABASE_NAME": "",

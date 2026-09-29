@@ -303,10 +303,10 @@ class EXT_Payment(AbstractStaticExtension):
         )
     """
 
-    name: str = "payment"
-    friendly_name: str = "Payment Processing"
-    version: str = "1.0.0"
-    description: str = (
+    name: ClassVar[str] = "payment"
+    friendly_name: ClassVar[str] = "Payment Processing"
+    version: ClassVar[str] = "1.0.0"
+    description: ClassVar[str] = (
         "Payment extension providing comprehensive payment processing abilities via Provider Rotation System"
     )
     types = {ExtensionType.DATABASE, ExtensionType.EXTERNAL}

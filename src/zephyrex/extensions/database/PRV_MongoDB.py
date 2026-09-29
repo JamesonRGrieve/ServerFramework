@@ -7,7 +7,7 @@ store, so ``execute_query`` accepts a JSON command envelope rather than SQL.
 """
 
 import json
-from typing import Any, Dict, List
+from typing import Any, ClassVar, Dict, List
 
 from zephyrex.extensions.database.EXT_Database import (
     AbstractDatabaseExtensionProvider as AbstractDatabaseProvider,
@@ -27,12 +27,12 @@ except ImportError:  # pragma: no cover - optional driver
 class PRV_MongoDB(AbstractDatabaseProvider):
     """MongoDB document database provider (static, rotation-compatible)."""
 
-    name: str = "MongoDB"
-    friendly_name: str = "MongoDB Database"
-    description: str = "MongoDB document (NoSQL) database provider"
-    db_type: str = "mongodb"
+    name: ClassVar[str] = "MongoDB"
+    friendly_name: ClassVar[str] = "MongoDB Database"
+    description: ClassVar[str] = "MongoDB document (NoSQL) database provider"
+    db_type: ClassVar[str] = "mongodb"
 
-    _env: Dict[str, Any] = {
+    _env: ClassVar[Dict[str, Any]] = {
         "DATABASE_HOST": "",
         "DATABASE_PORT": "27017",
         "DATABASE_NAME": "",

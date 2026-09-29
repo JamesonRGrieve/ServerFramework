@@ -5,7 +5,7 @@ Ported from the pre-zephyrex AGInfrastructure MySQL provider into the current
 static ``AbstractDatabaseExtensionProvider`` format.
 """
 
-from typing import Any, Dict, List
+from typing import Any, ClassVar, Dict, List
 
 from zephyrex.extensions.database.EXT_Database import (
     AbstractDatabaseExtensionProvider as AbstractDatabaseProvider,
@@ -25,14 +25,14 @@ except ImportError:  # pragma: no cover - optional driver
 class PRV_MySQL(AbstractDatabaseProvider):
     """MySQL database provider (static, rotation-compatible)."""
 
-    name: str = "MySQL"
-    friendly_name: str = "MySQL Database"
-    description: str = "MySQL relational database provider"
-    db_type: str = "mysql"
+    name: ClassVar[str] = "MySQL"
+    friendly_name: ClassVar[str] = "MySQL Database"
+    description: ClassVar[str] = "MySQL relational database provider"
+    db_type: ClassVar[str] = "mysql"
 
     _driver_available: bool = _mysql_available
 
-    _env: Dict[str, Any] = {
+    _env: ClassVar[Dict[str, Any]] = {
         "DATABASE_HOST": "",
         "DATABASE_PORT": "3306",
         "DATABASE_NAME": "",

@@ -12,7 +12,11 @@ the improved abstraction patterns similar to endpoint patterns.
 
 from typing import Any, Dict, List, Optional, cast
 
-from zephyrex.sdk.AbstractSDKHandler import AbstractSDKHandler, ResourceConfig
+from zephyrex.sdk.AbstractSDKHandler import (
+    AbstractSDKHandler,
+    ResourceConfig,
+    ResourceManager,
+)
 
 # ===== Extension SDK =====
 
@@ -22,6 +26,8 @@ class ExtensionSDK(AbstractSDKHandler):
 
     Uses configuration-driven resource management for standardized CRUD operations.
     """
+
+    extensions: ResourceManager
 
     def _configure_resources(self) -> Dict[str, ResourceConfig]:
         """Configure resources for extension management."""
@@ -122,6 +128,8 @@ class AbilitySDK(AbstractSDKHandler):
     Uses configuration-driven resource management for standardized CRUD operations.
     """
 
+    abilities: ResourceManager
+
     def _configure_resources(self) -> Dict[str, ResourceConfig]:
         """Configure resources for ability management."""
         return {
@@ -221,6 +229,9 @@ class ExtensionsSDK(AbstractSDKHandler):
     This SDK combines extension and ability management into a single interface
     using configuration-driven resource management.
     """
+
+    extensions: ResourceManager
+    abilities: ResourceManager
 
     def _configure_resources(self) -> Dict[str, ResourceConfig]:
         """Configure resources for extensions and abilities."""

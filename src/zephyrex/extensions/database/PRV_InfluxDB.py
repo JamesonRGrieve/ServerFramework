@@ -7,7 +7,7 @@ Supports both InfluxDB 1.x and 2.x APIs.
 
 import json
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, ClassVar, Dict, List, Optional
 
 from zephyrex.extensions.database.EXT_Database import (
     AbstractDatabaseExtensionProvider as AbstractDatabaseProvider,
@@ -44,15 +44,17 @@ class PRV_InfluxDB(AbstractDatabaseProvider):
     """
 
     # Provider metadata
-    name: str = "InfluxDB"
-    friendly_name: str = "InfluxDB Time Series Database"
-    description: str = "InfluxDB time-series database provider supporting 1.x and 2.x"
+    name: ClassVar[str] = "InfluxDB"
+    friendly_name: ClassVar[str] = "InfluxDB Time Series Database"
+    description: ClassVar[str] = (
+        "InfluxDB time-series database provider supporting 1.x and 2.x"
+    )
 
     # Database type for this provider
-    db_type: str = "influxdb"
+    db_type: ClassVar[str] = "influxdb"
 
     # Environment variables this provider needs
-    _env: Dict[str, Any] = {
+    _env: ClassVar[Dict[str, Any]] = {
         "INFLUXDB_URL": "",
         "INFLUXDB_TOKEN": "",
         "INFLUXDB_ORG": "",

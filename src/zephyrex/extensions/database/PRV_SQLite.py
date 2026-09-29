@@ -6,7 +6,7 @@ Fully static implementation compatible with the Provider Rotation System.
 
 import os
 import sqlite3
-from typing import Any, Dict, List
+from typing import Any, ClassVar, Dict, List
 
 from zephyrex.extensions.database.EXT_Database import (
     AbstractDatabaseExtensionProvider as AbstractDatabaseProvider,
@@ -22,15 +22,15 @@ class PRV_SQLite(AbstractDatabaseProvider):
     """
 
     # Provider metadata
-    name: str = "SQLite"
-    friendly_name: str = "SQLite Database"
-    description: str = "SQLite embedded database provider"
+    name: ClassVar[str] = "SQLite"
+    friendly_name: ClassVar[str] = "SQLite Database"
+    description: ClassVar[str] = "SQLite embedded database provider"
 
     # Database type for this provider
-    db_type: str = "sqlite"
+    db_type: ClassVar[str] = "sqlite"
 
     # Environment variables this provider needs
-    _env: Dict[str, Any] = {
+    _env: ClassVar[Dict[str, Any]] = {
         "DATABASE_FILE": "",
         "DATABASE_TYPE": "sqlite",
     }

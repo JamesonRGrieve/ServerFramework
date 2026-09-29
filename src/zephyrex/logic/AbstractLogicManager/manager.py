@@ -9,8 +9,10 @@ from typing import (
     Generic,
     List,
     Optional,
+    Protocol,
     Sequence,
     Set,
+    Type,
     TypeVar,
     Union,
     get_args,
@@ -37,6 +39,30 @@ from zephyrex.logic.AbstractLogicManager.models import FieldComparison
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
 T = TypeVar("T")
+
+
+class Requester(Protocol):
+    """The authenticated user a manager acts for.
+
+    At runtime this is either the ORM ``User`` row or a ``CachedRequester``.
+    """
+
+    @property
+    def id(self) -> str: ...
+
+    @property
+    def email(self) -> Optional[str]: ...
+
+
+class CachedRequester(BaseModel):
+    """A requester rebuilt from the entity cache. Every cached user field is
+    kept (``extra="allow"``); ``id`` is required so a malformed cache entry
+    fails validation and falls through to the database lookup."""
+
+    model_config = {"extra": "allow"}
+
+    id: str
+    email: Optional[str] = None
 
 
 def _escape_like(v: object) -> str:
@@ -149,7 +175,8 @@ def _fire_and_forget(coro) -> None:
 
 
 class AbstractBLLManager(ABC, Generic[ModelT]):
-    _model = None
+    _model: ClassVar[Optional[Type[BaseModel]]] = None
+    _requester: Optional[Requester] = None
 
     # Human-readable label for 404 messages (defaults to class name if None)
     _entity_label: ClassVar[Optional[str]] = None
@@ -182,6 +209,26 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
     @classproperty
     def BaseModel(cls):
         return cls.Model
+
+    @property
+    def requester(self) -> Requester:
+        """The authenticated requester. Raises ``AttributeError`` when the
+        manager was built without one (minimal-registry or external managers),
+        so ``getattr(manager, "requester", None)`` still reads as absent."""
+        if self._requester is None:
+            raise AttributeError(
+                f"{type(self).__name__} has no authenticated requester"
+            )
+        return self._requester
+
+    @requester.setter
+    def requester(self, value: Optional[Requester]) -> None:
+        self._requester = value
+
+    @property
+    def optional_requester(self) -> Optional[Requester]:
+        """The requester, or ``None`` for managers built without one."""
+        return self._requester
 
     # Instance object-level database entity, will automatically have the instance's model_registry and DB context applied before return.
     @property
@@ -246,7 +293,7 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
         self._target: Optional[Any] = None
         self._target_loaded = False
         self._parent = parent
-        self.requester = None
+        self._requester = None
 
         minimal_registry = not model_registry or not hasattr(
             model_registry, "is_committed"
@@ -271,7 +318,7 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
             try:
                 cached_user = _cache_sync_run(cache.get_by_id("user", requester_id))
                 if cached_user is not None:
-                    self.requester = UserModel.model_validate(cached_user)
+                    self.requester = CachedRequester.model_validate(cached_user)
                     self._register_search_transformers()
                     return
             except Exception:
@@ -282,7 +329,7 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
 
         session = self.model_registry.DB.session()
         try:
-            self.requester = session.query(User).filter(User.id == requester_id).first()
+            requester_row = session.query(User).filter(User.id == requester_id).first()
         finally:
             try:
                 session.close()
@@ -292,18 +339,19 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
                     self.__class__.__name__,
                     exc,
                 )
-        if self.requester is None:
+        if requester_row is None:
             raise HTTPException(
                 status_code=404,
                 detail=f"Requesting user with id {requester_id} not found.",
             )
+        self.requester = requester_row
 
         if cache is not None:
             try:
                 dto_dict = (
-                    self.requester.model_dump(mode="json")
-                    if hasattr(self.requester, "model_dump")
-                    else obj_to_dict(self.requester)
+                    requester_row.model_dump(mode="json")
+                    if hasattr(requester_row, "model_dump")
+                    else obj_to_dict(requester_row)
                 )
                 _cache_sync_run(
                     cache.put(
@@ -459,7 +507,7 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
         Returns:
             The target_id if set, otherwise the requester's ID
         """
-        return self.target_id if self.target_id else self.requester.id  # type: ignore[union-attr]
+        return self.target_id if self.target_id else self.requester.id
 
     def _register_search_transformers(self):
         """
@@ -1281,16 +1329,13 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
         """
         if not self._CALLER_OWNED_FIELDS:
             return
-        try:
-            from zephyrex.database.StaticPermissions import (
-                is_root_id,
-                is_system_id,
-            )
-        except ImportError:
-            is_root_id = lambda _id: False  # noqa: E731
-            is_system_id = lambda _id: False  # noqa: E731
-        requester_id = getattr(self.requester, "id", None)
-        if is_root_id(requester_id) or is_system_id(requester_id):
+        from zephyrex.database.StaticPermissions import is_root_id, is_system_id
+
+        requester = self.optional_requester
+        requester_id = requester.id if requester is not None else None
+        if requester_id is not None and (
+            is_root_id(requester_id) or is_system_id(requester_id)
+        ):
             return
         for field in self._CALLER_OWNED_FIELDS:
             supplied = kwargs.get(field)
@@ -1344,7 +1389,7 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
             create_args["user_id"] = self.target_id
 
         entity = self.DB.create(
-            requester_id=self.requester.id,  # type: ignore[union-attr]
+            requester_id=self.requester.id,
             model_registry=self.model_registry,
             return_type="dto",
             override_dto=self.model_registry.apply(self.Model),
@@ -1444,7 +1489,7 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
         db_kwargs = {k: v for k, v in kwargs.items() if k not in ["hook_processed"]}
 
         result = self.DB.get(
-            requester_id=self.requester.id,  # type: ignore[union-attr]
+            requester_id=self.requester.id,
             model_registry=self.model_registry,
             return_type="dto",
             override_dto=self.Model,
@@ -1499,7 +1544,7 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
         return cast(
             int,
             self.DB.count(
-                requester_id=self.requester.id,  # type: ignore[union-attr]
+                requester_id=self.requester.id,
                 model_registry=self.model_registry,
                 filters=filters,
                 **simple,
@@ -1594,7 +1639,7 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
         self.parent_validation(simple_kwargs)
 
         return self.DB.list(  # type: ignore[no-any-return]
-            requester_id=self.requester.id,  # type: ignore[union-attr]
+            requester_id=self.requester.id,
             model_registry=self.model_registry,
             return_type=return_type,
             override_dto=self.model_registry.apply(self.Model),
@@ -1684,7 +1729,7 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
         # Pass the converted SQLAlchemy constructs to the DBClass.list method
         # Use combined_filters for the 'filters' arg and simple_kwargs for '**kwargs'
         return self.DB.list(  # type: ignore[no-any-return]
-            requester_id=self.requester.id,  # type: ignore[union-attr]
+            requester_id=self.requester.id,
             model_registry=self.model_registry,
             return_type=return_type,  # Use the saved value instead of hardcoding "dto"
             options=options,
@@ -1794,7 +1839,7 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
                 )
 
         updated_entity = self.DB.update(
-            requester_id=self.requester.id,  # type: ignore[union-attr]
+            requester_id=self.requester.id,
             model_registry=self.model_registry,
             return_type="dto",
             override_dto=self.model_registry.apply(self.Model),
@@ -1892,7 +1937,7 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
                     pass
 
         self.DB.delete(
-            requester_id=self.requester.id,  # type: ignore[union-attr]
+            requester_id=self.requester.id,
             model_registry=self.model_registry,
             id=id,
         )

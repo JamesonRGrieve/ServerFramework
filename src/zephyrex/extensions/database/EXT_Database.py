@@ -17,22 +17,22 @@ class AbstractDatabaseExtensionProvider(AbstractStaticProvider):
     extension: ClassVar[Optional[Type[AbstractStaticExtension]]] = None
 
     # Provider metadata
-    name: str = ""  # Must be overridden by subclasses
-    friendly_name: str = ""  # Must be overridden by subclasses
-    description: str = ""  # Must be overridden by subclasses
+    name: ClassVar[str] = ""  # Must be overridden by subclasses
+    friendly_name: ClassVar[str] = ""  # Must be overridden by subclasses
+    description: ClassVar[str] = ""  # Must be overridden by subclasses
 
     # Database type for this provider
-    db_type: str = ""  # Must be overridden by subclasses
+    db_type: ClassVar[str] = ""  # Must be overridden by subclasses
 
     # Abilities provided by all database providers
-    _abilities: Set[str] = {
+    _abilities: ClassVar[Set[str]] = {
         "database",
         "sql",
         "data_storage",
     }
 
     # Environment variables this provider needs
-    _env: Dict[str, Any] = {}  # Override in subclasses
+    _env: ClassVar[Dict[str, Any]] = {}  # Override in subclasses
 
     @classmethod
     @abstractmethod
@@ -163,18 +163,18 @@ class EXT_Database(AbstractStaticExtension):
     """
 
     # Extension metadata (class attributes)
-    name: str = "database"
-    friendly_name: str = "Database Connectivity"
-    version: str = "1.0.0"
-    description: str = (
+    name: ClassVar[str] = "database"
+    friendly_name: ClassVar[str] = "Database Connectivity"
+    version: ClassVar[str] = "1.0.0"
+    description: ClassVar[str] = (
         "Database extension providing comprehensive database connectivity via Provider Rotation System"
     )
 
     # Provider discovery - cache for providers
-    _providers: List[Type] = []
+    _providers: ClassVar[List[Type]] = []
 
     # Environment variables exposed by the extension
-    _env: Dict[str, Any] = {
+    _env: ClassVar[Dict[str, Any]] = {
         "DATABASE_TYPE": "sqlite",
         "DATABASE_HOST": "",
         "DATABASE_PORT": "",
@@ -237,7 +237,7 @@ class EXT_Database(AbstractStaticExtension):
     )
 
     # Static abilities provided by the extension
-    _abilities: Set[str] = {
+    _abilities: ClassVar[Set[str]] = {
         "database_query",
         "database_schema",
         "database_chat",

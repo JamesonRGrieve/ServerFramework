@@ -131,7 +131,8 @@ class UserRecoveryQuestionManager(AbstractBLLManager, RouterMixin):
         return super().update(id, **kwargs)
 
     def verify_answer(self, question_id: str, answer: str) -> bool:
-        actor_key = str(self.requester.id) if self.requester is not None else "anon"
+        requester = self.optional_requester
+        actor_key = str(requester.id) if requester is not None else "anon"
         flow = "recovery_answer"
         if self._verify_lockout_tracker.is_locked(actor_key, flow):
             raise HTTPException(

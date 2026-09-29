@@ -26,6 +26,7 @@ from zephyrex.sdk.AbstractSDKHandler import (
     AbstractSDKHandler,
     AuthenticationError,
     ResourceConfig,
+    ResourceManager,
     SDKException,
 )
 
@@ -39,6 +40,8 @@ class UserSDK(AbstractSDKHandler):
 
     Uses configuration-driven resource management for standardized CRUD operations.
     """
+
+    users: ResourceManager
 
     def _configure_resources(self) -> Dict[str, ResourceConfig]:
         """Configure resources for user management."""
@@ -193,6 +196,8 @@ class TeamSDK(AbstractSDKHandler):
     Uses configuration-driven resource management for standardized CRUD operations.
     """
 
+    teams: ResourceManager
+
     def _configure_resources(self) -> Dict[str, ResourceConfig]:
         """Configure resources for team management."""
         return {
@@ -325,6 +330,8 @@ class RoleSDK(AbstractSDKHandler):
     Uses configuration-driven resource management for standardized CRUD operations.
     """
 
+    roles: ResourceManager
+
     def _configure_resources(self) -> Dict[str, ResourceConfig]:
         """Configure resources for role management."""
         return {
@@ -434,6 +441,8 @@ class UserTeamSDK(AbstractSDKHandler):
     Uses configuration-driven resource management for standardized CRUD operations.
     """
 
+    user_teams: ResourceManager
+
     def _configure_resources(self) -> Dict[str, ResourceConfig]:
         """Configure resources for user-team management."""
         return {
@@ -488,6 +497,8 @@ class InvitationSDK(AbstractSDKHandler):
 
     Uses configuration-driven resource management for standardized CRUD operations.
     """
+
+    invitations: ResourceManager
 
     def _configure_resources(self) -> Dict[str, ResourceConfig]:
         """Configure resources for invitation management."""
@@ -593,6 +604,8 @@ class SessionSDK(AbstractSDKHandler):
     Uses configuration-driven resource management for standardized CRUD operations.
     """
 
+    sessions: ResourceManager
+
     def _configure_resources(self) -> Dict[str, ResourceConfig]:
         """Configure resources for session management."""
         return {
@@ -657,6 +670,8 @@ class NotificationSDK(AbstractSDKHandler):
     Uses configuration-driven resource management for standardized CRUD operations.
     """
 
+    notifications: ResourceManager
+
     def _configure_resources(self) -> Dict[str, ResourceConfig]:
         """Configure resources for notification management."""
         return {
@@ -706,6 +721,8 @@ class ApiKeySDK(AbstractSDKHandler):
 
     Uses configuration-driven resource management for standardized CRUD operations.
     """
+
+    api_keys: ResourceManager
 
     def _configure_resources(self) -> Dict[str, ResourceConfig]:
         """Configure resources for API key management."""
@@ -766,6 +783,8 @@ class UserMetadataSDK(AbstractSDKHandler):
 
     Uses configuration-driven resource management for standardized CRUD operations.
     """
+
+    user_metadata: ResourceManager
 
     def _configure_resources(self) -> Dict[str, ResourceConfig]:
         """Configure resources for user metadata management."""
@@ -831,6 +850,8 @@ class TeamMetadataSDK(AbstractSDKHandler):
     Uses configuration-driven resource management for standardized CRUD operations.
     """
 
+    team_metadata: ResourceManager
+
     def _configure_resources(self) -> Dict[str, ResourceConfig]:
         """Configure resources for team metadata management."""
         return {
@@ -894,6 +915,8 @@ class UserCredentialSDK(AbstractSDKHandler):
 
     Uses configuration-driven resource management for standardized CRUD operations.
     """
+
+    user_credentials: ResourceManager
 
     def _configure_resources(self) -> Dict[str, ResourceConfig]:
         """Configure resources for user credential management."""
@@ -961,6 +984,8 @@ class RecoveryQuestionSDK(AbstractSDKHandler):
     Uses configuration-driven resource management for standardized CRUD operations.
     """
 
+    recovery_questions: ResourceManager
+
     def _configure_resources(self) -> Dict[str, ResourceConfig]:
         """Configure resources for recovery question management."""
         return {
@@ -1027,6 +1052,8 @@ class FailedLoginSDK(AbstractSDKHandler):
     Uses configuration-driven resource management for standardized CRUD operations.
     """
 
+    failed_logins: ResourceManager
+
     def _configure_resources(self) -> Dict[str, ResourceConfig]:
         """Configure resources for failed login management."""
         return {
@@ -1087,6 +1114,8 @@ class PermissionSDK(AbstractSDKHandler):
 
     Uses configuration-driven resource management for standardized CRUD operations.
     """
+
+    permissions: ResourceManager
 
     def _configure_resources(self) -> Dict[str, ResourceConfig]:
         """Configure resources for permission management."""
@@ -1162,6 +1191,21 @@ class AuthSDK(AbstractSDKHandler):
     This SDK combines all authentication functionality into a single interface
     using configuration-driven resource management.
     """
+
+    users: ResourceManager
+    teams: ResourceManager
+    roles: ResourceManager
+    user_teams: ResourceManager
+    invitations: ResourceManager
+    sessions: ResourceManager
+    notifications: ResourceManager
+    api_keys: ResourceManager
+    user_metadata: ResourceManager
+    team_metadata: ResourceManager
+    user_credentials: ResourceManager
+    recovery_questions: ResourceManager
+    failed_logins: ResourceManager
+    permissions: ResourceManager
 
     def _configure_resources(self) -> Dict[str, ResourceConfig]:
         """Configure all authentication-related resources."""

@@ -14,7 +14,7 @@ pillar holds.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, ClassVar, Dict, List
 
 from zephyrex.extensions.database.EXT_Database import (
     AbstractDatabaseExtensionProvider,
@@ -35,7 +35,7 @@ class PRV_Fake_Database(AbstractDatabaseExtensionProvider):
     description = "Deterministic in-memory provider used by offline-CI tests."
     db_type = "sqlite"  # Use sqlite for relational classification
 
-    _env: Dict[str, Any] = {}
+    _env: ClassVar[Dict[str, Any]] = {}
     _abilities = {
         "database",
         "sql",

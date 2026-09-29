@@ -1362,10 +1362,11 @@ class RotationManager(AbstractBLLManager, RouterMixin):
 
     def _tenant_id(self) -> str:
         """Item 84 — best-effort tenant identifier for cost metric labels."""
-        team_id = getattr(self.requester, "team_id", None)
+        requester = self.optional_requester
+        team_id = getattr(requester, "team_id", None)
         if team_id:
             return str(team_id)
-        user_id = getattr(self.requester, "id", None)
+        user_id = requester.id if requester is not None else None
         if user_id:
             return str(user_id)
         return "unknown"
@@ -1505,9 +1506,13 @@ class RotationManager(AbstractBLLManager, RouterMixin):
 
             rotation_provider_instances = filter_chain_by_jurisdiction(
                 rotation_provider_instances,
-                self.requester,
+                self.optional_requester,
                 ability=str(ability or "unknown"),
-                requester_id=getattr(self.requester, "id", None),
+                requester_id=(
+                    self.optional_requester.id
+                    if self.optional_requester is not None
+                    else None
+                ),
             )
         except HTTPException:
             raise

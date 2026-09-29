@@ -6,7 +6,7 @@ current static ``AbstractDatabaseExtensionProvider`` format. Supports standard
 relational access plus optional pgvector similarity search.
 """
 
-from typing import Any, Dict, List
+from typing import Any, ClassVar, Dict, List
 
 from zephyrex.extensions.database.EXT_Database import (
     AbstractDatabaseExtensionProvider as AbstractDatabaseProvider,
@@ -27,14 +27,14 @@ except ImportError:  # pragma: no cover - optional driver
 class PRV_Postgres(AbstractDatabaseProvider):
     """PostgreSQL database provider (static, rotation-compatible)."""
 
-    name: str = "PostgreSQL"
-    friendly_name: str = "PostgreSQL Database"
-    description: str = (
+    name: ClassVar[str] = "PostgreSQL"
+    friendly_name: ClassVar[str] = "PostgreSQL Database"
+    description: ClassVar[str] = (
         "PostgreSQL relational database provider with optional pgvector support"
     )
-    db_type: str = "postgresql"
+    db_type: ClassVar[str] = "postgresql"
 
-    _env: Dict[str, Any] = {
+    _env: ClassVar[Dict[str, Any]] = {
         "DATABASE_HOST": "",
         "DATABASE_PORT": "5432",
         "DATABASE_NAME": "",

@@ -11,7 +11,7 @@ classification) participates in every call exactly as in production.
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Dict, List, Optional
+from typing import Any, ClassVar, Dict, List, Optional
 
 import httpx
 import pytest
@@ -20,7 +20,10 @@ import pytest
 # against module globals when FastAPI calls ``get_type_hints``.
 from fastapi import FastAPI, Request
 
-from zephyrex.extensions.AbstractGraphQLProvider import AbstractGraphQLProvider
+from zephyrex.extensions.AbstractGraphQLProvider import (
+    AbstractGraphQLProvider,
+    FederationStyle,
+)
 from zephyrex.extensions.AuthStrategy import APIKeyAuth
 from zephyrex.extensions.federation.BLL_Federation_GQL import (
     APOLLO_DIRECTIVES_PREAMBLE,
@@ -137,10 +140,10 @@ class _Stub_GraphQLProvider(AbstractGraphQLProvider):
     name = "stub_gql"
     description = "in-process upstream for tests"
 
-    upstream_url: str = "http://upstream/graphql"
-    federation_style: str = "stitching"
-    type_namespace: Optional[str] = "Stub_"
-    auth_strategy_name: str = "api_key"
+    upstream_url: ClassVar[str] = "http://upstream/graphql"
+    federation_style: ClassVar[FederationStyle] = "stitching"
+    type_namespace: ClassVar[Optional[str]] = "Stub_"
+    auth_strategy_name: ClassVar[str] = "api_key"
 
     @classmethod
     def bond_instance(cls, instance):  # pragma: no cover - exercised via tests
@@ -155,9 +158,9 @@ class _StubApolloProvider(AbstractGraphQLProvider):
     name = "stub_apollo"
     description = "Apollo v2 upstream"
 
-    upstream_url: str = "http://upstream/graphql"
-    federation_style: str = "apollo_v2"
-    type_namespace: Optional[str] = None
+    upstream_url: ClassVar[str] = "http://upstream/graphql"
+    federation_style: ClassVar[FederationStyle] = "apollo_v2"
+    type_namespace: ClassVar[Optional[str]] = None
 
     @classmethod
     def bond_instance(cls, instance):  # pragma: no cover

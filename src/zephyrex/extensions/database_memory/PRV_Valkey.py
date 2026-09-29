@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Awaitable, Callable, Dict, List
+from typing import Any, Awaitable, Callable, ClassVar, Dict, List
 
 from zephyrex.extensions.database_memory.EXT_DatabaseMemory import (
     AbstractDatabaseMemoryProvider,
@@ -46,9 +46,9 @@ class PRV_Valkey(AbstractDatabaseMemoryProvider):
     pool. ``close()`` on the bonded instance disposes the pool.
     """
 
-    name: str = "Valkey"
-    friendly_name: str = "Valkey (Redis-protocol)"
-    description: str = (
+    name: ClassVar[str] = "Valkey"
+    friendly_name: ClassVar[str] = "Valkey (Redis-protocol)"
+    description: ClassVar[str] = (
         "Valkey/Redis-protocol provider via redis-py asyncio client. "
         "Drop-in compatible with Valkey, Redis OSS (≤7.2), Redis Inc.'s "
         "commercial distribution, KeyDB, and DragonflyDB."

@@ -58,18 +58,18 @@ class AbstractDatabaseMemoryProvider(AbstractStaticProvider):
 
     extension: ClassVar[Optional[Type[AbstractStaticExtension]]] = None
 
-    name: str = ""
-    friendly_name: str = ""
-    description: str = ""
+    name: ClassVar[str] = ""
+    friendly_name: ClassVar[str] = ""
+    description: ClassVar[str] = ""
 
-    _abilities: Set[str] = {
+    _abilities: ClassVar[Set[str]] = {
         "key_value",
         "streams",
         "pubsub",
         "counter",
     }
 
-    _env: Dict[str, Any] = {
+    _env: ClassVar[Dict[str, Any]] = {
         "DATABASE_MEMORY_URL": "redis://localhost:6379/0",
         "DATABASE_MEMORY_USERNAME": "",
         "DATABASE_MEMORY_PASSWORD": "",
@@ -120,10 +120,10 @@ class EXT_DatabaseMemory(AbstractStaticExtension):
     Memcached, KeyDB, DragonflyDB, Garnet) live underneath as siblings.
     """
 
-    name: str = "database_memory"
-    friendly_name: str = "Database (In-Memory)"
-    version: str = "1.0.0"
-    description: str = (
+    name: ClassVar[str] = "database_memory"
+    friendly_name: ClassVar[str] = "Database (In-Memory)"
+    version: ClassVar[str] = "1.0.0"
+    description: ClassVar[str] = (
         "DatabaseMemory extension — in-memory data store family. Owns "
         "connection management for the framework's key-value, streams, "
         "pubsub, and counter abilities; consumed by the EventBus, the "
@@ -133,16 +133,16 @@ class EXT_DatabaseMemory(AbstractStaticExtension):
         "PRV_KeyDB, PRV_Garnet as future additions)."
     )
 
-    _providers: List[Type] = []
+    _providers: ClassVar[List[Type]] = []
 
-    _env: Dict[str, Any] = {
+    _env: ClassVar[Dict[str, Any]] = {
         "DATABASE_MEMORY_URL": "redis://localhost:6379/0",
         "DATABASE_MEMORY_USERNAME": "",
         "DATABASE_MEMORY_PASSWORD": "",
         "DATABASE_MEMORY_TLS": "false",
     }
 
-    _abilities: Set[str] = {
+    _abilities: ClassVar[Set[str]] = {
         "key_value",
         "streams",
         "pubsub",

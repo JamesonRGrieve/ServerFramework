@@ -428,7 +428,8 @@ class DevicePairingManager(AbstractBLLManager, RouterMixin):
     )
     @rate_limit(DEFAULT_AUTH_RATE_LIMIT, scope="ip")
     def approve_route(self, body: PairingApprove) -> PairingApproveResponse:
-        approver_id = self.requester.id if self.requester is not None else ""
+        requester = self.optional_requester
+        approver_id = requester.id if requester is not None else ""
         return self.approve_pairing(token=body.token, approver_user_id=approver_id)
 
     @custom_route(
@@ -442,7 +443,8 @@ class DevicePairingManager(AbstractBLLManager, RouterMixin):
     )
     @rate_limit(DEFAULT_AUTH_RATE_LIMIT, scope="ip")
     def deny_route(self, body: PairingDeny) -> PairingActionResponse:
-        approver_id = self.requester.id if self.requester is not None else ""
+        requester = self.optional_requester
+        approver_id = requester.id if requester is not None else ""
         return self.deny_pairing(token=body.token, approver_user_id=approver_id)
 
     @custom_route(

@@ -7,7 +7,7 @@ endpoint; ``execute_query`` runs a GraphQL document.
 """
 
 import base64
-from typing import Any, Dict, List
+from typing import Any, ClassVar, Dict, List
 
 from zephyrex.extensions.database.EXT_Database import (
     AbstractDatabaseExtensionProvider as AbstractDatabaseProvider,
@@ -31,12 +31,12 @@ except ImportError:  # pragma: no cover - optional driver
 class PRV_GraphQL(AbstractDatabaseProvider):
     """GraphQL endpoint provider (static, rotation-compatible)."""
 
-    name: str = "GraphQL"
-    friendly_name: str = "GraphQL Endpoint"
-    description: str = "GraphQL HTTP endpoint database provider"
-    db_type: str = "graphql"
+    name: ClassVar[str] = "GraphQL"
+    friendly_name: ClassVar[str] = "GraphQL Endpoint"
+    description: ClassVar[str] = "GraphQL HTTP endpoint database provider"
+    db_type: ClassVar[str] = "graphql"
 
-    _env: Dict[str, Any] = {
+    _env: ClassVar[Dict[str, Any]] = {
         "DATABASE_HOST": "localhost",
         "DATABASE_PORT": "4000",
         "DATABASE_USERNAME": "",

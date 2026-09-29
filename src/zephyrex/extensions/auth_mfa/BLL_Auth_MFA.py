@@ -123,9 +123,10 @@ def mfa_rate_limiting_hook(context: HookContext) -> None:
     if method_name not in ("verify_mfa_code", "verify_recovery_code"):
         return
     manager = context.manager
-    if manager.requester is None or manager.requester.id is None:
+    requester = manager.optional_requester
+    if requester is None or requester.id is None:
         return
-    actor_key = str(manager.requester.id)
+    actor_key = str(requester.id)
     flow = "mfa_verify"
     if _MFA_VERIFY_LOCKOUT.is_locked(actor_key, flow):
         logger.warning(f"Rate limit exceeded for MFA verification by user {actor_key}")
@@ -566,9 +567,8 @@ class MultifactorMethodManager(AbstractBLLManager, RouterMixin):
     def verify_mfa_code(self, method_id: str, code: str) -> bool:
         """Verify MFA code for any method type"""
         method = self.get(id=method_id)
-        actor_key = (
-            str(self.requester.id) if self.requester and self.requester.id else None
-        )
+        requester = self.optional_requester
+        actor_key = str(requester.id) if requester and requester.id else None
 
         if not method or not method.is_enabled:
             if actor_key:
@@ -713,9 +713,8 @@ class MultifactorRecoveryCodeManager(AbstractBLLManager):
 
     def verify_recovery_code(self, multifactor_method_id: str, code: str) -> bool:
         """Verify and mark a recovery code as used"""
-        actor_key = (
-            str(self.requester.id) if self.requester and self.requester.id else None
-        )
+        requester = self.optional_requester
+        actor_key = str(requester.id) if requester and requester.id else None
         # Get all unused recovery codes for this MFA method
         recovery_codes = self.list(
             multifactor_method_id=multifactor_method_id,

@@ -21,7 +21,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import defaultdict
-from typing import Any, Awaitable, Callable, Dict, List
+from typing import Any, Awaitable, Callable, ClassVar, Dict, List
 
 from zephyrex.extensions.database_memory.EXT_DatabaseMemory import (
     AbstractDatabaseMemoryProvider,
@@ -41,9 +41,9 @@ class PRV_Fake_DatabaseMemory(AbstractDatabaseMemoryProvider):
     fake when they need real semantics.
     """
 
-    name: str = "FakeDatabaseMemory"
-    friendly_name: str = "In-process Fake (DatabaseMemory)"
-    description: str = (
+    name: ClassVar[str] = "FakeDatabaseMemory"
+    friendly_name: ClassVar[str] = "In-process Fake (DatabaseMemory)"
+    description: ClassVar[str] = (
         "In-process fake; emits real publish/subscribe semantics for tests "
         "without standing up an in-memory store. Do not use in production."
     )

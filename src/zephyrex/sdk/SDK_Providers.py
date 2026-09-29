@@ -18,7 +18,11 @@ the improved abstraction patterns similar to endpoint patterns.
 
 from typing import Any, Dict, List, Optional, cast
 
-from zephyrex.sdk.AbstractSDKHandler import AbstractSDKHandler, ResourceConfig
+from zephyrex.sdk.AbstractSDKHandler import (
+    AbstractSDKHandler,
+    ResourceConfig,
+    ResourceManager,
+)
 
 # ===== Provider SDK =====
 
@@ -28,6 +32,8 @@ class ProviderSDK(AbstractSDKHandler):
 
     Uses configuration-driven resource management for standardized CRUD operations.
     """
+
+    providers: ResourceManager
 
     def _configure_resources(self) -> Dict[str, ResourceConfig]:
         """Configure resources for provider management."""
@@ -193,6 +199,8 @@ class ProviderInstanceSDK(AbstractSDKHandler):
 
     Uses configuration-driven resource management for standardized CRUD operations.
     """
+
+    provider_instances: ResourceManager
 
     def _configure_resources(self) -> Dict[str, ResourceConfig]:
         """Configure resources for provider instance management."""
@@ -390,6 +398,8 @@ class ProviderInstanceSettingSDK(AbstractSDKHandler):
     Uses configuration-driven resource management for standardized CRUD operations.
     """
 
+    provider_instance_settings: ResourceManager
+
     def _configure_resources(self) -> Dict[str, ResourceConfig]:
         """Configure resources for provider instance setting management."""
         return {
@@ -476,6 +486,8 @@ class ProviderExtensionSDK(AbstractSDKHandler):
 
     Uses configuration-driven resource management for standardized CRUD operations.
     """
+
+    provider_extensions: ResourceManager
 
     def _configure_resources(self) -> Dict[str, ResourceConfig]:
         """Configure resources for provider extension management."""
@@ -568,6 +580,8 @@ class ProviderExtensionAbilitySDK(AbstractSDKHandler):
     Uses configuration-driven resource management for standardized CRUD operations.
     """
 
+    provider_extension_abilities: ResourceManager
+
     def _configure_resources(self) -> Dict[str, ResourceConfig]:
         """Configure resources for provider extension ability management."""
         return {
@@ -645,6 +659,8 @@ class RotationSDK(AbstractSDKHandler):
 
     Uses configuration-driven resource management for standardized CRUD operations.
     """
+
+    rotations: ResourceManager
 
     def _configure_resources(self) -> Dict[str, ResourceConfig]:
         """Configure resources for rotation management."""
@@ -746,6 +762,8 @@ class RotationProviderInstanceSDK(AbstractSDKHandler):
     Uses configuration-driven resource management for standardized CRUD operations.
     """
 
+    rotation_provider_instances: ResourceManager
+
     def _configure_resources(self) -> Dict[str, ResourceConfig]:
         """Configure resources for rotation provider instance management."""
         return {
@@ -839,6 +857,8 @@ class ProviderInstanceUsageSDK(AbstractSDKHandler):
 
     Uses configuration-driven resource management for standardized CRUD operations.
     """
+
+    provider_instance_usage: ResourceManager
 
     def _configure_resources(self) -> Dict[str, ResourceConfig]:
         """Configure resources for provider instance usage management."""
@@ -937,6 +957,8 @@ class ExtensionInstanceAbilitySDK(AbstractSDKHandler):
 
     Uses configuration-driven resource management for standardized CRUD operations.
     """
+
+    extension_instance_abilities: ResourceManager
 
     def _configure_resources(self) -> Dict[str, ResourceConfig]:
         """Configure resources for extension instance ability management."""
@@ -1045,6 +1067,16 @@ class ProvidersSDK(AbstractSDKHandler):
     This SDK combines all provider functionality into a single interface
     using configuration-driven resource management.
     """
+
+    providers: ResourceManager
+    provider_instances: ResourceManager
+    provider_instance_settings: ResourceManager
+    provider_extensions: ResourceManager
+    provider_extension_abilities: ResourceManager
+    rotations: ResourceManager
+    rotation_provider_instances: ResourceManager
+    provider_instance_usage: ResourceManager
+    extension_instance_abilities: ResourceManager
 
     def _configure_resources(self) -> Dict[str, ResourceConfig]:
         """Configure all provider-related resources."""

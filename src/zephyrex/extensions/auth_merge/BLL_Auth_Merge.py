@@ -502,7 +502,8 @@ class UserMergeManager(AbstractBLLManager, RouterMixin):
         being merged into ``initiating_user_id``. The returned token is
         single-use and short-lived (10 minutes); the initiating user
         submits it on POST /merge to prove consent (C-1)."""
-        if self.requester is None or self.requester.id is None:
+        requester = self.optional_requester
+        if requester is None or requester.id is None:
             raise HTTPException(status_code=401, detail="Authentication required")
         if self.requester.id == body.initiating_user_id:
             raise HTTPException(
