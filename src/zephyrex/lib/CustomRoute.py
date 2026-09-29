@@ -33,6 +33,7 @@ from typing import (
     Type,
 )
 
+from fastapi import HTTPException, Request
 from pydantic import BaseModel
 
 
@@ -149,10 +150,11 @@ def register_custom_routes(
     instance. When omitted, methods are called as classmethods/staticmethods
     or against a freshly-instantiated manager (best-effort).
     """
-    import inspect
-
-    from fastapi import HTTPException, Request
-
+    # ``Request`` must be importable from this module's globals: under
+    # ``from __future__ import annotations`` FastAPI resolves the endpoint's
+    # ``request: Request`` annotation string there, and a function-local import
+    # left it an unresolved ForwardRef, which broke OpenAPI generation (and so
+    # MCP mounting) for every app registering a custom route.
     registered = 0
     for method_name, spec in iter_custom_routes(manager_cls):
         if ExposeIn.REST not in spec.expose_in and ExposeIn.ALL not in spec.expose_in:

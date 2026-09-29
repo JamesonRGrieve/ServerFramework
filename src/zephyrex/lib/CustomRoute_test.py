@@ -18,6 +18,7 @@ from zephyrex.lib.CustomRoute import (
     get_custom_route_spec,
     has_existing_scaffold,
     iter_custom_routes,
+    register_custom_routes,
     register_custom_routes_to_graphql,
     reset_graphql_registrations,
     write_test_scaffold,
@@ -797,3 +798,28 @@ def test_generate_test_scaffold_no_header_omits_imports():
     text = generate_test_scaffold(_ScaffoldManager, include_header=False)
     assert "from fastapi.testclient" not in text
     assert "def test_promote_" in text
+
+
+def test_registered_route_openapi_builds_and_treats_request_as_the_request():
+    """The generated endpoint's ``request: Request`` annotation is a string
+    under postponed annotations; FastAPI must resolve it to the Request object,
+    not document it as a body/query field (which made OpenAPI generation, and
+    so MCP mounting, fail for every app with a custom route)."""
+    from fastapi import APIRouter, FastAPI
+
+    class ManagerWithPathParams:
+        @custom_route(
+            method="GET", path="/items/{item_id}/status", output_model=FetchOut
+        )
+        def status(self, item_id):
+            return FetchOut(items=[item_id])
+
+    router = APIRouter()
+    assert register_custom_routes(router, ManagerWithPathParams) == 1
+    app = FastAPI()
+    app.include_router(router)
+
+    operation = app.openapi()["paths"]["/items/{item_id}/status"]["get"]
+    documented = [p["name"] for p in operation.get("parameters", [])]
+    assert "request" not in documented
+    assert "requestBody" not in operation
