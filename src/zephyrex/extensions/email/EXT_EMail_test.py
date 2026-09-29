@@ -55,9 +55,9 @@ class ConcreteEmailProvider(AbstractEmailProvider):
     extension = EXT_EMail
 
     @classmethod
-    def bond_instance(cls, config: Dict[str, any]) -> None:  # type: ignore[valid-type]
-        """Configure the test provider"""
-        cls._config = config
+    def bond_instance(cls, instance: ProviderInstanceModel) -> None:
+        """The test provider has no SDK to bond."""
+        return None
 
     @classmethod
     def services(cls) -> List[str]:
@@ -575,3 +575,49 @@ class TestAbstractEmailProvider:
         """Test provider extension linkage"""
         assert ConcreteEmailProvider.extension == EXT_EMail
         assert ConcreteEmailProvider.extension_type == "email"
+
+
+class _FailingEmailProvider(ConcreteEmailProvider):
+    """Reports a send failure the way legacy providers do: as a string."""
+
+    failure: str = ""
+
+    @classmethod
+    async def send_email(cls, provider_instance, recipient, subject, body, **kwargs):
+        return cls.failure
+
+
+def _message():
+    from zephyrex.extensions.email.EXT_EMail import EmailAddress, EmailMessage
+
+    return EmailMessage(
+        to=[EmailAddress(address="to@example.com")], subject="hi", body_text="ok"
+    )
+
+
+class TestSendViaProviderFailureClass:
+    """``send_via_provider`` validates first, so a later failure string is the
+    provider's, never the caller's input: the rotation must move on."""
+
+    @pytest.mark.asyncio
+    async def test_failure_without_status_is_transient(self, monkeypatch):
+        from zephyrex.extensions.ExternalErrors import TransientExternalError
+
+        monkeypatch.setattr(
+            _FailingEmailProvider, "failure", "Failed to bond SendGrid instance"
+        )
+
+        with pytest.raises(TransientExternalError) as raised:
+            await _FailingEmailProvider.send_via_provider(None, _message())
+        assert raised.value.provider == _FailingEmailProvider.name
+
+    @pytest.mark.asyncio
+    async def test_failure_with_status_maps_by_status(self, monkeypatch):
+        from zephyrex.extensions.ExternalErrors import AuthExternalError
+
+        monkeypatch.setattr(
+            _FailingEmailProvider, "failure", "Failed to send email: 401 bad key"
+        )
+
+        with pytest.raises(AuthExternalError):
+            await _FailingEmailProvider.send_via_provider(None, _message())

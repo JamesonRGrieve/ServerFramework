@@ -22,6 +22,7 @@ from abc import abstractmethod
 from datetime import datetime
 from email.utils import parseaddr
 from enum import Enum
+from urllib.parse import urlencode
 from typing import (
     Any,
     ClassVar,
@@ -34,6 +35,7 @@ from typing import (
     Type,
 )
 
+from fastapi import HTTPException
 from pydantic import BaseModel, EmailStr, Field
 
 from zephyrex.extensions.AbstractExtensionProvider import (
@@ -45,8 +47,11 @@ from zephyrex.extensions.AbstractExternalModel import idempotent
 from zephyrex.extensions.email.EmailErrors import (
     EmailValidationError,
     extract_status_code,
-    map_upstream_status,
     map_validation_error,
+)
+from zephyrex.extensions.ExternalErrors import (
+    TransientExternalError,
+    map_upstream_status,
 )
 from zephyrex.lib.Dependencies import Dependencies, PIP_Dependency
 from zephyrex.lib.Environment import env
@@ -919,7 +924,9 @@ class AbstractEmailProvider(AbstractStaticProvider):
         Validates the message, delegates to ``cls.send``, then maps a failure
         onto the typed error hierarchy: a status code fished out of the legacy
         envelope routes through ``map_upstream_status`` (attributed to
-        ``cls.name``), otherwise the failure is treated as a validation error.
+        ``cls.name``). The message was already validated, so a failure without
+        a status is the provider's (not configured, cannot bond, transport
+        down) and is transient: the rotation moves on to the next provider.
         Returns a ``SentMessage``-shaped dict on success.
         """
         validation_error = cls._validate_message(message)
@@ -936,7 +943,7 @@ class AbstractEmailProvider(AbstractStaticProvider):
             status = extract_status_code(legacy_result)
             if status is not None:
                 raise map_upstream_status(status, legacy_result, provider=cls.name)
-            raise map_validation_error(legacy_result)
+            raise TransientExternalError(legacy_result, provider=cls.name)
 
         recipient = message.to[0].format() if message.to else ""
         return {
@@ -1496,17 +1503,27 @@ class EXT_EMail(AbstractStaticExtension):
 
     # Static methods for rotation system integration
     @classmethod
-    async def send_email(cls, recipient: str, subject: str, body: str, **kwargs) -> str:
-        """Send email via rotation system."""
-        if cls.root:
-            return await cls.root.arotate(  # type: ignore[no-any-return]
-                cls.provider_call("send_email"),
-                recipient=recipient,
-                subject=subject,
-                body=body,
-                **kwargs,
+    async def send_email(
+        cls, recipient: str, subject: str, body: str
+    ) -> Dict[str, Any]:
+        """Send a plain-text email through the root rotation.
+
+        Goes through ``send_via_provider``, which raises typed errors, so a
+        provider that cannot send fails over to the next one. Returns the
+        ``SentMessage``-shaped dict of the provider that sent it.
+        """
+        root = cls.root
+        if root is None:
+            raise HTTPException(
+                status_code=503, detail="No email provider is configured"
             )
-        return "Email extension not configured for rotation"
+        message = EmailMessage(
+            to=[EmailAddress(address=recipient)], subject=subject, body_text=body
+        )
+        result: Dict[str, Any] = await root.arotate(
+            cls.provider_call("send_via_provider"), message=message
+        )
+        return result
 
     @classmethod
     async def get_emails(
@@ -1592,22 +1609,27 @@ class EXT_EMail(AbstractStaticExtension):
         from zephyrex.logic.AbstractLogicManager import _fire_and_forget
 
         try:
-            root = cls.root
-            if root is None:
+            if cls.root is None:
                 return
+            team_name = entity.invitation.team.name
+            query = urlencode(
+                {
+                    "code": entity.invitation.code,
+                    "email": entity.email,
+                    "team": team_name,
+                }
+            )
+            body = (
+                f"You've been invited to join {team_name}.\n\n"
+                f"Click here to accept: {env('FRONTEND_URL')}/accept-invitation?{query}\n\n"
+                "This invitation expires in 7 days."
+            )
             # Sent in the background so invitation creation never waits on
             # (or fails with) the mail provider; failover happens inside the
             # task, attempt by attempt.
             _fire_and_forget(
-                root.arotate(
-                    cls.provider_call("send_email"),
-                    recipient=entity.email,
-                    subject=f"You've been invited to {entity.invitation.team.name}",
-                    body=f"""You've been invited to join {entity.invitation.team.name}.
-
-                    Click here to accept: {env('FRONTEND_URL')}/accept-invitation?code={entity.invitation.code}&email={entity.email}&team={entity.invitation.team.name}
-
-                    This invitation expires in 7 days.""",
+                cls.send_email(
+                    entity.email, f"You've been invited to {team_name}", body
                 )
             )
             logger.info(f"Invitation email queued for {entity.email}")

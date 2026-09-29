@@ -153,6 +153,44 @@ class NavigationNotIncludedError(InvalidInputExternalError):
     being named in the request's `include` set, while strict mode is on."""
 
 
+def map_upstream_status(
+    status: int,
+    message: str = "",
+    *,
+    provider: Optional[str] = None,
+    upstream_payload: Any = None,
+    retry_after_seconds: Optional[float] = None,
+) -> BaseExternalError:
+    """The typed error for a non-2xx upstream status.
+
+    429 -> RateLimit, 401/403 -> Auth, other 4xx -> InvalidInput,
+    5xx -> Transient, anything else -> Permanent.
+    """
+    if status == 429:
+        return RateLimitExternalError(
+            message,
+            retry_after_seconds=retry_after_seconds,
+            provider=provider,
+            upstream_status=status,
+            upstream_payload=upstream_payload,
+        )
+    error_class: type[BaseExternalError]
+    if status in (401, 403):
+        error_class = AuthExternalError
+    elif 400 <= status < 500:
+        error_class = InvalidInputExternalError
+    elif 500 <= status < 600:
+        error_class = TransientExternalError
+    else:
+        error_class = PermanentExternalError
+    return error_class(
+        message,
+        provider=provider,
+        upstream_status=status,
+        upstream_payload=upstream_payload,
+    )
+
+
 # RotationPolicy --------------------------------------------------------------
 
 

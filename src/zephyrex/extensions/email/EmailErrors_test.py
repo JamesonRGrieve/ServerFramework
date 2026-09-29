@@ -5,19 +5,17 @@ from __future__ import annotations
 import pytest
 
 from zephyrex.extensions.email.EmailErrors import (
-    AuthExternalError,
-    BaseExternalError,
     EmailAttachmentTraversalError,
     EmailHeaderInjectionError,
     EmailMalformedAddressError,
     EmailNonAsciiAddressError,
     EmailPayloadTooLargeError,
     EmailValidationError,
-    InvalidInputExternalError,
-    RateLimitExternalError,
-    TransientExternalError,
-    map_upstream_status,
     map_validation_error,
+)
+from zephyrex.extensions.ExternalErrors import (
+    BaseExternalError,
+    InvalidInputExternalError,
 )
 
 
@@ -80,31 +78,3 @@ class TestMapValidationError:
     def test_unrecognized_falls_back_to_base(self):
         err = map_validation_error("Failed to send email: something weird")
         assert isinstance(err, EmailValidationError)
-
-
-class TestMapUpstreamStatus:
-    def test_429_to_rate_limit(self):
-        err = map_upstream_status(429, "throttled")
-        assert isinstance(err, RateLimitExternalError)
-
-    def test_401_to_auth(self):
-        err = map_upstream_status(401, "bad key")
-        assert isinstance(err, AuthExternalError)
-
-    def test_403_to_auth(self):
-        assert isinstance(map_upstream_status(403, ""), AuthExternalError)
-
-    def test_400_to_invalid_input(self):
-        err = map_upstream_status(400, "bad request")
-        assert isinstance(err, InvalidInputExternalError)
-        # 4xx other than 401/403/429 should NOT be auth/rate-limit
-        assert not isinstance(err, AuthExternalError)
-        assert not isinstance(err, RateLimitExternalError)
-
-    def test_503_to_transient(self):
-        err = map_upstream_status(503, "down")
-        assert isinstance(err, TransientExternalError)
-
-    def test_unknown_to_base(self):
-        err = map_upstream_status(999, "weird")
-        assert isinstance(err, BaseExternalError)

@@ -9,40 +9,14 @@ strings like ``"Failed to send email: rejected CRLF in subject"``. The
 legacy `send_email(...) -> str` shim survives one release as a
 deprecation-aliased wrapper that catches these exceptions and re-stringifies
 them; new callers use `send(EmailMessage)` and `with pytest.raises(...)`.
-
-Imports the canonical base classes from `extensions.ExternalErrors` when
-available; falls back to a local stub when not. The stub exists so the email
-extension can land in isolation — Batch A's canonical hierarchy is the
-authoritative source once it is wired in.
 """
 
 from __future__ import annotations
 
-try:
-    from zephyrex.extensions.ExternalErrors import (
-        AuthExternalError,
-        BaseExternalError,
-        InvalidInputExternalError,
-        RateLimitExternalError,
-        TransientExternalError,
-    )
-except Exception:  # pragma: no cover — only when the canonical module is missing
-    # Local stub. Batch A will rebase these to the canonical location.
-    class BaseExternalError(Exception):  # type: ignore[no-redef]
-        """Stub base; replaced by `extensions.ExternalErrors.BaseExternalError`."""
-
-    class InvalidInputExternalError(BaseExternalError):  # type: ignore[no-redef]
-        """Stub; replaced by canonical InvalidInputExternalError."""
-
-    class TransientExternalError(BaseExternalError):  # type: ignore[no-redef]
-        """Stub; replaced by canonical TransientExternalError."""
-
-    class RateLimitExternalError(BaseExternalError):  # type: ignore[no-redef]
-        """Stub; replaced by canonical RateLimitExternalError."""
-
-    class AuthExternalError(BaseExternalError):  # type: ignore[no-redef]
-        """Stub; replaced by canonical AuthExternalError."""
-
+from zephyrex.extensions.ExternalErrors import (
+    BaseExternalError,
+    InvalidInputExternalError,
+)
 
 __all__ = [
     "EmailHeaderInjectionError",
@@ -55,12 +29,6 @@ __all__ = [
     "EmailValidationError",
     "NotSupportedError",
     "map_validation_error",
-    "map_upstream_status",
-    "BaseExternalError",
-    "InvalidInputExternalError",
-    "TransientExternalError",
-    "RateLimitExternalError",
-    "AuthExternalError",
 ]
 
 
@@ -174,59 +142,6 @@ def map_validation_error(message: str) -> EmailValidationError:
         if prefix.lower() in body:
             return exc_class(message)
     return EmailValidationError(message)
-
-
-# ---------------------------------------------------------------------------
-# Upstream-status mapping (Item 88)
-# ---------------------------------------------------------------------------
-
-
-def map_upstream_status(
-    status: int,
-    message: str = "",
-    *,
-    provider: str = "",
-    retry_after_seconds: float | None = None,
-) -> BaseExternalError:
-    """Map an upstream HTTP-style status code to the typed external-error
-    hierarchy.
-
-    Mapping rules per Item 88:
-        429        -> `RateLimitExternalError`
-        401 / 403  -> `AuthExternalError`
-        400-499    -> `InvalidInputExternalError`
-        500-599    -> `TransientExternalError`
-        other      -> `BaseExternalError`
-    """
-    kwargs = {}
-    if provider:
-        kwargs["provider"] = provider
-    try:
-        if status == 429:
-            return RateLimitExternalError(
-                message,
-                retry_after_seconds=retry_after_seconds,
-                **kwargs,
-            )
-        if status in (401, 403):
-            return AuthExternalError(message, **kwargs)
-        if 400 <= status < 500:
-            return InvalidInputExternalError(message, **kwargs)
-        if 500 <= status < 600:
-            return TransientExternalError(message, **kwargs)
-    except TypeError:
-        # Stub classes don't accept the keyword args — fall through to
-        # bare construction.
-        pass
-    if status == 429:
-        return RateLimitExternalError(message)
-    if status in (401, 403):
-        return AuthExternalError(message)
-    if 400 <= status < 500:
-        return InvalidInputExternalError(message)
-    if 500 <= status < 600:
-        return TransientExternalError(message)
-    return BaseExternalError(message)
 
 
 def extract_status_code(message: str) -> int | None:

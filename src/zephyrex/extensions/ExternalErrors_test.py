@@ -24,9 +24,44 @@ from zephyrex.extensions.ExternalErrors import (
     default_rotation_policy,
     extract_degradation_sentinel,
     fail_fast,
+    map_upstream_status,
     queue_and_retry,
     silent_drop,
 )
+
+
+class TestMapUpstreamStatus:
+    @pytest.mark.parametrize(
+        "status, error_class",
+        [
+            (429, RateLimitExternalError),
+            (401, AuthExternalError),
+            (403, AuthExternalError),
+            (400, InvalidInputExternalError),
+            (404, InvalidInputExternalError),
+            (503, TransientExternalError),
+            (302, PermanentExternalError),
+            (999, PermanentExternalError),
+        ],
+    )
+    def test_status_maps_to_its_failure_class(self, status, error_class):
+        assert type(map_upstream_status(status, "detail")) is error_class
+
+    def test_carries_the_upstream_context(self):
+        err = map_upstream_status(
+            429,
+            "throttled",
+            provider="sendgrid",
+            upstream_payload="slow down",
+            retry_after_seconds=2.0,
+        )
+
+        assert isinstance(err, RateLimitExternalError)
+        assert err.message == "throttled"
+        assert err.provider == "sendgrid"
+        assert err.upstream_status == 429
+        assert err.upstream_payload == "slow down"
+        assert err.retry_after_seconds == 2.0
 
 
 class TestErrorHierarchy:

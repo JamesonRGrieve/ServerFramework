@@ -36,58 +36,15 @@ from urllib.parse import urlparse
 import httpx
 from pydantic import BaseModel
 
-# Item 1's typed errors live in extensions.ExternalErrors. If Batch A's
-# file isn't on the import path yet, fall back to local stubs so this
-# module is independently importable.
-try:
-    from zephyrex.extensions.ExternalErrors import (
-        AuthExternalError,
-        BaseExternalError,
-        InvalidInputExternalError,
-        PermanentExternalError,
-        RateLimitExternalError,
-        TransientExternalError,
-    )
-except ImportError:  # pragma: no cover - safety net during phased rollout
-
-    class BaseExternalError(Exception):  # type: ignore[no-redef]
-        def __init__(self, message: str = "", **_: Any) -> None:
-            super().__init__(message)
-
-    class TransientExternalError(BaseExternalError):  # type: ignore[no-redef]
-        pass
-
-    class AuthExternalError(BaseExternalError):  # type: ignore[no-redef]
-        pass
-
-    class InvalidInputExternalError(BaseExternalError):  # type: ignore[no-redef]
-        pass
-
-    class RateLimitExternalError(BaseExternalError):  # type: ignore[no-redef]
-        def __init__(
-            self,
-            message: str = "",
-            *,
-            retry_after_seconds: Optional[float] = None,
-            **kw: Any,
-        ) -> None:
-            super().__init__(message, **kw)
-            self.retry_after_seconds = retry_after_seconds
-
-    class PermanentExternalError(BaseExternalError):  # type: ignore[no-redef]
-        pass
-
-
+from zephyrex.extensions.ExternalErrors import (
+    InvalidInputExternalError,
+    RateLimitExternalError,
+    TransientExternalError,
+    map_upstream_status,
+)
 from zephyrex.extensions.AuthStrategy import AuthStrategy
 from zephyrex.extensions.RateLimit import TokenBucket, parse_retry_after
-
-try:
-    from zephyrex.lib.Credentials import redact as _redact_secret
-except ImportError:  # pragma: no cover
-
-    def _redact_secret(text: str) -> str:
-        return text
-
+from zephyrex.lib.Credentials import redact as _redact_secret
 
 # ----- SSRF guard -----------------------------------------------------------
 #
@@ -357,23 +314,13 @@ def _classify_response(response: httpx.Response, provider: Optional[str]) -> Non
     status = response.status_code
     if 200 <= status < 300:
         return
-    detail = _safe_response_text(response)
-    detail = _redact_secret(detail)
-    kw = dict(provider=provider, upstream_status=status, upstream_payload=detail)
-    if status == 429:
-        retry_after = parse_retry_after(response.headers.get("Retry-After"))
-        raise RateLimitExternalError(
-            f"Rate limited (status {status})",
-            retry_after_seconds=retry_after,
-            **kw,
-        )
-    if status in (401, 403):
-        raise AuthExternalError(f"Auth failure (status {status})", **kw)
-    if 400 <= status < 500:
-        raise InvalidInputExternalError(f"Client error (status {status})", **kw)
-    if 500 <= status < 600:
-        raise TransientExternalError(f"Server error (status {status})", **kw)
-    raise PermanentExternalError(f"Unhandled status {status}", **kw)
+    raise map_upstream_status(
+        status,
+        f"Upstream returned status {status}",
+        provider=provider,
+        upstream_payload=_redact_secret(_safe_response_text(response)),
+        retry_after_seconds=parse_retry_after(response.headers.get("Retry-After")),
+    )
 
 
 def _safe_response_text(response: httpx.Response) -> str:
