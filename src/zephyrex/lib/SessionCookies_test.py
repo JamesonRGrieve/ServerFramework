@@ -3,7 +3,7 @@
 header it receives, and the cookie helpers' attributes."""
 
 import pytest
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.testclient import TestClient
 
 from zephyrex.lib.Environment import refresh_settings
@@ -26,6 +26,10 @@ def _app() -> FastAPI:
     @app.api_route("/echo", methods=["GET", "POST", "DELETE"])
     def echo(request: Request):
         return {"authorization": request.headers.get("authorization")}
+
+    @app.get("/stale")
+    def stale():
+        raise HTTPException(status_code=401, detail="Session revoked")
 
     @app.post("/login")
     def login(response: Response):
@@ -93,6 +97,25 @@ def test_cookie_mutations_need_the_csrf_token(client, method):
     allowed = send("/echo", headers={"X-CSRF-Token": csrf})
     assert allowed.status_code == 200
     assert allowed.json() == {"authorization": "Bearer session-jwt"}
+
+
+def test_a_401_on_the_cookie_clears_both_cookies(client):
+    _logged_in(client)
+    assert client.get("/echo").status_code == 200
+    assert SESSION_COOKIE in client.cookies
+
+    response = client.get("/stale")
+    assert response.status_code == 401
+    assert SESSION_COOKIE not in client.cookies
+    assert CSRF_COOKIE not in client.cookies
+
+
+def test_a_401_to_an_explicit_credential_leaves_the_cookies(client):
+    """Only a request the cookie authenticated says the cookie is stale."""
+    _logged_in(client)
+    response = client.get("/stale", headers={"Authorization": "Bearer other"})
+    assert response.status_code == 401
+    assert SESSION_COOKIE in client.cookies
 
 
 def test_logout_clears_both_cookies(client):

@@ -58,6 +58,35 @@ def clear_session_cookies(response: Response) -> None:
         )
 
 
+_UNAUTHORIZED = 401
+
+
+def _clearing_cookies_on_401(
+    send: Callable[[Any], Awaitable[None]],
+) -> Callable[[Any], Awaitable[None]]:
+    """A ``send`` that clears the session cookies when the response is a 401:
+    the cookie authenticated nothing (expired, revoked, invalid), so the
+    browser should stop presenting it."""
+    clearing = Response()
+    clear_session_cookies(clearing)
+    set_cookies = [
+        (name, value) for name, value in clearing.raw_headers if name == b"set-cookie"
+    ]
+
+    async def _send(message: Any) -> None:
+        if (
+            message["type"] == "http.response.start"
+            and message["status"] == _UNAUTHORIZED
+        ):
+            message = {
+                **message,
+                "headers": [*message.get("headers", []), *set_cookies],
+            }
+        await send(message)
+
+    return _send
+
+
 def _cookies(raw: Optional[bytes]) -> Dict[str, str]:
     if not raw:
         return {}
@@ -94,7 +123,11 @@ class SessionCookieMiddleware:
             await self._refuse(send)
             return
         bearer = (b"authorization", f"Bearer {token}".encode("latin-1"))
-        await self.app({**scope, "headers": [*headers, bearer]}, receive, send)
+        await self.app(
+            {**scope, "headers": [*headers, bearer]},
+            receive,
+            _clearing_cookies_on_401(send),
+        )
 
     @staticmethod
     def _csrf_matches(present: Dict[bytes, bytes]) -> bool:

@@ -72,6 +72,22 @@ def test_logout_revokes_the_session_and_clears_the_cookies(server):
     assert replayed.status_code == 401, replayed.text
 
 
+def test_a_revoked_session_clears_the_browser_cookies(server):
+    """The session is ended elsewhere (another device logs it out): the
+    browser's next request is a 401 and its cookies are cleared."""
+    browser = _signed_in(server)
+    token = browser.cookies[SESSION_COOKIE]
+    ended = _browser(server).post(
+        "/v1/user/logout", headers={"Authorization": f"Bearer {token}"}
+    )
+    assert ended.status_code == 204, ended.text
+
+    stale = browser.get("/v1/user")
+    assert stale.status_code == 401, stale.text
+    assert SESSION_COOKIE not in browser.cookies
+    assert CSRF_COOKIE not in browser.cookies
+
+
 def test_an_explicit_bearer_ignores_the_cookie(server):
     browser = _signed_in(server)
     # A bad explicit credential is not rescued by a good cookie.
