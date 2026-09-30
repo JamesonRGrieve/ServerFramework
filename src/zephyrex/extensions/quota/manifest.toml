@@ -1,15 +1,15 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Extension manifest (Item 20): what an installer reads before the extension
+# class can be imported. It mirrors the class (name, version, description,
+# dependencies); the class stays the source of truth and
+# Manifest_parity_test keeps the two in step.
+
 name = "quota"
 version = "1.0.0"
-description = "Per-user / per-team / system quota model with atomic decrement"
+description = "Per-user / per-team / system quota model with atomic decrement and period-key derivation. Optional billing dependency for USD caps."
 author = "ZephyrexTechnologies"
 entry_module = "EXT_Quota"
 minimum_framework_version = "0.0.0"
 
 pip_dependencies = []
 system_dependencies = []
-
-# Cost-aware quotas (USD caps) require the billing extension's cost model.
-# Plain call-count / token-count / byte-count quotas do not.
-[[extension_dependencies]]
-name = "billing"
-optional = true

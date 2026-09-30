@@ -6,7 +6,7 @@ Registers the `FailedLoginAttempt` model. ``BLL_Lockout`` wires the
 into the durable table when it is imported.
 """
 
-from typing import ClassVar, List
+from typing import ClassVar
 
 from zephyrex.extensions.AbstractExtensionProvider import (
     AbstractStaticExtension,
@@ -18,4 +18,3 @@ class AuthLockoutExtension(AbstractStaticExtension):
     description: ClassVar[str] = (
         "Persisted failed-login records and per-user lockout policy"
     )
-    extension_dependencies: ClassVar[List[str]] = []

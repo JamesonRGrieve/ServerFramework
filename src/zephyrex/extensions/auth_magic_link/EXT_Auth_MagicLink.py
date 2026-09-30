@@ -1,9 +1,10 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Magic-link authentication extension manifest (Item 58)."""
 
 from typing import Any, ClassVar, Dict, List, Set
 
 from zephyrex.extensions.AbstractExtensionProvider import AbstractStaticExtension
-from zephyrex.lib.Dependencies import Dependencies
+from zephyrex.lib.Dependencies import Dependencies, EXT_Dependency
 from zephyrex.lib.Logging import logger
 
 
@@ -26,12 +27,19 @@ class EXT_Auth_MagicLink(AbstractStaticExtension):
         "MAGIC_LINK_BASE_URL": "",
     }
 
-    dependencies: ClassVar[Dependencies] = Dependencies([])
+    dependencies: ClassVar[Dependencies] = Dependencies(
+        [
+            EXT_Dependency(
+                name="email",
+                friendly_name="Email",
+                optional=True,
+                reason="Delivers the links; without it none reach their users",
+            )
+        ]
+    )
 
     _abilities: ClassVar[Set[str]] = {"magic_link_request", "magic_link_verify"}
     _providers: ClassVar[List] = []
-
-    extension_dependencies: ClassVar[List[str]] = ["email"]
 
     @classmethod
     def on_initialize(cls) -> bool:

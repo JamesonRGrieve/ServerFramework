@@ -1,9 +1,15 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Extension manifest (Item 20): what an installer reads before the extension
+# class can be imported. It mirrors the class (name, version, description,
+# dependencies); the class stays the source of truth and
+# Manifest_parity_test keeps the two in step.
+
 name = "metadata"
 version = "0.1.0"
-description = "Free-form key/value metadata for users and teams"
+description = "Free-form key/value metadata for users and teams (Scope #3)"
+author = "ZephyrexTechnologies"
+entry_module = "EXT_Metadata"
+minimum_framework_version = "0.0.0"
 
-# No dependencies — foundational. Other extensions (auth_invitations) depend
-# on this for preference handoff at registration.
-[[extension_dependencies]]
-
-[python_dependencies]
+pip_dependencies = []
+system_dependencies = []

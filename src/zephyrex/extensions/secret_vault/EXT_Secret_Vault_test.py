@@ -93,7 +93,7 @@ class TestExtSecretVault:
         assert EXT_Secret_Vault.on_initialize() is True
 
     def test_no_extension_dependencies(self):
-        assert EXT_Secret_Vault.extension_dependencies == []
+        assert list(EXT_Secret_Vault.dependencies.ext) == []
 
     def test_description_nonempty(self):
         assert len(EXT_Secret_Vault.description) > 10

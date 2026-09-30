@@ -4,12 +4,12 @@
 # dependencies); the class stays the source of truth and
 # Manifest_parity_test keeps the two in step.
 
-name = "auth_api_keys"
+name = "secret_vault"
 version = "1.0.0"
-description = "API-key authentication: issue, validate, revoke, and rotate hashed-at-rest keys."
+description = "Secret vault management via OpenBao/Vault KV v2."
 author = "ZephyrexTechnologies"
-entry_module = "EXT_Auth_APIKeys"
+entry_module = "EXT_Secret_Vault"
 minimum_framework_version = "0.0.0"
 
-pip_dependencies = []
+pip_dependencies = ["hvac>=2.1.0"]
 system_dependencies = []

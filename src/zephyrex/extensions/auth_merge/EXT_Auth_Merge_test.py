@@ -35,7 +35,9 @@ class TestCanonicalWiring:
 
     def test_extension_metadata(self):
         assert EXT_Auth_Merge.name == "auth_merge"
-        assert "auth_session" in EXT_Auth_Merge.extension_dependencies
+        # Merging needs no other extension: a merged-away account is
+        # deactivated, so its sessions stop authenticating on their own.
+        assert list(EXT_Auth_Merge.dependencies.ext) == []
         assert "user_merge" in EXT_Auth_Merge.get_abilities()
 
 

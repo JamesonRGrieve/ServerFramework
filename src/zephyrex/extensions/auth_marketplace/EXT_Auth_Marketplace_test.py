@@ -27,7 +27,9 @@ class TestCanonicalWiring:
 
     def test_extension_metadata(self):
         assert EXT_Auth_Marketplace.name == "auth_marketplace"
-        assert "payment" in EXT_Auth_Marketplace.extension_dependencies
+        assert [
+            (dep.name, dep.optional) for dep in EXT_Auth_Marketplace.dependencies.ext
+        ] == [("payment", True)]
 
 
 class TestLifecycle:

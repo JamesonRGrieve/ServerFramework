@@ -30,7 +30,6 @@ class EXT_Auth_APIKeys(AbstractStaticExtension):
         "api_key_rotate",
     }
     _providers: ClassVar[List] = []
-    extension_dependencies: ClassVar[List[str]] = []
 
     @classmethod
     def on_initialize(cls) -> bool:

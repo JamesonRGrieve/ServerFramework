@@ -6,7 +6,7 @@ let core BLL_Auth talk to the extension without importing it; model discovery
 imports it for every app that loads ``metadata``.
 """
 
-from typing import ClassVar, List
+from typing import ClassVar
 
 from zephyrex.extensions.AbstractExtensionProvider import (
     AbstractStaticExtension,
@@ -18,4 +18,3 @@ class MetadataExtension(AbstractStaticExtension):
     description: ClassVar[str] = (
         "Free-form key/value metadata for users and teams (Scope #3)"
     )
-    extension_dependencies: ClassVar[List[str]] = []

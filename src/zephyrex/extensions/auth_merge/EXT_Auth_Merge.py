@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Extension manifest for auth_merge.
 
 Owns the ``UserMergeModel`` audit table and exposes ``UserMergeManager``
@@ -23,7 +24,6 @@ class EXT_Auth_Merge(AbstractStaticExtension):
 
     _abilities: ClassVar[Set[str]] = {"user_merge"}
     _providers: ClassVar[List] = []
-    extension_dependencies: ClassVar[List[str]] = ["auth_session"]
 
     @classmethod
     def on_initialize(cls) -> bool:

@@ -6,7 +6,7 @@ Invitation/Invitee through hook callables when it is imported, so the extension
 can be enabled/disabled via APP_EXTENSIONS without modifying core.
 """
 
-from typing import ClassVar, List
+from typing import ClassVar
 
 from zephyrex.extensions.AbstractExtensionProvider import (
     AbstractStaticExtension,
@@ -18,4 +18,3 @@ class AuthInvitationsExtension(AbstractStaticExtension):
     description: ClassVar[str] = (
         "Team invitation workflow with role assignment (Scope #4)"
     )
-    extension_dependencies: ClassVar[List[str]] = []

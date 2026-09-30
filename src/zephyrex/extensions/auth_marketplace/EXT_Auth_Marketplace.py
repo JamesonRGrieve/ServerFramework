@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Extension manifest for auth_marketplace.
 
 Owns ``UserPaymentPortalModel`` and ``TeamPaymentPortalModel`` — the
@@ -7,7 +8,7 @@ linkage rows that map a tenant onto a payment-provider customer record.
 from typing import Any, ClassVar, Dict, List, Set
 
 from zephyrex.extensions.AbstractExtensionProvider import AbstractStaticExtension
-from zephyrex.lib.Dependencies import Dependencies
+from zephyrex.lib.Dependencies import Dependencies, EXT_Dependency
 from zephyrex.lib.Logging import logger
 
 
@@ -19,14 +20,22 @@ class EXT_Auth_Marketplace(AbstractStaticExtension):
     )
 
     _env: ClassVar[Dict[str, Any]] = {}
-    dependencies: ClassVar[Dependencies] = Dependencies([])
+    dependencies: ClassVar[Dependencies] = Dependencies(
+        [
+            EXT_Dependency(
+                name="payment",
+                friendly_name="Payment",
+                optional=True,
+                reason="Supplies the payment providers the portal links point at",
+            )
+        ]
+    )
 
     _abilities: ClassVar[Set[str]] = {
         "marketplace_link_user_portal",
         "marketplace_link_team_portal",
     }
     _providers: ClassVar[List] = []
-    extension_dependencies: ClassVar[List[str]] = ["payment"]
 
     @classmethod
     def on_initialize(cls) -> bool:

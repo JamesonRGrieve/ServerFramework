@@ -1,6 +1,12 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Extension manifest (Item 20): what an installer reads before the extension
+# class can be imported. It mirrors the class (name, version, description,
+# dependencies); the class stays the source of truth and
+# Manifest_parity_test keeps the two in step.
+
 name = "billing"
 version = "1.0.0"
-description = "Cost model registry, daily summaries, per-tenant cost audit emission"
+description = "Cost model registry, daily cost summaries, per-tenant cost audit emission for finance reconstruction"
 author = "ZephyrexTechnologies"
 entry_module = "EXT_Billing"
 minimum_framework_version = "0.0.0"

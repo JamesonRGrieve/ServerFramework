@@ -26,7 +26,6 @@ class EXT_Auth_Notifications(AbstractStaticExtension):
         "notifications_acknowledge",
     }
     _providers: ClassVar[List] = []
-    extension_dependencies: ClassVar[List[str]] = []
 
     @classmethod
     def on_initialize(cls) -> bool:

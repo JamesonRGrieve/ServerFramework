@@ -7,7 +7,7 @@ create grants without importing the extension; model discovery imports it for
 every app that loads ``acl_rbac``.
 """
 
-from typing import ClassVar, List
+from typing import ClassVar
 
 from zephyrex.extensions.AbstractExtensionProvider import (
     AbstractStaticExtension,
@@ -19,4 +19,3 @@ class AclRbacExtension(AbstractStaticExtension):
     description: ClassVar[str] = (
         "Per-record ACL with the canonical 6-verb shape (Scope #5)"
     )
-    extension_dependencies: ClassVar[List[str]] = []

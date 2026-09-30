@@ -4,12 +4,12 @@
 # dependencies); the class stays the source of truth and
 # Manifest_parity_test keeps the two in step.
 
-name = "auth_api_keys"
+name = "email"
 version = "1.0.0"
-description = "API-key authentication: issue, validate, revoke, and rotate hashed-at-rest keys."
+description = "Email extension for interacting with various email providers"
 author = "ZephyrexTechnologies"
-entry_module = "EXT_Auth_APIKeys"
+entry_module = "EXT_EMail"
 minimum_framework_version = "0.0.0"
 
-pip_dependencies = []
+pip_dependencies = ["aiosmtplib>=3.0.0", "httpx>=0.27.0", "sendgrid>=6.10.0"]
 system_dependencies = []

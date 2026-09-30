@@ -4,11 +4,11 @@
 # dependencies); the class stays the source of truth and
 # Manifest_parity_test keeps the two in step.
 
-name = "auth_api_keys"
+name = "auth_oauth2_client"
 version = "1.0.0"
-description = "API-key authentication: issue, validate, revoke, and rotate hashed-at-rest keys."
+description = "External-IdP SSO client: link Google/GitHub/Microsoft/Amazon identities to a user account (connect / callback / disconnect)"
 author = "ZephyrexTechnologies"
-entry_module = "EXT_Auth_APIKeys"
+entry_module = "EXT_Auth_OAuth2Client"
 minimum_framework_version = "0.0.0"
 
 pip_dependencies = []

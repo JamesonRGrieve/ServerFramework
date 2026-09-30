@@ -13,7 +13,7 @@ now lives in the separate ``auth_oauth2_server`` extension. Opt-in via
 ``APP_EXTENSIONS``; not loaded by default.
 """
 
-from typing import ClassVar, List
+from typing import ClassVar
 
 from zephyrex.extensions.AbstractExtensionProvider import AbstractStaticExtension
 
@@ -25,4 +25,3 @@ class EXT_Auth_OAuth2Client(AbstractStaticExtension):
         "External-IdP SSO client: link Google/GitHub/Microsoft/Amazon identities "
         "to a user account (connect / callback / disconnect)"
     )
-    extension_dependencies: ClassVar[List[str]] = []

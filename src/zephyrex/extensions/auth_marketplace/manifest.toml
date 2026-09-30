@@ -1,9 +1,19 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Extension manifest (Item 20): what an installer reads before the extension
+# class can be imported. It mirrors the class (name, version, description,
+# dependencies); the class stays the source of truth and
+# Manifest_parity_test keeps the two in step.
+
 name = "auth_marketplace"
-version = "0.1.0"
-description = "Per-tenant payment-portal links"
+version = "1.0.0"
+description = "Per-user and per-team links to payment-portal providers."
+author = "ZephyrexTechnologies"
+entry_module = "EXT_Auth_Marketplace"
+minimum_framework_version = "0.0.0"
+
+pip_dependencies = []
+system_dependencies = []
 
 [[extension_dependencies]]
 name = "payment"
-optional = false
-
-[python_dependencies]
+optional = true

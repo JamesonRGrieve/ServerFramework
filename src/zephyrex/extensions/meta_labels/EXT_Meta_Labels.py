@@ -22,7 +22,6 @@ class EXT_Meta_Labels(AbstractStaticExtension):
 
     _abilities: ClassVar[Set[str]] = {"labels_attach", "labels_detach"}
     _providers: ClassVar[List] = []
-    extension_dependencies: ClassVar[List[str]] = []
 
     @classmethod
     def on_initialize(cls) -> bool:

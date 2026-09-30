@@ -35,7 +35,6 @@ class EXT_Auth_Privacy(AbstractStaticExtension):
         "data_residency_pin_tenant",
     }
     _providers: ClassVar[List] = []
-    extension_dependencies: ClassVar[List[str]] = []
 
     @classmethod
     def on_initialize(cls) -> bool:

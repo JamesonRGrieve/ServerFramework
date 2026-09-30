@@ -33,7 +33,6 @@ class EXT_FileIO(AbstractStaticExtension):
         "fileio_delete",
     }
     _providers: ClassVar[List] = []
-    extension_dependencies: ClassVar[List[str]] = []
 
     @classmethod
     def on_initialize(cls) -> bool:

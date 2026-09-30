@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Extension manifest (Item 20): what an installer reads before the extension
+# class can be imported. It mirrors the class (name, version, description,
+# dependencies); the class stays the source of truth and
+# Manifest_parity_test keeps the two in step.
+
+name = "database_memory"
+version = "1.0.0"
+description = "DatabaseMemory extension \u2014 in-memory data store family. Owns connection management for the framework's key-value, streams, pubsub, and counter abilities; consumed by the EventBus, the inbound rate limiter, and any application-level cache. Concrete backends ship as sibling providers (PRV_Valkey, the default reference implementation; PRV_Memcached, PRV_DragonflyDB, PRV_KeyDB, PRV_Garnet as future additions)."
+author = "ZephyrexTechnologies"
+entry_module = "EXT_DatabaseMemory"
+minimum_framework_version = "0.0.0"
+
+pip_dependencies = ["redis>=4.2.0"]
+system_dependencies = []

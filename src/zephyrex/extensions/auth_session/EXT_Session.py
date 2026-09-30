@@ -9,7 +9,7 @@ this extension on ``APP_EXTENSIONS``, core JWTs are stateless and the per-user
 "sessions" surface is absent.
 """
 
-from typing import ClassVar, List
+from typing import ClassVar
 
 from zephyrex.extensions.AbstractExtensionProvider import (
     AbstractStaticExtension,
@@ -22,4 +22,3 @@ class AuthSessionExtension(AbstractStaticExtension):
         "Persisted session rows that back JWT revocation, refresh, and "
         "device-pairing pending-state."
     )
-    extension_dependencies: ClassVar[List[str]] = []

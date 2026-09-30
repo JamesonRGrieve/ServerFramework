@@ -1,3 +1,9 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Extension manifest (Item 20): what an installer reads before the extension
+# class can be imported. It mirrors the class (name, version, description,
+# dependencies); the class stays the source of truth and
+# Manifest_parity_test keeps the two in step.
+
 name = "webhooks"
 version = "1.0.0"
 description = "Inbound webhook handler registry and router with mandatory signature verification and optional replay protection"
@@ -7,7 +13,3 @@ minimum_framework_version = "0.0.0"
 
 pip_dependencies = []
 system_dependencies = []
-
-# No extension dependencies. Provider extensions (email, payment) declare
-# webhooks as an optional dependency in their own manifests when they ship
-# verify_signature handlers — webhooks itself stands alone.

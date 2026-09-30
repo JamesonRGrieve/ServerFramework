@@ -1,9 +1,15 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Extension manifest (Item 20): what an installer reads before the extension
+# class can be imported. It mirrors the class (name, version, description,
+# dependencies); the class stays the source of truth and
+# Manifest_parity_test keeps the two in step.
+
 name = "acl_rbac"
 version = "0.1.0"
-description = "Per-record ACL with VIEW/EXECUTE/COPY/EDIT/DELETE/SHARE verbs"
+description = "Per-record ACL with the canonical 6-verb shape (Scope #5)"
+author = "ZephyrexTechnologies"
+entry_module = "EXT_ACL"
+minimum_framework_version = "0.0.0"
 
-# Foundational. No upstream extensions; downstream extensions that want to
-# share resources go through this manager.
-[[extension_dependencies]]
-
-[python_dependencies]
+pip_dependencies = []
+system_dependencies = []

@@ -1,6 +1,12 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Extension manifest (Item 20): what an installer reads before the extension
+# class can be imported. It mirrors the class (name, version, description,
+# dependencies); the class stays the source of truth and
+# Manifest_parity_test keeps the two in step.
+
 name = "audit_retention"
 version = "1.0.0"
-description = "Retention policies, archival to S3/GCS/local, and legal-hold workflows"
+description = "Retention policies, archival to S3/GCS/local, and legal-hold workflows for the framework's audit log"
 author = "ZephyrexTechnologies"
 entry_module = "EXT_AuditRetention"
 minimum_framework_version = "0.0.0"

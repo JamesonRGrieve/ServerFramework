@@ -1,5 +1,15 @@
-name = "meta_labels"
-version = "0.1.0"
-description = "Polymorphic label catalog"
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Extension manifest (Item 20): what an installer reads before the extension
+# class can be imported. It mirrors the class (name, version, description,
+# dependencies); the class stays the source of truth and
+# Manifest_parity_test keeps the two in step.
 
-[python_dependencies]
+name = "meta_labels"
+version = "1.0.0"
+description = "Polymorphic label catalog and attachment table."
+author = "ZephyrexTechnologies"
+entry_module = "EXT_Meta_Labels"
+minimum_framework_version = "0.0.0"
+
+pip_dependencies = []
+system_dependencies = []

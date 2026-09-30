@@ -1,3 +1,9 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Extension manifest (Item 20): what an installer reads before the extension
+# class can be imported. It mirrors the class (name, version, description,
+# dependencies); the class stays the source of truth and
+# Manifest_parity_test keeps the two in step.
+
 name = "meta_sdk_py"
 version = "1.0.0"
 description = "Opt-in generation of the typed Python client SDK from the committed registry"
@@ -7,6 +13,3 @@ minimum_framework_version = "0.0.0"
 
 pip_dependencies = []
 system_dependencies = []
-
-# Sibling language SDKs are separate opt-in extensions (meta_sdk_ts, meta_sdk_rs)
-# that emit the same REST surface from the shared sdk/SDKModel.py IR.

@@ -1,5 +1,15 @@
-name = "auth_privacy"
-version = "0.1.0"
-description = "Data-residency state for tenants"
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Extension manifest (Item 20): what an installer reads before the extension
+# class can be imported. It mirrors the class (name, version, description,
+# dependencies); the class stays the source of truth and
+# Manifest_parity_test keeps the two in step.
 
-[python_dependencies]
+name = "auth_privacy"
+version = "1.0.0"
+description = "Data-residency state (regions and per-tenant pinning) for compliance with regional data-handling rules."
+author = "ZephyrexTechnologies"
+entry_module = "EXT_Auth_Privacy"
+minimum_framework_version = "0.0.0"
+
+pip_dependencies = []
+system_dependencies = []

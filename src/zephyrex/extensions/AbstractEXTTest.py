@@ -2,7 +2,7 @@ import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from enum import Enum
-from typing import Any, Dict, Set, Type
+from typing import Any, Dict, List, Set, Type
 
 import pytest
 from pydantic import ConfigDict, Field
@@ -106,12 +106,10 @@ class ExtensionServerMixin:
         # with cross-extension FK parents (e.g. an ai_agents context-prompt
         # whose parent Prompt lives in ai_prompts) must be able to create
         # those parents via their real routes.
-        dep_names = []
-        ext_deps = getattr(self.extension_class, "ext_dependencies", None)
-        for dep in ext_deps or []:
-            dep_name = getattr(dep, "name", None)
-            if dep_name and dep_name not in dep_names:
-                dep_names.append(dep_name)
+        dep_names: List[str] = []
+        for dep in self.extension_class.dependencies.ext:
+            if dep.name not in dep_names:
+                dep_names.append(dep.name)
 
         ordered = [extension_name] + dep_names
         names = ordered + [c for c in CORE_COMPANION_EXTENSIONS if c not in ordered]

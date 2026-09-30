@@ -105,7 +105,6 @@ class EXT_Secret_Vault(AbstractStaticExtension):
         "secret_metadata",
     }
     _providers: ClassVar[List] = []
-    extension_dependencies: ClassVar[List[str]] = []
 
     @classmethod
     def on_initialize(cls) -> bool:
