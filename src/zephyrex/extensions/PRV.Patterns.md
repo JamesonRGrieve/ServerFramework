@@ -543,6 +543,10 @@ def is_configured(cls) -> bool:
     return True
 ```
 
+### Root provider status
+
+`GET /v1/provider/root/status` (root only) reports every loaded provider as `{provider, extension, configured, settings, health}`. Each setting is `{key, secret, set, value}`: a plain setting shows its value, a secret only whether it is set. `?extension=<name>` narrows the list to one extension's providers. `?health=true` adds `health: {status: "ok"|"degraded"|"down", detail}` from each provider's `cached_health_check()` (a live upstream call, cached per provider class); without it `health` is null, so the plain list never calls an upstream. A health check that raises reports `down` with only the exception's type, never its message. Admin pages for provider-backed extensions (the secret vault among them) read this rather than a bespoke status route.
+
 ## Environment Variables
 
 ### Static Variable Management

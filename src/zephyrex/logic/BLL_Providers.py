@@ -391,11 +391,20 @@ class RootProviderSetting(BaseModel):
     value: Optional[str] = None
 
 
+class RootProviderHealth(BaseModel):
+    """A live upstream check, from ``health_check`` (cached briefly)."""
+
+    status: Literal["ok", "degraded", "down"]
+    detail: str
+
+
 class RootProviderStatus(BaseModel):
     provider: str
     extension: str
     configured: bool
     settings: List[RootProviderSetting]
+    # Only when asked for: it calls every listed provider's upstream.
+    health: Optional[RootProviderHealth] = None
 
 
 class RootProviderStatusResponse(BaseModel):
@@ -429,12 +438,28 @@ def _provider_env_settings(provider_cls: Any) -> Dict[str, bool]:
     return {key: is_secret_setting(key) for key in dict.keys(legacy_env)}
 
 
+def _provider_health(provider_cls: Any) -> RootProviderHealth:
+    """The provider's cached health; a check that raises is itself down."""
+    try:
+        report = provider_cls.cached_health_check()
+    except Exception as exc:  # noqa: BLE001 - a failing check is a down provider
+        return RootProviderHealth(
+            status="down", detail=f"health check failed: {type(exc).__name__}"
+        )
+    return RootProviderHealth(status=report.status.value, detail=report.detail)
+
+
 def root_provider_status(
     extension_providers: Dict[str, List[Any]],
+    extension: Optional[str] = None,
+    health: bool = False,
 ) -> RootProviderStatusResponse:
-    """How each loaded provider's environment (root) configuration stands."""
+    """How each loaded provider's environment (root) configuration stands,
+    optionally for one extension and with a live health check."""
     statuses = []
     for extension_name, providers in sorted(extension_providers.items()):
+        if extension is not None and extension_name != extension:
+            continue
         for provider_cls in providers:
             settings = []
             for key, secret in sorted(_provider_env_settings(provider_cls).items()):
@@ -454,6 +479,7 @@ def root_provider_status(
                     extension=extension_name,
                     configured=provider_cls.is_configured(),
                     settings=settings,
+                    health=_provider_health(provider_cls) if health else None,
                 )
             )
     return RootProviderStatusResponse(providers=statuses)
@@ -504,16 +530,22 @@ class ProviderManager(AbstractBLLManager, RouterMixin):
         authentication_type="jwt",
         summary="Environment configuration of every loaded provider (root only)",
     )
-    def root_status_route(self) -> RootProviderStatusResponse:
+    def root_status_route(
+        self, extension: Optional[str] = None, health: bool = False
+    ) -> RootProviderStatusResponse:
         """Which providers are configured from the environment, setting by
-        setting; secrets report only whether they are set."""
+        setting; secrets report only whether they are set. ``?extension=``
+        narrows to one extension's providers; ``?health=true`` adds each
+        one's live upstream check."""
         from zephyrex.database.StaticPermissions import is_root_id
 
         if not is_root_id(self.requester.id):
             raise HTTPException(status_code=403, detail="Root only")
         extension_registry = self.model_registry.extension_registry
         return root_provider_status(
-            extension_registry.extension_providers if extension_registry else {}
+            extension_registry.extension_providers if extension_registry else {},
+            extension=extension,
+            health=health,
         )
 
     @property
