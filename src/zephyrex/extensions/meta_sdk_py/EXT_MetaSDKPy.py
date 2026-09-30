@@ -35,9 +35,15 @@ class EXT_MetaSDKPy(AbstractStaticExtension):
     @classmethod
     def on_initialize(cls) -> bool:
         from zephyrex.extensions.meta_sdk_py.PythonSDKEmitter import (
+            SDK_PY_OUTPUT_DIR_ENV,
             generate_python_sdk,
         )
         from zephyrex.lib.Hooks import register_sdk_generator
 
-        register_sdk_generator(cls.name, generate_python_sdk)
+        register_sdk_generator(
+            cls.name,
+            generate_python_sdk,
+            language="python",
+            output_dir_env=SDK_PY_OUTPUT_DIR_ENV,
+        )
         return True

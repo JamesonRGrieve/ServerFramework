@@ -31,8 +31,16 @@ class EXT_MetaSDKRs(AbstractStaticExtension):
 
     @classmethod
     def on_initialize(cls) -> bool:
-        from zephyrex.extensions.meta_sdk_rs.RustSDKEmitter import generate_rust_sdk
+        from zephyrex.extensions.meta_sdk_rs.RustSDKEmitter import (
+            SDK_RS_OUTPUT_DIR_ENV,
+            generate_rust_sdk,
+        )
         from zephyrex.lib.Hooks import register_sdk_generator
 
-        register_sdk_generator(cls.name, generate_rust_sdk)
+        register_sdk_generator(
+            cls.name,
+            generate_rust_sdk,
+            language="rust",
+            output_dir_env=SDK_RS_OUTPUT_DIR_ENV,
+        )
         return True

@@ -12,6 +12,7 @@ registrations remain visible through either import path.
 """
 
 from collections.abc import Collection
+from dataclasses import dataclass
 from typing import Any
 
 # privacy extension hooks — populated by `privacy.on_initialize`. Core's logging
@@ -43,7 +44,7 @@ def register_pii_hooks(*, log_filter=None) -> None:
 #   extensions its own app loaded (``sdk_generators_for``).
 _registry_hooks: dict = {
     "bootstrap_federation": None,  # (model_registry) -> federation_report | None
-    "generate_sdk": {},  # {extension_name: (model_registry) -> None}
+    "generate_sdk": {},  # {extension_name: SDKTarget}
 }
 
 
@@ -52,7 +53,20 @@ def register_registry_hooks(*, bootstrap_federation=None) -> None:
         _registry_hooks["bootstrap_federation"] = bootstrap_federation
 
 
-def register_sdk_generator(extension_name: str, generator) -> None:
+@dataclass(frozen=True)
+class SDKTarget:
+    """One ``meta_sdk_<language>`` extension's SDK: the generator, the
+    language it emits, and the environment variable naming the directory it
+    writes to (unset: the generator does nothing)."""
+
+    language: str
+    output_dir_env: str
+    generator: Any
+
+
+def register_sdk_generator(
+    extension_name: str, generator, *, language: str, output_dir_env: str
+) -> None:
     """Register the SDK generator owned by ``extension_name`` (idempotent).
 
     Each ``meta_sdk_<language>`` extension registers its emitter here at
@@ -60,19 +74,29 @@ def register_sdk_generator(extension_name: str, generator) -> None:
     under a test suite) overwrite rather than accumulate, so no generator fires
     twice.
     """
-    _registry_hooks["generate_sdk"][extension_name] = generator
+    _registry_hooks["generate_sdk"][extension_name] = SDKTarget(
+        language=language, output_dir_env=output_dir_env, generator=generator
+    )
 
 
-def sdk_generators_for(extension_names: Collection[str]) -> list[tuple[str, Any]]:
-    """The registered SDK generators owned by ``extension_names``.
+def sdk_targets_for(extension_names: Collection[str]) -> dict[str, SDKTarget]:
+    """The registered SDKs owned by ``extension_names``, by extension.
 
     ``ModelRegistry.commit`` passes the extensions loaded into the registry it
     commits, so enabling ``meta_sdk_py`` + ``meta_sdk_ts`` in one app produces
     both SDKs while a sibling app in the same process that loaded neither
-    produces none.
+    produces none; the SDK download routes list the same set.
     """
-    return [
-        (name, generator)
-        for name, generator in _registry_hooks["generate_sdk"].items()
+    return {
+        name: target
+        for name, target in _registry_hooks["generate_sdk"].items()
         if name in extension_names
+    }
+
+
+def sdk_generators_for(extension_names: Collection[str]) -> list[tuple[str, Any]]:
+    """The registered SDK generators owned by ``extension_names``."""
+    return [
+        (name, target.generator)
+        for name, target in sdk_targets_for(extension_names).items()
     ]

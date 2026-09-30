@@ -188,4 +188,10 @@ The generator uses the same source-of-truth as the OpenAPI generator and the RES
 
 Hand-authored handlers remain for non-CRUD operations (login, logout, install_extension) and for resources that need behavior beyond the mechanical CRUD shape; these are clearly distinguished and live in separate files. Authors writing custom handlers extend or override the generated ones via subclassing.
 
-Adding a new `RouterMixin`-decorated manager to an extension produces a corresponding SDK handler with full CRUD, search, and batch support, without any SDK code being written by the author. 
+Adding a new `RouterMixin`-decorated manager to an extension produces a corresponding SDK handler with full CRUD, search, and batch support, without any SDK code being written by the author.
+
+## Downloading generated SDKs
+
+Each `meta_sdk_<language>` extension registers its generator with `register_sdk_generator(extension, generator, language=..., output_dir_env=...)` and writes its SDK into the directory that variable names (`SDK_PY_OUTPUT_DIR`, `SDK_TS_OUTPUT_DIR`, `SDK_RS_OUTPUT_DIR`) when the registry commits; unset, it writes nothing.
+
+`GET /v1/sdk` (any signed-in user) lists `{sdks: [{language, extension, version, filename, size, sha256}]}` for each loaded SDK extension whose directory holds generated files; `version` is the server's. `GET /v1/sdk/{language}/download` returns that directory as `zephyrex-sdk-<language>.zip` (`application/zip`, `Content-Disposition: attachment`), or 404 for a language that is unknown, not loaded, or not generated. The archive is deterministic (sorted entries, fixed timestamps), so `sha256` changes only when the SDK does; symbolic links are never followed into it. 

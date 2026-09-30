@@ -553,11 +553,9 @@ def discover_bll_models_for_testing(
                             domain = part[4:]  # Remove "BLL_" prefix
                             break
 
-                # Initialize domain list if not exists
-                if domain not in _DISCOVERED_MODELS_CACHE:
-                    _DISCOVERED_MODELS_CACHE[domain] = []
-
-                # Find all model classes in the module
+                # Find all model classes in the module. A domain is recorded
+                # only once it has one: a BLL module may define none (a
+                # model-less manager serving custom routes only).
                 for attr_name in dir(module):
                     attr = getattr(module, attr_name)
 
@@ -605,9 +603,9 @@ def discover_bll_models_for_testing(
                                 )
 
                                 if has_base_mixin:
-                                    _DISCOVERED_MODELS_CACHE[domain].append(
-                                        (attr_name, attr)
-                                    )
+                                    _DISCOVERED_MODELS_CACHE.setdefault(
+                                        domain, []
+                                    ).append((attr_name, attr))
                                     logger.debug(
                                         f"Discovered model: {attr_name} from {module_name} (domain: {domain})"
                                     )

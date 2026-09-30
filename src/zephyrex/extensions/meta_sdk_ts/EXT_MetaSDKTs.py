@@ -32,9 +32,15 @@ class EXT_MetaSDKTs(AbstractStaticExtension):
     @classmethod
     def on_initialize(cls) -> bool:
         from zephyrex.extensions.meta_sdk_ts.TypeScriptSDKEmitter import (
+            SDK_TS_OUTPUT_DIR_ENV,
             generate_typescript_sdk,
         )
         from zephyrex.lib.Hooks import register_sdk_generator
 
-        register_sdk_generator(cls.name, generate_typescript_sdk)
+        register_sdk_generator(
+            cls.name,
+            generate_typescript_sdk,
+            language="typescript",
+            output_dir_env=SDK_TS_OUTPUT_DIR_ENV,
+        )
         return True
