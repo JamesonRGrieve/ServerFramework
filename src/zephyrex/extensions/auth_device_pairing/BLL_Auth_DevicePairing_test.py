@@ -82,7 +82,7 @@ class TestDevicePairing(ExtensionServerMixin):
 
         first = manager.approve_pairing(token=raw_token, approver_user_id=admin_a.id)
         assert first.state == "approved"
-        assert first.session_key
+        assert first.user_id == admin_a.id
 
         with pytest.raises(InvalidGrantError):
             manager.approve_pairing(token=raw_token, approver_user_id=admin_a.id)
@@ -135,9 +135,9 @@ class TestDevicePairing(ExtensionServerMixin):
         denied = manager.deny_pairing(token=raw_token, approver_user_id=admin_a.id)
         assert denied.state == "denied"
 
-        status = manager.get_status(result.pairing_id)
+        status = manager.get_status(result.pairing_id, result.binding)
         assert status.state == "denied"
-        assert status.session_key is None
+        assert status.token is None
 
         with pytest.raises(InvalidGrantError):
             manager.approve_pairing(token=raw_token, approver_user_id=admin_a.id)
@@ -165,9 +165,9 @@ class TestDevicePairing(ExtensionServerMixin):
         manager = self._manager(model_registry)
         result = manager.request_pairing(device_type="mobile")
 
-        status = manager.get_status(result.pairing_id)
+        status = manager.get_status(result.pairing_id, result.binding)
         assert status.state == "pending"
-        assert status.session_key is None
+        assert status.token is None
 
         # No SessionModel row should yet exist for this pairing.
         SessionDB = SessionModel.DB(model_registry.DB.manager.Base)
@@ -193,36 +193,47 @@ class TestDevicePairing(ExtensionServerMixin):
 
         # Approve and check that the session now exists.
         raw_token = _extract_raw_token_from_payload(result.qr_payload)
-        approved = manager.approve_pairing(token=raw_token, approver_user_id=admin_a.id)
+        manager.approve_pairing(token=raw_token, approver_user_id=admin_a.id)
 
-        post_status = manager.get_status(result.pairing_id)
+        post_status = manager.get_status(result.pairing_id, result.binding)
         assert post_status.state == "approved"
-        assert post_status.session_key == approved.session_key
+        assert post_status.token is not None
         assert post_status.user_id == admin_a.id
 
     # ------------------------------------------------------------------
-    # Polling status parity (status returns the same shape SSE emits)
+    # Delivery: the binding holder gets the session once; the id alone never
     # ------------------------------------------------------------------
 
-    def test_polling_status_parity_with_approved_state(self, model_registry, admin_a):
+    def test_the_binding_holder_takes_delivery_once(self, model_registry, admin_a):
         manager = self._manager(model_registry)
         result = manager.request_pairing(device_type="web")
         raw_token = _extract_raw_token_from_payload(result.qr_payload)
+        manager.approve_pairing(token=raw_token, approver_user_id=admin_a.id)
 
-        approved = manager.approve_pairing(token=raw_token, approver_user_id=admin_a.id)
+        by_id = manager.get_status(result.pairing_id)
+        assert (by_id.state, by_id.token, by_id.user_id) == ("approved", None, None)
 
-        polled = manager.get_status(result.pairing_id)
-        assert polled.state == "approved"
-        assert polled.session_key == approved.session_key
+        polled = manager.get_status(result.pairing_id, result.binding)
         assert polled.user_id == admin_a.id
-
-        # The requesting device receives its credential for that session.
         assert polled.token is not None
-        assert UserManager._decode_jwt(polled.token)["jti"] == polled.session_key
+        SessionDB = SessionModel.DB(model_registry.DB.manager.Base)
+        sessions = SessionDB.list(
+            requester_id=env("ROOT_ID"),
+            model_registry=model_registry,
+            filters=[
+                SessionDB.session_key == UserManager._decode_jwt(polled.token)["jti"]
+            ],
+            return_type="dto",
+            override_dto=SessionModel,
+        )
+        assert [s.grant_type for s in sessions] == ["device_pairing"]
         user = UserManager.auth(
             model_registry=model_registry, authorization=f"Bearer {polled.token}"
         )
         assert user.id == admin_a.id
+
+        again = manager.get_status(result.pairing_id, result.binding)
+        assert (again.state, again.token) == ("approved", None)
 
     # ------------------------------------------------------------------
     # Status: expired pairings report "expired"
@@ -265,7 +276,8 @@ class TestDevicePairing(ExtensionServerMixin):
         chunks = asyncio.run(collect())
         assert len(chunks) == 1
         assert chunks[0].startswith("event: approved\n")
-        assert "session_key" in chunks[0]
+        # The stream reports state; the session is delivered by status reads.
+        assert '"token":null' in chunks[0]
 
     def test_sse_generator_emits_denied_event(self, model_registry, admin_a):
         manager = self._manager(model_registry)

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+from types import SimpleNamespace
 
 import pytest
 from pydantic import BaseModel
@@ -557,6 +558,26 @@ def test_get_resolver_with_no_input_model():
     result = _run(contribution.resolver(info=None))
     assert isinstance(result, FetchOut)
     assert result.items == ["x"]
+
+
+def test_resolver_hands_the_method_the_context_request_and_response():
+    class ManagerR:
+        @custom_route(method="GET", path="/context", output_model=FetchOut)
+        def context(self, request, response):
+            return FetchOut(items=[request, response])
+
+    reg = GraphQLContributionRegistry()
+    register_custom_routes_to_graphql(
+        ManagerR,
+        manager_factory=lambda **_: ManagerR(),
+        contribution_registry=reg,
+    )
+    contribution = reg.resolve_fields(FieldKind.QUERY)["manager_r_context"]
+    info = SimpleNamespace(
+        context={"request": "the-request", "response": "the-response"}
+    )
+    result = _run(contribution.resolver(info=info))
+    assert result.items == ["the-request", "the-response"]
 
 
 def test_register_uses_method_description_or_summary():

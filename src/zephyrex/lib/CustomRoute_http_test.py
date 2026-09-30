@@ -14,7 +14,7 @@ from __future__ import annotations
 from typing import Any, ClassVar, Dict, Iterator, List, Optional
 
 import pytest
-from fastapi import APIRouter, FastAPI, HTTPException
+from fastapi import APIRouter, FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
 
@@ -106,6 +106,15 @@ class CustomRouteProbeManager(AbstractBLLManager):
     def public(self, body: ProbeInput) -> ProbeOutput:
         return ProbeOutput(text=body.text, requester_id=self.requester_id)
 
+    @custom_route(
+        method="GET",
+        path="/cookie",
+        output_model=ProbeOutput,
+        authentication_type="none",
+    )
+    def cookie(self, request: Request) -> ProbeOutput:
+        return ProbeOutput(text=request.cookies.get("probe", "none"))
+
 
 @pytest.fixture(scope="module")
 def probe(model_registry: Any) -> TestClient:
@@ -113,7 +122,7 @@ def probe(model_registry: Any) -> TestClient:
     app = FastAPI()
     app.state.model_registry = model_registry
     router = APIRouter(prefix=PROBE)
-    assert register_custom_routes(router, CustomRouteProbeManager) == 5
+    assert register_custom_routes(router, CustomRouteProbeManager) == 6
     app.include_router(router)
     return TestClient(app)
 
@@ -191,6 +200,13 @@ class TestCustomRouteDispatch:
         assert response.status_code == 200, response.text
         assert response.json()["text"] == "later"
         assert response.json()["requester_id"] == admin_a.id
+
+    def test_a_request_parameter_receives_the_incoming_request(self, probe):
+        response = probe.get(f"{PROBE}/cookie", headers={"Cookie": "probe=seen"})
+        assert response.status_code == 200, response.text
+        assert response.json()["text"] == "seen"
+        # ...and is never mistaken for a query parameter.
+        assert probe.get(f"{PROBE}/cookie").json()["text"] == "none"
 
     def test_jwt_route_without_credentials_is_401(self, probe):
         response = probe.post(f"{PROBE}/echo", json={"text": "anon"})
