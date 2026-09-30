@@ -200,6 +200,9 @@ class _RealMockRegistry:
     def apply(self, model: Any) -> Any:
         raise TypeError("No matching type found in registry")
 
+    def action_managers(self) -> List[Any]:
+        return []
+
 
 def _real_schema_manager() -> "GraphQLManager":
     """A GraphQLManager whose emitted schema carries MockTestModel's operations."""
@@ -401,6 +404,9 @@ class TestSchemaManager(AbstractPydanticTestMixin):
 
             def apply(self, model: Any) -> Any:
                 raise TypeError("No matching type found in registry")
+
+            def action_managers(self) -> List[Any]:
+                return []
 
         schema_manager = GraphQLManager(DummyRegistry())
         schema = schema_manager.create_schema()

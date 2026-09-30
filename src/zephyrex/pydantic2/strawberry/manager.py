@@ -89,6 +89,8 @@ class SchemaModelSource(Protocol):
 
     def apply(self, type: Type[Any], /) -> Type[Any]: ...
 
+    def action_managers(self) -> List[type]: ...
+
 
 class GraphQLManager(ErrorHandlerMixin):
     """Main GraphQL schema manager that generates schemas from ModelRegistry"""
@@ -469,6 +471,11 @@ class GraphQLManager(ErrorHandlerMixin):
                     f"(module: {module_name}): {str(e)}. "
                     f"Continuing with other models..."
                 )
+
+        # Managers with no model serve custom routes only; they are not in
+        # the model relationships above.
+        for manager_class in self.model_registry.action_managers():
+            self._register_custom_routes_for_manager(manager_class)
 
         # Log summary
         logger.info(

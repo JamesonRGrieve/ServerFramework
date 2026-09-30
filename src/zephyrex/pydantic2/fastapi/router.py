@@ -367,6 +367,17 @@ def create_router_from_manager(
     return router
 
 
+def require_custom_routes_only(manager: type) -> None:
+    """A manager with no model serves custom routes only (a status or a
+    download over no table of its own): CRUD over no model has nothing to
+    serve, so declaring any fails the build."""
+    if getattr(manager, "routes_to_register", None) != []:
+        raise TypeError(
+            f"{manager.__qualname__} has no model, so it serves custom routes "
+            "only: set routes_to_register = []"
+        )
+
+
 def generate_routers_from_model_registry(model_registry) -> Dict[str, APIRouter]:
     """
     Generate routers for all models in the model registry using Model.Manager pattern.
@@ -413,6 +424,14 @@ def generate_routers_from_model_registry(model_registry) -> Dict[str, APIRouter]
                 logger.info(f"Generated router for {manager_name}")
         else:
             logger.debug(f"Model {model_name} does not have a Manager attribute")
+
+    # Managers with no model (a status or download over no table of their
+    # own) are not reached through a model; they serve custom routes only.
+    action_manager: Type[RouterMixin]
+    for action_manager in model_registry.action_managers():
+        require_custom_routes_only(action_manager)
+        routers[action_manager.__name__] = action_manager.Router(model_registry)
+        logger.info(f"Generated router for {action_manager.__name__}")
 
     # Sort routers by prefix length (longest first) to ensure more specific routes
     # are registered before less specific ones in FastAPI.

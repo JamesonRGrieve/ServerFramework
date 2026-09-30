@@ -5,6 +5,7 @@ from typing import (
     Any,
     ClassVar,
     Dict,
+    Iterable,
     List,
     Optional,
     Set,
@@ -1504,20 +1505,44 @@ class ModelRegistry(AbstractRegistry):
         self-gate on their output directory before calling this), so a normal
         boot never pays for the scan.
         """
-        import sys
-
-        from zephyrex.pydantic2.fastapi import RouterMixin
-
-        managers: list = []
-        seen: set = set()
         try:
             imported_modules, _ = self._scoped_import(
                 file_type="BLL", scopes=["logic", "extensions"]
             )
         except Exception as exc:  # noqa: BLE001 - discovery must not break callers
             logger.debug(f"router_managers discovery import failed: {exc}")
-            return managers
+            return []
+        return sorted(
+            (
+                manager
+                for manager in self._bll_router_managers(imported_modules)
+                if getattr(manager, "Model", None) is not None
+            ),
+            key=lambda c: (c.__module__, c.__qualname__),
+        )
 
+    def action_managers(self) -> list:
+        """RouterMixin managers with no model: they serve custom routes only
+        (a status or download endpoint over no table of their own)."""
+        imported_modules, _ = self._scoped_import(
+            file_type="BLL", scopes=["logic", "extensions"]
+        )
+        return [
+            manager
+            for manager in self._bll_router_managers(imported_modules)
+            if getattr(manager, "Model", None) is None
+        ]
+
+    @staticmethod
+    def _bll_router_managers(imported_modules: Iterable[str]) -> list:
+        """The RouterMixin ``*Manager`` classes each imported BLL module
+        defines itself, once each, in discovery order (which is router
+        registration order, so it decides route precedence)."""
+        import sys
+
+        from zephyrex.pydantic2.fastapi import RouterMixin
+
+        managers: Dict[Tuple[str, str], type] = {}
         for module_name in imported_modules:
             if ".BLL_" not in module_name:
                 continue
@@ -1534,15 +1559,9 @@ class ModelRegistry(AbstractRegistry):
                     and attr is not RouterMixin
                     and hasattr(attr, "Router")
                     and attr.__module__ == module_name
-                    and getattr(attr, "Model", None) is not None
                 ):
-                    key = (attr.__module__, attr.__qualname__)
-                    if key not in seen:
-                        seen.add(key)
-                        managers.append(attr)
-
-        managers.sort(key=lambda c: (c.__module__, c.__qualname__))
-        return managers
+                    managers.setdefault((attr.__module__, attr.__qualname__), attr)
+        return list(managers.values())
 
     def build_all_routers_from_managers(self):
         """

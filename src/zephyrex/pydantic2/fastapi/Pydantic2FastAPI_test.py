@@ -222,6 +222,9 @@ class TestModelRegistry:
     def is_model_bound(self, model_class) -> bool:
         return model_class in self._models.values()
 
+    def action_managers(self) -> list:
+        return []
+
 
 # Pytest Fixtures
 @pytest.fixture

@@ -13,7 +13,7 @@ from zephyrex.extensions.observability.EXT_Observability import (
 )
 from zephyrex.lib.Logging import (
     NoopErrorReporter,
-    get_error_reporter,
+    installed_error_reporter,
     set_error_reporter,
 )
 from zephyrex.lib.Metrics import (
@@ -28,7 +28,7 @@ def _restore_globals():
     """Snapshot + restore the process-global metrics backend and error reporter
     so a wiring test never leaks a backend/reporter into unrelated tests."""
     saved_backend = get_metrics_backend()
-    saved_reporter = get_error_reporter()._inner  # unwrap the enriching wrapper
+    saved_reporter = installed_error_reporter()
     try:
         yield
     finally:
@@ -85,28 +85,28 @@ class TestErrorReporterWiring:
         monkeypatch.setenv("SENTRY_DSN", "https://x@example.invalid/1")
         monkeypatch.delenv("ROLLBAR_TOKEN", raising=False)
         EXT_Observability._wire_error_reporter()
-        assert isinstance(get_error_reporter()._inner, SentryErrorReporter)
+        assert isinstance(installed_error_reporter(), SentryErrorReporter)
 
     def test_rollbar_token_installs_rollbar_reporter(self, monkeypatch):
         set_error_reporter(NoopErrorReporter())
         monkeypatch.delenv("SENTRY_DSN", raising=False)
         monkeypatch.setenv("ROLLBAR_TOKEN", "rb-token")
         EXT_Observability._wire_error_reporter()
-        assert isinstance(get_error_reporter()._inner, RollbarErrorReporter)
+        assert isinstance(installed_error_reporter(), RollbarErrorReporter)
 
     def test_sentry_preferred_over_rollbar(self, monkeypatch):
         set_error_reporter(NoopErrorReporter())
         monkeypatch.setenv("SENTRY_DSN", "https://x@example.invalid/1")
         monkeypatch.setenv("ROLLBAR_TOKEN", "rb-token")
         EXT_Observability._wire_error_reporter()
-        assert isinstance(get_error_reporter()._inner, SentryErrorReporter)
+        assert isinstance(installed_error_reporter(), SentryErrorReporter)
 
     def test_neither_leaves_reporter_unchanged(self, monkeypatch):
         set_error_reporter(NoopErrorReporter())
         monkeypatch.delenv("SENTRY_DSN", raising=False)
         monkeypatch.delenv("ROLLBAR_TOKEN", raising=False)
         EXT_Observability._wire_error_reporter()
-        assert isinstance(get_error_reporter()._inner, NoopErrorReporter)
+        assert isinstance(installed_error_reporter(), NoopErrorReporter)
 
 
 class TestMetricsExposition:

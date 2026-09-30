@@ -334,6 +334,12 @@ def get_error_reporter() -> ErrorReporter:
     return _ContextEnrichingReporter(_active_reporter)
 
 
+def installed_error_reporter() -> ErrorReporter:
+    """The reporter ``set_error_reporter`` installed, unwrapped: to tell which
+    sink is configured. Report through :func:`get_error_reporter`."""
+    return _active_reporter
+
+
 class _ContextEnrichingReporter(ErrorReporter):
     """Decorator around an :class:`ErrorReporter` that, on every
     :meth:`report` call, copies the current ``correlation_id``,
