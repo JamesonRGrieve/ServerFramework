@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, ClassVar, Dict, List, Optional, Type, Union, cast
 
 import bcrypt
-from fastapi import HTTPException, Header, Request, status
+from fastapi import HTTPException, Header, Request, Response, status
 
 from pydantic import Field, ValidationError, model_validator
 
@@ -47,6 +47,7 @@ from zephyrex.logic.BLL_Auth._shared import (
     _mfa_hooks,
     _session_hooks,
 )
+from zephyrex.lib.SessionCookies import clear_session_cookies, set_session_cookies
 from zephyrex.lib.SingleUseToken import (
     issue_single_use_token,
     read_single_use_token,
@@ -55,6 +56,16 @@ from zephyrex.lib.SingleUseToken import (
 
 # A compact JWT is three base64url segments joined by two ``.`` separators.
 _JWT_SEPARATOR_COUNT = 2
+
+# Login tokens, and the session cookie that carries them, live this long.
+JWT_LIFETIME_HOURS = 24
+_SECONDS_PER_HOUR = 3600
+
+
+def issue_browser_session(response: Response, token: str) -> None:
+    """Set the session cookies for a login token (see lib.SessionCookies)."""
+    set_session_cookies(response, token, JWT_LIFETIME_HOURS * _SECONDS_PER_HOUR)
+
 
 # Password login for a user with a second factor yields this challenge,
 # redeemed with a code at POST /v1/user/authorize/mfa.
@@ -799,7 +810,7 @@ class UserManager(AbstractBLLManager, RouterMixin):
         user_id: str,
         email: str,
         timezone_str: str = "UTC",
-        expiration_hours: int = 24,
+        expiration_hours: int = JWT_LIFETIME_HOURS,
         session_key: Optional[str] | None = None,
         model_registry=None,
     ) -> str:
@@ -1270,10 +1281,13 @@ class UserManager(AbstractBLLManager, RouterMixin):
         password: str = Field(..., description="User's password")
 
     @staticmethod
-    def _complete_login(user: Dict[str, Any], model_registry: Any) -> Dict[str, Any]:
+    def _complete_login(
+        user: Dict[str, Any], model_registry: Any, response: Response
+    ) -> Dict[str, Any]:
         """Issue the session and build the login response for a user whose
-        credentials (and second factor, when they have one) are proven.
-        Shared by password login and the MFA challenge step."""
+        credentials (and second factor, when they have one) are proven: the
+        token in the body for API clients, and in the session cookies for
+        browsers. Shared by password login and the MFA challenge step."""
         root_id = env("ROOT_ID")
 
         # Login successful — issue the session row first (when
@@ -1394,11 +1408,15 @@ class UserManager(AbstractBLLManager, RouterMixin):
         }
 
         model_registry.DB.session().commit()
+        issue_browser_session(response, token)
         return result
 
     @staticmethod
-    def logout(authorization: Optional[str], model_registry: Any) -> None:
-        """Revoke the session the presented JWT belongs to.
+    def logout(
+        authorization: Optional[str], model_registry: Any, response: Response
+    ) -> None:
+        """Revoke the session the presented JWT belongs to (from the header
+        or, for a browser, the session cookie) and clear the session cookies.
 
         The token is authenticated first, so a missing, invalid, expired or
         already-revoked token is a 401. Without the auth_session extension
@@ -1415,6 +1433,7 @@ class UserManager(AbstractBLLManager, RouterMixin):
         revoke = _session_hooks["revoke_session_key"]
         if revoke is not None:
             revoke(session_key=session_key, model_registry=model_registry)
+        clear_session_cookies(response)
 
     @staticmethod
     @rate_limit(DEFAULT_AUTH_RATE_LIMIT, scope="ip")
@@ -1424,6 +1443,8 @@ class UserManager(AbstractBLLManager, RouterMixin):
         req_uri: Optional[str] | None = None,
         authorization: Optional[str] | None = None,
         model_registry=None,
+        *,
+        response: Response,
     ) -> Dict[str, Any]:
         """Process user login from various input methods.
 
@@ -1608,7 +1629,7 @@ class UserManager(AbstractBLLManager, RouterMixin):
                     ),
                     "methods": methods,
                 }
-            return UserManager._complete_login(user, model_registry)
+            return UserManager._complete_login(user, model_registry, response)
         finally:
             # Close session if we created it
             if close_session:
@@ -1616,7 +1637,9 @@ class UserManager(AbstractBLLManager, RouterMixin):
 
     @staticmethod
     @rate_limit(DEFAULT_AUTH_RATE_LIMIT, scope="ip")
-    def login_mfa(body: Dict[str, Any], model_registry: Any) -> Dict[str, Any]:
+    def login_mfa(
+        body: Dict[str, Any], model_registry: Any, response: Response
+    ) -> Dict[str, Any]:
         """Second step of an MFA login: exchange the challenge issued by
         POST /authorize and a current TOTP or recovery code for the normal
         login response. A wrong code leaves the challenge usable until it
@@ -1653,7 +1676,7 @@ class UserManager(AbstractBLLManager, RouterMixin):
             # The account may have been disabled since the password step.
             if len(users) != 1 or not users[0]["active"] or users[0]["deleted_at"]:
                 raise HTTPException(status_code=401, detail="Invalid credentials")
-            return UserManager._complete_login(users[0], model_registry)
+            return UserManager._complete_login(users[0], model_registry, response)
         finally:
             model_registry.DB.session().close()
 

@@ -106,6 +106,7 @@ Extensions and services use consistent configuration:
 
 ### Authentication
 - **JWT-Based**: Token authentication with root API key for system entities
+- **Browser Sessions**: Logins (password, MFA challenge, magic link) also set `zx_session` (the JWT; HttpOnly, Secure, SameSite=Lax, `SESSION_COOKIE_DOMAIN`) and a readable `zx_csrf`. The cookie authenticates only when the request carries no `Authorization` or `X-API-Key`; a cookie-authenticated request other than GET/HEAD/OPTIONS must send `X-CSRF-Token` equal to `zx_csrf` or gets 403. Logout clears both. Cross-origin browsers need their origin in `APP_CORS_ALLOWED_ORIGINS` (credentials are never allowed with `*`)
 - **User Management**: Complete user lifecycle with team/role management
 - **Invitation System**: Team invitation workflow with role assignment
 

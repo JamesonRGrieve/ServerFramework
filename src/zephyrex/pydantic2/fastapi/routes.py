@@ -1726,6 +1726,18 @@ def _list_query_args(request: Request, signature: Any) -> Dict[str, List[str]]:
     return args
 
 
+def _declared_request_args(
+    request: Request, response: Response, signature: Any
+) -> Dict[str, Any]:
+    """What a custom-route method may ask for by parameter name besides its
+    path and body: list query params, and the ``response`` it can set
+    cookies or headers on."""
+    args: Dict[str, Any] = dict(_list_query_args(request, signature))
+    if "response" in signature.parameters:
+        args["response"] = response
+    return args
+
+
 def register_custom_route(
     router: APIRouter,
     custom_route: CustomRouteConfig,
@@ -1759,7 +1771,7 @@ def register_custom_route(
     # Create endpoint function
     if is_static:
 
-        async def endpoint(request: Request):
+        async def endpoint(request: Request, response: Response):
             model_registry = getattr(request.app.state, "model_registry", None)
             if not model_registry:
                 raise HTTPException(
@@ -1805,7 +1817,7 @@ def register_custom_route(
             if "cls" in sig.parameters and "cls" not in method_args:
                 method_args["cls"] = manager_class
 
-            method_args.update(_list_query_args(request, sig))
+            method_args.update(_declared_request_args(request, response, sig))
 
             # Handle request body for POST/PUT/PATCH
             if request.method in _BODY_METHODS:
@@ -1846,17 +1858,16 @@ def register_custom_route(
 
     else:
 
-        async def endpoint(request: Request):
+        async def endpoint(request: Request, response: Response):
             request_info = await get_request_info(request)
             manager = manager_factory(request=request_info)
             method_func: Callable = getattr(manager, custom_route.function)
 
-            # Extract path parameters
-            path_params = dict(request.path_params)
-
             method_args = {
-                **path_params,
-                **_list_query_args(request, inspect.signature(method_func)),
+                **request.path_params,
+                **_declared_request_args(
+                    request, response, inspect.signature(method_func)
+                ),
             }
 
             if request.method in _BODY_METHODS:

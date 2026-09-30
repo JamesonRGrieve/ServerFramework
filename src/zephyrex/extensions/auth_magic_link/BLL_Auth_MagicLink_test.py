@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Item 58 — magic-link BLL tests against a real ModelRegistry & DB."""
 
 from datetime import datetime, timedelta, timezone
@@ -127,6 +128,29 @@ class TestMagicLink(ExtensionServerMixin):
             model_registry=model_registry, authorization=f"Bearer {result.token}"
         )
         assert user.id == admin_a.id
+
+    def test_verify_over_http_signs_the_browser_in(
+        self, server, captured_emails, admin_a
+    ):
+        from fastapi.testclient import TestClient
+
+        from zephyrex.lib.SessionCookies import CSRF_COOKIE, SESSION_COOKIE
+
+        browser = TestClient(server.app, base_url="https://testserver")
+        requested = browser.post(
+            "/v1/auth/magic-link/request", json={"email": admin_a.email}
+        )
+        assert requested.status_code in (200, 202), requested.text
+        raw_token = captured_emails[-1]["raw_token"]
+
+        verified = browser.post(
+            "/v1/auth/magic-link/verify",
+            json={"token": raw_token, "email": admin_a.email},
+        )
+        assert verified.status_code == 200, verified.text
+        assert browser.cookies[SESSION_COOKIE] == verified.json()["token"]
+        assert browser.cookies[CSRF_COOKIE]
+        assert browser.get("/v1/user").status_code == 200
 
     # ------------------------------------------------------------------
     # verify: replay rejected

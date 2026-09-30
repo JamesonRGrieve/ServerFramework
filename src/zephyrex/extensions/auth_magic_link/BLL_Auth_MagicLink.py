@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Item 58 - magic-link (passwordless email) authentication extension.
 
 Walks through the door opened by the framework primitives in ``BLL_Auth.py``:
@@ -11,6 +12,7 @@ Walks through the door opened by the framework primitives in ``BLL_Auth.py``:
 from datetime import datetime, timezone
 from typing import Callable, ClassVar, List, Optional
 
+from fastapi import Response
 from pydantic import BaseModel, Field
 
 from zephyrex.lib.CustomRoute import custom_route
@@ -34,6 +36,7 @@ from zephyrex.logic.BLL_Auth import (
     UserModel,
     make_user_id_grant_validator,
 )
+from zephyrex.logic.BLL_Auth.user import issue_browser_session
 
 # ---------------------------------------------------------------------------
 # Test-visible email-send listeners. Tests register a callable here to capture
@@ -297,8 +300,14 @@ class MagicLinkManager(AbstractBLLManager, RouterMixin):
         summary="Redeem a magic-link token for a session",
     )
     @rate_limit(DEFAULT_AUTH_RATE_LIMIT, scope="ip")
-    def verify_route(self, body: MagicLinkVerify) -> MagicLinkVerifyResponse:
-        return self.verify_magic_link(token=body.token, email=body.email)
+    def verify_route(
+        self, body: MagicLinkVerify, response: Response
+    ) -> MagicLinkVerifyResponse:
+        """The session in the body for API clients and in the session
+        cookies for the browser that opened the link."""
+        verified = self.verify_magic_link(token=body.token, email=body.email)
+        issue_browser_session(response, verified.token)
+        return verified
 
 
 # ---------------------------------------------------------------------------

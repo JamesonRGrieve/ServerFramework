@@ -61,6 +61,10 @@ class AppSettings(BaseModel):
     # framework will honour X-Forwarded-For. Empty = do not trust the
     # header. Set to a real proxy CIDR (e.g. "10.0.0.0/8") in production.
     TRUSTED_PROXIES: str = ""
+    # Domain attribute of the zx_session / zx_csrf cookies. Empty = host-only
+    # (the API's own host); set a parent domain (e.g. "example.com") when the
+    # web app is served from a sibling subdomain.
+    SESSION_COOKIE_DOMAIN: str = ""
     BCRYPT_ROUNDS: int = 12
     # Whether registration endpoints accept arbitrary metadata fields.
     # When false (default), unknown fields in the registration body are

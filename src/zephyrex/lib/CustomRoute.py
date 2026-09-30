@@ -36,7 +36,7 @@ from typing import (
     Type,
 )
 
-from fastapi import HTTPException, Request, status
+from fastapi import HTTPException, Request, Response, status
 from pydantic import BaseModel, TypeAdapter
 
 from zephyrex.lib.InboundSecurity import carry_rate_limit
@@ -50,6 +50,8 @@ from zephyrex.pydantic2.fastapi.types import AuthType
 _BODY_METHODS: FrozenSet[str] = frozenset({"POST", "PUT", "PATCH"})
 # A tagged method receives the validated input model under this parameter.
 _BODY_PARAMETER = "body"
+# ...and the outgoing response (REST, or the GraphQL context's) under this one.
+_RESPONSE_PARAMETER = "response"
 # ``{name}`` / ``{name:converter}`` placeholders in a route path.
 _PATH_PARAMETER_PATTERN = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)(?::[^}]*)?\}")
 # ``authentication_type`` spellings that are not ``AuthType`` values. A
@@ -219,9 +221,10 @@ class _RouteBinding:
     ``input_model`` binds to ``body`` or, when the method takes no ``body``,
     its declared fields splat onto same-named parameters (the input model is
     the writability gate, so a parameter naming a privileged column is never
-    reachable unless the model declares it); every other parameter binds
-    from the query string. Path and query values are validated against the
-    parameter's annotation.
+    reachable unless the model declares it); a ``response`` parameter gets
+    the outgoing response (to set cookies or headers on); every other
+    parameter binds from the query string. Path and query values are
+    validated against the parameter's annotation.
     """
 
     input_model: Optional[Type[BaseModel]]
@@ -229,6 +232,7 @@ class _RouteBinding:
     query_params: Mapping[str, Tuple[TypeAdapter[Any], bool]]
     takes_body: bool
     body_fields: FrozenSet[str]
+    takes_response: bool
 
     @classmethod
     def build(
@@ -254,7 +258,9 @@ class _RouteBinding:
         body_fields: FrozenSet[str] = frozenset()
         if input_model is not None and not takes_body:
             body_fields = frozenset(input_model.model_fields) & frozenset(parameters)
-        bound_elsewhere = set(placeholders) | body_fields | {_BODY_PARAMETER}
+        bound_elsewhere = (
+            set(placeholders) | body_fields | {_BODY_PARAMETER, _RESPONSE_PARAMETER}
+        )
         return cls(
             input_model=input_model,
             path_params={
@@ -270,14 +276,17 @@ class _RouteBinding:
             },
             takes_body=takes_body,
             body_fields=body_fields,
+            takes_response=_RESPONSE_PARAMETER in parameters,
         )
 
-    async def arguments(self, request: Request) -> Dict[str, Any]:
+    async def arguments(self, request: Request, response: Response) -> Dict[str, Any]:
         """Validated keyword arguments for the tagged method."""
         arguments: Dict[str, Any] = {
             name: adapter.validate_python(request.path_params[name])
             for name, adapter in self.path_params.items()
         }
+        if self.takes_response:
+            arguments[_RESPONSE_PARAMETER] = response
         for name, (adapter, required) in self.query_params.items():
             value = request.query_params.get(name)
             if value is not None:
@@ -326,14 +335,14 @@ def _make_rest_endpoint(
     # ``request: Request`` resolves against this module's globals under
     # ``from __future__ import annotations``, so ``Request`` is imported at
     # module level (a function-local import breaks OpenAPI generation).
-    async def endpoint(request: Request) -> Any:
+    async def endpoint(request: Request, response: Response) -> Any:
         try:
             manager = create_manager_factory(
                 manager_cls,
                 getattr(request.app.state, "model_registry", None),
                 auth_type,
             )(request=request)
-            arguments = await binding.arguments(request)
+            arguments = await binding.arguments(request, response)
             result = getattr(manager, method_name)(**arguments)
             if inspect.isawaitable(result):
                 result = await result
@@ -434,6 +443,11 @@ def _build_graphql_resolver(
                 accepted[key] = value
         return accepted
 
+    def _with_response(info: Any, kwargs: Dict[str, Any]) -> Dict[str, Any]:
+        if _RESPONSE_PARAMETER in method_sig.parameters:
+            return {**kwargs, _RESPONSE_PARAMETER: info.context["response"]}
+        return kwargs
+
     if spec.method in ("POST", "PUT", "PATCH") and spec.input_model is not None:
 
         async def resolver(info: Any, input: spec.input_model) -> spec.output_model:  # type: ignore[name-defined]
@@ -448,6 +462,7 @@ def _build_graphql_resolver(
                 kwargs: Dict[str, Any] = {"body": input}
             else:
                 kwargs = _split_kwargs(payload)
+            kwargs = _with_response(info, kwargs)
             result = (
                 target(**kwargs) if instance is not None else target(instance, **kwargs)
             )
@@ -462,7 +477,7 @@ def _build_graphql_resolver(
             target = (
                 getattr(instance, method_name) if instance is not None else bound_method
             )
-            accepted = _split_kwargs(kwargs)
+            accepted = _with_response(info, _split_kwargs(kwargs))
             result = (
                 target(**accepted)
                 if instance is not None

@@ -6,7 +6,7 @@ from typing import Optional
 
 import pytest
 from faker import Faker
-from fastapi import HTTPException
+from fastapi import HTTPException, Response
 from loguru import logger
 
 from zephyrex.AbstractTest import (
@@ -497,6 +497,7 @@ class TestUserManager(AbstractBLLTest):
                 {"email": email, "password": password},
                 ip_address=f"203.0.113.{uuid.uuid4().int % 250 + 1}",
                 model_registry=model_registry,
+                response=Response(),
             )
         finally:
             event.remove(Engine, "before_cursor_execute", _before)

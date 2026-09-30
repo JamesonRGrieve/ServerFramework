@@ -601,6 +601,7 @@ def build_app(model_registry: ModelRegistry):
     # ------------------------------------------------------------------
     from zephyrex.lib.Environment import is_production
     from zephyrex.lib.InboundSecurity import parse_cors_origins, validate_cors_config
+    from zephyrex.lib.SessionCookies import SessionCookieMiddleware
 
     app_env = "production" if is_production() else "development"
     raw_origins = env("APP_CORS_ALLOWED_ORIGINS", default="")
@@ -636,6 +637,9 @@ def build_app(model_registry: ModelRegistry):
             app_env=app_env,
         )
 
+    # Added before CORS so it runs inside it: a CSRF refusal still carries
+    # the CORS headers the browser needs to read it.
+    app.add_middleware(SessionCookieMiddleware)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=cors_origins,
