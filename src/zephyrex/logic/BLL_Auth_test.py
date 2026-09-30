@@ -1912,6 +1912,13 @@ class TestInvitationManager(AbstractBLLTest):
         assert app_invitation.team_id is None
         assert app_invitation.role_id is None
 
+        # Team invitations are issued by the team's admin.
+        manager = self.class_under_test(
+            requester_id=admin_a.id,
+            target_team_id=team_a.id,
+            model_registry=self.model_registry,
+        )
+
         # Test 2: Team-based invitation should have a code (auto-generated)
         team_invitation_data = {
             "team_id": team_a.id,

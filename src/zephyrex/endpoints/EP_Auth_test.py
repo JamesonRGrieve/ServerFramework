@@ -3830,6 +3830,36 @@ class TestInvitationEndpoints(AbstractEPTest):
             (email, "pending")
         ]
 
+    def test_a_direct_invitation_is_answered_with_its_invitee_row(
+        self, server: Any, admin_a: Any
+    ) -> None:
+        from conftest import create_user
+        from zephyrex.testing.factories import create_team
+
+        team = create_team(server, admin_a.id, name=f"Direct {uuid.uuid4().hex[:8]}")
+        invited = create_user(server)
+        invitation = self._invitation(server, admin_a, team, user_id=invited.id)
+
+        listed = server.get(
+            "/v1/user/invitation", headers=self._get_appropriate_headers(invited.jwt)
+        )
+        assert listed.status_code == 200, listed.text
+        (item,) = [i for i in listed.json()["invitations"] if i["team_id"] == team.id]
+        assert item["id"] == invitation["id"]
+        assert item["user"]["id"] == invited.id
+        (invitee,) = item["invitees"]
+        assert (invitee["email"], invitee["status"]) == (invited.email, "pending")
+
+        accepted = self._patch(
+            server, invited, invitation["id"], invitee_id=invitee["id"]
+        )
+        assert accepted.status_code == 200, accepted.text
+        assert accepted.json()["team_id"] == team.id
+        again = server.get(
+            "/v1/user/invitation", headers=self._get_appropriate_headers(invited.jwt)
+        )
+        assert all(i["team_id"] != team.id for i in again.json()["invitations"])
+
     def test_PATCH_404_code_of_another_invitation(
         self, server: Any, admin_a: Any, team_a: Any
     ) -> None:

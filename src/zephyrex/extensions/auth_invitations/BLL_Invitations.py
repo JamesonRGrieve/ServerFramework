@@ -394,7 +394,7 @@ class InvitationManager(AbstractBLLManager, RouterMixin):
 
             invitation = super().create(**kwargs)
             for em in emails:
-                self.add_invitee(invitation_id=invitation.id, email=em)
+                self._add_invitee(invitation, em)
             return invitation
 
         user = None
@@ -414,6 +414,9 @@ class InvitationManager(AbstractBLLManager, RouterMixin):
 
         invitation = super().create(**kwargs)
         if user is not None:
+            # The row the invited user answers with (PATCH takes an invitee
+            # id or a code, and a direct invitation may have no code).
+            self._add_invitee(invitation, user.email)
             invitation.user = user
         return invitation
 
@@ -427,9 +430,13 @@ class InvitationManager(AbstractBLLManager, RouterMixin):
     def add_invitee(self, invitation_id: str, email: str) -> Dict[str, Any]:
         if not invitation_id:
             raise HTTPException(status_code=404, detail="Invitation not found")
+        return self._add_invitee(self.get(id=invitation_id), email)
 
-        invitation = self.get(id=invitation_id)
-
+    def _add_invitee(self, invitation: Any, email: str) -> Dict[str, Any]:
+        """Address ``invitation`` to ``email`` and send it. Takes the
+        invitation itself so ``create`` need not re-read what it just wrote
+        (a creator may not be able to read a team's invitations)."""
+        invitation_id = invitation.id
         user_manager = UserManager(
             requester_id=self.requester.id, model_registry=self.model_registry
         )
@@ -966,13 +973,13 @@ def _invitee_manager_factory(requester_id, target_id, model_registry, **kw):
 def _pending_invitations_for_user(
     user_id: str, email: Optional[str], model_registry: Any
 ) -> List[Dict[str, Any]]:
-    """Invitations awaiting this user's answer: unrevoked, unexpired, and
-    addressed to them directly or by email. An email invitee row counts
-    whether it matches the user or only their address, so invitations sent
-    before they registered are included. Each item carries its ``team`` and
-    ``role`` and, for email invitations, the user's pending ``invitees``
-    rows. Reads run as root, which sees revoked rows, so they are excluded
-    explicitly."""
+    """Invitations awaiting this user's answer: unrevoked, unexpired, with a
+    pending invitee row addressed to them (every addressed invitation has
+    one, direct invitations included). A row counts whether it matches the
+    user or only their address, so invitations sent before they registered
+    are included. Each item carries its ``team``, ``role`` and the user's
+    pending ``invitees`` rows. Reads run as root, which sees revoked rows,
+    so they are excluded explicitly."""
     if not model_registry.is_model_bound(InvitationModel):
         return []
     Base = model_registry.DB.manager.Base
@@ -1006,8 +1013,7 @@ def _pending_invitations_for_user(
             pending_by_invitation.setdefault(row["invitation_id"], []).append(
                 {**row, "status": "pending"}
             )
-    direct_ids = {row["id"] for row in rows(InvitationDB, user_id=user_id)}
-    invitation_ids = (set(pending_by_invitation) | direct_ids) - answered
+    invitation_ids = set(pending_by_invitation) - answered
     if not invitation_ids:
         return []
 
