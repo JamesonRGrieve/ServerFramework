@@ -116,70 +116,6 @@ class ProviderSDK(AbstractSDKHandler):
             ),
         )
 
-    def get_provider_status(self, provider_id: str) -> Dict[str, Any]:
-        """Get provider status."""
-        return cast(
-            Dict[str, Any], self._request("GET", f"/v1/provider/{provider_id}/status")
-        )
-
-    def get_provider_config(self, provider_id: str) -> Dict[str, Any]:
-        """Get provider configuration."""
-        return cast(
-            Dict[str, Any], self._request("GET", f"/v1/provider/{provider_id}/config")
-        )
-
-    def update_provider_config(
-        self, provider_id: str, config: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """Update provider configuration."""
-        return cast(
-            Dict[str, Any],
-            self._request("PATCH", f"/v1/provider/{provider_id}/config", data=config),
-        )
-
-    def enable_provider(self, provider_id: str) -> Dict[str, Any]:
-        """Enable a provider."""
-        return cast(
-            Dict[str, Any], self._request("POST", f"/v1/provider/{provider_id}/enable")
-        )
-
-    def disable_provider(self, provider_id: str) -> Dict[str, Any]:
-        """Disable a provider."""
-        return cast(
-            Dict[str, Any], self._request("POST", f"/v1/provider/{provider_id}/disable")
-        )
-
-    def get_provider_metrics(
-        self,
-        provider_id: str,
-        start_date: Optional[str] = None,
-        end_date: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """Get provider metrics."""
-        params = {}
-        if start_date:
-            params["start_date"] = start_date
-        if end_date:
-            params["end_date"] = end_date
-        return cast(
-            Dict[str, Any],
-            self._request(
-                "GET", f"/v1/provider/{provider_id}/metrics", query_params=params
-            ),
-        )
-
-    def get_provider_logs(
-        self, provider_id: str, limit: int = 100, offset: int = 0
-    ) -> Dict[str, Any]:
-        """Get provider logs."""
-        params = {"limit": limit, "offset": offset}
-        return cast(
-            Dict[str, Any],
-            self._request(
-                "GET", f"/v1/provider/{provider_id}/logs", query_params=params
-            ),
-        )
-
     def batch_update_providers(
         self, updates: Dict[str, Any], provider_ids: List[str]
     ) -> Dict[str, Any]:
@@ -299,78 +235,6 @@ class ProviderInstanceSDK(AbstractSDKHandler):
                 limit=limit,
                 sort_by=sort_by,
                 sort_order=sort_order,
-            ),
-        )
-
-    def get_provider_instance_status(self, instance_id: str) -> Dict[str, Any]:
-        """Get provider instance status."""
-        return cast(
-            Dict[str, Any],
-            self._request("GET", f"/v1/provider/instance/{instance_id}/status"),
-        )
-
-    def get_provider_instance_config(self, instance_id: str) -> Dict[str, Any]:
-        """Get provider instance configuration."""
-        return cast(
-            Dict[str, Any],
-            self._request("GET", f"/v1/provider/instance/{instance_id}/config"),
-        )
-
-    def update_provider_instance_config(
-        self, instance_id: str, config: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """Update provider instance configuration."""
-        return cast(
-            Dict[str, Any],
-            self._request(
-                "PATCH", f"/v1/provider/instance/{instance_id}/config", data=config
-            ),
-        )
-
-    def enable_provider_instance(self, instance_id: str) -> Dict[str, Any]:
-        """Enable a provider instance."""
-        return cast(
-            Dict[str, Any],
-            self._request("POST", f"/v1/provider/instance/{instance_id}/enable"),
-        )
-
-    def disable_provider_instance(self, instance_id: str) -> Dict[str, Any]:
-        """Disable a provider instance."""
-        return cast(
-            Dict[str, Any],
-            self._request("POST", f"/v1/provider/instance/{instance_id}/disable"),
-        )
-
-    def get_provider_instance_metrics(
-        self,
-        instance_id: str,
-        start_date: Optional[str] = None,
-        end_date: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """Get provider instance metrics."""
-        params = {}
-        if start_date:
-            params["start_date"] = start_date
-        if end_date:
-            params["end_date"] = end_date
-        return cast(
-            Dict[str, Any],
-            self._request(
-                "GET",
-                f"/v1/provider/instance/{instance_id}/metrics",
-                query_params=params,
-            ),
-        )
-
-    def get_provider_instance_logs(
-        self, instance_id: str, limit: int = 100, offset: int = 0
-    ) -> Dict[str, Any]:
-        """Get provider instance logs."""
-        params = {"limit": limit, "offset": offset}
-        return cast(
-            Dict[str, Any],
-            self._request(
-                "GET", f"/v1/provider/instance/{instance_id}/logs", query_params=params
             ),
         )
 
@@ -865,7 +729,7 @@ class ProviderInstanceUsageSDK(AbstractSDKHandler):
         return {
             "provider_instance_usage": ResourceConfig(
                 name="provider_instance_usage",
-                name_plural="provider_instance_usage",
+                name_plural="provider_instance_usages",
                 endpoint="/v1/provider/instance/usage",
                 required_fields=["provider_instance_id"],
                 supports_search=True,
@@ -1078,95 +942,26 @@ class ProvidersSDK(AbstractSDKHandler):
     provider_instance_usage: ResourceManager
     extension_instance_abilities: ResourceManager
 
-    def _configure_resources(self) -> Dict[str, ResourceConfig]:
-        """Configure all provider-related resources."""
-        return {
-            "providers": ResourceConfig(
-                name="provider",
-                name_plural="providers",
-                endpoint="/v1/provider",
-                required_fields=["name"],
-                unique_fields=["name"],
-                supports_search=True,
-                supports_batch=True,
-            ),
-            "provider_instances": ResourceConfig(
-                name="provider_instance",
-                name_plural="provider_instances",
-                endpoint="/v1/provider/instance",
-                required_fields=["name", "provider_id"],
-                supports_search=True,
-                supports_batch=True,
-                parent_resource="provider",
-            ),
-            "provider_instance_settings": ResourceConfig(
-                name="provider_instance_setting",
-                name_plural="provider_instance_settings",
-                endpoint="/v1/provider/instance/setting",
-                required_fields=["provider_instance_id", "key", "value"],
-                supports_search=False,
-                supports_batch=False,
-                parent_resource="provider_instance",
-            ),
-            "provider_extensions": ResourceConfig(
-                name="provider_extension",
-                name_plural="provider_extensions",
-                endpoint="/v1/provider/extension",
-                required_fields=["provider_id", "extension_id"],
-                supports_search=True,
-                supports_batch=False,
-                parent_resource="provider",
-            ),
-            "provider_extension_abilities": ResourceConfig(
-                name="provider_extension_ability",
-                name_plural="provider_extension_abilities",
-                endpoint="/v1/extension/ability/provider",
-                required_fields=["provider_extension_id", "ability_id"],
-                supports_search=False,
-                supports_batch=False,
-                parent_resource="provider_extension",
-            ),
-            "rotations": ResourceConfig(
-                name="rotation",
-                name_plural="rotations",
-                endpoint="/v1/rotation",
-                required_fields=["name"],
-                supports_search=True,
-                supports_batch=True,
-            ),
-            "rotation_provider_instances": ResourceConfig(
-                name="rotation_provider_instance",
-                name_plural="rotation_provider_instances",
-                endpoint="/v1/rotation/provider/instance",
-                required_fields=["rotation_id", "provider_instance_id"],
-                supports_search=False,
-                supports_batch=False,
-                parent_resource="rotation",
-            ),
-            "provider_instance_usage": ResourceConfig(
-                name="provider_instance_usage",
-                name_plural="provider_instance_usage",
-                endpoint="/v1/provider/instance/usage",
-                required_fields=["provider_instance_id"],
-                supports_search=True,
-                supports_batch=False,
-                parent_resource="provider_instance",
-            ),
-            "extension_instance_abilities": ResourceConfig(
-                name="extension_instance_ability",
-                name_plural="extension_instance_abilities",
-                endpoint="/v1/extension/ability/provider/instance",
-                required_fields=[
-                    "provider_instance_id",
-                    "provider_extension_ability_id",
-                ],
-                supports_search=True,
-                supports_batch=False,
-                parent_resource="provider_instance",
-            ),
-        }
+    # The resource SDKs this composite exposes; each owns its resource config.
+    _PARTS: tuple = (
+        ProviderSDK,
+        ProviderInstanceSDK,
+        ProviderInstanceSettingSDK,
+        ProviderExtensionSDK,
+        ProviderExtensionAbilitySDK,
+        RotationSDK,
+        RotationProviderInstanceSDK,
+        ProviderInstanceUsageSDK,
+        ExtensionInstanceAbilitySDK,
+    )
 
-    # Provider convenience methods
+    def _configure_resources(self) -> Dict[str, ResourceConfig]:
+        """Every provider resource, as its own SDK configures it."""
+        configs: Dict[str, ResourceConfig] = {}
+        for part in self._PARTS:
+            configs.update(part._configure_resources(self))
+        return configs
+
     def create_provider(
         self,
         name: str,

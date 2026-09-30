@@ -32,6 +32,8 @@ from zephyrex.sdk.AbstractSDKHandler import (
 
 logger = getLogger(__name__)
 
+_API_KEYS_ENDPOINT = "/v1/auth/api-keys"
+
 # ===== User SDK =====
 
 
@@ -252,33 +254,15 @@ class TeamSDK(AbstractSDKHandler):
         self.teams.delete(team_id)
 
     def get_team_users(
-        self, team_id: str, offset: int = 0, limit: int = 100
+        self, team_id: str, include: Optional[List[str]] = None
     ) -> Dict[str, Any]:
-        """Get users in a team."""
-        params = {"offset": offset, "limit": limit}
+        """The team's memberships, each with its user and role; ``include``
+        may add ``team``. Members join through invitations."""
+        params = {"include": ",".join(include)} if include else None
         return cast(
             Dict[str, Any],
             self._request("GET", f"/v1/team/{team_id}/user", query_params=params),
         )
-
-    def add_user_to_team(
-        self, team_id: str, user_id: str, role_id: str
-    ) -> Dict[str, Any]:
-        """Add a user to a team with a specific role."""
-        data = {
-            "user_team": {
-                "user_id": user_id,
-                "team_id": team_id,
-                "role_id": role_id,
-            }
-        }
-        return cast(
-            Dict[str, Any], self._request("POST", f"/v1/team/{team_id}/user", data=data)
-        )
-
-    def remove_user_from_team(self, team_id: str, user_id: str) -> None:
-        """Remove a user from a team."""
-        self._request("DELETE", f"/v1/team/{team_id}/user/{user_id}")
 
     def update_user_role_in_team(
         self, team_id: str, user_id: str, role_id: str
@@ -287,7 +271,7 @@ class TeamSDK(AbstractSDKHandler):
         data = {"user_team": {"role_id": role_id}}
         return cast(
             Dict[str, Any],
-            self._request("PUT", f"/v1/team/{team_id}/user/{user_id}", data=data),
+            self._request("PATCH", f"/v1/team/{team_id}/user/{user_id}", data=data),
         )
 
     def search_teams(
@@ -571,15 +555,41 @@ class InvitationSDK(AbstractSDKHandler):
         invitation_code: Optional[str] = None,
         invitee_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Accept an invitation."""
-        data = {}
+        """Accept an invitation with its code or the caller's invitee id."""
+        return self._answer_invitation(
+            invitation_id, invitation_code, invitee_id, action="accept"
+        )
+
+    def decline_invitation(
+        self,
+        invitation_id: str,
+        invitation_code: Optional[str] = None,
+        invitee_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Decline an invitation with its code or the caller's invitee id."""
+        return self._answer_invitation(
+            invitation_id, invitation_code, invitee_id, action="decline"
+        )
+
+    def _answer_invitation(
+        self,
+        invitation_id: str,
+        invitation_code: Optional[str],
+        invitee_id: Optional[str],
+        action: str,
+    ) -> Dict[str, Any]:
+        answer: Dict[str, str] = {"action": action}
         if invitation_code:
-            data["invitation_code"] = invitation_code
+            answer["invitation_code"] = invitation_code
         if invitee_id:
-            data["invitee_id"] = invitee_id
+            answer["invitee_id"] = invitee_id
         return cast(
             Dict[str, Any],
-            self._request("POST", f"/v1/invitation/{invitation_id}/accept", data=data),
+            self._request(
+                "PATCH",
+                f"/v1/invitation/{invitation_id}",
+                data={"invitation": answer},
+            ),
         )
 
     def batch_update_invitations(
@@ -634,10 +644,6 @@ class SessionSDK(AbstractSDKHandler):
         """Delete a session."""
         self.sessions.delete(session_id)
 
-    def delete_all_sessions(self) -> None:
-        """Delete all sessions for the current user."""
-        self._request("DELETE", "/v1/session")
-
     def list_user_sessions(
         self, user_id: str, offset: int = 0, limit: int = 100, **filters
     ) -> Dict[str, Any]:
@@ -678,7 +684,7 @@ class NotificationSDK(AbstractSDKHandler):
             "notifications": ResourceConfig(
                 name="notification",
                 name_plural="notifications",
-                endpoint="/v1/notification",
+                endpoint="/v1/notifications",
                 supports_search=False,
                 supports_batch=False,
             )
@@ -697,16 +703,15 @@ class NotificationSDK(AbstractSDKHandler):
         """Get a notification by ID."""
         return cast(Dict[str, Any], self.notifications.get(notification_id))
 
-    def mark_notification_read(self, notification_id: str) -> Dict[str, Any]:
-        """Mark a notification as read."""
+    def mark_notification_read(self, user_notification_id: str) -> Dict[str, Any]:
+        """Mark one of the caller's notifications read (the id is the
+        user-notification's, the per-recipient row)."""
         return cast(
             Dict[str, Any],
-            self._request("PATCH", f"/v1/notification/{notification_id}/read"),
+            self._request(
+                "PATCH", f"/v1/user-notifications/{user_notification_id}/read"
+            ),
         )
-
-    def mark_all_notifications_read(self) -> Dict[str, Any]:
-        """Mark all notifications as read."""
-        return cast(Dict[str, Any], self._request("PATCH", "/v1/notification/read"))
 
     def delete_notification(self, notification_id: str) -> None:
         """Delete a notification."""
@@ -719,7 +724,9 @@ class NotificationSDK(AbstractSDKHandler):
 class ApiKeySDK(AbstractSDKHandler):
     """SDK for API key management operations.
 
-    Uses configuration-driven resource management for standardized CRUD operations.
+    Keys are issued and rotated, never created or edited directly: the raw
+    key is returned exactly once, by ``issue_api_key`` or ``rotate_api_key``.
+    Deleting a key revokes it.
     """
 
     api_keys: ResourceManager
@@ -730,22 +737,33 @@ class ApiKeySDK(AbstractSDKHandler):
             "api_keys": ResourceConfig(
                 name="api_key",
                 name_plural="api_keys",
-                endpoint="/v1/api_key",
-                required_fields=["name"],
-                supports_search=False,
+                endpoint=_API_KEYS_ENDPOINT,
+                supports_search=True,
                 supports_batch=False,
             )
         }
 
-    def create_api_key(
-        self, name: str, description: Optional[str] = None, **kwargs
+    def issue_api_key(
+        self,
+        name: str,
+        team_id: Optional[str] = None,
+        role_id: Optional[str] = None,
+        expires_at: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Create a new API key."""
-        api_key_data = {"name": name}
-        if description:
-            api_key_data["description"] = description
-        api_key_data.update(kwargs)
-        return cast(Dict[str, Any], self.api_keys.create(api_key_data))
+        """Issue a key for the caller (or a team they administer); the
+        response's ``key`` is the only time the raw value is returned."""
+        request: Dict[str, Any] = {"name": name}
+        for field, value in (
+            ("team_id", team_id),
+            ("role_id", role_id),
+            ("expires_at", expires_at),
+        ):
+            if value is not None:
+                request[field] = value
+        return cast(
+            Dict[str, Any],
+            self._request("POST", f"{_API_KEYS_ENDPOINT}/issue", data=request),
+        )
 
     def get_api_key(self, api_key_id: str) -> Dict[str, Any]:
         """Get an API key by ID."""
@@ -759,19 +777,18 @@ class ApiKeySDK(AbstractSDKHandler):
             Dict[str, Any], self.api_keys.list(offset=offset, limit=limit, **filters)
         )
 
-    def update_api_key(self, api_key_id: str, **updates) -> Dict[str, Any]:
-        """Update an API key."""
-        return cast(Dict[str, Any], self.api_keys.update(api_key_id, updates))
-
     def delete_api_key(self, api_key_id: str) -> None:
-        """Delete an API key."""
+        """Revoke an API key."""
         self.api_keys.delete(api_key_id)
 
-    def regenerate_api_key(self, api_key_id: str) -> Dict[str, Any]:
-        """Regenerate an API key."""
+    def rotate_api_key(self, api_key_id: str) -> Dict[str, Any]:
+        """Issue a replacement key and revoke this one; the response's
+        ``key`` is the replacement's raw value, returned only here."""
         return cast(
             Dict[str, Any],
-            self._request("POST", f"/v1/api_key/{api_key_id}/regenerate"),
+            self._request(
+                "POST", f"{_API_KEYS_ENDPOINT}/rotate", data={"key_id": api_key_id}
+            ),
         )
 
 
@@ -990,10 +1007,10 @@ class RecoveryQuestionSDK(AbstractSDKHandler):
         """Configure resources for recovery question management."""
         return {
             "recovery_questions": ResourceConfig(
-                name="recovery_question",
-                name_plural="recovery_questions",
-                endpoint="/v1/recovery_question",
-                required_fields=["user_id", "question", "answer_hash"],
+                name="user_recovery_question",
+                name_plural="user_recovery_questions",
+                endpoint="/v1/user/recovery-questions",
+                required_fields=["question", "answer"],
                 supports_search=False,
                 supports_batch=False,
                 parent_resource="user",
@@ -1015,22 +1032,6 @@ class RecoveryQuestionSDK(AbstractSDKHandler):
     def get_recovery_question(self, question_id: str) -> Dict[str, Any]:
         """Get recovery question by ID."""
         return cast(Dict[str, Any], self.recovery_questions.get(question_id))
-
-    def list_recovery_questions(
-        self,
-        user_id: Optional[str] = None,
-        offset: int = 0,
-        limit: int = 100,
-        **filters,
-    ) -> Dict[str, Any]:
-        """List recovery questions."""
-        list_filters = filters.copy()
-        if user_id:
-            list_filters["user_id"] = user_id
-        return cast(
-            Dict[str, Any],
-            self.recovery_questions.list(offset=offset, limit=limit, **list_filters),
-        )
 
     def update_recovery_question(self, question_id: str, **updates) -> Dict[str, Any]:
         """Update recovery question."""
@@ -1058,11 +1059,11 @@ class FailedLoginSDK(AbstractSDKHandler):
         """Configure resources for failed login management."""
         return {
             "failed_logins": ResourceConfig(
-                name="failed_login",
-                name_plural="failed_logins",
-                endpoint="/v1/failed_login",
-                required_fields=["user_id", "ip_address"],
-                supports_search=False,
+                name="failed_login_attempt",
+                name_plural="failed_login_attempts",
+                endpoint="/v1/admin/failed-logins",
+                required_fields=["user_id"],
+                supports_search=True,
                 supports_batch=False,
                 parent_resource="user",
             )
@@ -1207,133 +1208,31 @@ class AuthSDK(AbstractSDKHandler):
     failed_logins: ResourceManager
     permissions: ResourceManager
 
-    def _configure_resources(self) -> Dict[str, ResourceConfig]:
-        """Configure all authentication-related resources."""
-        return {
-            "users": ResourceConfig(
-                name="user",
-                name_plural="users",
-                endpoint="/v1/user",
-                required_fields=["email", "first_name", "last_name"],
-                unique_fields=["email"],
-                supports_search=True,
-                supports_batch=True,
-            ),
-            "teams": ResourceConfig(
-                name="team",
-                name_plural="teams",
-                endpoint="/v1/team",
-                required_fields=["name"],
-                unique_fields=["name"],
-                supports_search=True,
-                supports_batch=True,
-            ),
-            "roles": ResourceConfig(
-                name="role",
-                name_plural="roles",
-                endpoint="/v1/role",
-                required_fields=["name", "team_id"],
-                unique_fields=["name"],
-                supports_search=True,
-                supports_batch=True,
-                parent_resource="team",
-            ),
-            "user_teams": ResourceConfig(
-                name="user_team",
-                name_plural="user_teams",
-                endpoint="/v1/user_team",
-                required_fields=["user_id", "team_id", "role_id"],
-                supports_search=True,
-                supports_batch=True,
-            ),
-            "invitations": ResourceConfig(
-                name="invitation",
-                name_plural="invitations",
-                endpoint="/v1/invitation",
-                required_fields=["team_id", "role_id"],
-                supports_search=True,
-                supports_batch=True,
-                parent_resource="team",
-            ),
-            "sessions": ResourceConfig(
-                name="session",
-                name_plural="sessions",
-                endpoint="/v1/session",
-                supports_search=False,
-                supports_batch=False,
-            ),
-            "notifications": ResourceConfig(
-                name="notification",
-                name_plural="notifications",
-                endpoint="/v1/notification",
-                supports_search=False,
-                supports_batch=False,
-            ),
-            "api_keys": ResourceConfig(
-                name="api_key",
-                name_plural="api_keys",
-                endpoint="/v1/api_key",
-                required_fields=["name"],
-                supports_search=False,
-                supports_batch=False,
-            ),
-            "user_metadata": ResourceConfig(
-                name="metadata",
-                name_plural="metadata",
-                endpoint="/v1/user/{user_id}/metadata",
-                required_fields=["key", "value"],
-                supports_search=False,
-                supports_batch=False,
-                parent_resource="user",
-            ),
-            "team_metadata": ResourceConfig(
-                name="metadata",
-                name_plural="metadata",
-                endpoint="/v1/team/{team_id}/metadata",
-                required_fields=["key", "value"],
-                supports_search=False,
-                supports_batch=False,
-                parent_resource="team",
-            ),
-            "user_credentials": ResourceConfig(
-                name="user_credential",
-                name_plural="user_credentials",
-                endpoint="/v1/user_credential",
-                required_fields=["user_id", "credential_type", "credential_data"],
-                supports_search=False,
-                supports_batch=False,
-                parent_resource="user",
-            ),
-            "recovery_questions": ResourceConfig(
-                name="recovery_question",
-                name_plural="recovery_questions",
-                endpoint="/v1/recovery_question",
-                required_fields=["user_id", "question", "answer_hash"],
-                supports_search=False,
-                supports_batch=False,
-                parent_resource="user",
-            ),
-            "failed_logins": ResourceConfig(
-                name="failed_login",
-                name_plural="failed_logins",
-                endpoint="/v1/failed_login",
-                required_fields=["user_id", "ip_address"],
-                supports_search=False,
-                supports_batch=False,
-                parent_resource="user",
-            ),
-            "permissions": ResourceConfig(
-                name="permission",
-                name_plural="permissions",
-                endpoint="/v1/permission",
-                required_fields=["name"],
-                unique_fields=["name"],
-                supports_search=True,
-                supports_batch=False,
-            ),
-        }
+    # The resource SDKs this composite exposes; each owns its resource config.
+    _PARTS: tuple = (
+        UserSDK,
+        TeamSDK,
+        RoleSDK,
+        UserTeamSDK,
+        InvitationSDK,
+        SessionSDK,
+        NotificationSDK,
+        ApiKeySDK,
+        UserMetadataSDK,
+        TeamMetadataSDK,
+        UserCredentialSDK,
+        RecoveryQuestionSDK,
+        FailedLoginSDK,
+        PermissionSDK,
+    )
 
-    # Authentication methods
+    def _configure_resources(self) -> Dict[str, ResourceConfig]:
+        """Every authentication resource, as its own SDK configures it."""
+        configs: Dict[str, ResourceConfig] = {}
+        for part in self._PARTS:
+            configs.update(part._configure_resources(self))
+        return configs
+
     def login(self, email: str, password: str) -> Dict[str, Any]:
         """Login with email and password credentials."""
         auth_string = f"{email}:{password}"
