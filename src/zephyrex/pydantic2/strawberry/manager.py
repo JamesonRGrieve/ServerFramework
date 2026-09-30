@@ -33,6 +33,7 @@ from zephyrex.lib.AbstractPydantic2 import ErrorHandlerMixin
 from zephyrex.lib.Environment import inflection
 from zephyrex.lib.Logging import logger
 from zephyrex.lib.TypeUnions import unwrap_optional
+from zephyrex.pydantic2.fastapi.types import AuthType
 from zephyrex.pydantic2.manager_contract import (
     ManagerContract,
     SelfScopedManagerContract,
@@ -330,10 +331,21 @@ class GraphQLManager(ErrorHandlerMixin):
         )
         annotations["return"] = return_type
 
+        # The generated input type names its fields as GraphQL does
+        # (``apiKey``); map them back to the model's own (``api_key``).
+        model_field_for = (
+            {convert_field_name(name): name for name in input_model.model_fields}
+            if input_model is not None
+            else {}
+        )
+
         async def typed_resolver(info: Info, **kwargs: Any) -> Any:
             if input_model is not None and kwargs.get("input") is not None:
                 kwargs["input"] = input_model.model_validate(
-                    strawberry.asdict(kwargs["input"])
+                    {
+                        model_field_for.get(name, name): value
+                        for name, value in strawberry.asdict(kwargs["input"]).items()
+                    }
                 )
             result = resolver(info=info, **kwargs)
             if inspect.isawaitable(result):
@@ -478,8 +490,25 @@ class GraphQLManager(ErrorHandlerMixin):
         """
         from zephyrex.lib.CustomRoute import register_custom_routes_to_graphql
 
+        def manager_for(info: Info, auth_type: AuthType) -> Any:
+            # Resolvers are built once per (manager, method) and shared by
+            # every app in the process, so the registry is the serving app's,
+            # read from the request, never one captured here. The requester
+            # is decided as on REST: a public route runs without one; any
+            # other needs the caller's.
+            registry = info.context["request"].app.state.model_registry
+            requester_id = None
+            if auth_type != AuthType.NONE:
+                requester_id = self._get_context_from_info(info).get("requester_id")
+                if not requester_id:
+                    raise PermissionError(
+                        "Unable to authenticate user for GraphQL query - no "
+                        "requester_id found in context"
+                    )
+            return manager_class(model_registry=registry, requester_id=requester_id)
+
         register_custom_routes_to_graphql(
-            manager_class, contribution_registry=self._contributions
+            manager_class, manager_for, contribution_registry=self._contributions
         )
 
     def _generate_components_for_model(

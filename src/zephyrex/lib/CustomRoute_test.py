@@ -334,6 +334,10 @@ def test_infer_graphql_kind_invalid_override_raises():
         _infer_graphql_kind(spec)
 
 
+def _registration_only(**_):
+    raise AssertionError("these tests do not run the resolver")
+
+
 def test_register_post_emits_mutation():
     class ManagerA:
         @custom_route(
@@ -346,7 +350,9 @@ def test_register_post_emits_mutation():
             return PromoteOut(ok=True, new_role=body.role)
 
     reg = GraphQLContributionRegistry()
-    n = register_custom_routes_to_graphql(ManagerA, contribution_registry=reg)
+    n = register_custom_routes_to_graphql(
+        ManagerA, _registration_only, contribution_registry=reg
+    )
     assert n == 1
 
     mutations = reg.resolve_fields(FieldKind.MUTATION)
@@ -364,7 +370,9 @@ def test_register_get_emits_query():
             return FetchOut(items=["a", "b"])
 
     reg = GraphQLContributionRegistry()
-    register_custom_routes_to_graphql(ManagerB, contribution_registry=reg)
+    register_custom_routes_to_graphql(
+        ManagerB, _registration_only, contribution_registry=reg
+    )
     queries = reg.resolve_fields(FieldKind.QUERY)
     assert "manager_b_list_items" in queries
     assert queries["manager_b_list_items"].return_type is FetchOut
@@ -384,7 +392,9 @@ def test_explicit_graphql_kind_query_for_post():
             return FetchOut(items=[body.role])
 
     reg = GraphQLContributionRegistry()
-    register_custom_routes_to_graphql(ManagerC, contribution_registry=reg)
+    register_custom_routes_to_graphql(
+        ManagerC, _registration_only, contribution_registry=reg
+    )
     assert "manager_c_search" in reg.resolve_fields(FieldKind.QUERY)
     assert "manager_c_search" not in reg.resolve_fields(FieldKind.MUTATION)
 
@@ -402,7 +412,9 @@ def test_expose_in_excluding_graphql_skips_registration():
             return None
 
     reg = GraphQLContributionRegistry()
-    n = register_custom_routes_to_graphql(ManagerD, contribution_registry=reg)
+    n = register_custom_routes_to_graphql(
+        ManagerD, _registration_only, contribution_registry=reg
+    )
     assert n == 0
     assert reg.resolve_fields(FieldKind.MUTATION) == {}
 
@@ -420,7 +432,9 @@ def test_expose_in_graphql_explicit_registers():
             return PromoteOut(ok=True, new_role=body.role)
 
     reg = GraphQLContributionRegistry()
-    register_custom_routes_to_graphql(ManagerE, contribution_registry=reg)
+    register_custom_routes_to_graphql(
+        ManagerE, _registration_only, contribution_registry=reg
+    )
     assert "manager_e_run" in reg.resolve_fields(FieldKind.MUTATION)
 
 
@@ -438,7 +452,7 @@ def test_resolver_invokes_method_and_coerces_dict_to_output_model():
     reg = GraphQLContributionRegistry()
     register_custom_routes_to_graphql(
         ManagerF,
-        manager_factory=lambda info=None: ManagerF(),
+        manager_factory=lambda **_: ManagerF(),
         contribution_registry=reg,
     )
     contribution = reg.resolve_fields(FieldKind.MUTATION)["manager_f_promote"]
@@ -463,7 +477,7 @@ def test_resolver_passes_through_model_instance():
     reg = GraphQLContributionRegistry()
     register_custom_routes_to_graphql(
         ManagerG,
-        manager_factory=lambda info=None: ManagerG(),
+        manager_factory=lambda **_: ManagerG(),
         contribution_registry=reg,
     )
     contribution = reg.resolve_fields(FieldKind.MUTATION)["manager_g_demote"]
@@ -484,8 +498,12 @@ def test_register_is_idempotent_for_repeated_calls():
             return PromoteOut(ok=True, new_role=body.role)
 
     reg = GraphQLContributionRegistry()
-    n1 = register_custom_routes_to_graphql(ManagerH, contribution_registry=reg)
-    n2 = register_custom_routes_to_graphql(ManagerH, contribution_registry=reg)
+    n1 = register_custom_routes_to_graphql(
+        ManagerH, _registration_only, contribution_registry=reg
+    )
+    n2 = register_custom_routes_to_graphql(
+        ManagerH, _registration_only, contribution_registry=reg
+    )
     assert n1 == 1
     assert n2 == 0
     mutations = reg.resolve_fields(FieldKind.MUTATION)
@@ -507,9 +525,19 @@ def test_reset_registry_receives_the_routes_again():
             return None
 
     reg = GraphQLContributionRegistry()
-    assert register_custom_routes_to_graphql(ManagerR, contribution_registry=reg) == 1
+    assert (
+        register_custom_routes_to_graphql(
+            ManagerR, _registration_only, contribution_registry=reg
+        )
+        == 1
+    )
     reg.reset()
-    assert register_custom_routes_to_graphql(ManagerR, contribution_registry=reg) == 1
+    assert (
+        register_custom_routes_to_graphql(
+            ManagerR, _registration_only, contribution_registry=reg
+        )
+        == 1
+    )
     assert "manager_r_promote" in reg.resolve_fields(FieldKind.MUTATION)
 
 
@@ -522,7 +550,7 @@ def test_get_resolver_with_no_input_model():
     reg = GraphQLContributionRegistry()
     register_custom_routes_to_graphql(
         ManagerI,
-        manager_factory=lambda info=None: ManagerI(),
+        manager_factory=lambda **_: ManagerI(),
         contribution_registry=reg,
     )
     contribution = reg.resolve_fields(FieldKind.QUERY)["manager_i_list_things"]
@@ -545,7 +573,9 @@ def test_register_uses_method_description_or_summary():
             return None
 
     reg = GraphQLContributionRegistry()
-    register_custom_routes_to_graphql(ManagerJ, contribution_registry=reg)
+    register_custom_routes_to_graphql(
+        ManagerJ, _registration_only, contribution_registry=reg
+    )
     contribution = reg.resolve_fields(FieldKind.MUTATION)["manager_j_promote"]
     assert contribution.description == "Detailed description"
 
@@ -563,7 +593,9 @@ def test_register_uses_summary_when_description_absent():
             return None
 
     reg = GraphQLContributionRegistry()
-    register_custom_routes_to_graphql(ManagerK, contribution_registry=reg)
+    register_custom_routes_to_graphql(
+        ManagerK, _registration_only, contribution_registry=reg
+    )
     contribution = reg.resolve_fields(FieldKind.MUTATION)["manager_k_promote"]
     assert contribution.description == "Promote a user"
 
@@ -593,7 +625,9 @@ def test_multiple_routes_on_one_manager_register_independently():
             return None
 
     reg = GraphQLContributionRegistry()
-    n = register_custom_routes_to_graphql(ManagerL, contribution_registry=reg)
+    n = register_custom_routes_to_graphql(
+        ManagerL, _registration_only, contribution_registry=reg
+    )
     assert n == 3
     mutations = reg.resolve_fields(FieldKind.MUTATION)
     queries = reg.resolve_fields(FieldKind.QUERY)

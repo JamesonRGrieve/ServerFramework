@@ -411,11 +411,16 @@ def _infer_graphql_kind(spec: CustomRouteSpec) -> str:
     return "query" if spec.method == "GET" else "mutation"
 
 
+# Builds the manager a GraphQL custom-route resolver runs on:
+# ``factory(info=..., auth_type=...)``, deciding the requester as REST does.
+GraphQLManagerFactory = Callable[..., Any]
+
+
 def _build_graphql_resolver(
     manager_cls: type,
     method_name: str,
     spec: CustomRouteSpec,
-    manager_factory: Optional[Callable[..., Any]] | None = None,
+    manager_factory: GraphQLManagerFactory,
 ) -> Callable[..., Any]:
     """Wrap a tagged method as a Strawberry-compatible resolver.
 
@@ -423,18 +428,11 @@ def _build_graphql_resolver(
     spec's ``input_model`` and returns an instance of ``output_model``.
     Path parameters embedded in ``spec.path`` (``{id}`` style) become
     keyword arguments on the resolver so GraphQL clients can pass them
-    natively.
+    natively. The method runs on the manager ``manager_factory`` builds for
+    the caller and the route's authentication type, as on REST.
     """
     bound_method = getattr(manager_cls, method_name)
     method_sig = inspect.signature(_authored_method(bound_method))
-
-    def _instantiate_manager(info: Any) -> Any:
-        if manager_factory is not None:
-            return manager_factory(info=info)
-        try:
-            return manager_cls()
-        except Exception:
-            return None
 
     def _split_kwargs(payload: Dict[str, Any]) -> Dict[str, Any]:
         accepted: Dict[str, Any] = {}
@@ -451,21 +449,16 @@ def _build_graphql_resolver(
     if spec.method in ("POST", "PUT", "PATCH") and spec.input_model is not None:
 
         async def resolver(info: Any, input: spec.input_model) -> spec.output_model:  # type: ignore[name-defined]
-            instance = _instantiate_manager(info)
+            manager = manager_factory(info=info, auth_type=spec.auth_type)
             payload = (
                 input.model_dump() if hasattr(input, "model_dump") else dict(input)
-            )
-            target = (
-                getattr(instance, method_name) if instance is not None else bound_method
             )
             if "body" in method_sig.parameters:
                 kwargs: Dict[str, Any] = {"body": input}
             else:
                 kwargs = _split_kwargs(payload)
             kwargs = _with_response(info, kwargs)
-            result = (
-                target(**kwargs) if instance is not None else target(instance, **kwargs)
-            )
+            result = getattr(manager, method_name)(**kwargs)
             if inspect.isawaitable(result):
                 result = await result
             return _coerce_output(result, spec.output_model)
@@ -473,16 +466,9 @@ def _build_graphql_resolver(
     else:
 
         async def resolver(info: Any, **kwargs: Any) -> spec.output_model:  # type: ignore[name-defined, misc]
-            instance = _instantiate_manager(info)
-            target = (
-                getattr(instance, method_name) if instance is not None else bound_method
-            )
+            manager = manager_factory(info=info, auth_type=spec.auth_type)
             accepted = _with_response(info, _split_kwargs(kwargs))
-            result = (
-                target(**accepted)
-                if instance is not None
-                else target(instance, **accepted)
-            )
+            result = getattr(manager, method_name)(**accepted)
             if inspect.isawaitable(result):
                 result = await result
             return _coerce_output(result, spec.output_model)
@@ -529,7 +515,7 @@ def graphql_field_name(manager_cls: type, method_name: str) -> str:
 
 def register_custom_routes_to_graphql(
     manager_cls: type,
-    manager_factory: Optional[Callable[..., Any]] | None = None,
+    manager_factory: GraphQLManagerFactory,
     *,
     contribution_registry: Optional[Any] | None = None,
     extension_name: str = "core",
