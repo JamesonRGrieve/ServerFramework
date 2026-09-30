@@ -79,12 +79,18 @@ class SessionModel(
 
     model_config = {"extra": "ignore", "populate_by_name": True}
     Manager: ClassVar[Type["SessionManager"]] = None  # type: ignore[assignment]
-    session_key: str = Field(
-        ..., description="Unique session identifier used in JWT jti claim"
+    # Server-side only, never in a response: the key is the JWT's jti and the
+    # hash guards the refresh token. Optional because responses omit them.
+    session_key: Optional[str] = Field(
+        None,
+        exclude=True,
+        description="Unique session identifier used in JWT jti claim (write-only)",
     )
     jwt_issued_at: datetime = Field(..., description="When the JWT was issued")
     refresh_token_hash: Optional[str] = Field(
-        None, description="Hash of refresh token if refresh mechanism is enabled"
+        None,
+        exclude=True,
+        description="Hash of refresh token if refresh mechanism is enabled (write-only)",
     )
     device_type: Optional[str] = Field(
         None,
