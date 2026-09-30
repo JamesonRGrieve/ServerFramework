@@ -7,7 +7,7 @@ from time import monotonic
 from types import ModuleType
 from typing import Any, Callable, ClassVar, Dict, List, Optional, Set, Tuple, Type
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import HTTPException, status
 from ordered_set import OrderedSet
 from pydantic import BaseModel
 
@@ -24,7 +24,6 @@ from zephyrex.lib.Paths import (
     extensions_dir as _resolve_extensions_dir,
     src_dir as _resolve_src_dir,
 )
-from zephyrex.pydantic2.fastapi.types import CustomRouteConfig
 from zephyrex.pydantic2.registry import classproperty
 from zephyrex.logic.BLL_Providers import ProviderInstanceModel, RotationManager
 
@@ -109,43 +108,6 @@ def ability(name: Optional[str] = None, enabled: bool = True) -> Callable:
 class ExtensionRegistry(AbstractRegistry):
     """Registry for managing static extension classes and their models."""
 
-    extensions_static_routes: ClassVar[Dict[str, Dict]] = {}
-
-    @classmethod
-    def register_route(cls, extension_name: str, method: Callable):
-        router_info = cls.extensions_static_routes.get(extension_name)
-        if router_info is None:
-            router = APIRouter(
-                prefix=f"/extensions/{extension_name}",
-                tags=[f"{extension_name} Extension"],
-            )
-            router_info = {
-                "router": router,
-                "model_name": f"ext_{extension_name}_static",
-                "module_name": f"Extension_{extension_name}_StaticRoutes",
-            }
-            cls.extensions_static_routes[extension_name] = router_info
-        else:
-            router = router_info["router"]
-
-        method_name = method.__name__
-        config: CustomRouteConfig
-        for config in method._static_route_config:  # type: ignore[attr-defined]
-            path = config.path
-            http_method = config.method.value.lower()
-            router_method = getattr(router, http_method)
-            router_method(
-                path,
-                summary=config.summary or f"{extension_name}.{method_name}",
-                description=config.description or method.__doc__,
-                response_model=None,  # Let FastAPI infer from return type
-            )(method)
-
-            logger.debug(
-                f"Added static route: {http_method.upper()} "
-                f"/extensions/{extension_name}{path} -> {method_name}"
-            )
-
     def __init__(
         self,
         extensions_csv: str,
@@ -192,11 +154,6 @@ class ExtensionRegistry(AbstractRegistry):
             logger.debug("No valid extension names found")
             return
 
-        # Resolve the extensions root once. When no override is provided this
-        # reproduces the historical ``<src_dir>/extensions`` lookup.
-        extensions_root = self._extensions_root()
-        src_dir = _resolve_src_dir()
-
         # Register each requested extension - dependencies will be handled automatically
         for extension_name in extension_names:
             try:
@@ -222,22 +179,6 @@ class ExtensionRegistry(AbstractRegistry):
                     module_name = f"zephyrex.extensions.{extension_name}.{os.path.basename(file_path)[:-3]}"
 
                     try:
-                        # Create extension router
-                        router_info = ExtensionRegistry.extensions_static_routes.get(
-                            extension_name
-                        )
-                        if router_info is None:
-                            ExtensionRegistry.extensions_static_routes[
-                                extension_name
-                            ] = {
-                                "router": APIRouter(
-                                    prefix=f"/extensions/{extension_name}",
-                                    tags=[f"{extension_name} Extension"],
-                                ),
-                                "model_name": f"ext_{extension_name}_static",
-                                "module_name": f"Extension_{extension_name}_StaticRoutes",
-                            }
-
                         # Item 61: dual-name registration via the
                         # canonical loader. This ensures intra-extension
                         # imports keep resolving when the extensions tree
@@ -472,7 +413,6 @@ class ExtensionRegistry(AbstractRegistry):
                         continue
 
                     file_stem = os.path.basename(dep_file)[:-3]
-                    module_name = f"zephyrex.extensions.{dep_name}.{file_stem}"
 
                     # Item 61: dual-name registration so intra-extension
                     # imports keep working when the extensions tree lives
@@ -524,8 +464,6 @@ class ExtensionRegistry(AbstractRegistry):
         from zephyrex.lib.Logging import logger
 
         for extension_name in extension_names:
-            extension_scope = f"zephyrex.extensions.{extension_name}"
-
             try:
                 # Check extension type
                 extension_class = self._extension_name_map.get(extension_name)
@@ -1386,28 +1324,23 @@ class AbstractStaticExtensionMeta(ABCMeta):
     def __new__(mcs, name, bases, namespace):
         cls = super().__new__(mcs, name, bases, namespace)
 
-        # Register all @static_routes upon class definition. Found without
-        # evaluating class attributes: a class property such as ``root``
-        # queries the database, which defining a class must never do.
-        from zephyrex.extensions.AbstractExtensionProvider import ExtensionRegistry
+        # Extension classes serve no routes: a route lives on a RouterMixin
+        # manager. A @static_route here used to be collected and never
+        # mounted (#241), so it is refused at definition instead. Found
+        # without evaluating class attributes: a class property such as
+        # ``root`` queries the database, which defining a class must never do.
         from zephyrex.lib.ClassMembers import decorated_functions
 
-        for _, route_method, _ in decorated_functions(cls, "_static_route_config"):
-            paths = namespace["__module__"].split(".")
-            # Accept both the post-Item-60 layout (zephyrex.extensions.<name>...)
-            # and the legacy bare-extensions layout (extensions.<name>...) so
-            # ExtensionLoader's synthesized "extensions.<name>.<file>" sys.modules
-            # alias keeps resolving without metaclass complaint.
-            if paths[0] == "zephyrex" and len(paths) > 2 and paths[1] == "extensions":
-                extension_name = paths[2]
-            elif paths[0] == "extensions":
-                extension_name = paths[1]
-            else:
-                raise ValueError(
-                    "'__module__' not from 'extensions'. It looks like this class is not an extension | __module__ = "
-                    + namespace["__module__"]
-                )
-            ExtensionRegistry.register_route(extension_name, route_method)
+        declared = [
+            method_name
+            for method_name, _, _ in decorated_functions(cls, "_static_route_config")
+        ]
+        if declared:
+            raise TypeError(
+                f"{name} declares @static_route on {declared}, but extension "
+                "classes serve no routes: put them on a RouterMixin manager "
+                "as @custom_route"
+            )
         return cls
 
 

@@ -149,12 +149,15 @@ def static_route(
     tags: Optional[List[str]] = None,
 ) -> Callable[[Callable], Callable]:
     """
-    Decorator for defining static routes on extension static methods.
+    Decorator for a route on a RouterMixin manager that bypasses its CRUD
+    routes (e.g. ``UserManager``'s registration ``POST /v1/user``). Extension
+    classes serve no routes and refuse it; new routes should prefer the typed
+    ``@custom_route``.
 
     Usage:
-        @static_route("/status", method="GET", auth_type=AuthType.NONE)
-        def get_extension_status(cls) -> dict:
-            return {"status": "active", "version": cls.version}
+        @staticmethod
+        @static_route("", method="POST", auth_type=AuthType.NONE, status_code=201)
+        def register(registration_data: dict, model_registry) -> dict: ...
     """
 
     def decorator(func: Callable) -> Callable:
