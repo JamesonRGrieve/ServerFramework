@@ -1386,31 +1386,28 @@ class AbstractStaticExtensionMeta(ABCMeta):
     def __new__(mcs, name, bases, namespace):
         cls = super().__new__(mcs, name, bases, namespace)
 
-        # Register all @static_routes upon class definition
+        # Register all @static_routes upon class definition. Found without
+        # evaluating class attributes: a class property such as ``root``
+        # queries the database, which defining a class must never do.
         from zephyrex.extensions.AbstractExtensionProvider import ExtensionRegistry
+        from zephyrex.lib.ClassMembers import decorated_functions
 
-        for attr_name in dir(cls):
-            attr = getattr(cls, attr_name)
-            if hasattr(attr, "_static_route_config"):
-                paths = namespace["__module__"].split(".")
-                # Accept both the post-Item-60 layout (zephyrex.extensions.<name>...)
-                # and the legacy bare-extensions layout (extensions.<name>...) so
-                # ExtensionLoader's synthesized "extensions.<name>.<file>" sys.modules
-                # alias keeps resolving without metaclass complaint.
-                if (
-                    paths[0] == "zephyrex"
-                    and len(paths) > 2
-                    and paths[1] == "extensions"
-                ):
-                    extension_name = paths[2]
-                elif paths[0] == "extensions":
-                    extension_name = paths[1]
-                else:
-                    raise ValueError(
-                        "'__module__' not from 'extensions'. It looks like this class is not an extension | __module__ = "
-                        + namespace["__module__"]
-                    )
-                ExtensionRegistry.register_route(extension_name, attr)
+        for _, route_method, _ in decorated_functions(cls, "_static_route_config"):
+            paths = namespace["__module__"].split(".")
+            # Accept both the post-Item-60 layout (zephyrex.extensions.<name>...)
+            # and the legacy bare-extensions layout (extensions.<name>...) so
+            # ExtensionLoader's synthesized "extensions.<name>.<file>" sys.modules
+            # alias keeps resolving without metaclass complaint.
+            if paths[0] == "zephyrex" and len(paths) > 2 and paths[1] == "extensions":
+                extension_name = paths[2]
+            elif paths[0] == "extensions":
+                extension_name = paths[1]
+            else:
+                raise ValueError(
+                    "'__module__' not from 'extensions'. It looks like this class is not an extension | __module__ = "
+                    + namespace["__module__"]
+                )
+            ExtensionRegistry.register_route(extension_name, route_method)
         return cls
 
 

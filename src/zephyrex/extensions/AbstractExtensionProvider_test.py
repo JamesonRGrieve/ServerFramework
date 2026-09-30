@@ -1477,6 +1477,23 @@ class TestExtensionLoadDeniesPathTraversal:
 
 
 @pytest.mark.security
+class TestDefiningAnExtensionEvaluatesNothing:
+    def test_class_properties_are_not_read_at_class_definition(self):
+        """Defining an extension class must not evaluate its class
+        properties: ``root`` queries whichever database is attached, so a
+        definition could fail (or query) depending on test order."""
+
+        class _Probe(AbstractStaticExtension):
+            name = "definition_probe"
+            description = "probe"
+
+            @classproperty
+            def expensive(cls):
+                raise AssertionError("evaluated at class definition")
+
+        assert _Probe.name == "definition_probe"
+
+
 class TestExtensionRegistryDeniesOverride:
     """Registering two extensions with the same name must not silently win."""
 
