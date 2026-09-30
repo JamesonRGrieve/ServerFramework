@@ -1,22 +1,28 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # Pre-commit gate — blocks commit on any regression.
 # Install: git config core.hooksPath .githooks
 set -euo pipefail
 
-VENV_PYTHON="$(dirname "$(git rev-parse --git-dir)")/.venv/bin/python"
+REPO="$(git rev-parse --show-toplevel)"
+VENV_PYTHON="$REPO/.venv/bin/python"
 [ -x "$VENV_PYTHON" ] || VENV_PYTHON=python3
+# The whole run, kept so a failure can be read after the fact.
+SUITE_LOG="$(git rev-parse --absolute-git-dir)/pre-commit-last.log"
+# Lines of the suite's own summary echoed when it passes.
+SUMMARY_LINES=3
 
 echo "[pre-commit] Running test suite..."
-"$VENV_PYTHON" -m pytest src/ \
-  -q --tb=no 2>&1 | tail -3
-if [ ${PIPESTATUS[0]} -ne 0 ]; then
-  echo "[pre-commit] FAIL: tests did not pass"
+if ! "$VENV_PYTHON" -m pytest src/ -q --tb=short -rfE >"$SUITE_LOG" 2>&1; then
+  grep -E "^(FAILED|ERROR) " "$SUITE_LOG" || true
+  tail -n "$SUMMARY_LINES" "$SUITE_LOG"
+  echo "[pre-commit] FAIL: tests did not pass (full output: $SUITE_LOG)"
   exit 1
 fi
+tail -n "$SUMMARY_LINES" "$SUITE_LOG"
 
 echo "[pre-commit] Running ratchet checks..."
-"$VENV_PYTHON" scripts/ratchet-check.py
-if [ $? -ne 0 ]; then
+if ! "$VENV_PYTHON" scripts/ratchet-check.py; then
   echo "[pre-commit] FAIL: ratchet regression detected"
   exit 1
 fi
