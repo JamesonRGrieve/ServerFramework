@@ -1615,25 +1615,34 @@ class UserManager(AbstractBLLManager, RouterMixin):
             # failure into the next legitimate attempt.
             UserManager._lockout_tracker.clear(lockout_key, "password_login")
 
-            # A user with a verified second factor gets a challenge, not a
-            # session: POST /v1/user/authorize/mfa completes the login.
-            login_methods = _mfa_hooks["login_methods"]
-            methods = login_methods(user["id"], model_registry) if login_methods else []
-            if methods:
-                return {
-                    "mfa_required": True,
-                    "challenge_token": issue_single_use_token(
-                        audience=MFA_CHALLENGE_AUDIENCE,
-                        subject=str(user["id"]),
-                        ttl_seconds=MFA_CHALLENGE_TTL_SECONDS,
-                    ),
-                    "methods": methods,
-                }
+            challenge = UserManager.mfa_challenge(str(user["id"]), model_registry)
+            if challenge is not None:
+                return challenge
             return UserManager._complete_login(user, model_registry, response)
         finally:
             # Close session if we created it
             if close_session:
                 model_registry.DB.session().close()
+
+    @staticmethod
+    def mfa_challenge(user_id: str, model_registry: Any) -> Optional[Dict[str, Any]]:
+        """For a user with a verified second factor, the challenge any first
+        factor (password, magic link) yields instead of a session:
+        ``{mfa_required, challenge_token, methods}``, redeemed at POST
+        /v1/user/authorize/mfa. None for a user without one."""
+        login_methods = _mfa_hooks["login_methods"]
+        methods = login_methods(user_id, model_registry) if login_methods else []
+        if not methods:
+            return None
+        return {
+            "mfa_required": True,
+            "challenge_token": issue_single_use_token(
+                audience=MFA_CHALLENGE_AUDIENCE,
+                subject=user_id,
+                ttl_seconds=MFA_CHALLENGE_TTL_SECONDS,
+            ),
+            "methods": methods,
+        }
 
     @staticmethod
     @rate_limit(DEFAULT_AUTH_RATE_LIMIT, scope="ip")

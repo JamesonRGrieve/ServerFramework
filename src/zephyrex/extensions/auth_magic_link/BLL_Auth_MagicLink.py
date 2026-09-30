@@ -10,7 +10,7 @@ Walks through the door opened by the framework primitives in ``BLL_Auth.py``:
 """
 
 from datetime import datetime, timezone
-from typing import Callable, ClassVar, List, Optional
+from typing import Callable, ClassVar, Dict, List, Optional
 
 from fastapi import Response
 from pydantic import BaseModel, Field
@@ -79,11 +79,21 @@ class MagicLinkVerify(BaseModel):
 
 
 class MagicLinkVerifyResponse(BaseModel):
-    token: str = Field(..., description="JWT to present as Authorization: Bearer")
-    session_key: str
+    """Either a session (``token`` and the session fields) or, for a user
+    with a verified second factor, an MFA challenge (``mfa_required``,
+    ``challenge_token``, ``methods``) to complete at POST
+    /v1/user/authorize/mfa, exactly as a password login would."""
+
     user_id: str
-    grant_type: str
-    expires_at: datetime
+    token: Optional[str] = Field(
+        None, description="JWT to present as Authorization: Bearer"
+    )
+    session_key: Optional[str] = None
+    grant_type: Optional[str] = None
+    expires_at: Optional[datetime] = None
+    mfa_required: bool = False
+    challenge_token: Optional[str] = None
+    methods: Optional[List[Dict[str, str]]] = None
 
 
 # ---------------------------------------------------------------------------
@@ -239,6 +249,11 @@ class MagicLinkManager(AbstractBLLManager, RouterMixin):
 
         self._invalidate_other_tokens(matched.user_id, matched.id)
 
+        # The link proves the email only; a second factor still stands.
+        challenge = UserManager.mfa_challenge(matched.user_id, self.model_registry)
+        if challenge is not None:
+            return MagicLinkVerifyResponse(user_id=matched.user_id, **challenge)
+
         session = UserManager.login_via_grant(
             grant_type="magic_link",
             grant_payload=UserIdGrantPayload(
@@ -306,7 +321,8 @@ class MagicLinkManager(AbstractBLLManager, RouterMixin):
         """The session in the body for API clients and in the session
         cookies for the browser that opened the link."""
         verified = self.verify_magic_link(token=body.token, email=body.email)
-        issue_browser_session(response, verified.token)
+        if verified.token is not None:
+            issue_browser_session(response, verified.token)
         return verified
 
 
