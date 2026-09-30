@@ -267,6 +267,7 @@ Standard fixtures available across all test layers:
 
 #### Data Management
 - Use provided fixtures for consistent test data
+- A module-, class-, package- or session-scoped fixture that patches the environment to build its app (`DATABASE_NAME`, `DATABASE_PATH`, `SEED_DATA`, ...) builds inside `pytest.MonkeyPatch.context()` and yields *after* it. Tests of different modules interleave on a worker (`--order-dependencies`), so a patch held open for the fixture's life makes every other app built meanwhile boot against its database; the app captures its database settings at build, so nothing needs the patch afterwards. `testing/FixtureHygiene_test.py` enforces this.
 - Clean up test data after execution
 - Avoid hardcoded values - use parametrization
 - Test with realistic data scenarios
