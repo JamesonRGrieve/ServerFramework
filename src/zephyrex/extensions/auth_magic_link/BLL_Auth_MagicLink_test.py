@@ -25,6 +25,9 @@ from zephyrex.logic.BLL_Auth import (
     UserManager,
 )
 
+# Mail goes out on a background thread; this bounds the wait for it.
+_DELIVERY_TIMEOUT_SECONDS = 10
+
 
 @pytest.fixture(autouse=True)
 def _ensure_grant_registered():
@@ -151,6 +154,31 @@ class TestMagicLink(ExtensionServerMixin):
         assert browser.cookies[SESSION_COOKIE] == verified.json()["token"]
         assert browser.cookies[CSRF_COOKIE]
         assert browser.get("/v1/user").status_code == 200
+
+    def test_the_link_is_emailed_through_the_email_extension(
+        self, model_registry, captured_emails, admin_a, monkeypatch
+    ):
+        """The email extension (loaded here as a declared dependency) is the
+        delivery path; its provider rotation is the external boundary."""
+        import threading
+
+        from zephyrex.extensions.email.EXT_EMail import EXT_EMail
+
+        sent = []
+        delivered = threading.Event()
+
+        async def send_email(recipient, subject, body):
+            sent.append((recipient, subject, body))
+            delivered.set()
+
+        monkeypatch.setattr(EXT_EMail, "send_email", send_email)
+        self._manager(model_registry).request_magic_link(email=admin_a.email)
+
+        assert delivered.wait(timeout=_DELIVERY_TIMEOUT_SECONDS)
+        ((recipient, subject, body),) = sent
+        assert recipient == admin_a.email
+        assert subject.startswith("Sign in to ")
+        assert captured_emails[-1]["magic_link_url"] in body
 
     # ------------------------------------------------------------------
     # verify: replay rejected

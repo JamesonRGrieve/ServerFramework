@@ -91,6 +91,29 @@ def test_an_mfa_user_gets_the_challenge_and_no_session(server, inbox):
     assert server.cookies[SESSION_COOKIE] == completed.json()["token"]
 
 
+def test_without_the_email_extension_the_miss_is_logged(server, inbox):
+    """This app does not load the email extension: the request still
+    answers normally, and the undeliverable link is logged, not dropped
+    silently."""
+    import io
+
+    from loguru import logger as loguru_logger
+
+    user = create_user(server, email=f"nomail_{uuid.uuid4().hex[:8]}@example.com")
+    # Signed out, as a browser asking for a link is.
+    server.cookies.clear()
+    buffer = io.StringIO()
+    sink = loguru_logger.add(buffer, level="WARNING", format="{message}")
+    try:
+        requested = server.post(
+            "/v1/auth/magic-link/request", json={"email": user.email}
+        )
+    finally:
+        loguru_logger.remove(sink)
+    assert requested.status_code in (200, 202), requested.text
+    assert "cannot be delivered" in buffer.getvalue()
+
+
 def test_a_user_without_mfa_is_signed_in_by_the_link(server, inbox):
     user = create_user(server, email=f"link_{uuid.uuid4().hex[:8]}@example.com")
     server.cookies.clear()

@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 from zephyrex.lib.CustomRoute import custom_route
 from zephyrex.lib.Environment import env
 from zephyrex.lib.InboundSecurity import DEFAULT_AUTH_RATE_LIMIT, rate_limit
+from zephyrex.lib.Logging import logger
 from zephyrex.pydantic2.fastapi import AuthType, RouterMixin
 from zephyrex.logic.AbstractLogicManager import (
     AbstractBLLManager,
@@ -177,15 +178,30 @@ class MagicLinkManager(AbstractBLLManager, RouterMixin):
         return users[0]
 
     def _send_magic_link(self, email: str, raw_token: str) -> None:
-        """Notify any registered listeners and (best-effort) deliver via
-        EXT_Email if available.
+        """Email the link through the email extension (when this app loaded
+        it) and notify any registered listeners, the test seam.
 
-        The listener loop is the test seam. Production deployments configure
-        EXT_Email; tests register a listener that captures ``raw_token``.
-        """
+        Mail goes out in the background, so the request never waits on (or
+        fails with) the mail provider, and the response stays identical
+        whether or not the address has an account."""
         magic_link_url = f"{self._base_url()}?token={raw_token}"
         for listener in list(_send_listeners):
             listener(email=email, magic_link_url=magic_link_url, raw_token=raw_token)
+        if "email" not in self.model_registry.loaded_extension_names():
+            logger.warning(
+                "auth_magic_link: the email extension is not loaded, so the "
+                "requested sign-in link cannot be delivered"
+            )
+            return
+        from zephyrex.extensions.email.EXT_EMail import EXT_EMail
+
+        EXT_EMail.queue_email(
+            email,
+            f"Sign in to {env('APP_NAME')}",
+            f"Use this link to sign in. It works once and expires in "
+            f"{self._ttl_minutes()} minutes.\n\n{magic_link_url}\n\n"
+            "If you did not ask to sign in, you can ignore this email.",
+        )
 
     def request_magic_link(self, email: str) -> MagicLinkResponse:
         """Issue a magic link for ``email`` if a user matches. Always returns

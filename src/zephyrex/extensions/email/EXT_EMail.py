@@ -1521,6 +1521,21 @@ class EXT_EMail(AbstractStaticExtension):
         return result
 
     @classmethod
+    def queue_email(cls, recipient: str, subject: str, body: str) -> None:
+        """Send in the background, so the caller never waits on (or fails
+        with) the mail provider; failover happens inside the task, attempt by
+        attempt, and a send that fails outright is logged."""
+        from zephyrex.logic.AbstractLogicManager import _fire_and_forget
+
+        async def _deliver() -> None:
+            try:
+                await cls.send_email(recipient, subject, body)
+            except Exception as exc:
+                logger.error(f"Email {subject!r} to {recipient} was not sent: {exc}")
+
+        _fire_and_forget(_deliver())
+
+    @classmethod
     async def get_emails(
         cls, folder_name: str = "Inbox", max_emails: int = 10, **kwargs
     ) -> List[Dict[str, Any]]:
@@ -1601,8 +1616,6 @@ class EXT_EMail(AbstractStaticExtension):
         Hook to send invitation email after invitation is created.
         This demonstrates how extensions can hook into core functionality.
         """
-        from zephyrex.logic.AbstractLogicManager import _fire_and_forget
-
         try:
             if cls.root is None:
                 return
@@ -1619,14 +1632,7 @@ class EXT_EMail(AbstractStaticExtension):
                 f"Click here to accept: {env('FRONTEND_URL')}/accept-invitation?{query}\n\n"
                 "This invitation expires in 7 days."
             )
-            # Sent in the background so invitation creation never waits on
-            # (or fails with) the mail provider; failover happens inside the
-            # task, attempt by attempt.
-            _fire_and_forget(
-                cls.send_email(
-                    entity.email, f"You've been invited to {team_name}", body
-                )
-            )
+            cls.queue_email(entity.email, f"You've been invited to {team_name}", body)
             logger.info(f"Invitation email queued for {entity.email}")
         except Exception as e:
             logger.error(f"Failed to queue invitation email: {e}")
