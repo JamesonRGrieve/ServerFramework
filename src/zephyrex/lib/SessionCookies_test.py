@@ -3,7 +3,7 @@
 header it receives, and the cookie helpers' attributes."""
 
 import pytest
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import FastAPI, HTTPException, Request, Response, WebSocket
 from fastapi.testclient import TestClient
 
 from zephyrex.lib.Environment import refresh_settings
@@ -26,6 +26,14 @@ def _app() -> FastAPI:
     @app.api_route("/echo", methods=["GET", "POST", "DELETE"])
     def echo(request: Request):
         return {"authorization": request.headers.get("authorization")}
+
+    @app.websocket("/ws")
+    async def ws(websocket: WebSocket):
+        await websocket.accept()
+        await websocket.send_json(
+            {"authorization": websocket.headers.get("authorization")}
+        )
+        await websocket.close()
 
     @app.get("/stale")
     def stale():
@@ -116,6 +124,45 @@ def test_a_401_to_an_explicit_credential_leaves_the_cookies(client):
     response = client.get("/stale", headers={"Authorization": "Bearer other"})
     assert response.status_code == 401
     assert SESSION_COOKIE in client.cookies
+
+
+def _socket_authorization(client, origin=None):
+    headers = {"cookie": f"{SESSION_COOKIE}=session-jwt"}
+    if origin is not None:
+        headers["origin"] = origin
+    with client.websocket_connect("/ws", headers=headers) as socket:
+        return socket.receive_json()["authorization"]
+
+
+def test_a_same_origin_socket_is_authenticated_by_the_cookie(client):
+    assert _socket_authorization(client, "https://testserver") == "Bearer session-jwt"
+
+
+@pytest.mark.parametrize(
+    "origin", ["https://evil.example", None], ids=["cross-site", "no-origin"]
+)
+def test_a_cross_site_socket_is_not_authenticated_by_the_cookie(client, origin):
+    """Cross-site WebSocket hijacking: another site's page opens a socket and
+    the browser attaches the session cookie; the Origin check refuses it."""
+    assert _socket_authorization(client, origin) is None
+
+
+@pytest.mark.parametrize(
+    "allowlist, authenticated",
+    [("https://app.example", True), ("*", False)],
+    ids=["exact-origin", "wildcard"],
+)
+def test_an_allowlisted_origin_is_authenticated(
+    client, monkeypatch, allowlist, authenticated
+):
+    monkeypatch.setenv("APP_CORS_ALLOWED_ORIGINS", allowlist)
+    refresh_settings()
+    try:
+        authorization = _socket_authorization(client, "https://app.example")
+    finally:
+        monkeypatch.delenv("APP_CORS_ALLOWED_ORIGINS")
+        refresh_settings()
+    assert (authorization == "Bearer session-jwt") is authenticated
 
 
 def test_logout_clears_both_cookies(client):

@@ -9,6 +9,12 @@ only when the request carries neither ``Authorization`` nor ``X-API-Key``:
 explicit credentials win. A cookie-authenticated request that can change
 state must echo the CSRF cookie in ``X-CSRF-Token`` (double submit), or it
 is refused with 403 before reaching the app.
+
+A WebSocket upgrade (GraphQL subscriptions) is authenticated by the cookie
+too, but only from the app's own origin: the same host, or an exact origin in
+``APP_CORS_ALLOWED_ORIGINS``. Browsers send cookies on cross-site WebSocket
+upgrades and CORS does not apply to them, so without the Origin check any
+site could open a socket as the signed-in user.
 """
 
 import hmac
@@ -87,6 +93,23 @@ def _clearing_cookies_on_401(
     return _send
 
 
+def _same_app_origin(present: Dict[bytes, bytes]) -> bool:
+    """The upgrade comes from the app itself: its Origin is this host, or an
+    exact origin in APP_CORS_ALLOWED_ORIGINS (never ``*``, which grants no
+    credentials). No Origin, which a browser always sends, means no cookie."""
+    from urllib.parse import urlparse
+
+    from zephyrex.lib.InboundSecurity import parse_cors_origins
+
+    origin = present.get(b"origin", b"").decode("latin-1")
+    if not origin:
+        return False
+    if urlparse(origin).netloc == present.get(b"host", b"").decode("latin-1"):
+        return True
+    allowed = parse_cors_origins(env("APP_CORS_ALLOWED_ORIGINS") or "")
+    return origin != "*" and origin in allowed
+
+
 def _cookies(raw: Optional[bytes]) -> Dict[str, str]:
     if not raw:
         return {}
@@ -110,7 +133,7 @@ class SessionCookieMiddleware:
         receive: Callable[[], Awaitable[Any]],
         send: Callable[[Any], Awaitable[None]],
     ) -> None:
-        if scope["type"] != "http":
+        if scope["type"] not in ("http", "websocket"):
             await self.app(scope, receive, send)
             return
         headers: List[Tuple[bytes, bytes]] = scope["headers"]
@@ -119,10 +142,15 @@ class SessionCookieMiddleware:
         if not token or b"authorization" in present or b"x-api-key" in present:
             await self.app(scope, receive, send)
             return
+        bearer = (b"authorization", f"Bearer {token}".encode("latin-1"))
+        if scope["type"] == "websocket":
+            if _same_app_origin(present):
+                scope = {**scope, "headers": [*headers, bearer]}
+            await self.app(scope, receive, send)
+            return
         if scope["method"] not in _SAFE_METHODS and not self._csrf_matches(present):
             await self._refuse(send)
             return
-        bearer = (b"authorization", f"Bearer {token}".encode("latin-1"))
         await self.app(
             {**scope, "headers": [*headers, bearer]},
             receive,
