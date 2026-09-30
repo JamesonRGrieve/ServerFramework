@@ -1,17 +1,38 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """
 StaticSeeder.py - Helper functions for database seeding.
 
 This module provides helper functions used by ModelRegistry during the seeding process.
-The main seeding logic has been moved to ModelRegistry._seed() for better integration
-with the dependency ordering system.
+A seed item may name its parent (``_provider_name``, ``_extension_name``, ...)
+instead of carrying its id; an item whose parent is not seeded yet is deferred
+and retried by ``ModelRegistry._seed`` until nothing more resolves.
 """
 
 import inspect
-from typing import Any, Dict, List
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional
 from sqlalchemy import select
 from zephyrex.database.DatabaseManager import DatabaseManager
 from zephyrex.lib.Environment import env
 from zephyrex.lib.Logging import logger
+
+
+class ParentNotSeeded(LookupError):
+    """A seed item names a parent row that does not exist (yet)."""
+
+    def __init__(self, entity_label: str, name: str) -> None:
+        super().__init__(f"{entity_label} {name!r} is not seeded")
+
+
+@dataclass
+class SeedBatch:
+    """Seed items of one model still waiting for their parents."""
+
+    model_class: Any
+    pydantic_model: Any
+    items: List[Dict[str, Any]] = field(default_factory=list)
+    reasons: List[str] = field(default_factory=list)
+
 
 # Helper lookup functions
 
@@ -43,9 +64,8 @@ def _get_entity_by_name(
         if entity:
             logger.log("SQL", f"Found {entity_label} {name} with ID {entity.id}")
             return entity
-        else:
-            logger.warning(f"{entity_label.capitalize()} {name} not found")
-            return None
+        logger.log("SQL", f"{entity_label.capitalize()} {name} not found")
+        return None
     except Exception as e:
         logger.error(f"Error looking up {entity_label} {name}: {str(e)}")
         return None
@@ -88,7 +108,10 @@ def get_provider_instance_by_name(session, instance_name, db_manager: DatabaseMa
 
 
 def _resolve_placeholder_fields(item, session, class_name, db_manager):
-    """Resolve placeholder fields like _provider_name, _extension_name, etc. to actual IDs."""
+    """Resolve placeholder fields like _provider_name, _extension_name, etc. to
+    actual IDs. Raises ParentNotSeeded when a named parent does not exist, so
+    the caller can retry the item once more rows are seeded; returns None when
+    the item cannot be resolved at all."""
     if not isinstance(item, dict):
         return item
 
@@ -110,10 +133,7 @@ def _resolve_placeholder_fields(item, session, class_name, db_manager):
                     f"Resolved legacy EXT:{ext_name} to extension_id {extension.id}"
                 )
             else:
-                logger.warning(
-                    f"Extension '{ext_name}' not found for {class_name} (legacy format)"
-                )
-                return None
+                raise ParentNotSeeded("extension", ext_name)
 
         # Resolve _provider_name to provider_id
         if "_provider_name" in resolved_item:
@@ -122,8 +142,7 @@ def _resolve_placeholder_fields(item, session, class_name, db_manager):
             if provider:
                 resolved_item["provider_id"] = str(provider.id)
             else:
-                logger.warning(f"Provider '{provider_name}' not found for {class_name}")
-                return None
+                raise ParentNotSeeded("provider", provider_name)
 
         # Resolve _extension_name to extension_id
         if "_extension_name" in resolved_item:
@@ -132,10 +151,7 @@ def _resolve_placeholder_fields(item, session, class_name, db_manager):
             if extension:
                 resolved_item["extension_id"] = str(extension.id)
             else:
-                logger.warning(
-                    f"Extension '{extension_name}' not found for {class_name}"
-                )
-                return None
+                raise ParentNotSeeded("extension", extension_name)
 
         # Resolve _rotation_name to rotation_id
         if "_rotation_name" in resolved_item:
@@ -144,8 +160,7 @@ def _resolve_placeholder_fields(item, session, class_name, db_manager):
             if rotation:
                 resolved_item["rotation_id"] = str(rotation.id)
             else:
-                logger.warning(f"Rotation '{rotation_name}' not found for {class_name}")
-                return None
+                raise ParentNotSeeded("rotation", rotation_name)
 
         # Resolve _provider_instance_name to provider_instance_id
         if "_provider_instance_name" in resolved_item:
@@ -154,40 +169,24 @@ def _resolve_placeholder_fields(item, session, class_name, db_manager):
             if instance:
                 resolved_item["provider_instance_id"] = str(instance.id)
             else:
-                logger.warning(
-                    f"Provider instance '{instance_name}' not found for {class_name}"
-                )
-                return None
+                raise ParentNotSeeded("provider instance", instance_name)
 
         return resolved_item
 
+    except ParentNotSeeded:
+        raise
     except Exception as e:
         logger.error(f"Error resolving placeholders for {class_name}: {e}")
         return None
 
 
-def seed_model(model_class, session, db_manager, model_registry=None):
-    """Helper function to seed a specific model class."""
+def seed_model(
+    model_class, session, db_manager, model_registry=None
+) -> Optional[SeedBatch]:
+    """Seed one model class; returns the items deferred until their
+    parents exist (see seed_deferred), or None when it has no seed data."""
     class_name = model_class.__name__
     logger.log("SQL", f"Processing seeding for {class_name}...")
-
-    # Trigger before_seed_model hook to allow extensions to prepare or modify the model
-    try:
-        from zephyrex.extensions.AbstractExtensionProvider import (
-            AbstractStaticExtension,
-        )
-
-        AbstractStaticExtension.trigger_hook(
-            "DB",
-            "Seed",
-            model_class.__name__,
-            "before_seed_model",
-            "before",
-            model_class,
-            session,
-        )
-    except Exception as e:
-        logger.log("SQL", f"No extensions loaded or hook trigger failed: {e}")
 
     # Find the corresponding Pydantic model to get seed_data
     seed_list = []
@@ -247,7 +246,7 @@ def seed_model(model_class, session, db_manager, model_registry=None):
                 logger.error(
                     f"Error calling get_seed_list method for {class_name}: {str(e)}"
                 )
-                return
+                return None
         # Otherwise check for the static seed_list attribute
         elif hasattr(model_class, "seed_list"):
             # Handle seed_list that is a callable
@@ -263,50 +262,11 @@ def seed_model(model_class, session, db_manager, model_registry=None):
                     logger.error(
                         f"Error calling seed_list function for {class_name}: {str(e)}"
                     )
-                    return
-
-    # If still no seed list found, start with empty list for extensions to inject into
-    if not seed_list:
-        seed_list = []
-        logger.log(
-            "SQL",
-            f"Model {class_name} has no seed data, starting with empty list for extensions",
-        )
-
-    # Trigger before_seed_list hook to allow extensions to inject seed data
-    try:
-        from zephyrex.extensions.AbstractExtensionProvider import (
-            AbstractStaticExtension,
-        )
-
-        hook_results = AbstractStaticExtension.trigger_hook(
-            "DB",
-            "Seed",
-            model_class.__name__,
-            "inject_seed_data",
-            "before",
-            seed_list,
-            model_class,
-            session,
-        )
-
-        # Collect any seed data returned by hooks
-        for result in hook_results:
-            if isinstance(result, list):
-                seed_list.extend(result)
-                logger.log(
-                    "SQL",
-                    f"Extension injected {len(result)} seed items for {class_name}",
-                )
-            elif isinstance(result, dict):
-                seed_list.append(result)
-                logger.log("SQL", f"Extension injected 1 seed item for {class_name}")
-    except Exception as e:
-        logger.log("SQL", f"No extensions loaded or seed injection hook failed: {e}")
+                    return None
 
     if not seed_list:
         logger.log("SQL", f"No seed items for {class_name}")
-        return
+        return None
 
     # Item 38 — accept typed Pydantic instances in addition to raw dicts.
     # A seed list declared as `List[ModelClass]` is normalized to dicts
@@ -332,28 +292,45 @@ def seed_model(model_class, session, db_manager, model_registry=None):
 
     logger.log("SQL", f"Seeding {class_name} table with {len(seed_list)} items...")
 
-    # Process each seed item
-    items_created = 0
-    for item in seed_list:
-        # Resolve placeholder fields
-        item = _resolve_placeholder_fields(item, session, class_name, db_manager)
+    items_created, deferred = _seed_items(
+        model_class, pydantic_model, seed_list, session, db_manager, model_registry
+    )
 
-        if item is None:
-            # Item couldn't be resolved, skip it
+    logger.log("SQL", f"Created {items_created} items for {class_name}")
+    return deferred
+
+
+def _seed_items(
+    model_class, pydantic_model, seed_list, session, db_manager, model_registry
+) -> "tuple[int, SeedBatch]":
+    """Create each item that does not exist yet; returns how many were
+    created and the items deferred because a named parent is missing."""
+    class_name = model_class.__name__
+    items_created = 0
+    deferred = SeedBatch(model_class=model_class, pydantic_model=pydantic_model)
+    for item in seed_list:
+        # Resolve placeholder fields; an item whose parent is not seeded yet
+        # waits for a later pass.
+        try:
+            resolved = _resolve_placeholder_fields(
+                item, session, class_name, db_manager
+            )
+        except ParentNotSeeded as missing:
+            deferred.items.append(item)
+            deferred.reasons.append(str(missing))
             continue
+        if resolved is None:
+            continue
+        item = resolved
 
         # Check if the item already exists using the 'exists' method
         exists = False
+        # The field that identifies an existing row: id, else name, else email.
+        check_field: Optional[str] = next(
+            (k for k in ("id", "name", "email") if k in item), None
+        )
         try:
             if hasattr(model_class, "exists"):
-                # Determine the field to check for existence, prioritizing 'id'
-                if "id" in item:
-                    check_field = "id"
-                else:
-                    check_field = next(
-                        (k for k in ["name", "email"] if k in item),
-                        None,  # Check name/email if no id
-                    )
 
                 if check_field:
                     exists = model_class.exists(
@@ -417,23 +394,17 @@ def seed_model(model_class, session, db_manager, model_registry=None):
                 logger.error(f"Error creating {class_name} item: {str(e)}")
                 continue
 
-    # Trigger after_seed_model hook to allow extensions to perform post-seeding actions
-    try:
-        from zephyrex.extensions.AbstractExtensionProvider import (
-            AbstractStaticExtension,
-        )
+    return items_created, deferred
 
-        AbstractStaticExtension.trigger_hook(
-            "DB",
-            "Seed",
-            model_class.__name__,
-            "after_seed_model",
-            "after",
-            model_class,
-            session,
-            items_created,
-        )
-    except Exception as e:
-        logger.log("SQL", f"No extensions loaded or hook trigger failed: {e}")
 
-    logger.log("SQL", f"Created {items_created} items for {class_name}")
+def seed_deferred(batch: SeedBatch, session, db_manager, model_registry) -> SeedBatch:
+    """Retry a batch's deferred items; returns those still waiting."""
+    _, remaining = _seed_items(
+        batch.model_class,
+        batch.pydantic_model,
+        batch.items,
+        session,
+        db_manager,
+        model_registry,
+    )
+    return remaining

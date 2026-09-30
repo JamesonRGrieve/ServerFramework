@@ -110,7 +110,6 @@ class ModelRegistry(AbstractRegistry):
         self._locked = False
         self.db_models: Dict[Type[BaseModel], Type] = {}
         self.model_relationships: List[Tuple] = []
-        self.dependency_order: List[Type[BaseModel]] = []
         self.declarative_base = None  # Will be set during commit()
 
         # Router and schema storage
@@ -1157,20 +1156,13 @@ class ModelRegistry(AbstractRegistry):
         # Enhance model discovery
         self.utility.enhance_model_discovery(model_fields_mapping)
 
-        # Build dependency order from our already-sorted OrderedSet
-        # Since we've been adding models in dependency order during bind(),
-        # the OrderedSet already maintains the correct order
-        self.dependency_order = list(self.bound_models)
-
-        logger.debug(f"Resolved dependencies for {len(self.dependency_order)} models")
-        logger.debug(f"Dependency order: {[m.__name__ for m in self.dependency_order]}")
-
     def _seed(self) -> None:
         """
-        Seed the database with initial data from all models.
-        Uses the dependency order already established in bound_models.
+        Seed the database with initial data from all models, parents before
+        children (foreign-key order), so a seed row that names its parent
+        (an ability its extension, an instance its provider) finds it.
         """
-        from zephyrex.database.StaticSeeder import seed_model
+        from zephyrex.database.StaticSeeder import seed_deferred, seed_model
 
         logger.log("SQL", "Starting database seeding process...")
         logger.log("SQL", f"Total bound models: {len(self.bound_models)}")
@@ -1205,15 +1197,47 @@ class ModelRegistry(AbstractRegistry):
                         f"Model {pydantic_model.__name__} does NOT have seed_data",
                     )
 
-            logger.log("SQL", f"Found {len(models_to_seed)} models to seed")
+            # Binding order is not dependency order; the metadata's
+            # foreign-key sort is.
+            table_rank = {
+                table.name: rank
+                for rank, table in enumerate(
+                    self.database_manager.Base.metadata.sorted_tables
+                )
+            }
+            models_to_seed.sort(key=lambda db_model: table_rank[db_model.__tablename__])
             logger.log(
                 "SQL",
-                f"Models in dependency order: {[model.__name__ for model in models_to_seed]}",
+                f"Seeding in dependency order: {[m.__name__ for m in models_to_seed]}",
             )
 
-            # Seed all models in dependency order
-            for model in models_to_seed:
-                seed_model(model, session, self.database_manager, self)
+            # A seed item that names its parent (an ability its extension, an
+            # instance its provider) is deferred when that parent is not
+            # seeded yet; retry until a pass resolves nothing more.
+            waiting = [
+                batch
+                for batch in (
+                    seed_model(model, session, self.database_manager, self)
+                    for model in models_to_seed
+                )
+                if batch is not None and batch.items
+            ]
+            while waiting:
+                still_waiting = [
+                    seed_deferred(batch, session, self.database_manager, self)
+                    for batch in waiting
+                ]
+                still_waiting = [batch for batch in still_waiting if batch.items]
+                if sum(len(b.items) for b in still_waiting) == sum(
+                    len(b.items) for b in waiting
+                ):
+                    break
+                waiting = still_waiting
+            for batch in waiting:
+                for reason in batch.reasons:
+                    logger.warning(
+                        f"Seed item for {batch.model_class.__name__} skipped: {reason}"
+                    )
 
             session.commit()
             logger.log("SQL", "Database seeding completed successfully")
@@ -1817,7 +1841,6 @@ class ModelRegistry(AbstractRegistry):
         self.model_metadata.clear()
         self.db_models.clear()
         self.model_relationships.clear()
-        self.dependency_order.clear()
         self.ep_routers.clear()
         self.gql = None
         self._locked = False

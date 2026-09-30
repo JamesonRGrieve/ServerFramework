@@ -25,18 +25,21 @@ HookPath = Tuple[str, str, str, str, str]
 | Component | Description | Examples |
 |-----------|-------------|----------|
 | **layer** | The architectural layer | `"BLL"`, `"DB"`, `"EP"` |
-| **domain** | The operation domain | `"Seed"`, `"CRUD"`, `"Auth"` |
-| **entity** | The target entity/model | `"UserModel"`, `"ProviderModel"` |
-| **function** | The specific function/action | `"before_seed_model"`, `"inject_seed_data"` |
+| **domain** | The operation domain | `"invitations"`, `"CRUD"`, `"Auth"` |
+| **entity** | The target entity/model | `"invitation"`, `"UserModel"` |
+| **function** | The specific function/action | `"create"`, `"update"` |
 | **time** | Execution timing | `"before"`, `"after"` |
 
-**Example:**
+**Example** (the email extension, `EXT_EMail`):
 ```python
-@hook("DB", "Seed", "UserModel", "inject_seed_data", "before")
-def inject_user_seed_data(seed_list, model_class, session):
-    """Hook path: ("DB", "Seed", "UserModel", "inject_seed_data", "before")"""
-    seed_list.append({"name": "Extension User", "email": "ext@example.com"})
+@classmethod
+@AbstractStaticExtension.hook("bll", "invitations", "invitation", "create", "after")
+def send_invitation_email(cls, entity, **kwargs):
+    """Hook path: ("bll", "invitations", "invitation", "create", "after")"""
 ```
+
+Seeding has no hooks: rows come from each model's `seed_data`
+(see `database/DB.Seeding.md`).
 
 This hook path format enables precise targeting of hooks to specific operations across the framework's layers.
 

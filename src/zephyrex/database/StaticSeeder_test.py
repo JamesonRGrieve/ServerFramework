@@ -769,21 +769,55 @@ class TestSeedDataGeneration:
             static_seeder.get_rotation_by_name = original_rotation
             static_seeder.get_provider_instance_by_name = original_instance
 
-    def test_placeholder_resolution_returns_none_when_dependency_missing(self):
-        """If any placeholder lookup fails, the item should be skipped."""
+    def test_placeholder_resolution_reports_a_parent_not_seeded_yet(self):
+        """A missing parent is not a failure of the item: it raises
+        ParentNotSeeded so the seeder can retry once the parent exists."""
 
         original_provider = static_seeder.get_provider_by_name
 
         try:
             static_seeder.get_provider_by_name = lambda *args, **kwargs: None
 
-            unresolved = static_seeder._resolve_placeholder_fields(
-                {"_provider_name": "missing"}, object(), "TestModel", object()
-            )
-
-            assert unresolved is None
+            with pytest.raises(static_seeder.ParentNotSeeded, match="missing"):
+                static_seeder._resolve_placeholder_fields(
+                    {"_provider_name": "missing"}, object(), "TestModel", object()
+                )
         finally:
             static_seeder.get_provider_by_name = original_provider
+
+    def test_an_item_waits_for_its_parent_and_is_seeded_on_retry(self, monkeypatch):
+        created = []
+
+        class Child:
+            __name__ = "Child"
+            seed_list = [{"name": "child", "_provider_name": "parent"}]
+
+            @classmethod
+            def exists(cls, requester_id, model_registry, **kwargs):
+                return False
+
+            @classmethod
+            def create(cls, creator_id, model_registry, return_type="db", **item):
+                created.append(item)
+
+        class Parent:
+            id = "parent-id"
+
+        parents = {}
+        monkeypatch.setattr(
+            static_seeder,
+            "get_provider_by_name",
+            lambda session, name, db_manager: parents.get(name),
+        )
+
+        batch = static_seeder.seed_model(Child, object(), object())
+        assert created == []
+        assert [item["name"] for item in batch.items] == ["child"]
+
+        parents["parent"] = Parent()
+        remaining = static_seeder.seed_deferred(batch, object(), object(), None)
+        assert remaining.items == []
+        assert created == [{"name": "child", "provider_id": "parent-id"}]
 
 
 class TestSeedModelBehavior:
