@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field, create_model
 # All static artifacts have been replaced with instance-based approaches
 # Tests now use GraphQLManager and SchemaManager instances
 from zephyrex.lib.AbstractPydantic2Test import AbstractPydanticTestMixin
+from zephyrex.pydantic2.fastapi.types import RouterMixin
 from zephyrex.pydantic2.registry import ModelRegistry
 from zephyrex.pydantic2.strawberry import (
     ANY_SCALAR,
@@ -100,8 +101,9 @@ class ChildModel(BaseModel):
     parent_id: Optional[str] = Field(None, description="Parent model ID")
 
 
-# Mock manager classes
-class MockTestManager:
+# Mock manager classes. They stand in for routed managers: GraphQL serves the
+# CRUD operations REST serves, which only a RouterMixin manager has.
+class MockTestManager(RouterMixin):
     async def get(self, id: str, context: dict) -> MockTestModel:
         return MockTestModel(id=id, name="Test")
 
@@ -147,7 +149,7 @@ class ParentManager:
 # ---------------------------------------------------------------------------
 
 
-class _BoundMockManager:
+class _BoundMockManager(RouterMixin):
     """A manager the GraphQL emitter can introspect (carries ``Model``)."""
 
     Model = MockTestModel
@@ -351,7 +353,7 @@ class TestSchemaManager(AbstractPydanticTestMixin):
     def test_schema_includes_query_fields_when_registry_binding_missing(self):
         """GraphQL schema should expose query fields even without registry bindings."""
 
-        class DummyManager:
+        class DummyManager(RouterMixin):
             Model = MockTestModel
 
             def __init__(self, requester_id: str, model_registry: Any):

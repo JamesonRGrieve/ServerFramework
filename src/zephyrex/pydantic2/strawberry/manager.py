@@ -9,6 +9,7 @@ from typing import (
     AsyncGenerator,
     Callable,
     Dict,
+    FrozenSet,
     Hashable,
     Iterable,
     List,
@@ -33,7 +34,7 @@ from zephyrex.lib.AbstractPydantic2 import ErrorHandlerMixin
 from zephyrex.lib.Environment import inflection
 from zephyrex.lib.Logging import logger
 from zephyrex.lib.TypeUnions import unwrap_optional
-from zephyrex.pydantic2.fastapi.types import AuthType
+from zephyrex.pydantic2.fastapi.types import AuthType, RouterMixin, RouteType
 from zephyrex.pydantic2.manager_contract import (
     ManagerContract,
     SelfScopedManagerContract,
@@ -584,49 +585,32 @@ class GraphQLManager(ErrorHandlerMixin):
             update_input: Type = type_results["update_input"]
             filter_input: Type = type_results["filter_input"]
 
-            # Generate resolvers using safe operations
-            self.safe_operation(
-                lambda: (
-                    self._add_query_resolver(model_name_camel, gql_type, manager_class),  # type: ignore[func-returns-value]
-                    self._add_list_query_resolver(  # type: ignore[func-returns-value]
-                        model_name_plural, gql_type, manager_class, filter_input
-                    ),
-                ),
-                f"query resolvers for {model_name}",
-                strict=True,
-            )
-
-            self.safe_operation(
-                lambda: (
-                    self._add_create_mutation_resolver(  # type: ignore[func-returns-value]
-                        f"create{base_name}", gql_type, manager_class, create_input
-                    ),
-                    self._add_update_mutation_resolver(  # type: ignore[func-returns-value]
-                        f"update{base_name}", gql_type, manager_class, update_input
-                    ),
-                    self._add_delete_mutation_resolver(  # type: ignore[func-returns-value]
-                        f"delete{base_name}", manager_class
-                    ),
-                ),
-                f"mutation resolvers for {model_name}",
-                strict=True,
-            )
-
-            self.safe_operation(
-                lambda: (
-                    self._add_subscription_resolver(  # type: ignore[func-returns-value]
-                        f"{model_name_camel}Created", model_name
-                    ),
-                    self._add_subscription_resolver(  # type: ignore[func-returns-value]
-                        f"{model_name_camel}Updated", model_name
-                    ),
-                    self._add_subscription_resolver(  # type: ignore[func-returns-value]
-                        f"{model_name_camel}Deleted", model_name
-                    ),
-                ),
-                f"subscription resolvers for {model_name}",
-                strict=True,
-            )
+            # GraphQL serves exactly the CRUD operations REST serves for this
+            # manager: an operation a manager keeps off REST (an MFA method's
+            # plain delete, an API key's update) must not open here instead.
+            operations = self._crud_operations(manager_class)
+            readable = bool(operations & {RouteType.GET, RouteType.LIST})
+            if RouteType.GET in operations:
+                self._add_query_resolver(model_name_camel, gql_type, manager_class)
+            if operations & {RouteType.LIST, RouteType.SEARCH}:
+                self._add_list_query_resolver(
+                    model_name_plural, gql_type, manager_class, filter_input
+                )
+            if RouteType.CREATE in operations:
+                self._add_create_mutation_resolver(
+                    f"create{base_name}", gql_type, manager_class, create_input
+                )
+            if RouteType.UPDATE in operations:
+                self._add_update_mutation_resolver(
+                    f"update{base_name}", gql_type, manager_class, update_input
+                )
+            if RouteType.DELETE in operations:
+                self._add_delete_mutation_resolver(f"delete{base_name}", manager_class)
+            if readable:
+                for event in ("Created", "Updated", "Deleted"):
+                    self._add_subscription_resolver(
+                        f"{model_name_camel}{event}", model_name
+                    )
 
             logger.log("SQL", f"Generated GraphQL components for {model_name}")
 
@@ -1338,6 +1322,22 @@ class GraphQLManager(ErrorHandlerMixin):
                     raise
 
             self._query_fields[field_name] = _versioned_field(resolver, manager_class)
+
+    def _crud_operations(
+        self, manager_class: Type[ManagerContract]
+    ) -> FrozenSet[RouteType]:
+        """The CRUD operations REST serves for ``manager_class`` (see
+        ``create_router_from_manager``): none for a manager without
+        RouterMixin, its ``routes_to_register`` otherwise (all when unset).
+        The self-scoped user manager keeps its own current-user resolvers."""
+        if self._is_self_scoped(manager_class):
+            return frozenset(RouteType)
+        if not issubclass(manager_class, RouterMixin):
+            return frozenset()
+        declared = manager_class.routes_to_register
+        if declared is None:
+            return frozenset(RouteType)
+        return frozenset(RouteType(route) for route in declared)
 
     @staticmethod
     def _is_self_scoped(
