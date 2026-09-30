@@ -42,7 +42,9 @@ from zephyrex.logic.BLL_Auth import (
     UserManager,
     UserModel,
     UserTeamManager,
+    UserTeamModel,
 )
+from zephyrex.database.StaticPermissions import is_root_id, is_system_user_id
 
 
 def _expired(expires_at: Optional[datetime]) -> bool:
@@ -98,6 +100,58 @@ def _invitation_by_code(code: str, model_registry: Any) -> "InvitationModel":
         InvitationModel, model_registry, "Invalid invitation code", code=code
     )
     return invitation
+
+
+def _live_membership_role(
+    user_id: str, team_id: str, model_registry: Any
+) -> Optional[str]:
+    """The role the user holds in the team through an enabled, unrevoked,
+    unexpired membership; None when there is no such membership."""
+    UserTeamDB = UserTeamModel.DB(model_registry.DB.manager.Base)
+    memberships = UserTeamDB.list(
+        requester_id=env("ROOT_ID"),
+        model_registry=model_registry,
+        user_id=user_id,
+        team_id=team_id,
+        enabled=True,
+        filters=[UserTeamDB.deleted_at.is_(None)],
+        return_type="dto",
+        override_dto=UserTeamModel,
+    )
+    for membership in memberships:
+        if not _expired(membership.expires_at):
+            return str(membership.role_id)
+    return None
+
+
+class _RoleRanks:
+    """A role's rank is its depth below the root role (user < admin <
+    superadmin): each role extends its parent. Memoised per instance."""
+
+    _MAX_DEPTH = 32
+
+    def __init__(self, model_registry: Any) -> None:
+        self._model_registry = model_registry
+        self._ranks: Dict[str, int] = {}
+
+    def __call__(self, role_id: str) -> int:
+        if role_id not in self._ranks:
+            RoleDB = RoleModel.DB(self._model_registry.DB.manager.Base)
+            chain: List[str] = []
+            current: Optional[str] = role_id
+            while current and current not in chain and len(chain) < self._MAX_DEPTH:
+                chain.append(current)
+                role = RoleDB.get(
+                    requester_id=env("ROOT_ID"),
+                    model_registry=self._model_registry,
+                    id=current,
+                    allow_nonexistent=True,
+                )
+                if role is None:
+                    raise HTTPException(status_code=404, detail="Role not found")
+                current = role["parent_id"]
+            self._ranks[role_id] = len(chain)
+        return self._ranks[role_id]
 
 
 def _grant_membership(
@@ -340,6 +394,33 @@ class InvitationManager(AbstractBLLManager, RouterMixin):
             )
             if not role:
                 raise HTTPException(status_code=404, detail="Role not found")
+        if entity.team_id and entity.role_id:
+            self._assert_may_grant(entity.team_id, entity.role_id)
+
+    def update(self, id: str, **kwargs: Any) -> Any:
+        if kwargs.get("role_id"):
+            self._assert_may_grant(self.get(id=id).team_id, kwargs["role_id"])
+        return super().update(id, **kwargs)
+
+    def _assert_may_grant(self, team_id: Optional[str], role_id: str) -> None:
+        """A team invitation grants membership to whoever accepts it, so only
+        an admin (or higher) of that team may issue one, and never for a role
+        that outranks the issuer's own. Root and system are unrestricted."""
+        requester_id = self.requester.id
+        if not team_id or is_root_id(requester_id) or is_system_user_id(requester_id):
+            return
+        issuer_role_id = _live_membership_role(
+            requester_id, team_id, self.model_registry
+        )
+        rank = _RoleRanks(self.model_registry)
+        if issuer_role_id is None or rank(issuer_role_id) < rank(env("ADMIN_ROLE_ID")):
+            raise HTTPException(
+                status_code=403, detail="Only a team admin can invite to this team"
+            )
+        if rank(role_id) > rank(issuer_role_id):
+            raise HTTPException(
+                status_code=403, detail="Cannot invite to a role above your own"
+            )
 
     def create(self, **kwargs):
         has_team_role = kwargs.get("team_id") and kwargs.get("role_id")

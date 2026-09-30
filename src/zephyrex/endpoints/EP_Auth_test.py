@@ -3830,6 +3830,84 @@ class TestInvitationEndpoints(AbstractEPTest):
             (email, "pending")
         ]
 
+    def _team_with(self, server: Any, role_env: str) -> Any:
+        """A fresh team whose owner is its admin and a second user holding
+        ``role_env`` on it; returns (team, owner, member)."""
+        from conftest import create_user
+        from zephyrex.testing.factories import add_user_to_team, create_team
+
+        owner = create_user(server)
+        member = create_user(server)
+        team = create_team(server, owner.id, name=f"Grant {uuid.uuid4().hex[:8]}")
+        add_user_to_team(server, member.id, team.id, env(role_env))
+        return team, owner, member
+
+    def _offer(self, server: Any, issuer: Any, team: Any, role_env: str) -> Any:
+        return server.post(
+            "/v1/invitation",
+            json={"invitation": {"team_id": team.id, "role_id": env(role_env)}},
+            headers=self._get_appropriate_headers(issuer.jwt),
+        )
+
+    def test_an_outsider_cannot_invite_into_a_team(self, server: Any) -> None:
+        from conftest import create_user
+
+        team, _, _ = self._team_with(server, "USER_ROLE_ID")
+        outsider = create_user(server)
+        response = self._offer(server, outsider, team, "USER_ROLE_ID")
+        assert response.status_code == 403, response.text
+
+    @pytest.mark.parametrize("role_env", ["USER_ROLE_ID", "ADMIN_ROLE_ID"])
+    def test_a_plain_member_cannot_invite(self, server: Any, role_env: str) -> None:
+        team, _, member = self._team_with(server, "USER_ROLE_ID")
+        response = self._offer(server, member, team, role_env)
+        assert response.status_code == 403, response.text
+
+    def test_an_admin_invites_up_to_their_own_role(self, server: Any) -> None:
+        team, owner, _ = self._team_with(server, "USER_ROLE_ID")
+        for role_env in ("USER_ROLE_ID", "ADMIN_ROLE_ID"):
+            allowed = self._offer(server, owner, team, role_env)
+            assert allowed.status_code == 201, allowed.text
+        above = self._offer(server, owner, team, "SUPERADMIN_ROLE_ID")
+        assert above.status_code == 403, above.text
+
+    def test_an_admin_cannot_raise_an_invitation_above_their_role(
+        self, server: Any
+    ) -> None:
+        from fastapi import HTTPException
+        from zephyrex.extensions.auth_invitations.BLL_Invitations import (
+            InvitationManager,
+        )
+
+        team, owner, _ = self._team_with(server, "USER_ROLE_ID")
+        created = self._offer(server, owner, team, "USER_ROLE_ID")
+        assert created.status_code == 201, created.text
+        manager = InvitationManager(
+            requester_id=owner.id,
+            target_team_id=team.id,
+            model_registry=server.app.state.model_registry,
+        )
+        invitation_id = self._extract_invitation_from_response(created)["id"]
+        with pytest.raises(HTTPException) as exc:
+            manager.update(invitation_id, role_id=env("SUPERADMIN_ROLE_ID"))
+        assert exc.value.status_code == 403
+        manager.update(invitation_id, role_id=env("ADMIN_ROLE_ID"))
+
+    def test_a_member_cannot_promote_themselves_through_an_invitation(
+        self, server: Any
+    ) -> None:
+        """The exploit this closes: invite yourself at a higher role, then
+        accept your own code."""
+        team, owner, member = self._team_with(server, "USER_ROLE_ID")
+        attempt = self._offer(server, member, team, "ADMIN_ROLE_ID")
+        assert attempt.status_code == 403, attempt.text
+        members = server.get(
+            f"/v1/team/{team.id}/user",
+            headers=self._get_appropriate_headers(owner.jwt),
+        )
+        roles = {r["user_id"]: r["role_id"] for r in members.json()["user_teams"]}
+        assert roles[member.id] == env("USER_ROLE_ID")
+
     def test_a_direct_invitation_is_answered_with_its_invitee_row(
         self, server: Any, admin_a: Any
     ) -> None:
