@@ -673,6 +673,15 @@ class TestRoleManager(AbstractBLLTest):
         self._list(admin_a.id, team_a.id, model_registry=model_registry)
         self._list_assert("list_result")  # Will check team-specific roles
 
+    @staticmethod
+    def _fresh_member(server) -> str:
+        """A new user to hold the role under test: reassigning the shared
+        admin's own membership would leak into every later test that relies
+        on admin_a administering team_a."""
+        from conftest import create_user
+
+        return str(create_user(server).id)
+
     def _ensure_user_team(self, ut_mgr, user_id, team_id, role_id, model_registry):
         """Helper: ensure a UserTeam row exists with the given role_id and return its id."""
         from zephyrex.logic.BLL_Auth import UserTeamModel
@@ -711,7 +720,7 @@ class TestRoleManager(AbstractBLLTest):
             requester_id=env("ROOT_ID"), model_registry=model_registry
         )
         ut_id = self._ensure_user_team(
-            ut_mgr, admin_a.id, team_a.id, child_role.id, model_registry
+            ut_mgr, self._fresh_member(server), team_a.id, child_role.id, model_registry
         )
 
         role_mgr.delete(id=child_role.id)
@@ -746,7 +755,7 @@ class TestRoleManager(AbstractBLLTest):
             requester_id=env("ROOT_ID"), model_registry=model_registry
         )
         self._ensure_user_team(
-            ut_mgr, admin_a.id, team_a.id, rootless.id, model_registry
+            ut_mgr, self._fresh_member(server), team_a.id, rootless.id, model_registry
         )
 
         with pytest.raises(HTTPException) as exc_info:
@@ -1894,9 +1903,12 @@ class TestInvitationManager(AbstractBLLTest):
         # Create test users for each invitation to avoid duplicates
         from conftest import create_user
 
-        test_user_1 = create_user(server, email="test1@example.com")
-        test_user_2 = create_user(server, email="test2@example.com")
-        test_user_3 = create_user(server, email="test3@example.com")
+        # Unique addresses: a fixed one reuses the user (and their pending
+        # invitation) from any earlier run against the same database.
+        test_user_1, test_user_2, test_user_3 = (
+            create_user(server, email=f"codegen{n}_{uuid.uuid4().hex[:8]}@example.com")
+            for n in (1, 2, 3)
+        )
 
         manager = self.class_under_test(
             requester_id=test_user_1.id,
