@@ -30,7 +30,7 @@ from fastapi import HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from zephyrex.lib.CustomRoute import custom_route
+from zephyrex.lib.CustomRoute import ExposeIn, custom_route
 from zephyrex.lib.Environment import env
 from zephyrex.lib.InboundSecurity import DEFAULT_AUTH_RATE_LIMIT, rate_limit
 from zephyrex.logic.BLL_Auth.user import issue_browser_session
@@ -477,9 +477,10 @@ class DevicePairingManager(AbstractBLLManager, RouterMixin):
         return session.user_id, UserManager.session_token(session, self.model_registry)
 
     # ------------------------------------------------------------------
-    # SSE generator (extracted so it can be unit-tested directly).
-    # Polls DB once per second; emits a single terminal event then closes.
-    # Max stream lifetime equals the pairing TTL.
+    # SSE generator behind GET /{pairing_id}/stream. Polls the DB once per
+    # second; emits a single terminal event carrying state only (a stream's
+    # headers are already sent, so it cannot set session cookies) then
+    # closes. Max stream lifetime equals the pairing TTL.
     # ------------------------------------------------------------------
 
     async def stream_status(
@@ -569,7 +570,10 @@ class DevicePairingManager(AbstractBLLManager, RouterMixin):
         output_model=PairingStatus,
         authentication_type="none",
         openapi_tags=("Device Pairing Authentication",),
-        summary="Polling fallback: read the current pairing state",
+        summary=(
+            "Read the pairing state; the requesting device's first approved "
+            "read receives its session"
+        ),
     )
     def status_route(
         self, pairing_id: str, request: Request, response: Response
@@ -585,23 +589,23 @@ class DevicePairingManager(AbstractBLLManager, RouterMixin):
         issue_browser_session(response, status.token)
         return status.model_copy(update={"token": None})
 
-
-# ---------------------------------------------------------------------------
-# Streaming endpoint exposed as a stand-alone FastAPI route. (custom_route
-# requires a Pydantic output_model; SSE is a raw stream so we register the
-# route via a free function on the manager class.)
-# ---------------------------------------------------------------------------
-
-
-def make_stream_endpoint(manager_factory):
-    async def stream(pairing_id: str):
-        manager: DevicePairingManager = manager_factory()
+    @custom_route(
+        method="GET",
+        path="/{pairing_id}/stream",
+        authentication_type="none",
+        expose_in=(ExposeIn.REST,),
+        response_class=StreamingResponse,
+        openapi_tags=("Device Pairing Authentication",),
+        summary=(
+            "Server-sent event when the pairing resolves (state only; the "
+            "session is delivered by a status read)"
+        ),
+    )
+    @rate_limit(DEFAULT_AUTH_RATE_LIMIT, scope="ip")
+    def stream_route(self, pairing_id: str) -> StreamingResponse:
         return StreamingResponse(
-            manager.stream_status(pairing_id),
-            media_type="text/event-stream",
+            self.stream_status(pairing_id), media_type="text/event-stream"
         )
-
-    return stream
 
 
 # ---------------------------------------------------------------------------

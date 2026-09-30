@@ -15,6 +15,7 @@ from typing import Any, ClassVar, Dict, Iterator, List, Optional
 
 import pytest
 from fastapi import APIRouter, FastAPI, HTTPException, Request
+from fastapi.responses import PlainTextResponse
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
 
@@ -23,7 +24,7 @@ from zephyrex.extensions.auth_api_keys.EXT_Auth_APIKeys import EXT_Auth_APIKeys
 from zephyrex.extensions.auth_notifications.EXT_Auth_Notifications import (
     EXT_Auth_Notifications,
 )
-from zephyrex.lib.CustomRoute import custom_route, register_custom_routes
+from zephyrex.lib.CustomRoute import ExposeIn, custom_route, register_custom_routes
 from zephyrex.logic.AbstractLogicManager import (
     AbstractBLLManager,
     HookContext,
@@ -115,6 +116,16 @@ class CustomRouteProbeManager(AbstractBLLManager):
     def cookie(self, request: Request) -> ProbeOutput:
         return ProbeOutput(text=request.cookies.get("probe", "none"))
 
+    @custom_route(
+        method="GET",
+        path="/raw",
+        authentication_type="none",
+        expose_in=(ExposeIn.REST,),
+        response_class=PlainTextResponse,
+    )
+    def raw(self, wrong: bool = False) -> Any:
+        return {"not": "a response"} if wrong else PlainTextResponse("raw body")
+
 
 @pytest.fixture(scope="module")
 def probe(model_registry: Any) -> TestClient:
@@ -122,7 +133,7 @@ def probe(model_registry: Any) -> TestClient:
     app = FastAPI()
     app.state.model_registry = model_registry
     router = APIRouter(prefix=PROBE)
-    assert register_custom_routes(router, CustomRouteProbeManager) == 6
+    assert register_custom_routes(router, CustomRouteProbeManager) == 7
     app.include_router(router)
     return TestClient(app)
 
@@ -207,6 +218,15 @@ class TestCustomRouteDispatch:
         assert response.json()["text"] == "seen"
         # ...and is never mistaken for a query parameter.
         assert probe.get(f"{PROBE}/cookie").json()["text"] == "none"
+
+    def test_a_response_class_route_answers_with_its_own_response(self, probe):
+        response = probe.get(f"{PROBE}/raw")
+        assert response.status_code == 200, response.text
+        assert response.text == "raw body"
+        assert response.headers["content-type"].startswith("text/plain")
+
+    def test_a_response_class_route_returning_anything_else_fails(self, probe):
+        assert probe.get(f"{PROBE}/raw", params={"wrong": "true"}).status_code == 500
 
     def test_jwt_route_without_credentials_is_401(self, probe):
         response = probe.post(f"{PROBE}/echo", json={"text": "anon"})

@@ -59,6 +59,7 @@ def test_device_pairing_mounts_only_its_declared_routes(app):
         ("POST", "/v1/auth/pairing/approve"),
         ("POST", "/v1/auth/pairing/deny"),
         ("GET", "/v1/auth/pairing/{pairing_id}/status"),
+        ("GET", "/v1/auth/pairing/{pairing_id}/stream"),
     }
 
 

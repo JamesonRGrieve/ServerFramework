@@ -83,6 +83,27 @@ def test_missing_output_model_raises():
             return None
 
 
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"output_model": PromoteOut, "expose_in": (ExposeIn.REST,)},
+        {},
+        {"expose_in": (ExposeIn.REST, ExposeIn.GRAPHQL)},
+    ],
+    ids=["with-output-model", "default-exposure", "also-graphql"],
+)
+def test_a_response_class_route_is_rest_only_without_output_model(options):
+    from fastapi.responses import PlainTextResponse
+
+    with pytest.raises(ValueError, match="exposed on REST only"):
+
+        @custom_route(
+            method="GET", path="/x", response_class=PlainTextResponse, **options
+        )
+        def bad(self):
+            return None
+
+
 @pytest.mark.parametrize("method", ["POST", "PUT", "PATCH"])
 def test_non_get_missing_input_model_raises(method):
     with pytest.raises(ValueError, match="requires an input_model"):

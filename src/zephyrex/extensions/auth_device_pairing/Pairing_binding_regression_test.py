@@ -130,6 +130,24 @@ class TestPairingBinding(ExtensionServerMixin):
         self._status(requester, pairing["pairing_id"])
         assert SESSION_COOKIE in requester.cookies
 
+    def test_the_stream_reports_state_and_never_the_session(self, server, admin_a):
+        requester = self._device(server)
+        pairing = self._request(requester)
+        self._approve(server, admin_a, pairing["qr_payload"])
+
+        # Even with the binding the stream carries no credential: its
+        # headers went out before the pairing resolved.
+        streamed = requester.get(f"{_PAIRING}/{pairing['pairing_id']}/stream")
+        assert streamed.status_code == 200, streamed.text
+        assert streamed.headers["content-type"].startswith("text/event-stream")
+        assert streamed.text.startswith("event: approved\n")
+        assert '"token":null' in streamed.text
+        assert SESSION_COOKIE not in requester.cookies
+
+        # ...and consumed nothing: the status read still delivers.
+        self._status(requester, pairing["pairing_id"])
+        assert SESSION_COOKIE in requester.cookies
+
     def test_a_native_client_opts_in_to_a_bearer_token(self, server, admin_a):
         native = self._device(server)
         pairing = self._request(native, token_in_body=True)

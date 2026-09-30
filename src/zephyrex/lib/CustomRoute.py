@@ -98,6 +98,9 @@ class CustomRouteSpec:
     graphql_kind: Optional[str] | None = None
     summary: Optional[str] | None = None
     description: Optional[str] | None = None
+    # A REST-only route that answers with this Response subclass itself (a
+    # stream, a file) instead of an ``output_model`` body.
+    response_class: Optional[Type[Response]] = None
 
     @property
     def auth_type(self) -> AuthType:
@@ -117,8 +120,13 @@ def custom_route(
     graphql_kind: Optional[str] | None = None,
     summary: Optional[str] | None = None,
     description: Optional[str] | None = None,
+    response_class: Optional[Type[Response]] = None,
 ) -> Callable:
-    """Decorator: tag a method with its route/SDK/GraphQL contract."""
+    """Decorator: tag a method with its route/SDK/GraphQL contract.
+
+    A route answers with an ``output_model`` body, or, REST only, with an
+    instance of ``response_class`` the method builds itself.
+    """
 
     def deco(func):
         spec = CustomRouteSpec(
@@ -132,13 +140,20 @@ def custom_route(
             graphql_kind=graphql_kind,
             summary=summary,
             description=description,
+            response_class=response_class,
         )
         if spec.method not in ("GET", "DELETE") and spec.input_model is None:
             raise ValueError(
                 f"@custom_route on {func.__qualname__}: method {spec.method} "
                 f"requires an input_model (typed contract preserved)"
             )
-        if spec.output_model is None:
+        if spec.response_class is not None:
+            if spec.output_model is not None or spec.expose_in != {ExposeIn.REST}:
+                raise ValueError(
+                    f"@custom_route on {func.__qualname__}: a response_class "
+                    f"route has no output_model and is exposed on REST only"
+                )
+        elif spec.output_model is None:
             raise ValueError(
                 f"@custom_route on {func.__qualname__}: output_model is required "
                 f"to preserve typed contract (use a Pydantic model)"
@@ -352,6 +367,8 @@ def _make_rest_endpoint(
             result = getattr(manager, method_name)(**arguments)
             if inspect.isawaitable(result):
                 result = await result
+            if spec.response_class is not None:
+                return _checked_response(result, spec.response_class)
             output = _coerce_output(result, spec.output_model)
             if isinstance(output, BaseModel):
                 return output.model_dump()
@@ -361,6 +378,15 @@ def _make_rest_endpoint(
 
     carry_rate_limit(getattr(manager_cls, method_name), endpoint)
     return endpoint
+
+
+def _checked_response(result: Any, response_class: Type[Response]) -> Response:
+    if not isinstance(result, response_class):
+        raise TypeError(
+            f"a response_class route must return {response_class.__name__}, "
+            f"not {type(result).__name__}"
+        )
+    return result
 
 
 def register_custom_routes(router, manager_cls) -> int:
@@ -378,11 +404,15 @@ def register_custom_routes(router, manager_cls) -> int:
 
         endpoint = _make_rest_endpoint(manager_cls, method_name, spec)
         route_method = getattr(router, spec.method.lower())
+        options: Dict[str, Any] = {}
+        if spec.response_class is not None:
+            options["response_class"] = spec.response_class
         route_method(
             spec.path,
             summary=spec.summary or f"Custom {spec.method} {spec.path}",
             description=spec.description or "",
             tags=list(spec.openapi_tags) if spec.openapi_tags else None,
+            **options,
         )(endpoint)
         registered += 1
 
