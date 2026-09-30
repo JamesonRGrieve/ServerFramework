@@ -49,33 +49,7 @@ jobs:
 
       - name: Filter findings at HIGH+
         id: filter
-        run: |
-          python - <<'PY'
-          import json, os, sys
-          report = json.loads(open("audit-report.json").read() or "{}")
-          deps = report.get("dependencies") if isinstance(report, dict) else report or []
-          ranking = {"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "MODERATE": 2, "LOW": 1}
-          gate_findings = []
-          for dep in deps or []:
-              for v in dep.get("vulns") or []:
-                  sev = (v.get("severity") or "UNKNOWN").upper()
-                  if ranking.get(sev, 0) >= ranking["HIGH"]:
-                      gate_findings.append({
-                          "package": dep.get("name"),
-                          "version": dep.get("version"),
-                          "id": v.get("id"),
-                          "severity": sev,
-                          "fix_versions": v.get("fix_versions") or [],
-                      })
-          with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
-              fh.write(f"count={len(gate_findings)}\n")
-          open("gate-findings.json", "w").write(json.dumps(gate_findings, indent=2))
-          if gate_findings:
-              print("HIGH+ vulnerabilities detected:")
-              for f in gate_findings:
-                  print(f"  - {f['package']} {f['version']} {f['id']} ({f['severity']})")
-          sys.exit(1 if gate_findings else 0)
-          PY
+        run: python scripts/audit_gate.py audit-report.json
 
       - name: Open issue on scheduled failure
         if: failure() && github.event_name == 'schedule'

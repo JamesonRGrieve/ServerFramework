@@ -1,0 +1,194 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: Release
+
+# A `v*` tag builds, signs and audits the wheel and sdist, publishes them to
+# TestPyPI, smoke-tests `zephyrex[all]` installed from there, and only then
+# publishes to PyPI, behind the `pypi` environment's required reviewer.
+# Publishing uses PyPI Trusted Publishing (OIDC): no token is stored. Each
+# index needs a trusted publisher for this repository, this workflow
+# (release.yml) and its environment (`testpypi`, `pypi`).
+#
+# A manual run (workflow_dispatch) builds, audits and signs only.
+#
+# Signatures are sigstore bundles, keyless via this workflow's OIDC identity:
+#   sigstore verify identity \
+#     --cert-identity-regexp '^https://github\.com/JamesonRGrieve/ServerFramework/' \
+#     --cert-oidc-issuer https://token.actions.githubusercontent.com \
+#     --bundle <file>.sigstore <file>
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build, audit, sign
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write # sigstore keyless signing
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install build, audit and signing tools
+        run: python -m pip install -U pip build cyclonedx-bom pip-audit sigstore
+
+      - name: Read the version, and check a tag matches it
+        id: version
+        run: |
+          version=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [ "${GITHUB_REF_TYPE}" = "tag" ] && [ "${GITHUB_REF_NAME}" != "v${version}" ]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match pyproject version ${version}"
+            exit 1
+          fi
+
+      - name: Check extras match the extensions' declarations
+        run: |
+          python -m pip install -e .
+          python -m zephyrex.extensions.sync_dependencies --check
+
+      - name: Build wheel and sdist
+        run: python -m build --outdir dist
+
+      - name: Check the wheel ships no tests
+        run: |
+          python - <<'PY'
+          import glob, sys, zipfile
+          (wheel,) = glob.glob("dist/*.whl")
+          tests = [n for n in zipfile.ZipFile(wheel).namelist()
+                   if n.endswith("_test.py") or n.endswith("/conftest.py")]
+          print(f"{wheel}: {len(tests)} test modules")
+          sys.exit(1 if tests else 0)
+          PY
+
+      - name: Generate CycloneDX SBOM
+        run: |
+          mkdir -p release
+          cyclonedx-py requirements requirements.lock \
+            --output-format JSON --output-file release/bom.json
+
+      - name: Audit dependencies (the nightly audit's HIGH+ gate)
+        run: |
+          pip-audit -r requirements.lock --format json > audit-report.json || true
+          python scripts/audit_gate.py audit-report.json
+
+      - name: Sign wheel and sdist (sigstore, keyless)
+        run: |
+          for artifact in dist/*.whl dist/*.tar.gz; do
+            sigstore sign --bundle "release/$(basename "$artifact").sigstore" "$artifact"
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-extras
+          path: release/
+          if-no-files-found: error
+
+  publish-testpypi:
+    name: Publish to TestPyPI
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/project/zephyrex/${{ needs.build.outputs.version }}/
+    permissions:
+      id-token: write # trusted publishing
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+  smoke-testpypi:
+    name: Smoke-test zephyrex[all] from TestPyPI
+    needs: [build, publish-testpypi]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: scripts
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install from TestPyPI (dependencies from PyPI only)
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          python -m venv /tmp/smoke
+          # Fetch only zephyrex from TestPyPI; its dependencies resolve from
+          # PyPI, so nobody else's TestPyPI upload can stand in for one.
+          for attempt in 1 2 3 4 5 6; do
+            /tmp/smoke/bin/pip download --no-deps --dest /tmp/wheel \
+              --index-url https://test.pypi.org/simple/ "zephyrex==${VERSION}" && break
+            echo "TestPyPI has not served ${VERSION} yet (attempt ${attempt})"; sleep 20
+          done
+          wheel=$(ls /tmp/wheel/zephyrex-*.whl)
+          /tmp/smoke/bin/pip install "zephyrex[all] @ file://${wheel}"
+          /tmp/smoke/bin/pip check
+      - name: Smoke test
+        working-directory: /tmp
+        run: |
+          /tmp/smoke/bin/zephyrex version
+          /tmp/smoke/bin/python "${GITHUB_WORKSPACE}/scripts/release_smoke.py"
+
+  publish-pypi:
+    name: Publish to PyPI
+    needs: [build, smoke-testpypi]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: pypi # required reviewer: the release waits here for approval
+      url: https://pypi.org/project/zephyrex/${{ needs.build.outputs.version }}/
+    permissions:
+      id-token: write # trusted publishing
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+  github-release:
+    name: Attach artifacts to the GitHub release
+    needs: publish-pypi
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/dist/*
+            artifacts/release-extras/*

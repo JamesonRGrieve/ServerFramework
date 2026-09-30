@@ -31,6 +31,17 @@ Uniform code style is key to a maintainable codebase. Please observe the followi
 - **Language-Specific Conventions:** Adhere to any additional style guides relevant to the programming language or framework you are working in.
 - **Review Before Submission:** Double-check your code against the repository’s style expectations to ensure consistency and readability.
 ---
+## Releasing
+Releases go to PyPI as the single `zephyrex` distribution, with an extra per bundled extension. `.github/workflows/release.yml` runs on a `v*` tag, which must equal the `version` in `pyproject.toml` (e.g. `v1.0.0a1`):
+
+1. Build the wheel and sdist, check the extras match the extensions' declarations and that the wheel ships no tests, write the SBOM, run the HIGH+ dependency-audit gate, and sign with sigstore.
+2. Publish to TestPyPI (`testpypi` environment).
+3. Install `zephyrex[all]` from TestPyPI into a clean environment, resolving its dependencies from PyPI only, then run `zephyrex version` and `scripts/release_smoke.py`.
+4. Publish to PyPI (`pypi` environment). The run waits here for a required reviewer to approve.
+5. Attach the packages, signatures and SBOM to the GitHub release.
+
+Publishing uses PyPI Trusted Publishing, so no token is stored. Each index needs a trusted publisher for this repository, workflow `release.yml` and environment `testpypi` or `pypi`, and the `pypi` environment needs its required reviewers set. After changing an extension's pip dependencies, run `python -m zephyrex.extensions.sync_dependencies` to update its manifest and extra; the test suite fails until you do.
+---
 ## In Summary
 Every contribution, from minor corrections to major feature additions, is appreciated. Clear communication and adherence to these guidelines help us create a more robust and user-friendly repository. Thank you for investing your time and expertise in advancing this project. We eagerly await your ideas and improvements!
 Happy contributing!
