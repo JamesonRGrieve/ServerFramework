@@ -359,7 +359,11 @@ class UserOAuthManager(AbstractBLLManager, RouterMixin):
         cfg = _PROVIDER_AUTH.get(provider)
         if cfg is None:
             raise HTTPException(status_code=404, detail=f"unknown provider: {provider}")
-        redirect_uri = env(f"{provider.upper()}_REDIRECT_URI") or env("APP_URI")
+        # The web client finishes a link on its close page; a deployment
+        # can point a provider elsewhere with <PROVIDER>_REDIRECT_URI.
+        redirect_uri = env(f"{provider.upper()}_REDIRECT_URI") or (
+            f"{env('APP_URI').rstrip('/')}/user/close/{provider}"
+        )
         state = issue_link_state(self.requester.id, provider, redirect_uri)
         params = {
             "client_id": env(cfg["client_id_env"]),

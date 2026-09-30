@@ -73,7 +73,7 @@ def _fake_adapter(returns_instance=True, seen_redirects=None):
 
 def _state(mgr, provider, monkeypatch):
     """A link state from the connect call, as a browser would carry it."""
-    monkeypatch.setenv("APP_URI", "https://app.example.com/cb")
+    monkeypatch.setenv("APP_URI", "https://app.example.com")
     return mgr.connect_route(provider)["state"]
 
 
@@ -236,7 +236,28 @@ class TestLinkState:
             "github",
             {"code": "c", "state": state, "redirect_uri": "https://evil.example/cb"},
         )
-        assert github == ["https://app.example.com/cb"]
+        assert github == ["https://app.example.com/user/close/github"]
+
+    def test_links_finish_on_the_clients_close_page_by_default(
+        self, client_registry, monkeypatch
+    ):
+        from urllib.parse import parse_qs, urlparse
+
+        monkeypatch.setenv("APP_URI", "https://app.example.com/")
+        url = _mgr(client_registry).connect_route("google")["authorize_url"]
+        (redirect,) = parse_qs(urlparse(url).query)["redirect_uri"]
+        assert redirect == "https://app.example.com/user/close/google"
+
+    def test_a_provider_redirect_setting_overrides_the_default(
+        self, client_registry, monkeypatch
+    ):
+        from urllib.parse import parse_qs, urlparse
+
+        monkeypatch.setenv("APP_URI", "https://app.example.com")
+        monkeypatch.setenv("GOOGLE_REDIRECT_URI", "https://auth.example.com/g")
+        url = _mgr(client_registry).connect_route("google")["authorize_url"]
+        (redirect,) = parse_qs(urlparse(url).query)["redirect_uri"]
+        assert redirect == "https://auth.example.com/g"
 
 
 class TestOAuth2ClientEndpointsMount:
