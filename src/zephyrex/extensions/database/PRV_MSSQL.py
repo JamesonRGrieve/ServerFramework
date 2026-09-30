@@ -13,6 +13,7 @@ from zephyrex.extensions.database.EXT_Database import (
     SQL_CHAT_GUIDANCE,
     AbstractDatabaseExtensionProvider as AbstractDatabaseProvider,
 )
+from zephyrex.lib.Dependencies import Dependencies, PIP_Dependency
 from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 
 try:  # optional driver — guarded so discovery never fails on a missing package
@@ -34,6 +35,17 @@ class PRV_MSSQL(AbstractDatabaseProvider):
     friendly_name: ClassVar[str] = "Microsoft SQL Server"
     description: ClassVar[str] = "Microsoft SQL Server relational database provider"
     db_type: ClassVar[str] = "mssql"
+
+    dependencies: ClassVar[Dependencies] = Dependencies(
+        [
+            PIP_Dependency(
+                name="pyodbc",
+                friendly_name="pyodbc",
+                semver=">=5.0.0",
+                reason="Microsoft SQL Server provider driver (needs an ODBC driver)",
+            )
+        ]
+    )
 
     _env: ClassVar[Dict[str, Any]] = {
         "DATABASE_HOST": "",

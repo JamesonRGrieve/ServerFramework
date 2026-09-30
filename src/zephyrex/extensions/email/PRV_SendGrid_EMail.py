@@ -247,7 +247,7 @@ class SendgridProvider(AbstractEmailProvider):
             PIP_Dependency(
                 name="sendgrid",
                 friendly_name="SendGrid",
-                semver=">=6.0.0",
+                semver=">=6.10.0",
                 reason="SendGrid email service",
             )
         ]

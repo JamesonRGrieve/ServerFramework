@@ -6,6 +6,8 @@
 **/*.db-shm
 **/*.db-wal
 *.egg-info/
+/build/
+/dist/
 **/*.env*
 **/.idea
 .idea

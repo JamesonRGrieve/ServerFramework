@@ -11,5 +11,5 @@ author = "ZephyrexTechnologies"
 entry_module = "EXT_Auth_OAuth2Client"
 minimum_framework_version = "0.0.0"
 
-pip_dependencies = []
+pip_dependencies = ["requests>=2.28.0"]
 system_dependencies = []

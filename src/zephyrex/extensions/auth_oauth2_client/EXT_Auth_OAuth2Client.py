@@ -16,6 +16,7 @@ now lives in the separate ``auth_oauth2_server`` extension. Opt-in via
 from typing import ClassVar
 
 from zephyrex.extensions.AbstractExtensionProvider import AbstractStaticExtension
+from zephyrex.lib.Dependencies import Dependencies, PIP_Dependency
 
 
 class EXT_Auth_OAuth2Client(AbstractStaticExtension):
@@ -24,4 +25,14 @@ class EXT_Auth_OAuth2Client(AbstractStaticExtension):
     description: ClassVar[str] = (
         "External-IdP SSO client: link Google/GitHub/Microsoft/Amazon identities "
         "to a user account (connect / callback / disconnect)"
+    )
+    dependencies: ClassVar[Dependencies] = Dependencies(
+        [
+            PIP_Dependency(
+                name="requests",
+                friendly_name="Requests",
+                semver=">=2.28.0",
+                reason="Token and user-info exchange with each identity provider",
+            )
+        ]
     )

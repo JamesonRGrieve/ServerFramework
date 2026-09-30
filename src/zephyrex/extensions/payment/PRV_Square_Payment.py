@@ -234,7 +234,8 @@ class PaymentExtensionSquareProvider(AbstractPaymentProvider):
             PIP_Dependency(
                 name="squareup",
                 friendly_name="Square Python SDK",
-                semver=">=37.0.0",
+                # square.client.Client is the pre-42 SDK; 42 replaced it.
+                semver=">=37.0.0,<42",
                 reason="Square payment provider support",
             ),
         ]

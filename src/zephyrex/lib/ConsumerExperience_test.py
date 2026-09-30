@@ -376,7 +376,7 @@ class TestPipExtras:
         "extra, expected_dep",
         [
             ("email", "sendgrid"),
-            ("mfa", "pyotp"),
+            ("auth-mfa", "pyotp"),
             ("payment", "stripe"),
             ("cache", "redis"),
         ],
@@ -392,9 +392,8 @@ class TestPipExtras:
     def test_all_extra_includes_others(self, pyproject):
         extras = pyproject["project"]["optional-dependencies"]
         assert "all" in extras
-        all_deps = " ".join(extras["all"]).lower()
-        for name in ("email", "mfa", "payment", "cache"):
-            assert name in all_deps
+        for name in ("email", "auth-mfa", "payment", "cache"):
+            assert f"zephyrex[{name}]" in extras["all"]
 
 
 # ---------------------------------------------------------------------------

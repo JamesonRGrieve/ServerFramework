@@ -1572,6 +1572,24 @@ class AbstractStaticExtension(
             cls._providers = providers
         return providers
 
+    @classmethod
+    def pip_requirements(cls) -> List[str]:
+        """Every pip requirement this extension and its providers declare,
+        one per package, as sorted PEP 508 strings: what the extension's
+        ``zephyrex[<name>]`` extra installs and its manifest lists. Two
+        declarations of one package must agree."""
+        found: Dict[str, str] = {}
+        for owner in (cls, *cls.providers):
+            for dependency in owner.dependencies.pip:
+                requirement = f"{dependency.name}{dependency.semver or ''}"
+                earlier = found.setdefault(dependency.name.lower(), requirement)
+                if earlier != requirement:
+                    raise ValueError(
+                        f"{cls.name}: {dependency.name} is declared as both "
+                        f"{earlier!r} and {requirement!r}"
+                    )
+        return sorted(found.values())
+
     _root_rotation_cache: ClassVar[Optional[RotationManager]] = None
 
     @classproperty

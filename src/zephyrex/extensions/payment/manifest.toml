@@ -11,5 +11,5 @@ author = "ZephyrexTechnologies"
 entry_module = "EXT_Payment"
 minimum_framework_version = "0.0.0"
 
-pip_dependencies = []
+pip_dependencies = ["httpx>=0.24.0", "paypalrestsdk>=1.13.0", "squareup>=37.0.0,<42", "stripe>=15.0.0"]
 system_dependencies = []

@@ -4,6 +4,7 @@
 from typing import Any, ClassVar, Dict, List, Optional, Set, Tuple
 
 from zephyrex.extensions.AbstractExtensionProvider import AbstractStaticExtension
+from zephyrex.lib.Dependencies import Dependencies, PIP_Dependency
 from zephyrex.lib.Environment import env
 from zephyrex.lib.Logging import logger
 
@@ -31,6 +32,36 @@ class EXT_Observability(AbstractStaticExtension):
     )
 
     _env: ClassVar[Dict[str, Any]] = {}
+    # Each backend is used only when its setting selects it; the extra
+    # installs all four so any can be switched on.
+    dependencies: ClassVar[Dependencies] = Dependencies(
+        [
+            PIP_Dependency(
+                name="prometheus-client",
+                friendly_name="Prometheus client",
+                semver=">=0.20.0",
+                reason="METRICS_BACKEND=prometheus",
+            ),
+            PIP_Dependency(
+                name="opentelemetry-api",
+                friendly_name="OpenTelemetry API",
+                semver=">=1.20.0",
+                reason="METRICS_BACKEND=otel",
+            ),
+            PIP_Dependency(
+                name="sentry-sdk",
+                friendly_name="Sentry SDK",
+                semver=">=2.0.0",
+                reason="SENTRY_DSN error reporting",
+            ),
+            PIP_Dependency(
+                name="rollbar",
+                friendly_name="Rollbar",
+                semver=">=1.0.0",
+                reason="ROLLBAR_TOKEN error reporting",
+            ),
+        ]
+    )
     _abilities: ClassVar[Set[str]] = {"metrics_export", "error_report"}
     _providers: ClassVar[List] = []
 

@@ -681,7 +681,9 @@ class PaymentExtensionStripeProvider(AbstractPaymentProvider):
             PIP_Dependency(
                 name="stripe",
                 friendly_name="Stripe Python Library",
-                semver=">=5.5.0",
+                # Webhooks rely on stripe.SignatureVerificationError and
+                # StripeObject.to_dict(), verified against 15.
+                semver=">=15.0.0",
                 reason="Stripe payment provider support",
             ),
         ]

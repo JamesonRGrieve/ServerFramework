@@ -10,7 +10,7 @@ symlinks).
 from typing import Any, ClassVar, Dict, List, Set
 
 from zephyrex.extensions.AbstractExtensionProvider import AbstractStaticExtension
-from zephyrex.lib.Dependencies import Dependencies
+from zephyrex.lib.Dependencies import Dependencies, PIP_Dependency
 from zephyrex.lib.Logging import logger
 
 
@@ -25,7 +25,16 @@ class EXT_FileIO(AbstractStaticExtension):
         "FILEIO_BASE_DIRECTORY": "",
     }
 
-    dependencies: ClassVar[Dependencies] = Dependencies([])
+    dependencies: ClassVar[Dependencies] = Dependencies(
+        [
+            PIP_Dependency(
+                name="psutil",
+                friendly_name="psutil",
+                semver=">=5.9.0",
+                reason="Local storage reports disk usage",
+            )
+        ]
+    )
     _abilities: ClassVar[Set[str]] = {
         "fileio_read",
         "fileio_write",

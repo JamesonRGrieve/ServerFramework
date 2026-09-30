@@ -13,6 +13,7 @@ from zephyrex.extensions.database.EXT_Database import (
     SQL_CHAT_GUIDANCE,
     AbstractDatabaseExtensionProvider as AbstractDatabaseProvider,
 )
+from zephyrex.lib.Dependencies import Dependencies, PIP_Dependency
 from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 
 try:  # optional driver — guarded so discovery never fails on a missing package
@@ -35,6 +36,17 @@ class PRV_MySQL(AbstractDatabaseProvider):
     db_type: ClassVar[str] = "mysql"
 
     _driver_available: ClassVar[bool] = _mysql_available
+
+    dependencies: ClassVar[Dependencies] = Dependencies(
+        [
+            PIP_Dependency(
+                name="mysql-connector-python",
+                friendly_name="MySQL Connector/Python",
+                semver=">=9.0.0",
+                reason="MySQL database provider driver",
+            )
+        ]
+    )
 
     _env: ClassVar[Dict[str, Any]] = {
         "DATABASE_HOST": "",

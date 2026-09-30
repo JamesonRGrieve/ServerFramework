@@ -11,5 +11,5 @@ author = "ZephyrexTechnologies"
 entry_module = "EXT_FileIO"
 minimum_framework_version = "0.0.0"
 
-pip_dependencies = []
+pip_dependencies = ["psutil>=5.9.0"]
 system_dependencies = []
