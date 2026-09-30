@@ -479,7 +479,7 @@ class TestTeamEndpoints(AbstractEPTest):
             f"Response: {response_json}"
         )
 
-        expected_message = "Access denied: You must have administrator privileges in this team to modify user roles"
+        expected_message = "Only a team admin can manage this team"
         actual_message = response_json["detail"]
 
         assert actual_message == expected_message, (

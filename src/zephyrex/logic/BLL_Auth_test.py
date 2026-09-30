@@ -921,6 +921,8 @@ class TestMetadataManager(AbstractBLLTest):
 
 class TestUserTeamManager(AbstractBLLTest):
     class_under_test = UserTeamManager
+    # A member never creates their own membership; the team's admin grants it.
+    created_by_owner = False
     create_fields = {
         "enabled": True,
     }

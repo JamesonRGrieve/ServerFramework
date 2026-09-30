@@ -171,6 +171,16 @@ class TeamManager(AbstractBLLManager, RouterMixin):
             "response_model": "Dict[str, str]",
             "status_code": 200,
         },
+        {
+            "path": "/{team_id}/user/{user_id}",
+            "method": "delete",
+            "function": "remove_member",
+            "summary": "Remove a member (or leave the team)",
+            "description": "A team admin removes a member at or below their own "
+            "role; any member may remove themselves. The last admin cannot "
+            "be removed (409).",
+            "status_code": 204,
+        },
     ]
     nested_resources: ClassVar[Dict[str, Any]] = {
         "invitation": {
@@ -358,9 +368,11 @@ class TeamManager(AbstractBLLManager, RouterMixin):
             # Add the creator as an admin of the team
             from zephyrex.logic.BLL_Auth.user_team import UserTeamManager
 
+            # A team's creator is its first admin: the server grants that,
+            # as root, since no one administers the team yet.
             UserTeamManager(
-                requester_id=self.requester.id, model_registry=self.model_registry
-            ).create(  # Must create with Root ID or can't see Team (yet).
+                requester_id=env("ROOT_ID"), model_registry=self.model_registry
+            ).create(
                 team_id=team.id, user_id=self.requester.id, role_id=env("ADMIN_ROLE_ID")
             )
 
@@ -479,6 +491,10 @@ class TeamManager(AbstractBLLManager, RouterMixin):
     def patch_role(self, team_id: str, user_id: str, body: Dict[str, Any]):
         """Update a user's role within a team (custom route method)"""
         return self.user_teams.patch_role(user_id=user_id, team_id=team_id, body=body)
+
+    def remove_member(self, team_id: str, user_id: str) -> None:
+        """DELETE /v1/team/{team_id}/user/{user_id}."""
+        self.user_teams.remove_member(team_id=team_id, user_id=user_id)
 
     def revoke_all_invitations(self, team_id: str):
         """Revoke all invitations for a team (nested custom route method)"""

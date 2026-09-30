@@ -411,8 +411,10 @@ class UserMergeManager(AbstractBLLManager, RouterMixin):
             )
         }
 
+        # The target consented to the merge (their consent token), so the
+        # server carries their memberships over, as root.
         ut_manager = UserTeamManager(
-            requester_id=self.requester.id, model_registry=self.model_registry
+            requester_id=env("ROOT_ID"), model_registry=self.model_registry
         )
         for membership in target_memberships:
             if membership.team_id not in initiating_memberships:

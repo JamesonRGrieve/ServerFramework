@@ -562,7 +562,10 @@ class UserManager(AbstractBLLManager, RouterMixin):
                 __import__("zephyrex.logic.BLL_Auth", fromlist=["UserTeamManager"]),
                 "UserTeamManager",
             ),
-            # child_network_model_cls will be inferred from the manager
+            # Read-only: a membership is granted, changed and removed through
+            # the team (invitations, PATCH/DELETE /v1/team/{t}/user/{u}),
+            # where TeamAuthority decides; a member never edits their own.
+            "routes_to_register": ["get", "list"],
         },
         "metadata": {
             "child_resource_name": "metadata",

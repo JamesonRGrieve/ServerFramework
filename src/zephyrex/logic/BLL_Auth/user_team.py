@@ -6,6 +6,7 @@ from fastapi import HTTPException
 from pydantic import Field
 
 from zephyrex.lib.Environment import env
+from zephyrex.logic.BLL_Auth.team_authority import TeamAuthority
 from zephyrex.pydantic2.fastapi import RouterMixin
 from zephyrex.logic.AbstractLogicManager import (
     AbstractBLLManager,
@@ -323,89 +324,93 @@ class UserTeamManager(AbstractBLLManager, RouterMixin):
                     setattr(record, relation, related)
         return records
 
-    def update(
-        self, id: str, team_id: str | None = None, db=None, db_manager=None, **kwargs
-    ):
-        """Update user team record with improved error handling"""
-        db = db or self.db
+    def _authority(self, team_id: str) -> TeamAuthority:
+        return TeamAuthority(self.requester.id, team_id, self.model_registry)
 
-        # Ensure db_manager is set
-        if db_manager is None:
-            # Try to get from model_registry if available
-            if hasattr(self, "model_registry") and hasattr(self.model_registry, "DB"):
-                db_manager = getattr(self.model_registry.DB, "manager", None)
-        if db_manager is None:
-            raise RuntimeError(
-                "db_manager is required for permission checks but was not provided or found."
+    def _membership(self, id: str) -> "UserTeamModel":
+        """The membership row, read as root: whether the requester may act on
+        it is TeamAuthority's decision, not the row filter's."""
+        membership = UserTeamModel.DB(self.model_registry.DB.manager.Base).get(
+            requester_id=env("ROOT_ID"),
+            model_registry=self.model_registry,
+            id=id,
+            filters=[
+                UserTeamModel.DB(self.model_registry.DB.manager.Base).deleted_at.is_(
+                    None
+                )
+            ],
+            allow_nonexistent=True,
+            return_type="dto",
+            override_dto=UserTeamModel,
+        )
+        if membership is None:
+            raise HTTPException(status_code=404, detail="Membership not found")
+        return membership  # type: ignore[no-any-return]
+
+    def create(self, **kwargs: Any) -> Any:
+        """Adding a member grants them ``role_id``: only someone who may grant
+        that role in the team (TeamAuthority) may do it."""
+        self._authority(kwargs["team_id"]).assert_may_grant(kwargs["role_id"])
+        return super().create(**kwargs)
+
+    def update(self, id: str, **kwargs: Any) -> Any:
+        """Changing a membership acts on its holder, and a new role is a
+        grant: both are TeamAuthority's to allow."""
+        membership = self._membership(id)
+        authority = self._authority(membership.team_id)
+        authority.assert_may_act_on(membership.role_id)
+        if membership.user_id == self.requester.id and not authority.unlimited:
+            # Leaving is the one change a member makes to their own
+            # membership; a demotion is another admin's call, so a team
+            # cannot be left without one by accident.
+            raise HTTPException(
+                status_code=403, detail="You cannot change your own membership"
             )
-
-        if team_id is not None:
-            # First check if the requester is a member of the team at all
-            try:
-                user_team_membership = (
-                    db.query(self.Model.DB(db_manager.Base))
-                    .filter(
-                        self.Model.DB(db_manager.Base).user_id == self.requester.id,
-                        self.Model.DB(db_manager.Base).team_id == team_id,
-                    )
-                    .first()
-                )
-            except Exception as e:
-                from zephyrex.lib.Logging import logger
-
-                logger.error(
-                    f"Database error checking team membership for user {self.requester.id} in team {team_id}: {str(e)}"
-                )
-                raise HTTPException(
-                    status_code=500,
-                    detail="Internal error while checking team membership",
-                )
-
-            if user_team_membership is None:
-                raise HTTPException(
-                    status_code=403,
-                    detail=f"Access denied: You must be a member of team '{team_id}' to modify user roles",
-                )
-
-            # Check if user has deleted membership
-            if (
-                hasattr(user_team_membership, "deleted_at")
-                and user_team_membership.deleted_at is not None
-            ):
-                from zephyrex.database.StaticPermissions import is_root_id
-
-                if not is_root_id(self.requester.id):
-                    raise HTTPException(
-                        status_code=403,
-                        detail="Access denied: Your team membership has been revoked",
-                    )
-
-            # Check admin access using the existing method signature
-            try:
-                has_admin_access = self.DB.user_has_admin_access(
-                    self.requester.id,
-                    team_id,
-                    db,
-                    db_manager=db_manager,  # Only pass db_manager, not model_registry
-                )
-            except Exception as e:
-                # Log the specific error for debugging
-                from zephyrex.lib.Logging import logger
-
-                logger.error(
-                    f"Error checking admin access for user {self.requester.id} in team {team_id}: {str(e)}"
-                )
-                raise HTTPException(
-                    status_code=500, detail="Internal error while checking permissions"
-                )
-
-            if not has_admin_access:
-                raise HTTPException(
-                    status_code=403,
-                    detail="Access denied: You must have administrator privileges in this team to modify user roles",
-                )
-
+        new_role_id = kwargs.get("role_id") or membership.role_id
+        if kwargs.get("role_id"):
+            authority.assert_may_grant(new_role_id)
+        stays_admin = kwargs.get("enabled", True) and authority.is_admin_role(
+            new_role_id
+        )
+        if not stays_admin and self._is_last_administrator(membership):
+            raise HTTPException(
+                status_code=409, detail="A team must keep at least one admin"
+            )
         return super().update(id, **kwargs)
+
+    def delete(self, id: str) -> None:
+        """Removing a member acts on them; a member may always leave. A
+        team's last administrator can neither leave nor be removed."""
+        membership = self._membership(id)
+        authority = self._authority(membership.team_id)
+        if membership.user_id != self.requester.id:
+            authority.assert_may_act_on(membership.role_id)
+        if self._is_last_administrator(membership):
+            raise HTTPException(
+                status_code=409, detail="A team must keep at least one admin"
+            )
+        # TeamAuthority has decided; the row's creator (usually the system
+        # or root, when it was granted) is not who may remove it.
+        self.DB.delete(
+            requester_id=env("ROOT_ID"), model_registry=self.model_registry, id=id
+        )
+
+    def _is_last_administrator(self, membership: "UserTeamModel") -> bool:
+        members = UserTeamModel.DB(self.model_registry.DB.manager.Base).list(
+            requester_id=env("ROOT_ID"),
+            model_registry=self.model_registry,
+            team_id=membership.team_id,
+            return_type="dto",
+            override_dto=UserTeamModel,
+        )
+        administrators = {
+            member.user_id
+            for member in members
+            if TeamAuthority(
+                member.user_id, member.team_id, self.model_registry
+            ).administers()
+        }
+        return administrators == {membership.user_id}
 
     def validate(self, user_id: str, team_id: str, body: Dict[str, str]):
         try:
@@ -460,11 +465,24 @@ class UserTeamManager(AbstractBLLManager, RouterMixin):
         target_user_team = user_team_list[0]
 
         target_role_id = body["user_team"]["role_id"]  # type: ignore[index]
-        updated_data = {"role_id": target_role_id}
-
-        self.update(id=target_user_team.id, team_id=team_id, **updated_data)
+        self.update(id=target_user_team.id, role_id=target_role_id)
 
         return {"message": "Role updated successfully"}
+
+    def remove_member(self, team_id: str, user_id: str) -> None:
+        """Take ``user_id`` off the team (or leave it, for the member
+        themselves); see ``delete`` for who may."""
+        memberships = UserTeamModel.DB(self.model_registry.DB.manager.Base).list(
+            requester_id=env("ROOT_ID"),
+            model_registry=self.model_registry,
+            team_id=team_id,
+            user_id=user_id,
+            return_type="dto",
+            override_dto=UserTeamModel,
+        )
+        if not memberships:
+            raise HTTPException(status_code=404, detail="Membership not found")
+        self.delete(id=memberships[0].id)
 
 
 UserTeamModel.Manager = UserTeamManager

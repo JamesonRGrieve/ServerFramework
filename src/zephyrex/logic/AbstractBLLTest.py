@@ -37,6 +37,9 @@ class AbstractBLLTest(AbstractTest):
 
     # Required overrides that child classes must provide
     class_under_test: Type[AbstractBLLManager] = None  # type: ignore[assignment]
+    # Entities carrying a user_id are created by that user, unless someone
+    # else grants them (a team membership is granted by the team's admin).
+    created_by_owner: bool = True
 
     # Default test configuration
     test_config: ClassOfTestsConfig = ClassOfTestsConfig(
@@ -621,8 +624,13 @@ class AbstractBLLTest(AbstractTest):
             logger.debug(f"Entity data for search: {entity_data}")
 
             # For entities that belong to a user, use that user as the requester
+            # (unless the entity is granted to its user by someone else).
             effective_requester_id = requester_id
-            if "user_id" in entity_data and entity_data["user_id"]:
+            if (
+                self.created_by_owner
+                and "user_id" in entity_data
+                and entity_data["user_id"]
+            ):
                 effective_requester_id = entity_data["user_id"]
 
             manager = self.class_under_test(
