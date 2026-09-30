@@ -1,8 +1,9 @@
 import inspect
-from datetime import time
+import time
 from typing import (
     TYPE_CHECKING,
     Any,
+    Callable,
     ClassVar,
     Dict,
     Iterable,
@@ -20,10 +21,6 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import configure_mappers
 
 from zephyrex.database.migrations.Migration import MigrationManager
-from zephyrex.lib.Paths import (
-    extensions_dir as _resolve_extensions_dir,
-    src_dir as _resolve_src_dir,
-)
 from zephyrex.lib.AbstractPydantic2 import CacheManager
 from zephyrex.lib.Environment import AbstractRegistry, env
 from zephyrex.lib.Logging import logger
@@ -41,6 +38,34 @@ from zephyrex.pydantic2.registry_utils import (
 
 if TYPE_CHECKING:
     from zephyrex.extensions.AbstractExtensionProvider import ExtensionRegistry
+
+# A server database that is still starting gets this many tries, this far
+# apart, before the registry gives up on it.
+DB_CONNECT_ATTEMPTS = 5
+DB_CONNECT_RETRY_SECONDS = 5.0
+
+
+def wait_for_database(
+    engine: Any,
+    attempts: int = DB_CONNECT_ATTEMPTS,
+    retry_seconds: float = DB_CONNECT_RETRY_SECONDS,
+    sleep: Callable[[float], None] = time.sleep,
+) -> None:
+    """Connect once to prove the database is up, retrying while it starts."""
+    for attempt in range(1, attempts + 1):
+        try:
+            engine.connect().close()
+            return
+        except Exception as error:
+            logger.error(
+                f"Error connecting to database (attempt {attempt}/{attempts})",
+                exc_info=True,
+            )
+            if attempt == attempts:
+                raise ConnectionError(
+                    "Failed to connect to database after maximum retries"
+                ) from error
+            sleep(retry_seconds)
 
 
 class ModelRegistry(AbstractRegistry):
@@ -125,8 +150,7 @@ class ModelRegistry(AbstractRegistry):
 
     def apply(self, type: Type) -> Type:
         if type is None:
-            raise TypeError(f"Cannot apply registry to None type")
-        # print(f"BEFORE APPLY: {list(type.model_fields.keys())}")
+            raise TypeError("Cannot apply registry to None type")
         new_type = next(
             (
                 possible_type
@@ -135,7 +159,6 @@ class ModelRegistry(AbstractRegistry):
             ),
             None,
         )
-        # print(f"AFTER APPLY: {list(new_type.model_fields.keys())}")
         if not new_type:
             raise TypeError(f"No matching type found in registry for {type.__name__}!")
         return new_type
@@ -837,21 +860,7 @@ class ModelRegistry(AbstractRegistry):
 
         if db_type != "sqlite":
             logger.info("Connecting to database...")
-            for retry_count in range(5):
-                try:
-                    connection = engine.connect()
-                    connection.close()
-                    break
-                except Exception as e:
-                    logger.error(
-                        f"Error connecting to database (attempt {retry_count+1}/5)",
-                        exc_info=True,
-                    )
-                    if retry_count == 4:
-                        raise Exception(
-                            "Failed to connect to database after maximum retries"
-                        )
-                    time.sleep(5)  # type: ignore[attr-defined]
+            wait_for_database(engine)
 
         import os
 
@@ -1402,108 +1411,21 @@ class ModelRegistry(AbstractRegistry):
         """Delegate to the ScopedModuleImporter collaborator."""
         return self._scoped_importer._parse_imports_and_dependencies(file_path, scope)
 
-    def build_routers(self):
-        """
-        Build FastAPI routers using RouterMixin from BLL managers.
-
-        This method uses the RouterMixin approach exclusively - NO EP files are used.
-        We are now completely decoupled from EP_Auth, EP_Extensions, and EP_Providers.
-
-        Returns:
-            List of router information dictionaries
-        """
-        if not self._locked:
-            raise RuntimeError("Registry must be committed before building routers")
-
-        logger.info("Building routers using RouterMixin approach - NO EP files")
-
-        # Use the RouterMixin approach exclusively
-        router_instances = self.build_all_routers_from_managers()
-
-        # Add special root authorization verification endpoint
-        root_auth_router = self._create_root_auth_router()
-        if root_auth_router:
-            router_instances.append(root_auth_router)
-
-        # Convert to the format expected by the application
-        routers = []
-        for i, router in enumerate(router_instances):
-            # Extract router information from the router instance
-            router_prefix = getattr(router, "prefix", f"/unknown_{i}")
-            router_name = router_prefix.replace("/v1/", "").replace("/", "_")
-            if router_name.startswith("_"):
-                router_name = router_name[1:]
-
-            routers.append(
-                {
-                    "router": router,
-                    "model_name": router_name,
-                    "module_name": f"RouterMixin_{router_name}",
-                }
-            )
-
-            # Include nested routers if they exist
-            if hasattr(router, "nested_routers") and router.nested_routers:
-                logger.info(
-                    f"Found {len(router.nested_routers)} nested routers for {router_name}"
-                )
-                for j, nested_router in enumerate(router.nested_routers):
-                    nested_prefix = getattr(nested_router, "prefix", f"/nested_{i}_{j}")
-                    nested_name = (
-                        nested_prefix.replace("/v1/", "")
-                        .replace("/", "_")
-                        .replace("{", "")
-                        .replace("}", "")
-                    )
-                    if nested_name.startswith("_"):
-                        nested_name = nested_name[1:]
-
-                    routers.append(
-                        {
-                            "router": nested_router,
-                            "model_name": nested_name,
-                            "module_name": f"RouterMixin_nested_{nested_name}",
-                        }
-                    )
-                    logger.info(f"Added nested router: {nested_prefix}")
-            else:
-                logger.debug(f"No nested routers found for {router_name}")
-
-        # Add static routes from extensions
-        extension_static_routes = [
-            item for item in self.extension_registry.extensions_static_routes.values()
-        ]
-        if extension_static_routes:
-            routers.extend(extension_static_routes)
-            logger.info(
-                f"Added {len(extension_static_routes)} extension static route routers"
-            )
-
-        logger.info(
-            f"Built {len(routers)} total routers (including nested) using RouterMixin approach"
-        )
-        return routers
-
     def router_managers(self) -> list:
         """Return the RouterMixin-tagged manager classes for this registry.
 
         Read-only discovery: scoped-imports the BLL modules for the loaded
-        scopes and collects every ``*Manager`` class that subclasses
-        ``RouterMixin``, is defined in its own module, and carries both a
-        ``Router`` and a ``BaseModel`` — the exact predicate
-        ``build_all_routers_from_managers`` uses to decide what gets a router,
-        minus the router instantiation and its side effects.
+        scopes and collects every model-backed ``*Manager`` class that
+        subclasses ``RouterMixin`` and is defined in its own module (the
+        model-less ones are ``action_managers``). Nothing is instantiated, and
+        a discovery failure yields an empty list rather than raising.
 
         The opt-in SDK emitters (``meta_sdk_py`` / ``meta_sdk_ts`` /
         ``meta_sdk_rs``) consume this via ``sdk.SDKModel.extract_resources``
         (``sdk.SDKGenerator._iter_manager_classes`` auto-detects the
-        ``router_managers`` accessor), so a generated client covers precisely
-        the mounted routes and cannot drift from them. Kept deliberately
-        separate from the builder: the builder re-raises on any
-        router-construction failure, which a read-only enumeration must never
-        do. Only invoked when SDK generation is actually requested (the emitters
-        self-gate on their output directory before calling this), so a normal
-        boot never pays for the scan.
+        ``router_managers`` accessor). Only invoked when SDK generation is
+        actually requested (the emitters self-gate on their output directory
+        before calling this), so a normal boot never pays for the scan.
         """
         try:
             imported_modules, _ = self._scoped_import(
@@ -1562,245 +1484,6 @@ class ModelRegistry(AbstractRegistry):
                 ):
                     managers.setdefault((attr.__module__, attr.__qualname__), attr)
         return list(managers.values())
-
-    def build_all_routers_from_managers(self):
-        """
-        Build FastAPI routers from all managers using RouterMixin.
-
-        This is the new approach that generates routers directly from BLL managers
-        without requiring separate EP_ files.
-
-        Returns:
-            List of APIRouter instances
-        """
-        if not self._locked:
-            raise RuntimeError("Registry must be committed before building routers")
-
-        routers = []
-
-        try:
-            # Import BLL managers using scoped import
-            imported_modules, _ = self._scoped_import(
-                file_type="BLL", scopes=["logic", "extensions"]
-            )
-
-            import sys
-
-            from zephyrex.pydantic2.fastapi import RouterMixin
-
-            # Find all BLL manager classes with RouterMixin
-            for module_name in imported_modules:
-                try:
-                    module = sys.modules.get(module_name)
-                    if not module:
-                        continue
-
-                    # Only process modules that are actually BLL files (not imported dependencies)
-                    if ".BLL_" not in module_name:
-                        # Skip modules that don't match the BLL_ pattern
-                        logger.debug(f"Skipping non-BLL module: {module_name}")
-                        continue
-
-                    # Look for manager classes in the module
-                    for attr_name in dir(module):
-                        if attr_name.endswith("Manager"):
-                            attr = getattr(module, attr_name)
-
-                            # Check if it's a class that inherits RouterMixin
-                            if (
-                                inspect.isclass(attr)
-                                and issubclass(attr, RouterMixin)
-                                and attr != RouterMixin
-                                and hasattr(attr, "Router")
-                            ):
-
-                                # Additional check: make sure this class is actually defined in this module
-                                if attr.__module__ == module_name:
-                                    try:
-                                        # Get the model used by this manager
-                                        base_model = getattr(attr, "Model", None)
-                                        if base_model is None:
-                                            logger.debug(
-                                                f"Skipping {attr_name} - no Model attribute"
-                                            )
-                                            continue
-                                        model = self.apply(base_model)
-                                        if model and hasattr(model, "model_fields"):
-                                            logger.debug(
-                                                f"{attr.__name__} router uses model {model.__name__} with fields: {list(model.model_fields.keys())}"
-                                            )
-                                            # Generate router using RouterMixin
-                                        router = attr.Router(model_registry=self)
-                                        routers.append(router)
-                                        logger.debug(
-                                            f"Generated router for {attr_name} from {module_name}"
-                                        )
-                                    except Exception as e:
-                                        import traceback
-
-                                        logger.error(
-                                            f"Failed to generate router for {attr_name}: {traceback.print_exc(e)}"
-                                        )
-                                        raise (e)
-
-                                else:
-                                    logger.debug(
-                                        f"Skipping {attr_name} as it's defined in {attr.__module__}, not {module_name}"
-                                    )
-
-                except Exception as e:
-                    logger.error(f"Failed to process module {module_name}: {e}")
-                    raise (e)
-
-        except Exception as e:
-            logger.error(f"Error building routers from managers: {e}")
-            raise (e)
-
-        logger.debug(f"Generated {len(routers)} routers from managers")
-        return routers
-
-    def _create_root_auth_router(self):
-        """Create the root authorization verification router (/v1)."""
-        try:
-            from typing import Optional
-
-            from fastapi import (
-                APIRouter,
-                Depends,
-                Header,
-                HTTPException,
-                Request,
-                Response,
-                status,
-            )
-
-            router = APIRouter(prefix="/v1", tags=["Authentication"])
-
-            # Define dependency for model registry
-            def get_model_registry(request: Request):
-                """Get the model registry from app state."""
-                model_registry = getattr(request.app.state, "model_registry", None)
-                if model_registry is None:
-                    raise HTTPException(
-                        status_code=500, detail="Model registry not available"
-                    )
-                return model_registry
-
-            @router.get(
-                "",
-                summary="Verify authorization",
-                description="Verifies if the provided JWT token or API Key is valid.",
-                status_code=status.HTTP_204_NO_CONTENT,
-                responses={
-                    status.HTTP_204_NO_CONTENT: {
-                        "description": "Authorization is valid"
-                    },
-                    status.HTTP_401_UNAUTHORIZED: {
-                        "description": "Invalid authorization"
-                    },
-                },
-            )
-            async def verify_authorization(
-                authorization: Optional[str] = Header(
-                    None,
-                    description="Authorization header with Bearer token or API Key",
-                ),
-                model_registry=Depends(get_model_registry),
-            ):
-                if not authorization:
-                    raise HTTPException(
-                        status_code=status.HTTP_401_UNAUTHORIZED,
-                        detail="Authorization header is missing",
-                    )
-                token = authorization.replace("Bearer ", "").strip()
-                if not token:
-                    raise HTTPException(
-                        status_code=status.HTTP_401_UNAUTHORIZED,
-                        detail="Token is missing or empty",
-                    )
-
-                # Verify the token via the registered identity/auth provider
-                # (issue #221 — no concrete UserManager import in lib/).
-                try:
-                    from zephyrex.lib.AuthProvider import get_auth_provider
-
-                    get_auth_provider().verify_token(
-                        token=token, model_registry=model_registry
-                    )
-                    return Response(status_code=status.HTTP_204_NO_CONTENT)
-                except (ImportError, RuntimeError):
-                    logger.error("No auth provider available for token verification")
-                    raise HTTPException(
-                        status_code=500, detail="Authentication service unavailable"
-                    )
-                except Exception as e:
-                    logger.debug(f"Token verification failed: {e}")
-                    raise HTTPException(
-                        status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token"
-                    )
-
-            logger.debug("Created root authorization verification router at /v1")
-            return router
-
-        except Exception as e:
-            logger.error(f"Failed to create root auth router: {e}")
-            return None
-
-    def _load_extension_ep_files(self, extension_names):
-        """Load EP (endpoint) files for specified extensions."""
-        import glob
-        import os
-        import sys
-
-        # Get the source directory
-        src_dir = _resolve_src_dir()
-
-        imported_modules = []
-
-        # Load EP files for each extension. Resolve through Paths so a
-        # configured external extensions root is honored.
-        extensions_root = _resolve_extensions_dir()
-        for ext_name in extension_names:
-            scope_dir = os.path.join(extensions_root, ext_name)
-            files_pattern = os.path.join(scope_dir, "EP_*.py")
-            matching_files = glob.glob(files_pattern)
-
-            # Filter out test files
-            ep_files = [
-                f
-                for f in matching_files
-                if not os.path.basename(f).endswith("_test.py")
-            ]
-
-            for file_path in ep_files:
-                module_name = (
-                    f"zephyrex.extensions.{ext_name}.{os.path.basename(file_path)[:-3]}"
-                )
-
-                # Skip if already imported
-                if module_name in sys.modules:
-                    logger.debug(f"EP module already imported: {module_name}")
-                    imported_modules.append(module_name)
-                    continue
-
-                try:
-                    logger.debug(f"Importing extension EP module: {module_name}")
-                    # Item 61: route through the canonical loader so
-                    # out-of-tree extension EP files load correctly and
-                    # are registered under both legacy and synthesized
-                    # names.
-                    from zephyrex.extensions.ExtensionLoader import (
-                        load_extension_module,
-                    )
-
-                    file_stem = os.path.basename(file_path)[:-3]
-                    module = load_extension_module(extensions_root, ext_name, file_stem)
-                    imported_modules.append(module_name)
-                    logger.debug(f"Successfully imported EP module: {module_name}")
-                except Exception as e:
-                    logger.error(f"Failed to import EP module {module_name}: {e}")
-
-        return imported_modules
 
     def get_sqlalchemy_model(
         self, pydantic_model: Type[BaseModel], for_generation: bool = False
