@@ -219,6 +219,18 @@ def create_router_from_manager(
             )
             continue
 
+        # A core manager may nest a resource an extension owns (a team's
+        # metadata, a user's sessions); without that extension this app has
+        # no such resource, so there is nothing to route.
+        if not model_registry.is_model_bound(child_manager_class.Model):
+            logger.debug(
+                "Skipping nested resource %s on %s: %s is not loaded in this app",
+                child_resource_name,
+                manager_class.__name__,
+                child_manager_class.Model.__name__,
+            )
+            continue
+
         # Proceed with using child_manager_class
         logger.debug(f"Using child manager class: {child_manager_class}")
 

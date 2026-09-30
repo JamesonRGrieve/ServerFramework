@@ -348,9 +348,7 @@ class ProviderModel(
                     )
 
             if not found_any:
-                logger.warning(
-                    "No ExtensionRegistry available in ModelRegistry, no providers to seed"
-                )
+                logger.debug("No loaded extension ships providers; nothing to seed")
 
             logger.debug(f"Total providers in seed data: {len(seed_data)}")
             return seed_data
@@ -630,8 +628,8 @@ class ProviderExtensionModel(
                     )
 
             if not found_any:
-                logger.warning(
-                    "No ExtensionRegistry available in ModelRegistry, no provider-extension links to seed"
+                logger.debug(
+                    "No loaded extension ships providers; no provider links to seed"
                 )
 
             logger.debug(
@@ -892,9 +890,7 @@ class ProviderInstanceModel(
                     )
 
             if not found_any:
-                logger.warning(
-                    "No ExtensionRegistry available in ModelRegistry, no providers to seed"
-                )
+                logger.debug("No loaded extension ships providers; nothing to seed")
 
             logger.debug(f"Total provider instances in seed data: {len(seed_data)}")
             return seed_data

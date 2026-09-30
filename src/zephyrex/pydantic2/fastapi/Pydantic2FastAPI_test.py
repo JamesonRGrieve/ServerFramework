@@ -219,6 +219,9 @@ class TestModelRegistry:
             model_class.Network = TestNetworkModel
         return model_class
 
+    def is_model_bound(self, model_class) -> bool:
+        return model_class in self._models.values()
+
 
 # Pytest Fixtures
 @pytest.fixture
@@ -724,6 +727,36 @@ class TestRouterCreation:
         schema = app.openapi()
         paths = list(schema.get("paths", {}).keys())
         assert any("/{parent_id}/child" in path for path in paths)
+
+    def test_a_nested_resource_of_an_unloaded_extension_is_not_routed(
+        self, model_registry
+    ):
+        """A core manager may nest a resource an extension owns; an app that
+        did not load that extension (its model is not bound) gets no routes
+        for it, rather than errors."""
+
+        class UnboundModel(TestModel):
+            __test__ = False
+
+        class UnboundManager(TestManager):
+            _model = UnboundModel
+
+        class ParentManager(TestManager):
+            prefix = "/v1/parent"
+            nested_resources = {
+                "orphan": NestedResourceConfig(
+                    child_resource_name="orphan",
+                    manager_property="orphans",
+                    child_manager_class=UnboundManager,
+                    routes_to_register=[RouteType.LIST],
+                )
+            }
+
+        from fastapi import FastAPI
+
+        app = FastAPI()
+        app.include_router(create_router_from_manager(ParentManager, model_registry))
+        assert not any("/orphan" in p for p in app.openapi().get("paths", {}))
 
 
 class TestModelRegistryIntegration:
