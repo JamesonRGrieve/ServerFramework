@@ -1106,8 +1106,16 @@ class PaymentExtensionStripeProvider(AbstractPaymentProvider):
             event = stripe_client.Webhook.construct_event(
                 payload, signature, webhook_secret
             )
+        except stripe_client.SignatureVerificationError:
+            logger.warning("Stripe webhook signature verification failed")
+            return {"success": False, "error": "Invalid signature"}
+        except ValueError:
+            logger.warning("Stripe webhook payload is not a valid event")
+            return {"success": False, "error": "Invalid payload"}
 
-            # Process the event based on type
+        try:
+            # A StripeObject is not a dict (no .get); work on its plain form.
+            event = event.to_dict()
             event_type = event.get("type")
             event_data = event.get("data", {}).get("object", {})
 
@@ -1135,19 +1143,8 @@ class PaymentExtensionStripeProvider(AbstractPaymentProvider):
             }
 
         except Exception as e:
-            # Try to detect Stripe signature errors safely
-            try:
-                if stripe is not None:
-                    from stripe.error import SignatureVerificationError
-
-                    if isinstance(e, SignatureVerificationError):
-                        logger.error(f"Webhook signature verification failed: {e}")
-                        return {"success": False, "error": "Invalid signature"}
-            except Exception:
-                pass
-
-            logger.error(f"Error processing webhook: {e}")
-            return {"success": False, "error": str(e)}
+            logger.error(f"Error processing Stripe webhook: {e}")
+            return {"success": False, "error": "Webhook processing failed"}
 
 
 # ============================================================================

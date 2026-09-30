@@ -1,3 +1,8 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+import hashlib
+import hmac
+import json
+import time
 from decimal import Decimal
 
 import pytest
@@ -420,3 +425,88 @@ class TestStripeProvider:
             ), f"Old timestamp raised unexpected error: {e}"
             if "not configured" in err or "not available" in err:
                 pytest.skip("Stripe SDK not installed")
+
+
+_WEBHOOK_SECRET = "whsec_zx_probe_secret"
+
+
+def _stripe_signature(payload: str, secret: str, timestamp: int) -> str:
+    """The Stripe-Signature header Stripe sends for ``payload``."""
+    signed = f"{timestamp}.{payload}".encode()
+    digest = hmac.new(secret.encode(), signed, hashlib.sha256).hexdigest()
+    return f"t={timestamp},v1={digest}"
+
+
+@pytest.mark.payment
+@pytest.mark.stripe
+class TestStripeWebhookVerification:
+    """Signature checking is local HMAC work, so it runs without a live key.
+
+    The provider used to detect a bad signature through ``stripe.error``,
+    which the Stripe SDK no longer has: the branch never ran, and every
+    rejection returned the SDK's exception text to the caller.
+    """
+
+    @pytest.fixture(autouse=True)
+    def configured(self, monkeypatch):
+        monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_zx_probe")
+        monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", _WEBHOOK_SECRET)
+        monkeypatch.setattr(PaymentExtensionStripeProvider, "_stripe_available", False)
+        monkeypatch.setattr(PaymentExtensionStripeProvider, "_stripe_client", None)
+
+    async def _process(self, payload: str, signature: str) -> dict:
+        from datetime import datetime, timezone
+
+        from zephyrex.logic.BLL_Providers import ProviderInstanceModel
+
+        now = datetime.now(timezone.utc)
+        instance = ProviderInstanceModel(
+            id="stripe-instance",
+            provider_id="stripe",
+            name="stripe",
+            created_at=now,
+            created_by_user_id=env("ROOT_ID"),
+            updated_at=now,
+            updated_by_user_id=env("ROOT_ID"),
+        )
+        result: dict = await PaymentExtensionStripeProvider.process_webhook(
+            instance, payload, signature
+        )
+        return result
+
+    @pytest.mark.asyncio
+    async def test_a_correctly_signed_event_is_processed(self):
+        payload = json.dumps(
+            {"id": "evt_1", "type": "payment_intent.succeeded", "data": {"object": {}}}
+        )
+        signature = _stripe_signature(payload, _WEBHOOK_SECRET, int(time.time()))
+        assert await self._process(payload, signature) == {
+            "success": True,
+            "event_type": "payment_intent.succeeded",
+            "event_id": "evt_1",
+            "processed": True,
+        }
+
+    @pytest.mark.security
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "secret, age",
+        [("whsec_someone_else", 0), (_WEBHOOK_SECRET, 3600)],
+        ids=["wrong-secret", "replayed-stale"],
+    )
+    async def test_a_bad_signature_is_rejected_without_detail(self, secret, age):
+        payload = json.dumps({"id": "evt_2", "type": "payment_intent.succeeded"})
+        signature = _stripe_signature(payload, secret, int(time.time()) - age)
+        assert await self._process(payload, signature) == {
+            "success": False,
+            "error": "Invalid signature",
+        }
+
+    @pytest.mark.asyncio
+    async def test_a_signed_body_that_is_not_an_event_is_rejected(self):
+        payload = "not json at all"
+        signature = _stripe_signature(payload, _WEBHOOK_SECRET, int(time.time()))
+        assert await self._process(payload, signature) == {
+            "success": False,
+            "error": "Invalid payload",
+        }
