@@ -142,7 +142,7 @@ class TestRequestLatency:
             env_patch.setenv("SEED_DATA", "true")
             prepare_test_registry()
             app = instance(extensions="", db_prefix=_worker_db_prefix("lat"))
-            yield TestClient(app)
+        yield TestClient(app)
 
     def test_openapi_generation(self, client):
         ratchet(

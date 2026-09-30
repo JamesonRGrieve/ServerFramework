@@ -21,7 +21,7 @@ def client_registry(tmp_path_factory):
     """An app with only auth_oauth2_client. Follows the conftest server
     contract: prepare_test_registry() first, so an earlier suite's
     @extension_model mutations (e.g. payment's UserModel columns) are undone
-    before this app builds its schema; env changes are scoped to the module."""
+    before this app builds its schema; env changes are scoped to the build."""
     from zephyrex.app import instance
     from zephyrex.pydantic2.sqlalchemy import prepare_test_registry
 
@@ -35,7 +35,7 @@ def client_registry(tmp_path_factory):
             extensions="auth_oauth2_client",
             db_prefix=f"oauth2cli.{worker}.{os.getpid()}",
         )
-        yield app.state.model_registry
+    yield app.state.model_registry
 
 
 def _mgr(registry):

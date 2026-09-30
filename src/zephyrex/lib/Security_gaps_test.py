@@ -96,7 +96,8 @@ class TestRouteInventory:
             env_patch.setenv("DATABASE_NAME", f"inventory_{os.getpid()}")
             env_patch.setenv("DATABASE_PATH", str(tmp))
             prepare_test_registry()
-            yield instance(extensions="", db_prefix=f"inv.{worker}.{os.getpid()}")
+            app = instance(extensions="", db_prefix=f"inv.{worker}.{os.getpid()}")
+        yield app
 
     @pytest.mark.security
     def test_no_debug_endpoints_serve_real_data(self, app):

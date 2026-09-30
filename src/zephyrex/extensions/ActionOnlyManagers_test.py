@@ -29,10 +29,11 @@ def app(tmp_path_factory):
         env_patch.setenv("DATABASE_NAME", f"action_only_{worker}_{os.getpid()}")
         env_patch.setenv("DATABASE_PATH", str(tmp))
         prepare_test_registry()
-        yield instance(
+        app = instance(
             extensions="auth_magic_link,auth_device_pairing",
             db_prefix=f"action_only.{worker}.{os.getpid()}",
         )
+    yield app
 
 
 def _routes(app, prefix):

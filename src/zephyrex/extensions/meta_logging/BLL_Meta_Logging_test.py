@@ -166,7 +166,7 @@ def model_registry(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Any]:
             db_prefix=f"test.meta_logging.{uuid.uuid4().hex[:8]}",
             extensions="meta_logging",
         )
-        yield app.state.model_registry
+    yield app.state.model_registry
 
 
 def _audit_logs(model_registry: Any) -> AuditLogManager:

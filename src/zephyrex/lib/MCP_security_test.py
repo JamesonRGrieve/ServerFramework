@@ -35,8 +35,8 @@ def mcp_app(tmp_path_factory):
         prepare_test_registry()
         app = instance(extensions="", db_prefix=f"mcp.sec.{worker}.{os.getpid()}")
         assert hasattr(app.state, "mcp"), "MCP failed to mount"
-        yield app
     refresh_settings()
+    yield app
 
 
 @pytest.fixture(scope="module")
