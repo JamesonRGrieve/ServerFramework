@@ -1,21 +1,25 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 import hashlib
 import hmac
+import importlib
+import importlib.util
 import json
 import time
 from decimal import Decimal
+from types import SimpleNamespace
+from typing import Any, Dict
 
 import pytest
 
-# Import BLL_Payment to ensure @extension_model decorator is applied
-from zephyrex.extensions.payment.BLL_Payment import *
 from zephyrex.extensions.payment.PRV_Stripe_Payment import (
     PaymentExtensionStripeProvider,
     Stripe_CustomerManager,
     Stripe_CustomerModel,
 )
-from zephyrex.lib.Dependencies import Dependencies
 from zephyrex.lib.Environment import env
+
+# BLL_Payment's @extension_model decorators apply on import.
+importlib.import_module("zephyrex.extensions.payment.BLL_Payment")
 
 
 @pytest.mark.payment
@@ -114,15 +118,11 @@ class TestStripeProvider:
         """Test bonding instance with API key."""
         bonded = PaymentExtensionStripeProvider.bond_instance(provider_instance)
 
-        # Check if stripe library is available
-        try:
-            import stripe
-
-            # If library is available, bonding should succeed
+        # Bonding succeeds exactly when the Stripe SDK is installed.
+        if importlib.util.find_spec("stripe") is not None:
             assert bonded is not None
             assert hasattr(bonded, "sdk")
-        except ImportError:
-            # If library not available, bonding should fail
+        else:
             assert bonded is None
 
     def test_static_configuration_methods(self):
@@ -362,9 +362,9 @@ class TestStripeProvider:
     @pytest.mark.asyncio
     async def test_process_webhook_rejects_tampered_body(self, provider_instance):
         """A body altered after signing must be rejected."""
-        original = b'{"id": "evt_1", "type": "payment_intent.succeeded"}'
+        # The body as altered after signing (it was payment_intent.succeeded).
         tampered = b'{"id": "evt_1", "type": "payment_intent.refunded"}'
-        # We don't have a valid signature for either, so use a syntactically
+        # There is no valid signature for it, so use a syntactically
         # plausible-but-wrong sig to confirm the verify path engages.
         bogus_sig = "t=1700000000,v1=" + ("00" * 32)
         try:
@@ -510,3 +510,107 @@ class TestStripeWebhookVerification:
             "success": False,
             "error": "Invalid payload",
         }
+
+
+class _RecordingResource:
+    """Stands in for one ``StripeClient.v1.<resource>`` service."""
+
+    def __init__(self, calls: list, resource: str, record: dict) -> None:
+        self._calls, self._resource, self._record = calls, resource, record
+
+    def create(self, **params):
+        self._calls.append((self._resource, "create", params))
+        return SimpleNamespace(**self._record)
+
+    def list(self, **params):
+        self._calls.append((self._resource, "list", params))
+        return SimpleNamespace(data=[SimpleNamespace(**self._record)])
+
+
+_PRODUCT: Dict[str, Any] = dict(
+    id="prod_1",
+    name="Plan",
+    description=None,
+    active=True,
+    images=[],
+    metadata={},
+    created=1,
+    updated=1,
+    livemode=False,
+)
+_CUSTOMER: Dict[str, Any] = dict(
+    id="cus_1",
+    email="a@example.com",
+    name="A",
+    phone=None,
+    metadata={},
+    created=1,
+    balance=0,
+    delinquent=False,
+    tax_exempt="none",
+    livemode=False,
+)
+
+
+@pytest.mark.payment
+@pytest.mark.stripe
+class TestStripeExternalResources:
+    """Each external model calls its own Stripe resource.
+
+    The product CRUD methods sat inside Stripe_SubscriptionModel, so product
+    CRUD reached only the abstract stubs (nothing happened) while
+    subscription CRUD would have created and deleted products. Calls also
+    go through the SDK's current ``v1`` namespace.
+    """
+
+    @pytest.fixture
+    def calls(self, monkeypatch) -> list:
+        from zephyrex.extensions.AbstractExtensionProvider import (
+            AbstractProviderInstance_SDK,
+        )
+
+        calls: list = []
+        v1 = SimpleNamespace(
+            products=_RecordingResource(calls, "products", _PRODUCT),
+            customers=_RecordingResource(calls, "customers", _CUSTOMER),
+        )
+        client = SimpleNamespace(v1=v1)
+        monkeypatch.setattr(
+            PaymentExtensionStripeProvider,
+            "bond_instance",
+            classmethod(lambda cls, instance: AbstractProviderInstance_SDK(client)),
+        )
+        return calls
+
+    def test_product_crud_reaches_products(self, calls):
+        from zephyrex.extensions.payment.PRV_Stripe_Payment import (
+            Stripe_ProductModel,
+        )
+
+        created = Stripe_ProductModel.create_via_provider(None, name="Plan")
+        listed = Stripe_ProductModel.list_via_provider(None, limit=5)
+
+        assert created["success"] is True, created
+        assert created["data"]["id"] == "prod_1"
+        assert listed["success"] is True, listed
+        assert [call[:2] for call in calls] == [
+            ("products", "create"),
+            ("products", "list"),
+        ]
+
+    def test_customer_crud_reaches_customers(self, calls):
+        created = Stripe_CustomerModel.create_via_provider(None, email="a@example.com")
+        assert created["success"] is True, created
+        assert calls == [("customers", "create", {"email": "a@example.com"})]
+
+    def test_subscriptions_carry_no_product_crud(self):
+        from zephyrex.extensions.payment.PRV_Stripe_Payment import (
+            Stripe_SubscriptionModel,
+        )
+
+        own = {
+            name
+            for name in vars(Stripe_SubscriptionModel)
+            if name.endswith("_via_provider")
+        }
+        assert own == {"get_subscription_status_via_provider"}

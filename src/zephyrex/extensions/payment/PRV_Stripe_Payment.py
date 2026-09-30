@@ -31,7 +31,6 @@ from zephyrex.extensions.payment.EXT_Payment import (
 from zephyrex.lib.Dependencies import Dependencies, PIP_Dependency
 from zephyrex.lib.Environment import env
 from zephyrex.lib.Logging import logger
-from zephyrex.pydantic2.registry import BaseModel
 from zephyrex.logic.AbstractLogicManager import ModelMeta
 from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 
@@ -156,7 +155,7 @@ class Stripe_CustomerModel(PassthroughExternalModel, metaclass=ModelMeta):
                 customer_data["metadata"] = kwargs["metadata"]
 
             # Create customer via Stripe
-            customer = stripe_client.customers.create(**customer_data)
+            customer = stripe_client.v1.customers.create(**customer_data)
 
             return {
                 "success": True,
@@ -190,7 +189,7 @@ class Stripe_CustomerModel(PassthroughExternalModel, metaclass=ModelMeta):
             stripe_client = bonded.sdk
 
             # Get customer via Stripe
-            customer = stripe_client.customers.retrieve(external_id)
+            customer = stripe_client.v1.customers.retrieve(external_id)
 
             return {
                 "success": True,
@@ -226,7 +225,7 @@ class Stripe_CustomerModel(PassthroughExternalModel, metaclass=ModelMeta):
             stripe_client = bonded.sdk
 
             # List customers via Stripe
-            customers = stripe_client.customers.list(**kwargs)
+            customers = stripe_client.v1.customers.list(**kwargs)
 
             return {
                 "success": True,
@@ -265,7 +264,7 @@ class Stripe_CustomerModel(PassthroughExternalModel, metaclass=ModelMeta):
             stripe_client = bonded.sdk
 
             # Update customer via Stripe
-            customer = stripe_client.customers.modify(external_id, **kwargs)
+            customer = stripe_client.v1.customers.modify(external_id, **kwargs)
 
             return {
                 "success": True,
@@ -301,7 +300,7 @@ class Stripe_CustomerModel(PassthroughExternalModel, metaclass=ModelMeta):
             stripe_client = bonded.sdk
 
             # Delete customer via Stripe
-            deleted = stripe_client.customers.delete(external_id)
+            stripe_client.v1.customers.delete(external_id)
 
             return {"success": True}
 
@@ -431,30 +430,6 @@ class Stripe_ProductModel(PassthroughExternalModel, metaclass=ModelMeta):
 
         return external_params
 
-
-# Minimal additional external models required by tests
-class Stripe_PaymentIntentModel(AbstractExternalModel, metaclass=ModelMeta):
-    """Minimal representation of Stripe PaymentIntent for tests."""
-
-    external_resource: ClassVar[str] = "payment_intents"
-    _is_extension_model: ClassVar[bool] = True
-
-    id: str = Field(...)
-    amount: int = Field(...)
-    currency: str = Field(...)
-    status: str = Field(...)
-
-
-class Stripe_SubscriptionModel(AbstractExternalModel, metaclass=ModelMeta):
-    """Minimal representation of Stripe Subscription for tests."""
-
-    external_resource: ClassVar[str] = "subscriptions"
-    _is_extension_model: ClassVar[bool] = True
-
-    id: str = Field(...)
-    customer: str = Field(...)
-    status: str = Field(...)
-
     @staticmethod
     def create_via_provider(provider_instance, **kwargs) -> Dict[str, Any]:
         """Create product via provider instance."""
@@ -467,7 +442,7 @@ class Stripe_SubscriptionModel(AbstractExternalModel, metaclass=ModelMeta):
             stripe_client = bonded.sdk
 
             # Create product via Stripe
-            product = stripe_client.products.create(**kwargs)
+            product = stripe_client.v1.products.create(**kwargs)
 
             return {
                 "success": True,
@@ -501,7 +476,7 @@ class Stripe_SubscriptionModel(AbstractExternalModel, metaclass=ModelMeta):
             stripe_client = bonded.sdk
 
             # Get product via Stripe
-            product = stripe_client.products.retrieve(external_id)
+            product = stripe_client.v1.products.retrieve(external_id)
 
             return {
                 "success": True,
@@ -537,7 +512,7 @@ class Stripe_SubscriptionModel(AbstractExternalModel, metaclass=ModelMeta):
             stripe_client = bonded.sdk
 
             # List products via Stripe
-            products = stripe_client.products.list(**kwargs)
+            products = stripe_client.v1.products.list(**kwargs)
 
             return {
                 "success": True,
@@ -576,7 +551,7 @@ class Stripe_SubscriptionModel(AbstractExternalModel, metaclass=ModelMeta):
             stripe_client = bonded.sdk
 
             # Update product via Stripe
-            product = stripe_client.products.modify(external_id, **kwargs)
+            product = stripe_client.v1.products.modify(external_id, **kwargs)
 
             return {
                 "success": True,
@@ -612,7 +587,7 @@ class Stripe_SubscriptionModel(AbstractExternalModel, metaclass=ModelMeta):
             stripe_client = bonded.sdk
 
             # Delete product via Stripe
-            deleted = stripe_client.products.delete(external_id)
+            stripe_client.v1.products.delete(external_id)
 
             return {"success": True}
 
@@ -620,6 +595,30 @@ class Stripe_SubscriptionModel(AbstractExternalModel, metaclass=ModelMeta):
             if "No such product" in str(e):
                 return {"success": False, "error": "Not found"}
             return {"success": False, "error": str(e)}
+
+
+# Minimal additional external models required by tests
+class Stripe_PaymentIntentModel(AbstractExternalModel, metaclass=ModelMeta):
+    """Minimal representation of Stripe PaymentIntent for tests."""
+
+    external_resource: ClassVar[str] = "payment_intents"
+    _is_extension_model: ClassVar[bool] = True
+
+    id: str = Field(...)
+    amount: int = Field(...)
+    currency: str = Field(...)
+    status: str = Field(...)
+
+
+class Stripe_SubscriptionModel(AbstractExternalModel, metaclass=ModelMeta):
+    """Minimal representation of Stripe Subscription for tests."""
+
+    external_resource: ClassVar[str] = "subscriptions"
+    _is_extension_model: ClassVar[bool] = True
+
+    id: str = Field(...)
+    customer: str = Field(...)
+    status: str = Field(...)
 
     @staticmethod
     def get_subscription_status_via_provider(
