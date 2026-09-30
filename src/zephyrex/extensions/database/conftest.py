@@ -61,8 +61,9 @@ def provider_instance(database_app: Any) -> InstanceFactory:
     Each call makes a fresh instance: the app database outlives a test, so
     settings on a shared instance would leak between tests.
     """
-    registry = ModelRegistry.attached()
-    assert registry is not None
+    # This app's own registry: the process-wide attached one is whichever
+    # app was built last in the worker, whose database is not this one.
+    registry: ModelRegistry = database_app.state.model_registry
     root_id = env("ROOT_ID")
 
     def _create(
