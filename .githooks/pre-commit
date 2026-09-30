@@ -13,7 +13,8 @@ SUITE_LOG="$(git rev-parse --absolute-git-dir)/pre-commit-last.log"
 SUMMARY_LINES=3
 
 echo "[pre-commit] Running test suite..."
-if ! "$VENV_PYTHON" -m pytest src/ -q --tb=short -rfE >"$SUITE_LOG" 2>&1; then
+# Every test path pytest.ini names (the package, the SDK, scripts/).
+if ! "$VENV_PYTHON" -m pytest -q --tb=short -rfE >"$SUITE_LOG" 2>&1; then
   grep -E "^(FAILED|ERROR) " "$SUITE_LOG" || true
   tail -n "$SUMMARY_LINES" "$SUITE_LOG"
   echo "[pre-commit] FAIL: tests did not pass (full output: $SUITE_LOG)"

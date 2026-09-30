@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -53,15 +54,14 @@ def judge(old: int | None, current: int, direction: str, force: bool) -> str:
 
 def _count_collected_tests() -> int:
     result = subprocess.run(
-        [sys.executable, "-m", "pytest", "src/", "--co", "-q", "-n0"] + IGNORES,
+        # The same test paths the hook runs: pytest.ini's testpaths.
+        [sys.executable, "-m", "pytest", "--co", "-q", "-n0"] + IGNORES,
         capture_output=True,
         text=True,
         timeout=60,
     )
     for line in result.stdout.splitlines():
         if "tests collected" in line or "test collected" in line:
-            import re
-
             m = re.search(r"(\d+)\s+tests?\s+collected", line)
             if m:
                 return int(m.group(1))
