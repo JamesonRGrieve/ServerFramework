@@ -129,3 +129,13 @@ For a comprehensive overview, start with [Framework.md](../src/zephyrex/Framewor
 ## License
 
 [AGPL-3.0-or-later](../LICENSE). A server built on Zephyrex offers its users its source, as section 13 of the license requires for network use: `GET /source` returns the source URL, version and license. It points at `APP_REPOSITORY`, which defaults to the canonical repository, https://git.zephyrex.dev/ZephyrexTechnologies/ServerFramework; a deployment that runs modified code sets `APP_REPOSITORY` to its own source.
+
+Every response also carries the source, always:
+
+| Header | Values |
+|---|---|
+| `Source-Link` | `APP_REPOSITORY` |
+| `Source-Hash-Status` | `verified`: the running source matches the release it was installed from; `modified`: it does not; `unverified`: there is no release to check against (a source checkout) |
+| `Source-Git-Status` | The running source's git state: `clean` or `dirty` in a git checkout of it; `none` when it is not one (no `.git`, as for an installed release, which `Source-Hash-Status` vouches for); `error` when git cannot say (not installed, timed out, refused) |
+
+Each release wheel carries `zephyrex/_provenance.json`, the digest of exactly what it ships and the commit it was built from, covered by the wheel's sigstore signature; the running server hashes its own source against it at startup, offline. `GET /source` adds the version, commit, digest and, per loaded extension, its own source: a bundled extension is part of the framework's, and one loaded from your extensions directory declares `repository` in its `manifest.toml` and is checked on its own. None of this changes what the server does: it reports, it never refuses to run.

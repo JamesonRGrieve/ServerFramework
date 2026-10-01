@@ -64,18 +64,12 @@ jobs:
           python -m zephyrex.extensions.sync_dependencies --check
 
       - name: Build wheel and sdist
-        run: python -m build --outdir dist
+        # Both from the checkout (not the wheel from the sdist), so the
+        # wheel's provenance manifest records this commit and its state.
+        run: python -m build --sdist --wheel --outdir dist
 
-      - name: Check the wheel ships no tests
-        run: |
-          python - <<'PY'
-          import glob, sys, zipfile
-          (wheel,) = glob.glob("dist/*.whl")
-          tests = [n for n in zipfile.ZipFile(wheel).namelist()
-                   if n.endswith("_test.py") or n.endswith("/conftest.py")]
-          print(f"{wheel}: {len(tests)} test modules")
-          sys.exit(1 if tests else 0)
-          PY
+      - name: Check the wheel ships no tests and vouches for this commit
+        run: python scripts/check_wheel.py dist "$GITHUB_SHA"
 
       - name: Generate CycloneDX SBOM
         run: |

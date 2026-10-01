@@ -34,7 +34,7 @@ Uniform code style is key to a maintainable codebase. Please observe the followi
 ## Releasing
 Releases go to PyPI as the single `zephyrex` distribution, with an extra per bundled extension. `.github/workflows/release.yml` runs on a `v*` tag, which must equal the `version` in `pyproject.toml` (e.g. `v1.0.0a1`):
 
-1. Build the wheel and sdist, check the extras match the extensions' declarations and that the wheel ships no tests, write the SBOM, run the HIGH+ dependency-audit gate, and sign with sigstore.
+1. Build the wheel and sdist from the checkout; check the extras match the extensions' declarations, that the wheel ships no tests, and that its provenance manifest names the tagged commit built from a clean tree (`scripts/check_wheel.py`); write the SBOM, run the HIGH+ dependency-audit gate, and sign with sigstore. Tag only a clean, committed tree.
 2. Publish to TestPyPI (`testpypi` environment).
 3. Install `zephyrex[all]` from TestPyPI into a clean environment, resolving its dependencies from PyPI only, then run `zephyrex version` and `scripts/release_smoke.py`.
 4. Publish to PyPI (`pypi` environment). The run waits here for a required reviewer to approve.

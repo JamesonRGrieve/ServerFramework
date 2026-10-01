@@ -2,6 +2,7 @@ import json
 import os
 import sys
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 # Venv + dependency bootstrap lives in ``bootstrap.py`` so importing
@@ -39,6 +40,10 @@ from zephyrex.lib.RequestContext import (
     set_request_deadline_ms,
     set_request_user,
 )
+
+# The installed framework's own source tree: what the source headers and
+# GET /source hash and check.
+PACKAGE_ROOT = Path(__file__).resolve().parent
 
 
 def parse_extension_csv(csv: str) -> list[str]:
@@ -213,7 +218,7 @@ def create_registry_with_db_manager(db_manager, extensions_list: Optional[str] =
             f"After discover_extension_models, extension_models count: {len(extension_registry.extension_models)}"
         )
     else:
-        logger.debug(f"No extensions_str, skipping discovery")
+        logger.debug("No extensions_str, skipping discovery")
 
     # Create ModelRegistry with ExtensionRegistry and auto-bind models
     registry = ModelRegistry(
@@ -460,10 +465,6 @@ def build_app(model_registry: ModelRegistry):
     from zephyrex.lib.Environment import env
     from zephyrex.lib.Logging import logger
 
-    from zephyrex import get_framework_version
-
-    version = get_framework_version()
-
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         """Handles startup and shutdown events for each worker"""
@@ -670,6 +671,15 @@ def build_app(model_registry: ModelRegistry):
     # the worker. Mount before any router so a 413 short-circuits before
     # the body is buffered downstream.
     app.add_middleware(SecurityHeadersMiddleware)
+    # Every response says where its source is offered and whether it is
+    # what was published (AGPL-3.0 section 13); always on.
+    from zephyrex.lib.Provenance import SourceHeadersMiddleware
+
+    app.add_middleware(
+        SourceHeadersMiddleware,
+        root=PACKAGE_ROOT,
+        link=lambda: env("APP_REPOSITORY"),
+    )
     app.add_middleware(BodySizeLimitMiddleware)
     app.add_middleware(RateLimitMiddleware)
     app.add_middleware(RequestSmugglingMiddleware)
@@ -942,7 +952,7 @@ def build_app(model_registry: ModelRegistry):
             # Pydantic model
             try:
                 return obj.model_dump(mode="json")
-            except Exception as e:
+            except Exception:
                 logger.warning(
                     "make_json_serializable: model_dump failed; "
                     "falling back to str()",
@@ -966,7 +976,7 @@ def build_app(model_registry: ModelRegistry):
                 else:
                     # Last resort - convert to string
                     return str(obj)
-            except Exception as e:
+            except Exception:
                 logger.warning(
                     "make_json_serializable: dict-style coercion failed; "
                     "falling back to str()",
@@ -1115,17 +1125,21 @@ def build_app(model_registry: ModelRegistry):
             return {"status": "UP"}
 
         @app.get("/source", tags=["Meta"])
-        async def source() -> Dict[str, str]:
-            """Where to get this server's source (AGPL-3.0 section 13). A
-            deployment running modified code sets APP_REPOSITORY to its own
-            source."""
+        async def source() -> Dict[str, Any]:
+            """Where to get this server's source (AGPL-3.0 section 13), and
+            whether the running source is what was published, for the
+            framework and each loaded extension. A deployment running
+            modified code sets APP_REPOSITORY to its own source."""
             from zephyrex import get_framework_version
+            from zephyrex.lib.SourceOffer import source_offer
 
-            return {
-                "source": env("APP_REPOSITORY"),
-                "version": get_framework_version(),
-                "license": "AGPL-3.0-or-later",
-            }
+            registry = model_registry.extension_registry
+            return source_offer(
+                PACKAGE_ROOT,
+                env("APP_REPOSITORY"),
+                get_framework_version(),
+                registry.extensions if registry is not None else (),
+            )
 
         from zephyrex.endpoints.Operations import create_operations_router
 
@@ -1543,8 +1557,8 @@ def build_app(model_registry: ModelRegistry):
         try:
             from zephyrex.lib.Logging import logger
 
-            # Test all models first
-            problematic_models = test_all_models_for_undefined_types()
+            # Test all models first (it logs any it finds)
+            test_all_models_for_undefined_types()
 
             logger.debug("Testing OpenAPI schema generation step by step...")
 
@@ -1552,13 +1566,6 @@ def build_app(model_registry: ModelRegistry):
 
             # Try to isolate which part of OpenAPI generation fails
             try:
-                logger.debug("Step 1: Creating base OpenAPI structure...")
-                base_schema = {
-                    "openapi": "3.1.0",
-                    "info": {"title": app.title, "version": app.version},
-                    "paths": {},
-                }
-
                 logger.debug("Step 2: Generating full schema...")
                 openapi_schema = get_openapi(
                     title=app.title,
@@ -1578,7 +1585,7 @@ def build_app(model_registry: ModelRegistry):
                 schema_dict = jsonable_encoder(openapi_schema)
 
                 logger.debug("Step 3b: Converting to JSON...")
-                json_str = json.dumps(schema_dict)
+                json.dumps(schema_dict)  # raises on what JSON cannot carry
 
                 logger.debug("✓ OpenAPI schema generated successfully")
                 app.openapi_schema = openapi_schema

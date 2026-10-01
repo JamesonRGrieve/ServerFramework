@@ -68,6 +68,10 @@ class ExtensionManifest(BaseModel):
     pip_dependencies: List[str] = Field(default_factory=list)  # PEP 508 strings
     system_dependencies: List[str] = Field(default_factory=list)
     minimum_framework_version: Optional[str] = None
+    # Where this extension's source is offered (AGPL-3.0 section 13). A
+    # bundled extension is part of the framework's source and leaves it
+    # unset; one loaded from a consumer's extensions directory names its own.
+    repository: Optional[str] = None
 
     @field_validator("name")
     @classmethod

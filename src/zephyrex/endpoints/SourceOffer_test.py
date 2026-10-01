@@ -4,18 +4,34 @@
 
 from zephyrex import get_framework_version
 from zephyrex.lib.Environment import env, refresh_settings
+from zephyrex.lib.Provenance import CLEAN, DIRTY, ERROR, NONE
 
 CANONICAL = "https://git.zephyrex.dev/ZephyrexTechnologies/ServerFramework"
+GIT_STATUSES = (CLEAN, DIRTY, NONE, ERROR)
 
 
 def test_anyone_can_read_where_the_source_is(server):
     response = server.get("/source")
     assert response.status_code == 200, response.text
-    assert response.json() == {
-        "source": env("APP_REPOSITORY"),
-        "version": get_framework_version(),
-        "license": "AGPL-3.0-or-later",
-    }
+    body = response.json()
+    assert body["source"] == env("APP_REPOSITORY")
+    assert body["version"] == get_framework_version()
+    assert body["license"] == "AGPL-3.0-or-later"
+    assert body["hash_status"] in ("verified", "modified", "unverified")
+    assert body["git_status"] in GIT_STATUSES
+    assert len(body["digest"]) == 64
+    assert body["extensions"], "the loaded extensions are listed"
+    assert all(
+        e["bundled"] and e["source"] == body["source"] for e in body["extensions"]
+    )
+
+
+def test_every_response_says_where_its_source_is(server):
+    for path in ("/health", "/v1/no-such-route"):
+        headers = server.get(path).headers
+        assert headers["source-link"] == env("APP_REPOSITORY")
+        assert headers["source-hash-status"] in ("verified", "modified", "unverified")
+        assert headers["source-git-status"] in GIT_STATUSES
 
 
 def test_the_default_is_the_canonical_repository(monkeypatch):
