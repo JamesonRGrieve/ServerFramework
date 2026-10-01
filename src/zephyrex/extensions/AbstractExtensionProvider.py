@@ -1098,7 +1098,8 @@ class InstanceSetting:
     ``ProviderInstanceSetting`` row named ``key`` (or the instance's own
     ``field`` column, such as ``api_key``), else the ``env`` variable, else
     ``default``. A ``secret`` one is stored encrypted and never returned
-    once written."""
+    once written. A ``multiline`` value spans lines (a PEM key, a JSON
+    credentials file), so a form offers a text area for it."""
 
     key: str
     description: str
@@ -1106,6 +1107,7 @@ class InstanceSetting:
     default: Optional[str] = None
     secret: bool = False
     field: Optional[str] = None
+    multiline: bool = False
 
 
 class AbstractProviderInstance(ABC):

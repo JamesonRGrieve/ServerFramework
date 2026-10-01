@@ -31,6 +31,7 @@ class PRV_GCS_Cloud(AbstractCloudProvider):
             "Service account JSON key (empty: Application Default Credentials)",
             env="GCS_CREDENTIALS_JSON",
             secret=True,
+            multiline=True,
         ),
     )
     dependencies: ClassVar[Dependencies] = Dependencies(

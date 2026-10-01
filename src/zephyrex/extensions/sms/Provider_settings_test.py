@@ -74,6 +74,7 @@ class TestProviderSettings(ExtensionServerMixin):
             "default": "us-east-1",
             "write_only": False,
             "field": None,
+            "multiline": False,
         }
         assert settings["api_key"]["field"] == "api_key"
 

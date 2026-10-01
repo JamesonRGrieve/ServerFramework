@@ -423,6 +423,9 @@ class InstanceSettingInfo(BaseModel):
     field: Optional[str] = Field(
         None, description="An instance column (api_key, model_name), not a setting row"
     )
+    multiline: bool = Field(
+        False, description="The value spans lines (a PEM key, a JSON credentials file)"
+    )
 
 
 class ProviderSettingsCatalogue(BaseModel):
@@ -606,6 +609,7 @@ class ProviderManager(AbstractBLLManager, RouterMixin):
                     default=setting.default,
                     write_only=setting.secret,
                     field=setting.field,
+                    multiline=setting.multiline,
                 )
                 for setting in declared
             ],

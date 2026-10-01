@@ -67,6 +67,7 @@ class PRV_Apple_Maps(AbstractMapsProvider):
             "Maps private key (.p8 PEM contents)",
             env="APPLE_MAPS_PRIVATE_KEY",
             secret=True,
+            multiline=True,
         ),
     )
     modes: ClassVar[Mapping[str, str]] = {
