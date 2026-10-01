@@ -18,11 +18,7 @@ from typing import (
     get_args,
     get_origin,
 )
-
-try:
-    from zoneinfo import ZoneInfo
-except ImportError:
-    from backports.zoneinfo import ZoneInfo  # type: ignore[no-redef]
+from zoneinfo import ZoneInfo
 
 import stringcase
 from pydantic import BaseModel, Field

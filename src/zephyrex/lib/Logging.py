@@ -58,11 +58,7 @@ import re
 import sys
 from abc import ABC, abstractmethod
 from typing import Any, Mapping
-
-try:
-    from zoneinfo import ZoneInfo
-except ImportError:
-    from backports.zoneinfo import ZoneInfo  # type: ignore[no-redef]
+from zoneinfo import ZoneInfo
 
 from loguru import logger as _loguru_logger
 

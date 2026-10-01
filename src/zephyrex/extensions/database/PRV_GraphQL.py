@@ -15,6 +15,7 @@ from typing import Any, ClassVar, Dict, List, Optional
 
 from zephyrex.extensions.database.EXT_Database import (
     AbstractDatabaseExtensionProvider as AbstractDatabaseProvider,
+    driver_installed,
 )
 from zephyrex.extensions.ExternalErrors import (
     InvalidInputExternalError,
@@ -22,17 +23,7 @@ from zephyrex.extensions.ExternalErrors import (
 )
 from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 
-try:  # optional driver — guarded so discovery never fails on a missing package
-    from gql import Client as _GqlClient
-    from gql import gql as _gql
-    from gql.transport.requests import RequestsHTTPTransport as _RequestsHTTPTransport
-
-    _gql_available = True
-except ImportError:  # pragma: no cover - optional driver
-    _GqlClient = None
-    _gql = None
-    _RequestsHTTPTransport = None
-    _gql_available = False
+_gql_available = driver_installed("gql")
 
 GRAPHQL_DEFAULT_HOST = "localhost"
 GRAPHQL_DEFAULT_PORT = 4000
@@ -99,13 +90,16 @@ class PRV_GraphQL(AbstractDatabaseProvider):
     def _connect(cls, config: Dict[str, Any]) -> Any:
         """A gql client connected to the endpoint, its schema fetched."""
         cls.require_driver(_gql_available, "gql")
-        transport = _RequestsHTTPTransport(
+        from gql import Client
+        from gql.transport.requests import RequestsHTTPTransport
+
+        transport = RequestsHTTPTransport(
             url=config["graphql_endpoint"],
             headers=config["graphql_headers"],
             verify=True,
             retries=GRAPHQL_TRANSPORT_RETRIES,
         )
-        client = _GqlClient(transport=transport, fetch_schema_from_transport=True)
+        client = Client(transport=transport, fetch_schema_from_transport=True)
         try:
             client.connect_sync()
         except Exception as exc:
@@ -121,8 +115,10 @@ class PRV_GraphQL(AbstractDatabaseProvider):
         if "```graphql" in query:
             query = query.split("```graphql")[1].split("```")[0]
         query = query.replace("```", "").strip()
+        from gql import gql
+
         try:
-            result = client.session.execute(_gql(query))
+            result = client.session.execute(gql(query))
         except Exception as exc:
             raise cls.query_failed(exc, "GraphQL query") from exc
         finally:

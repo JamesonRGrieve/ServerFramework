@@ -174,6 +174,27 @@ _DEFAULT_SECURITY_HEADERS: Dict[str, str] = {
 DEFAULT_MAX_BODY_BYTES: int = 10 * 1024 * 1024
 
 
+def _with_vary(
+    raw: List[Tuple[bytes, bytes]], required: str
+) -> List[Tuple[bytes, bytes]]:
+    """``raw`` with a single ``Vary`` naming every field it already varied on
+    plus each of ``required``. ``Vary`` is a list: a layer that varies on
+    ``Origin`` must not stop the response varying on ``Authorization``."""
+    fields: List[str] = []
+    rest: List[Tuple[bytes, bytes]] = []
+    for key, value in raw:
+        if key.decode("latin-1").lower() == "vary":
+            fields.extend(value.decode("latin-1").split(","))
+        else:
+            rest.append((key, value))
+    fields.extend(required.split(","))
+    merged: Dict[str, str] = {}
+    for field in (f.strip() for f in fields):
+        if field:
+            merged.setdefault(field.lower(), field)
+    return rest + [(b"vary", ", ".join(merged.values()).encode("latin-1"))]
+
+
 class SecurityHeadersMiddleware:
     """ASGI middleware that injects strict response headers (H-4).
 
@@ -228,9 +249,10 @@ class SecurityHeadersMiddleware:
                         if k.decode("latin-1").lower() != "server"
                     ]
                 for name, value in headers_to_add.items():
-                    if name.lower() in existing_lower:
-                        continue
-                    raw.append((name.encode("latin-1"), value.encode("latin-1")))
+                    if name.lower() == "vary":
+                        raw = _with_vary(raw, value)
+                    elif name.lower() not in existing_lower:
+                        raw.append((name.encode("latin-1"), value.encode("latin-1")))
                 message["headers"] = raw
             await send(message)
 

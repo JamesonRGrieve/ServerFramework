@@ -121,7 +121,7 @@ jobs:
           repository-url: https://test.pypi.org/legacy/
 
   smoke-testpypi:
-    name: Smoke-test zephyrex[all] from TestPyPI
+    name: Smoke-test zephyrex and zephyrex[all] from TestPyPI
     needs: [build, publish-testpypi]
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -144,14 +144,21 @@ jobs:
               --index-url https://test.pypi.org/simple/ "zephyrex==${VERSION}" && break
             echo "TestPyPI has not served ${VERSION} yet (attempt ${attempt})"; sleep 20
           done
-          wheel=$(ls /tmp/wheel/zephyrex-*.whl)
-          /tmp/smoke/bin/pip install "zephyrex[all] @ file://${wheel}"
+          /tmp/smoke/bin/pip install "$(ls /tmp/wheel/zephyrex-*.whl)"
           /tmp/smoke/bin/pip check
-      - name: Smoke test
+      - name: Smoke test zephyrex (core dependencies only)
         working-directory: /tmp
         run: |
           /tmp/smoke/bin/zephyrex version
-          /tmp/smoke/bin/python "${GITHUB_WORKSPACE}/scripts/release_smoke.py"
+          /tmp/smoke/bin/python "${GITHUB_WORKSPACE}/scripts/release_smoke.py" --core
+      - name: Install zephyrex[all]
+        run: |
+          wheel=$(ls /tmp/wheel/zephyrex-*.whl)
+          /tmp/smoke/bin/pip install "zephyrex[all] @ file://${wheel}"
+          /tmp/smoke/bin/pip check
+      - name: Smoke test zephyrex[all]
+        working-directory: /tmp
+        run: /tmp/smoke/bin/python "${GITHUB_WORKSPACE}/scripts/release_smoke.py"
 
   publish-pypi:
     name: Publish to PyPI

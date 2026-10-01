@@ -73,7 +73,15 @@ class TestSquareProvider:
         assert "SQUARE_WEBHOOK_SIGNATURE_KEY" in env_vars
         assert "SQUARE_CURRENCY" in env_vars
 
-    def test_bond_instance_without_api_key(self):
+    def test_bond_instance_without_api_key(self, monkeypatch):
+        """No key on the instance and none configured: the provider falls back
+        to SQUARE_ACCESS_TOKEN, so it is cleared where ``env()`` reads it."""
+        from zephyrex.lib import Environment
+
+        monkeypatch.setenv("SQUARE_ACCESS_TOKEN", "")
+        if hasattr(Environment.settings, "SQUARE_ACCESS_TOKEN"):
+            monkeypatch.setattr(Environment.settings, "SQUARE_ACCESS_TOKEN", "")
+
         class MockInstanceWithoutKey:
             id = "test_id"
             api_key = None

@@ -1,20 +1,21 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Release smoke test, run against an installed ``zephyrex[all]``.
+"""Release smoke test, run against an installed ``zephyrex``.
 
 The release workflow installs the wheel it just published to TestPyPI into a
-clean environment and runs this before anything reaches PyPI:
+clean environment and runs this before anything reaches PyPI, twice:
 
-- every package any bundled extension declares is installed (what the
-  ``all`` extra promises);
-- the server boots and answers ``/health`` and ``/readyz`` (the database is
-  reachable).
+- ``--core``, against plain ``zephyrex``: the server boots and answers
+  ``/health`` and ``/readyz`` (the database is reachable) with nothing but
+  core's own dependencies installed;
+- then against ``zephyrex[all]``: every package any bundled extension
+  declares is installed (what the ``all`` extra promises), and it boots.
 
 Exits non-zero, naming what failed, otherwise. Run it outside the source
 tree so the installed package, not the checkout, is what gets imported.
 
 Usage:
-    python scripts/release_smoke.py
+    python scripts/release_smoke.py [--core]
 """
 
 import os
@@ -53,7 +54,11 @@ def boot_failures() -> List[str]:
     return failures
 
 
-def main() -> int:
+def main(argv: List[str]) -> int:
+    core_only = argv == ["--core"]
+    if argv and not core_only:
+        print("usage: release_smoke.py [--core]")
+        return 2
     import zephyrex
 
     if "site-packages" not in (zephyrex.__file__ or ""):
@@ -63,7 +68,7 @@ def main() -> int:
         os.environ.setdefault("DATABASE_TYPE", "sqlite")
         os.environ.setdefault("DATABASE_PATH", workdir)
         os.environ.setdefault("JWT_SECRET", os.urandom(32).hex())
-        problems = missing_requirements() + boot_failures()
+        problems = ([] if core_only else missing_requirements()) + boot_failures()
     for problem in problems:
         print(f"FAIL {problem}")
     print("release smoke: " + ("failed" if problems else "passed"))
@@ -71,4 +76,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv[1:]))

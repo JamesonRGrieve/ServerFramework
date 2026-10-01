@@ -12,17 +12,12 @@ from typing import Any, ClassVar, Dict, List, Optional
 from zephyrex.extensions.database.EXT_Database import (
     SQL_CHAT_GUIDANCE,
     AbstractDatabaseExtensionProvider as AbstractDatabaseProvider,
+    driver_installed,
 )
 from zephyrex.lib.Dependencies import Dependencies, PIP_Dependency
 from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 
-try:  # optional driver — guarded so discovery never fails on a missing package
-    import pyodbc as _pyodbc
-
-    _pyodbc_available = True
-except ImportError:  # pragma: no cover - optional driver
-    _pyodbc = None
-    _pyodbc_available = False
+_pyodbc_available = driver_installed("pyodbc")
 
 MSSQL_DEFAULT_PORT = 1433
 MSSQL_DEFAULT_ODBC_DRIVER = "ODBC Driver 18 for SQL Server"
@@ -85,8 +80,10 @@ class PRV_MSSQL(AbstractDatabaseProvider):
             f"PWD={config['database_password']};"
             "TrustServerCertificate=yes"
         )
+        import pyodbc
+
         try:
-            return _pyodbc.connect(connection_string)
+            return pyodbc.connect(connection_string)
         except Exception as exc:
             raise cls.connection_failed(exc) from exc
 

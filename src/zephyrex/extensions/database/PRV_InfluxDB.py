@@ -15,30 +15,14 @@ from typing import Any, ClassVar, Dict, List, Optional
 
 from zephyrex.extensions.database.EXT_Database import (
     AbstractDatabaseExtensionProvider as AbstractDatabaseProvider,
+    driver_installed,
 )
 from zephyrex.extensions.ExternalErrors import TransientExternalError
 from zephyrex.lib.Logging import logger
 from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 
-try:
-    import influxdb
-    from influxdb import InfluxDBClient
-except ImportError:
-    influxdb = None
-    InfluxDBClient = None
-
-try:
-    # For InfluxDB 2.x
-    import influxdb_client
-    from influxdb_client import InfluxDBClient as InfluxDBClient2
-    from influxdb_client.client.write_api import SYNCHRONOUS
-
-    has_influxdb2 = True
-except ImportError:
-    has_influxdb2 = False
-    influxdb_client = None
-    InfluxDBClient2 = None
-    SYNCHRONOUS = None
+has_influxdb1 = driver_installed("influxdb")
+has_influxdb2 = driver_installed("influxdb_client")
 
 INFLUXDB_DEFAULT_VERSION = "2"
 INFLUXDB_DEFAULT_PORT = 8086
@@ -158,8 +142,10 @@ class PRV_InfluxDB(AbstractDatabaseProvider):
         if config["influxdb_version"] == "2":
             cls.require_driver(has_influxdb2, "influxdb-client")
             cls.require_config(config, "influxdb_url", "influxdb_token", "influxdb_org")
+            from influxdb_client import InfluxDBClient
+
             try:
-                client = InfluxDBClient2(
+                client = InfluxDBClient(
                     url=config["influxdb_url"],
                     token=config["influxdb_token"],
                     org=config["influxdb_org"],
@@ -174,20 +160,22 @@ class PRV_InfluxDB(AbstractDatabaseProvider):
                 )
             return client
 
-        cls.require_driver(influxdb is not None, "influxdb")
+        cls.require_driver(has_influxdb1, "influxdb")
         cls.require_config(config, "database_host")
+        from influxdb import InfluxDBClient as LegacyInfluxDBClient
+
         try:
-            client = InfluxDBClient(
+            legacy_client = LegacyInfluxDBClient(
                 host=config["database_host"],
                 port=config["database_port"],
                 username=config["database_username"],
                 password=config["database_password"],
                 database=config["database_name"],
             )
-            client.ping()
+            legacy_client.ping()
         except Exception as exc:
             raise cls.connection_failed(exc) from exc
-        return client
+        return legacy_client
 
     @classmethod
     async def execute_sql(
@@ -346,6 +334,8 @@ To query this InfluxDB {influxdb_version}.x database, you need to write {query_l
         client = cls._get_connection(config)
         try:
             if config["influxdb_version"] == "2":
+                from influxdb_client.client.write_api import SYNCHRONOUS
+
                 client.write_api(write_options=SYNCHRONOUS).write(
                     bucket=config["influxdb_bucket"],
                     org=config["influxdb_org"],
@@ -375,7 +365,7 @@ To query this InfluxDB {influxdb_version}.x database, you need to write {query_l
         else:
             version_label = "InfluxDB 1.x"
             required = INFLUXDB_V1_REQUIRED
-            driver_available = influxdb is not None
+            driver_available = has_influxdb1
         if not driver_available:
             issues.append(f"{version_label} client library not installed")
         issues.extend(

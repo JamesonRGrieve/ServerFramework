@@ -10,6 +10,7 @@ one from ``SENTRY_DSN`` / ``ROLLBAR_TOKEN`` at ``on_initialize``.
 
 from __future__ import annotations
 
+from types import ModuleType
 from typing import Any, Mapping
 
 from zephyrex.lib.Logging import ErrorReporter, logger
@@ -57,12 +58,13 @@ class SentryErrorReporter(ErrorReporter):
     """
 
     def __init__(self) -> None:
+        self._sentry_sdk: ModuleType | None
         try:
             import sentry_sdk
 
             self._sentry_sdk = sentry_sdk
             try:
-                if sentry_sdk.Hub.current.client is None:
+                if not sentry_sdk.get_client().is_active():
                     sentry_sdk.init(
                         send_default_pii=False,
                         include_local_variables=False,
@@ -81,7 +83,7 @@ class SentryErrorReporter(ErrorReporter):
         if self._sentry_sdk is None:
             return None
         try:
-            with self._sentry_sdk.push_scope() as scope:
+            with self._sentry_sdk.new_scope() as scope:
                 for key, value in context.items():
                     try:
                         scope.set_extra(key, value)
@@ -100,6 +102,7 @@ class RollbarErrorReporter(ErrorReporter):
     dependency: missing it degrades the reporter to a no-op."""
 
     def __init__(self) -> None:
+        self._rollbar: ModuleType | None
         try:
             import rollbar
 

@@ -10,6 +10,7 @@ import subprocess
 import sys
 from abc import ABC, abstractmethod
 from enum import Enum
+from importlib.metadata import PackageNotFoundError, version
 from typing import Any, Dict, List, Optional, Tuple, Type
 
 import semver
@@ -17,11 +18,6 @@ import stringcase
 from pydantic import BaseModel, Field
 
 from zephyrex.lib.Logging import logger
-
-try:
-    from importlib.metadata import PackageNotFoundError, version
-except ImportError:
-    from importlib_metadata import version, PackageNotFoundError  # type: ignore[no-redef]
 
 # Import for better OS detection
 try:

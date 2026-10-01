@@ -1,7 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Tests for the observability extension's env-driven wiring (#210, #215)."""
 
+import warnings
+
 import pytest
+import sentry_sdk
+from sentry_sdk.envelope import Envelope
+from sentry_sdk.transport import Transport
 
 from zephyrex.extensions.observability.ErrorReporters import (
     RollbarErrorReporter,
@@ -25,15 +30,53 @@ from zephyrex.lib.Metrics import (
 
 @pytest.fixture(autouse=True)
 def _restore_globals():
-    """Snapshot + restore the process-global metrics backend and error reporter
-    so a wiring test never leaks a backend/reporter into unrelated tests."""
+    """Snapshot + restore the process-global metrics backend, error reporter
+    and Sentry client so a wiring test never leaks one into unrelated tests."""
     saved_backend = get_metrics_backend()
     saved_reporter = installed_error_reporter()
+    saved_sentry_client = sentry_sdk.get_client()
     try:
         yield
     finally:
         set_metrics_backend(saved_backend)
         set_error_reporter(saved_reporter)
+        if sentry_sdk.get_client() is not saved_sentry_client:
+            sentry_sdk.get_client().close()
+            sentry_sdk.get_global_scope().set_client(saved_sentry_client)
+
+
+class _CapturingTransport(Transport):
+    """Keeps every envelope Sentry would send."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.envelopes: list[Envelope] = []
+
+    def capture_envelope(self, envelope: Envelope) -> None:
+        self.envelopes.append(envelope)
+
+
+class TestSentryReporter:
+    def test_report_sends_the_exception_with_its_context(self):
+        """The reporter uses sentry-sdk 2.x's scope API: ``Hub`` and
+        ``push_scope`` are deprecated there, and the next major removes them."""
+        transport = _CapturingTransport()
+        sentry_sdk.init(
+            dsn="https://key@example.invalid/1",
+            transport=transport,
+            default_integrations=False,
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
+            reporter = SentryErrorReporter()
+            reporter.report(ValueError("boom"), {"request_id": "r-1"})
+
+        events = [e.get_event() for e in transport.envelopes]
+        assert len(events) == 1
+        event = events[0]
+        assert event is not None
+        assert event["exception"]["values"][0]["value"] == "boom"
+        assert event["extra"]["request_id"] == "r-1"
 
 
 class TestMetricsWiring:

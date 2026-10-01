@@ -12,6 +12,7 @@ from zephyrex.lib.InboundSecurity import (
     LockoutPolicy,
     LockoutTracker,
     NoOpAnomalyDetector,
+    SecurityHeadersMiddleware,
     parse_cors_origins,
     parse_rate_spec,
     rate_limit,
@@ -969,6 +970,40 @@ class TestCachePoisoning:
         assert (
             "Authorization" in vary
         ), f"Vary header must include Authorization, got: {vary}"
+
+    @pytest.mark.parametrize(
+        "inner_vary",
+        [[], [b"Origin"], [b"origin, accept"], [b"Origin", b"Cookie"]],
+        ids=["none", "origin", "overlapping", "two-headers"],
+    )
+    async def test_a_layer_varying_on_its_own_fields_keeps_the_required_ones(
+        self, inner_vary
+    ):
+        """CORS answers ``Vary: Origin``; that must not drop ``Authorization``
+        and let a cache serve one user's response to another."""
+
+        async def app(scope, receive, send):
+            headers = [(b"vary", value) for value in inner_vary]
+            await send(
+                {"type": "http.response.start", "status": 200, "headers": headers}
+            )
+            await send({"type": "http.response.body", "body": b"{}"})
+
+        sent = []
+
+        async def send(message):
+            sent.append(message)
+
+        await SecurityHeadersMiddleware(app)({"type": "http"}, None, send)
+
+        varies = [v for k, v in sent[0]["headers"] if k.lower() == b"vary"]
+        assert len(varies) == 1
+        fields = [f.strip().lower() for f in varies[0].decode().split(",")]
+        assert {"accept", "authorization"} <= set(fields)
+        assert len(fields) == len(set(fields))
+        for value in inner_vary:
+            for field in value.decode().split(","):
+                assert field.strip().lower() in fields
 
 
 # ---------------------------------------------------------------------------

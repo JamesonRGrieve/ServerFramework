@@ -327,6 +327,27 @@ class TestEXTDatabase(ExtensionServerMixin):
         assert "pymongo" in pip_names
         assert "influxdb" in pip_names
 
+    def test_gql_requests_transport_dependencies_declared(self):
+        """PRV_GraphQL connects over gql's requests transport, which imports
+        what gql's ``requests`` extra installs; plain ``gql`` lacks it."""
+        from importlib.metadata import requires
+
+        from packaging.requirements import Requirement
+
+        transport = [
+            Requirement(r)
+            for r in requires("gql") or []
+            if Requirement(r).marker
+            and Requirement(r).marker.evaluate({"extra": "requests"})
+        ]
+        assert transport
+        declared = {
+            Requirement(r).name.replace("_", "-").lower()
+            for r in EXT_Database.pip_requirements()
+        }
+        for requirement in transport:
+            assert requirement.name.replace("_", "-").lower() in declared
+
     def test_startup_shutdown_hooks(self):
         # No mocks: just verify the hooks complete without raising.
         EXT_Database.on_start()

@@ -13,17 +13,11 @@ from typing import Any, ClassVar, Dict, List, Optional
 from zephyrex.extensions.database.EXT_Database import (
     SQL_CHAT_GUIDANCE,
     AbstractDatabaseExtensionProvider as AbstractDatabaseProvider,
+    driver_installed,
 )
 from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 
-try:  # optional driver — guarded so discovery never fails on a missing package
-    import psycopg2
-    import psycopg2.extras
-
-    _psycopg2_available = True
-except ImportError:  # pragma: no cover - optional driver
-    psycopg2 = None
-    _psycopg2_available = False
+_psycopg2_available = driver_installed("psycopg2")
 
 POSTGRES_DEFAULT_PORT = 5432
 
@@ -65,6 +59,8 @@ class PRV_Postgres(AbstractDatabaseProvider):
         """Open a psycopg2 connection with the resolved configuration."""
         cls.require_driver(_psycopg2_available, "psycopg2")
         cls.require_config(config, "database_host", "database_name")
+        import psycopg2
+
         try:
             return psycopg2.connect(
                 host=config["database_host"],
@@ -82,12 +78,16 @@ class PRV_Postgres(AbstractDatabaseProvider):
     ) -> str:
         """Execute a SQL query and return the result as a string / CSV."""
         connection = cls._get_connection(cls.bond_instance(instance).config)
+        import psycopg2.extras
+
         return cls.run_sql(connection, query, cursor_factory=psycopg2.extras.DictCursor)
 
     @classmethod
     async def get_schema(cls, instance: ProviderInstanceModel, **kwargs: Any) -> str:
         """Introspect table definitions and foreign-key relations."""
         connection = cls._get_connection(cls.bond_instance(instance).config)
+        import psycopg2.extras
+
         sql_export: List[str] = []
         key_relations: List[str] = []
         try:

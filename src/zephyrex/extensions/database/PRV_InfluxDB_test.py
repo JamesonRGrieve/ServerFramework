@@ -162,7 +162,7 @@ class TestPRVInfluxDBConnectionConfig:
     async def test_v1_missing_library_raises_transient(
         self, provider_instance, monkeypatch
     ):
-        monkeypatch.setattr(influx_module, "influxdb", None)
+        monkeypatch.setattr(influx_module, "has_influxdb1", False)
         instance = provider_instance(PRV_InfluxDB, settings={"influxdb_version": "1"})
 
         with pytest.raises(TransientExternalError, match="influxdb package"):
@@ -211,7 +211,7 @@ class TestPRVInfluxDBValidateConfig:
     @pytest.mark.unit
     def test_validate_config_v1_missing_fields(self, monkeypatch, set_env):
         """validate_config flags missing required InfluxDB 1.x fields."""
-        monkeypatch.setattr(influx_module, "influxdb", object())
+        monkeypatch.setattr(influx_module, "has_influxdb1", True)
         set_env("INFLUXDB_VERSION", "1")
         set_env("DATABASE_HOST", "")
         set_env("DATABASE_NAME", "test_db")

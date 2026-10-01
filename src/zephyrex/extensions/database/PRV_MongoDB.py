@@ -14,17 +14,12 @@ from typing import Any, ClassVar, Dict, List, Optional
 
 from zephyrex.extensions.database.EXT_Database import (
     AbstractDatabaseExtensionProvider as AbstractDatabaseProvider,
+    driver_installed,
 )
 from zephyrex.extensions.ExternalErrors import InvalidInputExternalError
 from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 
-try:  # optional driver — guarded so discovery never fails on a missing package
-    from pymongo import MongoClient as _MongoClient
-
-    _pymongo_available = True
-except ImportError:  # pragma: no cover - optional driver
-    _MongoClient = None
-    _pymongo_available = False
+_pymongo_available = driver_installed("pymongo")
 
 MONGODB_DEFAULT_PORT = 27017
 MONGODB_DEFAULT_FIND_LIMIT = 25
@@ -79,8 +74,10 @@ class PRV_MongoDB(AbstractDatabaseProvider):
                 f"mongodb://{credentials}{config['database_host']}:"
                 f"{config['database_port']}/{config['database_name']}"
             )
+        from pymongo import MongoClient
+
         try:
-            client = _MongoClient(
+            client: MongoClient[Dict[str, Any]] = MongoClient(
                 uri, serverSelectionTimeoutMS=MONGODB_SERVER_SELECTION_TIMEOUT_MS
             )
             client.admin.command("ping")

@@ -12,17 +12,10 @@ from typing import Any, ClassVar, Dict, List, Optional
 from zephyrex.extensions.database.EXT_Database import (
     SQL_CHAT_GUIDANCE,
     AbstractDatabaseExtensionProvider as AbstractDatabaseProvider,
+    driver_installed,
 )
 from zephyrex.lib.Dependencies import Dependencies, PIP_Dependency
 from zephyrex.logic.BLL_Providers import ProviderInstanceModel
-
-try:  # optional driver — guarded so discovery never fails on a missing package
-    import mysql.connector as _mysql_connector
-
-    _mysql_available = True
-except ImportError:  # pragma: no cover - optional driver
-    _mysql_connector = None
-    _mysql_available = False
 
 MYSQL_DEFAULT_PORT = 3306
 
@@ -35,7 +28,7 @@ class PRV_MySQL(AbstractDatabaseProvider):
     description: ClassVar[str] = "MySQL relational database provider"
     db_type: ClassVar[str] = "mysql"
 
-    _driver_available: ClassVar[bool] = _mysql_available
+    _driver_available: ClassVar[bool] = driver_installed("mysql.connector")
 
     dependencies: ClassVar[Dependencies] = Dependencies(
         [
@@ -69,8 +62,10 @@ class PRV_MySQL(AbstractDatabaseProvider):
         """Open a mysql.connector connection with the resolved configuration."""
         cls.require_driver(cls._driver_available, "mysql-connector-python")
         cls.require_config(config, "database_host", "database_name")
+        import mysql.connector
+
         try:
-            return _mysql_connector.connect(
+            return mysql.connector.connect(
                 host=config["database_host"],
                 port=config["database_port"],
                 database=config["database_name"],
