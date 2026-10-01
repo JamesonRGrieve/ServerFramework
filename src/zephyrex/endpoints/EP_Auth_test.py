@@ -15,6 +15,7 @@ from zephyrex.pydantic2.strawberry import convert_field_name
 
 from zephyrex.extensions.auth_invitations.BLL_Invitations import InvitationModel
 from zephyrex.logic.BLL_Auth import RoleModel, TeamModel, UserManager, UserModel
+from zephyrex.testing.factories import TEST_PASSWORD
 
 
 def generate_jwt_for_user(user_data: Dict[str, Any], server: Any = None) -> str:
@@ -533,7 +534,7 @@ class TestTeamEndpoints(AbstractEPTest):
         test_user = create_user(
             server=server,
             email=f"role_test_{uuid.uuid4().hex[:8]}@example.com",
-            password="testpassword",
+            password=TEST_PASSWORD,
             first_name="RoleTest",
             last_name="User",
         )
@@ -990,7 +991,7 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
         # The authorize endpoint expects flat email/password, not nested in "auth"
         auth_payload = {
             "email": admin_a.email,
-            "password": "testpassword",  # Hardcoded for test users
+            "password": TEST_PASSWORD,  # Hardcoded for test users
         }
 
         endpoint = "/v1/user/authorize"
@@ -1049,7 +1050,7 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
         test_user = create_user(
             server=server,
             email=f"put_test_{uuid.uuid4().hex[:8]}@example.com",
-            password="testpassword",
+            password=TEST_PASSWORD,
             first_name="PutTest",
             last_name="User",
         )
@@ -1086,7 +1087,7 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
         test_user = create_user(
             server=server,
             email=f"state_test_{uuid.uuid4().hex[:8]}@example.com",
-            password="testpassword",
+            password=TEST_PASSWORD,
             first_name="State",
             last_name="Test",
         )
@@ -1137,7 +1138,7 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
         return create_user(
             server=server,
             email=f"{prefix}_{uuid.uuid4().hex[:8]}@example.com",
-            password="testpassword",
+            password=TEST_PASSWORD,
             first_name="Isolated",
             last_name="User",
         )
@@ -1176,7 +1177,7 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
         test_user = create_user(
             server=server,
             email=f"patch_test_{uuid.uuid4().hex[:8]}@example.com",
-            password="testpassword",
+            password=TEST_PASSWORD,
             first_name="PatchTest",
             last_name="User",
         )
@@ -1190,7 +1191,7 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
         )
 
         payload = {
-            "current_password": "testpassword",  # Hardcoded for test users
+            "current_password": TEST_PASSWORD,  # Hardcoded for test users
             "new_password": new_password,
         }
 
@@ -1360,7 +1361,7 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
         test_user = create_user(
             server=server,
             email=f"session_test_{uuid.uuid4().hex[:8]}@example.com",
-            password="testpassword",
+            password=TEST_PASSWORD,
             first_name="SessionTest",
             last_name="User",
         )
@@ -1614,7 +1615,7 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
         test_user = create_user(
             server=server,
             email=f"revoke_test_{uuid.uuid4().hex[:8]}@example.com",
-            password="testpassword",
+            password=TEST_PASSWORD,
             first_name="RevokeTest",
             last_name="User",
         )
@@ -1655,7 +1656,7 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
         test_user = create_user(
             server=server,
             email=f"lockout_test_{uuid.uuid4().hex[:8]}@example.com",
-            password="testpassword",
+            password=TEST_PASSWORD,
             first_name="LockoutTest",
             last_name="User",
         )
@@ -1715,7 +1716,7 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
         test_user = create_user(
             server=server,
             email=f"enum_test_{uuid.uuid4().hex[:8]}@example.com",
-            password="testpassword",
+            password=TEST_PASSWORD,
             first_name="EnumTest",
             last_name="User",
         )
@@ -1747,7 +1748,7 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
         test_user = create_user(
             server=server,
             email=f"pw_curr_{uuid.uuid4().hex[:8]}@example.com",
-            password="testpassword",
+            password=TEST_PASSWORD,
             first_name="PwCurr",
             last_name="User",
         )
@@ -1791,13 +1792,13 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
         test_user = create_user(
             server=server,
             email=f"pw_weak_{uuid.uuid4().hex[:8]}@example.com",
-            password="testpassword",
+            password=TEST_PASSWORD,
             first_name="PwWeak",
             last_name="User",
         )
         r = server.patch(
             "/v1/user",
-            json={"current_password": "testpassword", "new_password": "a"},
+            json={"current_password": TEST_PASSWORD, "new_password": "a"},
             headers=self._get_appropriate_headers(test_user.jwt),
         )
         assert (
@@ -1813,14 +1814,14 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
         user_x = create_user(
             server=server,
             email=f"sess_x_{uuid.uuid4().hex[:8]}@example.com",
-            password="testpassword",
+            password=TEST_PASSWORD,
             first_name="SessX",
             last_name="User",
         )
         user_y = create_user(
             server=server,
             email=f"sess_y_{uuid.uuid4().hex[:8]}@example.com",
-            password="testpassword",
+            password=TEST_PASSWORD,
             first_name="SessY",
             last_name="User",
         )
@@ -1854,7 +1855,7 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
         test_user = create_user(
             server=server,
             email=f"delete_test_{uuid.uuid4().hex[:8]}@example.com",
-            password="testpassword",
+            password=TEST_PASSWORD,
             first_name="DeleteTest",
             last_name="User",
         )
@@ -1869,7 +1870,7 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
         # This should fail since the user is deleted
         auth_payload = {
             "email": test_user.email,
-            "password": "testpassword",
+            "password": TEST_PASSWORD,
         }
 
         auth_response = server.post("/v1/user/authorize", json=auth_payload)
@@ -1907,7 +1908,7 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
         test_user = create_user(
             server=server,
             email=f"missing_{uuid.uuid4().hex[:8]}@example.com",
-            password="testpassword",
+            password=TEST_PASSWORD,
             first_name="Missing",
             last_name="User",
         )
@@ -2287,7 +2288,7 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
         test_user = create_user(
             server=server,
             email=f"delete_gql_test_{uuid.uuid4().hex[:8]}@example.com",
-            password="testpassword",
+            password=TEST_PASSWORD,
             first_name="DeleteGQLTest",
             last_name="User",
         )
@@ -2506,7 +2507,7 @@ class TestRoleEndpoints(AbstractEPTest):
             test_user = create_user(
                 server=server,
                 email=f"role_test_{uuid.uuid4().hex[:8]}@example.com",
-                password="testpassword",
+                password=TEST_PASSWORD,
                 first_name="RoleTest",
                 last_name="User",
             )
@@ -3350,15 +3351,13 @@ class TestInvitationEndpoints(AbstractEPTest):
         from conftest import create_user
 
         # Get a database session (we need this for create_user)
-        from zephyrex.database.DatabaseManager import DatabaseManager
-
         db = self._get_db_manager(server).get_session()
 
         try:
             new_user = create_user(
                 server=server,
                 email=f"invalid_code_test_{uuid.uuid4().hex[:8]}@example.com",
-                password="testpassword",
+                password=TEST_PASSWORD,
                 first_name="InvalidCodeTest",
                 last_name="User",
             )
@@ -3393,7 +3392,6 @@ class TestInvitationEndpoints(AbstractEPTest):
         invitee_email = f"direct_reg_user_{uuid.uuid4().hex[:8]}@example.com"
 
         # Add the email as an invitee to the invitation
-        from zephyrex.database.DatabaseManager import DatabaseManager
         from zephyrex.lib.Environment import env
         from zephyrex.extensions.auth_invitations.BLL_Invitations import (
             InvitationManager,
@@ -3490,7 +3488,7 @@ class TestInvitationEndpoints(AbstractEPTest):
         test_user = create_user(
             server=server,
             email=f"invitation_test_{uuid.uuid4().hex[:8]}@example.com",
-            password="testpassword",
+            password=TEST_PASSWORD,
             first_name="InvitationTest",
             last_name="User",
         )

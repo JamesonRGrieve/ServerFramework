@@ -9,6 +9,7 @@ from fastapi import HTTPException, Header, Request, Response, status
 from pydantic import Field, ValidationError, model_validator
 
 from sqlalchemy import or_
+from zephyrex.lib.CustomRoute import ExposeIn, custom_route
 from zephyrex.lib.Dependencies import jwt
 from zephyrex.lib.Environment import env, extract_base_domain
 from zephyrex.lib.InboundSecurity import (
@@ -48,6 +49,11 @@ from zephyrex.logic.BLL_Auth._shared import (
     _session_hooks,
 )
 from zephyrex.lib.SessionCookies import clear_session_cookies, set_session_cookies
+from zephyrex.logic.BLL_Auth.password_policy import (
+    PASSWORD_POLICY,
+    PasswordPolicy,
+    enforce_password_policy,
+)
 from zephyrex.lib.SingleUseToken import (
     issue_single_use_token,
     read_single_use_token,
@@ -1853,6 +1859,20 @@ class UserManager(AbstractBLLManager, RouterMixin):
             new_password=new_password,
         )
 
+    @custom_route(
+        method="GET",
+        path="/password-policy",
+        output_model=PasswordPolicy,
+        authentication_type="none",
+        # Read before a session exists, over REST; GraphQL keeps password
+        # types out of its schema.
+        expose_in=(ExposeIn.REST,),
+        summary="The password rule register and change-password enforce",
+    )
+    def password_policy_route(self) -> PasswordPolicy:
+        """Public, so a registration form can check before submitting."""
+        return PASSWORD_POLICY
+
     @staticmethod
     @rate_limit(DEFAULT_AUTH_RATE_LIMIT, scope="ip")
     @static_route("", method="POST", auth_type=AuthType.NONE, status_code=201)
@@ -2003,6 +2023,9 @@ class UserManager(AbstractBLLManager, RouterMixin):
             raise HTTPException(
                 status_code=422, detail="Email and password are required."
             )
+        # Before the user row exists: a refused password must not leave an
+        # account with no credential behind.
+        enforce_password_policy(password)
 
         # Validation - check if username already exists (if provided)
         if temp_entity.username and UserModel.DB(model_registry.DB.manager.Base).exists(
@@ -2253,6 +2276,7 @@ class UserCredentialManager(AbstractBLLManager, RouterMixin):
 
     def create(self, **kwargs):
         """Create new user credentials (password)"""
+        enforce_password_policy(kwargs.get("password"))
         UserCredentialModel.DB(self.model_registry.DB.manager.Base).update(
             requester_id=self.requester.id,
             model_registry=self.model_registry,
@@ -2283,6 +2307,7 @@ class UserCredentialManager(AbstractBLLManager, RouterMixin):
     def update(self, id: str, **kwargs):
         """Update user credentials (password)"""
         if "password" in kwargs:
+            enforce_password_policy(kwargs["password"])
             # Get the credential we're updating
             credential = UserCredentialModel.DB(
                 self.model_registry.DB.manager.Base
@@ -2309,37 +2334,6 @@ class UserCredentialManager(AbstractBLLManager, RouterMixin):
 
         return super().update(id, **kwargs)
 
-    # Minimum password requirements. A password must contain at least
-    # MIN_LENGTH characters and at least one digit + one letter. The aim
-    # is to refuse trivially-weak passwords (e.g. "a" or "12345"), not to
-    # police every dictionary password — defence in depth on top of
-    # bcrypt + MFA.
-    PASSWORD_MIN_LENGTH = 8
-
-    @staticmethod
-    def _validate_password_policy(password: Optional[str]) -> None:
-        """Reject passwords that don't meet the minimum policy."""
-        if not isinstance(password, str) or not password.strip():
-            raise HTTPException(
-                status_code=422,
-                detail="Password must be a non-empty string",
-            )
-        if len(password) < UserCredentialManager.PASSWORD_MIN_LENGTH:
-            raise HTTPException(
-                status_code=422,
-                detail=(
-                    f"Password must be at least "
-                    f"{UserCredentialManager.PASSWORD_MIN_LENGTH} characters"
-                ),
-            )
-        has_alpha = any(c.isalpha() for c in password)
-        has_digit = any(c.isdigit() for c in password)
-        if not (has_alpha and has_digit):
-            raise HTTPException(
-                status_code=422,
-                detail="Password must contain at least one letter and one digit",
-            )
-
     def change_password(
         self,
         user_id: str,
@@ -2351,7 +2345,7 @@ class UserCredentialManager(AbstractBLLManager, RouterMixin):
         # cleanly with 422/401 rather than crashing inside bcrypt.
         if current_password is None or not isinstance(current_password, str):
             raise HTTPException(status_code=422, detail="current_password is required")
-        self._validate_password_policy(new_password)
+        enforce_password_policy(new_password)
 
         # Find current active credential
         credentials = UserCredentialModel.DB(self.model_registry.DB.manager.Base).list(

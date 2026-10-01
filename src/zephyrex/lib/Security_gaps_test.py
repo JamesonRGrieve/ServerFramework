@@ -11,6 +11,7 @@ Tests that need a running server use per-entity abstract bases instead.
 from __future__ import annotations
 
 import os
+import json
 import time
 import uuid
 
@@ -20,6 +21,7 @@ os.environ.setdefault("JWT_SECRET", "test-jwt-secret-32-bytes-or-more-aaaaaa")
 os.environ.setdefault("DATABASE_TYPE", "sqlite")
 os.environ.setdefault("SEED_DATA", "false")
 
+from zephyrex.testing.factories import TEST_PASSWORD  # noqa: E402 (env first)
 
 # ------------------------------------------------------------------ #
 # §11 — SSRF: ProviderHTTPClient must reject internal addresses
@@ -339,7 +341,7 @@ def _outsider_and_foreign_team(server):
     owner = create_user(
         server,
         email=f"xte_owner_{uuid.uuid4().hex[:8]}@example.com",
-        password="testpassword",
+        password=TEST_PASSWORD,
         first_name="XteOwner",
         last_name="Test",
     )
@@ -349,7 +351,7 @@ def _outsider_and_foreign_team(server):
     outsider = create_user(
         server,
         email=f"xte_out_{uuid.uuid4().hex[:8]}@example.com",
-        password="testpassword",
+        password=TEST_PASSWORD,
         first_name="XteOut",
         last_name="Test",
     )
@@ -701,7 +703,7 @@ class TestAuthHeaderParsing:
         # Valid Basic creds (correct email:password) must ALSO be rejected: the
         # scheme is refused before any credential check, so a real password
         # cannot authenticate a protected endpoint via Basic.
-        good = base64.b64encode(f"{admin_a.email}:testpassword".encode()).decode()
+        good = base64.b64encode(f"{admin_a.email}:{TEST_PASSWORD}".encode()).decode()
         r_good = server.get("/v1/team", headers={"Authorization": f"Basic {good}"})
         assert r_good.status_code == 401, r_good.text
         assert "Bearer" in r_good.json().get("detail", ""), r_good.text

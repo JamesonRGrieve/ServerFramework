@@ -8,7 +8,6 @@ entities, returning the created object.
 import base64
 import uuid
 
-import pytest
 from faker import Faker
 from starlette.testclient import TestClient
 
@@ -20,6 +19,9 @@ from zephyrex.logic.BLL_Auth import (
     UserModel,
     UserTeamModel,
 )
+
+# The password test users are created with; it meets the password policy.
+TEST_PASSWORD = "testpassword1"
 
 
 def generate_test_email(prefix="test"):
@@ -33,7 +35,7 @@ class UserWithJWT(UserModel):
 def create_user(
     server,
     email=None,
-    password="testpassword",
+    password=TEST_PASSWORD,
     first_name="Test",
     last_name="User",
 ):
@@ -88,7 +90,7 @@ def create_user(
     return UserWithJWT(**user_dict, jwt=authorize_user(server, user.email))
 
 
-def authorize_user(server, email: str, password="testpassword"):
+def authorize_user(server, email: str, password=TEST_PASSWORD):
     credentials = f"{email}:{password}"
     encoded_credentials = base64.b64encode(credentials.encode()).decode()
     response = server.post(

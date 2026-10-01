@@ -19,13 +19,13 @@ from zephyrex.extensions.auth_mfa.BLL_Auth_MFA import (
 from zephyrex.extensions.auth_mfa.EXT_Auth_MFA import EXT_Auth_MFA
 from zephyrex.lib.SingleUseToken import issue_single_use_token
 from zephyrex.logic.BLL_Auth.user import MFA_CHALLENGE_AUDIENCE
-from zephyrex.testing.factories import create_user
+from zephyrex.testing.factories import TEST_PASSWORD, create_user
 
 pyotp = pytest.importorskip("pyotp")
 
 AUTHORIZE = "/v1/user/authorize"
 AUTHORIZE_MFA = "/v1/user/authorize/mfa"
-PASSWORD = "testpassword"
+PASSWORD = TEST_PASSWORD
 
 
 def _password_login(server: Any, email: str) -> Any:

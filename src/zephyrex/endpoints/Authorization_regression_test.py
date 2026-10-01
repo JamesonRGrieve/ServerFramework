@@ -20,6 +20,7 @@ import pytest
 from zephyrex.lib.Environment import env
 from zephyrex.logic.AbstractLogicManager import manager as manager_module
 from zephyrex.logic.AbstractLogicManager import set_entity_cache
+from zephyrex.testing.factories import TEST_PASSWORD
 
 
 class InMemoryEntityCache:
@@ -88,7 +89,7 @@ def _outsider(server) -> Any:
     return create_user(
         server=server,
         email=f"outsider_{uuid.uuid4().hex[:8]}@example.com",
-        password="testpassword",
+        password=TEST_PASSWORD,
         first_name="Out",
         last_name="Sider",
     )

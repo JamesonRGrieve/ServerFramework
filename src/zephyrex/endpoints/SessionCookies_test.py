@@ -10,8 +10,9 @@ from typing import Any
 from fastapi.testclient import TestClient
 
 from zephyrex.lib.SessionCookies import CSRF_COOKIE, SESSION_COOKIE
+from zephyrex.testing.factories import TEST_PASSWORD
 
-PASSWORD = "testpassword"
+PASSWORD = TEST_PASSWORD
 
 
 def _browser(server: Any) -> TestClient:
