@@ -6,7 +6,7 @@
 
 name = "wearable"
 version = "1.0.0"
-description = "Integrates with various wearable health devices"
+description = "Wearable activity, heart and sleep data, devices and trends (Fitbit)"
 author = "ZephyrexTechnologies"
 entry_module = "EXT_Wearable"
 minimum_framework_version = "0.0.0"

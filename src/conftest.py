@@ -204,6 +204,8 @@ EXTERNAL_API_PROVIDER_ENV_VARS: Dict[str, List[str]] = {
     "slack_test": ["SLACK_BOT_TOKEN", "SLACK_TEST_CHANNEL"],
     "discord_test": ["DISCORD_BOT_TOKEN", "DISCORD_TEST_CHANNEL"],
     "telegram_test": ["TELEGRAM_BOT_TOKEN", "TELEGRAM_TEST_CHAT"],
+    # Wearable: a Fitbit test account's OAuth access token.
+    "fitbit": ["FITBIT_ACCESS_TOKEN"],
     # SendGrid sandbox.
     "sendgrid": ["SENDGRID_API_KEY"],
     # Twilio sandbox.
