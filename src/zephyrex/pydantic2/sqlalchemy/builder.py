@@ -115,17 +115,15 @@ def get_entity_module_class(
             if _is_database_model(obj):
                 return obj.__module__, obj
 
-    # Check all loaded modules as a fallback
-    for module_name, module in sys.modules.items():
-        if module and hasattr(module, entity_class_name):
-            obj = getattr(module, entity_class_name)
-            if _is_database_model(obj):
-                return module_name, obj
-
-        # Also check for variations like UserModel when looking for User
-        model_variant = f"{entity_class_name}Model"
-        if module and hasattr(module, model_variant):
-            obj = getattr(module, model_variant)
+    # Check all loaded modules as a fallback: what each one has defined,
+    # never ``getattr``, which runs a lazy module's ``__getattr__`` and so
+    # imports whatever it fronts (transformers then needs torchvision). A
+    # copy, as an import can change ``sys.modules`` mid-scan.
+    candidates = (entity_class_name, f"{entity_class_name}Model")
+    for module_name, module in list(sys.modules.items()):
+        namespace = vars(module) if module is not None else {}
+        for candidate in candidates:
+            obj = namespace.get(candidate)
             if _is_database_model(obj):
                 return module_name, obj
 
