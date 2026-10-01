@@ -1,38 +1,84 @@
-import logging
-from typing import Any, Dict, List
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""Microsoft Teams, through a channel's incoming webhook.
 
-from zephyrex.extensions.messaging.PRV_Messaging import AbstractMessagingProvider
+Microsoft Graph lets an app post to channels only as a signed-in user or a
+Bot Framework bot; a Workflows (or legacy connector) incoming webhook is
+the one way a server can post on its own. A webhook belongs to one channel,
+so the instance's ``webhook_url`` setting (else ``TEAMS_WEBHOOK_URL``) is
+the destination and a recipient is only a label. It can post, nothing
+more: history and deletion need Graph as a user.
+"""
+
+from typing import Any, ClassVar, Dict, List
+from urllib.parse import urlparse
+
+from zephyrex.extensions.ExternalErrors import (
+    InvalidInputExternalError,
+    TransientExternalError,
+)
+from zephyrex.extensions.messaging.EXT_Messaging import AbstractMessagingProvider
+from zephyrex.logic.BLL_Providers import ProviderInstanceModel
+
+# Where Teams webhooks live: Workflows (Power Automate) and the legacy
+# Office 365 connectors.
+_WEBHOOK_HOSTS = (".logic.azure.com", ".webhook.office.com", ".powerplatform.com")
 
 
-class MicrosoftTeamsProvider(AbstractMessagingProvider):
-    """
-    Microsoft Teams provider for messaging functionality.
-    """
+class PRV_Microsoft_Messaging(AbstractMessagingProvider):
+    name: ClassVar[str] = "msteams"
+    friendly_name: ClassVar[str] = "Microsoft Teams"
+    description: ClassVar[str] = "Microsoft Teams, through a channel's incoming webhook"
+    _env: ClassVar[Dict[str, Any]] = {"TEAMS_WEBHOOK_URL": ""}
 
-    def get_platform_name(self) -> str:
-        return "Microsoft Teams"
+    @classmethod
+    def _webhook(cls, instance: ProviderInstanceModel) -> str:
+        url = cls.resolve_setting(instance, "webhook_url", "TEAMS_WEBHOOK_URL")
+        if not url:
+            raise TransientExternalError(
+                "Teams webhook_url not configured", provider=cls.name
+            )
+        parsed = urlparse(url)
+        if parsed.scheme != "https" or not (parsed.hostname or "").endswith(
+            _WEBHOOK_HOSTS
+        ):
+            raise InvalidInputExternalError(
+                "Teams webhook_url must be an https Teams Workflows or connector URL",
+                provider=cls.name,
+            )
+        return url
 
-    @staticmethod
-    def services() -> List[str]:
-        return ["messaging", "msteams"]
-
-    def send_message(
-        self, recipient: str, message: str, platform: str = "msteams"
-    ) -> str:
-        # Implementation would go here
-        logging.debug(
-            f"Sending message to Microsoft Teams channel {recipient}: {message}"
+    @classmethod
+    async def send_message(
+        cls, instance: ProviderInstanceModel, recipient: str, text: str
+    ) -> Dict[str, Any]:
+        # An Adaptive Card: what Workflows webhooks accept (and connectors too).
+        await cls.http().post(
+            cls._webhook(instance),
+            json={
+                "type": "message",
+                "attachments": [
+                    {
+                        "contentType": "application/vnd.microsoft.card.adaptive",
+                        "content": {
+                            "type": "AdaptiveCard",
+                            "version": "1.4",
+                            "body": [{"type": "TextBlock", "text": text, "wrap": True}],
+                        },
+                    }
+                ],
+            },
         )
-        return f"Message sent to Microsoft Teams channel {recipient} successfully!"
+        # A webhook answers without an id for what it posted.
+        return {"message_id": None, "recipient": recipient, "provider": cls.name}
 
-    def receive_messages(self, platform: str = "msteams") -> List[Dict[str, Any]]:
-        # Implementation would go here
-        logging.debug("Getting messages from Microsoft Teams")
-        return []
+    @classmethod
+    async def get_message_history(
+        cls, instance: ProviderInstanceModel, recipient: str, limit: int
+    ) -> List[Dict[str, Any]]:
+        raise cls.unsupported("read history", "an incoming webhook can only post")
 
-    def delete_message(self, channel_id: str, message_id: str) -> str:
-        # Implementation would go here
-        logging.debug(
-            f"Deleting message {message_id} from Microsoft Teams channel {channel_id}"
-        )
-        return f"Message {message_id} deleted from Microsoft Teams channel {channel_id} successfully!"
+    @classmethod
+    async def delete_message(
+        cls, instance: ProviderInstanceModel, recipient: str, message_id: str
+    ) -> Dict[str, Any]:
+        raise cls.unsupported("delete messages", "an incoming webhook can only post")

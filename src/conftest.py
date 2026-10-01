@@ -200,6 +200,10 @@ EXTERNAL_API_PROVIDER_ENV_VARS: Dict[str, List[str]] = {
     # a TMDb v3 key or v4 read access token.
     "youtube": ["YOUTUBE_API_KEY"],
     "tmdb": ["TMDB_API_KEY"],
+    # Messaging round trips: a bot and a channel or chat set aside for tests.
+    "slack_test": ["SLACK_BOT_TOKEN", "SLACK_TEST_CHANNEL"],
+    "discord_test": ["DISCORD_BOT_TOKEN", "DISCORD_TEST_CHANNEL"],
+    "telegram_test": ["TELEGRAM_BOT_TOKEN", "TELEGRAM_TEST_CHAT"],
     # SendGrid sandbox.
     "sendgrid": ["SENDGRID_API_KEY"],
     # Twilio sandbox.

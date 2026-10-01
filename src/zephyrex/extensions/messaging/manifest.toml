@@ -6,7 +6,7 @@
 
 name = "messaging"
 version = "1.0.0"
-description = "Messaging functionality for AGInfrastructure"
+description = "Chat messaging across Discord, Slack, Telegram, Teams, WhatsApp, Messenger, Signal and TeamSpeak"
 author = "ZephyrexTechnologies"
 entry_module = "EXT_Messaging"
 minimum_framework_version = "0.0.0"
