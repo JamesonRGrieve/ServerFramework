@@ -135,6 +135,21 @@ async def test_a_failure_names_the_host_never_the_path_or_query(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_raw_returns_the_response_with_its_bytes_untouched(monkeypatch):
+    """A binary body decoded as text would be corrupted."""
+    body = bytes(range(256))
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=body)
+
+    _patch_client_with_handler(monkeypatch, handler)
+    response = await ProviderHTTPClient().get("https://api.example/file", raw=True)
+    assert isinstance(response, httpx.Response)
+    assert response.content == body
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_idempotency_header_injected(monkeypatch):
     captured = {}
 

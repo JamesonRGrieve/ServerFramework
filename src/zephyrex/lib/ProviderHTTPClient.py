@@ -546,6 +546,7 @@ class ProviderHTTPClient:
         url: str,
         *,
         model: Optional[Type[BaseModel]] = None,
+        raw: bool = False,
         idempotency_key: Optional[str] = None,
         deadline_ms: Optional[int] = None,
         requester_id: Optional[str] = None,
@@ -596,7 +597,8 @@ class ProviderHTTPClient:
                 cause=exc,
             )
         _classify_response(response, self.provider_name)
-        return _maybe_parse_model(response, model)
+        # raw: the response itself, for a binary body decoding would corrupt.
+        return response if raw else _maybe_parse_model(response, model)
 
     async def get(self, url: str, **kw: Any) -> Any:
         return await self.request("GET", url, **kw)
@@ -660,6 +662,7 @@ class ProviderHTTPClientSync:
         url: str,
         *,
         model: Optional[Type[BaseModel]] = None,
+        raw: bool = False,
         idempotency_key: Optional[str] = None,
         deadline_ms: Optional[int] = None,
         requester_id: Optional[str] = None,
@@ -709,7 +712,8 @@ class ProviderHTTPClientSync:
                 cause=exc,
             )
         _classify_response(response, self.provider_name)
-        return _maybe_parse_model(response, model)
+        # raw: the response itself, for a binary body decoding would corrupt.
+        return response if raw else _maybe_parse_model(response, model)
 
     def get(self, url: str, **kw: Any) -> Any:
         return self.request("GET", url, **kw)
