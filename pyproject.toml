@@ -57,9 +57,9 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/ZephyrexTechnologies/ServerFramework"
-Repository = "https://github.com/ZephyrexTechnologies/ServerFramework.git"
-Issues = "https://github.com/ZephyrexTechnologies/ServerFramework/issues"
+Homepage = "https://git.zephyrex.dev/ZephyrexTechnologies/ServerFramework"
+Repository = "https://git.zephyrex.dev/ZephyrexTechnologies/ServerFramework.git"
+Issues = "https://git.zephyrex.dev/ZephyrexTechnologies/ServerFramework/issues"
 
 [project.scripts]
 zephyrex = "zephyrex.cli:main"

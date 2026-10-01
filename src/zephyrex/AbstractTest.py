@@ -513,7 +513,7 @@ class AbstractTest:
         """
         if skip := self.__class__.__skip_lookup__.get(test_name):
             reason = skip.details + (
-                (f" (GitHub: {env('APP_REPOSITORY')}/issues/{skip.gh_issue_number})")
+                (f" (issue: {env('APP_REPOSITORY')}/issues/{skip.gh_issue_number})")
                 if skip.gh_issue_number
                 else ""
             )

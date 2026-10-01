@@ -1,0 +1,39 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""GET /source: every deployment offers its users the source it runs
+(AGPL-3.0 section 13), defaulting to the canonical repository."""
+
+from zephyrex import get_framework_version
+from zephyrex.lib.Environment import env, refresh_settings
+
+CANONICAL = "https://git.zephyrex.dev/ZephyrexTechnologies/ServerFramework"
+
+
+def test_anyone_can_read_where_the_source_is(server):
+    response = server.get("/source")
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "source": env("APP_REPOSITORY"),
+        "version": get_framework_version(),
+        "license": "AGPL-3.0-or-later",
+    }
+
+
+def test_the_default_is_the_canonical_repository(monkeypatch):
+    monkeypatch.delenv("APP_REPOSITORY", raising=False)
+    refresh_settings()
+    try:
+        assert env("APP_REPOSITORY") == CANONICAL
+    finally:
+        monkeypatch.undo()
+        refresh_settings()
+
+
+def test_a_modified_deployment_offers_its_own_source(server, monkeypatch):
+    fork = "https://git.example.org/acme/zephyrex-fork"
+    monkeypatch.setenv("APP_REPOSITORY", fork)
+    refresh_settings()
+    try:
+        assert server.get("/source").json()["source"] == fork
+    finally:
+        monkeypatch.undo()
+        refresh_settings()

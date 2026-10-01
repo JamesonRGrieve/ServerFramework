@@ -73,7 +73,7 @@ pip install zephyrex
 
 From source (for framework development):
 ```sh
-git clone git@github.com:JamesonRGrieve/ServerFramework.git
+git clone https://git.zephyrex.dev/ZephyrexTechnologies/ServerFramework.git
 cd ServerFramework
 pip install -e ".[dev]"
 ```
@@ -125,3 +125,7 @@ This framework provides:
 - **Type Safety**: End-to-end type checking from API to database
 
 For a comprehensive overview, start with [Framework.md](../src/zephyrex/Framework.md)
+
+## License
+
+[AGPL-3.0-or-later](../LICENSE). A server built on Zephyrex offers its users its source, as section 13 of the license requires for network use: `GET /source` returns the source URL, version and license. It points at `APP_REPOSITORY`, which defaults to the canonical repository, https://git.zephyrex.dev/ZephyrexTechnologies/ServerFramework; a deployment that runs modified code sets `APP_REPOSITORY` to its own source.

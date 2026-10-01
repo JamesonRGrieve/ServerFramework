@@ -2,10 +2,10 @@
 
 ### Clone the repo:
 
-`git clone https://github.com/JamesonRGrieve/ServerFramework.git`
+`git clone https://git.zephyrex.dev/ZephyrexTechnologies/ServerFramework.git`
 
 ### Basic Operations
-- **Start the application**: `python src/app.py` (handles virtual environment setup automatically)
+- **Start the application**: `python -m zephyrex run` (after `pip install -e ".[dev]"`; serves on port 1996)
 - **Run tests**: `pytest` should be configured to discover tests through the VS Code test explorer
 - **Format code**: `black src/` (configured with 88-character line length)
 - **Type checking**: `mypy src/` (if available in dev dependencies)

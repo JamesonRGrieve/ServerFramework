@@ -580,7 +580,7 @@ def build_app(model_registry: ModelRegistry):
     app = FastAPI(
         title=env("APP_NAME"),
         version=env("APP_VERSION"),
-        description=f"{env('APP_NAME')} is {inflection.a(env('APP_DESCRIPTION'))}. Visit the GitHub repo for more information or to report issues. {env('APP_REPOSITORY')}",
+        description=f"{env('APP_NAME')} is {inflection.a(env('APP_DESCRIPTION'))}. Source, issues and more information: {env('APP_REPOSITORY')}",
         openapi_url="/openapi.json" if docs_enabled else None,
         docs_url="/docs" if docs_enabled else None,
         redoc_url="/redoc" if docs_enabled else None,
@@ -1113,6 +1113,19 @@ def build_app(model_registry: ModelRegistry):
         @app.get("/health", tags=["Health"])
         async def health():
             return {"status": "UP"}
+
+        @app.get("/source", tags=["Meta"])
+        async def source() -> Dict[str, str]:
+            """Where to get this server's source (AGPL-3.0 section 13). A
+            deployment running modified code sets APP_REPOSITORY to its own
+            source."""
+            from zephyrex import get_framework_version
+
+            return {
+                "source": env("APP_REPOSITORY"),
+                "version": get_framework_version(),
+                "license": "AGPL-3.0-or-later",
+            }
 
         from zephyrex.endpoints.Operations import create_operations_router
 

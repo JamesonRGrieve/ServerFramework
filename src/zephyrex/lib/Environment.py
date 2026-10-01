@@ -42,7 +42,11 @@ class AppSettings(BaseModel):
     APP_NAME: str = "Zephyrex"
     APP_DESCRIPTION: str = "Zephyrex Framework Server"
     APP_VERSION: str = "0.0.0"
-    APP_REPOSITORY: str = "https://github.com/ZephyrexTechnologies/ServerFramework"
+    # Where this server's source is offered (AGPL-3.0 section 13, GET
+    # /source): a deployment running modified code points it at its own.
+    APP_REPOSITORY: str = (
+        "https://git.zephyrex.dev/ZephyrexTechnologies/ServerFramework"
+    )
     APP_EXTENSIONS: str = ""
     # Empty default: consumers choose extensions explicitly via run() or
     # instance(). The test conftest sets _CORE_TEST_EXTENSIONS for the
