@@ -6,7 +6,7 @@
 
 name = "automotive"
 version = "1.0.0"
-description = "Automotive extension for smart car integrations"
+description = "Connected vehicles: state, locks, climate, charging and navigation"
 author = "ZephyrexTechnologies"
 entry_module = "EXT_Automotive"
 minimum_framework_version = "0.0.0"

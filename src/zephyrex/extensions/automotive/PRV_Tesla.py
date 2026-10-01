@@ -1,93 +1,156 @@
-from typing import Any
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""Tesla, through the Tesla Fleet API (the Owner API is retired).
 
-from zephyrex.extensions.automotive.PRV_Automotive import AbstractAutomotiveProvider
+The instance's API key is a Fleet API OAuth access token (else
+``TESLA_ACCESS_TOKEN``). Its ``api_url`` setting (else ``TESLA_API_URL``)
+is the account's regional endpoint, North America by default; vehicles
+that require signed commands (most built since 2021) take commands only
+through Tesla's vehicle-command proxy (tesla-http-proxy), so point
+``api_url`` at that proxy for them (a private address goes in
+``EGRESS_ALLOWED_HOSTS``). A sleeping vehicle answers 408: it is woken and
+the call fails over (or the caller retries) while it wakes.
+"""
 
-TESLA_API_BASE_URL = "https://owner-api.teslamotors.com/api/1"
+from typing import Any, ClassVar, Dict, Tuple
+
+from zephyrex.extensions.automotive.EXT_Automotive import AbstractAutomotiveProvider
+from zephyrex.extensions.ExternalErrors import (
+    InvalidInputExternalError,
+    TransientExternalError,
+)
+from zephyrex.logic.BLL_Providers import ProviderInstanceModel
+
+TESLA_FLEET_API = "https://fleet-api.prd.na.vn.cloud.tesla.com"
+HTTP_VEHICLE_ASLEEP = 408
+# The extension's commands, as Fleet API command endpoints.
+_COMMANDS = {
+    "door_lock": "door_lock",
+    "door_unlock": "door_unlock",
+    "climate_on": "auto_conditioning_start",
+    "climate_off": "auto_conditioning_stop",
+    "charge_start": "charge_start",
+    "charge_stop": "charge_stop",
+    "navigate": "share",
+}
 
 
-class TeslaProvider(AbstractAutomotiveProvider):
-    """
-    Automotive provider backed by the Tesla Owner API.
+class PRV_Tesla_Automotive(AbstractAutomotiveProvider):
+    name: ClassVar[str] = "tesla"
+    friendly_name: ClassVar[str] = "Tesla"
+    description: ClassVar[str] = "Tesla vehicles, through the Fleet API"
+    _env: ClassVar[Dict[str, Any]] = {
+        "TESLA_ACCESS_TOKEN": "",
+        "TESLA_API_URL": TESLA_FLEET_API,
+    }
 
-    A lightweight, directly-instantiated client: it holds the vehicle id and
-    OAuth access token and issues synchronous HTTP requests to the Tesla
-    Owner API. Requires the ``requests`` dependency (already required by the
-    extension) and, for token refresh/storage, the optional ``cryptography``
-    dependency.
-    """
+    @classmethod
+    def _vehicle(
+        cls, instance: ProviderInstanceModel, vehicle_id: str
+    ) -> Tuple[str, Dict[str, str]]:
+        """``(vehicle url, headers)``."""
+        if not vehicle_id.isdigit():
+            raise InvalidInputExternalError(
+                f"{vehicle_id!r} is not a Tesla vehicle id", provider=cls.name
+            )
+        token = cls.resolve_setting(
+            instance, "api_key", "TESLA_ACCESS_TOKEN", field="api_key"
+        )
+        if not token:
+            raise TransientExternalError(
+                "Tesla access token not configured", provider=cls.name
+            )
+        base = cls.resolve_setting(
+            instance, "api_url", "TESLA_API_URL", default=TESLA_FLEET_API
+        )
+        return (
+            f"{(base or TESLA_FLEET_API).rstrip('/')}/api/1/vehicles/{vehicle_id}",
+            {"Authorization": f"Bearer {token}"},
+        )
 
-    def get_platform_name(self) -> str:
-        return "Tesla"
+    @classmethod
+    async def _awake(cls, url: str, headers: Dict[str, str], call: Any) -> Any:
+        """``call()``; a sleeping vehicle is woken and the call fails over."""
+        try:
+            return await call()
+        except InvalidInputExternalError as exc:
+            if exc.upstream_status != HTTP_VEHICLE_ASLEEP:
+                raise
+            await cls.http().post(f"{url}/wake_up", headers=headers)
+            raise TransientExternalError(
+                "The vehicle was asleep and is waking; try again shortly",
+                provider=cls.name,
+            ) from exc
 
-    def _client(self) -> Any:
-        import requests
+    @classmethod
+    async def get_vehicle_info(
+        cls, instance: ProviderInstanceModel, vehicle_id: str
+    ) -> Dict[str, Any]:
+        url, headers = cls._vehicle(instance, vehicle_id)
+        answer = await cls._awake(
+            url, headers, lambda: cls.get_json(f"{url}/vehicle_data", headers=headers)
+        )
+        data = answer.get("response") or {}
+        charge = data.get("charge_state") or {}
+        return {
+            "vehicle_id": vehicle_id,
+            "name": data.get("display_name", ""),
+            "state": data.get("state", ""),
+            "battery_level": charge.get("battery_level"),
+            "range_miles": charge.get("battery_range"),
+            "charging_state": charge.get("charging_state"),
+            "locked": (data.get("vehicle_state") or {}).get("locked"),
+            "provider": cls.name,
+        }
 
-        session = requests.Session()
-        session.headers.update(
-            {
-                "Authorization": f"Bearer {self.access_token}",
-                "Content-Type": "application/json",
+    @classmethod
+    async def command(
+        cls,
+        instance: ProviderInstanceModel,
+        vehicle_id: str,
+        command: str,
+        payload: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        endpoint = _COMMANDS.get(command)
+        if endpoint is None:
+            raise InvalidInputExternalError(
+                f"Unknown command {command!r}", provider=cls.name
+            )
+        url, headers = cls._vehicle(instance, vehicle_id)
+
+        async def post(name: str, body: Dict[str, Any]) -> Dict[str, Any]:
+            answer: Dict[str, Any] = await cls.http().post(
+                f"{url}/command/{name}", json=body, headers=headers
+            )
+            result = answer.get("response") or {}
+            if not result.get("result", False):
+                raise InvalidInputExternalError(
+                    f"Tesla refused {name}: {result.get('reason', 'no reason given')}",
+                    provider=cls.name,
+                )
+            return result
+
+        if command == "climate_on":
+            temperature = payload["temperature"]
+            await cls._awake(
+                url,
+                headers,
+                lambda: post(
+                    "set_temps",
+                    {"driver_temp": temperature, "passenger_temp": temperature},
+                ),
+            )
+        body: Dict[str, Any] = {}
+        if command == "navigate":
+            body = {
+                "type": "share_ext_content_raw",
+                "locale": "en-US",
+                "timestamp_ms": "0",
+                "value": {"android.intent.extra.TEXT": payload["address"]},
             }
-        )
-        return session
-
-    def _vehicle_url(self, path: str) -> str:
-        return f"{TESLA_API_BASE_URL}/vehicles/{self.vehicle_id}/{path}"
-
-    def get_vehicle_info(self) -> str:
-        response = self._client().get(self._vehicle_url("vehicle_data"))
-        response.raise_for_status()
-        data = response.json().get("response", {}) or {}
-
-        charge_state = data.get("charge_state", {}) or {}
-        display_name = data.get("display_name", "Tesla vehicle")
-        battery_level = charge_state.get("battery_level")
-        battery_range = charge_state.get("battery_range")
-
-        details = [display_name]
-        if battery_level is not None:
-            details.append(f"Battery: {battery_level}%")
-        if battery_range is not None:
-            details.append(f"Range: {battery_range} miles")
-
-        return " - ".join(details) if len(details) > 1 else details[0]
-
-    def lock_doors(self) -> str:
-        response = self._client().post(self._vehicle_url("command/door_lock"))
-        response.raise_for_status()
-        return "Vehicle doors locked"
-
-    def unlock_doors(self) -> str:
-        response = self._client().post(self._vehicle_url("command/door_unlock"))
-        response.raise_for_status()
-        return "Vehicle doors unlocked"
-
-    def set_climate(self, temperature: float, enabled: bool = True) -> str:
-        client = self._client()
-        command = "auto_conditioning_start" if enabled else "auto_conditioning_stop"
-        response = client.post(self._vehicle_url(f"command/{command}"))
-        response.raise_for_status()
-        response = client.post(
-            self._vehicle_url("command/set_temps"),
-            json={"driver_temp": temperature, "passenger_temp": temperature},
-        )
-        response.raise_for_status()
-        return f"Climate set to {temperature}°C"
-
-    def start_charging(self) -> str:
-        response = self._client().post(self._vehicle_url("command/charge_start"))
-        response.raise_for_status()
-        return "Charging started"
-
-    def stop_charging(self) -> str:
-        response = self._client().post(self._vehicle_url("command/charge_stop"))
-        response.raise_for_status()
-        return "Charging stopped"
-
-    def navigate_to(self, address: str) -> str:
-        response = self._client().post(
-            self._vehicle_url("command/navigation_request"),
-            json={"type": "share_ext_content_raw", "locale": "en-US", "value": {"android.intent.extra.TEXT": address}},
-        )
-        response.raise_for_status()
-        return f"Navigation set to {address}"
+        await cls._awake(url, headers, lambda: post(endpoint, body))
+        return {
+            "vehicle_id": vehicle_id,
+            "command": command,
+            "done": True,
+            "provider": cls.name,
+        }
