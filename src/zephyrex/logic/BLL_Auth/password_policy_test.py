@@ -22,8 +22,20 @@ from zephyrex.logic.BLL_Auth.password_policy import (
         ("        ", ["min_length", "require_letter", "require_digit"]),
         (None, ["min_length", "require_letter", "require_digit"]),
         ("a1" + "é" * 40, ["max_bytes"]),  # 82 UTF-8 bytes in 42 characters
+        ("password²", ["require_digit"]),  # a superscript is not a digit
+        ("pässwörd٣", []),  # Arabic-Indic three is a decimal digit (Nd)
     ],
-    ids=["ok", "short", "no-digit", "no-letter", "blank", "missing", "over-bcrypt"],
+    ids=[
+        "ok",
+        "short",
+        "no-digit",
+        "no-letter",
+        "blank",
+        "missing",
+        "over-bcrypt",
+        "superscript",
+        "other-script",
+    ],
 )
 def test_failed_rules(password, failed):
     assert failed_rules(password) == failed

@@ -41,7 +41,8 @@ def failed_rules(
         failed.append("max_bytes")
     if policy.require_letter and not any(c.isalpha() for c in text):
         failed.append("require_letter")
-    if policy.require_digit and not any(c.isdigit() for c in text):
+    # A decimal digit (Unicode Nd): isdigit() would also take superscripts.
+    if policy.require_digit and not any(c.isdecimal() for c in text):
         failed.append("require_digit")
     return failed
 

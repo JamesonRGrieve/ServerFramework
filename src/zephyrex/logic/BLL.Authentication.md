@@ -173,7 +173,7 @@ credentials_manager.change_password(
 is_valid = user_manager.verify_password(user_id, password)
 ```
 
-Every password write (register, change-password, any credential create or update) meets one policy, `BLL_Auth/password_policy.py`: at least 8 characters, a letter and a digit, and at most 72 UTF-8 bytes (bcrypt's input limit). Register checks it before creating the user row, so a refused password leaves no account behind. A refusal is `422 {"detail": {"message": "Password does not meet the policy", "failed": [...]}}`, naming the broken rules from `min_length`, `max_bytes`, `require_letter`, `require_digit`. `GET /v1/user/password-policy` (public, REST only) serves the policy as `{min_length, max_bytes, require_letter, require_digit}` so a client can check before submitting.
+Every password write (register, change-password, any credential create or update) meets one policy, `BLL_Auth/password_policy.py`: at least 8 characters, a letter (Unicode L) and a decimal digit (Unicode Nd; superscripts do not count), and at most 72 UTF-8 bytes (bcrypt's input limit). Register checks it before creating the user row, so a refused password leaves no account behind. A refusal is `422 {"detail": {"message": "Password does not meet the policy", "failed": [...]}}`, naming the broken rules from `min_length`, `max_bytes`, `require_letter`, `require_digit`. `GET /v1/user/password-policy` (public, REST only) serves the policy as `{min_length, max_bytes, require_letter, require_digit}` so a client can check before submitting.
 
 ### User Metadata & Preferences
 ```python
