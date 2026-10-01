@@ -148,11 +148,10 @@ class AbstractPaymentProvider(AbstractStaticProvider):
         is computed — the single empty-signature policy now shared by every
         payment provider.
 
-        This is the one true implementation behind Square, PayPal, Moneris, and
-        Helcim webhook verification. It replaces four hand-rolled
-        ``hmac.new(...).hexdigest()`` + ``compare_digest`` copies that had
-        diverged — Square, in particular, had no empty-signature guard. (Stripe
-        verifies via the vendor SDK's ``construct_event`` and does not use this.)
+        This is the one implementation behind PayPal, Moneris, and Helcim
+        webhook verification, replacing hand-rolled copies that had diverged.
+        Stripe and Square verify with their SDKs' own checks (Square signs the
+        notification URL with the body, base64), not this.
         """
         if not signature:
             return False

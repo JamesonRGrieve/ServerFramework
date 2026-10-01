@@ -13,11 +13,11 @@ from typing import Any, ClassVar, Dict, List, Optional
 from zephyrex.extensions.database.EXT_Database import (
     SQL_CHAT_GUIDANCE,
     AbstractDatabaseExtensionProvider as AbstractDatabaseProvider,
-    driver_installed,
 )
+from zephyrex.lib.Dependencies import importable
 from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 
-_psycopg2_available = driver_installed("psycopg2")
+_psycopg2_available = importable("psycopg2")
 
 POSTGRES_DEFAULT_PORT = 5432
 

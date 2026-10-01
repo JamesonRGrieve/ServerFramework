@@ -12,9 +12,8 @@ from typing import Any, ClassVar, Dict, List, Optional
 from zephyrex.extensions.database.EXT_Database import (
     SQL_CHAT_GUIDANCE,
     AbstractDatabaseExtensionProvider as AbstractDatabaseProvider,
-    driver_installed,
 )
-from zephyrex.lib.Dependencies import Dependencies, PIP_Dependency
+from zephyrex.lib.Dependencies import Dependencies, PIP_Dependency, importable
 from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 
 MYSQL_DEFAULT_PORT = 3306
@@ -28,7 +27,7 @@ class PRV_MySQL(AbstractDatabaseProvider):
     description: ClassVar[str] = "MySQL relational database provider"
     db_type: ClassVar[str] = "mysql"
 
-    _driver_available: ClassVar[bool] = driver_installed("mysql.connector")
+    _driver_available: ClassVar[bool] = importable("mysql.connector")
 
     dependencies: ClassVar[Dependencies] = Dependencies(
         [

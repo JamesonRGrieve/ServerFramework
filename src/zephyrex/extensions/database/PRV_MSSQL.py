@@ -12,12 +12,11 @@ from typing import Any, ClassVar, Dict, List, Optional
 from zephyrex.extensions.database.EXT_Database import (
     SQL_CHAT_GUIDANCE,
     AbstractDatabaseExtensionProvider as AbstractDatabaseProvider,
-    driver_installed,
 )
-from zephyrex.lib.Dependencies import Dependencies, PIP_Dependency
+from zephyrex.lib.Dependencies import Dependencies, PIP_Dependency, importable
 from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 
-_pyodbc_available = driver_installed("pyodbc")
+_pyodbc_available = importable("pyodbc")
 
 MSSQL_DEFAULT_PORT = 1433
 MSSQL_DEFAULT_ODBC_DRIVER = "ODBC Driver 18 for SQL Server"

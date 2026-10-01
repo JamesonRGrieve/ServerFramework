@@ -14,12 +14,12 @@ from typing import Any, ClassVar, Dict, List, Optional
 
 from zephyrex.extensions.database.EXT_Database import (
     AbstractDatabaseExtensionProvider as AbstractDatabaseProvider,
-    driver_installed,
 )
 from zephyrex.extensions.ExternalErrors import InvalidInputExternalError
+from zephyrex.lib.Dependencies import importable
 from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 
-_pymongo_available = driver_installed("pymongo")
+_pymongo_available = importable("pymongo")
 
 MONGODB_DEFAULT_PORT = 27017
 MONGODB_DEFAULT_FIND_LIMIT = 25

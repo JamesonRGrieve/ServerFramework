@@ -6,6 +6,7 @@ and to manage system and Python package dependencies.
 import os
 import platform
 import shutil
+import importlib
 import subprocess
 import sys
 from abc import ABC, abstractmethod
@@ -43,6 +44,17 @@ except ImportError:
     class Resolver:  # type: ignore[no-redef]
         def __init__(self, provider, reporter=None):
             pass
+
+
+def importable(module: str) -> bool:
+    """Whether a provider's optional SDK or driver ``module`` imports.
+    Installed is not enough: pyodbc installs without unixODBC and then fails
+    to load. The provider imports the module again, typed, where it uses it."""
+    try:
+        importlib.import_module(module)
+    except ImportError:
+        return False
+    return True
 
 
 # Common utility function for executing shell commands

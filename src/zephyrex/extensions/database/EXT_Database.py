@@ -1,5 +1,4 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-import importlib
 from abc import abstractmethod
 from typing import Any, ClassVar, Dict, List, Optional, Sequence, Set, Type
 
@@ -21,17 +20,6 @@ from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 from zephyrex.pydantic2.registry import classproperty
 
 SQL_CHAT_GUIDANCE = "Convert your request to SQL and use execute_sql to run it."
-
-
-def driver_installed(module: str) -> bool:
-    """Whether a provider's optional driver ``module`` imports. Installed is
-    not enough: pyodbc installs without unixODBC and then fails to load. The
-    provider imports the driver again, typed, where it connects."""
-    try:
-        importlib.import_module(module)
-    except ImportError:
-        return False
-    return True
 
 
 class DatabaseConnection(AbstractProviderInstance):

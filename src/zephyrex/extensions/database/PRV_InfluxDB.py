@@ -15,14 +15,14 @@ from typing import Any, ClassVar, Dict, List, Optional
 
 from zephyrex.extensions.database.EXT_Database import (
     AbstractDatabaseExtensionProvider as AbstractDatabaseProvider,
-    driver_installed,
 )
 from zephyrex.extensions.ExternalErrors import TransientExternalError
+from zephyrex.lib.Dependencies import importable
 from zephyrex.lib.Logging import logger
 from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 
-has_influxdb1 = driver_installed("influxdb")
-has_influxdb2 = driver_installed("influxdb_client")
+has_influxdb1 = importable("influxdb")
+has_influxdb2 = importable("influxdb_client")
 
 INFLUXDB_DEFAULT_VERSION = "2"
 INFLUXDB_DEFAULT_PORT = 8086

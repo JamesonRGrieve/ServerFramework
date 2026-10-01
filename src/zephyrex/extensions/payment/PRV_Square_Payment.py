@@ -2,26 +2,21 @@
 """Square payment provider for zephyrex.
 
 Provides payment processing, customer management, and webhook handling
-through Square's API. Fully static implementation compatible with the
-Provider Rotation System.
+through Square's API (the ``squareup`` SDK, v42 and later). Fully static
+implementation compatible with the Provider Rotation System.
+
+The SDK raises ``square.core.api_error.ApiError`` for a refused request and
+returns typed responses; each call here reports either as the provider's
+``{"success": ...}`` dict.
 """
 
 from __future__ import annotations
 
-from typing import Any, ClassVar, Dict, List, Optional
+import json
+import uuid
+from typing import Any, Callable, ClassVar, Dict, List, Optional
 
-try:
-    from square.client import Client as SquareClient
-except ImportError:
-    SquareClient = None
-    import warnings
-
-    warnings.warn(
-        "Square package currently missing, but in PIP_Dependencies, will likely install on run",
-        ImportWarning,
-    )
-
-from pydantic import BaseModel, Field
+from pydantic import Field
 
 from zephyrex.extensions.AbstractExtensionProvider import AbstractProviderInstance_SDK
 from zephyrex.extensions.AbstractExternalModel import (
@@ -32,12 +27,67 @@ from zephyrex.extensions.payment.EXT_Payment import (
     AbstractPaymentProvider,
     PassthroughExternalModel,
 )
-from zephyrex.lib.Dependencies import Dependencies, PIP_Dependency
+from zephyrex.lib.Dependencies import Dependencies, PIP_Dependency, importable
 from zephyrex.lib.Environment import env
 from zephyrex.lib.Logging import logger
-from zephyrex.pydantic2.registry import BaseModel
 from zephyrex.logic.AbstractLogicManager import ModelMeta
 from zephyrex.logic.BLL_Providers import ProviderInstanceModel
+from zephyrex.pydantic2.registry import BaseModel
+
+SQUARE_ENVIRONMENTS = ("sandbox", "production")
+
+
+def _square_dict(model: Any) -> Dict[str, Any]:
+    """A Square SDK model as the JSON object Square's API documents."""
+    if model is None:
+        return {}
+    dumped: Dict[str, Any] = model.model_dump(mode="json", exclude_none=True)
+    return dumped
+
+
+def _error_message(error: Exception) -> str:
+    """What a caller is told of a failed Square call: for a refusal, its
+    status and Square's error details, never the response headers."""
+    from square.core.api_error import ApiError
+
+    if not isinstance(error, ApiError):
+        return str(error)
+    body = error.body if isinstance(error.body, dict) else {}
+    details = [
+        e.get("detail") or e.get("code", "")
+        for e in body.get("errors", [])
+        if isinstance(e, dict)
+    ]
+    return f"Square refused the request ({error.status_code}): " + (
+        "; ".join(d for d in details if d) or "no detail"
+    )
+
+
+def _with_bonded_client(
+    provider_instance: Any, call: Callable[[Any], Dict[str, Any]]
+) -> Dict[str, Any]:
+    """``call`` with the instance's bonded Square client, as a result."""
+    try:
+        bonded = PaymentExtensionSquareProvider.bond_instance(provider_instance)
+        if not bonded or not bonded.sdk:
+            return {"success": False, "error": "Failed to bond provider instance"}
+        return {"success": True, **call(bonded.sdk)}
+    except Exception as e:
+        message = _error_message(e)
+        logger.error("Square call failed: %s", message)
+        return {"success": False, "error": message}
+
+
+def _customer_summary(customer: Dict[str, Any]) -> Dict[str, Any]:
+    name = f"{customer.get('given_name', '')} {customer.get('family_name', '')}"
+    return {
+        "success": True,
+        "customer_id": customer.get("id"),
+        "email": customer.get("email_address"),
+        "name": name.strip(),
+        "phone": customer.get("phone_number"),
+    }
+
 
 # ============================================================================
 # Square Customer External Model
@@ -100,82 +150,61 @@ class Square_CustomerModel(PassthroughExternalModel, metaclass=ModelMeta):
         offset: Optional[int] = None,
         order_by: Optional[List] = None,
     ) -> Dict[str, Any]:
-        external_params = {}
-        for field, value in query_params.items():
-            external_params[field] = value
+        external_params = dict(query_params)
         if limit:
             external_params["limit"] = min(limit, 100)
         return external_params
 
     @staticmethod
     def create_via_provider(provider_instance, **kwargs) -> Dict[str, Any]:
-        try:
-            bonded = PaymentExtensionSquareProvider.bond_instance(provider_instance)
-            if not bonded or not bonded.sdk:
-                return {"success": False, "error": "Failed to bond provider instance"}
-            result = bonded.sdk.customers.create_customer(body=kwargs)
-            if result.is_success():
-                customer = result.body.get("customer", {})
-                return {"success": True, "data": customer}
-            return {"success": False, "error": str(result.errors)}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
+        return _with_bonded_client(
+            provider_instance,
+            lambda sdk: {"data": _square_dict(sdk.customers.create(**kwargs).customer)},
+        )
 
     @staticmethod
     def get_via_provider(provider_instance, external_id: str) -> Dict[str, Any]:
-        try:
-            bonded = PaymentExtensionSquareProvider.bond_instance(provider_instance)
-            if not bonded or not bonded.sdk:
-                return {"success": False, "error": "Failed to bond provider instance"}
-            result = bonded.sdk.customers.retrieve_customer(customer_id=external_id)
-            if result.is_success():
-                return {"success": True, "data": result.body.get("customer", {})}
-            return {"success": False, "error": str(result.errors)}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
+        return _with_bonded_client(
+            provider_instance,
+            lambda sdk: {
+                "data": _square_dict(
+                    sdk.customers.get(customer_id=external_id).customer
+                )
+            },
+        )
 
     @staticmethod
     def list_via_provider(provider_instance, **kwargs) -> Dict[str, Any]:
-        try:
-            bonded = PaymentExtensionSquareProvider.bond_instance(provider_instance)
-            if not bonded or not bonded.sdk:
-                return {"success": False, "error": "Failed to bond provider instance"}
-            result = bonded.sdk.customers.list_customers(**kwargs)
-            if result.is_success():
-                return {"success": True, "data": result.body.get("customers", [])}
-            return {"success": False, "error": str(result.errors)}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
+        return _with_bonded_client(
+            provider_instance,
+            lambda sdk: {
+                "data": [
+                    _square_dict(customer)
+                    for customer in sdk.customers.list(**kwargs).items or []
+                ]
+            },
+        )
 
     @staticmethod
     def update_via_provider(
         provider_instance, external_id: str, **kwargs
     ) -> Dict[str, Any]:
-        try:
-            bonded = PaymentExtensionSquareProvider.bond_instance(provider_instance)
-            if not bonded or not bonded.sdk:
-                return {"success": False, "error": "Failed to bond provider instance"}
-            result = bonded.sdk.customers.update_customer(
-                customer_id=external_id, body=kwargs
-            )
-            if result.is_success():
-                return {"success": True, "data": result.body.get("customer", {})}
-            return {"success": False, "error": str(result.errors)}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
+        return _with_bonded_client(
+            provider_instance,
+            lambda sdk: {
+                "data": _square_dict(
+                    sdk.customers.update(customer_id=external_id, **kwargs).customer
+                )
+            },
+        )
 
     @staticmethod
     def delete_via_provider(provider_instance, external_id: str) -> Dict[str, Any]:
-        try:
-            bonded = PaymentExtensionSquareProvider.bond_instance(provider_instance)
-            if not bonded or not bonded.sdk:
-                return {"success": False, "error": "Failed to bond provider instance"}
-            result = bonded.sdk.customers.delete_customer(customer_id=external_id)
-            if result.is_success():
-                return {"success": True}
-            return {"success": False, "error": str(result.errors)}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
+        def delete(sdk: Any) -> Dict[str, Any]:
+            sdk.customers.delete(customer_id=external_id)
+            return {}
+
+        return _with_bonded_client(provider_instance, delete)
 
 
 # ============================================================================
@@ -226,16 +255,16 @@ class PaymentExtensionSquareProvider(AbstractPaymentProvider):
     _currency_env_var: ClassVar[str] = "SQUARE_CURRENCY"
     _default_currency: ClassVar[str] = "USD"
 
-    _square_client = None
-    _square_available = False
+    _square_client: ClassVar[Any] = None
+    _square_available: ClassVar[bool] = False
 
     dependencies = Dependencies(
         [
             PIP_Dependency(
                 name="squareup",
                 friendly_name="Square Python SDK",
-                # square.client.Client is the pre-42 SDK; 42 replaced it.
-                semver=">=37.0.0,<42",
+                # square.Square, its client since v42.
+                semver=">=42.0.0",
                 reason="Square payment provider support",
             ),
         ]
@@ -244,16 +273,33 @@ class PaymentExtensionSquareProvider(AbstractPaymentProvider):
     _env = {
         "SQUARE_ACCESS_TOKEN": "",
         "SQUARE_APP_ID": "",
+        "SQUARE_LOCATION_ID": "",
         "SQUARE_WEBHOOK_SIGNATURE_KEY": "",
+        "SQUARE_WEBHOOK_NOTIFICATION_URL": "",
         "SQUARE_ENVIRONMENT": "sandbox",
         "SQUARE_CURRENCY": "USD",
     }
 
     @classmethod
+    def _new_client(cls, access_token: str) -> Any:
+        """A Square client for ``access_token`` in SQUARE_ENVIRONMENT."""
+        from square import Square
+        from square.environment import SquareEnvironment
+
+        square_env = (env("SQUARE_ENVIRONMENT") or "sandbox").strip().lower()
+        if square_env not in SQUARE_ENVIRONMENTS:
+            raise ValueError(
+                f"SQUARE_ENVIRONMENT must be one of {', '.join(SQUARE_ENVIRONMENTS)}"
+            )
+        return Square(
+            token=access_token, environment=SquareEnvironment[square_env.upper()]
+        )
+
+    @classmethod
     def bond_instance(
         cls, instance: ProviderInstanceModel
     ) -> Optional[AbstractProviderInstance_SDK]:
-        if SquareClient is None:
+        if not importable("square"):
             logger.warning("Square library not available for bonding")
             return None
         try:
@@ -265,38 +311,31 @@ class PaymentExtensionSquareProvider(AbstractPaymentProvider):
             if not access_token:
                 logger.error("No access token available for Square provider instance")
                 return None
-            square_env = env("SQUARE_ENVIRONMENT") or "sandbox"
-            client = SquareClient(access_token=access_token, environment=square_env)
-            return AbstractProviderInstance_SDK(client)
+            return AbstractProviderInstance_SDK(cls._new_client(access_token))
         except Exception as e:
             logger.error("Failed to bond Square provider instance: %s", e)
             return None
 
     @classmethod
     def _configure_square(cls) -> None:
-        if SquareClient is None:
-            cls._square_available = False
-            cls._square_client = None
+        cls._square_available = False
+        cls._square_client = None
+        access_token = cls.get_access_token()
+        if not (importable("square") and access_token):
             return
         try:
-            access_token = cls.get_access_token()
-            if access_token:
-                square_env = env("SQUARE_ENVIRONMENT") or "sandbox"
-                cls._square_client = SquareClient(
-                    access_token=access_token, environment=square_env
-                )
-                cls._square_available = True
-            else:
-                cls._square_available = False
+            cls._square_client = cls._new_client(access_token)
+            cls._square_available = True
         except Exception as e:
-            cls._square_available = False
             logger.error("Failed to configure Square: %s", e)
 
     @classmethod
-    def _get_square_client(cls):
+    def _get_square_client(cls) -> Any:
         if not cls._square_available:
             cls._configure_square()
-        return cls._square_client if cls._square_available else None
+        if not cls._square_available:
+            raise Exception("Square client not configured")
+        return cls._square_client
 
     @classmethod
     def get_access_token(cls) -> Optional[str]:
@@ -309,6 +348,12 @@ class PaymentExtensionSquareProvider(AbstractPaymentProvider):
     @classmethod
     def get_webhook_signature_key(cls) -> Optional[str]:
         return env("SQUARE_WEBHOOK_SIGNATURE_KEY")
+
+    @classmethod
+    def get_webhook_notification_url(cls) -> Optional[str]:
+        """The URL Square posts this subscription's webhooks to: Square signs
+        it together with the body."""
+        return env("SQUARE_WEBHOOK_NOTIFICATION_URL")
 
     @classmethod
     def validate_config(cls) -> bool:
@@ -325,6 +370,19 @@ class PaymentExtensionSquareProvider(AbstractPaymentProvider):
         return ["payment", "subscription", "commerce"]
 
     @classmethod
+    def _call(
+        cls, action: str, call: Callable[[Any], Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """``call`` with the configured client; a refusal or failure is the
+        provider's error result."""
+        client = cls._get_square_client()
+        try:
+            return {"success": True, **call(client)}
+        except Exception as e:
+            message = _error_message(e)
+            logger.error("Square %s failed: %s", action, message)
+            return {"success": False, "error": message}
+
     @classmethod
     def create_payment(
         cls,
@@ -336,67 +394,49 @@ class PaymentExtensionSquareProvider(AbstractPaymentProvider):
         description: Optional[str] = None,
         metadata: Optional[Dict] = None,
     ) -> Dict:
-        client = cls._get_square_client()
-        if not client:
-            raise Exception("Square client not configured")
-        try:
-            import uuid
+        request: Dict[str, Any] = {
+            "idempotency_key": str(uuid.uuid4()),
+            "amount_money": {
+                "amount": cls.to_minor_units(amount, currency),
+                "currency": currency.upper(),
+            },
+            "source_id": payment_method_id or "EXTERNAL",
+        }
+        if customer_id:
+            request["customer_id"] = customer_id
+        if description:
+            request["note"] = description
 
-            body: Dict[str, Any] = {
-                "idempotency_key": str(uuid.uuid4()),
-                "amount_money": {
-                    "amount": cls.to_minor_units(amount, currency),
-                    "currency": currency.upper(),
-                },
-                "source_id": payment_method_id or "EXTERNAL",
+        def create(client: Any) -> Dict[str, Any]:
+            payment = _square_dict(client.payments.create(**request).payment)
+            return {
+                "payment_id": payment.get("id"),
+                "amount": amount,
+                "currency": currency,
+                "status": payment.get("status"),
             }
-            if customer_id:
-                body["customer_id"] = customer_id
-            if description:
-                body["note"] = description
-            result = client.payments.create_payment(body=body)
-            if result.is_success():
-                payment = result.body.get("payment", {})
-                return {
-                    "success": True,
-                    "payment_id": payment.get("id"),
-                    "amount": amount,
-                    "currency": currency,
-                    "status": payment.get("status"),
-                }
-            return {"success": False, "error": str(result.errors)}
-        except Exception as e:
-            logger.error("Error creating Square payment: %s", e)
-            return {"success": False, "error": str(e)}
+
+        return cls._call("payment creation", create)
 
     @classmethod
     def get_payment(
         cls, provider_instance: ProviderInstanceModel, payment_id: str
     ) -> Dict:
-        client = cls._get_square_client()
-        if not client:
-            raise Exception("Square client not configured")
-        try:
-            result = client.payments.get_payment(payment_id=payment_id)
-            if result.is_success():
-                payment = result.body.get("payment", {})
-                amount_money = payment.get("amount_money", {})
-                return {
-                    "success": True,
-                    "payment_id": payment.get("id"),
-                    "amount": float(
-                        cls.from_minor_units(
-                            amount_money.get("amount", 0),
-                            amount_money.get("currency"),
-                        )
-                    ),
-                    "currency": amount_money.get("currency", "USD"),
-                    "status": payment.get("status"),
-                }
-            return {"success": False, "error": str(result.errors)}
-        except Exception as e:
-            logger.error("Error getting Square payment %s: %s", payment_id, e)
-            return {"success": False, "error": str(e)}
+        def get(client: Any) -> Dict[str, Any]:
+            payment = _square_dict(client.payments.get(payment_id=payment_id).payment)
+            amount_money = payment.get("amount_money", {})
+            return {
+                "payment_id": payment.get("id"),
+                "amount": float(
+                    cls.from_minor_units(
+                        amount_money.get("amount", 0), amount_money.get("currency")
+                    )
+                ),
+                "currency": amount_money.get("currency", "USD"),
+                "status": payment.get("status"),
+            }
+
+        return cls._call(f"payment {payment_id} retrieval", get)
 
     @classmethod
     def refund_payment(
@@ -406,41 +446,42 @@ class PaymentExtensionSquareProvider(AbstractPaymentProvider):
         amount: Optional[float] = None,
         reason: Optional[str] = None,
     ) -> Dict:
-        client = cls._get_square_client()
-        if not client:
-            raise Exception("Square client not configured")
-        try:
-            import uuid
+        """Refund ``amount``, or with none the payment's whole amount: Square
+        requires the amount on every refund."""
 
-            body: Dict[str, Any] = {
-                "idempotency_key": str(uuid.uuid4()),
-                "payment_id": payment_id,
-            }
-            if amount is not None:
-                body["amount_money"] = {
+        def refund(client: Any) -> Dict[str, Any]:
+            if amount is None:
+                payment = _square_dict(
+                    client.payments.get(payment_id=payment_id).payment
+                )
+                amount_money = payment["amount_money"]
+            else:
+                amount_money = {
                     "amount": cls.to_minor_units(amount),
                     "currency": cls.get_default_currency(),
                 }
+            request: Dict[str, Any] = {
+                "idempotency_key": str(uuid.uuid4()),
+                "payment_id": payment_id,
+                "amount_money": amount_money,
+            }
             if reason:
-                body["reason"] = reason
-            result = client.refunds.refund_payment(body=body)
-            if result.is_success():
-                refund = result.body.get("refund", {})
-                refund_amount = refund.get("amount_money", {})
-                return {
-                    "success": True,
-                    "refund_id": refund.get("id"),
-                    "payment_id": payment_id,
-                    "amount": float(
-                        cls.from_minor_units(refund_amount.get("amount", 0))
-                    ),
-                    "reason": reason,
-                    "status": refund.get("status"),
-                }
-            return {"success": False, "error": str(result.errors)}
-        except Exception as e:
-            logger.error("Error refunding Square payment %s: %s", payment_id, e)
-            return {"success": False, "error": str(e)}
+                request["reason"] = reason
+            refunded = _square_dict(client.refunds.refund_payment(**request).refund)
+            refund_amount = refunded.get("amount_money", {})
+            return {
+                "refund_id": refunded.get("id"),
+                "payment_id": payment_id,
+                "amount": float(
+                    cls.from_minor_units(
+                        refund_amount.get("amount", 0), refund_amount.get("currency")
+                    )
+                ),
+                "reason": reason,
+                "status": refunded.get("status"),
+            }
+
+        return cls._call(f"refund of payment {payment_id}", refund)
 
     @classmethod
     def create_customer(
@@ -451,57 +492,33 @@ class PaymentExtensionSquareProvider(AbstractPaymentProvider):
         phone: Optional[str] = None,
         metadata: Optional[Dict] = None,
     ) -> Dict:
-        client = cls._get_square_client()
-        if not client:
-            raise Exception("Square client not configured")
-        try:
-            body: Dict[str, Any] = {"email_address": email}
-            if name:
-                parts = name.split(" ", 1)
-                body["given_name"] = parts[0]
-                if len(parts) > 1:
-                    body["family_name"] = parts[1]
-            if phone:
-                body["phone_number"] = phone
-            if metadata:
-                body["reference_id"] = metadata.get("user_id", "")
-            result = client.customers.create_customer(body=body)
-            if result.is_success():
-                customer = result.body.get("customer", {})
-                return {
-                    "success": True,
-                    "customer_id": customer.get("id"),
-                    "email": customer.get("email_address"),
-                    "name": f"{customer.get('given_name', '')} {customer.get('family_name', '')}".strip(),
-                    "phone": customer.get("phone_number"),
-                }
-            return {"success": False, "error": str(result.errors)}
-        except Exception as e:
-            logger.error("Error creating Square customer: %s", e)
-            return {"success": False, "error": str(e)}
+        request: Dict[str, Any] = {"email_address": email}
+        if name:
+            parts = name.split(" ", 1)
+            request["given_name"] = parts[0]
+            if len(parts) > 1:
+                request["family_name"] = parts[1]
+        if phone:
+            request["phone_number"] = phone
+        if metadata:
+            request["reference_id"] = metadata.get("user_id", "")
+        return cls._call(
+            "customer creation",
+            lambda client: _customer_summary(
+                _square_dict(client.customers.create(**request).customer)
+            ),
+        )
 
     @classmethod
     def get_customer(
         cls, provider_instance: ProviderInstanceModel, customer_id: str
     ) -> Dict:
-        client = cls._get_square_client()
-        if not client:
-            raise Exception("Square client not configured")
-        try:
-            result = client.customers.retrieve_customer(customer_id=customer_id)
-            if result.is_success():
-                customer = result.body.get("customer", {})
-                return {
-                    "success": True,
-                    "customer_id": customer.get("id"),
-                    "email": customer.get("email_address"),
-                    "name": f"{customer.get('given_name', '')} {customer.get('family_name', '')}".strip(),
-                    "phone": customer.get("phone_number"),
-                }
-            return {"success": False, "error": str(result.errors)}
-        except Exception as e:
-            logger.error("Error getting Square customer %s: %s", customer_id, e)
-            return {"success": False, "error": str(e)}
+        return cls._call(
+            f"customer {customer_id} retrieval",
+            lambda client: _customer_summary(
+                _square_dict(client.customers.get(customer_id=customer_id).customer)
+            ),
+        )
 
     @classmethod
     def create_subscription(
@@ -513,31 +530,24 @@ class PaymentExtensionSquareProvider(AbstractPaymentProvider):
         trial_days: Optional[int] = None,
         metadata: Optional[Dict] = None,
     ) -> Dict:
-        client = cls._get_square_client()
-        if not client:
-            raise Exception("Square client not configured")
-        try:
-            import uuid
+        request: Dict[str, Any] = {
+            "idempotency_key": str(uuid.uuid4()),
+            "location_id": env("SQUARE_LOCATION_ID") or "",
+            "customer_id": customer_id,
+            "plan_variation_id": price_id,
+        }
 
-            body: Dict[str, Any] = {
-                "idempotency_key": str(uuid.uuid4()),
-                "location_id": env("SQUARE_LOCATION_ID") or "",
-                "customer_id": customer_id,
-                "plan_variation_id": price_id,
+        def create(client: Any) -> Dict[str, Any]:
+            subscription = _square_dict(
+                client.subscriptions.create(**request).subscription
+            )
+            return {
+                "subscription_id": subscription.get("id"),
+                "customer_id": subscription.get("customer_id"),
+                "status": subscription.get("status"),
             }
-            result = client.subscriptions.create_subscription(body=body)
-            if result.is_success():
-                sub = result.body.get("subscription", {})
-                return {
-                    "success": True,
-                    "subscription_id": sub.get("id"),
-                    "customer_id": sub.get("customer_id"),
-                    "status": sub.get("status"),
-                }
-            return {"success": False, "error": str(result.errors)}
-        except Exception as e:
-            logger.error("Error creating Square subscription: %s", e)
-            return {"success": False, "error": str(e)}
+
+        return cls._call("subscription creation", create)
 
     @classmethod
     def cancel_subscription(
@@ -546,52 +556,57 @@ class PaymentExtensionSquareProvider(AbstractPaymentProvider):
         subscription_id: str,
         immediately: bool = False,
     ) -> Dict:
-        client = cls._get_square_client()
-        if not client:
-            raise Exception("Square client not configured")
-        try:
-            result = client.subscriptions.cancel_subscription(
-                subscription_id=subscription_id
+        def cancel(client: Any) -> Dict[str, Any]:
+            subscription = _square_dict(
+                client.subscriptions.cancel(
+                    subscription_id=subscription_id
+                ).subscription
             )
-            if result.is_success():
-                sub = result.body.get("subscription", {})
-                return {
-                    "success": True,
-                    "subscription_id": sub.get("id"),
-                    "status": sub.get("status"),
-                    "cancelled_immediately": immediately,
-                }
-            return {"success": False, "error": str(result.errors)}
-        except Exception as e:
-            logger.error(
-                "Error cancelling Square subscription %s: %s", subscription_id, e
-            )
-            return {"success": False, "error": str(e)}
+            return {
+                "subscription_id": subscription.get("id"),
+                "status": subscription.get("status"),
+                "cancelled_immediately": immediately,
+            }
+
+        return cls._call(f"cancellation of subscription {subscription_id}", cancel)
 
     @classmethod
     async def process_webhook(
         cls, provider_instance: ProviderInstanceModel, payload: str, signature: str
     ) -> Dict:
-        """Process a webhook from Square. Async to match the abstract interface."""
-        # Empty-signature guard, uniform with the other providers (#228): Square
-        # previously had none — an empty/missing signature can never be verified,
-        # so reject it up front before any HMAC computation.
+        """Process a webhook from Square. Async to match the abstract interface.
+
+        Square signs the subscription's notification URL followed by the body
+        (base64 HMAC-SHA256, ``x-square-hmacsha256-signature``); the SDK's
+        ``verify_signature`` checks it in constant time."""
+        # Empty-signature guard, uniform with the other providers (#228): an
+        # empty or missing signature can never be verified.
         if not signature:
             raise Exception("Webhook signature missing — cannot verify authenticity")
         sig_key = cls.get_webhook_signature_key()
         if not sig_key:
             return {"success": False, "error": "Webhook signature key not configured"}
+        notification_url = cls.get_webhook_notification_url()
+        if not notification_url:
+            return {
+                "success": False,
+                "error": "Webhook notification URL not configured",
+            }
         try:
-            import json
+            from square.utils.webhooks_helper import verify_signature
 
-            payload_bytes = payload if isinstance(payload, bytes) else payload.encode()
-            if not cls.verify_hmac_sha256(sig_key, payload_bytes, signature):
+            body = payload.decode() if isinstance(payload, bytes) else payload
+            if not verify_signature(
+                request_body=body,
+                signature_header=signature,
+                signature_key=sig_key,
+                notification_url=notification_url,
+            ):
                 return {"success": False, "error": "Invalid signature"}
-            event = json.loads(payload_bytes)
-            event_type = event.get("type", "unknown")
+            event = json.loads(body)
             return {
                 "success": True,
-                "event_type": event_type,
+                "event_type": event.get("type", "unknown"),
                 "event_id": event.get("event_id"),
                 "processed": True,
             }

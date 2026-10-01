@@ -15,15 +15,15 @@ from typing import Any, ClassVar, Dict, List, Optional
 
 from zephyrex.extensions.database.EXT_Database import (
     AbstractDatabaseExtensionProvider as AbstractDatabaseProvider,
-    driver_installed,
 )
 from zephyrex.extensions.ExternalErrors import (
     InvalidInputExternalError,
     TransientExternalError,
 )
+from zephyrex.lib.Dependencies import importable
 from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 
-_gql_available = driver_installed("gql")
+_gql_available = importable("gql")
 
 GRAPHQL_DEFAULT_HOST = "localhost"
 GRAPHQL_DEFAULT_PORT = 4000
