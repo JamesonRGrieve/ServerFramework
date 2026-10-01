@@ -2,9 +2,10 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """The dependency-audit gate shared by the nightly audit and the release.
 
-Reads a ``pip-audit --format json`` report and fails on any finding at or
-above HIGH severity, writing those findings to ``gate-findings.json`` (and
-their count to ``$GITHUB_OUTPUT`` when set) for the workflow to report.
+Reads a ``pip-audit --format json`` report and fails on any known
+vulnerability, whatever its severity (pip-audit's report seldom carries
+one), writing the findings to ``gate-findings.json`` (and their count to
+``$GITHUB_OUTPUT`` when set) for the workflow to report.
 
 Usage:
     pip-audit -r requirements.lock --format json > audit-report.json
@@ -17,28 +18,22 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List
 
-SEVERITY_RANK = {"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "MODERATE": 2, "LOW": 1}
-GATE_RANK = SEVERITY_RANK["HIGH"]
 FINDINGS_FILE = "gate-findings.json"
 
 
 def gate_findings(report: Any) -> List[Dict[str, Any]]:
     dependencies = report.get("dependencies") if isinstance(report, dict) else report
-    findings = []
-    for dependency in dependencies or []:
-        for vulnerability in dependency.get("vulns") or []:
-            severity = (vulnerability.get("severity") or "UNKNOWN").upper()
-            if SEVERITY_RANK.get(severity, 0) >= GATE_RANK:
-                findings.append(
-                    {
-                        "package": dependency.get("name"),
-                        "version": dependency.get("version"),
-                        "id": vulnerability.get("id"),
-                        "severity": severity,
-                        "fix_versions": vulnerability.get("fix_versions") or [],
-                    }
-                )
-    return findings
+    return [
+        {
+            "package": dependency.get("name"),
+            "version": dependency.get("version"),
+            "id": vulnerability.get("id"),
+            "severity": (vulnerability.get("severity") or "UNKNOWN").upper(),
+            "fix_versions": vulnerability.get("fix_versions") or [],
+        }
+        for dependency in dependencies or []
+        for vulnerability in dependency.get("vulns") or []
+    ]
 
 
 def main(argv: List[str]) -> int:
@@ -50,11 +45,12 @@ def main(argv: List[str]) -> int:
         with open(output, "a") as handle:
             handle.write(f"count={len(findings)}\n")
     if findings:
-        print("HIGH+ vulnerabilities detected:")
+        print("Known vulnerabilities:")
         for finding in findings:
+            fixes = ", ".join(finding["fix_versions"]) or "no fix yet"
             print(
                 f"  - {finding['package']} {finding['version']} "
-                f"{finding['id']} ({finding['severity']})"
+                f"{finding['id']} ({finding['severity']}; fixed in {fixes})"
             )
     return 1 if findings else 0
 

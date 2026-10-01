@@ -5,15 +5,15 @@ name: Item 86 — pip-audit nightly + PR
 #   * nightly at 06:00 UTC,
 #   * on workflow_dispatch.
 #
-# Findings at or above HIGH severity fail the build and open an issue
-# (the `gh issue create` step is gated on the scheduled run so PRs do
-# not double-create issues).
+# Any known vulnerability fails the build and opens an issue (the
+# `gh issue create` step is gated on the scheduled run so PRs do not
+# double-create issues).
 
 on:
   pull_request:
     paths:
       - "requirements.lock"
-      - "src/pyproject.toml"
+      - "pyproject.toml"
   schedule:
     - cron: "0 6 * * *"
   workflow_dispatch: {}
@@ -24,7 +24,7 @@ permissions:
 
 jobs:
   audit:
-    name: pip-audit (HIGH+ gate)
+    name: pip-audit (any known vulnerability fails)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -47,7 +47,7 @@ jobs:
           # Always succeed at this step; the gate logic is below.
           exit 0
 
-      - name: Filter findings at HIGH+
+      - name: Gate on known vulnerabilities
         id: filter
         run: python scripts/audit_gate.py audit-report.json
 
@@ -57,7 +57,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh issue create \
-            --title "pip-audit: HIGH+ vulnerability detected ($(date -u +%Y-%m-%d))" \
+            --title "pip-audit: known vulnerability detected ($(date -u +%Y-%m-%d))" \
             --body-file gate-findings.json \
             --label security,supply-chain || true
 

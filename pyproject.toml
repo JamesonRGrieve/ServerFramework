@@ -12,7 +12,7 @@ authors = [
 ]
 license = "AGPL-3.0-or-later"
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 3 - Alpha",
     "Framework :: FastAPI",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",

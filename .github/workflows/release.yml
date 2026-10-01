@@ -77,7 +77,7 @@ jobs:
           cyclonedx-py requirements requirements.lock \
             --output-format JSON --output-file release/bom.json
 
-      - name: Audit dependencies (the nightly audit's HIGH+ gate)
+      - name: Audit dependencies (any known vulnerability fails)
         run: |
           pip-audit -r requirements.lock --format json > audit-report.json || true
           python scripts/audit_gate.py audit-report.json

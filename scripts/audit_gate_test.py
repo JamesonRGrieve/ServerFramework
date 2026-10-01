@@ -29,17 +29,21 @@ def _report(*severities):
 
 
 @pytest.mark.parametrize(
-    "severities, gated",
-    [
-        (["CRITICAL"], ["V-0"]),
-        (["high", "LOW"], ["V-0"]),
-        (["MEDIUM", "LOW", None], []),
-    ],
-    ids=["critical", "high-among-low", "below-high-or-unknown"],
+    "severities",
+    [["CRITICAL"], ["LOW"], [None], ["MEDIUM", "high", None]],
+    ids=["critical", "low", "no-severity", "mixed"],
 )
-def test_only_high_and_above_are_gated(severities, gated):
+def test_every_known_vulnerability_is_gated(severities):
+    """Any severity, or none: pip-audit's report seldom carries one, so a
+    severity threshold would let nearly everything through."""
     findings = audit_gate.gate_findings(_report(*severities))
-    assert [f["id"] for f in findings] == gated
+    assert [f["id"] for f in findings] == [f"V-{i}" for i in range(len(severities))]
+
+
+def test_a_clean_report_passes():
+    assert (
+        audit_gate.gate_findings({"dependencies": [{"name": "pkg", "vulns": []}]}) == []
+    )
 
 
 def test_main_writes_findings_and_fails_on_them(tmp_path, monkeypatch):
