@@ -63,7 +63,7 @@ def _installed_by_core() -> Set[str]:
     project = tomllib.loads(PYPROJECT.read_text())["project"]
     extras = project["optional-dependencies"]
     core = list(project["dependencies"])
-    for extra in ("cache", "mcp"):
+    for extra in ("cache", "mcp-server"):
         core += extras[extra]
     installed: Set[str] = set()
     for line in core:
