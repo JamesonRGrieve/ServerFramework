@@ -1,766 +1,164 @@
-from unittest.mock import MagicMock, patch
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""The wiki extension: its providers' configuration and safety, and real
+calls to Wikipedia, Fandom and Kanka (Kanka only with sandbox credentials;
+the public wikis xfail when the network is unreachable)."""
 
+import httpx
 import pytest
-import requests
 
-from zephyrex.extensions.wiki.EXT_Wiki import EXT_Wiki
-from zephyrex.extensions.wiki.PRV_Kanka import KankaProvider
+from zephyrex.extensions.ExternalErrors import (
+    InvalidInputExternalError,
+    TransientExternalError,
+)
+from zephyrex.extensions.wiki.EXT_Wiki import (
+    NO_SUMMARY,
+    EXT_Wiki,
+    first_paragraph,
+    host_label,
+    plain_text,
+)
+from zephyrex.extensions.wiki.PRV_Fandom import PRV_Fandom_Wiki
+from zephyrex.extensions.wiki.PRV_Kanka import PRV_Kanka_Wiki
+from zephyrex.extensions.wiki.PRV_Wikipedia import PRV_Wikipedia_Wiki
 
 
-class TestWikiExtension:
-    """
-    Test suite for the Wiki extension.
+def _online() -> bool:
+    try:
+        httpx.head("https://en.wikipedia.org", timeout=5)
+        return True
+    except httpx.HTTPError:
+        return False
 
-    Tests extension metadata/configuration, wiki provider creation and
-    integration (Wikipedia, Fandom), content abilities (search, article
-    retrieval, summarization), capability management, and extension
-    lifecycle/config validation.
-    """
 
-    @pytest.fixture
-    def extension(self):
-        """Create an EXT_Wiki instance for testing."""
-        return EXT_Wiki()
+online = pytest.mark.xfail(not _online(), reason="Wikipedia is unreachable")
 
-    @pytest.fixture
-    def mock_wiki_provider(self):
-        """Mock wiki provider."""
-        mock_provider = MagicMock()
-        mock_provider.search.return_value = [
-            {
-                "title": "Python (programming language)",
-                "snippet": "Python is a high-level programming language",
-                "url": "https://en.wikipedia.org/wiki/Python_(programming_language)",
-            }
-        ]
-        mock_provider.get_article.return_value = {
-            "title": "Python (programming language)",
-            "content": "Python is a high-level, general-purpose programming language...",
-            "url": "https://en.wikipedia.org/wiki/Python_(programming_language)",
-            "pageid": "23862",
-        }
-        mock_provider.get_summary.return_value = (
-            "Python is a programming language that lets you work quickly."
+
+class TestExtension:
+    def test_providers(self):
+        assert {p.name for p in EXT_Wiki.providers} == {"wikipedia", "fandom", "kanka"}
+
+    def test_abilities(self):
+        assert {"search_wiki", "get_wiki_article", "get_wiki_summary"} <= set(
+            EXT_Wiki.get_abilities()
         )
-        mock_provider.commands = {
-            "Search Wikipedia": mock_provider.search,
-            "Get Wikipedia Article": mock_provider.get_article,
-        }
-        return mock_provider
 
-    def test_extension_metadata(self, extension):
-        """Test extension metadata is correctly set."""
-        assert extension.name == "wiki"
-        assert extension.version == "1.0.0"
-        assert "Wiki content access extension" in extension.description
-        assert hasattr(extension, "ext_dependencies")
-        assert hasattr(extension, "pip_dependencies")
-        assert hasattr(extension, "sys_dependencies")
+    async def test_no_configured_provider_is_503(self, monkeypatch):
+        """No app attached: no root rotation to run an ability on."""
+        from fastapi import HTTPException
 
-    def test_dependencies(self, extension):
-        """Test that dependencies are properly structured."""
-        ext_deps = extension.ext_dependencies
-        assert len(ext_deps) == 1
+        from zephyrex.pydantic2.registry import ModelRegistry
 
-        dep_names = {dep.name for dep in ext_deps}
-        assert "labels" in dep_names
-        for dep in ext_deps:
-            if dep.name == "labels":
-                assert dep.optional is True
+        monkeypatch.setattr(ModelRegistry, "attached", classmethod(lambda cls: None))
+        with pytest.raises(HTTPException) as raised:
+            await EXT_Wiki.search_wiki("anything")
+        assert raised.value.status_code == 503
 
-        pip_deps = extension.pip_dependencies
-        assert len(pip_deps) == 2
 
-        pip_dep_names = {dep.name for dep in pip_deps}
-        assert "requests" in pip_dep_names
-        assert "wikipedia" in pip_dep_names
+class TestHelpers:
+    @pytest.mark.parametrize("label", ["en", "zh-yue", "simple", "harrypotter"])
+    def test_host_labels(self, label):
+        assert host_label(label, "language") == label
 
-        for dep in pip_deps:
-            if dep.name == "wikipedia":
-                assert dep.optional is True
-            elif dep.name == "requests":
-                assert dep.optional is False
+    @pytest.mark.parametrize(
+        "value", ["evil.example/#", "en.evil.example", "", "a b", "../x", "-en"]
+    )
+    def test_a_value_that_would_change_the_host_is_refused(self, value):
+        """language and wiki_domain become part of the hostname."""
+        with pytest.raises(InvalidInputExternalError):
+            host_label(value, "language")
 
-        assert isinstance(extension.sys_dependencies, list)
-        assert len(extension.sys_dependencies) == 0
+    def test_plain_text_and_first_paragraph(self):
+        assert plain_text("<p>Ada <b>Lovelace</b></p>") == "Ada Lovelace"
+        assert first_paragraph("\n\nFirst.\n\nSecond.") == "First."
+        assert first_paragraph("   ") == NO_SUMMARY
 
-    def test_capabilities(self, extension):
-        """Test extension capabilities are properly defined."""
-        expected_capabilities = {
-            "wiki_search",
-            "page_retrieval",
-            "content_parsing",
-            "multi_wiki",
-        }
-        assert set(extension.capabilities) == expected_capabilities
 
-    def test_initialization(self, extension):
-        """Test extension attributes are properly initialized."""
-        assert hasattr(extension, "wiki_platform")
-        assert hasattr(extension, "api_key")
-        assert hasattr(extension, "language")
-        assert hasattr(extension, "wiki_domain")
-        assert hasattr(extension, "provider")
-        assert hasattr(extension, "commands")
-        assert extension.provider is None
+class TestConfiguration:
+    def test_wikipedia_language_from_the_instance(self, provider_instance):
+        instance = provider_instance(PRV_Wikipedia_Wiki, settings={"language": "de"})
+        assert PRV_Wikipedia_Wiki.site(instance) == "https://de.wikipedia.org"
 
-    def test_default_configuration(self, extension):
-        """Test default configuration values."""
-        assert extension.wiki_platform == "wikipedia"
-        assert extension.api_key == ""
-        assert extension.language == "en"
-        assert extension.wiki_domain == ""
+    def test_wikipedia_language_defaults_to_english(self, provider_instance):
+        instance = provider_instance(PRV_Wikipedia_Wiki)
+        assert PRV_Wikipedia_Wiki.site(instance) == "https://en.wikipedia.org"
 
-    def test_db_tables(self, extension):
-        """Test database tables list."""
-        assert isinstance(extension.db_tables, list)
-        assert len(extension.db_tables) == 0
+    def test_a_hostile_wiki_domain_is_refused(self, provider_instance):
+        instance = provider_instance(
+            PRV_Fandom_Wiki, settings={"wiki_domain": "evil.example/#"}
+        )
+        with pytest.raises(InvalidInputExternalError):
+            PRV_Fandom_Wiki.site(instance)
 
-    @patch("zephyrex.extensions.wiki.EXT_Wiki.logger")
-    def test_on_initialize_success(self, mock_logger, extension):
-        """Test successful extension initialization."""
-        with patch.object(extension, "_create_provider"), patch.object(
-            extension, "_register_commands"
-        ):
-            result = extension.on_initialize()
-            assert result is True
-            mock_logger.debug.assert_called()
-
-    @patch("zephyrex.extensions.wiki.EXT_Wiki.logger")
-    def test_on_initialize_failure(self, mock_logger, extension):
-        """Test extension initialization failure handling."""
-        with patch.object(
-            extension, "_create_provider", side_effect=Exception("Test error")
-        ):
-            result = extension.on_initialize()
-            assert result is False
-            mock_logger.error.assert_called()
-
-    def test_create_provider_wikipedia_success(self, extension, mock_wiki_provider):
-        """Test successful Wikipedia provider creation."""
-        extension.wiki_platform = "wikipedia"
-
-        with patch(
-            "zephyrex.extensions.wiki.PRV_Wikipedia.WikipediaProvider",
-            return_value=mock_wiki_provider,
-        ):
-            extension._create_provider()
-
-            assert extension.provider is not None
-            assert extension.provider == mock_wiki_provider
-
-    def test_create_provider_fandom_success(self, extension, mock_wiki_provider):
-        """Test successful Fandom provider creation."""
-        extension.wiki_platform = "fandom"
-        extension.wiki_domain = "example"
-
-        with patch(
-            "zephyrex.extensions.wiki.PRV_Fandom.FandomProvider",
-            return_value=mock_wiki_provider,
-        ):
-            extension._create_provider()
-
-            assert extension.provider is not None
-            assert extension.provider == mock_wiki_provider
-
-    def test_create_provider_kanka_success(self, extension, mock_wiki_provider):
-        """Test successful Kanka provider creation."""
-        extension.wiki_platform = "kanka"
-        extension.api_key = "test-kanka-token"
-
-        with patch(
-            "zephyrex.extensions.wiki.PRV_Kanka.KankaProvider",
-            return_value=mock_wiki_provider,
-        ):
-            extension._create_provider()
-
-            assert extension.provider is not None
-            assert extension.provider == mock_wiki_provider
-
-    def test_create_provider_unsupported_platform(self, extension):
-        """Test provider creation with an unsupported platform."""
-        extension.wiki_platform = "unsupported"
-        extension._create_provider()
-
-        assert extension.provider is None
-
-    def test_create_provider_import_failure(self, extension):
-        """Test provider creation when the Wikipedia provider import/construction fails."""
-        with patch(
-            "zephyrex.extensions.wiki.PRV_Wikipedia.WikipediaProvider",
-            side_effect=ImportError("Mock import error"),
-        ):
-            extension._create_provider()
-
-            assert extension.provider is None
-
-    def test_wikipedia_provider_creation_parameters(
-        self, extension, mock_wiki_provider
+    async def test_kanka_without_a_campaign_fails_over(
+        self, provider_instance, set_env
     ):
-        """Test that the Wikipedia provider is created with correct parameters."""
-        extension.wiki_platform = "wikipedia"
-        extension.api_key = "test-api-key"
-        extension.language = "es"
-        extension.conversation_id = "test-conversation-id"
+        set_env("KANKA_CAMPAIGN_ID", "")
+        instance = provider_instance(PRV_Kanka_Wiki, api_key="token")
+        with pytest.raises(TransientExternalError, match="campaign_id"):
+            await PRV_Kanka_Wiki.search(instance, "dragon")
 
-        with patch(
-            "zephyrex.extensions.wiki.PRV_Wikipedia.WikipediaProvider",
-            return_value=mock_wiki_provider,
-        ) as mock_wikipedia_class:
-            extension._create_provider()
+    async def test_kanka_without_a_token_fails_over(self, provider_instance, set_env):
+        set_env("KANKA_API_TOKEN", "")
+        instance = provider_instance(PRV_Kanka_Wiki, settings={"campaign_id": "1"})
+        with pytest.raises(TransientExternalError, match="token"):
+            await PRV_Kanka_Wiki.search(instance, "dragon")
 
-            mock_wikipedia_class.assert_called_once_with(
-                api_key="test-api-key",
-                language="es",
-                wiki_domain="",
-                extension_id="wiki",
-                conversation_directory="test-conversation-id",
-            )
+    async def test_kanka_refuses_an_empty_search(self, provider_instance):
+        instance = provider_instance(
+            PRV_Kanka_Wiki, api_key="token", settings={"campaign_id": "1"}
+        )
+        with pytest.raises(InvalidInputExternalError):
+            await PRV_Kanka_Wiki.search(instance, "  ")
 
-    def test_register_commands_with_provider(self, extension, mock_wiki_provider):
-        """Test command registration with an available provider."""
-        extension.provider = mock_wiki_provider
-        extension._register_commands()
 
-        assert extension.commands == mock_wiki_provider.commands
-
-    def test_register_commands_without_provider(self, extension):
-        """Test command registration without a provider."""
-        extension.wiki_platform = "wikipedia"
-        extension.provider = None
-        extension._register_commands()
-
-        assert len(extension.commands) > 0
-        for command_name in extension.commands:
-            assert "WIKIPEDIA" in command_name
-
-    def test_capability_management(self, extension):
-        """Test capability management methods."""
-        extension.register_capability("test_capability")
-        assert "test_capability" in extension.capabilities
-
-        capabilities = extension.get_registered_capabilities()
-        assert isinstance(capabilities, set)
-        assert "test_capability" in capabilities
-
-        capabilities = extension.get_capabilities()
-        assert isinstance(capabilities, set)
-
-    def test_capability_registration_is_instance_scoped(self):
-        """Registering a capability on one instance must not leak to another."""
-        first = EXT_Wiki()
-        second = EXT_Wiki()
-
-        first.register_capability("instance_only_capability")
-
-        assert "instance_only_capability" in first.capabilities
-        assert "instance_only_capability" not in second.capabilities
-
-    @pytest.mark.asyncio
-    async def test_search_wiki_with_provider(self, extension, mock_wiki_provider):
-        """Test searching the wiki with a provider."""
-        extension.provider = mock_wiki_provider
-
-        result = await extension.search_wiki("Python programming")
-
-        assert isinstance(result, list)
-        assert result[0]["title"] == "Python (programming language)"
-        mock_wiki_provider.search.assert_called_once_with("Python programming", 5)
-
-    @pytest.mark.asyncio
-    async def test_search_wiki_without_provider(self, extension):
-        """Test searching the wiki without a provider."""
-        extension.provider = None
-
-        result = await extension.search_wiki("Python programming")
-
-        assert "No wiki provider available" in result
-
-    @pytest.mark.asyncio
-    async def test_search_wiki_error(self, extension, mock_wiki_provider):
-        """Test searching the wiki when the provider raises."""
-        mock_wiki_provider.search.side_effect = Exception("Provider error")
-        extension.provider = mock_wiki_provider
-
-        result = await extension.search_wiki("Python programming")
-
-        assert "Error searching wiki" in result
-
-    @pytest.mark.asyncio
-    async def test_get_wiki_article_success(self, extension, mock_wiki_provider):
-        """Test successful article retrieval."""
-        extension.provider = mock_wiki_provider
-
-        result = await extension.get_wiki_article("Python (programming language)")
-
-        assert result["title"] == "Python (programming language)"
-        mock_wiki_provider.get_article.assert_called_once_with(
-            "Python (programming language)"
+@online
+class TestWikipediaLive:
+    async def test_search(self, provider_instance):
+        results = await PRV_Wikipedia_Wiki.search(
+            provider_instance(PRV_Wikipedia_Wiki), "Ada Lovelace", limit=3
+        )
+        assert 0 < len(results) <= 3
+        assert any("Lovelace" in r["title"] for r in results)
+        assert all(
+            r["url"].startswith("https://en.wikipedia.org/wiki/") for r in results
         )
 
-    @pytest.mark.asyncio
-    async def test_get_wiki_article_without_provider(self, extension):
-        """Test article retrieval without a provider."""
-        extension.provider = None
+    async def test_article_and_summary(self, provider_instance):
+        instance = provider_instance(PRV_Wikipedia_Wiki)
+        article = await PRV_Wikipedia_Wiki.get_article(instance, "Ada Lovelace")
+        assert article["title"] == "Ada Lovelace"
+        assert "mathematician" in article["content"]
+        assert article["pageid"]
+        summary = await PRV_Wikipedia_Wiki.get_summary(instance, "Ada Lovelace")
+        assert "Lovelace" in summary and len(summary) < len(article["content"])
 
-        result = await extension.get_wiki_article("Test Page")
-
-        assert "No wiki provider available" in result
-
-    @pytest.mark.asyncio
-    async def test_get_wiki_article_error(self, extension, mock_wiki_provider):
-        """Test article retrieval when the provider raises."""
-        mock_wiki_provider.get_article.side_effect = Exception("Provider error")
-        extension.provider = mock_wiki_provider
-
-        result = await extension.get_wiki_article("Test Page")
-
-        assert "Error getting wiki article" in result
-
-    @pytest.mark.asyncio
-    async def test_get_wiki_summary_success(self, extension, mock_wiki_provider):
-        """Test successful summary retrieval."""
-        extension.provider = mock_wiki_provider
-
-        result = await extension.get_wiki_summary("Python (programming language)")
-
-        assert "Python is a programming language" in result
-        mock_wiki_provider.get_summary.assert_called_once_with(
-            "Python (programming language)"
+    async def test_a_missing_article_is_empty(self, provider_instance):
+        article = await PRV_Wikipedia_Wiki.get_article(
+            provider_instance(PRV_Wikipedia_Wiki), "Zx no such article qq9"
         )
+        assert article["content"] == "" and article["pageid"] == ""
 
-    @pytest.mark.asyncio
-    async def test_get_wiki_summary_without_provider(self, extension):
-        """Test summary retrieval without a provider."""
-        extension.provider = None
 
-        result = await extension.get_wiki_summary("Test Page")
-
-        assert "No wiki provider available" in result
-
-    @pytest.mark.asyncio
-    async def test_get_wiki_summary_error(self, extension, mock_wiki_provider):
-        """Test summary retrieval when the provider raises."""
-        mock_wiki_provider.get_summary.side_effect = Exception("Provider error")
-        extension.provider = mock_wiki_provider
-
-        result = await extension.get_wiki_summary("Test Page")
-
-        assert "Error getting wiki summary" in result
-
-    @pytest.mark.asyncio
-    async def test_wiki_operations_without_provider(self, extension):
-        """Test wiki operations without a provider."""
-        extension.provider = None
-
-        operations = [
-            extension.search_wiki("query"),
-            extension.get_wiki_article("Test Page"),
-            extension.get_wiki_summary("Test Page"),
-        ]
-
-        for operation in operations:
-            result = await operation
-            assert "No wiki provider available" in result
-
-    @pytest.mark.asyncio
-    async def test_no_provider_warning(self, extension):
-        """Test the no-provider warning message."""
-        extension.wiki_platform = "test"
-
-        result = await extension._no_provider_warning()
-
-        assert "No wiki provider available for test" in result
-
-    def test_lifecycle_methods(self, extension):
-        """Test extension lifecycle methods."""
-        assert extension.on_start() is True
-
-        extension.provider = MagicMock()
-        assert extension.on_stop() is True
-        assert extension.provider is None
-
-        extension.on_startup()
-        extension.on_shutdown()
-
-    def test_provider_cleanup_on_stop(self, extension, mock_wiki_provider):
-        """Test that the provider is cleaned up when the extension stops."""
-        extension.provider = mock_wiki_provider
-
-        result = extension.on_stop()
-
-        assert result is True
-        assert extension.provider is None
-
-    @patch("zephyrex.extensions.wiki.EXT_Wiki.logger")
-    def test_extension_startup_shutdown_hooks(self, mock_logger, extension):
-        """Test startup and shutdown hooks log the expected messages."""
-        extension.on_startup()
-        mock_logger.debug.assert_called_with("Wiki extension startup hook called")
-
-        extension.on_shutdown()
-        mock_logger.debug.assert_called_with("Wiki extension shutdown hook called")
-
-    def test_validate_config_all_available(self):
-        """Test configuration validation when all dependencies are available."""
-        with patch("builtins.__import__") as mock_import:
-            mock_import.return_value = MagicMock()
-
-            extension = EXT_Wiki(wiki_platform="wikipedia")
-            issues = extension.validate_config()
-
-            assert len(issues) == 0
-
-    def test_validate_config_missing_requests(self):
-        """Test configuration validation when requests is missing."""
-
-        def mock_import(name, *args, **kwargs):
-            if name == "requests":
-                raise ImportError("No module named 'requests'")
-            return MagicMock()
-
-        with patch("builtins.__import__", side_effect=mock_import):
-            extension = EXT_Wiki()
-            issues = extension.validate_config()
-
-            assert len(issues) >= 1
-            issue_text = " ".join(issues).lower()
-            assert "requests" in issue_text
-
-    def test_validate_config_unsupported_platform(self):
-        """Test configuration validation with an unsupported platform."""
-        with patch("builtins.__import__") as mock_import:
-            mock_import.return_value = MagicMock()
-
-            extension = EXT_Wiki(wiki_platform="unsupported")
-            issues = extension.validate_config()
-
-            assert len(issues) >= 1
-            issue_text = " ".join(issues).lower()
-            assert "unsupported" in issue_text
-
-    def test_validate_config_missing_fandom_domain(self):
-        """Test configuration validation with a missing Fandom wiki domain."""
-        with patch("builtins.__import__") as mock_import:
-            mock_import.return_value = MagicMock()
-
-            extension = EXT_Wiki(wiki_platform="fandom")
-            issues = extension.validate_config()
-
-            assert len(issues) >= 1
-            issue_text = " ".join(issues).lower()
-            assert "fandom" in issue_text
-            assert "wiki domain" in issue_text
-
-    def test_validate_config_kanka_supported(self):
-        """Test configuration validation accepts kanka as a supported platform."""
-        with patch("builtins.__import__") as mock_import:
-            mock_import.return_value = MagicMock()
-
-            extension = EXT_Wiki(wiki_platform="kanka")
-            issues = extension.validate_config()
-
-            assert len(issues) == 0
-
-    def test_get_required_permissions(self, extension):
-        """Test getting required permissions."""
-        permissions = extension.get_required_permissions()
-
-        assert isinstance(permissions, list)
-        assert len(permissions) == 4
-        assert "wiki:search" in permissions
-        assert "wiki:read" in permissions
-        assert "wiki:parse" in permissions
-        assert "internet:access" in permissions
-
-    def test_has_capability(self, extension):
-        """Test capability checking."""
-        for capability in extension.capabilities:
-            assert extension.has_capability(capability) is True
-
-        assert extension.has_capability("non_existent_capability") is False
-
-    def test_platform_specific_initialization(self):
-        """Test initialization with the supported platforms."""
-        for platform in ["wikipedia", "fandom", "kanka"]:
-            extension = EXT_Wiki(wiki_platform=platform)
-            assert extension.wiki_platform == platform
-
-    def test_platform_is_lowercased(self):
-        """Test that the wiki platform is normalized to lower case."""
-        extension = EXT_Wiki(wiki_platform="WIKIPEDIA")
-        assert extension.wiki_platform == "wikipedia"
-
-    def test_full_initialization_flow(self, extension):
-        """Test the complete initialization flow."""
-        with patch.object(extension, "_create_provider"), patch.object(
-            extension, "_register_commands"
-        ):
-            result = extension.on_initialize()
-
-            assert result is True
-
-    def test_custom_configuration(self):
-        """Test extension with custom configuration via constructor."""
-        extension = EXT_Wiki(
-            wiki_platform="fandom",
-            language="fr",
-            wiki_domain="starwars",
+@online
+class TestFandomLive:
+    async def test_search_and_article(self, provider_instance):
+        instance = provider_instance(
+            PRV_Fandom_Wiki, settings={"wiki_domain": "harrypotter"}
         )
+        results = await PRV_Fandom_Wiki.search(instance, "Hermione", limit=3)
+        assert results and "Hermione" in results[0]["title"]
+        article = await PRV_Fandom_Wiki.get_article(instance, results[0]["title"])
+        assert article["content"] and "<" not in article["content"][:200]
 
-        assert extension.wiki_platform == "fandom"
-        assert extension.language == "fr"
-        assert extension.wiki_domain == "starwars"
 
-
-class TestKankaProvider:
-    """
-    Test suite for the Kanka provider.
-
-    Exercises KankaProvider directly (bypassing EXT_Wiki) since the Kanka
-    API talks in typed "entities" rather than MediaWiki pages: search hits
-    the campaign search endpoint, and article/summary retrieval resolves
-    an entity (by numeric id or by name) and renders its rich-text entry.
-    All HTTP calls are mocked at the ``requests`` boundary; no live API.
-    """
-
-    @pytest.fixture
-    def provider(self):
-        """Create a KankaProvider instance for testing."""
-        return KankaProvider(api_key="test-kanka-token", campaign_id="123")
-
-    @staticmethod
-    def _mock_response(json_data, status_code=200):
-        response = MagicMock()
-        response.status_code = status_code
-        response.json.return_value = json_data
-        return response
-
-    def test_platform_name(self, provider):
-        """Test the platform name reported by the provider."""
-        assert provider.get_platform_name() == "Kanka"
-
-    def test_provider_configuration(self, provider):
-        """Test that the API token and campaign id are stored as given."""
-        assert provider.api_key == "test-kanka-token"
-        assert provider.campaign_id == "123"
-
-    def test_config_falls_back_to_environment(self, monkeypatch):
-        """Test that a missing token/campaign id falls back to env vars."""
-        monkeypatch.setenv("KANKA_API_TOKEN", "env-token")
-        monkeypatch.setenv("KANKA_CAMPAIGN_ID", "456")
-
-        provider = KankaProvider()
-
-        assert provider.api_key == "env-token"
-        assert provider.campaign_id == "456"
-
-    def test_missing_config_logs_warnings(self, monkeypatch, caplog):
-        """Test that missing token/campaign id are logged as warnings."""
-        monkeypatch.delenv("KANKA_API_TOKEN", raising=False)
-        monkeypatch.delenv("KANKA_CAMPAIGN_ID", raising=False)
-
-        with caplog.at_level("WARNING"):
-            provider = KankaProvider()
-
-        assert provider.api_key == ""
-        assert provider.campaign_id == ""
-        assert "campaign id" in caplog.text.lower()
-        assert "api token" in caplog.text.lower()
-
-    @patch("zephyrex.extensions.wiki.PRV_Kanka.requests.get")
-    def test_search_success(self, mock_get, provider):
-        """Test searching Kanka entities."""
-        mock_get.return_value = self._mock_response(
-            {
-                "data": [
-                    {
-                        "id": 42,
-                        "entity_id": 999,
-                        "name": "Solenne",
-                        "type": "location",
-                        "url": "https://kanka.io/en/campaign/123/entities/999",
-                    }
-                ]
-            }
+@pytest.mark.external_api(provider="kanka")
+class TestKankaLive:
+    async def test_search(self, provider_instance, sandbox_credentials_for):
+        creds = sandbox_credentials_for("kanka")
+        instance = provider_instance(
+            PRV_Kanka_Wiki,
+            api_key=creds["KANKA_API_TOKEN"],
+            settings={"campaign_id": creds["KANKA_CAMPAIGN_ID"]},
         )
-
-        results = provider.search("Solenne")
-
-        assert results == [
-            {
-                "title": "Solenne",
-                "snippet": "location",
-                "url": "https://kanka.io/en/campaign/123/entities/999",
-            }
-        ]
-        called_url = mock_get.call_args[0][0]
-        assert called_url == "https://api.kanka.io/1.0/campaigns/123/search/Solenne"
-        assert (
-            mock_get.call_args.kwargs["headers"]["Authorization"]
-            == "Bearer test-kanka-token"
-        )
-
-    @patch("zephyrex.extensions.wiki.PRV_Kanka.requests.get")
-    def test_search_respects_limit(self, mock_get, provider):
-        """Test that search truncates results to the requested limit."""
-        mock_get.return_value = self._mock_response(
-            {
-                "data": [
-                    {"id": 1, "entity_id": 1, "name": "One", "type": "note"},
-                    {"id": 2, "entity_id": 2, "name": "Two", "type": "note"},
-                    {"id": 3, "entity_id": 3, "name": "Three", "type": "note"},
-                ]
-            }
-        )
-
-        results = provider.search("query", limit=2)
-
-        assert len(results) == 2
-
-    @patch("zephyrex.extensions.wiki.PRV_Kanka.requests.get")
-    def test_search_raises_on_http_error(self, mock_get, provider):
-        """Test that a Kanka API error propagates from search."""
-        error_response = MagicMock()
-        error_response.raise_for_status.side_effect = requests.exceptions.HTTPError(
-            "500 Server Error"
-        )
-        mock_get.return_value = error_response
-
-        with pytest.raises(requests.exceptions.HTTPError):
-            provider.search("query")
-
-    @patch("zephyrex.extensions.wiki.PRV_Kanka.requests.get")
-    def test_get_article_by_name_success(self, mock_get, provider):
-        """Test fetching an article by resolving its name via search."""
-        search_response = self._mock_response(
-            {
-                "data": [
-                    {
-                        "id": 42,
-                        "entity_id": 999,
-                        "name": "Solenne",
-                        "type": "location",
-                    }
-                ]
-            }
-        )
-        entity_response = self._mock_response(
-            {
-                "data": {
-                    "id": 42,
-                    "entity_id": 999,
-                    "name": "Solenne",
-                    "type": "location",
-                    "entry": "<p>Solenne is the free city.</p>\n\n<p>It has many districts.</p>",
-                    "url": "https://kanka.io/en/campaign/123/entities/999",
-                }
-            }
-        )
-        mock_get.side_effect = [search_response, entity_response]
-
-        article = provider.get_article("Solenne")
-
-        assert article["title"] == "Solenne"
-        assert "Solenne is the free city." in article["content"]
-        assert "It has many districts." in article["content"]
-        assert "<p>" not in article["content"]
-        assert article["url"] == "https://kanka.io/en/campaign/123/entities/999"
-        assert article["pageid"] == 999
-        assert mock_get.call_count == 2
-
-    @patch("zephyrex.extensions.wiki.PRV_Kanka.requests.get")
-    def test_get_article_by_id_success(self, mock_get, provider):
-        """Test fetching an article directly by numeric entity id."""
-        entity_response = self._mock_response(
-            {
-                "data": {
-                    "id": 42,
-                    "entity_id": 999,
-                    "name": "Solenne",
-                    "type": "location",
-                    "entry": "<p>Solenne is the free city.</p>",
-                    "url": "https://kanka.io/en/campaign/123/entities/999",
-                }
-            }
-        )
-        mock_get.return_value = entity_response
-
-        article = provider.get_article("999")
-
-        assert article["title"] == "Solenne"
-        assert "Solenne is the free city." in article["content"]
-        assert article["pageid"] == 999
-        # Resolved directly by id -- no search round-trip needed.
-        mock_get.assert_called_once()
-        called_url = mock_get.call_args[0][0]
-        assert called_url == "https://api.kanka.io/1.0/campaigns/123/entities/999"
-
-    @patch("zephyrex.extensions.wiki.PRV_Kanka.requests.get")
-    def test_get_article_not_found(self, mock_get, provider):
-        """Test article retrieval when no matching entity exists."""
-        mock_get.return_value = self._mock_response({"data": []})
-
-        article = provider.get_article("Nonexistent Entity")
-
-        assert article == {
-            "title": "Nonexistent Entity",
-            "content": "",
-            "url": "",
-            "pageid": "",
-        }
-
-    @patch("zephyrex.extensions.wiki.PRV_Kanka.requests.get")
-    def test_get_summary_success(self, mock_get, provider):
-        """Test fetching an entity's entry excerpt as its summary."""
-        search_response = self._mock_response(
-            {"data": [{"id": 42, "entity_id": 999, "name": "Solenne"}]}
-        )
-        entity_response = self._mock_response(
-            {
-                "data": {
-                    "id": 42,
-                    "entity_id": 999,
-                    "name": "Solenne",
-                    "entry": "<p>Solenne is the free city.</p>\n\n<p>It has many districts.</p>",
-                }
-            }
-        )
-        mock_get.side_effect = [search_response, entity_response]
-
-        summary = provider.get_summary("Solenne")
-
-        assert summary == "Solenne is the free city."
-
-    @patch("zephyrex.extensions.wiki.PRV_Kanka.requests.get")
-    def test_get_summary_no_entry(self, mock_get, provider):
-        """Test summary retrieval when the resolved entity has no entry text."""
-        mock_get.return_value = self._mock_response(
-            {"data": {"id": 42, "entity_id": 999, "name": "Solenne", "entry": ""}}
-        )
-
-        summary = provider.get_summary("999")
-
-        assert summary == "No summary available"
-
-    @patch("zephyrex.extensions.wiki.PRV_Kanka.requests.get")
-    def test_get_summary_not_found(self, mock_get, provider):
-        """Test summary retrieval when no matching entity exists."""
-        mock_get.return_value = self._mock_response({"data": []})
-
-        summary = provider.get_summary("Nonexistent Entity")
-
-        assert summary == "No summary available"
-
-    @patch("zephyrex.extensions.wiki.PRV_Kanka.requests.get")
-    def test_fetch_entity_returns_none_on_404(self, mock_get, provider):
-        """Test that a 404 while fetching an entity by id is treated as absent."""
-        mock_get.return_value = self._mock_response({}, status_code=404)
-
-        article = provider.get_article("999")
-
-        assert article == {"title": "999", "content": "", "url": "", "pageid": ""}
-
-
-if __name__ == "__main__":
-    pytest.main([__file__])
+        results = await PRV_Kanka_Wiki.search(instance, "a", limit=2)
+        assert isinstance(results, list)

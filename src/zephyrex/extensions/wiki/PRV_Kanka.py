@@ -1,149 +1,137 @@
-import logging
-import os
-import re
-from typing import Any, Dict, List, Optional
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""Kanka (kanka.io), a TTRPG worldbuilding service, read as a wiki.
 
-import requests
+Kanka holds a campaign's knowledge as typed entities (characters, locations,
+journals, …) rather than pages: a search is the campaign's entity search, an
+article an entity's rich-text entry as plain text, a summary that entry's
+first paragraph. The instance's API key is a campaign-scoped Bearer token
+(else ``KANKA_API_TOKEN``) and its ``campaign_id`` setting the campaign
+(else ``KANKA_CAMPAIGN_ID``).
+"""
 
-try:
-    import kanka  # noqa: F401
-except ImportError:  # pragma: no cover - optional convenience SDK, unused
-    kanka = None
+from typing import Any, ClassVar, Dict, List, Optional
+from urllib.parse import quote
 
-from zephyrex.extensions.wiki.PRV_Wiki import AbstractWikiProvider
+from zephyrex.extensions.ExternalErrors import (
+    InvalidInputExternalError,
+    TransientExternalError,
+)
+from zephyrex.extensions.wiki.EXT_Wiki import (
+    NO_SUMMARY,
+    AbstractWikiProvider,
+    first_paragraph,
+    plain_text,
+)
+from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 
-KANKA_REQUEST_TIMEOUT_SECONDS = 10
-KANKA_API_BASE_URL = "https://api.kanka.io/1.0"
+KANKA_API = "https://api.kanka.io/1.0"
+KANKA_SITE = "https://app.kanka.io/w"
+HTTP_NOT_FOUND = 404
 
 
-class KankaProvider(AbstractWikiProvider):
-    """
-    Wiki provider backed by the Kanka (kanka.io) TTRPG worldbuilding API.
+class PRV_Kanka_Wiki(AbstractWikiProvider):
+    name: ClassVar[str] = "kanka"
+    friendly_name: ClassVar[str] = "Kanka"
+    description: ClassVar[str] = "A Kanka campaign's entities"
+    _env: ClassVar[Dict[str, Any]] = {"KANKA_API_TOKEN": "", "KANKA_CAMPAIGN_ID": ""}
 
-    Kanka organizes campaign knowledge as typed "entities" (characters,
-    locations, journals, notes, organisations, etc.) rather than
-    MediaWiki-style pages. This provider maps wiki semantics onto that
-    model: ``search`` queries the campaign's entity search endpoint,
-    ``get_article`` resolves an entity by numeric id or by name and
-    renders its rich-text entry as plain text, and ``get_summary`` returns
-    that entry's leading excerpt.
-
-    Requires a campaign-scoped Bearer API token and a campaign id. Both
-    may be supplied directly (``api_key`` / ``campaign_id``) or, like
-    sibling providers reading their own config, fall back to environment
-    variables (``KANKA_API_TOKEN`` / ``KANKA_CAMPAIGN_ID``) when omitted.
-    An optional ``kanka`` convenience SDK is guarded above but not
-    required -- this provider always talks to the API directly via
-    ``requests``, matching the pattern used by the other wiki providers.
-    """
-
-    def __init__(self, campaign_id: str = "", **kwargs: Any) -> None:
-        super().__init__(**kwargs)
-
-        self.campaign_id = campaign_id or os.getenv("KANKA_CAMPAIGN_ID", "")
-        if not self.api_key:
-            self.api_key = os.getenv("KANKA_API_TOKEN", "")
-
-        if not self.campaign_id:
-            logging.warning("No campaign id provided for Kanka provider")
-        if not self.api_key:
-            logging.warning("No API token provided for Kanka provider")
-
-    def get_platform_name(self) -> str:
-        return "Kanka"
-
-    def _api_uri(self, path: str) -> str:
-        return f"{KANKA_API_BASE_URL}/campaigns/{self.campaign_id}/{path}"
-
-    def _headers(self) -> Dict[str, str]:
-        return {
-            "Authorization": f"Bearer {self.api_key}",
-            "Accept": "application/json",
-        }
-
-    def _raw_search(self, query: str, limit: int) -> List[Dict[str, Any]]:
-        response = requests.get(
-            self._api_uri(f"search/{query}"),
-            headers=self._headers(),
-            timeout=KANKA_REQUEST_TIMEOUT_SECONDS,
+    @classmethod
+    def campaign(cls, instance: Optional[ProviderInstanceModel]) -> str:
+        campaign = (
+            cls.resolve_setting(instance, "campaign_id", "KANKA_CAMPAIGN_ID") or ""
         )
-        response.raise_for_status()
-        data = response.json()
+        if not campaign.isdigit():
+            raise TransientExternalError(
+                "Kanka campaign_id not configured (a numeric id)", provider=cls.name
+            )
+        return campaign
+
+    @classmethod
+    def headers(cls, instance: Optional[ProviderInstanceModel]) -> Dict[str, str]:
+        token = cls.resolve_setting(
+            instance, "api_key", "KANKA_API_TOKEN", field="api_key"
+        )
+        if not token:
+            raise TransientExternalError(
+                "Kanka API token not configured", provider=cls.name
+            )
+        return {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+
+    @classmethod
+    async def _get(cls, instance: ProviderInstanceModel, path: str) -> Dict[str, Any]:
+        data: Dict[str, Any] = await cls.get_json(
+            f"{KANKA_API}/campaigns/{cls.campaign(instance)}/{path}",
+            headers=cls.headers(instance),
+        )
+        return data
+
+    @classmethod
+    def _entity_url(cls, instance: ProviderInstanceModel, entity_id: Any) -> str:
+        return f"{KANKA_SITE}/{cls.campaign(instance)}/entities/{entity_id}"
+
+    @classmethod
+    async def _search(
+        cls, instance: ProviderInstanceModel, query: str, limit: int
+    ) -> List[Dict[str, Any]]:
+        if not query.strip():
+            raise InvalidInputExternalError(
+                "A Kanka search needs a term", provider=cls.name
+            )
+        # The term is a path segment: quoted whole, so "../x" stays a term.
+        data = await cls._get(instance, f"search/{quote(query, safe='')}")
         matches: List[Dict[str, Any]] = data.get("data", [])
         return matches[:limit]
 
-    def search(self, query: str, limit: int = 5) -> List[Dict[str, Any]]:
-        matches = self._raw_search(query, limit)
+    @classmethod
+    async def search(
+        cls, instance: ProviderInstanceModel, query: str, limit: int = 5
+    ) -> List[Dict[str, Any]]:
+        return [
+            {
+                "title": item.get("name", ""),
+                "snippet": item.get("type", ""),
+                "url": item.get("url")
+                or cls._entity_url(instance, item.get("entity_id", item.get("id", ""))),
+            }
+            for item in await cls._search(instance, query, limit)
+        ]
 
-        results = []
-        for item in matches:
-            entity_id = item.get("entity_id", item.get("id", ""))
-            results.append(
-                {
-                    "title": item.get("name", ""),
-                    "snippet": item.get("type", ""),
-                    "url": item.get(
-                        "url",
-                        f"https://kanka.io/en/campaign/{self.campaign_id}/entities/{entity_id}",
-                    ),
-                }
-            )
-        return results
-
-    def _fetch_entity(self, entity_id: Any) -> Optional[Dict[str, Any]]:
-        response = requests.get(
-            self._api_uri(f"entities/{entity_id}"),
-            headers=self._headers(),
-            timeout=KANKA_REQUEST_TIMEOUT_SECONDS,
-        )
-        if response.status_code == 404:
-            return None
-        response.raise_for_status()
-        entity: Optional[Dict[str, Any]] = response.json().get("data")
-        return entity
-
-    def _resolve_entity(self, title: str) -> Optional[Dict[str, Any]]:
-        """Resolve a Kanka entity by numeric id, falling back to a name search."""
-        if str(title).isdigit():
-            entity = self._fetch_entity(title)
-            if entity is not None:
-                return entity
-
-        matches = self._raw_search(title, limit=1)
+    @classmethod
+    async def _entity(
+        cls, instance: ProviderInstanceModel, title: str
+    ) -> Optional[Dict[str, Any]]:
+        """The entity with id ``title``, else the first named ``title``."""
+        if title.isdigit():
+            try:
+                found = await cls._get(instance, f"entities/{title}")
+                return found.get("data")
+            except InvalidInputExternalError as exc:
+                if exc.upstream_status != HTTP_NOT_FOUND:
+                    raise
+        matches = await cls._search(instance, title, limit=1)
         if not matches:
             return None
-
         entity_id = matches[0].get("entity_id", matches[0].get("id", ""))
-        return self._fetch_entity(entity_id)
+        found = await cls._get(instance, f"entities/{quote(str(entity_id), safe='')}")
+        return found.get("data")
 
-    def get_article(self, title: str) -> Dict[str, Any]:
-        entity = self._resolve_entity(title)
+    @classmethod
+    async def get_article(
+        cls, instance: ProviderInstanceModel, title: str
+    ) -> Dict[str, Any]:
+        entity = await cls._entity(instance, title)
         if entity is None:
             return {"title": title, "content": "", "url": "", "pageid": ""}
-
-        entry = entity.get("entry", "") or ""
-        plain_text = re.sub(r"<.*?>", "", entry)
         entity_id = entity.get("entity_id", entity.get("id", ""))
-
         return {
             "title": entity.get("name", title),
-            "content": plain_text,
-            "url": entity.get(
-                "url",
-                f"https://kanka.io/en/campaign/{self.campaign_id}/entities/{entity_id}",
-            ),
+            "content": plain_text(entity.get("entry") or ""),
+            "url": entity.get("url") or cls._entity_url(instance, entity_id),
             "pageid": entity_id,
         }
 
-    def get_summary(self, title: str) -> str:
-        entity = self._resolve_entity(title)
-        if entity is None:
-            return "No summary available"
-
-        entry = entity.get("entry", "") or ""
-        if not entry:
-            return "No summary available"
-
-        plain_text = re.sub(r"<.*?>", "", entry)
-        paragraphs = [p.strip() for p in plain_text.split("\n\n") if p.strip()]
-        return paragraphs[0] if paragraphs else "No summary available"
+    @classmethod
+    async def get_summary(cls, instance: ProviderInstanceModel, title: str) -> str:
+        entity = await cls._entity(instance, title)
+        entry = plain_text(entity.get("entry") or "") if entity else ""
+        return first_paragraph(entry) if entry else NO_SUMMARY

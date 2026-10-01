@@ -1,75 +1,73 @@
-from typing import Any, Dict, List
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""Wikipedia, through the MediaWiki Action API of the instance's language
+edition (``language`` setting, else ``WIKIPEDIA_LANGUAGE``, else ``en``)."""
 
-import requests
+from typing import Any, ClassVar, Dict, List, Optional
 
-from zephyrex.extensions.wiki.PRV_Wiki import AbstractWikiProvider
+from zephyrex.extensions.wiki.EXT_Wiki import (
+    NO_SUMMARY,
+    AbstractWikiProvider,
+    host_label,
+)
+from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 
-WIKIPEDIA_REQUEST_TIMEOUT_SECONDS = 10
+DEFAULT_LANGUAGE = "en"
 
 
-class WikipediaProvider(AbstractWikiProvider):
-    """
-    Wiki provider backed by the Wikipedia MediaWiki Action API.
+class PRV_Wikipedia_Wiki(AbstractWikiProvider):
+    name: ClassVar[str] = "wikipedia"
+    friendly_name: ClassVar[str] = "Wikipedia"
+    description: ClassVar[str] = "Wikipedia, any language edition"
+    _env: ClassVar[Dict[str, Any]] = {"WIKIPEDIA_LANGUAGE": DEFAULT_LANGUAGE}
 
-    A lightweight, directly-instantiated client: it holds the target
-    language and issues synchronous HTTP requests to Wikipedia's public API.
-    Requires the ``requests`` dependency (already required by the
-    extension).
-    """
-
-    def get_platform_name(self) -> str:
-        return "Wikipedia"
-
-    def _api_uri(self) -> str:
-        return f"https://{self.language}.wikipedia.org/w/api.php"
-
-    def search(self, query: str, limit: int = 5) -> List[Dict[str, Any]]:
-        params = {
-            "action": "query",
-            "format": "json",
-            "list": "search",
-            "srsearch": query,
-            "srlimit": limit,
-        }
-        response = requests.get(
-            self._api_uri(), params=params, timeout=WIKIPEDIA_REQUEST_TIMEOUT_SECONDS
+    @classmethod
+    def language(cls, instance: Optional[ProviderInstanceModel]) -> str:
+        value = cls.resolve_setting(
+            instance, "language", "WIKIPEDIA_LANGUAGE", default=DEFAULT_LANGUAGE
         )
-        response.raise_for_status()
-        data = response.json()
+        return host_label(value or DEFAULT_LANGUAGE, "language")
 
-        results = []
-        for item in data.get("query", {}).get("search", []):
-            title = item.get("title", "")
-            results.append(
-                {
-                    "title": title,
-                    "snippet": item.get("snippet", ""),
-                    "url": f"https://{self.language}.wikipedia.org/wiki/{title.replace(' ', '_')}",
-                }
-            )
-        return results
+    @classmethod
+    def site(cls, instance: Optional[ProviderInstanceModel]) -> str:
+        return f"https://{cls.language(instance)}.wikipedia.org"
 
-    def get_article(self, title: str) -> Dict[str, Any]:
-        params = {
-            "action": "query",
-            "format": "json",
-            "prop": "extracts|info",
-            "titles": title,
-            "explaintext": 1,
-            "inprop": "url",
-        }
-        response = requests.get(
-            self._api_uri(), params=params, timeout=WIKIPEDIA_REQUEST_TIMEOUT_SECONDS
+    @classmethod
+    async def _query(
+        cls, instance: ProviderInstanceModel, **params: Any
+    ) -> Dict[str, Any]:
+        data: Dict[str, Any] = await cls.get_json(
+            f"{cls.site(instance)}/w/api.php",
+            {"action": "query", "format": "json", **params},
         )
-        response.raise_for_status()
-        data = response.json()
+        return data
 
-        pages = data.get("query", {}).get("pages", {})
-        if not pages:
+    @classmethod
+    async def search(
+        cls, instance: ProviderInstanceModel, query: str, limit: int = 5
+    ) -> List[Dict[str, Any]]:
+        data = await cls._query(instance, list="search", srsearch=query, srlimit=limit)
+        site = cls.site(instance)
+        return [
+            {
+                "title": item.get("title", ""),
+                "snippet": item.get("snippet", ""),
+                "url": f"{site}/wiki/{item.get('title', '').replace(' ', '_')}",
+            }
+            for item in data.get("query", {}).get("search", [])
+        ]
+
+    @classmethod
+    async def get_article(
+        cls, instance: ProviderInstanceModel, title: str
+    ) -> Dict[str, Any]:
+        data = await cls._query(
+            instance, prop="extracts|info", titles=title, explaintext=1, inprop="url"
+        )
+        pages: Dict[str, Dict[str, Any]] = data.get("query", {}).get("pages", {})
+        empty: Dict[str, Any] = {}
+        page_id, page = next(iter(pages.items()), ("", empty))
+        if not page or "missing" in page:
             return {"title": title, "content": "", "url": "", "pageid": ""}
-
-        page_id = next(iter(pages))
-        page = pages[page_id]
         return {
             "title": page.get("title", title),
             "content": page.get("extract", ""),
@@ -77,24 +75,12 @@ class WikipediaProvider(AbstractWikiProvider):
             "pageid": page_id,
         }
 
-    def get_summary(self, title: str) -> str:
-        params = {
-            "action": "query",
-            "format": "json",
-            "prop": "extracts",
-            "titles": title,
-            "exintro": 1,
-            "explaintext": 1,
-        }
-        response = requests.get(
-            self._api_uri(), params=params, timeout=WIKIPEDIA_REQUEST_TIMEOUT_SECONDS
+    @classmethod
+    async def get_summary(cls, instance: ProviderInstanceModel, title: str) -> str:
+        data = await cls._query(
+            instance, prop="extracts", titles=title, exintro=1, explaintext=1
         )
-        response.raise_for_status()
-        data = response.json()
-
-        pages = data.get("query", {}).get("pages", {})
-        if not pages:
-            return "No summary available"
-
-        page_id = next(iter(pages))
-        return pages[page_id].get("extract", "No summary available")
+        pages: Dict[str, Dict[str, Any]] = data.get("query", {}).get("pages", {})
+        empty: Dict[str, Any] = {}
+        page = next(iter(pages.values()), empty)
+        return str(page.get("extract") or NO_SUMMARY)

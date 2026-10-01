@@ -192,6 +192,8 @@ EXTERNAL_API_PROVIDER_ENV_VARS: Dict[str, List[str]] = {
     "moneris": ["MONERIS_STORE_ID", "MONERIS_MERCHANT_ID"],
     # Helcim — API token.
     "helcim": ["HELCIM_API_TOKEN"],
+    # Kanka (wiki) — a campaign-scoped token and that campaign's id.
+    "kanka": ["KANKA_API_TOKEN", "KANKA_CAMPAIGN_ID"],
     # SendGrid sandbox.
     "sendgrid": ["SENDGRID_API_KEY"],
     # Twilio sandbox.
