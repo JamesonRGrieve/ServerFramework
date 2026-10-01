@@ -1255,6 +1255,32 @@ class AbstractStaticProvider(AbstractStaticExtensionSystemComponent):
     def root(cls) -> AbstractProviderInstance:
         pass
 
+    # Seconds before an outbound HTTP call through ``http()`` gives up.
+    http_timeout_seconds: ClassVar[float] = 30.0
+
+    @classmethod
+    def http(cls) -> Any:
+        """This provider's ``ProviderHTTPClient``: SSRF-guarded, typed
+        errors on non-2xx (which drive the rotation), and a User-Agent
+        naming this software."""
+        from zephyrex.lib.ProviderHTTPClient import ClientPolicy, ProviderHTTPClient
+
+        return ProviderHTTPClient(
+            policy=ClientPolicy(timeout=cls.http_timeout_seconds),
+            provider_name=cls.name,
+            provider=cls,
+        )
+
+    @classmethod
+    async def get_json(
+        cls,
+        url: str,
+        params: Optional[Dict[str, Any]] = None,
+        headers: Optional[Dict[str, str]] = None,
+    ) -> Any:
+        """GET ``url`` through ``http()``: the decoded JSON answer."""
+        return await cls.http().get(url, params=params, headers=headers)
+
     @classmethod
     def resolve_setting(
         cls,
@@ -1882,6 +1908,44 @@ class AbstractStaticExtension(
                 detail=f"No {cls.name} provider is configured",
             )
         return await root.arotate(cls.provider_call(method_name), *args, **kwargs)
+
+    @classmethod
+    async def rotate_provider_for(
+        cls, provider_name: str, method_name: str, *args: Any, **kwargs: Any
+    ) -> Any:
+        """:meth:`rotate_provider` over only the instances of the provider
+        named ``provider_name``: for an operation on something that provider
+        owns (its message id, its media id). 503 when the rotation holds no
+        instance of it; 400 when this extension has no such provider."""
+        if not any(p.name == provider_name for p in cls.providers):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"{cls.name} has no provider {provider_name!r}",
+            )
+        root = cls.root
+        if root is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"No {cls.name} provider is configured",
+            )
+        from zephyrex.logic.BLL_Providers import (
+            ProviderInstanceManager,
+            ProviderManager,
+        )
+
+        registry, requester_id = root.model_registry, env("ROOT_ID")
+        provider = ProviderManager(
+            model_registry=registry, requester_id=requester_id
+        ).get(name=provider_name)
+        instances = ProviderInstanceManager(
+            model_registry=registry, requester_id=requester_id
+        ).list(provider_id=provider.id)
+        return await root.arotate(
+            cls.provider_call(method_name),
+            *args,
+            provider_instance_ids=[instance.id for instance in instances],
+            **kwargs,
+        )
 
     @classmethod
     def get_rotation_provider_instances_seed_data(cls) -> List[Dict[str, Any]]:

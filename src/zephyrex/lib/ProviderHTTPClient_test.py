@@ -94,6 +94,28 @@ async def test_auth_strategy_headers_injected(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_requests_name_zephyrex_and_the_deployments_source(monkeypatch):
+    """Wikimedia and others refuse anonymous clients: every request says
+    what is calling, unless the caller names itself."""
+    from zephyrex.lib.Environment import env
+
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.headers.get("User-Agent"))
+        return httpx.Response(200, json={})
+
+    _patch_client_with_handler(monkeypatch, handler)
+    c = ProviderHTTPClient()
+    await c.get("https://api.example/test")
+    await c.get("https://api.example/test", headers={"User-Agent": "custom/1"})
+    assert seen[0].startswith("zephyrex/")
+    assert seen[0].endswith(f"({env('APP_REPOSITORY')})")
+    assert seen[1] == "custom/1"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_idempotency_header_injected(monkeypatch):
     captured = {}
 

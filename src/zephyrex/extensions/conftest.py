@@ -17,6 +17,10 @@ from zephyrex.logic.BLL_Providers import (
     ProviderInstanceModel,
     ProviderInstanceSettingManager,
     ProviderManager,
+    RotationManager,
+    RotationModel,
+    RotationProviderInstanceManager,
+    RotationProviderInstanceModel,
 )
 from zephyrex.pydantic2.registry import ModelRegistry
 
@@ -100,3 +104,40 @@ def provider_instance(extension_app: Any) -> InstanceFactory:
         return instance
 
     return _create
+
+
+@pytest.fixture
+def rotation_over(provider_instance, extension_app) -> Any:
+    """A rotation that tries the given instances in order."""
+    registry: ModelRegistry = extension_app.state.model_registry
+    root_id = env("ROOT_ID")
+
+    def _build(*instances: ProviderInstanceModel) -> RotationManager:
+        rotation_manager = RotationManager(
+            model_registry=registry, requester_id=root_id
+        )
+        rotation = RotationModel.model_validate(
+            rotation_manager.create(
+                name=f"test_rotation_{uuid.uuid4().hex}",
+                description="A test rotation over the given instances",
+            ),
+            from_attributes=True,
+        )
+        links = RotationProviderInstanceManager(
+            model_registry=registry, requester_id=root_id
+        )
+        parent_id = None
+        for instance in instances:
+            link = RotationProviderInstanceModel.model_validate(
+                links.create(
+                    rotation_id=rotation.id,
+                    provider_instance_id=instance.id,
+                    parent_id=parent_id,
+                ),
+                from_attributes=True,
+            )
+            parent_id = link.id
+        rotation_manager.target_id = rotation.id
+        return rotation_manager
+
+    return _build

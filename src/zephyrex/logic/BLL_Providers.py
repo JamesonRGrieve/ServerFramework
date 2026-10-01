@@ -12,6 +12,7 @@ from typing import (
     Any,
     Callable,
     ClassVar,
+    Collection,
     Dict,
     Generator,
     Iterator,
@@ -1735,6 +1736,11 @@ class RotationManager(AbstractBLLManager, RouterMixin):
         # rotation pre-checks the estimated USD cost against the quota's
         # remaining headroom and updates `consumed_usd` post-call.
         usd_quota: Optional[Any] = kwargs.pop("usd_quota", None)
+        # Only these provider instances may serve the call (an operation on
+        # something one provider owns, such as its message or media id).
+        only_instances: Optional[Collection[str]] = kwargs.pop(
+            "provider_instance_ids", None
+        )
 
         # Get all rotation provider instances for this rotation
         if not self.target_id:
@@ -1776,6 +1782,19 @@ class RotationManager(AbstractBLLManager, RouterMixin):
             # Residency filter must never crash rotation; missing module or
             # resolver bugs degrade to "no filtering" rather than failure.
             pass
+
+        if only_instances is not None:
+            allowed = {str(instance_id) for instance_id in only_instances}
+            rotation_provider_instances = [
+                r
+                for r in rotation_provider_instances
+                if str(r.provider_instance_id) in allowed
+            ]
+            if not rotation_provider_instances:
+                raise HTTPException(
+                    status_code=503,
+                    detail="No instance of the required provider is in the rotation",
+                )
 
         # Item 51 — if a stickiness key is present, try the pinned provider
         # first. On success → return. On failure → invalidate the pin and

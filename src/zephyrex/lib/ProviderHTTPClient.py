@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import functools
 import ipaddress
 import logging
 import os
@@ -238,6 +239,26 @@ _shared_unbound_clients: Dict[Tuple, httpx.AsyncClient] = {}
 _shared_sync_clients: Dict[Tuple, httpx.Client] = {}
 
 
+@functools.lru_cache(maxsize=1)
+def _release() -> str:
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        return version("zephyrex")
+    except PackageNotFoundError:
+        return "unknown"
+
+
+def user_agent() -> str:
+    """``zephyrex/<version> (<this deployment's source>)``, sent on every
+    provider request a caller does not name itself on: upstreams such as
+    Wikimedia refuse anonymous clients, and an operator reading their logs
+    can find who called."""
+    from zephyrex.lib.Environment import env
+
+    return f"zephyrex/{_release()} ({env('APP_REPOSITORY')})"
+
+
 def _async_pool() -> Dict[Tuple, httpx.AsyncClient]:
     try:
         loop = asyncio.get_running_loop()
@@ -439,7 +460,7 @@ class ProviderHTTPClient:
         idempotency_key: Optional[str],
         requester_id: Optional[str],
     ) -> Dict[str, str]:
-        headers: Dict[str, str] = {}
+        headers: Dict[str, str] = {"User-Agent": user_agent()}
         tp = get_traceparent()
         if tp:
             headers["traceparent"] = tp

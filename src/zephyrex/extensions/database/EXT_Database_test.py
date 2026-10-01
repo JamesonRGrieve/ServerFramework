@@ -460,43 +460,6 @@ class TestConnectionSettingResolution:
         )
 
 
-@pytest.fixture
-def rotation_over(provider_instance, extension_app) -> Any:
-    """A rotation that tries the given instances in order."""
-    registry: ModelRegistry = extension_app.state.model_registry
-    root_id = env("ROOT_ID")
-
-    def _build(*instances: ProviderInstanceModel) -> RotationManager:
-        rotation_manager = RotationManager(
-            model_registry=registry, requester_id=root_id
-        )
-        rotation = RotationModel.model_validate(
-            rotation_manager.create(
-                name=f"database_failover_{uuid.uuid4().hex}",
-                description="Database provider failover test rotation",
-            ),
-            from_attributes=True,
-        )
-        links = RotationProviderInstanceManager(
-            model_registry=registry, requester_id=root_id
-        )
-        parent_id = None
-        for instance in instances:
-            link = RotationProviderInstanceModel.model_validate(
-                links.create(
-                    rotation_id=rotation.id,
-                    provider_instance_id=instance.id,
-                    parent_id=parent_id,
-                ),
-                from_attributes=True,
-            )
-            parent_id = link.id
-        rotation_manager.target_id = rotation.id
-        return rotation_manager
-
-    return _build
-
-
 class TestDatabaseRotationFailover:
     """Typed provider errors drive the rotation: an unreachable database
     fails over, a rejected statement surfaces to the caller."""
@@ -526,6 +489,47 @@ class TestDatabaseRotationFailover:
             await EXT_Database.execute_sql("NOT A STATEMENT;")
         # The second instance was never tried, so its file was never created.
         assert not (tmp_path / "second.db").exists()
+
+    async def test_rotate_provider_for_uses_only_that_providers_instances(
+        self, provider_instance, rotation_over, tmp_path: Path, monkeypatch
+    ):
+        """An operation on what one provider owns runs on that provider's
+        instances only, even when another provider leads the rotation."""
+        fake = provider_instance(PRV_Fake_Database)
+        sqlite = provider_instance(PRV_SQLite, api_key=str(tmp_path / "owned.db"))
+        monkeypatch.setattr(
+            EXT_Database, "_root_rotation_cache", rotation_over(fake, sqlite)
+        )
+        assert await EXT_Database.execute_sql("SELECT 7;") == "fake-sql:SELECT 7;"
+        assert (
+            await EXT_Database.rotate_provider_for(
+                PRV_SQLite.name, "execute_sql", "SELECT 7;"
+            )
+            == "7"
+        )
+
+    async def test_rotate_provider_for_without_that_provider_in_the_rotation(
+        self, provider_instance, rotation_over, monkeypatch
+    ):
+        from fastapi import HTTPException
+
+        monkeypatch.setattr(
+            EXT_Database,
+            "_root_rotation_cache",
+            rotation_over(provider_instance(PRV_Fake_Database)),
+        )
+        with pytest.raises(HTTPException) as raised:
+            await EXT_Database.rotate_provider_for(
+                PRV_SQLite.name, "execute_sql", "SELECT 1;"
+            )
+        assert raised.value.status_code == 503
+
+    async def test_rotate_provider_for_an_unknown_provider(self):
+        from fastapi import HTTPException
+
+        with pytest.raises(HTTPException) as raised:
+            await EXT_Database.rotate_provider_for("no_such", "execute_sql", "")
+        assert raised.value.status_code == 400
 
     def test_provider_metadata_attributes(self):
         assert hasattr(ConcreteDatabaseProvider, "name")

@@ -10,7 +10,7 @@ instance of the extension's root rotation.
 
 import re
 from abc import abstractmethod
-from typing import Any, ClassVar, Dict, List, Optional, Set
+from typing import Any, ClassVar, Dict, List, Set
 
 from zephyrex.extensions.AbstractExtensionProvider import (
     AbstractProviderInstance,
@@ -20,8 +20,6 @@ from zephyrex.extensions.AbstractExtensionProvider import (
 )
 from zephyrex.extensions.ExternalErrors import InvalidInputExternalError
 from zephyrex.lib.Dependencies import Dependencies
-from zephyrex.lib.Environment import env
-from zephyrex.lib.ProviderHTTPClient import ClientPolicy, ProviderHTTPClient
 from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 
 WIKI_REQUEST_TIMEOUT_SECONDS = 10.0
@@ -47,18 +45,6 @@ def host_label(value: str, setting: str) -> str:
     return label
 
 
-def user_agent() -> str:
-    """``zephyrex/<version> (<this deployment's source>)``: who is asking,
-    per Wikimedia's User-Agent policy."""
-    from importlib.metadata import PackageNotFoundError, version
-
-    try:
-        release = version("zephyrex")
-    except PackageNotFoundError:
-        release = "unknown"
-    return f"zephyrex/{release} ({env('APP_REPOSITORY')})"
-
-
 def first_paragraph(text: str) -> str:
     paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
     return paragraphs[0] if paragraphs else NO_SUMMARY
@@ -77,31 +63,11 @@ class AbstractWikiProvider(AbstractStaticProvider):
         "get_wiki_summary",
     }
     _env: ClassVar[Dict[str, Any]] = {}
+    http_timeout_seconds: ClassVar[float] = WIKI_REQUEST_TIMEOUT_SECONDS
 
     @classmethod
     def bond_instance(cls, instance: ProviderInstanceModel) -> AbstractProviderInstance:
         return AbstractProviderInstance(instance)
-
-    @classmethod
-    def http(cls) -> ProviderHTTPClient:
-        return ProviderHTTPClient(
-            policy=ClientPolicy(timeout=WIKI_REQUEST_TIMEOUT_SECONDS),
-            provider_name=cls.name,
-            provider=cls,
-        )
-
-    @classmethod
-    async def get_json(
-        cls,
-        url: str,
-        params: Optional[Dict[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
-    ) -> Any:
-        """The decoded JSON answer. Every request names this software:
-        Wikimedia refuses clients without a descriptive User-Agent."""
-        return await cls.http().get(
-            url, params=params, headers={"User-Agent": user_agent(), **(headers or {})}
-        )
 
     @classmethod
     @abstractmethod
