@@ -2,8 +2,9 @@
 """Wikipedia, through the MediaWiki Action API of the instance's language
 edition (``language`` setting, else ``WIKIPEDIA_LANGUAGE``, else ``en``)."""
 
-from typing import Any, ClassVar, Dict, List, Optional
+from typing import Any, ClassVar, Dict, List, Optional, Tuple
 
+from zephyrex.extensions.AbstractExtensionProvider import InstanceSetting
 from zephyrex.extensions.wiki.EXT_Wiki import (
     NO_SUMMARY,
     AbstractWikiProvider,
@@ -19,12 +20,18 @@ class PRV_Wikipedia_Wiki(AbstractWikiProvider):
     friendly_name: ClassVar[str] = "Wikipedia"
     description: ClassVar[str] = "Wikipedia, any language edition"
     _env: ClassVar[Dict[str, Any]] = {"WIKIPEDIA_LANGUAGE": DEFAULT_LANGUAGE}
+    instance_settings: ClassVar[Tuple[InstanceSetting, ...]] = (
+        InstanceSetting(
+            "language",
+            "Wikipedia language edition (en, de, …)",
+            env="WIKIPEDIA_LANGUAGE",
+            default=DEFAULT_LANGUAGE,
+        ),
+    )
 
     @classmethod
     def language(cls, instance: Optional[ProviderInstanceModel]) -> str:
-        value = cls.resolve_setting(
-            instance, "language", "WIKIPEDIA_LANGUAGE", default=DEFAULT_LANGUAGE
-        )
+        value = cls.setting(instance, "language")
         return host_label(value or DEFAULT_LANGUAGE, "language")
 
     @classmethod

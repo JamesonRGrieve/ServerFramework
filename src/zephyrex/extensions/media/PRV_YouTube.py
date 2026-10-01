@@ -8,8 +8,9 @@ the other videos of the same channel, most viewed first.
 """
 
 import re
-from typing import Any, ClassVar, Dict, List, Optional
+from typing import Any, ClassVar, Dict, List, Optional, Tuple
 
+from zephyrex.extensions.AbstractExtensionProvider import InstanceSetting
 from zephyrex.extensions.ExternalErrors import (
     InvalidInputExternalError,
     TransientExternalError,
@@ -28,12 +29,19 @@ class PRV_YouTube_Media(AbstractMediaProvider):
     friendly_name: ClassVar[str] = "YouTube"
     description: ClassVar[str] = "YouTube videos (Data API v3)"
     _env: ClassVar[Dict[str, Any]] = {"YOUTUBE_API_KEY": ""}
+    instance_settings: ClassVar[Tuple[InstanceSetting, ...]] = (
+        InstanceSetting(
+            "api_key",
+            "Google API key with the YouTube Data API enabled",
+            env="YOUTUBE_API_KEY",
+            secret=True,
+            field="api_key",
+        ),
+    )
 
     @classmethod
     def _key(cls, instance: ProviderInstanceModel) -> str:
-        key = cls.resolve_setting(
-            instance, "api_key", "YOUTUBE_API_KEY", field="api_key"
-        )
+        key = cls.setting(instance, "api_key")
         if not key:
             raise TransientExternalError(
                 "YouTube API key not configured", provider=cls.name

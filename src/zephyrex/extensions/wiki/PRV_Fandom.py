@@ -2,8 +2,9 @@
 """A Fandom wiki, through its MediaWiki Action API (``wiki_domain`` setting,
 else ``FANDOM_WIKI_DOMAIN``, else ``community``: ``<domain>.fandom.com``)."""
 
-from typing import Any, ClassVar, Dict, List, Optional
+from typing import Any, ClassVar, Dict, List, Optional, Tuple
 
+from zephyrex.extensions.AbstractExtensionProvider import InstanceSetting
 from zephyrex.extensions.ExternalErrors import InvalidInputExternalError
 from zephyrex.extensions.wiki.EXT_Wiki import (
     NO_SUMMARY,
@@ -22,12 +23,18 @@ class PRV_Fandom_Wiki(AbstractWikiProvider):
     friendly_name: ClassVar[str] = "Fandom"
     description: ClassVar[str] = "A Fandom (MediaWiki) wiki"
     _env: ClassVar[Dict[str, Any]] = {"FANDOM_WIKI_DOMAIN": DEFAULT_WIKI_DOMAIN}
+    instance_settings: ClassVar[Tuple[InstanceSetting, ...]] = (
+        InstanceSetting(
+            "wiki_domain",
+            "Fandom wiki subdomain (<domain>.fandom.com)",
+            env="FANDOM_WIKI_DOMAIN",
+            default=DEFAULT_WIKI_DOMAIN,
+        ),
+    )
 
     @classmethod
     def site(cls, instance: Optional[ProviderInstanceModel]) -> str:
-        domain = cls.resolve_setting(
-            instance, "wiki_domain", "FANDOM_WIKI_DOMAIN", default=DEFAULT_WIKI_DOMAIN
-        )
+        domain = cls.setting(instance, "wiki_domain")
         return f"https://{host_label(domain or DEFAULT_WIKI_DOMAIN, 'wiki_domain')}.fandom.com"
 
     @classmethod

@@ -10,8 +10,9 @@ delivery-status logs.
 """
 
 import asyncio
-from typing import Any, ClassVar, Dict
+from typing import Any, ClassVar, Dict, Tuple
 
+from zephyrex.extensions.AbstractExtensionProvider import InstanceSetting
 from zephyrex.extensions.ExternalErrors import (
     AuthExternalError,
     InvalidInputExternalError,
@@ -44,6 +45,29 @@ class PRV_Amazon_SMS(AbstractSMSProvider):
         "AWS_REGION": DEFAULT_REGION,
         "SNS_SMS_SENDER_ID": "",
     }
+    instance_settings: ClassVar[Tuple[InstanceSetting, ...]] = (
+        InstanceSetting(
+            "api_key",
+            "AWS access key id",
+            env="AWS_ACCESS_KEY_ID",
+            secret=True,
+            field="api_key",
+        ),
+        InstanceSetting(
+            "aws_region", "AWS region", env="AWS_REGION", default=DEFAULT_REGION
+        ),
+        InstanceSetting(
+            "aws_secret_key",
+            "AWS secret access key",
+            env="AWS_SECRET_ACCESS_KEY",
+            secret=True,
+        ),
+        InstanceSetting(
+            "sender_id",
+            "SMS sender id (1-11 letters or digits)",
+            env="SNS_SMS_SENDER_ID",
+        ),
+    )
     dependencies: ClassVar[Dependencies] = Dependencies(
         [
             PIP_Dependency(
@@ -67,12 +91,8 @@ class PRV_Amazon_SMS(AbstractSMSProvider):
             raise TransientExternalError(
                 "boto3 package not installed", provider=cls.name
             )
-        key_id = cls.resolve_setting(
-            instance, "api_key", "AWS_ACCESS_KEY_ID", field="api_key"
-        )
-        secret = cls.resolve_setting(
-            instance, "aws_secret_key", "AWS_SECRET_ACCESS_KEY"
-        )
+        key_id = cls.setting(instance, "api_key")
+        secret = cls.setting(instance, "aws_secret_key")
         if not (key_id and secret):
             raise TransientExternalError(
                 "AWS credentials not configured", provider=cls.name
@@ -81,9 +101,7 @@ class PRV_Amazon_SMS(AbstractSMSProvider):
 
         return boto3.client(
             "sns",
-            region_name=cls.resolve_setting(
-                instance, "aws_region", "AWS_REGION", default=DEFAULT_REGION
-            ),
+            region_name=cls.setting(instance, "aws_region"),
             aws_access_key_id=key_id,
             aws_secret_access_key=secret,
         )
@@ -95,7 +113,7 @@ class PRV_Amazon_SMS(AbstractSMSProvider):
         from botocore.exceptions import BotoCoreError, ClientError
 
         attributes: Dict[str, Any] = {}
-        sender = cls.resolve_setting(instance, "sender_id", "SNS_SMS_SENDER_ID")
+        sender = cls.setting(instance, "sender_id")
         if sender:
             if not (sender.isalnum() and len(sender) <= SENDER_ID_MAX):
                 raise InvalidInputExternalError(

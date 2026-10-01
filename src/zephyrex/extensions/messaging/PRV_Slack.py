@@ -7,8 +7,9 @@ message id is the message's ``ts``. Slack answers 200 with ``ok: false``
 on failure, so its error codes are mapped here.
 """
 
-from typing import Any, ClassVar, Dict, List
+from typing import Any, ClassVar, Dict, List, Tuple
 
+from zephyrex.extensions.AbstractExtensionProvider import InstanceSetting
 from zephyrex.extensions.ExternalErrors import (
     AuthExternalError,
     BaseExternalError,
@@ -42,12 +43,19 @@ class PRV_Slack_Messaging(AbstractMessagingProvider):
     friendly_name: ClassVar[str] = "Slack"
     description: ClassVar[str] = "Slack, as a bot"
     _env: ClassVar[Dict[str, Any]] = {"SLACK_BOT_TOKEN": ""}
+    instance_settings: ClassVar[Tuple[InstanceSetting, ...]] = (
+        InstanceSetting(
+            "api_key",
+            "Slack bot token (xoxb-…)",
+            env="SLACK_BOT_TOKEN",
+            secret=True,
+            field="api_key",
+        ),
+    )
 
     @classmethod
     def _headers(cls, instance: ProviderInstanceModel) -> Dict[str, str]:
-        token = cls.resolve_setting(
-            instance, "api_key", "SLACK_BOT_TOKEN", field="api_key"
-        )
+        token = cls.setting(instance, "api_key")
         if not token:
             raise TransientExternalError(
                 "Slack bot token not configured", provider=cls.name

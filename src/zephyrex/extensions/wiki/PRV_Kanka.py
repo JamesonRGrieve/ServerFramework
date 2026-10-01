@@ -9,9 +9,10 @@ first paragraph. The instance's API key is a campaign-scoped Bearer token
 (else ``KANKA_CAMPAIGN_ID``).
 """
 
-from typing import Any, ClassVar, Dict, List, Optional
+from typing import Any, ClassVar, Dict, List, Optional, Tuple
 from urllib.parse import quote
 
+from zephyrex.extensions.AbstractExtensionProvider import InstanceSetting
 from zephyrex.extensions.ExternalErrors import (
     InvalidInputExternalError,
     TransientExternalError,
@@ -34,12 +35,22 @@ class PRV_Kanka_Wiki(AbstractWikiProvider):
     friendly_name: ClassVar[str] = "Kanka"
     description: ClassVar[str] = "A Kanka campaign's entities"
     _env: ClassVar[Dict[str, Any]] = {"KANKA_API_TOKEN": "", "KANKA_CAMPAIGN_ID": ""}
+    instance_settings: ClassVar[Tuple[InstanceSetting, ...]] = (
+        InstanceSetting(
+            "api_key",
+            "Kanka campaign-scoped API token",
+            env="KANKA_API_TOKEN",
+            secret=True,
+            field="api_key",
+        ),
+        InstanceSetting(
+            "campaign_id", "Kanka campaign id (numeric)", env="KANKA_CAMPAIGN_ID"
+        ),
+    )
 
     @classmethod
     def campaign(cls, instance: Optional[ProviderInstanceModel]) -> str:
-        campaign = (
-            cls.resolve_setting(instance, "campaign_id", "KANKA_CAMPAIGN_ID") or ""
-        )
+        campaign = cls.setting(instance, "campaign_id") or ""
         if not campaign.isdigit():
             raise TransientExternalError(
                 "Kanka campaign_id not configured (a numeric id)", provider=cls.name
@@ -48,9 +59,7 @@ class PRV_Kanka_Wiki(AbstractWikiProvider):
 
     @classmethod
     def headers(cls, instance: Optional[ProviderInstanceModel]) -> Dict[str, str]:
-        token = cls.resolve_setting(
-            instance, "api_key", "KANKA_API_TOKEN", field="api_key"
-        )
+        token = cls.setting(instance, "api_key")
         if not token:
             raise TransientExternalError(
                 "Kanka API token not configured", provider=cls.name

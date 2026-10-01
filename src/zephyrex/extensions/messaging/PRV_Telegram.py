@@ -9,8 +9,9 @@ the chat.
 """
 
 import re
-from typing import Any, ClassVar, Dict, List
+from typing import Any, ClassVar, Dict, List, Tuple
 
+from zephyrex.extensions.AbstractExtensionProvider import InstanceSetting
 from zephyrex.extensions.ExternalErrors import (
     InvalidInputExternalError,
     TransientExternalError,
@@ -28,12 +29,19 @@ class PRV_Telegram_Messaging(AbstractMessagingProvider):
     friendly_name: ClassVar[str] = "Telegram"
     description: ClassVar[str] = "Telegram, as a bot"
     _env: ClassVar[Dict[str, Any]] = {"TELEGRAM_BOT_TOKEN": ""}
+    instance_settings: ClassVar[Tuple[InstanceSetting, ...]] = (
+        InstanceSetting(
+            "api_key",
+            "Telegram bot token (<id>:<secret>)",
+            env="TELEGRAM_BOT_TOKEN",
+            secret=True,
+            field="api_key",
+        ),
+    )
 
     @classmethod
     def _bot(cls, instance: ProviderInstanceModel) -> str:
-        token = cls.resolve_setting(
-            instance, "api_key", "TELEGRAM_BOT_TOKEN", field="api_key"
-        )
+        token = cls.setting(instance, "api_key")
         if not token:
             raise TransientExternalError(
                 "Telegram bot token not configured", provider=cls.name

@@ -10,8 +10,9 @@ template). Incoming messages arrive only by webhook, and sent messages
 cannot be deleted through the API.
 """
 
-from typing import Any, ClassVar, Dict, List
+from typing import Any, ClassVar, Dict, List, Tuple
 
+from zephyrex.extensions.AbstractExtensionProvider import InstanceSetting
 from zephyrex.extensions.ExternalErrors import TransientExternalError
 from zephyrex.extensions.messaging.EXT_Messaging import (
     AbstractMessagingProvider,
@@ -29,17 +30,27 @@ class PRV_WhatsApp_Messaging(AbstractMessagingProvider):
         "WHATSAPP_ACCESS_TOKEN": "",
         "WHATSAPP_PHONE_NUMBER_ID": "",
     }
+    instance_settings: ClassVar[Tuple[InstanceSetting, ...]] = (
+        InstanceSetting(
+            "api_key",
+            "WhatsApp Cloud API access token",
+            env="WHATSAPP_ACCESS_TOKEN",
+            secret=True,
+            field="api_key",
+        ),
+        InstanceSetting(
+            "phone_number_id",
+            "Sending business phone number id",
+            env="WHATSAPP_PHONE_NUMBER_ID",
+        ),
+    )
 
     @classmethod
     async def send_message(
         cls, instance: ProviderInstanceModel, recipient: str, text: str
     ) -> Dict[str, Any]:
-        token = cls.resolve_setting(
-            instance, "api_key", "WHATSAPP_ACCESS_TOKEN", field="api_key"
-        )
-        number = cls.resolve_setting(
-            instance, "phone_number_id", "WHATSAPP_PHONE_NUMBER_ID"
-        )
+        token = cls.setting(instance, "api_key")
+        number = cls.setting(instance, "phone_number_id")
         if not (token and number):
             raise TransientExternalError(
                 "WhatsApp access token and phone_number_id not configured",

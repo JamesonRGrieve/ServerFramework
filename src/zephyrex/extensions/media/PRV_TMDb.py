@@ -8,6 +8,7 @@ v4 read access token (a JWT, sent as a Bearer token). A native id is
 
 from typing import Any, ClassVar, Dict, List, Optional, Tuple
 
+from zephyrex.extensions.AbstractExtensionProvider import InstanceSetting
 from zephyrex.extensions.ExternalErrors import (
     InvalidInputExternalError,
     TransientExternalError,
@@ -27,13 +28,22 @@ class PRV_TMDb_Media(AbstractMediaProvider):
     friendly_name: ClassVar[str] = "TMDb"
     description: ClassVar[str] = "The Movie Database: movies and TV"
     _env: ClassVar[Dict[str, Any]] = {"TMDB_API_KEY": ""}
+    instance_settings: ClassVar[Tuple[InstanceSetting, ...]] = (
+        InstanceSetting(
+            "api_key",
+            "TMDb v3 API key or v4 read access token",
+            env="TMDB_API_KEY",
+            secret=True,
+            field="api_key",
+        ),
+    )
 
     @classmethod
     def _auth(
         cls, instance: ProviderInstanceModel
     ) -> Tuple[Dict[str, str], Dict[str, str]]:
         """``(params, headers)`` carrying the credential."""
-        key = cls.resolve_setting(instance, "api_key", "TMDB_API_KEY", field="api_key")
+        key = cls.setting(instance, "api_key")
         if not key:
             raise TransientExternalError(
                 "TMDb API key not configured", provider=cls.name

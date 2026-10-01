@@ -13,6 +13,7 @@ the call fails over (or the caller retries) while it wakes.
 
 from typing import Any, ClassVar, Dict, Tuple
 
+from zephyrex.extensions.AbstractExtensionProvider import InstanceSetting
 from zephyrex.extensions.automotive.EXT_Automotive import AbstractAutomotiveProvider
 from zephyrex.extensions.ExternalErrors import (
     InvalidInputExternalError,
@@ -42,6 +43,21 @@ class PRV_Tesla_Automotive(AbstractAutomotiveProvider):
         "TESLA_ACCESS_TOKEN": "",
         "TESLA_API_URL": TESLA_FLEET_API,
     }
+    instance_settings: ClassVar[Tuple[InstanceSetting, ...]] = (
+        InstanceSetting(
+            "api_key",
+            "Tesla Fleet API OAuth access token",
+            env="TESLA_ACCESS_TOKEN",
+            secret=True,
+            field="api_key",
+        ),
+        InstanceSetting(
+            "api_url",
+            "Fleet API regional endpoint, or the vehicle-command proxy",
+            env="TESLA_API_URL",
+            default=TESLA_FLEET_API,
+        ),
+    )
 
     @classmethod
     def _vehicle(
@@ -52,16 +68,12 @@ class PRV_Tesla_Automotive(AbstractAutomotiveProvider):
             raise InvalidInputExternalError(
                 f"{vehicle_id!r} is not a Tesla vehicle id", provider=cls.name
             )
-        token = cls.resolve_setting(
-            instance, "api_key", "TESLA_ACCESS_TOKEN", field="api_key"
-        )
+        token = cls.setting(instance, "api_key")
         if not token:
             raise TransientExternalError(
                 "Tesla access token not configured", provider=cls.name
             )
-        base = cls.resolve_setting(
-            instance, "api_url", "TESLA_API_URL", default=TESLA_FLEET_API
-        )
+        base = cls.setting(instance, "api_url")
         return (
             f"{(base or TESLA_FLEET_API).rstrip('/')}/api/1/vehicles/{vehicle_id}",
             {"Authorization": f"Bearer {token}"},

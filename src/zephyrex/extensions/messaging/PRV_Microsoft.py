@@ -9,9 +9,10 @@ the destination and a recipient is only a label. It can post, nothing
 more: history and deletion need Graph as a user.
 """
 
-from typing import Any, ClassVar, Dict, List
+from typing import Any, ClassVar, Dict, List, Tuple
 from urllib.parse import urlparse
 
+from zephyrex.extensions.AbstractExtensionProvider import InstanceSetting
 from zephyrex.extensions.ExternalErrors import (
     InvalidInputExternalError,
     TransientExternalError,
@@ -29,10 +30,18 @@ class PRV_Microsoft_Messaging(AbstractMessagingProvider):
     friendly_name: ClassVar[str] = "Microsoft Teams"
     description: ClassVar[str] = "Microsoft Teams, through a channel's incoming webhook"
     _env: ClassVar[Dict[str, Any]] = {"TEAMS_WEBHOOK_URL": ""}
+    instance_settings: ClassVar[Tuple[InstanceSetting, ...]] = (
+        InstanceSetting(
+            "webhook_url",
+            "The channel's Workflows or connector incoming-webhook URL",
+            env="TEAMS_WEBHOOK_URL",
+            secret=True,
+        ),
+    )
 
     @classmethod
     def _webhook(cls, instance: ProviderInstanceModel) -> str:
-        url = cls.resolve_setting(instance, "webhook_url", "TEAMS_WEBHOOK_URL")
+        url = cls.setting(instance, "webhook_url")
         if not url:
             raise TransientExternalError(
                 "Teams webhook_url not configured", provider=cls.name

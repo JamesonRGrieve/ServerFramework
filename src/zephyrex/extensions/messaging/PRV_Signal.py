@@ -14,6 +14,7 @@ A message id is the message's timestamp, which remote deletion takes.
 from typing import Any, ClassVar, Dict, List, Tuple
 from urllib.parse import quote
 
+from zephyrex.extensions.AbstractExtensionProvider import InstanceSetting
 from zephyrex.extensions.ExternalErrors import (
     InvalidInputExternalError,
     TransientExternalError,
@@ -27,12 +28,20 @@ class PRV_Signal_Messaging(AbstractMessagingProvider):
     friendly_name: ClassVar[str] = "Signal"
     description: ClassVar[str] = "Signal, through a signal-cli REST API"
     _env: ClassVar[Dict[str, Any]] = {"SIGNAL_API_URL": "", "SIGNAL_NUMBER": ""}
+    instance_settings: ClassVar[Tuple[InstanceSetting, ...]] = (
+        InstanceSetting(
+            "api_url", "signal-cli REST API base URL", env="SIGNAL_API_URL"
+        ),
+        InstanceSetting(
+            "number", "Registered Signal number that sends", env="SIGNAL_NUMBER"
+        ),
+    )
 
     @classmethod
     def _service(cls, instance: ProviderInstanceModel) -> Tuple[str, str]:
         """``(api url, sending number)``."""
-        url = cls.resolve_setting(instance, "api_url", "SIGNAL_API_URL")
-        number = cls.resolve_setting(instance, "number", "SIGNAL_NUMBER")
+        url = cls.setting(instance, "api_url")
+        number = cls.setting(instance, "number")
         if not (url and number):
             raise TransientExternalError(
                 "Signal api_url and number not configured", provider=cls.name

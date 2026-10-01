@@ -8,8 +8,9 @@ needs a message tag, which this provider does not send. Incoming messages
 arrive only by webhook, and sent messages cannot be deleted.
 """
 
-from typing import Any, ClassVar, Dict, List
+from typing import Any, ClassVar, Dict, List, Tuple
 
+from zephyrex.extensions.AbstractExtensionProvider import InstanceSetting
 from zephyrex.extensions.ExternalErrors import TransientExternalError
 from zephyrex.extensions.messaging.EXT_Messaging import (
     AbstractMessagingProvider,
@@ -23,14 +24,21 @@ class PRV_Facebook_Messaging(AbstractMessagingProvider):
     friendly_name: ClassVar[str] = "Facebook Messenger"
     description: ClassVar[str] = "Facebook Messenger, as a Page"
     _env: ClassVar[Dict[str, Any]] = {"MESSENGER_PAGE_TOKEN": ""}
+    instance_settings: ClassVar[Tuple[InstanceSetting, ...]] = (
+        InstanceSetting(
+            "api_key",
+            "Facebook Page access token",
+            env="MESSENGER_PAGE_TOKEN",
+            secret=True,
+            field="api_key",
+        ),
+    )
 
     @classmethod
     async def send_message(
         cls, instance: ProviderInstanceModel, recipient: str, text: str
     ) -> Dict[str, Any]:
-        token = cls.resolve_setting(
-            instance, "api_key", "MESSENGER_PAGE_TOKEN", field="api_key"
-        )
+        token = cls.setting(instance, "api_key")
         if not token:
             raise TransientExternalError(
                 "Messenger Page token not configured", provider=cls.name

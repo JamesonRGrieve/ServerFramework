@@ -7,8 +7,9 @@ The instance's API key is the auth token (else ``TWILIO_AUTH_TOKEN``); its
 """
 
 import asyncio
-from typing import Any, ClassVar, Dict
+from typing import Any, ClassVar, Dict, Tuple
 
+from zephyrex.extensions.AbstractExtensionProvider import InstanceSetting
 from zephyrex.extensions.ExternalErrors import (
     AuthExternalError,
     InvalidInputExternalError,
@@ -32,6 +33,21 @@ class PRV_Twilio_SMS(AbstractSMSProvider):
         "TWILIO_AUTH_TOKEN": "",
         "TWILIO_FROM_NUMBER": "",
     }
+    instance_settings: ClassVar[Tuple[InstanceSetting, ...]] = (
+        InstanceSetting(
+            "account_sid", "Twilio account SID (AC…)", env="TWILIO_ACCOUNT_SID"
+        ),
+        InstanceSetting(
+            "api_key",
+            "Twilio auth token",
+            env="TWILIO_AUTH_TOKEN",
+            secret=True,
+            field="api_key",
+        ),
+        InstanceSetting(
+            "from_number", "Sending number, E.164", env="TWILIO_FROM_NUMBER"
+        ),
+    )
     dependencies: ClassVar[Dependencies] = Dependencies(
         [
             PIP_Dependency(
@@ -49,10 +65,8 @@ class PRV_Twilio_SMS(AbstractSMSProvider):
             raise TransientExternalError(
                 "twilio package not installed", provider=cls.name
             )
-        account_sid = cls.resolve_setting(instance, "account_sid", "TWILIO_ACCOUNT_SID")
-        token = cls.resolve_setting(
-            instance, "api_key", "TWILIO_AUTH_TOKEN", field="api_key"
-        )
+        account_sid = cls.setting(instance, "account_sid")
+        token = cls.setting(instance, "api_key")
         if not (account_sid and token):
             raise TransientExternalError(
                 "Twilio account_sid and auth token not configured", provider=cls.name
@@ -85,7 +99,7 @@ class PRV_Twilio_SMS(AbstractSMSProvider):
     async def send_sms(
         cls, instance: ProviderInstanceModel, phone_number: str, message: str
     ) -> Dict[str, Any]:
-        sender = cls.resolve_setting(instance, "from_number", "TWILIO_FROM_NUMBER")
+        sender = cls.setting(instance, "from_number")
         if not sender:
             raise TransientExternalError(
                 "Twilio from_number not configured", provider=cls.name

@@ -12,6 +12,7 @@ query can read and cannot retract a message.
 
 from typing import Any, ClassVar, Dict, List, Tuple
 
+from zephyrex.extensions.AbstractExtensionProvider import InstanceSetting
 from zephyrex.extensions.ExternalErrors import (
     AuthExternalError,
     InvalidInputExternalError,
@@ -39,6 +40,21 @@ class PRV_TeamSpeak_Messaging(AbstractMessagingProvider):
         "TEAMSPEAK_API_KEY": "",
         "TEAMSPEAK_SERVER_ID": "1",
     }
+    instance_settings: ClassVar[Tuple[InstanceSetting, ...]] = (
+        InstanceSetting(
+            "api_key",
+            "WebQuery API key",
+            env="TEAMSPEAK_API_KEY",
+            secret=True,
+            field="api_key",
+        ),
+        InstanceSetting(
+            "api_url", "WebQuery base URL (https://host:10443)", env="TEAMSPEAK_API_URL"
+        ),
+        InstanceSetting(
+            "server_id", "Virtual server id", env="TEAMSPEAK_SERVER_ID", default="1"
+        ),
+    )
 
     @classmethod
     def _target(cls, recipient: str) -> Tuple[int, str]:
@@ -62,13 +78,9 @@ class PRV_TeamSpeak_Messaging(AbstractMessagingProvider):
         cls, instance: ProviderInstanceModel, recipient: str, text: str
     ) -> Dict[str, Any]:
         mode, target = cls._target(recipient)
-        url = cls.resolve_setting(instance, "api_url", "TEAMSPEAK_API_URL")
-        key = cls.resolve_setting(
-            instance, "api_key", "TEAMSPEAK_API_KEY", field="api_key"
-        )
-        server = cls.resolve_setting(
-            instance, "server_id", "TEAMSPEAK_SERVER_ID", default="1"
-        )
+        url = cls.setting(instance, "api_url")
+        key = cls.setting(instance, "api_key")
+        server = cls.setting(instance, "server_id")
         if not (url and key):
             raise TransientExternalError(
                 "TeamSpeak api_url and API key not configured", provider=cls.name

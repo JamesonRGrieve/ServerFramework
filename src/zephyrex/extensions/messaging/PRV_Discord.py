@@ -6,8 +6,9 @@ recipient is a channel id the bot can see. Reading history needs the
 Message Content intent for the text to be returned.
 """
 
-from typing import Any, ClassVar, Dict, List
+from typing import Any, ClassVar, Dict, List, Tuple
 
+from zephyrex.extensions.AbstractExtensionProvider import InstanceSetting
 from zephyrex.extensions.ExternalErrors import TransientExternalError
 from zephyrex.extensions.messaging.EXT_Messaging import (
     AbstractMessagingProvider,
@@ -23,12 +24,19 @@ class PRV_Discord_Messaging(AbstractMessagingProvider):
     friendly_name: ClassVar[str] = "Discord"
     description: ClassVar[str] = "Discord, as a bot"
     _env: ClassVar[Dict[str, Any]] = {"DISCORD_BOT_TOKEN": ""}
+    instance_settings: ClassVar[Tuple[InstanceSetting, ...]] = (
+        InstanceSetting(
+            "api_key",
+            "Discord bot token",
+            env="DISCORD_BOT_TOKEN",
+            secret=True,
+            field="api_key",
+        ),
+    )
 
     @classmethod
     def _headers(cls, instance: ProviderInstanceModel) -> Dict[str, str]:
-        token = cls.resolve_setting(
-            instance, "api_key", "DISCORD_BOT_TOKEN", field="api_key"
-        )
+        token = cls.setting(instance, "api_key")
         if not token:
             raise TransientExternalError(
                 "Discord bot token not configured", provider=cls.name
