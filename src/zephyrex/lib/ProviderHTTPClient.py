@@ -107,6 +107,14 @@ class SSRFGuardError(ValueError):
     """Raised when an outbound URL targets a blocked destination (H-2)."""
 
 
+def _where(url: str) -> str:
+    """The scheme and host of ``url``: what a failure message may name. A
+    path or query can carry a secret (a Telegram bot token is a path
+    segment, API keys travel as parameters)."""
+    parsed = urlparse(url)
+    return f"{parsed.scheme}://{parsed.netloc}" if parsed.netloc else "<url>"
+
+
 def _allowed_hosts() -> List[str]:
     raw = (os.environ.get("EGRESS_ALLOWED_HOSTS") or "").strip()
     if not raw:
@@ -577,13 +585,13 @@ class ProviderHTTPClient:
             )
         except httpx.TimeoutException as exc:
             raise TransientExternalError(
-                f"Timeout calling {method} {url}",
+                f"Timeout calling {method} {_where(url)}",
                 provider=self.provider_name,
                 cause=exc,
             )
         except httpx.RequestError as exc:
             raise TransientExternalError(
-                f"Network error calling {method} {url}: {exc!s}",
+                f"Network error calling {method} {_where(url)}: {exc!s}",
                 provider=self.provider_name,
                 cause=exc,
             )
@@ -690,13 +698,13 @@ class ProviderHTTPClientSync:
             )
         except httpx.TimeoutException as exc:
             raise TransientExternalError(
-                f"Timeout calling {method} {url}",
+                f"Timeout calling {method} {_where(url)}",
                 provider=self.provider_name,
                 cause=exc,
             )
         except httpx.RequestError as exc:
             raise TransientExternalError(
-                f"Network error calling {method} {url}: {exc!s}",
+                f"Network error calling {method} {_where(url)}: {exc!s}",
                 provider=self.provider_name,
                 cause=exc,
             )

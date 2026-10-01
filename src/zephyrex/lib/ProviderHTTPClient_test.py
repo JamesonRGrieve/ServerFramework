@@ -116,6 +116,25 @@ async def test_requests_name_zephyrex_and_the_deployments_source(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_a_failure_names_the_host_never_the_path_or_query(monkeypatch):
+    """A Telegram bot token is a path segment and keys travel as query
+    parameters: neither may reach an error message (or a log)."""
+    from zephyrex.extensions.ExternalErrors import TransientExternalError
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("refused", request=request)
+
+    _patch_client_with_handler(monkeypatch, handler)
+    with pytest.raises(TransientExternalError) as raised:
+        await ProviderHTTPClient().get(
+            "https://api.example/bot123:SECRET/sendMessage?key=SECRET2"
+        )
+    assert "https://api.example" in raised.value.message
+    assert "SECRET" not in raised.value.message
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_idempotency_header_injected(monkeypatch):
     captured = {}
 
