@@ -6,7 +6,7 @@
 
 name = "maps"
 version = "1.0.0"
-description = "Maps integration extension for connecting to various mapping services"
+description = "Place search, geocoding and directions across OpenStreetMap, Google Maps and Apple Maps"
 author = "ZephyrexTechnologies"
 entry_module = "EXT_Maps"
 minimum_framework_version = "0.0.0"
