@@ -40,6 +40,11 @@ def test_unwrap_optional_only_unwraps_single_member_optionals():
 
 
 def test_non_none_args_strips_only_none():
+    """Members, not their order: typing caches unions by set equality, so
+    ``Optional[Union[int, str]]`` can come back as an earlier-built
+    ``Union[str, int, None]`` (the pre-commit suite hit exactly that)."""
     assert non_none_args(int | None) == (int,)
-    assert non_none_args(Optional[Union[int, str]]) == (int, str)
-    assert non_none_args(int | str) == (int, str)
+    for union in (Optional[Union[int, str]], int | str):
+        members = non_none_args(union)
+        assert len(members) == 2
+        assert set(members) == {int, str}
