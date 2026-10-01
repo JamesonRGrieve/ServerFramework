@@ -1,502 +1,279 @@
-import ast
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""Mathematics: arithmetic, equation solving, derivatives and integrals
+through the provider rotation (SymPy locally, or Wolfram|Alpha), and
+descriptive statistics and line graphs computed here.
+
+Every provider answers in the same shapes: ``calculate`` gives
+``{"result", "decimal"}``, ``solve`` ``{"variable", "solutions"}``,
+``differentiate`` ``{"result"}`` and ``integrate`` ``{"result",
+"evaluated"}`` (False when no closed form was found), each with the
+``provider`` that answered. Expressions use ``^`` or ``**`` for powers.
+"""
+
+import asyncio
+import base64
+import io
 import math
-import operator
-import os
-import tempfile
-import uuid
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Set
-
-import matplotlib
-
-matplotlib.use("Agg")
-
-import matplotlib.pyplot as plt  # noqa: E402
-import numpy as np  # noqa: E402
-import sympy  # noqa: E402
+import statistics
+from abc import abstractmethod
+from typing import Any, ClassVar, Dict, List, Optional, Set
 
 from zephyrex.extensions.AbstractExtensionProvider import (
+    AbstractProviderInstance,
     AbstractStaticExtension,
+    AbstractStaticProvider,
     ability,
 )
-from zephyrex.lib.Dependencies import EXT_Dependency, PIP_Dependency
-from zephyrex.lib.Logging import logger
+from zephyrex.extensions.ExternalErrors import InvalidInputExternalError
+from zephyrex.extensions.math.Symbolic import MAX_EXPRESSION_LENGTH, VARIABLE_NAME
+from zephyrex.lib.Dependencies import Dependencies, PIP_Dependency
+from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 
-# Whitelisted operators/functions for `_safe_eval`. Kept at module scope so
-# the mapping is built once (not per-call) and stays trivially auditable --
-# nothing outside these dicts is ever reachable from user input.
-_ALLOWED_BINOPS = {
-    ast.Add: operator.add,
-    ast.Sub: operator.sub,
-    ast.Mult: operator.mul,
-    ast.Div: operator.truediv,
-    ast.FloorDiv: operator.floordiv,
-    ast.Mod: operator.mod,
-    ast.Pow: operator.pow,
-}
+MATH_REQUEST_TIMEOUT_SECONDS = 20.0
+MAX_DERIVATIVE_ORDER = 10
+MAX_DATA_POINTS = 100_000
+MAX_TITLE_LENGTH = 200
+GRAPH_SIZE_INCHES = (8.0, 6.0)
+GRAPH_DPI = 100
 
-# Only unary minus is supported. Unary plus (`+3`) is intentionally excluded
-# so malformed-looking expressions such as "2 + + 3" are rejected rather than
-# silently accepted.
-_ALLOWED_UNARYOPS = {
-    ast.USub: operator.neg,
-}
 
-_ALLOWED_NAMES: Dict[str, float] = {
-    "pi": math.pi,
-    "e": math.e,
-}
+def checked_text(text: str, what: str) -> str:
+    if not text.strip():
+        raise InvalidInputExternalError(f"{what} is empty")
+    if len(text) > MAX_EXPRESSION_LENGTH:
+        raise InvalidInputExternalError(
+            f"{what} is at most {MAX_EXPRESSION_LENGTH} characters"
+        )
+    return text
 
-_ALLOWED_FUNCTIONS: Dict[str, Any] = {
-    "abs": abs,
-    "round": round,
-    "sqrt": math.sqrt,
-    "sin": math.sin,
-    "cos": math.cos,
-    "tan": math.tan,
-    "asin": math.asin,
-    "acos": math.acos,
-    "atan": math.atan,
-    "sinh": math.sinh,
-    "cosh": math.cosh,
-    "tanh": math.tanh,
-    "exp": math.exp,
-    "log": math.log,
-    "log10": math.log10,
-    "pow": math.pow,
-    "ceil": math.ceil,
-    "floor": math.floor,
-    "degrees": math.degrees,
-    "radians": math.radians,
-}
 
-# Calculation history is capped so a long-running agent session can't grow
-# it without bound.
-_MAX_HISTORY_SIZE = 100
+def checked_variable(name: str) -> str:
+    if not VARIABLE_NAME.match(name):
+        raise InvalidInputExternalError(f"{name!r} is not a variable name")
+    return name
+
+
+def checked_data(values: List[float], what: str) -> List[float]:
+    if not values:
+        raise InvalidInputExternalError(f"{what} is empty")
+    if len(values) > MAX_DATA_POINTS:
+        raise InvalidInputExternalError(f"{what} has over {MAX_DATA_POINTS} values")
+    numbers = [float(value) for value in values]
+    if not all(math.isfinite(number) for number in numbers):
+        raise InvalidInputExternalError(f"{what} holds a non-finite value")
+    return numbers
+
+
+def describe(values: List[float]) -> Dict[str, Any]:
+    """Descriptive statistics of ``values``; the sample spread is None for
+    a single value."""
+    data = checked_data(values, "data")
+    several = len(data) > 1
+    return {
+        "count": len(data),
+        "sum": math.fsum(data),
+        "mean": statistics.fmean(data),
+        "median": statistics.median(data),
+        "min": min(data),
+        "max": max(data),
+        "population_std_dev": statistics.pstdev(data),
+        "population_variance": statistics.pvariance(data),
+        "sample_std_dev": statistics.stdev(data) if several else None,
+        "sample_variance": statistics.variance(data) if several else None,
+    }
+
+
+def line_graph(x_data: List[float], y_data: List[float], title: str) -> bytes:
+    """A PNG line graph of ``y_data`` against ``x_data``."""
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from matplotlib.figure import Figure
+
+    xs, ys = checked_data(x_data, "x_data"), checked_data(y_data, "y_data")
+    if len(xs) != len(ys):
+        raise InvalidInputExternalError("x_data and y_data differ in length")
+    if len(title) > MAX_TITLE_LENGTH:
+        raise InvalidInputExternalError(
+            f"title is at most {MAX_TITLE_LENGTH} characters"
+        )
+    # The object API, not pyplot: pyplot's global state is not thread-safe.
+    figure = Figure(figsize=GRAPH_SIZE_INCHES, dpi=GRAPH_DPI)
+    FigureCanvasAgg(figure)
+    axes = figure.add_subplot()
+    axes.plot(xs, ys)
+    axes.set_title(title)
+    axes.grid(True)
+    buffer = io.BytesIO()
+    figure.savefig(buffer, format="png")
+    return buffer.getvalue()
+
+
+class AbstractMathProvider(AbstractStaticProvider):
+    """A mathematics engine."""
+
+    name: ClassVar[str] = ""
+    friendly_name: ClassVar[str] = ""
+    description: ClassVar[str] = ""
+    _abilities: ClassVar[Set[str]] = {
+        "calculate_expression",
+        "solve_equation",
+        "differentiate",
+        "integrate",
+    }
+    _env: ClassVar[Dict[str, Any]] = {}
+    http_timeout_seconds: ClassVar[float] = MATH_REQUEST_TIMEOUT_SECONDS
+
+    @classmethod
+    def bond_instance(cls, instance: ProviderInstanceModel) -> AbstractProviderInstance:
+        return AbstractProviderInstance(instance)
+
+    @classmethod
+    @abstractmethod
+    async def calculate(
+        cls, instance: ProviderInstanceModel, expression: str
+    ) -> Dict[str, Any]:
+        """The value of a numeric expression."""
+
+    @classmethod
+    @abstractmethod
+    async def solve(
+        cls, instance: ProviderInstanceModel, equation: str, variable: Optional[str]
+    ) -> Dict[str, Any]:
+        """The solutions of ``equation`` for ``variable`` (its only unknown
+        when None)."""
+
+    @classmethod
+    @abstractmethod
+    async def differentiate(
+        cls, instance: ProviderInstanceModel, expression: str, variable: str, order: int
+    ) -> Dict[str, Any]:
+        """The ``order``-th derivative."""
+
+    @classmethod
+    @abstractmethod
+    async def integrate(
+        cls,
+        instance: ProviderInstanceModel,
+        expression: str,
+        variable: str,
+        lower: Optional[str],
+        upper: Optional[str],
+    ) -> Dict[str, Any]:
+        """The indefinite integral, or the definite one between bounds."""
+
+    @classmethod
+    def services(cls) -> List[str]:
+        return ["math", "symbolic_math"]
 
 
 class EXT_Math(AbstractStaticExtension):
-    """
-    Math extension for AGInfrastructure.
+    name: ClassVar[str] = "math"
+    version: ClassVar[str] = "1.0.0"
+    description: ClassVar[str] = (
+        "Arithmetic, equations, calculus, statistics and graphs, with SymPy "
+        "or Wolfram|Alpha"
+    )
 
-    Provides mathematical computation capabilities: safe expression
-    evaluation, equation solving, statistical analysis, and graphing.
-    """
+    _env: ClassVar[Dict[str, Any]] = {}
+    dependencies: ClassVar[Dependencies] = Dependencies(
+        [
+            PIP_Dependency(
+                name="sympy",
+                friendly_name="SymPy",
+                semver=">=1.12",
+                reason="Parsing expressions and the local symbolic engine",
+            ),
+            PIP_Dependency(
+                name="matplotlib",
+                friendly_name="Matplotlib",
+                semver=">=3.7",
+                reason="Rendering line graphs",
+            ),
+        ]
+    )
+    _abilities: ClassVar[Set[str]] = {
+        "calculate_expression",
+        "solve_equation",
+        "differentiate",
+        "integrate",
+        "analyze_statistics",
+        "create_graph",
+    }
 
-    # Extension metadata
-    name = "math"
-    version = "1.0.0"
-    description = "Math extension for mathematical calculations and analysis"
-
-    # Define dependencies
-    ext_dependencies = [
-        EXT_Dependency(
-            name="core",
-            friendly_name="Core Extension",
-            optional=False,
-            reason="Required for base extension registration and permissions.",
-        ),
-    ]
-
-    pip_dependencies = [
-        PIP_Dependency(
-            name="numpy",
-            friendly_name="NumPy",
-            optional=False,
-            semver=">=1.21.0",
-            reason="Statistical analysis (mean, median, std dev, variance).",
-        ),
-        PIP_Dependency(
-            name="scipy",
-            friendly_name="SciPy",
-            optional=True,
-            semver=">=1.7.0",
-            reason="Extended scientific computing functions.",
-        ),
-        PIP_Dependency(
-            name="sympy",
-            friendly_name="SymPy",
-            optional=False,
-            semver=">=1.9",
-            reason="Symbolic math and equation solving.",
-        ),
-        PIP_Dependency(
-            name="matplotlib",
-            friendly_name="Matplotlib",
-            optional=False,
-            semver=">=3.4",
-            reason="Rendering graphs/plots to disk.",
-        ),
-    ]
-
-    sys_dependencies: List[Any] = []
-
-    # Capabilities this extension provides.
-    capabilities: List[str] = [
-        "basic_arithmetic",
-        "advanced_math",
-        "statistical_analysis",
-        "graphing",
-        "symbolic_math",
-        "equation_solving",
-    ]
-
-    # Define database tables
-    db_tables: List[Any] = []
-
-    def __init__(self, precision: int = 10, **kwargs: Any) -> None:
-        """
-        Initialize the Math extension.
-
-        Args:
-            precision: Number of decimal places used by `_format_result`.
-            **kwargs: Forwarded to the base extension.
-        """
-        super().__init__(**kwargs)
-
-        self.precision = precision
-        # Per-instance copies so mutating state (capabilities, history) on
-        # one instance never leaks into another via the shared class attrs.
-        self.capabilities = list(self.__class__.capabilities)
-        self.calculation_history: List[Dict[str, Any]] = []
-
-    def on_initialize(self) -> bool:
-        """Initialize the Math extension, registering its capabilities."""
-        logger.debug("Initializing Math Extension...")
-
-        try:
-            for capability in self.__class__.capabilities:
-                self.register_capability(capability)
-
-            logger.debug("Math extension initialized successfully")
-            return True
-
-        except Exception as e:
-            logger.error(f"Failed to initialize Math extension: {str(e)}")
-            return False
-
-    def get_capabilities(self) -> Set[str]:
-        """Return the capabilities this extension provides."""
-        return set(self.capabilities)
-
-    def register_capability(self, capability: str) -> None:
-        """Register a new capability."""
-        if capability not in self.capabilities:
-            self.capabilities.append(capability)
-
-    def get_registered_capabilities(self) -> Set[str]:
-        """Return currently registered capabilities."""
-        return set(self.capabilities)
-
-    def has_capability(self, capability: str) -> bool:
-        """Check if this extension has a specific capability."""
-        return capability in self.capabilities
-
+    @classmethod
     @ability("calculate_expression")
-    async def calculate_expression(self, expression: str) -> Dict[str, Any]:
-        """
-        Evaluate a mathematical expression using the safe AST-based evaluator.
+    async def calculate_expression(cls, expression: str) -> Dict[str, Any]:
+        """The value of a numeric expression, exact and as a decimal."""
+        result: Dict[str, Any] = await cls.rotate_provider(
+            "calculate", checked_text(expression, "expression")
+        )
+        return result
 
-        Args:
-            expression: The mathematical expression to evaluate.
-
-        Returns:
-            A dict with `success`, and either `result`/`expression` or
-            `error`/`message` on failure.
-        """
-        try:
-            result = self._safe_eval(expression)
-            self._add_to_history(expression, result)
-            return {
-                "success": True,
-                "result": result,
-                "expression": expression,
-            }
-        except Exception as e:
-            return {
-                "success": False,
-                "error": str(e),
-                "message": f"Failed to calculate expression: {str(e)}",
-            }
-
+    @classmethod
     @ability("solve_equation")
     async def solve_equation(
-        self, equation: str, variable: str = "x"
+        cls, equation: str, variable: Optional[str] = None
     ) -> Dict[str, Any]:
-        """
-        Solve a mathematical equation for a given variable using SymPy.
+        """The solutions of ``lhs = rhs`` (a bare expression equals zero)."""
+        result: Dict[str, Any] = await cls.rotate_provider(
+            "solve",
+            checked_text(equation, "equation"),
+            checked_variable(variable) if variable else None,
+        )
+        return result
 
-        Args:
-            equation: The equation to solve (implicitly set to zero).
-            variable: The variable to solve for.
+    @classmethod
+    @ability("differentiate")
+    async def differentiate(
+        cls, expression: str, variable: str = "x", order: int = 1
+    ) -> Dict[str, Any]:
+        """The ``order``-th derivative with respect to ``variable``."""
+        if not 1 <= order <= MAX_DERIVATIVE_ORDER:
+            raise InvalidInputExternalError(f"order must be 1-{MAX_DERIVATIVE_ORDER}")
+        result: Dict[str, Any] = await cls.rotate_provider(
+            "differentiate",
+            checked_text(expression, "expression"),
+            checked_variable(variable),
+            order,
+        )
+        return result
 
-        Returns:
-            A dict with `success`, and either `solutions`/`equation`/
-            `variable` or `error`/`message` on failure.
-        """
-        try:
-            symbol = sympy.Symbol(variable)
-            expr = sympy.sympify(equation)
-            solutions = sympy.solve(expr, symbol)
-            return {
-                "success": True,
-                "solutions": solutions,
-                "equation": equation,
-                "variable": variable,
-            }
-        except Exception as e:
-            return {
-                "success": False,
-                "error": str(e),
-                "message": f"Failed to solve equation: {str(e)}",
-            }
+    @classmethod
+    @ability("integrate")
+    async def integrate(
+        cls,
+        expression: str,
+        variable: str = "x",
+        lower: Optional[str] = None,
+        upper: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """The integral with respect to ``variable``; definite when both
+        bounds are given."""
+        if (lower is None) != (upper is None):
+            raise InvalidInputExternalError("a definite integral needs both bounds")
+        result: Dict[str, Any] = await cls.rotate_provider(
+            "integrate",
+            checked_text(expression, "expression"),
+            checked_variable(variable),
+            checked_text(lower, "lower bound") if lower is not None else None,
+            checked_text(upper, "upper bound") if upper is not None else None,
+        )
+        return result
 
+    @classmethod
     @ability("analyze_statistics")
-    async def analyze_statistics(self, data: List[float]) -> Dict[str, Any]:
-        """
-        Compute descriptive statistics (mean, median, std dev, variance)
-        for a dataset.
+    async def analyze_statistics(cls, data: List[float]) -> Dict[str, Any]:
+        """Count, sum, mean, median, extremes and spread of ``data``."""
+        return describe(data)
 
-        Args:
-            data: The numeric data to analyze.
-
-        Returns:
-            A dict with `success` and the computed statistics, or
-            `success: False` and a `message` describing the failure.
-        """
-        if not data:
-            return {"success": False, "message": "Cannot analyze empty dataset"}
-
-        try:
-            array = np.array(data, dtype=float)
-            return {
-                "success": True,
-                "mean": float(np.mean(array)),
-                "median": float(np.median(array)),
-                "std_dev": float(np.std(array)),
-                "variance": float(np.var(array)),
-                "count": len(data),
-            }
-        except Exception as e:
-            return {
-                "success": False,
-                "message": f"Failed to analyze statistics: {str(e)}",
-            }
-
+    @classmethod
     @ability("create_graph")
     async def create_graph(
-        self,
-        x_data: List[float],
-        y_data: List[float],
-        title: str = "Mathematical Graph",
+        cls, x_data: List[float], y_data: List[float], title: str = "Graph"
     ) -> Dict[str, Any]:
-        """
-        Render a line graph of `y_data` against `x_data` to a PNG file.
-
-        Args:
-            x_data: X-axis values.
-            y_data: Y-axis values.
-            title: Graph title.
-
-        Returns:
-            A dict with `success`, `graph_path`, and `title` on success, or
-            `success: False` and a `message` describing the failure.
-        """
-        if not x_data or not y_data:
-            return {"success": False, "message": "Data arrays cannot be empty"}
-
-        if len(x_data) != len(y_data):
-            return {
-                "success": False,
-                "message": "Data arrays must have the same length",
-            }
-
-        try:
-            figure = plt.figure()
-            plt.plot(x_data, y_data)
-            plt.title(title)
-
-            graph_dir = os.path.join(tempfile.gettempdir(), "zephyrex_math_graphs")
-            os.makedirs(graph_dir, exist_ok=True)
-            graph_path = os.path.join(graph_dir, f"graph_{uuid.uuid4().hex}.png")
-            plt.savefig(graph_path)
-            plt.close(figure)
-
-            return {
-                "success": True,
-                "graph_path": graph_path,
-                "title": title,
-            }
-        except Exception as e:
-            return {
-                "success": False,
-                "message": f"Failed to create graph: {str(e)}",
-            }
-
-    def _safe_eval(self, expression: str) -> Any:
-        """
-        Safely evaluate a mathematical expression via a whitelisted AST walk.
-
-        Only literal numbers, the basic arithmetic operators, unary minus,
-        the constants `pi`/`e`, and a fixed set of `math` functions are
-        reachable -- no name lookup, attribute access, or arbitrary calls.
-
-        Args:
-            expression: The expression to evaluate.
-
-        Returns:
-            The numeric result.
-
-        Raises:
-            ValueError: If the expression uses anything outside the
-                whitelist, or contains invalid syntax.
-        """
-        try:
-            tree = ast.parse(expression.replace("^", "**"), mode="eval")
-        except SyntaxError as e:
-            raise ValueError(f"Invalid expression syntax: {expression}") from e
-
-        return self._eval_ast_node(tree.body)
-
-    def _eval_ast_node(self, node: ast.AST) -> Any:
-        """Recursively evaluate a single whitelisted AST node."""
-        if isinstance(node, ast.Constant):
-            if isinstance(node.value, bool) or not isinstance(node.value, (int, float)):
-                raise ValueError(f"Unsupported constant: {node.value!r}")
-            return node.value
-
-        if isinstance(node, ast.BinOp):
-            op_type = type(node.op)
-            if op_type not in _ALLOWED_BINOPS:
-                raise ValueError(f"Unsupported operator: {op_type.__name__}")
-            left = self._eval_ast_node(node.left)
-            right = self._eval_ast_node(node.right)
-            return _ALLOWED_BINOPS[op_type](left, right)
-
-        if isinstance(node, ast.UnaryOp):
-            unary_op_type = type(node.op)
-            if unary_op_type not in _ALLOWED_UNARYOPS:
-                raise ValueError(
-                    f"Unsupported unary operator: {unary_op_type.__name__}"
-                )
-            return _ALLOWED_UNARYOPS[unary_op_type](self._eval_ast_node(node.operand))
-
-        if isinstance(node, ast.Name):
-            if node.id in _ALLOWED_NAMES:
-                return _ALLOWED_NAMES[node.id]
-            raise ValueError(f"Use of name '{node.id}' is not allowed")
-
-        if isinstance(node, ast.Call):
-            if (
-                not isinstance(node.func, ast.Name)
-                or node.func.id not in _ALLOWED_FUNCTIONS
-            ):
-                func_name = getattr(node.func, "id", "<expression>")
-                raise ValueError(f"Use of function '{func_name}' is not allowed")
-            if node.keywords:
-                raise ValueError("Keyword arguments are not allowed")
-            args = [self._eval_ast_node(arg) for arg in node.args]
-            return _ALLOWED_FUNCTIONS[node.func.id](*args)
-
-        raise ValueError(f"Unsupported expression element: {type(node).__name__}")
-
-    def _format_result(self, value: Any) -> Any:
-        """
-        Format a numeric result to the extension's configured precision.
-
-        Integers pass through unchanged; floats are rounded to
-        `self.precision` decimal places.
-        """
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, int):
-            return value
-        if isinstance(value, float):
-            return round(value, self.precision)
-        return value
-
-    def _add_to_history(self, expression: str, result: Any) -> None:
-        """Record a calculation in the history, capped at the last 100."""
-        self.calculation_history.append(
-            {
-                "expression": expression,
-                "result": result,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            }
-        )
-        if len(self.calculation_history) > _MAX_HISTORY_SIZE:
-            self.calculation_history = self.calculation_history[-_MAX_HISTORY_SIZE:]
-
-    def get_calculation_history(self) -> List[Dict[str, Any]]:
-        """Return a copy of the calculation history."""
-        return list(self.calculation_history)
-
-    def clear_history(self) -> None:
-        """Clear the calculation history."""
-        self.calculation_history = []
-
-    def set_precision(self, precision: int) -> None:
-        """
-        Set the number of decimal places used by `_format_result`.
-
-        Raises:
-            TypeError: If `precision` is not an integer.
-            ValueError: If `precision` is not positive.
-        """
-        if not isinstance(precision, int) or isinstance(precision, bool):
-            raise TypeError("precision must be an integer")
-        if precision < 1:
-            raise ValueError("precision must be a positive integer")
-        self.precision = precision
-
-    def get_precision(self) -> int:
-        """Return the current precision setting."""
-        return self.precision
-
-    def get_required_permissions(self) -> List[str]:
-        """Return the list of permissions required by this extension."""
-        return [
-            "math:calculate",
-            "math:analyze",
-            "math:graph",
-            "file:write",  # For saving graphs
-        ]
-
-    def on_start(self) -> bool:
-        """Start the Math extension."""
-        try:
-            logger.debug("Math extension started successfully")
-            return True
-        except Exception as e:
-            logger.error(f"Failed to start Math extension: {e}")
-            return False
-
-    def on_stop(self) -> bool:
-        """Stop the Math extension."""
-        try:
-            logger.debug("Math extension stopped successfully")
-            return True
-        except Exception as e:
-            logger.error(f"Error stopping Math extension: {e}")
-            return False
-
-    def validate_config(self) -> List[str]:
-        """Validate the extension configuration."""
-        issues = []
-
-        if (
-            not isinstance(self.precision, int)
-            or isinstance(self.precision, bool)
-            or self.precision < 1
-        ):
-            issues.append("Precision must be a positive integer")
-
-        return issues
-
-    def on_startup(self) -> None:
-        """Called during application startup."""
-        logger.debug("Math extension startup hook called")
-
-    def on_shutdown(self) -> None:
-        """Called during application shutdown."""
-        logger.debug("Math extension shutdown hook called")
+        """A line graph, as a base64 PNG."""
+        png = await asyncio.to_thread(line_graph, x_data, y_data, title)
+        return {
+            "title": title,
+            "media_type": "image/png",
+            "image_base64": base64.b64encode(png).decode("ascii"),
+        }

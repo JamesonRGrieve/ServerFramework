@@ -209,6 +209,8 @@ EXTERNAL_API_PROVIDER_ENV_VARS: Dict[str, List[str]] = {
     # Cloud storage round trips: a bucket and a Nextcloud account for tests.
     "s3_test": ["S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY", "S3_BUCKET"],
     "nextcloud_test": ["NEXTCLOUD_URL", "NEXTCLOUD_USERNAME", "NEXTCLOUD_APP_PASSWORD"],
+    # Math: a Wolfram|Alpha AppID (the free developer tier).
+    "wolfram_alpha": ["WOLFRAM_ALPHA_APPID"],
     # SendGrid sandbox.
     "sendgrid": ["SENDGRID_API_KEY"],
     # Twilio sandbox.
