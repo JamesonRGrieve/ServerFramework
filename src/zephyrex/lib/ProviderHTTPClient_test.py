@@ -21,6 +21,7 @@ from zephyrex.lib.ProviderHTTPClient import (
     ProviderHTTPClientSync,
     _shared_clients,
     _shared_sync_clients,
+    _shared_unbound_clients,
     get_async_client,
     get_sync_client,
     get_traceparent,
@@ -31,9 +32,11 @@ from zephyrex.lib.ProviderHTTPClient import (
 @pytest.fixture(autouse=True)
 def _clear_pool():
     _shared_clients.clear()
+    _shared_unbound_clients.clear()
     _shared_sync_clients.clear()
     yield
     _shared_clients.clear()
+    _shared_unbound_clients.clear()
     _shared_sync_clients.clear()
 
 
@@ -196,6 +199,27 @@ def test_pool_reuses_clients_for_same_policy():
     s1 = get_sync_client(ClientPolicy())
     s2 = get_sync_client(ClientPolicy())
     assert s1 is s2
+
+
+@pytest.mark.unit
+def test_each_event_loop_gets_its_own_client():
+    """An httpx.AsyncClient is bound to the loop it first sends on; sharing
+    one across loops failed with "Event loop is closed" (every async test
+    runs in a loop of its own)."""
+    import asyncio
+
+    async def pooled():
+        return get_async_client(ClientPolicy())
+
+    first = asyncio.run(pooled())
+    second = asyncio.run(pooled())
+    assert first is not second
+
+    async def twice():
+        return get_async_client(ClientPolicy()), get_async_client(ClientPolicy())
+
+    a, b = asyncio.run(twice())
+    assert a is b
 
 
 @pytest.mark.unit

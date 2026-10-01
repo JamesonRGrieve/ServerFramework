@@ -24,11 +24,13 @@ SDK-specific limitations in the provider's `PRV.X.md`.
 
 from __future__ import annotations
 
+import asyncio
 import contextvars
 import ipaddress
 import logging
 import os
 import socket
+import weakref
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Mapping, Optional, Tuple, Type
 from urllib.parse import urlparse
@@ -227,8 +229,21 @@ class ClientPolicy:
 
 # ----- Pooled client cache --------------------------------------------------
 
-_shared_clients: Dict[Tuple, httpx.AsyncClient] = {}
+# An ``httpx.AsyncClient`` is bound to the event loop it first sends on and
+# fails on any other ("Event loop is closed"), so async clients are pooled
+# per running loop; a finished loop's pool goes with it.
+_shared_clients: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, Dict[Tuple, httpx.AsyncClient]]" = (weakref.WeakKeyDictionary())
+# Clients asked for outside any running loop.
+_shared_unbound_clients: Dict[Tuple, httpx.AsyncClient] = {}
 _shared_sync_clients: Dict[Tuple, httpx.Client] = {}
+
+
+def _async_pool() -> Dict[Tuple, httpx.AsyncClient]:
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return _shared_unbound_clients
+    return _shared_clients.setdefault(loop, {})
 
 
 def _policy_pool_key(policy: ClientPolicy) -> Tuple:
@@ -289,11 +304,12 @@ def _build_sync_client(policy: ClientPolicy) -> httpx.Client:
 
 
 def get_async_client(policy: ClientPolicy) -> httpx.AsyncClient:
+    pool = _async_pool()
     key = _policy_pool_key(policy)
-    client = _shared_clients.get(key)
+    client = pool.get(key)
     if client is None:
         client = _build_async_client(policy)
-        _shared_clients[key] = client
+        pool[key] = client
     return client
 
 
