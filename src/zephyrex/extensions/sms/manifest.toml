@@ -6,10 +6,10 @@
 
 name = "sms"
 version = "1.0.0"
-description = "SMS messaging extension"
+description = "SMS through Twilio or Amazon SNS"
 author = "ZephyrexTechnologies"
 entry_module = "EXT_SMS"
 minimum_framework_version = "0.0.0"
 
-pip_dependencies = []
+pip_dependencies = ["boto3>=1.26.0", "botocore>=1.29.0", "twilio>=9.0.0"]
 system_dependencies = []

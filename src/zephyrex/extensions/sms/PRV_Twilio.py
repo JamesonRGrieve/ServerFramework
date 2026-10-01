@@ -1,61 +1,112 @@
-import logging
-from typing import Any, Dict, Optional
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""SMS through Twilio Programmable Messaging.
 
-from zephyrex.extensions.sms.PRV_SMS import AbstractSMS
+The instance's API key is the auth token (else ``TWILIO_AUTH_TOKEN``); its
+``account_sid`` and ``from_number`` settings fall back to
+``TWILIO_ACCOUNT_SID`` and ``TWILIO_FROM_NUMBER``.
+"""
 
-try:
-    from twilio.rest import Client
-except ImportError:  # pragma: no cover - exercised via TwilioProvider tests
-    Client = None
+import asyncio
+from typing import Any, ClassVar, Dict
+
+from zephyrex.extensions.ExternalErrors import (
+    AuthExternalError,
+    InvalidInputExternalError,
+    TransientExternalError,
+)
+from zephyrex.extensions.sms.EXT_SMS import AbstractSMSProvider, e164
+from zephyrex.lib.Dependencies import Dependencies, PIP_Dependency, importable
+from zephyrex.logic.BLL_Providers import ProviderInstanceModel
+
+# Twilio's HTTP statuses for a bad request and for refused credentials.
+_CLIENT_ERROR = 400
+_UNAUTHORIZED = 401
 
 
-class TwilioProvider(AbstractSMS):
-    """
-    SMS provider backed by the Twilio Programmable Messaging API.
-
-    Requires the optional ``twilio`` dependency declared on
-    ``EXT_SMS.pip_dependencies``. When the library is not installed the
-    provider still constructs successfully but ``send_sms`` reports a clear
-    error instead of raising an ``ImportError`` at construction time.
-    """
-
-    def __init__(self, **kwargs: Any) -> None:
-        super().__init__(**kwargs)
-
-        account_sid = self.settings.get("account_sid", "")
-        self.from_number = self.settings.get("from_number", "")
-        self.client: Optional[Any] = None
-
-        if Client is None:
-            logging.warning("Twilio library not installed; TwilioProvider is inert")
-            return
-
-        try:
-            self.client = Client(account_sid, self.api_key)
-            logging.info("Twilio client initialized")
-        except Exception as e:
-            logging.error(f"Failed to initialize Twilio client: {str(e)}")
-            self.client = None
-
-    def get_platform_name(self) -> str:
-        return "Twilio"
-
-    def send_sms(self, phone_number: str, message: str) -> Dict[str, Any]:
-        if not self.client or not self.from_number:
-            return {
-                "success": False,
-                "error": "Twilio client not initialized or from_number not set",
-            }
-
-        try:
-            message_obj = self.client.messages.create(
-                body=message, from_=self.from_number, to=phone_number
+class PRV_Twilio_SMS(AbstractSMSProvider):
+    name: ClassVar[str] = "twilio"
+    friendly_name: ClassVar[str] = "Twilio"
+    description: ClassVar[str] = "Twilio Programmable Messaging"
+    _env: ClassVar[Dict[str, Any]] = {
+        "TWILIO_ACCOUNT_SID": "",
+        "TWILIO_AUTH_TOKEN": "",
+        "TWILIO_FROM_NUMBER": "",
+    }
+    dependencies: ClassVar[Dependencies] = Dependencies(
+        [
+            PIP_Dependency(
+                name="twilio",
+                friendly_name="Twilio Python SDK",
+                semver=">=9.0.0",
+                reason="Twilio SMS provider",
             )
+        ]
+    )
 
-            return {
-                "success": True,
-                "message_id": message_obj.sid,
-                "provider": "Twilio",
-            }
-        except Exception as e:
-            return {"success": False, "error": str(e), "provider": "Twilio"}
+    @classmethod
+    def _client(cls, instance: ProviderInstanceModel) -> Any:
+        if not importable("twilio"):
+            raise TransientExternalError(
+                "twilio package not installed", provider=cls.name
+            )
+        account_sid = cls.resolve_setting(instance, "account_sid", "TWILIO_ACCOUNT_SID")
+        token = cls.resolve_setting(
+            instance, "api_key", "TWILIO_AUTH_TOKEN", field="api_key"
+        )
+        if not (account_sid and token):
+            raise TransientExternalError(
+                "Twilio account_sid and auth token not configured", provider=cls.name
+            )
+        from twilio.rest import Client
+
+        return Client(account_sid, token)
+
+    @classmethod
+    async def _call(cls, call: Any) -> Any:
+        """A blocking Twilio call, off the event loop, its failures typed."""
+        from twilio.base.exceptions import TwilioRestException
+
+        try:
+            return await asyncio.to_thread(call)
+        except TwilioRestException as exc:
+            if exc.status == _UNAUTHORIZED:
+                raise AuthExternalError(
+                    exc.msg, provider=cls.name, upstream_status=exc.status
+                ) from exc
+            if _CLIENT_ERROR <= exc.status < 500:
+                raise InvalidInputExternalError(
+                    exc.msg, provider=cls.name, upstream_status=exc.status
+                ) from exc
+            raise TransientExternalError(
+                exc.msg, provider=cls.name, upstream_status=exc.status
+            ) from exc
+
+    @classmethod
+    async def send_sms(
+        cls, instance: ProviderInstanceModel, phone_number: str, message: str
+    ) -> Dict[str, Any]:
+        sender = cls.resolve_setting(instance, "from_number", "TWILIO_FROM_NUMBER")
+        if not sender:
+            raise TransientExternalError(
+                "Twilio from_number not configured", provider=cls.name
+            )
+        client = cls._client(instance)
+        sent = await cls._call(
+            lambda: client.messages.create(
+                body=message, from_=e164(sender), to=phone_number
+            )
+        )
+        return {"message_id": sent.sid, "status": sent.status, "provider": cls.name}
+
+    @classmethod
+    async def get_sms_status(
+        cls, instance: ProviderInstanceModel, message_id: str
+    ) -> Dict[str, Any]:
+        client = cls._client(instance)
+        found = await cls._call(lambda: client.messages(message_id).fetch())
+        return {
+            "message_id": found.sid,
+            "status": found.status,
+            "error_code": found.error_code,
+            "provider": cls.name,
+        }
