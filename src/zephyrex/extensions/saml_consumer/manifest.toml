@@ -1,0 +1,10 @@
+name = "saml_consumer"
+version = "1.0.0"
+description = "Authenticate users via SAML 2.0 against an external Identity Provider"
+
+[[extension_dependencies]]
+name = "auth_session"
+optional = false
+
+[python_dependencies]
+pysaml2 = ">=7.0.0"

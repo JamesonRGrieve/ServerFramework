@@ -1,0 +1,12 @@
+name = "oidc_consumer"
+version = "1.0.0"
+description = "Authenticate users via OpenID Connect against an external identity provider"
+
+[[extension_dependencies]]
+name = "auth_session"
+optional = false
+
+[python_dependencies]
+requests = ">=2.31.0"
+PyJWT = ">=2.8.0"
+cryptography = ">=41.0.0"

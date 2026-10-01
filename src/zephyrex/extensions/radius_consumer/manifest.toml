@@ -1,0 +1,10 @@
+name = "radius_consumer"
+version = "1.0.0"
+description = "Authenticate users against an external RADIUS server (PAP/CHAP/EAP)"
+
+[[extension_dependencies]]
+name = "auth_session"
+optional = false
+
+[python_dependencies]
+pyrad = ">=2.4"

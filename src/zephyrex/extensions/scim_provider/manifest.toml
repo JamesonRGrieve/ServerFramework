@@ -1,0 +1,10 @@
+name = "scim_provider"
+version = "1.0.0"
+description = "Push user and group provisioning to downstream SCIM 2.0 service providers"
+
+[[extension_dependencies]]
+name = "auth_session"
+optional = false
+
+[python_dependencies]
+requests = ">=2.31.0"

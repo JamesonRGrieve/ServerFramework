@@ -1,0 +1,10 @@
+name = "kerberos_consumer"
+version = "1.0.0"
+description = "Authenticate users via Kerberos/SPNEGO/GSSAPI against an external KDC"
+
+[[extension_dependencies]]
+name = "auth_session"
+optional = false
+
+[python_dependencies]
+gssapi = ">=1.8.0"

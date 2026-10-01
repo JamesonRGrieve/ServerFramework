@@ -1,0 +1,10 @@
+name = "x509_consumer"
+version = "1.0.0"
+description = "Authenticate users via X.509 client certificates (mutual TLS)"
+
+[[extension_dependencies]]
+name = "auth_session"
+optional = false
+
+[python_dependencies]
+cryptography = ">=41.0.0"

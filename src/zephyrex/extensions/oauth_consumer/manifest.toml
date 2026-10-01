@@ -1,0 +1,11 @@
+name = "oauth_consumer"
+version = "1.0.0"
+description = "Authenticate users against external OAuth2 IdPs (Google, GitHub, Microsoft, Amazon Cognito)"
+
+[[extension_dependencies]]
+name = "auth_session"
+optional = false
+
+[python_dependencies]
+requests = ">=2.31.0"
+httpx = ">=0.25.0"

@@ -1,0 +1,10 @@
+name = "webauthn_provider"
+version = "1.0.0"
+description = "Run this server as a WebAuthn/FIDO2 relying party for third-party consumers"
+
+[[extension_dependencies]]
+name = "auth_session"
+optional = false
+
+[python_dependencies]
+fido2 = ">=1.1.0"

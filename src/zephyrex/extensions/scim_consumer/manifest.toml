@@ -1,0 +1,10 @@
+name = "scim_consumer"
+version = "1.0.0"
+description = "Provision users and groups from an external SCIM 2.0 identity provider"
+
+[[extension_dependencies]]
+name = "auth_session"
+optional = false
+
+[python_dependencies]
+requests = ">=2.31.0"

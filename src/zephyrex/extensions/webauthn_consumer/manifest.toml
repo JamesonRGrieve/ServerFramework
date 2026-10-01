@@ -1,0 +1,10 @@
+name = "webauthn_consumer"
+version = "1.0.0"
+description = "Authenticate users via WebAuthn/FIDO2/Passkeys from an external authenticator"
+
+[[extension_dependencies]]
+name = "auth_session"
+optional = false
+
+[python_dependencies]
+fido2 = ">=1.1.0"
