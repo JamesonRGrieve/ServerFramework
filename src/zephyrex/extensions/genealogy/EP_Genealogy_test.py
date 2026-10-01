@@ -203,6 +203,25 @@ class TestFamilyTreeRoutes(ExtensionServerMixin):
         ).json()
         assert adopted_only["relatives"] == []
 
+    @pytest.mark.parametrize("intensity", [1.5, -1.01, 5])
+    def test_intensity_outside_minus_one_to_one_is_refused(
+        self, server, admin_a, family, intensity
+    ):
+        """intensity is -1.0 (nemesis) to +1.0 (closest); 5 used to be stored."""
+        response = server.post(
+            "/v1/relationship",
+            json={
+                "relationship": {
+                    "person_id": family["mum"],
+                    "target_person_id": family["aunt"],
+                    "kind": "sibling_of",
+                    "intensity": intensity,
+                }
+            },
+            headers={"Authorization": f"Bearer {admin_a.jwt}"},
+        )
+        assert response.status_code == 422, response.text
+
     def test_import_refuses_what_it_cannot_read(self, server, admin_a):
         response = server.post(
             "/v1/person/gedcom",

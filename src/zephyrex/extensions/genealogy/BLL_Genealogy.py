@@ -54,6 +54,10 @@ from zephyrex.logic.AbstractLogicManager import (
     UpdateMixinModel,
 )
 
+# A relationship's signed magnitude: -1.0 nemesis to +1.0 closest.
+INTENSITY_MIN = -1.0
+INTENSITY_MAX = 1.0
+
 # ---------------------------------------------------------------------------
 # Person
 # ---------------------------------------------------------------------------
@@ -460,6 +464,8 @@ class RelationshipModel(
     )
     intensity: Optional[float] = Field(
         None,
+        ge=INTENSITY_MIN,
+        le=INTENSITY_MAX,
         description=(
             "Signed magnitude. -1.0 nemesis ↔ +1.0 closest; reused for "
             "reputation, regard, partnership closeness, etc."
@@ -496,7 +502,7 @@ class RelationshipModel(
         target_person_id: Optional[str] = None
         kind: Optional[str] = None
         discriminator: Optional[str] = None
-        intensity: Optional[float] = None
+        intensity: Optional[float] = Field(None, ge=INTENSITY_MIN, le=INTENSITY_MAX)
         qualifier: Optional[str] = None
         valid_from: Optional[datetime] = None
         valid_to: Optional[datetime] = None
@@ -505,7 +511,7 @@ class RelationshipModel(
     class Update(BaseModel):
         kind: Optional[str] = None
         discriminator: Optional[str] = None
-        intensity: Optional[float] = None
+        intensity: Optional[float] = Field(None, ge=INTENSITY_MIN, le=INTENSITY_MAX)
         qualifier: Optional[str] = None
         valid_from: Optional[datetime] = None
         valid_to: Optional[datetime] = None
