@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Extension manifest (Item 20): what an installer reads before the extension
+# class can be imported. It mirrors the class (name, version, description,
+# dependencies); the class stays the source of truth and
+# Manifest_parity_test keeps the two in step.
+
+name = "book"
+version = "1.0.0"
+description = "Book creation, editing, and publishing extension"
+author = "ZephyrexTechnologies"
+entry_module = "EXT_Book"
+minimum_framework_version = "0.0.0"
+
+pip_dependencies = []
+system_dependencies = []
