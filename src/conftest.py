@@ -196,6 +196,10 @@ EXTERNAL_API_PROVIDER_ENV_VARS: Dict[str, List[str]] = {
     "kanka": ["KANKA_API_TOKEN", "KANKA_CAMPAIGN_ID"],
     # Twilio test credentials (sms): they send nothing and charge nothing.
     "twilio_test": ["TWILIO_TEST_ACCOUNT_SID", "TWILIO_TEST_AUTH_TOKEN"],
+    # Media catalogues: a Google key with the YouTube Data API enabled, and
+    # a TMDb v3 key or v4 read access token.
+    "youtube": ["YOUTUBE_API_KEY"],
+    "tmdb": ["TMDB_API_KEY"],
     # SendGrid sandbox.
     "sendgrid": ["SENDGRID_API_KEY"],
     # Twilio sandbox.

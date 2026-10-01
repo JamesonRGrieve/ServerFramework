@@ -1,139 +1,143 @@
-import logging
-from typing import Any, Dict, Optional
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""YouTube videos, through the YouTube Data API v3.
 
-from zephyrex.extensions.media.PRV_Media import AbstractMediaProvider
+The instance's API key (else ``YOUTUBE_API_KEY``) is a Google Cloud key
+with the YouTube Data API enabled. YouTube's API no longer offers related
+videos (``relatedToVideoId`` was retired in 2023), so recommendations are
+the other videos of the same channel, most viewed first.
+"""
 
-YOUTUBE_API_BASE_URL = "https://www.googleapis.com/youtube/v3"
+import re
+from typing import Any, ClassVar, Dict, List, Optional
+
+from zephyrex.extensions.ExternalErrors import (
+    InvalidInputExternalError,
+    TransientExternalError,
+)
+from zephyrex.extensions.media.EXT_Media import AbstractMediaProvider
+from zephyrex.logic.BLL_Providers import ProviderInstanceModel
+
+YOUTUBE_API = "https://www.googleapis.com/youtube/v3"
+# YouTube caps a page at 50 results.
+YOUTUBE_MAX_RESULTS = 50
+_VIDEO_ID = re.compile(r"^[A-Za-z0-9_-]{11}$")
 
 
-class YouTubeProvider(AbstractMediaProvider):
-    """
-    Media provider backed by YouTube.
+class PRV_YouTube_Media(AbstractMediaProvider):
+    name: ClassVar[str] = "youtube"
+    friendly_name: ClassVar[str] = "YouTube"
+    description: ClassVar[str] = "YouTube videos (Data API v3)"
+    _env: ClassVar[Dict[str, Any]] = {"YOUTUBE_API_KEY": ""}
 
-    A lightweight, directly-instantiated client. Search, info, and
-    recommendation lookups are mocked pending a real YouTube Data API
-    integration; channel info, playlists, and comments follow the same
-    shape.
-    """
-
-    def __init__(self, **kwargs: Any) -> None:
-        super().__init__(**kwargs)
-        self.api_uri = self.settings.get("youtube_api_uri", YOUTUBE_API_BASE_URL)
-        self.commands.update(
-            {
-                "Get YouTube Channel Info": self.get_channel_info,
-                "Get YouTube Playlists": self.get_playlists,
-                "Get YouTube Comments": self.get_comments,
-            }
+    @classmethod
+    def _key(cls, instance: ProviderInstanceModel) -> str:
+        key = cls.resolve_setting(
+            instance, "api_key", "YOUTUBE_API_KEY", field="api_key"
         )
+        if not key:
+            raise TransientExternalError(
+                "YouTube API key not configured", provider=cls.name
+            )
+        return key
 
-    def get_platform_name(self) -> str:
-        return "YouTube"
-
-    def search(self, query: str, service: Optional[str] = None) -> Dict[str, Any]:
-        logging.info(f"Searching YouTube for: {query}")
-
-        return {
-            "service": "YouTube",
-            "query": query,
-            "results": [
-                {
-                    "id": "yt123abc",
-                    "title": f"Video about {query}",
-                    "type": "video",
-                    "channel": "SampleChannel",
-                },
-                {
-                    "id": "yt456def",
-                    "title": f"Tutorial on {query}",
-                    "type": "video",
-                    "channel": "TutorialChannel",
-                },
-            ],
-        }
-
-    def get_info(self, media_id: str) -> Dict[str, Any]:
-        logging.info(f"Getting info for YouTube video: {media_id}")
-
-        return {
-            "id": media_id,
-            "title": f"YouTube Video {media_id}",
-            "description": "This is a sample description for a YouTube video.",
-            "published_at": "2023-01-15T12:30:45Z",
-            "channel": "SampleChannel",
-            "channel_id": "UC123456",
-            "views": 12345,
-            "likes": 1000,
-            "duration": "PT10M30S",
-        }
-
-    def get_recommendations(
-        self, user_id: str, genre: Optional[str] = None
+    @classmethod
+    async def _api(
+        cls, instance: ProviderInstanceModel, resource: str, **params: Any
     ) -> Dict[str, Any]:
-        logging.info(f"Getting YouTube recommendations for user: {user_id}")
+        # The key travels as a parameter, never in the URL a failure names.
+        data: Dict[str, Any] = await cls.get_json(
+            f"{YOUTUBE_API}/{resource}", {**params, "key": cls._key(instance)}
+        )
+        return data
 
-        filter_text = f" in {genre} category" if genre else ""
+    @classmethod
+    def _video(cls, video_id: str, snippet: Dict[str, Any]) -> Dict[str, Any]:
+        published = snippet.get("publishedAt", "")
         return {
-            "service": "YouTube",
-            "user_id": user_id,
-            "category": genre,
-            "recommendations": [
-                {
-                    "id": "yt789ghi",
-                    "title": f"Recommended Video{filter_text}",
-                    "channel": "PopularChannel",
-                },
-                {
-                    "id": "yt012jkl",
-                    "title": f"Trending Video{filter_text}",
-                    "channel": "TrendingChannel",
-                },
-            ],
+            "id": cls.media_id(video_id),
+            "title": snippet.get("title", ""),
+            "kind": "video",
+            "year": int(published[:4]) if published[:4].isdigit() else None,
+            "overview": snippet.get("description", ""),
+            "channel": snippet.get("channelTitle", ""),
+            "url": f"https://www.youtube.com/watch?v={video_id}",
         }
 
-    def get_channel_info(self, channel_id: str) -> Dict[str, Any]:
-        logging.info(f"Getting channel info for: {channel_id}")
+    @classmethod
+    def _limit(cls, limit: int) -> int:
+        return max(1, min(limit, YOUTUBE_MAX_RESULTS))
 
+    @classmethod
+    async def search(
+        cls,
+        instance: ProviderInstanceModel,
+        query: str,
+        kind: Optional[str] = None,
+        limit: int = 10,
+    ) -> List[Dict[str, Any]]:
+        if kind not in (None, "video"):
+            return []
+        data = await cls._api(
+            instance,
+            "search",
+            part="snippet",
+            q=query,
+            type="video",
+            maxResults=cls._limit(limit),
+        )
+        return [
+            cls._video(item["id"]["videoId"], item.get("snippet", {}))
+            for item in data.get("items", [])
+            if item.get("id", {}).get("videoId")
+        ]
+
+    @classmethod
+    def _video_id(cls, native_id: str) -> str:
+        if not _VIDEO_ID.match(native_id):
+            raise InvalidInputExternalError(
+                f"{native_id!r} is not a YouTube video id", provider=cls.name
+            )
+        return native_id
+
+    @classmethod
+    async def get_info(
+        cls, instance: ProviderInstanceModel, native_id: str
+    ) -> Dict[str, Any]:
+        video_id = cls._video_id(native_id)
+        data = await cls._api(
+            instance, "videos", part="snippet,contentDetails,statistics", id=video_id
+        )
+        items = data.get("items", [])
+        if not items:
+            raise InvalidInputExternalError(
+                f"No YouTube video {video_id}", provider=cls.name, upstream_status=404
+            )
+        item = items[0]
+        statistics = item.get("statistics", {})
         return {
-            "id": channel_id,
-            "title": f"Channel {channel_id}",
-            "description": "This is a sample YouTube channel.",
-            "subscribers": 100000,
-            "video_count": 456,
-            "created_at": "2020-05-15T00:00:00Z",
+            **cls._video(video_id, item.get("snippet", {})),
+            "channel_id": item.get("snippet", {}).get("channelId", ""),
+            "duration": item.get("contentDetails", {}).get("duration", ""),
+            "views": int(statistics.get("viewCount", 0)),
+            "likes": int(statistics.get("likeCount", 0)),
         }
 
-    def get_playlists(self, channel_id: str) -> Dict[str, Any]:
-        logging.info(f"Getting playlists for channel: {channel_id}")
-
-        return {
-            "channel_id": channel_id,
-            "playlists": [
-                {"id": "PL123", "title": "Tutorial Series", "video_count": 15},
-                {"id": "PL456", "title": "Vlogs", "video_count": 32},
-            ],
-        }
-
-    def get_comments(self, video_id: str, limit: int = 20) -> Dict[str, Any]:
-        logging.info(f"Getting comments for video: {video_id}")
-
-        return {
-            "video_id": video_id,
-            "comment_count": 256,
-            "comments": [
-                {
-                    "id": "comment123",
-                    "author": "User1",
-                    "text": "Great video!",
-                    "likes": 45,
-                    "published_at": "2023-02-10T15:30:00Z",
-                },
-                {
-                    "id": "comment456",
-                    "author": "User2",
-                    "text": "Thanks for the information.",
-                    "likes": 12,
-                    "published_at": "2023-02-11T08:45:00Z",
-                },
-            ][:limit],
-        }
+    @classmethod
+    async def get_recommendations(
+        cls, instance: ProviderInstanceModel, native_id: str, limit: int = 10
+    ) -> List[Dict[str, Any]]:
+        info = await cls.get_info(instance, native_id)
+        data = await cls._api(
+            instance,
+            "search",
+            part="snippet",
+            channelId=info["channel_id"],
+            type="video",
+            order="viewCount",
+            maxResults=cls._limit(limit + 1),
+        )
+        return [
+            cls._video(item["id"]["videoId"], item.get("snippet", {}))
+            for item in data.get("items", [])
+            if item.get("id", {}).get("videoId") not in (None, native_id)
+        ][:limit]

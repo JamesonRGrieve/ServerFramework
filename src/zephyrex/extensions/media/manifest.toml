@@ -6,7 +6,7 @@
 
 name = "media"
 version = "1.0.0"
-description = "Media extension providing media streaming and content platform abilities"
+description = "Media search, details and recommendations through YouTube and TMDb"
 author = "ZephyrexTechnologies"
 entry_module = "EXT_Media"
 minimum_framework_version = "0.0.0"
