@@ -3,6 +3,7 @@ from __future__ import annotations
 from abc import ABC, ABCMeta, abstractmethod
 from datetime import datetime, timezone
 from enum import Enum
+from pathlib import Path
 from time import monotonic
 from types import ModuleType
 from typing import Any, Callable, ClassVar, Dict, List, Optional, Set, Tuple, Type
@@ -1445,6 +1446,19 @@ class AbstractStaticExtension(
     _providers: ClassVar[List[Type[AbstractStaticProvider]]] = []
 
     @classmethod
+    def _extensions_root(cls) -> str:
+        """The directory holding this extension's folder: where its class is
+        defined, when that is a folder named for it, so a bundled extension
+        and a consumer's own both find their modules whichever root is
+        active; otherwise the active root (``set_extensions_root``)."""
+        import inspect
+
+        defined_in = Path(inspect.getfile(cls)).resolve().parent
+        if defined_in.name == cls.name:
+            return str(defined_in.parent)
+        return _resolve_extensions_dir()
+
+    @classmethod
     def _load_component_modules(cls, prefix: str) -> Tuple[List[ModuleType], bool]:
         """Load this extension's ``{prefix}*.py`` modules (tests excluded).
 
@@ -1458,8 +1472,7 @@ class AbstractStaticExtension(
 
         from zephyrex.extensions.ExtensionLoader import load_extension_module
 
-        # Through Paths so a global ``set_extensions_root`` override is honored.
-        extensions_root = _resolve_extensions_dir()
+        extensions_root = cls._extensions_root()
         pattern = os.path.join(extensions_root, cls.name, f"{prefix}*.py")
         modules: List[ModuleType] = []
         partial = False
