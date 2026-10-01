@@ -78,7 +78,7 @@ cd ServerFramework
 pip install -e ".[dev]"
 ```
 
-Every bundled extension is included; each one's third-party packages install through an extra of the same name, hyphenated: `pip install "zephyrex[auth-mfa,secret-vault]"`. `cache` adds the Redis/Valkey client core uses for its cache and rate limiter, and `all` installs every extra. The extras are generated from what each extension and its providers declare (`python -m zephyrex.extensions.sync_dependencies`; the test suite fails if they drift).
+Every bundled extension is included; each one's third-party packages install through an extra of the same name, hyphenated: `pip install "zephyrex[auth-mfa,secret-vault]"`. `cache` adds the Redis/Valkey client core uses for its cache and rate limiter, `mcp-server` adds what core needs to serve this API as MCP tools (`MCP=true`), and `all` installs every extra. The extras are generated from what each extension and its providers declare (`python -m zephyrex.extensions.sync_dependencies`; the test suite fails if they drift).
 
 ### Requirements
 - Python 3.11+
