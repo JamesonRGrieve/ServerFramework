@@ -26,7 +26,8 @@ The main class that orchestrates schema generation with comprehensive error hand
 
 The module handles various Python type conversions:
 
-- **Basic Types**: str, int, float, bool, datetime, date
+- **Basic Types**: `str`, `float` and `bool` are GraphQL's built-in `String`, `Float` and `Boolean`; `int` is `Long`, a 64-bit integer scalar carried as a JSON number (GraphQL's own `Int` is 32-bit, too small for byte sizes, minor-unit amounts or epoch timestamps); `datetime` and `date` are the scalars below
+- **Nullability**: a field is nullable when its model declares it `Optional`; models built from the `.Optional` variants (e.g. `UserModel`, `TeamModel`) serve every field nullable
 - **Complex Types**: Dict, List, Optional, Any
 - **Enum Types**: Regular enums and string-based enums
 - **Nested Models**: Pydantic models as GraphQL types
@@ -46,6 +47,7 @@ Special handling for enum types to ensure compatibility:
 
 Custom scalar types for complex data:
 
+- **Long**: 64-bit integers
 - **DateTimeScalar**: ISO format datetime serialization
 - **DateScalar**: ISO format date serialization
 - **ANY_SCALAR**: JSON-serializable values

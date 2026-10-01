@@ -209,6 +209,28 @@ def _real_schema_manager() -> "GraphQLManager":
     return GraphQLManager(_RealMockRegistry())
 
 
+def test_fields_use_graphql_scalars_not_python_class_names():
+    """Python str/float/bool are GraphQL's String/Float/Boolean, and int is
+    the 64-bit Long. They used to be custom scalars named after the Python
+    classes (`scalar str`, `scalar bool`), which codegen and variables
+    typed `String` could not match."""
+    from zephyrex.pydantic2.strawberry.scalars import LONG_SCALAR
+
+    assert TYPE_MAPPING[int] is LONG_SCALAR
+    assert (TYPE_MAPPING[str], TYPE_MAPPING[float], TYPE_MAPPING[bool]) == (
+        str,
+        float,
+        bool,
+    )
+    sdl = str(_real_schema_manager().create_schema())
+    for python_name in ("str", "int", "float", "bool"):
+        assert f"scalar {python_name}\n" not in sdl
+    mock_type = sdl[sdl.index("type MockTestType {") :]
+    mock_type = mock_type[: mock_type.index("}")]
+    assert "  name: String" in mock_type
+    assert "  description: String" in mock_type
+
+
 def _query_field_names(schema: Any) -> List[str]:
     return [field.name for field in schema.get_type_by_name("Query").fields]
 

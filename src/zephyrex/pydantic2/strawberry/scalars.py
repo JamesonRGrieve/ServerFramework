@@ -1,6 +1,6 @@
 import json
 from datetime import date, datetime
-from typing import Any
+from typing import Any, NewType
 
 import strawberry
 
@@ -83,17 +83,23 @@ LIST_SCALAR = ListScalar
 
 # Remove generic type - not needed
 
-# Map Python types to GraphQL scalar types
+# A Python int can exceed GraphQL's 32-bit Int (byte sizes, minor-unit
+# amounts, epoch timestamps), so integers are served as Long, a 64-bit
+# integer scalar carried as a JSON number.
+LONG_SCALAR = strawberry.scalar(
+    NewType("Long", int),
+    description="A 64-bit integer, carried as a JSON number",
+    serialize=int,
+    parse_value=int,
+)
+
+# Map Python types to GraphQL scalar types. str, float and bool are
+# GraphQL's built-in String, Float and Boolean.
 TYPE_MAPPING = {
-    str: strawberry.scalar(
-        str,
-        description="String value",
-        serialize=lambda v: v if v is not None else None,
-        parse_value=lambda v: v if v is not None else None,
-    ),
-    int: strawberry.scalar(int, description="Integer value"),
-    float: strawberry.scalar(float, description="Float value"),
-    bool: strawberry.scalar(bool, description="Boolean value"),
+    str: str,
+    int: LONG_SCALAR,
+    float: float,
+    bool: bool,
     datetime: DateTimeScalar,
     date: DateScalar,
     dict: DICT_SCALAR,
