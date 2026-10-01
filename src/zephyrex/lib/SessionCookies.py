@@ -10,6 +10,13 @@ explicit credentials win. A cookie-authenticated request that can change
 state must echo the CSRF cookie in ``X-CSRF-Token`` (double submit), or it
 is refused with 403 before reaching the app.
 
+A write with no session to protect (register, login by body, magic-link
+or pairing request) carries no cookie to check, so the middleware also
+refuses, 403, any non-safe request that has neither ``Authorization`` nor
+``X-API-Key`` and whose ``Origin`` is not the app's own: such a request is
+exactly what another site's page can send. Behind a proxy that rewrites
+``Host``, list the public origin in ``APP_CORS_ALLOWED_ORIGINS``.
+
 A WebSocket upgrade (GraphQL subscriptions) is authenticated by the cookie
 too, but only from the app's own origin: the same host, or an exact origin in
 ``APP_CORS_ALLOWED_ORIGINS``. Browsers send cookies on cross-site WebSocket
@@ -110,6 +117,20 @@ def _same_app_origin(present: Dict[bytes, bytes]) -> bool:
     return origin != "*" and origin in allowed
 
 
+def _forged_cross_site(method: str, present: Dict[bytes, bytes]) -> bool:
+    """A write another site's page could have sent: no explicit credential
+    (those force a CORS preflight), and an Origin that is not the app's.
+    Browsers always send Origin on such a write; clients that are not
+    browsers send none and pass."""
+    return (
+        method not in _SAFE_METHODS
+        and b"authorization" not in present
+        and b"x-api-key" not in present
+        and b"origin" in present
+        and not _same_app_origin(present)
+    )
+
+
 def _cookies(raw: Optional[bytes]) -> Dict[str, str]:
     if not raw:
         return {}
@@ -138,6 +159,9 @@ class SessionCookieMiddleware:
             return
         headers: List[Tuple[bytes, bytes]] = scope["headers"]
         present = {name.lower(): value for name, value in headers}
+        if scope["type"] == "http" and _forged_cross_site(scope["method"], present):
+            await self._refuse(send, "Cross-site request refused")
+            return
         token = _cookies(present.get(b"cookie")).get(SESSION_COOKIE)
         if not token or b"authorization" in present or b"x-api-key" in present:
             await self.app(scope, receive, send)
@@ -149,7 +173,7 @@ class SessionCookieMiddleware:
             await self.app(scope, receive, send)
             return
         if scope["method"] not in _SAFE_METHODS and not self._csrf_matches(present):
-            await self._refuse(send)
+            await self._refuse(send, "CSRF token missing or invalid")
             return
         await self.app(
             {**scope, "headers": [*headers, bearer]},
@@ -164,8 +188,8 @@ class SessionCookieMiddleware:
         return bool(expected) and hmac.compare_digest(expected, offered)
 
     @staticmethod
-    async def _refuse(send: Callable[[Any], Awaitable[None]]) -> None:
-        body = json.dumps({"detail": "CSRF token missing or invalid"}).encode()
+    async def _refuse(send: Callable[[Any], Awaitable[None]], detail: str) -> None:
+        body = json.dumps({"detail": detail}).encode()
         await send(
             {
                 "type": "http.response.start",

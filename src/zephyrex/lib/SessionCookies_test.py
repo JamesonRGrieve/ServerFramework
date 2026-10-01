@@ -165,6 +165,51 @@ def test_an_allowlisted_origin_is_authenticated(
     assert (authorization == "Bearer session-jwt") is authenticated
 
 
+@pytest.mark.parametrize(
+    "origin", ["https://evil.example", "null"], ids=["other-site", "opaque"]
+)
+def test_a_cross_site_write_without_credentials_is_refused(client, origin):
+    """Before a session there is no cookie to double-submit: another site's
+    form could register, log in or request a magic link as the visitor."""
+    response = client.post("/echo", headers={"Origin": origin})
+    assert response.status_code == 403
+    assert response.json() == {"detail": "Cross-site request refused"}
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {"Origin": "https://testserver"},
+        {},
+        {"Origin": "https://evil.example", "Authorization": "Bearer explicit"},
+        {"Origin": "https://evil.example", "X-API-Key": "key"},
+    ],
+    ids=["same-origin", "no-origin", "bearer", "api-key"],
+)
+def test_writes_that_cannot_be_forged_pass(client, headers):
+    """Same-origin pages and non-browser clients pass; an explicit credential
+    header forces a CORS preflight, so a cross-site page cannot send it."""
+    assert client.post("/echo", headers=headers).status_code == 200
+
+
+def test_reads_are_never_refused_for_their_origin(client):
+    assert (
+        client.get("/echo", headers={"Origin": "https://evil.example"}).status_code
+        == 200
+    )
+
+
+def test_an_allowlisted_origin_may_write(client, monkeypatch):
+    monkeypatch.setenv("APP_CORS_ALLOWED_ORIGINS", "https://app.example")
+    refresh_settings()
+    try:
+        response = client.post("/echo", headers={"Origin": "https://app.example"})
+    finally:
+        monkeypatch.delenv("APP_CORS_ALLOWED_ORIGINS")
+        refresh_settings()
+    assert response.status_code == 200
+
+
 def test_logout_clears_both_cookies(client):
     _logged_in(client)
     csrf = client.cookies[CSRF_COOKIE]
