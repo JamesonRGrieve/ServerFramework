@@ -880,6 +880,31 @@ class GraphQLManager(ErrorHandlerMixin):
                 resolver=make_resolver(pydantic_field_name)
             )
 
+        # A field with a pydantic field serializer answers what the model
+        # serializes, as REST does: reading the attribute would bypass it
+        # (a secret setting's serializer withholds its value).
+        serialized_fields = {
+            field
+            for decorator in model_class.__pydantic_decorators__.field_serializers.values()
+            for field in decorator.info.fields
+        }
+        graphql_name = {py: gql for gql, py in field_name_mappings.items()}
+        for py_field in sorted(serialized_fields):
+            if py_field not in annotations and py_field not in graphql_name:
+                continue
+
+            def make_serialized_resolver(name: str):
+                def resolver(root) -> Any:
+                    if hasattr(root, "model_dump"):
+                        return root.model_dump(include={name}).get(name)
+                    return getattr(root, name, None)
+
+                return resolver
+
+            fields_dict[graphql_name.get(py_field, py_field)] = strawberry.field(
+                resolver=make_serialized_resolver(py_field)
+            )
+
         # Add navigation resolver methods for reverse relationships
         if model_class in self._reverse_relationships:
             for reverse_field_name, (

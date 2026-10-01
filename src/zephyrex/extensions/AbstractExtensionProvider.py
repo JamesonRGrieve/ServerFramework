@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, ABCMeta, abstractmethod
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
@@ -1091,6 +1092,22 @@ class AbstractStaticExtensionSystemComponent(ABC):
                 )
 
 
+@dataclass(frozen=True)
+class InstanceSetting:
+    """A setting a provider reads from each of its instances: a
+    ``ProviderInstanceSetting`` row named ``key`` (or the instance's own
+    ``field`` column, such as ``api_key``), else the ``env`` variable, else
+    ``default``. A ``secret`` one is stored encrypted and never returned
+    once written."""
+
+    key: str
+    description: str
+    env: Optional[str] = None
+    default: Optional[str] = None
+    secret: bool = False
+    field: Optional[str] = None
+
+
 class AbstractProviderInstance(ABC):
     """Item 26 — typed contract for bonded provider instances.
 
@@ -1257,6 +1274,33 @@ class AbstractStaticProvider(AbstractStaticExtensionSystemComponent):
 
     # Seconds before an outbound HTTP call through ``http()`` gives up.
     http_timeout_seconds: ClassVar[float] = 30.0
+
+    # The settings this provider reads from its instances: the catalogue a
+    # client renders, and the only keys ``setting()`` will read.
+    instance_settings: ClassVar[Tuple[InstanceSetting, ...]] = ()
+
+    @classmethod
+    def instance_setting(cls, key: str) -> InstanceSetting:
+        for declared in cls.instance_settings:
+            if declared.key == key:
+                return declared
+        raise KeyError(f"{cls.name} declares no instance setting {key!r}")
+
+    @classmethod
+    def setting(
+        cls, instance: Optional[ProviderInstanceModel], key: str
+    ) -> Optional[str]:
+        """The value of the declared setting ``key`` for ``instance``: its
+        column or setting row, else its environment variable, else its
+        default. ``instance`` is None for an environment-only lookup."""
+        declared = cls.instance_setting(key)
+        return cls.resolve_setting(
+            instance,
+            declared.key,
+            declared.env,
+            field=declared.field,
+            default=declared.default,
+        )
 
     @classmethod
     def http(cls) -> Any:

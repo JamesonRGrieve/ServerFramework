@@ -25,7 +25,7 @@ from typing import (
 
 import stringcase
 from fastapi import HTTPException
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_serializer, model_validator
 
 
 def _validate_name_min_length(instance, entity_label: str = "Name"):
@@ -412,6 +412,38 @@ class RootProviderStatusResponse(BaseModel):
     providers: List[RootProviderStatus]
 
 
+class InstanceSettingInfo(BaseModel):
+    key: str
+    description: str
+    env: Optional[str] = Field(
+        None, description="Environment variable it falls back to"
+    )
+    default: Optional[str] = None
+    write_only: bool = Field(False, description="A secret: never returned once set")
+    field: Optional[str] = Field(
+        None, description="An instance column (api_key, model_name), not a setting row"
+    )
+
+
+class ProviderSettingsCatalogue(BaseModel):
+    provider_id: str
+    provider: str
+    settings: List[InstanceSettingInfo]
+
+
+def provider_class_named(model_registry: Any, name: str) -> Optional[Any]:
+    """The loaded provider class called ``name``, among the attached app's
+    extensions; None when no loaded extension has one."""
+    extension_registry = getattr(model_registry, "extension_registry", None)
+    for providers in (
+        extension_registry.extension_providers.values() if extension_registry else []
+    ):
+        for provider_class in providers:
+            if getattr(provider_class, "name", None) == name:
+                return provider_class
+    return None
+
+
 def _provider_env_settings(provider_cls: Any) -> Dict[str, bool]:
     """Each environment variable a provider reads, mapped to whether its value
     is a secret. A typed ``Settings`` model (Item 90) is authoritative: its
@@ -547,6 +579,36 @@ class ProviderManager(AbstractBLLManager, RouterMixin):
             extension_registry.extension_providers if extension_registry else {},
             extension=extension,
             health=health,
+        )
+
+    @custom_route(
+        method="GET",
+        path="/{provider_id}/settings",
+        output_model=ProviderSettingsCatalogue,
+        authentication_type="jwt",
+        summary="The settings each instance of this provider reads",
+    )
+    def settings_catalogue_route(self, provider_id: str) -> ProviderSettingsCatalogue:
+        """What a client offers when configuring an instance: each setting's
+        key, meaning, environment fallback and default, and whether it is a
+        write-only secret."""
+        provider = self.get(id=provider_id)
+        provider_class = provider_class_named(self.model_registry, provider.name)
+        declared = provider_class.instance_settings if provider_class else ()
+        return ProviderSettingsCatalogue(
+            provider_id=provider.id,
+            provider=provider.name,
+            settings=[
+                InstanceSettingInfo(
+                    key=setting.key,
+                    description=setting.description,
+                    env=setting.env,
+                    default=setting.default,
+                    write_only=setting.secret,
+                    field=setting.field,
+                )
+                for setting in declared
+            ],
         )
 
     @property
@@ -954,9 +1016,13 @@ class ProviderInstanceModel(
             provider_instance_id=self.id,
             key=key,
         )
+        from zephyrex.lib.SecretEncryption import decrypt_secret
+
         for row in rows:
             if row.value is not None:
-                return str(row.value)
+                return (
+                    decrypt_secret(str(row.value)) if row.write_only else str(row.value)
+                )
         return default
 
     class Create(BaseModel):
@@ -1161,22 +1227,37 @@ class ProviderInstanceSettingModel(
 ):
     key: str
     value: Optional[str] | None = None
+    # Set by the server when the instance's provider declares ``key``
+    # secret: the value is stored encrypted and never returned.
+    write_only: bool = Field(
+        False, description="Its value is stored encrypted and never returned"
+    )
 
     # Database metadata for SQLAlchemy generation
     table_comment: ClassVar[str] = (
         "A ProviderInstanceSetting represents a non-default configuration setting for a User or Team's instance of an Provider."
     )
+
+    # ``str | None``: in a model body ``Optional`` is the nested class.
+    @field_serializer("value")
+    def _withhold_secret(self, value: str | None) -> str | None:
+        return None if self.write_only else value
+
     is_system_entity: ClassVar[bool] = False
 
     class Create(BaseModel):
         provider_instance_id: str
         key: str
         value: Optional[str] | None = None
+        # A caller may make any value write-only; the server does for every
+        # key the provider declares secret.
+        write_only: bool = False
 
     class Update(BaseModel):
         provider_instance_id: Optional[str] | None = None
         key: Optional[str] | None = None
         value: Optional[str] | None = None
+        write_only: Optional[bool] | None = None
 
     class Search(
         ApplicationModel.Search,
@@ -1217,6 +1298,96 @@ class ProviderInstanceSettingManager(AbstractBLLManager, RouterMixin):
                 raise HTTPException(
                     status_code=404, detail="Provider instance not found"
                 )
+
+    def _declared_secret(
+        self, provider_instance_id: Optional[str], key: Optional[str]
+    ) -> bool:
+        """Whether the instance's provider declares ``key`` a secret."""
+        if not (provider_instance_id and key):
+            return False
+        base, root_id = self.model_registry.DB.manager.Base, env("ROOT_ID")
+        instance = ProviderInstanceModel.DB(base).get(
+            requester_id=root_id,
+            model_registry=self.model_registry,
+            id=provider_instance_id,
+            return_type="dto",
+            override_dto=ProviderInstanceModel,
+        )
+        provider = (
+            ProviderModel.DB(base).get(
+                requester_id=root_id,
+                model_registry=self.model_registry,
+                id=instance.provider_id,
+                return_type="dto",
+                override_dto=ProviderModel,
+            )
+            if instance is not None
+            else None
+        )
+        provider_class = (
+            provider_class_named(self.model_registry, provider.name)
+            if provider is not None
+            else None
+        )
+        if provider_class is None:
+            return False
+        try:
+            return bool(provider_class.instance_setting(key).secret)
+        except KeyError:
+            return False
+
+    def _sealed(
+        self,
+        fields: Dict[str, Any],
+        provider_instance_id: Optional[str],
+        key: Optional[str],
+    ) -> Dict[str, Any]:
+        """``fields`` with a secret's value encrypted and the row marked
+        secret: when the provider declares the key secret, or the caller
+        (or an earlier write) did."""
+        secret = bool(fields.get("write_only")) or self._declared_secret(
+            provider_instance_id, key
+        )
+        if not secret:
+            return fields
+        from zephyrex.lib.SecretEncryption import encrypt_secret
+
+        sealed = {**fields, "write_only": True}
+        if "value" in fields:
+            sealed["value"] = encrypt_secret(fields["value"])
+        return sealed
+
+    def create(self, **kwargs: Any) -> Any:
+        if isinstance(kwargs.get("entities"), list):
+            kwargs["entities"] = [
+                self._sealed(
+                    {**kwargs, **entity},
+                    {**kwargs, **entity}.get("provider_instance_id"),
+                    {**kwargs, **entity}.get("key"),
+                )
+                for entity in kwargs["entities"]
+            ]
+            return super().create(**kwargs)
+        return super().create(
+            **self._sealed(
+                kwargs, kwargs.get("provider_instance_id"), kwargs.get("key")
+            )
+        )
+
+    def update(self, id: str, **kwargs: Any) -> Any:
+        existing = self.get(id=id)
+        fields = {
+            **kwargs,
+            "write_only": kwargs.get("write_only") or existing.write_only,
+        }
+        return super().update(
+            id,
+            **self._sealed(
+                fields,
+                kwargs.get("provider_instance_id", existing.provider_instance_id),
+                kwargs.get("key", existing.key),
+            ),
+        )
 
 
 class ProviderInstanceExtensionAbilityModel(
