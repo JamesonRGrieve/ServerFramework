@@ -1,17 +1,16 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Fixtures for the database providers: a built database app, so provider
-instances and their settings are real rows read the way a rotation reads
+"""Fixtures shared by every extension's tests: the extension's own app, and
+real provider instances with settings in it, read the way a rotation reads
 them."""
 
 import os
 import uuid
+from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Type
 
 import pytest
 
-from zephyrex.extensions.database.EXT_Database import (
-    AbstractDatabaseExtensionProvider,
-)
+from zephyrex.extensions.AbstractExtensionProvider import AbstractStaticProvider
 from zephyrex.lib.Environment import env
 from zephyrex.logic.BLL_Providers import (
     ProviderInstanceManager,
@@ -42,32 +41,35 @@ def set_env(monkeypatch: pytest.MonkeyPatch) -> Callable[[str, str], None]:
 
 
 @pytest.fixture(scope="module")
-def database_app() -> Any:
-    """The database extension's app, built once per test module."""
+def extension_app(request: pytest.FixtureRequest) -> Any:
+    """The app of the extension whose folder holds the test module, built
+    once per module."""
     from zephyrex.app import instance
     from zephyrex.pydantic2.sqlalchemy import prepare_test_registry
 
+    extension = Path(str(request.node.path)).parent.name
     prepare_test_registry()
     worker_id = os.environ.get("PYTEST_XDIST_WORKER", "main")
     return instance(
-        db_prefix=f"test.database_providers.{worker_id}", extensions="database"
+        db_prefix=f"test.{extension}_providers.{worker_id}", extensions=extension
     )
 
 
 @pytest.fixture
-def provider_instance(database_app: Any) -> InstanceFactory:
-    """Create a provider instance of a database provider, with settings.
+def provider_instance(extension_app: Any) -> InstanceFactory:
+    """Create a provider instance of one of the extension's providers, with
+    settings.
 
     Each call makes a fresh instance: the app database outlives a test, so
     settings on a shared instance would leak between tests.
     """
     # This app's own registry: the process-wide attached one is whichever
     # app was built last in the worker, whose database is not this one.
-    registry: ModelRegistry = database_app.state.model_registry
+    registry: ModelRegistry = extension_app.state.model_registry
     root_id = env("ROOT_ID")
 
     def _create(
-        provider_cls: Type[AbstractDatabaseExtensionProvider],
+        provider_cls: Type[AbstractStaticProvider],
         *,
         api_key: Optional[str] = None,
         model_name: Optional[str] = None,

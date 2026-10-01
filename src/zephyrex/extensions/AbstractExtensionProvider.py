@@ -1256,6 +1256,34 @@ class AbstractStaticProvider(AbstractStaticExtensionSystemComponent):
         pass
 
     @classmethod
+    def resolve_setting(
+        cls,
+        instance: Optional[ProviderInstanceModel],
+        key: str,
+        env_var: Optional[str] = None,
+        *,
+        field: Optional[str] = None,
+        default: Optional[str] = None,
+    ) -> Optional[str]:
+        """The first non-empty of: the instance's ``field`` column, the
+        instance's ``key`` setting, the ``env_var`` environment value, and
+        ``default``. ``instance`` is None for an environment-only lookup
+        (configuration checks have no instance)."""
+        if instance is not None:
+            if field is not None:
+                value = getattr(instance, field)
+                if value:
+                    return str(value)
+            setting = instance.get_setting(key)
+            if setting:
+                return setting
+        if env_var is not None:
+            env_value = cls.get_env_value(env_var)
+            if env_value:
+                return str(env_value)
+        return default
+
+    @classmethod
     def is_configured(cls) -> bool:
         """All required environment variables present and non-empty.
 
@@ -1839,6 +1867,21 @@ class AbstractStaticExtension(
 
         call.__name__ = method_name
         return call
+
+    @classmethod
+    async def rotate_provider(cls, method_name: str, *args: Any, **kwargs: Any) -> Any:
+        """Run ``method_name`` on the provider serving each instance of this
+        extension's root rotation, with failover: the provider method gets the
+        rotated ``ProviderInstanceModel`` first, and a
+        ``TransientExternalError`` moves on to the next instance. 503 when no
+        provider is configured."""
+        root = cls.root
+        if root is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"No {cls.name} provider is configured",
+            )
+        return await root.arotate(cls.provider_call(method_name), *args, **kwargs)
 
     @classmethod
     def get_rotation_provider_instances_seed_data(cls) -> List[Dict[str, Any]]:

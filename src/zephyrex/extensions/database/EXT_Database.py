@@ -2,7 +2,6 @@
 from abc import abstractmethod
 from typing import Any, ClassVar, Dict, List, Optional, Sequence, Set, Type
 
-from fastapi import HTTPException
 
 from zephyrex.extensions.AbstractExtensionProvider import (
     AbstractProviderInstance,
@@ -108,34 +107,8 @@ class AbstractDatabaseExtensionProvider(AbstractStaticProvider):
     ) -> str:
         """Write data to the database."""
 
-    # -- Connection-setting resolution ---------------------------------------
-
-    @classmethod
-    def resolve_setting(
-        cls,
-        instance: Optional[ProviderInstanceModel],
-        key: str,
-        env_var: Optional[str] = None,
-        *,
-        field: Optional[str] = None,
-        default: Optional[str] = None,
-    ) -> Optional[str]:
-        """The first non-empty of: the instance's ``field`` column, the
-        instance's ``key`` setting, the ``env_var`` environment value, and
-        ``default``."""
-        if instance is not None:
-            if field is not None:
-                value = getattr(instance, field)
-                if value:
-                    return str(value)
-            setting = instance.get_setting(key)
-            if setting:
-                return setting
-        if env_var is not None:
-            env_value = cls.get_env_value(env_var)
-            if env_value:
-                return str(env_value)
-        return default
+    # -- Connection-setting resolution (resolve_setting is the provider
+    # base's) ------------------------------------------------------------------
 
     @classmethod
     def resolve_port(
@@ -560,48 +533,35 @@ class EXT_Database(AbstractStaticExtension):
         return abilities
 
     @classmethod
-    async def _rotate_provider(cls, method_name: str, *args: Any, **kwargs: Any) -> Any:
-        """Run ``method_name`` on the provider serving each rotated instance,
-        with failover. The provider method receives the rotated
-        ``ProviderInstanceModel`` first and connects with its settings; a
-        ``TransientExternalError`` fails over to the next instance."""
-        root = cls.root
-        if root is None:
-            raise HTTPException(
-                status_code=503, detail="No database provider is configured"
-            )
-        return await root.arotate(cls.provider_call(method_name), *args, **kwargs)
-
-    @classmethod
     @ability("execute_sql")
     async def execute_sql(cls, query: str, **kwargs) -> str:
         """Execute a custom SQL query in the database, with provider failover."""
-        return str(await cls._rotate_provider("execute_sql", query, **kwargs))
+        return str(await cls.rotate_provider("execute_sql", query, **kwargs))
 
     @classmethod
     @ability("get_schema")
     async def get_schema(cls, **kwargs) -> str:
         """Get the schema of the database, with provider failover."""
-        return str(await cls._rotate_provider("get_schema", **kwargs))
+        return str(await cls.rotate_provider("get_schema", **kwargs))
 
     @classmethod
     @ability("chat_with_db")
     async def chat_with_db(cls, request: str, **kwargs) -> str:
         """Chat with the database in natural language, with provider failover."""
-        return str(await cls._rotate_provider("chat_with_db", request, **kwargs))
+        return str(await cls.rotate_provider("chat_with_db", request, **kwargs))
 
     @classmethod
     @ability("execute_query")
     async def execute_query(cls, query: str, **kwargs) -> str:
         """Execute a database-specific query (e.g. InfluxQL, Flux, MongoDB),
         with provider failover."""
-        return str(await cls._rotate_provider("execute_query", query, **kwargs))
+        return str(await cls.rotate_provider("execute_query", query, **kwargs))
 
     @classmethod
     @ability("write_data")
     async def write_data(cls, data: str, **kwargs) -> str:
         """Write data (e.g. to a time-series database), with provider failover."""
-        return str(await cls._rotate_provider("write_data", data, **kwargs))
+        return str(await cls.rotate_provider("write_data", data, **kwargs))
 
     @classmethod
     def get_database_classifications(

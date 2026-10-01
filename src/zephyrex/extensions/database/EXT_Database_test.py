@@ -461,9 +461,9 @@ class TestConnectionSettingResolution:
 
 
 @pytest.fixture
-def rotation_over(provider_instance, database_app) -> Any:
+def rotation_over(provider_instance, extension_app) -> Any:
     """A rotation that tries the given instances in order."""
-    registry: ModelRegistry = database_app.state.model_registry
+    registry: ModelRegistry = extension_app.state.model_registry
     root_id = env("ROOT_ID")
 
     def _build(*instances: ProviderInstanceModel) -> RotationManager:
