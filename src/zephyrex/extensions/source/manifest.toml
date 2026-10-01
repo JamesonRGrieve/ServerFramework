@@ -6,7 +6,7 @@
 
 name = "source"
 version = "1.0.0"
-description = "Extension for source code repository interactions"
+description = "Repositories, issues, pull requests, commits and files on GitHub, GitLab, Forgejo and Bitbucket"
 author = "ZephyrexTechnologies"
 entry_module = "EXT_Source"
 minimum_framework_version = "0.0.0"
