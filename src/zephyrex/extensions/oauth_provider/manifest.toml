@@ -1,9 +1,19 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Extension manifest (Item 20): what an installer reads before the extension
+# class can be imported. It mirrors the class (name, version, description,
+# dependencies); the class stays the source of truth and
+# Manifest_parity_test keeps the two in step.
+
 name = "oauth_provider"
 version = "1.0.0"
-description = "Run this server as an OAuth2 issuer (auth code grant + PKCE, refresh, introspect, revoke)"
+description = "Run this server as an OAuth2 issuer (auth code, refresh token grants)."
+author = "ZephyrexTechnologies"
+entry_module = "EXT_OAuthProvider"
+minimum_framework_version = "0.0.0"
+
+pip_dependencies = []
+system_dependencies = []
 
 [[extension_dependencies]]
 name = "auth_session"
 optional = false
-
-[python_dependencies]

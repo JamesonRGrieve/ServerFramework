@@ -1,7 +1,15 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Extension manifest (Item 20): what an installer reads before the extension
+# class can be imported. It mirrors the class (name, version, description,
+# dependencies); the class stays the source of truth and
+# Manifest_parity_test keeps the two in step.
+
 name = "auth_oauth2_server"
 version = "1.0.0"
-description = "OAuth2 authorization server (client registration, auth-code + PKCE, opaque revocable tokens)"
+description = "OAuth2 authorization server: third-party client registration, the authorization-code flow with PKCE, and opaque revocable access/refresh tokens (introspect / revoke)"
+author = "ZephyrexTechnologies"
+entry_module = "EXT_Auth_OAuth2Server"
+minimum_framework_version = "0.0.0"
 
-# Standard-library only (secrets, hmac, hashlib, base64); no third-party or
-# cross-extension dependencies. Core auth (users/teams) is an implicit base.
-[python_dependencies]
+pip_dependencies = []
+system_dependencies = []

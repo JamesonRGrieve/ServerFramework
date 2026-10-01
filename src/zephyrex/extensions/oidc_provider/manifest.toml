@@ -1,6 +1,18 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Extension manifest (Item 20): what an installer reads before the extension
+# class can be imported. It mirrors the class (name, version, description,
+# dependencies); the class stays the source of truth and
+# Manifest_parity_test keeps the two in step.
+
 name = "oidc_provider"
 version = "1.0.0"
-description = "Run this server as an OpenID Connect identity provider (ID tokens, discovery, JWKS)"
+description = "Run this server as an OpenID Connect identity provider."
+author = "ZephyrexTechnologies"
+entry_module = "EXT_OIDCProvider"
+minimum_framework_version = "0.0.0"
+
+pip_dependencies = []
+system_dependencies = []
 
 [[extension_dependencies]]
 name = "auth_session"
@@ -9,7 +21,3 @@ optional = false
 [[extension_dependencies]]
 name = "oauth_provider"
 optional = false
-
-[python_dependencies]
-PyJWT = ">=2.8.0"
-cryptography = ">=41.0.0"
