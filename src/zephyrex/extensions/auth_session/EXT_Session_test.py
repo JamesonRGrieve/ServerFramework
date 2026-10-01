@@ -127,7 +127,7 @@ def test_generate_jwt_token_uses_issue_hook_when_registered():
     os.environ.setdefault("JWT_AUDIENCE", "test-aud")
     os.environ.setdefault("JWT_ISSUER", "test-iss")
 
-    from zephyrex.lib.Dependencies import jwt
+    import jwt
     from zephyrex.lib.Environment import env
     from zephyrex.logic.BLL_Auth import (
         UserManager,
@@ -170,7 +170,7 @@ def test_generate_jwt_token_falls_back_when_hook_missing():
     os.environ.setdefault("JWT_AUDIENCE", "test-aud")
     os.environ.setdefault("JWT_ISSUER", "test-iss")
 
-    from zephyrex.lib.Dependencies import jwt
+    import jwt
     from zephyrex.lib.Environment import env
     from zephyrex.logic.BLL_Auth import UserManager
 

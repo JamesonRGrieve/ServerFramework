@@ -3596,7 +3596,7 @@ class TestJWTDualKeyRotation:
 
     def test_token_signed_with_previous_key_validates(self, monkeypatch, server):
         """A token signed with the old key still validates after rotation."""
-        from zephyrex.lib.Dependencies import jwt
+        import jwt
 
         old_secret = "old-rotation-secret-key-32bytes!"
         new_secret = "new-rotation-secret-key-32bytes!"
@@ -3627,7 +3627,7 @@ class TestJWTDualKeyRotation:
 
     def test_token_with_unknown_key_rejected(self, monkeypatch, server):
         """A token signed with neither current nor previous key is rejected."""
-        from zephyrex.lib.Dependencies import jwt
+        import jwt
 
         payload = {
             "sub": "test-user-id",

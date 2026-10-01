@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 import pytest
 
-from zephyrex.lib.Dependencies import jwt
+import jwt
 from zephyrex.lib.ReplayCache import InMemoryReplayCache, set_replay_cache
 from zephyrex.lib.SingleUseToken import (
     issue_single_use_token,

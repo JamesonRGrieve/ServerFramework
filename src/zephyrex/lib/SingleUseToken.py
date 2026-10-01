@@ -17,7 +17,7 @@ import secrets
 import time
 from typing import Any, Dict, Optional
 
-from zephyrex.lib.Dependencies import jwt
+import jwt
 from zephyrex.lib.Environment import env
 from zephyrex.lib.ReplayCache import get_replay_cache
 

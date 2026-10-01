@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 import secrets
 from datetime import datetime, timedelta, timezone
-from typing import Any, ClassVar, Dict, List, Optional, Type, Union, cast
+from typing import Any, ClassVar, Dict, List, Optional, Type, Union
 
 import bcrypt
 from fastapi import HTTPException, Header, Request, Response, status
@@ -10,7 +10,7 @@ from pydantic import Field, ValidationError, model_validator
 
 from sqlalchemy import or_
 from zephyrex.lib.CustomRoute import ExposeIn, custom_route
-from zephyrex.lib.Dependencies import jwt
+import jwt
 from zephyrex.lib.Environment import env, extract_base_domain
 from zephyrex.lib.InboundSecurity import (
     DEFAULT_AUTH_RATE_LIMIT,
@@ -66,6 +66,8 @@ _JWT_SEPARATOR_COUNT = 2
 # Login tokens, and the session cookie that carries them, live this long.
 JWT_LIFETIME_HOURS = 24
 _SECONDS_PER_HOUR = 3600
+# Clock skew tolerated between token issuer and verifier.
+JWT_LEEWAY_SECONDS = 30
 
 
 def issue_browser_session(response: Response, token: str) -> None:
@@ -161,73 +163,75 @@ class UserModel(
             is_system_user_id,
         )
 
-        # Get the record if an ID was passed
-        if isinstance(record, str):
-            db = model_registry.DB.session()
-            record_obj = (
-                db.query(cls.DB(model_registry.DB.manager.Base))
-                .filter(cls.DB(model_registry.DB.manager.Base).id == record)
-                .first()
-            )
-            if record_obj is None:
+        db = model_registry.DB.session()
+        try:
+            # Get the record if an ID was passed
+            if isinstance(record, str):
+                record_obj = (
+                    db.query(cls.DB(model_registry.DB.manager.Base))
+                    .filter(cls.DB(model_registry.DB.manager.Base).id == record)
+                    .first()
+                )
+                if record_obj is None:
+                    return False
+            else:
+                record_obj = record
+
+            # ROOT_ID can access everything
+            if is_root_id(user_id):
+                return True
+
+            # Check for deleted records - only ROOT_ID can see them
+            if hasattr(record_obj, "deleted_at") and record_obj.deleted_at is not None:
                 return False
-        else:
-            record_obj = record
-            db = model_registry.DB.session()
 
-        # ROOT_ID can access everything
-        if is_root_id(user_id):
-            return True
+            # Users can see their own records
+            if user_id == record_obj.id:
+                return True
 
-        # Check for deleted records - only ROOT_ID can see them
-        if hasattr(record_obj, "deleted_at") and record_obj.deleted_at is not None:
+            # Check for records created by SYSTEM_ID
+            if hasattr(
+                record_obj, "created_by_user_id"
+            ) and record_obj.created_by_user_id == env("SYSTEM_ID"):
+                # For view operations, regular users can view
+                if minimum_role is None or minimum_role == "user":
+                    return True
+                # For admin operations, only ROOT_ID and SYSTEM_ID
+                return is_root_id(user_id) or is_system_user_id(user_id)
+
+            # Check for records created by TEMPLATE_ID
+            if hasattr(
+                record_obj, "created_by_user_id"
+            ) and record_obj.created_by_user_id == env("TEMPLATE_ID"):
+                # For view/copy/execute/share operations, all users can access
+                if minimum_role is None or minimum_role == "user":
+                    return True
+                # For edit/delete, only ROOT_ID and SYSTEM_ID can modify
+                return is_root_id(user_id) or is_system_user_id(user_id)
+
+            # For direct record-level access checks, use standard permission system
+            if not referred:
+                # Check if created by this user
+                if (
+                    hasattr(record_obj, "created_by_user_id")
+                    and record_obj.created_by_user_id == user_id
+                ):
+                    return True
+
+                # Use standard permission system
+                result, _ = check_permission(
+                    user_id,
+                    cls.DB,
+                    record_obj.id,
+                    db,
+                    PermissionType.VIEW if minimum_role is None else None,
+                    minimum_role=minimum_role,
+                )
+                return result == PermissionResult.GRANTED
+
             return False
-
-        # Users can see their own records
-        if user_id == record_obj.id:
-            return True
-
-        # Check for records created by SYSTEM_ID
-        if hasattr(
-            record_obj, "created_by_user_id"
-        ) and record_obj.created_by_user_id == env("SYSTEM_ID"):
-            # For view operations, regular users can view
-            if minimum_role is None or minimum_role == "user":
-                return True
-            # For admin operations, only ROOT_ID and SYSTEM_ID
-            return is_root_id(user_id) or is_system_user_id(user_id)
-
-        # Check for records created by TEMPLATE_ID
-        if hasattr(
-            record_obj, "created_by_user_id"
-        ) and record_obj.created_by_user_id == env("TEMPLATE_ID"):
-            # For view/copy/execute/share operations, all users can access
-            if minimum_role is None or minimum_role == "user":
-                return True
-            # For edit/delete, only ROOT_ID and SYSTEM_ID can modify
-            return is_root_id(user_id) or is_system_user_id(user_id)
-
-        # For direct record-level access checks, use standard permission system
-        if not referred:
-            # Check if created by this user
-            if (
-                hasattr(record_obj, "created_by_user_id")
-                and record_obj.created_by_user_id == user_id
-            ):
-                return True
-
-            # Use standard permission system
-            result, _ = check_permission(
-                user_id,
-                cls.DB,
-                record_obj.id,
-                db,
-                PermissionType.VIEW if minimum_role is None else None,
-                minimum_role=minimum_role,
-            )
-            return result == PermissionResult.GRANTED
-
-        return False
+        finally:
+            db.close()
 
     @classmethod
     def user_has_admin_access(
@@ -872,7 +876,7 @@ class UserManager(AbstractBLLManager, RouterMixin):
             "iss": env("JWT_ISSUER"),
             "jti": session_key,
         }
-        return jwt.encode(payload, env("JWT_SECRET"), algorithm=env("JWT_ALGORITHM"))  # type: ignore[no-any-return]
+        return jwt.encode(payload, env("JWT_SECRET"), algorithm=env("JWT_ALGORITHM"))
 
     @staticmethod
     def _enforce_session_not_revoked(
@@ -930,23 +934,24 @@ class UserManager(AbstractBLLManager, RouterMixin):
     @staticmethod
     def _decode_jwt(token: str) -> Dict[str, Any]:
         """Decode a JWT trying current secret, then previous for rotation."""
-        decode_kwargs = dict(
-            algorithms=[env("JWT_ALGORITHM")],
-            audience=env("JWT_AUDIENCE"),
-            issuer=env("JWT_ISSUER"),
-            leeway=30,
-            options={"require": ["exp", "nbf", "iat", "jti", "aud", "iss"]},
-        )
-        try:
-            return cast(
-                Dict[str, Any], jwt.decode(token, env("JWT_SECRET"), **decode_kwargs)
+
+        def decode(secret: str) -> Dict[str, Any]:
+            return jwt.decode(
+                token,
+                secret,
+                algorithms=[env("JWT_ALGORITHM")],
+                audience=env("JWT_AUDIENCE"),
+                issuer=env("JWT_ISSUER"),
+                leeway=JWT_LEEWAY_SECONDS,
+                options={"require": ["exp", "nbf", "iat", "jti", "aud", "iss"]},
             )
+
+        try:
+            return decode(env("JWT_SECRET"))
         except jwt.InvalidSignatureError:
             previous = env("JWT_SECRET_PREVIOUS")
             if previous:
-                return cast(
-                    Dict[str, Any], jwt.decode(token, previous, **decode_kwargs)
-                )
+                return decode(previous)
             raise
 
     @staticmethod
@@ -1117,28 +1122,6 @@ class UserManager(AbstractBLLManager, RouterMixin):
                 status_code=401, detail="Authorization header is missing!"
             )
 
-        ip = None
-        server = None
-        if request:
-            # H-7 — never trust X-Forwarded-For unless the immediate peer is
-            # a configured trusted proxy. Centralized in `resolve_client_ip`
-            # so spoofing one transport doesn't bypass another.
-            from zephyrex.lib.InboundSecurity import resolve_client_ip
-
-            peer_host: Optional[str] | None = None
-            client_obj = getattr(request, "client", None)
-            if client_obj is not None:
-                if hasattr(client_obj, "host"):
-                    peer_host = client_obj.host
-                elif isinstance(client_obj, (tuple, list)) and client_obj:
-                    peer_host = client_obj[0]
-                elif isinstance(client_obj, dict) and "host" in client_obj:
-                    peer_host = client_obj["host"]
-            ip = resolve_client_ip(request, peer_host=peer_host)
-            host = request.headers.get("Host")
-            scheme = request.headers.get("X-Forwarded-Proto", "http")
-            if host:
-                server = f"{scheme}://{host}"
         db_manager = model_registry.DB
         if db_manager is None:
             raise ValueError("db_manager is required for auth")
@@ -1416,7 +1399,6 @@ class UserManager(AbstractBLLManager, RouterMixin):
             "session_key": session_key,
         }
 
-        model_registry.DB.session().commit()
         issue_browser_session(response, token)
         return result
 
@@ -1470,168 +1452,141 @@ class UserManager(AbstractBLLManager, RouterMixin):
         if model_registry is None:
             raise ValueError("model_registry is required for login")
 
-        db = model_registry.DB.session()
-        close_session = True
+        # Extract credentials from Basic Auth header if provided
+        if authorization and authorization.startswith("Basic "):
+            identifier, password = UserManager._decode_basic_auth(authorization)
+            login_data = {"email": identifier, "password": password}
 
-        try:
-            # Extract credentials from Basic Auth header if provided
-            if authorization and authorization.startswith("Basic "):
-                identifier, password = UserManager._decode_basic_auth(authorization)
-                login_data = {"email": identifier, "password": password}
+        if not login_data:
+            raise HTTPException(status_code=400, detail="Invalid Authorization header.")
 
-            if not login_data:
-                raise HTTPException(
-                    status_code=400, detail="Invalid Authorization header."
+        # H-8 — IP-keyed lockout check before any DB work. An attacker
+        # rotating usernames against a single IP trips this even if no
+        # individual user account is locked.
+        lockout_key = ip_address or "unknown"
+        if UserManager._lockout_tracker.is_locked(lockout_key, "password_login"):
+            remaining = UserManager._lockout_tracker.remaining_lockout_seconds(
+                lockout_key, "password_login"
+            )
+            raise HTTPException(
+                status_code=429,
+                detail="Too many failed attempts. Try again later.",
+                headers={"Retry-After": str(int(remaining or 60))},
+            )
+
+        login_model = UserManager.UserLoginModel(**login_data)
+        normalized_identifier = UserManager._normalize_identifier(login_model.email)
+
+        # Try to find user by email or username
+        user = UserModel.DB(model_registry.DB.manager.Base).list(
+            requester_id=env("ROOT_ID"),
+            model_registry=model_registry,
+            filters=[
+                or_(
+                    UserModel.DB(model_registry.DB.manager.Base).email
+                    == normalized_identifier,
+                    UserModel.DB(model_registry.DB.manager.Base).username
+                    == normalized_identifier,
                 )
+            ],
+        )
+        if len(user) != 1:
+            logger.warning("This should never have multiple users!")
+            UserManager._lockout_tracker.record_failure(lockout_key, "password_login")
+            # Burn the same bcrypt time as a real password check to
+            # prevent timing-based username enumeration.
+            bcrypt.checkpw((login_model.password or "x").encode(), _DUMMY_BCRYPT_HASH)
+            raise HTTPException(status_code=401, detail="Invalid credentials")
 
-            # H-8 — IP-keyed lockout check before any DB work. An attacker
-            # rotating usernames against a single IP trips this even if no
-            # individual user account is locked.
-            lockout_key = ip_address or "unknown"
-            if UserManager._lockout_tracker.is_locked(lockout_key, "password_login"):
-                remaining = UserManager._lockout_tracker.remaining_lockout_seconds(
-                    lockout_key, "password_login"
-                )
-                raise HTTPException(
-                    status_code=429,
-                    detail="Too many failed attempts. Try again later.",
-                    headers={"Retry-After": str(int(remaining or 60))},
-                )
+        user = user[0]
 
-            login_model = UserManager.UserLoginModel(**login_data)
-            normalized_identifier = UserManager._normalize_identifier(login_model.email)
+        # Per-user threshold gate (auth_lockout extension when loaded).
+        # The IP-keyed in-memory lockout above is the always-on defense.
+        if _lockout_hooks["assert_within_threshold"] is not None:
+            _lockout_hooks["assert_within_threshold"](user["id"], model_registry)
 
-            # Try to find user by email or username
-            user = UserModel.DB(model_registry.DB.manager.Base).list(
-                requester_id=env("ROOT_ID"),
+        # Check if user account is active
+        if not user["active"]:
+            if _lockout_hooks["record_failure"] is not None:
+                _lockout_hooks["record_failure"](user["id"], ip_address, model_registry)
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+
+        # Check if user account was deleted
+        if user["deleted_at"]:
+            if _lockout_hooks["record_failure"] is not None:
+                _lockout_hooks["record_failure"](user["id"], ip_address, model_registry)
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+
+        # Handle password-based login
+        if login_model.password:
+            credential = UserCredentialModel.DB(model_registry.DB.manager.Base).get(
+                requester_id=user["id"],
                 model_registry=model_registry,
+                user_id=user["id"],
                 filters=[
-                    or_(
-                        UserModel.DB(model_registry.DB.manager.Base).email
-                        == normalized_identifier,
-                        UserModel.DB(model_registry.DB.manager.Base).username
-                        == normalized_identifier,
-                    )
+                    UserCredentialModel.DB(
+                        model_registry.DB.manager.Base
+                    ).password_changed_at
+                    == None,
                 ],
             )
-            if len(user) != 1:
-                logger.warning("This should never have multiple users!")
-                UserManager._lockout_tracker.record_failure(
-                    lockout_key, "password_login"
-                )
-                # Burn the same bcrypt time as a real password check to
-                # prevent timing-based username enumeration.
-                bcrypt.checkpw(
-                    (login_model.password or "x").encode(), _DUMMY_BCRYPT_HASH
-                )
-                raise HTTPException(status_code=401, detail="Invalid credentials")
 
-            user = user[0]
-
-            # Per-user threshold gate (auth_lockout extension when loaded).
-            # The IP-keyed in-memory lockout above is the always-on defense.
-            if _lockout_hooks["assert_within_threshold"] is not None:
-                _lockout_hooks["assert_within_threshold"](user["id"], model_registry)
-
-            # Check if user account is active
-            if not user["active"]:
-                if _lockout_hooks["record_failure"] is not None:
-                    _lockout_hooks["record_failure"](
-                        user["id"], ip_address, model_registry
-                    )
-                raise HTTPException(status_code=401, detail="Invalid credentials")
-
-            # Check if user account was deleted
-            if user["deleted_at"]:
-                if _lockout_hooks["record_failure"] is not None:
-                    _lockout_hooks["record_failure"](
-                        user["id"], ip_address, model_registry
-                    )
-                raise HTTPException(status_code=401, detail="Invalid credentials")
-
-            # Handle password-based login
-            if login_model.password:
-                credential = UserCredentialModel.DB(model_registry.DB.manager.Base).get(
-                    requester_id=user["id"],
-                    model_registry=model_registry,
-                    user_id=user["id"],
-                    filters=[
-                        UserCredentialModel.DB(
-                            model_registry.DB.manager.Base
-                        ).password_changed_at
-                        == None,
-                    ],
-                )
-
-                if not bcrypt.checkpw(
-                    login_model.password.encode(), credential["password_hash"].encode()
-                ):
-                    # Check if there is an older password that matches
+            if not bcrypt.checkpw(
+                login_model.password.encode(), credential["password_hash"].encode()
+            ):
+                # Check if there is an older password that matches
+                Credential = UserCredentialModel.DB(model_registry.DB.manager.Base)
+                with model_registry.DB.manager._get_db_session(
+                    auto_commit=False
+                ) as session:
                     old_credentials = (
-                        model_registry.DB.session()
-                        .query(UserCredentialModel.DB(model_registry.DB.manager.Base))
+                        session.query(Credential)
                         .filter(
-                            UserCredentialModel.DB(
-                                model_registry.DB.manager.Base
-                            ).user_id
-                            == user["id"],
-                            UserCredentialModel.DB(
-                                model_registry.DB.manager.Base
-                            ).password_changed_at
-                            != None,
+                            Credential.user_id == user["id"],
+                            Credential.password_changed_at != None,
                         )
-                        .order_by(
-                            UserCredentialModel.DB(
-                                model_registry.DB.manager.Base
-                            ).password_changed_at.desc()
-                        )
+                        .order_by(Credential.password_changed_at.desc())
                         .first()
                     )
 
-                    if old_credentials and bcrypt.checkpw(
-                        login_model.password.encode(),
-                        old_credentials.password_hash.encode(),
-                    ):
-                        logger.info(
-                            "Login attempt used a previously valid password "
-                            "(changed %s)",
-                            old_credentials.password_changed_at.strftime("%Y-%m"),
+                if old_credentials and bcrypt.checkpw(
+                    login_model.password.encode(),
+                    old_credentials.password_hash.encode(),
+                ):
+                    logger.info(
+                        "Login attempt used a previously valid password "
+                        "(changed %s)",
+                        old_credentials.password_changed_at.strftime("%Y-%m"),
+                    )
+                    raise HTTPException(
+                        status_code=401,
+                        detail="Invalid credentials",
+                    )
+                else:
+                    if _lockout_hooks["record_failure"] is not None:
+                        _lockout_hooks["record_failure"](
+                            user["id"], ip_address, model_registry
                         )
-                        raise HTTPException(
-                            status_code=401,
-                            detail="Invalid credentials",
-                        )
-                    else:
-                        if _lockout_hooks["record_failure"] is not None:
-                            _lockout_hooks["record_failure"](
-                                user["id"], ip_address, model_registry
-                            )
-                        # H-8 — record IP-keyed failure too.
-                        UserManager._lockout_tracker.record_failure(
-                            lockout_key, "password_login"
-                        )
-                        raise HTTPException(
-                            status_code=401, detail="Invalid credentials"
-                        )
+                    # H-8 — record IP-keyed failure too.
+                    UserManager._lockout_tracker.record_failure(
+                        lockout_key, "password_login"
+                    )
+                    raise HTTPException(status_code=401, detail="Invalid credentials")
 
-            else:
-                raise HTTPException(
-                    status_code=400, detail="Either password or token is required"
-                )
+        else:
+            raise HTTPException(
+                status_code=400, detail="Either password or token is required"
+            )
 
-            # H-8 — successful auth clears the IP-keyed counter so a user
-            # who misremembered their password once does not carry the
-            # failure into the next legitimate attempt.
-            UserManager._lockout_tracker.clear(lockout_key, "password_login")
+        # H-8 — successful auth clears the IP-keyed counter so a user
+        # who misremembered their password once does not carry the
+        # failure into the next legitimate attempt.
+        UserManager._lockout_tracker.clear(lockout_key, "password_login")
 
-            challenge = UserManager.mfa_challenge(str(user["id"]), model_registry)
-            if challenge is not None:
-                return challenge
-            return UserManager._complete_login(user, model_registry, response)
-        finally:
-            # Close session if we created it
-            if close_session:
-                model_registry.DB.session().close()
+        challenge = UserManager.mfa_challenge(str(user["id"]), model_registry)
+        if challenge is not None:
+            return challenge
+        return UserManager._complete_login(user, model_registry, response)
 
     @staticmethod
     def mfa_challenge(user_id: str, model_registry: Any) -> Optional[Dict[str, Any]]:
@@ -1675,28 +1630,23 @@ class UserManager(AbstractBLLManager, RouterMixin):
             )
         user_id = str(claims["sub"])
         code = str(body.get("code") or "")
-        try:
-            if (
-                verify_code is None
-                or not code
-                or not verify_code(user_id, code, model_registry)
-            ):
-                raise HTTPException(status_code=401, detail="Invalid MFA code")
-            if not redeem_single_use_token(claims):
-                raise HTTPException(
-                    status_code=401, detail="MFA challenge already used"
-                )
-            users = UserModel.DB(model_registry.DB.manager.Base).list(
-                requester_id=env("ROOT_ID"),
-                model_registry=model_registry,
-                id=user_id,
-            )
-            # The account may have been disabled since the password step.
-            if len(users) != 1 or not users[0]["active"] or users[0]["deleted_at"]:
-                raise HTTPException(status_code=401, detail="Invalid credentials")
-            return UserManager._complete_login(users[0], model_registry, response)
-        finally:
-            model_registry.DB.session().close()
+        if (
+            verify_code is None
+            or not code
+            or not verify_code(user_id, code, model_registry)
+        ):
+            raise HTTPException(status_code=401, detail="Invalid MFA code")
+        if not redeem_single_use_token(claims):
+            raise HTTPException(status_code=401, detail="MFA challenge already used")
+        users = UserModel.DB(model_registry.DB.manager.Base).list(
+            requester_id=env("ROOT_ID"),
+            model_registry=model_registry,
+            id=user_id,
+        )
+        # The account may have been disabled since the password step.
+        if len(users) != 1 or not users[0]["active"] or users[0]["deleted_at"]:
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+        return UserManager._complete_login(users[0], model_registry, response)
 
     @staticmethod
     def _issue_session(

@@ -35,7 +35,7 @@ from zephyrex.extensions.auth_oauth2_client.Forgejo import ForgejoOAuthProvider
 from zephyrex.extensions.auth_oauth2_client.GitHub import GitHubOAuthProvider
 from zephyrex.extensions.auth_oauth2_client.Google import GoogleOAuthProvider
 from zephyrex.extensions.auth_oauth2_client.Microsoft import MicrosoftOAuthProvider
-from zephyrex.lib.Dependencies import jwt
+import jwt
 from zephyrex.lib.Environment import env
 from zephyrex.lib.SingleUseToken import (
     issue_single_use_token,
