@@ -206,6 +206,9 @@ EXTERNAL_API_PROVIDER_ENV_VARS: Dict[str, List[str]] = {
     "telegram_test": ["TELEGRAM_BOT_TOKEN", "TELEGRAM_TEST_CHAT"],
     # Wearable: a Fitbit test account's OAuth access token.
     "fitbit": ["FITBIT_ACCESS_TOKEN"],
+    # Cloud storage round trips: a bucket and a Nextcloud account for tests.
+    "s3_test": ["S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY", "S3_BUCKET"],
+    "nextcloud_test": ["NEXTCLOUD_URL", "NEXTCLOUD_USERNAME", "NEXTCLOUD_APP_PASSWORD"],
     # SendGrid sandbox.
     "sendgrid": ["SENDGRID_API_KEY"],
     # Twilio sandbox.

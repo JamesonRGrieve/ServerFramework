@@ -6,10 +6,10 @@
 
 name = "cloud"
 version = "1.0.0"
-description = "Cloud storage extension providing file management across multiple cloud storage providers (AWS S3, Azure Blob Storage, Google Cloud Storage, Dropbox, Nextcloud)"
+description = "Cloud object storage on S3, Azure Blob, Google Cloud Storage, Dropbox and Nextcloud"
 author = "ZephyrexTechnologies"
 entry_module = "EXT_Cloud"
 minimum_framework_version = "0.0.0"
 
-pip_dependencies = []
+pip_dependencies = ["azure-core>=1.29.0", "azure-storage-blob>=12.19.0", "boto3>=1.26.0", "botocore>=1.29.0", "dropbox>=11.36.0", "google-api-core>=2.11.0", "google-auth>=2.0.0", "google-cloud-storage>=2.10.0"]
 system_dependencies = []

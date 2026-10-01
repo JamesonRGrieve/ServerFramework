@@ -24,6 +24,7 @@ from zephyrex.lib.Dependencies import Dependencies, PIP_Dependency, importable
 from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 
 DEFAULT_REGION = "us-east-1"
+CONNECT_TIMEOUT_SECONDS = 10
 # A sender id is 1-11 alphanumeric characters (AWS's limit).
 SENDER_ID_MAX = 11
 _AUTH_ERRORS = {
@@ -98,12 +99,17 @@ class PRV_Amazon_SMS(AbstractSMSProvider):
                 "AWS credentials not configured", provider=cls.name
             )
         import boto3
+        from botocore.config import Config
 
         return boto3.client(
             "sns",
             region_name=cls.setting(instance, "aws_region"),
             aws_access_key_id=key_id,
             aws_secret_access_key=secret,
+            # The rotation retries and fails over, not the SDK.
+            config=Config(
+                retries={"max_attempts": 1}, connect_timeout=CONNECT_TIMEOUT_SECONDS
+            ),
         )
 
     @classmethod
