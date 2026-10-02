@@ -218,6 +218,10 @@ EXTERNAL_API_PROVIDER_ENV_VARS: Dict[str, List[str]] = {
     "threads_test": ["THREADS_ACCESS_TOKEN"],
     "tiktok_test": ["TIKTOK_ACCESS_TOKEN"],
     "postiz_test": ["POSTIZ_API_KEY", "POSTIZ_INTEGRATION_ID"],
+    # Calendar: test accounts, read only.
+    "google_calendar_test": ["GOOGLE_CALENDAR_TOKEN"],
+    "microsoft_calendar_test": ["MICROSOFT_GRAPH_TOKEN"],
+    "calendly_test": ["CALENDLY_TOKEN"],
     # SendGrid sandbox.
     "sendgrid": ["SENDGRID_API_KEY"],
     # Twilio sandbox.

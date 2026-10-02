@@ -1,678 +1,273 @@
-from datetime import datetime
-from unittest.mock import MagicMock, patch
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""The calendar extension: times and ranges, event field checks, the
+free-time computation (buffers, busy spans, a daylight-saving day),
+each provider's request bodies and answers, Calendly's refusals, real
+calls refusing a bogus token, and read-only live checks."""
 
+from datetime import UTC, date, datetime, time, timedelta
+from zoneinfo import ZoneInfo
+
+import httpx
 import pytest
 
-from zephyrex.extensions.calendar.EXT_Calendar import EXT_Calendar
+from zephyrex.extensions.ExternalErrors import (
+    AuthExternalError,
+    InvalidInputExternalError,
+    PermanentExternalError,
+)
+from zephyrex.extensions.calendar.EXT_Calendar import (
+    EXT_Calendar,
+    aware,
+    clock,
+    event_fields,
+    free_slots,
+    iso,
+    parse_time,
+    time_range,
+    zone,
+)
+from zephyrex.extensions.calendar.PRV_Calendly import PRV_Calendly_Calendar
+from zephyrex.extensions.calendar.PRV_Google import PRV_Google_Calendar, when
+from zephyrex.extensions.calendar.PRV_Microsoft import (
+    PRV_Microsoft_Calendar,
+    graph_time,
+)
+
+BOGUS = "not-a-real-token"
+DAY = date(2026, 10, 5)  # a Monday
+HALF_HOUR = timedelta(minutes=30)
 
 
-class TestCalendarExtension:
-    """Test cases for Calendar Extension."""
+def at(hour: int, minute: int = 0, day: date = DAY) -> datetime:
+    return datetime.combine(day, time(hour, minute), UTC)
 
-    @pytest.fixture
-    def extension(self):
-        """Create a CalendarExtension instance for testing."""
-        return EXT_Calendar()
 
-    def test_extension_metadata(self, extension):
-        """Test extension metadata is correctly set."""
-        assert extension.name == "calendar"
-        assert extension.version == "1.0.0"
-        assert "calendar" in extension.description.lower()
-        assert "scheduling" in extension.description.lower()
+def _online(url: str) -> bool:
+    try:
+        httpx.head(url, timeout=5)
+        return True
+    except httpx.HTTPError:
+        return False
 
-    def test_dependencies(self, extension):
-        """Test extension dependencies are properly defined."""
-        # Check extension dependencies
-        ext_deps = {dep.name for dep in extension.ext_dependencies}
-        assert "core" in ext_deps
-        assert "oauth" in ext_deps
 
-        # Check pip dependencies
-        pip_deps = {dep.name for dep in extension.pip_dependencies}
-        assert "google-api-python-client" in pip_deps
-        assert "microsoft-graph-api" in pip_deps
-        assert "requests" in pip_deps
-        assert "pytz" in pip_deps
+def reachable(url: str) -> pytest.MarkDecorator:
+    return pytest.mark.xfail(not _online(url), reason=f"{url} is unreachable")
 
-        # Check sys dependencies
-        assert isinstance(extension.sys_dependencies, list)
 
-    def test_capabilities(self, extension):
-        """Test extension capabilities are properly defined."""
-        expected_capabilities = {
-            "event_management",
-            "calendar_scheduling",
-            "availability_checking",
-            "meeting_creation",
-            "calendar_synchronization",
-            "timezone_handling",
+class TestTimes:
+    def test_naive_is_utc(self):
+        assert aware(datetime(2026, 10, 5, 9)) == at(9)
+        assert iso(datetime(2026, 10, 5, 9)) == "2026-10-05T09:00:00Z"
+
+    def test_offsets_convert(self):
+        assert parse_time("2026-10-05T11:00:00+02:00") == at(9)
+        assert parse_time("2026-10-05T09:00:00.0000000") == at(9)
+
+    def test_ranges(self):
+        assert time_range(at(9), at(10)) == (at(9), at(10))
+        with pytest.raises(InvalidInputExternalError):
+            time_range(at(10), at(9))
+        with pytest.raises(InvalidInputExternalError):
+            time_range(at(9), at(9) + timedelta(days=400))
+
+    def test_zones_and_clock_times(self):
+        assert zone("Europe/Paris") == ZoneInfo("Europe/Paris")
+        assert clock("09:30") == time(9, 30)
+        for bad in ("Mars/Olympus", "../etc"):
+            with pytest.raises(InvalidInputExternalError):
+                zone(bad)
+        with pytest.raises(InvalidInputExternalError):
+            clock("9am")
+
+    def test_event_fields(self):
+        fields = event_fields("Standup", at(9), at(10), None, None, ["a@b.co"], True)
+        assert fields == {
+            "title": "Standup",
+            "start": at(9),
+            "end": at(10),
+            "attendees": ["a@b.co"],
+            "online_meeting": True,
         }
-        assert set(extension.capabilities) == expected_capabilities
+        with pytest.raises(InvalidInputExternalError):
+            event_fields("  ", None, None, None, None, None, None)
+        with pytest.raises(InvalidInputExternalError):
+            event_fields("x", None, None, None, None, ["not an address"], None)
 
-    def test_initialization(self, extension):
-        """Test extension initialization."""
-        assert hasattr(extension, "calendar_platform")
-        assert hasattr(extension, "access_token")
-        assert hasattr(extension, "timezone")
-        assert hasattr(extension, "provider")
-        assert hasattr(extension, "commands")
-
-    def test_default_configuration(self, extension):
-        """Test default configuration values."""
-        assert extension.calendar_platform == "google"
-        assert extension.access_token == ""
-        assert extension.timezone == "UTC"
-
-    @patch("zephyrex.extensions.calendar.EXT_Calendar.logger")
-    def test_on_initialize_success(self, mock_logger, extension):
-        """Test successful extension initialization."""
-        with patch.object(extension, "_create_provider"), patch.object(
-            extension, "_register_commands"
-        ), patch.object(extension, "register_capability"):
-
-            result = extension.on_initialize()
-            assert result is True
-            mock_logger.debug.assert_called()
-
-    @patch("zephyrex.extensions.calendar.EXT_Calendar.logger")
-    def test_on_initialize_failure(self, mock_logger, extension):
-        """Test extension initialization failure."""
-        with patch.object(
-            extension, "_create_provider", side_effect=Exception("Test error")
-        ):
-            result = extension.on_initialize()
-            assert result is False
-            mock_logger.error.assert_called()
-
-    def test_create_provider_google(self, extension):
-        """Test Google Calendar provider creation."""
-        extension.calendar_platform = "google"
-
-        with patch(
-            "zephyrex.extensions.calendar.Google.GoogleCalendarProvider"
-        ) as mock_provider:
-            mock_instance = MagicMock()
-            mock_provider.return_value = mock_instance
-
-            extension._create_provider()
-
-            assert extension.provider == mock_instance
-            mock_provider.assert_called_once()
-
-    def test_create_provider_microsoft(self, extension):
-        """Test Microsoft Calendar provider creation."""
-        extension.calendar_platform = "microsoft"
-
-        with patch(
-            "zephyrex.extensions.calendar.Microsoft.MicrosoftCalendarProvider"
-        ) as mock_provider:
-            mock_instance = MagicMock()
-            mock_provider.return_value = mock_instance
-
-            extension._create_provider()
-
-            assert extension.provider == mock_instance
-            mock_provider.assert_called_once()
-
-    def test_create_provider_unsupported_platform(self, extension):
-        """Test provider creation with unsupported platform."""
-        extension.calendar_platform = "unsupported_platform"
-
-        with patch("zephyrex.extensions.calendar.EXT_Calendar.logger") as mock_logger:
-            extension._create_provider()
-
-            assert extension.provider is None
-            mock_logger.error.assert_called_with(
-                "Unsupported calendar platform: unsupported_platform"
+    async def test_ability_arguments_are_checked_first(self):
+        with pytest.raises(InvalidInputExternalError):
+            await EXT_Calendar.update_event("google_calendar", "e1", start=at(9))
+        with pytest.raises(InvalidInputExternalError):
+            await EXT_Calendar.update_event("google_calendar", "e1")
+        with pytest.raises(InvalidInputExternalError):
+            await EXT_Calendar.find_free_time("google_calendar", DAY, days=0)
+        with pytest.raises(InvalidInputExternalError):
+            await EXT_Calendar.find_free_time(
+                "google_calendar", DAY, work_day_start="17:00", work_day_end="09:00"
             )
 
-    def test_create_provider_import_error(self, extension):
-        """Test provider creation with import error."""
-        extension.calendar_platform = "google"
 
-        with patch(
-            "zephyrex.extensions.calendar.Google.GoogleCalendarProvider",
-            side_effect=ImportError("Module not found"),
-        ), patch("zephyrex.extensions.calendar.EXT_Calendar.logger") as mock_logger:
+class TestFreeSlots:
+    def slots(self, busy, days=1, buffer=timedelta(0), where=UTC, first=DAY):
+        return free_slots(
+            busy, first, days, time(9), time(12), HALF_HOUR, buffer, where
+        )
 
-            extension._create_provider()
-
-            assert extension.provider is None
-            mock_logger.warning.assert_called()
-
-    def test_register_commands_with_provider(self, extension):
-        """Test command registration when provider is available."""
-        mock_provider = MagicMock()
-        mock_provider.commands = {"test_command": MagicMock()}
-        extension.provider = mock_provider
-
-        extension._register_commands()
-
-        assert extension.commands == mock_provider.commands
-
-    def test_register_commands_without_provider(self, extension):
-        """Test command registration when provider is not available."""
-        extension.provider = None
-        extension.calendar_platform = "google"
-
-        extension._register_commands()
-
-        assert len(extension.commands) == 5
-        assert "Get GOOGLE Calendar Events" in extension.commands
-        assert "Create GOOGLE Calendar Event" in extension.commands
-        assert "Update GOOGLE Calendar Event" in extension.commands
-        assert "Delete GOOGLE Calendar Event" in extension.commands
-        assert "Find GOOGLE Available Timeslots" in extension.commands
-
-    @pytest.mark.asyncio
-    async def test_no_provider_warning(self, extension):
-        """Test warning message when no provider is available."""
-        extension.calendar_platform = "google"
-
-        result = await extension._no_provider_warning()
-
-        assert "No calendar provider available for google" in result
-
-    def test_capability_management(self, extension):
-        """Test capability management methods."""
-        # Test register_capability
-        extension.register_capability("test_capability")
-        assert "test_capability" in extension.capabilities
-
-        # Test get_registered_capabilities
-        capabilities = extension.get_registered_capabilities()
-        assert isinstance(capabilities, set)
-        assert "test_capability" in capabilities
-
-        # Test get_capabilities
-        capabilities = extension.get_capabilities()
-        assert isinstance(capabilities, set)
-
-        # Test has_capability
-        assert extension.has_capability("test_capability") is True
-        assert extension.has_capability("nonexistent_capability") is False
-
-    @pytest.mark.asyncio
-    async def test_get_events_success(self, extension):
-        """Test successful event retrieval."""
-        mock_provider = MagicMock()
-        mock_events = [
-            {"id": "1", "title": "Meeting 1", "start_time": "2024-01-01T10:00:00Z"},
-            {"id": "2", "title": "Meeting 2", "start_time": "2024-01-01T14:00:00Z"},
+    def test_an_empty_morning(self):
+        assert [start.hour * 60 + start.minute for start, _ in self.slots([])] == [
+            540,
+            570,
+            600,
+            630,
+            660,
+            690,
         ]
-        mock_provider.get_events = MagicMock(return_value=mock_events)
-        extension.provider = mock_provider
 
-        start_date = datetime(2024, 1, 1)
-        end_date = datetime(2024, 1, 2)
+    def test_busy_time_is_skipped_and_slots_resume_after_it(self):
+        found = self.slots([(at(9, 45), at(10, 20))])
+        assert found[0] == (at(9), at(9, 30))
+        assert (at(10, 20), at(10, 50)) in found
+        assert all(end <= at(9, 45) or start >= at(10, 20) for start, end in found)
 
-        result = await extension.get_events(start_date, end_date, max_events=10)
+    def test_a_buffer_keeps_slots_clear(self):
+        found = self.slots([(at(10), at(10, 30))], buffer=timedelta(minutes=15))
+        assert all(end <= at(9, 45) or start >= at(10, 45) for start, end in found)
 
-        assert result["success"] is True
-        assert result["events"] == mock_events
-        assert result["count"] == 2
-        mock_provider.get_events.assert_called_once_with(start_date, end_date, 10)
-
-    @pytest.mark.asyncio
-    async def test_get_events_no_provider(self, extension):
-        """Test event retrieval without provider."""
-        extension.provider = None
-
-        result = await extension.get_events()
-
-        assert result["success"] is False
-        assert "No calendar provider available" in result["message"]
-
-    @pytest.mark.asyncio
-    async def test_create_event_success(self, extension):
-        """Test successful event creation."""
-        mock_provider = MagicMock()
-        mock_provider.create_event = MagicMock(
-            return_value="event_created_successfully"
+    def test_a_busy_span_over_days(self):
+        found = self.slots([(at(11, day=DAY), at(10, day=DAY + timedelta(days=1)))], 2)
+        assert all(
+            start.date() == DAY or start >= at(10, day=DAY + timedelta(days=1))
+            for start, _ in found
         )
-        extension.provider = mock_provider
+        assert (
+            at(11, 30, DAY + timedelta(days=1)),
+            at(12, day=DAY + timedelta(days=1)),
+        ) in found
 
-        start_time = datetime(2024, 1, 1, 10, 0)
-        end_time = datetime(2024, 1, 1, 11, 0)
+    def test_working_hours_follow_the_zone_across_daylight_saving(self):
+        """Paris leaves summer time on 2026-10-25: 09:00 is 07:00 UTC on
+        the 24th and 08:00 UTC on the 26th."""
+        paris = ZoneInfo("Europe/Paris")
+        saturday = self.slots([], where=paris, first=date(2026, 10, 24))
+        monday = self.slots([], where=paris, first=date(2026, 10, 26))
+        assert saturday[0][0] == datetime(2026, 10, 24, 7, tzinfo=UTC)
+        assert monday[0][0] == datetime(2026, 10, 26, 8, tzinfo=UTC)
 
-        result = await extension.create_event(
-            subject="Test Meeting",
-            start_time=start_time,
-            end_time=end_time,
-            location="Conference Room A",
-            attendees=["user1@example.com", "user2@example.com"],
-            description="Test meeting description",
-            is_online_meeting=True,
+
+class TestProviders:
+    def test_google_bodies_and_answers(self):
+        body = PRV_Google_Calendar._body(
+            {"title": "Demo", "start": at(9), "end": at(10), "online_meeting": True}
         )
-
-        assert result["success"] is True
-        assert result["result"] == "event_created_successfully"
-        assert result["subject"] == "Test Meeting"
-        assert result["start_time"] == start_time.isoformat()
-        assert result["end_time"] == end_time.isoformat()
-
-        mock_provider.create_event.assert_called_once_with(
-            "Test Meeting",
-            start_time,
-            end_time,
-            "Conference Room A",
-            ["user1@example.com", "user2@example.com"],
-            "Test meeting description",
-            True,
-        )
-
-    @pytest.mark.asyncio
-    async def test_create_event_no_provider(self, extension):
-        """Test event creation without provider."""
-        extension.provider = None
-
-        start_time = datetime(2024, 1, 1, 10, 0)
-        end_time = datetime(2024, 1, 1, 11, 0)
-
-        result = await extension.create_event("Test Meeting", start_time, end_time)
-
-        assert result["success"] is False
-        assert "No calendar provider available" in result["message"]
-
-    @pytest.mark.asyncio
-    async def test_update_event_success(self, extension):
-        """Test successful event update."""
-        mock_provider = MagicMock()
-        mock_provider.update_event = MagicMock(
-            return_value="event_updated_successfully"
-        )
-        extension.provider = mock_provider
-
-        start_time = datetime(2024, 1, 1, 10, 0)
-        end_time = datetime(2024, 1, 1, 11, 0)
-
-        result = await extension.update_event(
-            event_id="event_123",
-            subject="Updated Meeting",
-            start_time=start_time,
-            end_time=end_time,
-            location="Conference Room B",
-            attendees=["user3@example.com"],
-            description="Updated description",
-        )
-
-        assert result["success"] is True
-        assert result["result"] == "event_updated_successfully"
-        assert result["event_id"] == "event_123"
-
-        mock_provider.update_event.assert_called_once_with(
-            "event_123",
-            "Updated Meeting",
-            start_time,
-            end_time,
-            "Conference Room B",
-            ["user3@example.com"],
-            "Updated description",
-        )
-
-    @pytest.mark.asyncio
-    async def test_update_event_no_provider(self, extension):
-        """Test event update without provider."""
-        extension.provider = None
-
-        result = await extension.update_event("event_123", subject="Updated Meeting")
-
-        assert result["success"] is False
-        assert "No calendar provider available" in result["message"]
-
-    @pytest.mark.asyncio
-    async def test_delete_event_success(self, extension):
-        """Test successful event deletion."""
-        mock_provider = MagicMock()
-        mock_provider.delete_event = MagicMock(
-            return_value="event_deleted_successfully"
-        )
-        extension.provider = mock_provider
-
-        result = await extension.delete_event("event_123")
-
-        assert result["success"] is True
-        assert result["result"] == "event_deleted_successfully"
-        assert result["event_id"] == "event_123"
-        mock_provider.delete_event.assert_called_once_with("event_123")
-
-    @pytest.mark.asyncio
-    async def test_delete_event_no_provider(self, extension):
-        """Test event deletion without provider."""
-        extension.provider = None
-
-        result = await extension.delete_event("event_123")
-
-        assert result["success"] is False
-        assert "No calendar provider available" in result["message"]
-
-    @pytest.mark.asyncio
-    async def test_get_available_timeslots_success(self, extension):
-        """Test successful timeslot retrieval."""
-        mock_provider = MagicMock()
-        mock_timeslots = [
-            {"start": "2024-01-01T09:00:00Z", "end": "2024-01-01T09:30:00Z"},
-            {"start": "2024-01-01T10:00:00Z", "end": "2024-01-01T10:30:00Z"},
-        ]
-        mock_provider.get_available_timeslots = MagicMock(return_value=mock_timeslots)
-        extension.provider = mock_provider
-
-        start_date = datetime(2024, 1, 1)
-
-        result = await extension.get_available_timeslots(
-            start_date=start_date,
-            num_days=7,
-            work_day_start="09:00",
-            work_day_end="17:00",
-            duration_minutes=30,
-            buffer_minutes=15,
-        )
-
-        assert result["success"] is True
-        assert result["timeslots"] == mock_timeslots
-        assert result["count"] == 2
-
-        mock_provider.get_available_timeslots.assert_called_once_with(
-            start_date, 7, "09:00", "17:00", 30, 15
-        )
-
-    @pytest.mark.asyncio
-    async def test_get_available_timeslots_no_provider(self, extension):
-        """Test timeslot retrieval without provider."""
-        extension.provider = None
-
-        start_date = datetime(2024, 1, 1)
-        result = await extension.get_available_timeslots(start_date)
-
-        assert result["success"] is False
-        assert "No calendar provider available" in result["message"]
-
-    @pytest.mark.asyncio
-    async def test_ability_error_handling(self, extension):
-        """Test error handling in abilities."""
-        mock_provider = MagicMock()
-        mock_provider.get_events = MagicMock(side_effect=Exception("Provider error"))
-        extension.provider = mock_provider
-
-        result = await extension.get_events()
-
-        assert result["success"] is False
-        assert "Error retrieving calendar events" in result["message"]
-
-    def test_lifecycle_methods(self, extension):
-        """Test extension lifecycle methods."""
-        # Test on_start
-        assert extension.on_start() is True
-
-        # Test on_stop
-        extension.provider = MagicMock()
-        assert extension.on_stop() is True
-        assert extension.provider is None
-
-        # Test on_startup and on_shutdown
-        extension.on_startup()  # Should not raise exception
-        extension.on_shutdown()  # Should not raise exception
-
-    def test_validate_config_success(self, extension):
-        """Test successful configuration validation."""
-        with patch("builtins.__import__"):
-            issues = extension.validate_config()
-            assert isinstance(issues, list)
-
-    def test_validate_config_missing_requests(self, extension):
-        """Test configuration validation with missing requests library."""
-        with patch("builtins.__import__", side_effect=ImportError("Module not found")):
-            issues = extension.validate_config()
-
-            assert len(issues) > 0
-            assert any("Requests library not installed" in issue for issue in issues)
-
-    def test_validate_config_missing_pytz(self, extension):
-        """Test configuration validation with missing pytz library."""
-
-        def mock_import(name, *args, **kwargs):
-            if name == "pytz":
-                raise ImportError("Module not found")
-            return MagicMock()
-
-        with patch("builtins.__import__", side_effect=mock_import):
-            issues = extension.validate_config()
-
-            assert any("Pytz library not installed" in issue for issue in issues)
-
-    def test_validate_config_no_platform(self, extension):
-        """Test configuration validation with no platform."""
-        extension.calendar_platform = ""
-
-        issues = extension.validate_config()
-
-        assert any("Calendar platform not specified" in issue for issue in issues)
-
-    def test_validate_config_unsupported_platform(self, extension):
-        """Test configuration validation with unsupported platform."""
-        extension.calendar_platform = "unsupported"
-
-        issues = extension.validate_config()
-
-        assert any(
-            "Unsupported calendar platform: unsupported" in issue for issue in issues
-        )
-
-    def test_validate_config_no_access_token(self, extension):
-        """Test configuration validation with no access token."""
-        extension.access_token = ""
-
-        issues = extension.validate_config()
-
-        assert any("Google Calendar requires access token" in issue for issue in issues)
-
-    def test_validate_config_google_missing_library(self, extension):
-        """Test configuration validation when Google API library is missing."""
-        extension.calendar_platform = "google"
-
-        def mock_import(name, *args, **kwargs):
-            if name == "googleapiclient":
-                raise ImportError("Module not found")
-            return MagicMock()
-
-        with patch("builtins.__import__", side_effect=mock_import):
-            issues = extension.validate_config()
-
-            assert any("Google API client not installed" in issue for issue in issues)
-
-    def test_validate_config_microsoft_missing_library(self, extension):
-        """Test configuration validation when Microsoft library is missing."""
-        extension.calendar_platform = "microsoft"
-
-        def mock_import(name, *args, **kwargs):
-            if name == "msal":
-                raise ImportError("Module not found")
-            return MagicMock()
-
-        with patch("builtins.__import__", side_effect=mock_import):
-            issues = extension.validate_config()
-
-            assert any("MSAL library not installed" in issue for issue in issues)
-
-    def test_get_required_permissions(self, extension):
-        """Test required permissions."""
-        permissions = extension.get_required_permissions()
-        assert isinstance(permissions, list)
-        assert len(permissions) > 0
-
-        expected_permissions = [
-            "calendar:read",
-            "calendar:write",
-            "calendar:events:create",
-            "calendar:events:update",
-            "calendar:events:delete",
-            "calendar:availability:read",
-        ]
-        assert set(permissions) == set(expected_permissions)
-
-    def test_custom_configuration(self):
-        """Test extension with custom configuration."""
-        extension = EXT_Calendar(
-            calendar_platform="microsoft",
-            access_token="test_token_123",
-            timezone="America/New_York",
-        )
-
-        assert extension.calendar_platform == "microsoft"
-        assert extension.access_token == "test_token_123"
-        assert extension.timezone == "America/New_York"
-
-    def test_provider_with_commands(self, extension):
-        """Test provider that has commands attribute."""
-        mock_provider = MagicMock()
-        mock_provider.commands = {
-            "create_event": MagicMock(),
-            "get_events": MagicMock(),
+        assert body["start"] == {"dateTime": "2026-10-05T09:00:00Z"}
+        assert body["conferenceData"]["createRequest"]["conferenceSolutionKey"] == {
+            "type": "hangoutsMeet"
         }
-        extension.provider = mock_provider
+        assert when({"date": "2026-10-05"}) == "2026-10-05"
+        event = PRV_Google_Calendar._event(
+            {
+                "id": "e1",
+                "summary": "Demo",
+                "start": {"dateTime": "2026-10-05T09:00:00Z"},
+                "end": {"dateTime": "2026-10-05T10:00:00Z"},
+                "attendees": [{"email": "a@b.co"}, {"displayName": "no address"}],
+                "hangoutLink": "https://meet.google.com/abc",
+            }
+        )
+        assert event["attendees"] == ["a@b.co"]
+        assert event["meeting_url"] == "https://meet.google.com/abc"
 
-        extension._register_commands()
-
-        assert extension.commands == mock_provider.commands
-
-    def test_provider_without_commands(self, extension):
-        """Test provider that doesn't have commands attribute."""
-        mock_provider = MagicMock()
-        del mock_provider.commands  # Remove commands attribute
-        extension.provider = mock_provider
-        extension.calendar_platform = "microsoft"
-
-        extension._register_commands()
-
-        # Should fall back to placeholder commands
-        assert "Get MICROSOFT Calendar Events" in extension.commands
-
-    @pytest.mark.asyncio
-    async def test_all_abilities_with_different_platforms(self, extension):
-        """Test all abilities work with different calendar platforms."""
-        for platform in ["google", "microsoft"]:
-            extension.calendar_platform = platform
-            extension.provider = None
-
-            # All abilities should return provider not available error
-            result = await extension.get_events()
-            assert result["success"] is False
-            assert f"No calendar provider available for {platform}" in result["message"]
-
-            start_time = datetime(2024, 1, 1, 10, 0)
-            end_time = datetime(2024, 1, 1, 11, 0)
-
-            result = await extension.create_event("Test", start_time, end_time)
-            assert result["success"] is False
-
-            result = await extension.update_event("event_123")
-            assert result["success"] is False
-
-            result = await extension.delete_event("event_123")
-            assert result["success"] is False
-
-            result = await extension.get_available_timeslots(start_time)
-            assert result["success"] is False
-
-    def test_provider_settings_passed(self, extension):
-        """Test that settings are passed to provider."""
-        extension.settings = {"custom_setting": "value"}
-        extension.calendar_platform = "google"
-
-        with patch(
-            "zephyrex.extensions.calendar.Google.GoogleCalendarProvider"
-        ) as mock_provider:
-            extension._create_provider()
-
-            # Check that settings were passed to provider
-            mock_provider.assert_called_once()
-            call_kwargs = mock_provider.call_args[1]
-            assert "custom_setting" in call_kwargs
-            assert call_kwargs["custom_setting"] == "value"
-
-    def test_provider_with_extension_id(self, extension):
-        """Test that extension ID is passed to provider."""
-        extension.calendar_platform = "google"
-
-        with patch(
-            "zephyrex.extensions.calendar.Google.GoogleCalendarProvider"
-        ) as mock_provider:
-            extension._create_provider()
-
-            mock_provider.assert_called_once()
-            call_kwargs = mock_provider.call_args[1]
-            assert call_kwargs["extension_id"] == "calendar"
-
-    def test_provider_with_access_token_and_timezone(self, extension):
-        """Test that access token and timezone are passed to provider."""
-        extension.calendar_platform = "google"
-        extension.access_token = "test_token"
-        extension.timezone = "America/New_York"
-
-        with patch(
-            "zephyrex.extensions.calendar.Google.GoogleCalendarProvider"
-        ) as mock_provider:
-            extension._create_provider()
-
-            mock_provider.assert_called_once()
-            call_kwargs = mock_provider.call_args[1]
-            assert call_kwargs["access_token"] == "test_token"
-            assert call_kwargs["timezone"] == "America/New_York"
-
-    @pytest.mark.asyncio
-    async def test_event_creation_with_all_parameters(self, extension):
-        """Test event creation with all optional parameters."""
-        mock_provider = MagicMock()
-        mock_provider.create_event = MagicMock(return_value="event_created")
-        extension.provider = mock_provider
-
-        start_time = datetime(2024, 1, 1, 10, 0)
-        end_time = datetime(2024, 1, 1, 11, 0)
-
-        result = await extension.create_event(
-            subject="All Parameters Meeting",
-            start_time=start_time,
-            end_time=end_time,
-            location="Virtual",
-            attendees=["user1@example.com"],
-            description="Comprehensive test",
-            is_online_meeting=True,
+    def test_microsoft_bodies_and_answers(self):
+        body = PRV_Microsoft_Calendar._body(
+            {
+                "start": at(9),
+                "end": at(10),
+                "description": "Notes",
+                "online_meeting": True,
+            }
+        )
+        assert body["start"] == {"dateTime": "2026-10-05T09:00:00Z", "timeZone": "UTC"}
+        assert body["onlineMeetingProvider"] == "teamsForBusiness"
+        assert graph_time({"dateTime": "2026-10-05T09:00:00.0000000"}) == (
+            "2026-10-05T09:00:00Z"
         )
 
-        assert result["success"] is True
-        mock_provider.create_event.assert_called_once_with(
-            "All Parameters Meeting",
-            start_time,
-            end_time,
-            "Virtual",
-            ["user1@example.com"],
-            "Comprehensive test",
-            True,
+    async def test_calendly_cannot_create_or_change(self, provider_instance):
+        instance = provider_instance(PRV_Calendly_Calendar, api_key=BOGUS)
+        with pytest.raises(PermanentExternalError):
+            await PRV_Calendly_Calendar.create_event(instance, {"title": "x"})
+        with pytest.raises(PermanentExternalError):
+            await PRV_Calendly_Calendar.update_event(instance, "e1", {"title": "x"})
+
+    async def test_a_calendly_id_stays_one_path_segment(self, provider_instance):
+        instance = provider_instance(PRV_Calendly_Calendar, api_key=BOGUS)
+        with pytest.raises(InvalidInputExternalError):
+            await PRV_Calendly_Calendar.delete_event(instance, "../users/me")
+
+
+class TestRefusedTokens:
+    @reachable("https://www.googleapis.com")
+    async def test_google(self, provider_instance):
+        with pytest.raises(AuthExternalError):
+            await PRV_Google_Calendar.list_events(
+                provider_instance(PRV_Google_Calendar, api_key=BOGUS), at(9), at(10), 5
+            )
+
+    @reachable("https://graph.microsoft.com")
+    async def test_microsoft(self, provider_instance):
+        with pytest.raises(AuthExternalError):
+            await PRV_Microsoft_Calendar.list_events(
+                provider_instance(PRV_Microsoft_Calendar, api_key=BOGUS),
+                at(9),
+                at(10),
+                5,
+            )
+
+    @reachable("https://api.calendly.com")
+    async def test_calendly(self, provider_instance):
+        with pytest.raises(AuthExternalError):
+            await PRV_Calendly_Calendar.list_events(
+                provider_instance(PRV_Calendly_Calendar, api_key=BOGUS),
+                at(9),
+                at(10),
+                5,
+            )
+
+
+class TestLive:
+    """Read-only checks with test accounts (the next week's events)."""
+
+    @pytest.mark.external_api(provider="google_calendar_test")
+    async def test_google(self, provider_instance, sandbox_credentials_for):
+        token = sandbox_credentials_for("google_calendar_test")["GOOGLE_CALENDAR_TOKEN"]
+        now = datetime.now(UTC)
+        events = await PRV_Google_Calendar.list_events(
+            provider_instance(PRV_Google_Calendar, api_key=token),
+            now,
+            now + timedelta(days=7),
+            10,
         )
+        assert isinstance(events, list)
 
-    @pytest.mark.asyncio
-    async def test_event_update_with_partial_parameters(self, extension):
-        """Test event update with only some parameters."""
-        mock_provider = MagicMock()
-        mock_provider.update_event = MagicMock(return_value="event_updated")
-        extension.provider = mock_provider
-
-        result = await extension.update_event(
-            event_id="event_123", subject="New Subject Only"
+    @pytest.mark.external_api(provider="microsoft_calendar_test")
+    async def test_microsoft(self, provider_instance, sandbox_credentials_for):
+        token = sandbox_credentials_for("microsoft_calendar_test")[
+            "MICROSOFT_GRAPH_TOKEN"
+        ]
+        now = datetime.now(UTC)
+        busy = await PRV_Microsoft_Calendar.busy(
+            provider_instance(PRV_Microsoft_Calendar, api_key=token),
+            now,
+            now + timedelta(days=7),
         )
+        assert all(start < end for start, end in busy)
 
-        assert result["success"] is True
-        mock_provider.update_event.assert_called_once_with(
-            "event_123",
-            "New Subject Only",
-            None,  # start_time
-            None,  # end_time
-            None,  # location
-            None,  # attendees
-            None,  # description
+    @pytest.mark.external_api(provider="calendly_test")
+    async def test_calendly(self, provider_instance, sandbox_credentials_for):
+        token = sandbox_credentials_for("calendly_test")["CALENDLY_TOKEN"]
+        now = datetime.now(UTC)
+        busy = await PRV_Calendly_Calendar.busy(
+            provider_instance(PRV_Calendly_Calendar, api_key=token),
+            now,
+            now + timedelta(days=10),
         )
-
-
-if __name__ == "__main__":
-    pytest.main([__file__])
+        assert all(start < end for start, end in busy)

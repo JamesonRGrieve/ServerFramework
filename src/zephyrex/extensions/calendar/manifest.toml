@@ -6,7 +6,7 @@
 
 name = "calendar"
 version = "1.0.0"
-description = "Calendar extension for scheduling and event management"
+description = "Events and free time on Google Calendar, Microsoft 365 and Calendly"
 author = "ZephyrexTechnologies"
 entry_module = "EXT_Calendar"
 minimum_framework_version = "0.0.0"

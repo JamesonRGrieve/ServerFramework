@@ -1,448 +1,381 @@
-from datetime import datetime
-from typing import Any, Dict, List, Optional, Set
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""Calendars: read, create, change and delete events and find free time on
+Google Calendar, Microsoft 365 / Outlook (Microsoft Graph) and Calendly.
 
-from zephyrex.extensions.AbstractExtensionProvider import AbstractStaticExtension, ability
-from zephyrex.lib.Dependencies import EXT_Dependency, PIP_Dependency
-from zephyrex.lib.Logging import logger
+An event belongs to one calendar account, so every ability names its
+``provider`` and runs on that provider's instances (one instance per
+account). Times are timezone-aware; a naive time is taken as UTC.
+Providers answer an event as ``{id, title, start, end, location,
+description, attendees, meeting_url, url, provider}`` with ISO 8601 UTC
+times.
+
+Free time is computed here, from the busy intervals a provider reports,
+within working hours in the caller's timezone.
+"""
+
+from abc import abstractmethod
+from datetime import UTC, date, datetime, time, timedelta, tzinfo
+from typing import Any, ClassVar, Dict, List, Optional, Set, Tuple
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+from zephyrex.extensions.AbstractExtensionProvider import (
+    AbstractProviderInstance,
+    AbstractStaticExtension,
+    AbstractStaticProvider,
+    ability,
+)
+from zephyrex.extensions.ExternalErrors import (
+    InvalidInputExternalError,
+    TransientExternalError,
+)
+from zephyrex.lib.Dependencies import Dependencies
+from zephyrex.logic.BLL_Providers import ProviderInstanceModel
+
+CALENDAR_REQUEST_TIMEOUT_SECONDS = 20.0
+DEFAULT_EVENT_LIMIT = 25
+MAX_EVENT_LIMIT = 250
+MAX_RANGE_DAYS = 366
+MAX_SLOT_DAYS = 31
+MAX_DURATION_MINUTES = 24 * 60
+
+Interval = Tuple[datetime, datetime]
+
+
+def aware(moment: datetime) -> datetime:
+    """``moment`` in UTC; a naive time is taken as UTC."""
+    if moment.tzinfo is None:
+        return moment.replace(tzinfo=UTC)
+    return moment.astimezone(UTC)
+
+
+def iso(moment: datetime) -> str:
+    return aware(moment).isoformat().replace("+00:00", "Z")
+
+
+def parse_time(value: str) -> datetime:
+    """An API time (``Z``, an offset, or naive meaning UTC)."""
+    return aware(datetime.fromisoformat(value))
+
+
+def time_range(start: datetime, end: datetime) -> Interval:
+    start, end = aware(start), aware(end)
+    if end <= start:
+        raise InvalidInputExternalError("the end must be after the start")
+    if end - start > timedelta(days=MAX_RANGE_DAYS):
+        raise InvalidInputExternalError(f"a range spans at most {MAX_RANGE_DAYS} days")
+    return start, end
+
+
+def event_limit(limit: int) -> int:
+    if not 1 <= limit <= MAX_EVENT_LIMIT:
+        raise InvalidInputExternalError(f"limit must be 1-{MAX_EVENT_LIMIT}")
+    return limit
+
+
+def zone(name: str) -> tzinfo:
+    try:
+        return ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError) as exc:
+        raise InvalidInputExternalError(f"{name!r} is not an IANA time zone") from exc
+
+
+def clock(value: str) -> time:
+    try:
+        return time.fromisoformat(value)
+    except ValueError as exc:
+        raise InvalidInputExternalError(f"{value!r} is not a HH:MM time") from exc
+
+
+def free_slots(
+    busy: List[Interval],
+    first_day: date,
+    days: int,
+    day_start: time,
+    day_end: time,
+    duration: timedelta,
+    buffer: timedelta,
+    where: tzinfo,
+) -> List[Interval]:
+    """The ``duration``-long slots, inside working hours on each of
+    ``days`` days from ``first_day`` (in ``where``), clear of every busy
+    interval by ``buffer``. Slots start on the hour or after a busy
+    interval ends."""
+    blocked = sorted((start - buffer, end + buffer) for start, end in busy)
+    slots: List[Interval] = []
+    for offset in range(days):
+        day = first_day + timedelta(days=offset)
+        cursor = datetime.combine(day, day_start, where).astimezone(UTC)
+        closing = datetime.combine(day, day_end, where).astimezone(UTC)
+        for start, end in blocked:
+            if end <= cursor or start >= closing:
+                continue
+            while cursor + duration <= min(start, closing):
+                slots.append((cursor, cursor + duration))
+                cursor += duration
+            cursor = max(cursor, end)
+        while cursor + duration <= closing:
+            slots.append((cursor, cursor + duration))
+            cursor += duration
+    return slots
+
+
+class AbstractCalendarProvider(AbstractStaticProvider):
+    """A calendar service; each instance is one account (one calendar)."""
+
+    name: ClassVar[str] = ""
+    friendly_name: ClassVar[str] = ""
+    description: ClassVar[str] = ""
+    _abilities: ClassVar[Set[str]] = {
+        "list_events",
+        "create_event",
+        "update_event",
+        "delete_event",
+        "find_free_time",
+    }
+    _env: ClassVar[Dict[str, Any]] = {}
+    http_timeout_seconds: ClassVar[float] = CALENDAR_REQUEST_TIMEOUT_SECONDS
+
+    @classmethod
+    def bond_instance(cls, instance: ProviderInstanceModel) -> AbstractProviderInstance:
+        return AbstractProviderInstance(instance)
+
+    @classmethod
+    def token(cls, instance: ProviderInstanceModel) -> str:
+        token = cls.setting(instance, "api_key")
+        if not token:
+            raise TransientExternalError(
+                f"{cls.friendly_name} access token not configured", provider=cls.name
+            )
+        return str(token)
+
+    @classmethod
+    def event(
+        cls,
+        *,
+        event_id: str,
+        title: str,
+        start: Optional[str],
+        end: Optional[str],
+        location: str = "",
+        description: str = "",
+        attendees: Optional[List[str]] = None,
+        meeting_url: str = "",
+        url: str = "",
+    ) -> Dict[str, Any]:
+        return {
+            "id": event_id,
+            "title": title,
+            "start": start,
+            "end": end,
+            "location": location,
+            "description": description,
+            "attendees": attendees or [],
+            "meeting_url": meeting_url,
+            "url": url,
+            "provider": cls.name,
+        }
+
+    @classmethod
+    @abstractmethod
+    async def list_events(
+        cls, instance: ProviderInstanceModel, start: datetime, end: datetime, limit: int
+    ) -> List[Dict[str, Any]]:
+        """Events overlapping the range, earliest first."""
+
+    @classmethod
+    @abstractmethod
+    async def create_event(
+        cls, instance: ProviderInstanceModel, fields: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """``fields``: title, start, end, and optionally location,
+        description, attendees and online_meeting."""
+
+    @classmethod
+    @abstractmethod
+    async def update_event(
+        cls, instance: ProviderInstanceModel, event_id: str, changes: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """``changes``: any of the fields ``create_event`` takes."""
+
+    @classmethod
+    @abstractmethod
+    async def delete_event(
+        cls, instance: ProviderInstanceModel, event_id: str
+    ) -> Dict[str, Any]: ...
+
+    @classmethod
+    @abstractmethod
+    async def busy(
+        cls, instance: ProviderInstanceModel, start: datetime, end: datetime
+    ) -> List[Interval]:
+        """The busy intervals in the range."""
+
+    @classmethod
+    def services(cls) -> List[str]:
+        return ["calendar"]
+
+
+def event_fields(
+    title: Optional[str],
+    start: Optional[datetime],
+    end: Optional[datetime],
+    location: Optional[str],
+    description: Optional[str],
+    attendees: Optional[List[str]],
+    online_meeting: Optional[bool],
+) -> Dict[str, Any]:
+    """The fields given, checked: a title is not blank, times are aware
+    and ordered, attendees are email addresses."""
+    if title is not None and not title.strip():
+        raise InvalidInputExternalError("an event needs a title")
+    if start is not None and end is not None:
+        start, end = time_range(start, end)
+    for address in attendees or []:
+        if "@" not in address or any(c.isspace() for c in address):
+            raise InvalidInputExternalError(f"{address!r} is not an email address")
+    fields = {
+        "title": title,
+        "start": aware(start) if start is not None else None,
+        "end": aware(end) if end is not None else None,
+        "location": location,
+        "description": description,
+        "attendees": attendees,
+        "online_meeting": online_meeting,
+    }
+    return {key: value for key, value in fields.items() if value is not None}
 
 
 class EXT_Calendar(AbstractStaticExtension):
-    """
-    Calendar extension for AGInfrastructure.
-    Provides scheduling and event management for various calendar platforms
-    including Google Calendar and Microsoft 365 Calendar.
+    name: ClassVar[str] = "calendar"
+    version: ClassVar[str] = "1.0.0"
+    description: ClassVar[str] = (
+        "Events and free time on Google Calendar, Microsoft 365 and Calendly"
+    )
 
-    Component loading (DB, BLL, EP) is handled automatically by the import system
-    based on file naming conventions.
-    """
+    _env: ClassVar[Dict[str, Any]] = {}
+    dependencies: ClassVar[Dependencies] = Dependencies([])
+    _abilities: ClassVar[Set[str]] = set(AbstractCalendarProvider._abilities)
 
-    # Extension metadata
-    name = "calendar"
-    version = "1.0.0"
-    description = "Calendar extension for scheduling and event management"
+    @classmethod
+    @ability("list_events")
+    async def list_events(
+        cls,
+        provider: str,
+        start: datetime,
+        end: datetime,
+        limit: int = DEFAULT_EVENT_LIMIT,
+    ) -> List[Dict[str, Any]]:
+        """Events between ``start`` and ``end``, earliest first."""
+        start, end = time_range(start, end)
+        result: List[Dict[str, Any]] = await cls.rotate_provider_for(
+            provider, "list_events", start, end, event_limit(limit)
+        )
+        return result
 
-    # Define dependencies
-    ext_dependencies = [
-        EXT_Dependency(
-            name="core",
-            friendly_name="Core Extension",
-            optional=False,
-            reason="Required for base calendar functionality",
-        ),
-        EXT_Dependency(
-            name="oauth",
-            friendly_name="OAuth Extension",
-            optional=False,
-            reason="Required for calendar platform authentication",
-        ),
-    ]
-
-    pip_dependencies = [
-        PIP_Dependency(
-            name="google-api-python-client",
-            friendly_name="Google API Client",
-            optional=True,
-            reason="Required for Google Calendar integration",
-            semver=">=2.0.0",
-        ),
-        PIP_Dependency(
-            name="microsoft-graph-api",
-            friendly_name="Microsoft Graph API",
-            optional=True,
-            reason="Required for Microsoft 365 Calendar integration",
-            semver=">=1.0.0",
-        ),
-        PIP_Dependency(
-            name="requests",
-            friendly_name="HTTP Requests Library",
-            optional=False,
-            reason="Required for API communications",
-            semver=">=2.28.0",
-        ),
-        PIP_Dependency(
-            name="pytz",
-            friendly_name="Timezone Library",
-            optional=False,
-            reason="Required for timezone handling",
-            semver=">=2021.1",
-        ),
-    ]
-
-    sys_dependencies = []
-
-    # Define database tables (none for this extension)
-    db_tables = []
-
-    # Define what capabilities this extension provides
-    capabilities = [
-        "event_management",
-        "calendar_scheduling",
-        "availability_checking",
-        "meeting_creation",
-        "calendar_synchronization",
-        "timezone_handling",
-    ]
-
-    def __init__(
-        self,
-        calendar_platform: str = "google",
-        access_token: str = "",
-        timezone: str = "UTC",
-        **kwargs,
-    ):
-        """
-        Initialize the calendar extension.
-        """
-        super().__init__(**kwargs)
-
-        self.calendar_platform = calendar_platform.lower()
-        self.access_token = access_token
-        self.timezone = timezone
-        self.provider = None
-        self.commands = {}
-
-    def on_initialize(self) -> bool:
-        """Initialize the calendar extension with the appropriate provider."""
-        logger.debug("Initializing Calendar Extension...")
-
-        try:
-            self._create_provider()
-            self._register_commands()
-
-            # Register capabilities
-            for capability in self.capabilities:
-                self.register_capability(capability)
-
-            logger.debug("Calendar extension initialized successfully")
-            return True
-
-        except Exception as e:
-            logger.error(f"Failed to initialize Calendar extension: {str(e)}")
-            return False
-
-    def _create_provider(self):
-        """Create the appropriate calendar provider based on calendar_platform."""
-        try:
-            if self.calendar_platform == "google":
-                try:
-                    from zephyrex.extensions.calendar.Google import (
-                        GoogleCalendarProvider,
-                    )
-
-                    self.provider = GoogleCalendarProvider(
-                        access_token=self.access_token,
-                        timezone=self.timezone,
-                        extension_id=self.name,
-                        **getattr(self, "settings", {}),
-                    )
-                    logger.debug("Google Calendar provider created successfully")
-
-                except ImportError as e:
-                    logger.warning(f"Could not import Google Calendar provider: {e}")
-                    self.provider = None
-
-            elif self.calendar_platform == "microsoft":
-                try:
-                    from zephyrex.extensions.calendar.Microsoft import (
-                        MicrosoftCalendarProvider,
-                    )
-
-                    self.provider = MicrosoftCalendarProvider(
-                        access_token=self.access_token,
-                        timezone=self.timezone,
-                        extension_id=self.name,
-                        **getattr(self, "settings", {}),
-                    )
-                    logger.debug("Microsoft Calendar provider created successfully")
-
-                except ImportError as e:
-                    logger.warning(f"Could not import Microsoft Calendar provider: {e}")
-                    self.provider = None
-
-            else:
-                logger.error(f"Unsupported calendar platform: {self.calendar_platform}")
-                self.provider = None
-
-        except Exception as e:
-            logger.error(f"Error creating calendar provider: {str(e)}")
-            self.provider = None
-
-    def _register_commands(self):
-        """Register commands based on available provider."""
-        if self.provider and hasattr(self.provider, "commands"):
-            self.commands = self.provider.commands
-        else:
-            # Provide placeholder commands that warn about missing provider
-            platform_name = self.calendar_platform.upper()
-            self.commands = {
-                f"Get {platform_name} Calendar Events": self._no_provider_warning,
-                f"Create {platform_name} Calendar Event": self._no_provider_warning,
-                f"Update {platform_name} Calendar Event": self._no_provider_warning,
-                f"Delete {platform_name} Calendar Event": self._no_provider_warning,
-                f"Find {platform_name} Available Timeslots": self._no_provider_warning,
-            }
-
-    async def _no_provider_warning(self, *args, **kwargs) -> str:
-        """Warning message when a provider is not available."""
-        return f"No calendar provider available for {self.calendar_platform}. Please check your configuration."
-
-    def register_capability(self, capability: str):
-        """Register a new capability."""
-        if capability not in self.capabilities:
-            self.capabilities.append(capability)
-
-    def get_registered_capabilities(self) -> Set[str]:
-        """Return currently registered capabilities."""
-        return set(self.capabilities)
-
-    def get_capabilities(self) -> Set[str]:
-        """Return the capabilities this extension provides."""
-        return set(self.capabilities)
-
-    @ability("get_events")
-    async def get_events(
-        self,
-        start_date: Optional[datetime] = None,
-        end_date: Optional[datetime] = None,
-        max_events: int = 10,
-    ) -> Dict[str, Any]:
-        """Get calendar events within a date range."""
-        try:
-            if not self.provider:
-                return {"success": False, "message": await self._no_provider_warning()}
-
-            events = self.provider.get_events(start_date, end_date, max_events)
-            return {
-                "success": True,
-                "events": events,
-                "count": len(events) if events else 0,
-            }
-
-        except Exception as e:
-            logger.error(f"Error retrieving calendar events: {e}")
-            return {
-                "success": False,
-                "message": f"Error retrieving calendar events: {str(e)}",
-            }
-
+    @classmethod
     @ability("create_event")
     async def create_event(
-        self,
-        subject: str,
-        start_time: datetime,
-        end_time: datetime,
+        cls,
+        provider: str,
+        title: str,
+        start: datetime,
+        end: datetime,
         location: Optional[str] = None,
-        attendees: Optional[List[str]] = None,
         description: Optional[str] = None,
-        is_online_meeting: bool = False,
+        attendees: Optional[List[str]] = None,
+        online_meeting: bool = False,
     ) -> Dict[str, Any]:
-        """Create a new calendar event."""
-        try:
-            if not self.provider:
-                return {"success": False, "message": await self._no_provider_warning()}
+        """Add an event (inviting ``attendees``; with an online meeting
+        link where the calendar offers one)."""
+        fields = event_fields(
+            title, start, end, location, description, attendees, online_meeting
+        )
+        result: Dict[str, Any] = await cls.rotate_provider_for(
+            provider, "create_event", fields
+        )
+        return result
 
-            result = self.provider.create_event(
-                subject,
-                start_time,
-                end_time,
-                location,
-                attendees,
-                description,
-                is_online_meeting,
-            )
-            return {
-                "success": True,
-                "result": result,
-                "subject": subject,
-                "start_time": start_time.isoformat(),
-                "end_time": end_time.isoformat(),
-            }
-
-        except Exception as e:
-            logger.error(f"Error creating calendar event: {e}")
-            return {
-                "success": False,
-                "message": f"Error creating calendar event: {str(e)}",
-            }
-
+    @classmethod
     @ability("update_event")
     async def update_event(
-        self,
+        cls,
+        provider: str,
         event_id: str,
-        subject: Optional[str] = None,
-        start_time: Optional[datetime] = None,
-        end_time: Optional[datetime] = None,
+        title: Optional[str] = None,
+        start: Optional[datetime] = None,
+        end: Optional[datetime] = None,
         location: Optional[str] = None,
-        attendees: Optional[List[str]] = None,
         description: Optional[str] = None,
+        attendees: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
-        """Update an existing calendar event."""
-        try:
-            if not self.provider:
-                return {"success": False, "message": await self._no_provider_warning()}
+        """Change an event; ``start`` and ``end`` change together."""
+        if (start is None) != (end is None):
+            raise InvalidInputExternalError("start and end change together")
+        changes = event_fields(
+            title, start, end, location, description, attendees, None
+        )
+        if not changes:
+            raise InvalidInputExternalError("nothing to change")
+        result: Dict[str, Any] = await cls.rotate_provider_for(
+            provider, "update_event", event_id, changes
+        )
+        return result
 
-            result = self.provider.update_event(
-                event_id,
-                subject,
-                start_time,
-                end_time,
-                location,
-                attendees,
-                description,
-            )
-            return {"success": True, "result": result, "event_id": event_id}
-
-        except Exception as e:
-            logger.error(f"Error updating calendar event: {e}")
-            return {
-                "success": False,
-                "message": f"Error updating calendar event: {str(e)}",
-            }
-
+    @classmethod
     @ability("delete_event")
-    async def delete_event(self, event_id: str) -> Dict[str, Any]:
-        """Delete a calendar event."""
-        try:
-            if not self.provider:
-                return {"success": False, "message": await self._no_provider_warning()}
+    async def delete_event(cls, provider: str, event_id: str) -> Dict[str, Any]:
+        """Delete (Calendly: cancel) an event."""
+        result: Dict[str, Any] = await cls.rotate_provider_for(
+            provider, "delete_event", event_id
+        )
+        return result
 
-            result = self.provider.delete_event(event_id)
-            return {"success": True, "result": result, "event_id": event_id}
-
-        except Exception as e:
-            logger.error(f"Error deleting calendar event: {e}")
-            return {
-                "success": False,
-                "message": f"Error deleting calendar event: {str(e)}",
-            }
-
-    @ability("get_available_timeslots")
-    async def get_available_timeslots(
-        self,
-        start_date: datetime,
-        num_days: int = 7,
+    @classmethod
+    @ability("find_free_time")
+    async def find_free_time(
+        cls,
+        provider: str,
+        first_day: date,
+        days: int = 7,
+        duration_minutes: int = 30,
         work_day_start: str = "09:00",
         work_day_end: str = "17:00",
-        duration_minutes: int = 30,
+        timezone: str = "UTC",
         buffer_minutes: int = 0,
-    ) -> Dict[str, Any]:
-        """Find available time slots over a specified number of days."""
-        try:
-            if not self.provider:
-                return {"success": False, "message": await self._no_provider_warning()}
-
-            timeslots = self.provider.get_available_timeslots(
-                start_date,
-                num_days,
-                work_day_start,
-                work_day_end,
-                duration_minutes,
-                buffer_minutes,
-            )
-            return {
-                "success": True,
-                "timeslots": timeslots,
-                "count": len(timeslots) if timeslots else 0,
-            }
-
-        except Exception as e:
-            logger.error(f"Error finding available timeslots: {e}")
-            return {
-                "success": False,
-                "message": f"Error finding available timeslots: {str(e)}",
-            }
-
-    def on_start(self) -> bool:
-        """Start the Calendar extension."""
-        try:
-            logger.debug("Calendar extension started successfully")
-            return True
-        except Exception as e:
-            logger.error(f"Failed to start Calendar extension: {e}")
-            return False
-
-    def on_stop(self) -> bool:
-        """Stop the Calendar extension."""
-        try:
-            if self.provider:
-                # Clean up provider resources if needed
-                self.provider = None
-
-            logger.debug("Calendar extension stopped successfully")
-            return True
-        except Exception as e:
-            logger.error(f"Error stopping Calendar extension: {e}")
-            return False
-
-    def validate_config(self) -> List[str]:
-        """Validate the extension configuration."""
-        issues = []
-
-        # Check for required Python packages
-        try:
-            import requests
-        except ImportError:
-            issues.append(
-                "Requests library not installed - API communications will not work"
-            )
-
-        try:
-            import pytz
-        except ImportError:
-            issues.append(
-                "Pytz library not installed - timezone handling will not work"
-            )
-
-        # Platform-specific validation
-        if not self.calendar_platform:
-            issues.append("Calendar platform not specified")
-        elif self.calendar_platform not in ["google", "microsoft"]:
-            issues.append(f"Unsupported calendar platform: {self.calendar_platform}")
-
-        # Check required credentials
-        if not self.access_token:
-            issues.append(
-                f"{self.calendar_platform.title()} Calendar requires access token"
-            )
-
-        # Platform-specific library checks
-        if self.calendar_platform == "google":
-            try:
-                import googleapiclient
-            except ImportError:
-                issues.append(
-                    "Google API client not installed - Google Calendar will not work"
-                )
-
-        elif self.calendar_platform == "microsoft":
-            try:
-                import msal
-            except ImportError:
-                issues.append(
-                    "MSAL library not installed - Microsoft Calendar will not work"
-                )
-
-        return issues
-
-    def get_required_permissions(self) -> List[str]:
-        """Return the list of permissions required by this extension."""
+    ) -> List[Dict[str, str]]:
+        """Free slots of ``duration_minutes`` within working hours, from now
+        on (a slot already begun is not offered)."""
+        if not 1 <= days <= MAX_SLOT_DAYS:
+            raise InvalidInputExternalError(f"days must be 1-{MAX_SLOT_DAYS}")
+        if not 1 <= duration_minutes <= MAX_DURATION_MINUTES:
+            raise InvalidInputExternalError("duration_minutes must be 1-1440")
+        if not 0 <= buffer_minutes <= MAX_DURATION_MINUTES:
+            raise InvalidInputExternalError("buffer_minutes must be 0-1440")
+        where, opens, closes = (
+            zone(timezone),
+            clock(work_day_start),
+            clock(work_day_end),
+        )
+        if closes <= opens:
+            raise InvalidInputExternalError("the working day must end after it starts")
+        start = datetime.combine(first_day, opens, where)
+        end = datetime.combine(first_day + timedelta(days=days - 1), closes, where)
+        busy: List[Interval] = await cls.rotate_provider_for(
+            provider, "busy", aware(start), aware(end)
+        )
+        slots = free_slots(
+            busy,
+            first_day,
+            days,
+            opens,
+            closes,
+            timedelta(minutes=duration_minutes),
+            timedelta(minutes=buffer_minutes),
+            where,
+        )
+        now = datetime.now(UTC)
         return [
-            "calendar:read",
-            "calendar:write",
-            "calendar:events:create",
-            "calendar:events:update",
-            "calendar:events:delete",
-            "calendar:availability:read",
+            {"start": iso(begin), "end": iso(finish)}
+            for begin, finish in slots
+            if begin >= now
         ]
-
-    def on_startup(self):
-        """Called during application startup."""
-        logger.debug("Calendar extension startup hook called")
-
-    def on_shutdown(self):
-        """Called during application shutdown."""
-        logger.debug("Calendar extension shutdown hook called")
-
-    def has_capability(self, capability: str) -> bool:
-        """Check if this extension has a specific capability."""
-        return capability in self.capabilities
