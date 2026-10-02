@@ -1,10 +1,35 @@
-"""
-AI extension for AGInfrastructure.
-Implements the Provider Rotation System for AI model capabilities.
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""AI models: chat (with tool calls), text, embeddings, images,
+transcription and speech, across OpenAI, Anthropic, Google, Azure OpenAI,
+DeepSeek, xAI, Hugging Face, ElevenLabs and any OpenAI-compatible server
+(Ollama, vLLM, LM Studio, Bifrost, AGInYourPC).
+
+Each provider instance is one account or server: its API key, address
+and model. An ability rotates over the instances of the providers that
+offer it, so speech never lands on a chat-only model.
+
+Messages are provider-neutral, and each provider translates them::
+
+    {"role": "system" | "user" | "assistant" | "tool",
+     "content": str | None,
+     "images": [url or data: URL],                     # user, optional
+     "tool_calls": [{"id", "name", "arguments": str}],  # assistant
+     "tool_call_id": str}                               # tool
+
+Tools take the OpenAI function-tool shape: ``{"type": "function",
+"function": {"name", "description", "parameters": <JSON Schema>}}``.
+
+A chat answers ``{"message": {"role": "assistant", "content",
+"tool_calls"}, "finish_reason": "stop" | "tool_calls" | "length" | ...,
+"model", "usage": {"input_tokens", "output_tokens"}}``. The tokens each
+call uses are recorded against its instance (ProviderInstanceUsage), and
+against the user it ran for when one is named.
 """
 
-from abc import abstractmethod
-from typing import Any, ClassVar, Dict, List, Optional, Set, Type
+import base64
+import binascii
+import json
+from typing import Any, ClassVar, Dict, List, Mapping, Optional, Set
 
 from zephyrex.extensions.AbstractExtensionProvider import (
     AbstractProviderInstance,
@@ -12,551 +37,437 @@ from zephyrex.extensions.AbstractExtensionProvider import (
     AbstractStaticProvider,
     ability,
 )
-from zephyrex.lib.Dependencies import Dependencies, EXT_Dependency, PIP_Dependency
-from zephyrex.lib.Logging import logger
-from zephyrex.pydantic2.registry import classproperty
+from zephyrex.extensions.ExternalErrors import (
+    InvalidInputExternalError,
+    PermanentExternalError,
+)
+from zephyrex.lib.Dependencies import Dependencies
+from zephyrex.lib.Environment import env
 from zephyrex.logic.BLL_Providers import ProviderInstanceModel
+
+AI_REQUEST_TIMEOUT_SECONDS = 120.0
+DEFAULT_MAX_TOKENS = 4096
+MAX_MESSAGES = 1000
+MAX_EMBEDDING_INPUTS = 2048
+MAX_AUDIO_BYTES = 25 * 1024 * 1024
+MAX_SPEECH_CHARACTERS = 4096
+ROLES = ("system", "user", "assistant", "tool")
+CHAT, EMBEDDINGS, IMAGES = "chat", "embeddings", "image_generation"
+TRANSCRIPTION, SPEECH = "transcription", "text_to_speech"
+IMAGE_SIZES = ("1024x1024", "1024x1536", "1536x1024", "auto")
+
+
+def _image_reference(url: Any) -> str:
+    if not isinstance(url, str) or not url.startswith(
+        ("https://", "http://", "data:image/")
+    ):
+        raise InvalidInputExternalError(
+            "an image is an http(s) URL or a data:image/ URL"
+        )
+    return url
+
+
+def checked_messages(messages: Any) -> List[Dict[str, Any]]:
+    """``messages`` in the neutral shape, or an invalid-input error."""
+    if not isinstance(messages, list) or not messages:
+        raise InvalidInputExternalError("messages is a non-empty list")
+    if len(messages) > MAX_MESSAGES:
+        raise InvalidInputExternalError(f"at most {MAX_MESSAGES} messages")
+    checked = []
+    for message in messages:
+        if not isinstance(message, dict) or message.get("role") not in ROLES:
+            raise InvalidInputExternalError(
+                f"each message is an object whose role is one of {', '.join(ROLES)}"
+            )
+        content = message.get("content")
+        if content is not None and not isinstance(content, str):
+            raise InvalidInputExternalError("a message's content is text")
+        role = message["role"]
+        entry: Dict[str, Any] = {"role": role, "content": content}
+        if message.get("images"):
+            if role != "user":
+                raise InvalidInputExternalError("only a user message has images")
+            entry["images"] = [_image_reference(u) for u in message["images"]]
+        if role == "assistant" and message.get("tool_calls"):
+            entry["tool_calls"] = [_tool_call(c) for c in message["tool_calls"]]
+        if role == "tool":
+            if not isinstance(message.get("tool_call_id"), str):
+                raise InvalidInputExternalError("a tool message has a tool_call_id")
+            entry["tool_call_id"] = message["tool_call_id"]
+        checked.append(entry)
+    return checked
+
+
+def _tool_call(call: Any) -> Dict[str, str]:
+    if not isinstance(call, dict) or not all(
+        isinstance(call.get(k), str) for k in ("id", "name", "arguments")
+    ):
+        raise InvalidInputExternalError(
+            "a tool call is {id, name, arguments} with arguments as JSON text"
+        )
+    return {"id": call["id"], "name": call["name"], "arguments": call["arguments"]}
+
+
+def checked_tools(tools: Any) -> Optional[List[Dict[str, Any]]]:
+    """``tools`` in the OpenAI function-tool shape, or None for no tools."""
+    if not tools:
+        return None
+    if not isinstance(tools, list):
+        raise InvalidInputExternalError("tools is a list")
+    for tool in tools:
+        function = tool.get("function") if isinstance(tool, dict) else None
+        if (
+            not isinstance(tool, dict)
+            or tool.get("type") != "function"
+            or not isinstance(function, dict)
+            or not isinstance(function.get("name"), str)
+        ):
+            raise InvalidInputExternalError(
+                'a tool is {"type": "function", "function": {"name", '
+                '"description", "parameters"}}'
+            )
+    return list(tools)
+
+
+def checked_texts(texts: Any) -> List[str]:
+    if isinstance(texts, str):
+        texts = [texts]
+    if (
+        not isinstance(texts, list)
+        or not texts
+        or not all(isinstance(t, str) and t for t in texts)
+    ):
+        raise InvalidInputExternalError("texts is a non-empty list of text")
+    if len(texts) > MAX_EMBEDDING_INPUTS:
+        raise InvalidInputExternalError(f"at most {MAX_EMBEDDING_INPUTS} texts")
+    return texts
+
+
+def audio_bytes(audio_base64: str) -> bytes:
+    try:
+        audio = base64.b64decode(audio_base64, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise InvalidInputExternalError("audio_base64 is not base64") from exc
+    if not audio:
+        raise InvalidInputExternalError("the audio is empty")
+    if len(audio) > MAX_AUDIO_BYTES:
+        raise InvalidInputExternalError(
+            f"audio is at most {MAX_AUDIO_BYTES // (1024 * 1024)} MiB"
+        )
+    return audio
+
+
+def speech_text(text: str) -> str:
+    if not text or not text.strip() or len(text) > MAX_SPEECH_CHARACTERS:
+        raise InvalidInputExternalError(
+            f"speech text is 1-{MAX_SPEECH_CHARACTERS} characters"
+        )
+    return text
+
+
+def image_size(size: str) -> str:
+    if size not in IMAGE_SIZES:
+        raise InvalidInputExternalError(
+            f"size is one of {', '.join(IMAGE_SIZES)}, not {size!r}"
+        )
+    return size
+
+
+def flatten_messages(messages: List[Dict[str, Any]]) -> str:
+    """A conversation as one labelled prompt, tool calls included."""
+    lines: List[str] = []
+    for message in messages:
+        role = str(message["role"]).capitalize()
+        if message.get("content"):
+            lines.append(f"{role}: {message['content']}")
+        for call in message.get("tool_calls") or []:
+            lines.append(f"{role} (tool call): {call['name']}({call['arguments']})")
+    return "\n".join(lines)
+
+
+def chat_answer(
+    content: Optional[str],
+    tool_calls: Optional[List[Dict[str, str]]],
+    finish_reason: Optional[str],
+    model: str,
+    input_tokens: Optional[int],
+    output_tokens: Optional[int],
+) -> Dict[str, Any]:
+    return {
+        "message": {
+            "role": "assistant",
+            "content": content,
+            "tool_calls": tool_calls or None,
+        },
+        "finish_reason": finish_reason,
+        "model": model,
+        "usage": {"input_tokens": input_tokens, "output_tokens": output_tokens},
+    }
+
+
+def arguments_text(arguments: Any) -> str:
+    """A tool call's arguments as JSON text, whichever form they came in."""
+    return arguments if isinstance(arguments, str) else json.dumps(arguments or {})
 
 
 class AbstractAIProvider(AbstractStaticProvider):
-    """
-    Abstract base class for AI service providers.
-    Defines the common interface for all AI providers with static functionality.
-    All AI providers should be static/abstract classes with no instantiation required.
-    Integrates with the Provider Rotation System for failover and load balancing.
-    """
+    """An AI model API; each instance is one account or server. A provider
+    declares the abilities it offers (``chat``, ``embeddings``,
+    ``image_generation``, ``transcription``, ``text_to_speech``) and
+    implements those methods."""
 
-    extension_type: ClassVar[str] = "ai"
-
-    @classmethod
-    @abstractmethod
-    def bond_instance(
-        cls, instance: ProviderInstanceModel
-    ) -> Optional[AbstractProviderInstance]:
-        """
-        Bond a provider instance for API operations.
-
-        Args:
-            instance: ProviderInstanceModel with API credentials
-
-        Returns:
-            Bonded instance with configured SDK or None if bonding fails
-        """
-        pass
+    name: ClassVar[str] = ""
+    friendly_name: ClassVar[str] = ""
+    description: ClassVar[str] = ""
+    _abilities: ClassVar[Set[str]] = {CHAT}
+    _env: ClassVar[Dict[str, Any]] = {}
+    http_timeout_seconds: ClassVar[float] = AI_REQUEST_TIMEOUT_SECONDS
 
     @classmethod
-    @abstractmethod
-    def get_platform_name(cls) -> str:
-        """Get the name of the AI platform this provider interacts with."""
-        pass
+    def bond_instance(cls, instance: ProviderInstanceModel) -> AbstractProviderInstance:
+        return AbstractProviderInstance(instance)
 
     @classmethod
-    def get_extension_info(cls) -> Dict[str, Any]:
-        """Get information about the AI extension."""
-        return {
-            "name": "AI",
-            "description": f"AI extension for {cls.get_platform_name()}",
-            "platform": cls.get_platform_name(),
-        }
+    def unsupported(cls, what: str) -> PermanentExternalError:
+        return PermanentExternalError(
+            f"{cls.friendly_name} does not offer {what}", provider=cls.name
+        )
 
     @classmethod
-    @abstractmethod
-    def services(cls) -> List[str]:
-        """Return a list of services provided by this provider."""
-        pass
-
-    # Abstract abilities - must be implemented by providers
-    @classmethod
-    @abstractmethod
-    @ability(name="text_generation")
-    def generate_text(
+    async def complete(
         cls,
-        bonded_instance: AbstractProviderInstance,
-        prompt: str,
-        max_tokens: Optional[int] = None,
-        temperature: Optional[float] = None,
-        **kwargs,
+        instance: ProviderInstanceModel,
+        messages: List[Dict[str, Any]],
+        tools: Optional[List[Dict[str, Any]]],
+        max_tokens: Optional[int],
+        temperature: Optional[float],
     ) -> Dict[str, Any]:
-        """Generate text using this AI provider."""
-        pass
+        """One chat turn in this provider's API: a :func:`chat_answer`."""
+        raise cls.unsupported("chat")
 
     @classmethod
-    @abstractmethod
-    @ability(name="embedding_generation")
-    def generate_embeddings(
-        cls, bonded_instance: AbstractProviderInstance, text: str, **kwargs
-    ) -> Dict[str, Any]:
-        """Generate text embeddings using this AI provider."""
-        pass
-
-    @classmethod
-    def chat(
+    async def chat(
         cls,
-        bonded_instance: AbstractProviderInstance,
+        instance: ProviderInstanceModel,
         messages: List[Dict[str, Any]],
         tools: Optional[List[Dict[str, Any]]] = None,
         max_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
-        **kwargs,
+        requester_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Run a single chat turn over a provider-neutral message list.
-
-        This is the transport the agent-turn loop uses to talk to a model —
-        distinct from ``generate_text`` (a single string prompt). ``chat``
-        carries a whole conversation (system/user/assistant/tool messages) and,
-        for tool-capable providers, a ``tools`` catalog, and can return the
-        model's ``tool_calls`` so the caller can execute them and continue the
-        loop.
-
-        Message format is provider-neutral (providers translate to their own
-        wire format)::
-
-            {"role": "system"|"user"|"assistant"|"tool",
-             "content": Optional[str],
-             "tool_calls": [{"id": str, "name": str, "arguments": str}],  # assistant
-             "tool_call_id": str}                                          # tool
-
-        Tool format is the OpenAI function-tool shape (the de-facto standard;
-        non-OpenAI providers translate)::
-
-            {"type": "function",
-             "function": {"name": str, "description": str,
-                          "parameters": {<json-schema>}}}
-
-        Returns::
-
-            {"success": True,
-             "message": {"role": "assistant", "content": Optional[str],
-                         "tool_calls": Optional[List[{"id","name","arguments"}]]},
-             "finish_reason": Optional[str], "model": str}
-
-        or ``{"success": False, "error": str}`` on failure.
-
-        This base implementation is a text-only fallback for providers that do
-        not natively support chat/tools: it flattens ``messages`` into one
-        prompt, calls ``generate_text``, and returns the reply as an assistant
-        message with no ``tool_calls``. ``tools`` are ignored — a text-only
-        model cannot call them, so this is honest capability degradation, not a
-        silently-dropped tool call. Tool-capable providers override this method.
-        """
-        prompt = cls._flatten_messages_to_prompt(messages)
-        result = cls.generate_text(
-            bonded_instance,
-            prompt=prompt,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            **kwargs,
+        """One chat turn, its tokens recorded against ``instance`` and the
+        user named by ``requester_id``."""
+        answer = await cls.complete(
+            instance,
+            checked_messages(messages),
+            checked_tools(tools),
+            max_tokens,
+            temperature,
         )
-        if not result.get("success"):
-            return result
-        return {
-            "success": True,
-            "message": {
-                "role": "assistant",
-                "content": result.get("text", ""),
-                "tool_calls": None,
-            },
-            "finish_reason": "stop",
-            "model": result.get("model", getattr(bonded_instance, "model_name", "")),
-        }
-
-    @staticmethod
-    def _flatten_messages_to_prompt(messages: List[Dict[str, Any]]) -> str:
-        """Flatten a provider-neutral message list into one labelled prompt.
-
-        Used only by the text-only ``chat`` fallback. Role structure is kept as
-        ``Role: content`` lines so a plain completion model still sees the
-        conversation, and tool-call / tool-result turns are rendered textually
-        so nothing is silently dropped.
-        """
-        lines: List[str] = []
-        for msg in messages:
-            role = str(msg.get("role", "user")).capitalize()
-            content = msg.get("content")
-            if content:
-                text = content if isinstance(content, str) else str(content)
-                lines.append(f"{role}: {text}")
-            for tool_call in msg.get("tool_calls") or []:
-                lines.append(
-                    f"{role} (tool call): "
-                    f"{tool_call.get('name')}({tool_call.get('arguments')})"
-                )
-        return "\n".join(lines)
+        record_usage(instance, answer.get("usage") or {}, requester_id)
+        return answer
 
     @classmethod
-    @ability(name="image_generation")
-    def generate_image(
-        cls, bonded_instance: AbstractProviderInstance, prompt: str, **kwargs
+    async def embed(
+        cls, instance: ProviderInstanceModel, texts: List[str]
     ) -> Dict[str, Any]:
-        """Generate image using this AI provider (optional)."""
-        return {
-            "success": False,
-            "error": "Image generation not supported by this provider",
-        }
+        """``{embeddings: [[float]], model, dimensions}``, one per text."""
+        raise cls.unsupported("embeddings")
 
     @classmethod
-    @ability(name="transcription")
-    def transcribe_audio(
-        cls, bonded_instance: AbstractProviderInstance, audio_path: str, **kwargs
+    async def image(
+        cls, instance: ProviderInstanceModel, prompt: str, size: str
     ) -> Dict[str, Any]:
-        """Transcribe audio to text (optional)."""
-        return {
-            "success": False,
-            "error": "Audio transcription not supported by this provider",
-        }
+        """``{images: [{base64 | url}], model}``."""
+        raise cls.unsupported("image generation")
 
     @classmethod
-    @ability(name="text_to_speech")
-    def text_to_speech(
-        cls, bonded_instance: AbstractProviderInstance, text: str, **kwargs
+    async def transcribe(
+        cls,
+        instance: ProviderInstanceModel,
+        audio: bytes,
+        filename: str,
+        language: Optional[str],
     ) -> Dict[str, Any]:
-        """Convert text to speech (optional)."""
-        return {
-            "success": False,
-            "error": "Text-to-speech not supported by this provider",
-        }
+        """``{text, model}``."""
+        raise cls.unsupported("transcription")
+
+    @classmethod
+    async def speak(
+        cls, instance: ProviderInstanceModel, text: str, voice: Optional[str]
+    ) -> Dict[str, Any]:
+        """``{audio_base64, content_type, model, voice}``."""
+        raise cls.unsupported("speech")
+
+    @classmethod
+    def model(cls, instance: ProviderInstanceModel) -> str:
+        return str(cls.setting(instance, "model") or "")
+
+    @classmethod
+    def services(cls) -> List[str]:
+        return ["ai"]
+
+
+def record_usage(
+    instance: ProviderInstanceModel,
+    usage: Mapping[str, Any],
+    requester_id: Optional[str],
+) -> None:
+    """Record a call's input and output tokens against ``instance`` (and
+    the user it ran for), when an app is running to record them in."""
+    from zephyrex.logic.BLL_Providers import ProviderInstanceUsageManager
+    from zephyrex.pydantic2.registry import ModelRegistry
+
+    registry = ModelRegistry.attached()
+    if registry is None:
+        return
+    usages = ProviderInstanceUsageManager(
+        model_registry=registry, requester_id=env("ROOT_ID")
+    )
+    for key in ("input_tokens", "output_tokens"):
+        if isinstance(usage.get(key), int) and usage[key] > 0:
+            usages.create(
+                provider_instance_id=instance.id,
+                key=key,
+                value=usage[key],
+                user_id=requester_id,
+            )
 
 
 class EXT_AI(AbstractStaticExtension):
-    """
-    AI extension for AGInfrastructure.
-
-    Provides comprehensive AI model functionality including text generation, embeddings,
-    transcription, image generation, and more through the Provider Rotation System.
-    This extension serves as the base framework for AI capabilities that can be
-    extended by specific AI implementations.
-
-    The extension focuses on:
-    - Text generation and chat capabilities
-    - Embedding generation for semantic search
-    - Image generation and vision processing
-    - Audio transcription and text-to-speech
-    - Multi-modal AI interactions
-    - Provider rotation for high availability
-    - AI model management and optimization
-    - Request tracking and analytics
-
-    Usage:
-        # Generate text using any available AI provider
-        result = EXT_AI.root.rotate(
-            EXT_AI.generate_text,
-            prompt="What is artificial intelligence?",
-            max_tokens=100,
-            temperature=0.7
-        )
-    """
-
-    # Extension metadata
     name: ClassVar[str] = "ai"
-    friendly_name: ClassVar[str] = "AI Framework"
-    version: ClassVar[str] = "2.0.0"
+    version: ClassVar[str] = "3.0.0"
     description: ClassVar[str] = (
-        "AI extension providing comprehensive AI model capabilities via Provider Rotation System"
+        "AI chat, embeddings, images, transcription and speech across "
+        "hosted and self-hosted models"
     )
 
-    # Environment variables that this extension needs
-    _env: ClassVar[Dict[str, Any]] = {
-        "AI_DEFAULT_MODEL": "gpt-4",
-        "AI_MAX_TOKENS": "4096",
-        "AI_TEMPERATURE": "0.7",
-        "AI_TOP_P": "0.9",
-        "AI_REQUEST_TIMEOUT": "60",
-        "AI_MAX_RETRIES": "3",
-        "AI_ENABLE_TRACKING": "true",
-        "AI_COST_TRACKING": "true",
+    _env: ClassVar[Dict[str, Any]] = {}
+    dependencies: ClassVar[Dependencies] = Dependencies([])
+    _abilities: ClassVar[Set[str]] = {
+        "list_ai_models",
+        "chat",
+        "generate_text",
+        "embed",
+        "generate_image",
+        "transcribe",
+        "speak",
+        "ai_usage",
     }
 
-    # Unified dependencies using the Dependencies class
-    dependencies: ClassVar[Dependencies] = Dependencies(
-        [
-            EXT_Dependency(
-                name="conversations",
-                friendly_name="Conversation Framework",
-                reason="Required for conversing with agents",
-                optional=False,
-            ),
-            PIP_Dependency(
-                name="tiktoken",
-                friendly_name="TikToken - OpenAI tokenizer library",
-                optional=False,
-                reason="Required for token counting across AI providers",
-                semver=">=0.5.0",
-            ),
-            PIP_Dependency(
-                name="openai",
-                friendly_name="OpenAI Python client",
-                optional=True,
-                reason="Required for OpenAI provider functionality",
-                semver=">=1.0.0",
-            ),
-            PIP_Dependency(
-                name="anthropic",
-                friendly_name="Anthropic Python client",
-                optional=True,
-                reason="Required for Anthropic/Claude provider functionality",
-                semver=">=0.8.0",
-            ),
-        ]
-    )
-
-    # Meta abilities provided by this extension for managing AI operations
-    _abilities: ClassVar[set] = {
-        "manage_ai_providers",
-        "configure_ai_models",
-        "track_ai_usage",
-        "optimize_model_selection",
-    }
-
-    @classproperty
-    def pip_dependencies(cls):
-        """Get PIP dependencies for backward compatibility."""
-        return cls.dependencies.pip
-
-    @classproperty
-    def ext_dependencies(cls):
-        """Get extension dependencies for backward compatibility."""
-        return cls.dependencies.ext
-
-    @classproperty
-    def sys_dependencies(cls):
-        """Get system dependencies for backward compatibility."""
-        return cls.dependencies.sys
+    @classmethod
+    @ability("list_ai_models")
+    async def list_ai_models(cls) -> List[Dict[str, Any]]:
+        """The configured model instances: id, name and provider."""
+        return cls.instances_of()
 
     @classmethod
-    def has_ability(cls, ability: str) -> bool:
-        """Check if this extension has a specific ability."""
-        return ability in cls._abilities
-
-    @ability
-    @classmethod
-    def manage_ai_providers(cls, **kwargs) -> Dict[str, Any]:
-        """
-        Meta ability: Manage AI provider configurations and status.
-
-        Returns:
-            Dict containing provider management information
-        """
-        try:
-            providers = []
-            for provider_class in cls.providers:
-                providers.append(
-                    {
-                        "name": getattr(
-                            provider_class, "name", provider_class.__name__
-                        ),
-                        "abilities": list(getattr(provider_class, "_abilities", set())),
-                        "status": "available",
-                    }
-                )
-
-            return {"success": True, "providers": providers, "count": len(providers)}
-        except Exception as e:
-            logger.error(f"Error managing AI providers: {e}")
-            return {"success": False, "error": str(e)}
-
-    @ability
-    @classmethod
-    def configure_ai_models(
-        cls, provider_name: str, settings: Dict[str, Any], **kwargs
+    @ability("chat")
+    async def chat(
+        cls,
+        messages: List[Dict[str, Any]],
+        tools: Optional[List[Dict[str, Any]]] = None,
+        max_tokens: Optional[int] = None,
+        temperature: Optional[float] = None,
+        requester_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """
-        Meta ability: Configure AI model settings for a specific provider.
+        """One chat turn over the neutral message shape; with ``tools`` the
+        model may answer with tool calls for the caller to run."""
+        result: Dict[str, Any] = await cls.rotate_capable(
+            CHAT,
+            "chat",
+            checked_messages(messages),
+            checked_tools(tools),
+            max_tokens,
+            temperature,
+            requester_id,
+        )
+        return result
 
-        Args:
-            provider_name: Name of the provider to configure
-            settings: Configuration settings
-
-        Returns:
-            Configuration result
-        """
-        try:
-            return {
-                "success": True,
-                "provider": provider_name,
-                "settings_applied": settings,
-                "message": f"Configuration updated for {provider_name}",
-            }
-        except Exception as e:
-            logger.error(f"Error configuring AI models: {e}")
-            return {"success": False, "error": str(e)}
-
-    @ability
     @classmethod
-    def track_ai_usage(cls, **kwargs) -> Dict[str, Any]:
-        """
-        Meta ability: Track AI usage statistics across providers.
-
-        Returns:
-            Usage statistics
-        """
-        try:
-            # In real implementation, would query ProviderInstanceUsage records
-            return {
-                "success": True,
-                "total_requests": 0,
-                "total_tokens": 0,
-                "by_provider": {},
-                "message": "Usage tracking data",
-            }
-        except Exception as e:
-            logger.error(f"Error tracking AI usage: {e}")
-            return {"success": False, "error": str(e)}
-
-    @ability
-    @classmethod
-    def optimize_model_selection(
-        cls, task_type: str, requirements: Dict[str, Any], **kwargs
+    @ability("generate_text")
+    async def generate_text(
+        cls,
+        prompt: str,
+        max_tokens: Optional[int] = None,
+        temperature: Optional[float] = None,
+        requester_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """
-        Meta ability: Optimize model selection based on task requirements.
-
-        Args:
-            task_type: Type of AI task (text_generation, embedding, etc.)
-            requirements: Task requirements (speed, quality, cost, etc.)
-
-        Returns:
-            Recommended model configuration
-        """
-        try:
-            # Simple recommendation logic
-            recommendations = []
-
-            if task_type == "text_generation":
-                if requirements.get("quality_priority", False):
-                    recommendations.append(
-                        {
-                            "provider": "openai",
-                            "model": "gpt-4",
-                            "reason": "Highest quality text generation",
-                        }
-                    )
-                elif requirements.get("cost_priority", False):
-                    recommendations.append(
-                        {
-                            "provider": "openai",
-                            "model": "gpt-3.5-turbo",
-                            "reason": "Cost-effective text generation",
-                        }
-                    )
-
-            return {
-                "success": True,
-                "task_type": task_type,
-                "recommendations": recommendations,
-                "requirements": requirements,
-            }
-        except Exception as e:
-            logger.error(f"Error optimizing model selection: {e}")
-            return {"success": False, "error": str(e)}
+        """A reply to one prompt: ``{text, model, usage}``."""
+        answer = await cls.chat(
+            [{"role": "user", "content": prompt}],
+            None,
+            max_tokens,
+            temperature,
+            requester_id,
+        )
+        return {
+            "text": answer["message"]["content"] or "",
+            "model": answer["model"],
+            "usage": answer["usage"],
+        }
 
     @classmethod
-    def get_seed_data(cls) -> List[Dict[str, Any]]:
-        """
-        Return seed data for AI providers and instances.
-        """
-        from zephyrex.lib.Environment import env
-
-        providers_data = []
-        instances_data = []
-
-        # AGInYourPC Provider
-        if env("AGINYOURPC_API_KEY") and env("AGINYOURPC_API_URI"):
-            providers_data.append(
-                {
-                    "name": "AGInYourPC",
-                    "friendly_name": "AGInYourPC AI Service",
-                    "system": True,
-                }
-            )
-            instances_data.append(
-                {
-                    "name": "Root_AGInYourPC",
-                    "_provider_name": "AGInYourPC",
-                    "api_key": env("AGINYOURPC_API_KEY"),
-                    "api_uri": env("AGINYOURPC_API_URI"),
-                    "model_name": "aginyourpc",
-                    "enabled": True,
-                }
-            )
-            logger.debug("Registering AGInYourPC provider via AI extension")
-
-        # OpenAI Provider (if configured)
-        if env("OPENAI_API_KEY"):
-            providers_data.append(
-                {
-                    "name": "OpenAI",
-                    "friendly_name": "OpenAI API Service",
-                    "system": True,
-                }
-            )
-            instances_data.append(
-                {
-                    "name": "Root_OpenAI",
-                    "_provider_name": "OpenAI",
-                    "api_key": env("OPENAI_API_KEY"),
-                    "model_name": env("OPENAI_MODEL", "gpt-4"),
-                    "enabled": True,
-                }
-            )
-            logger.debug("Registering OpenAI provider via AI extension")
-
-        return {"providers": providers_data, "instances": instances_data}
+    @ability("embed")
+    async def embed(cls, texts: List[str]) -> Dict[str, Any]:
+        """An embedding vector per text."""
+        result: Dict[str, Any] = await cls.rotate_capable(
+            EMBEDDINGS, "embed", checked_texts(texts)
+        )
+        return result
 
     @classmethod
-    def transcribe_audio(cls, audio_file, **kwargs):
-        try:
-            temp_audio_file_path = "audio.mp3"
-            if cls.root:
-                result = cls.root.rotate(
-                    provider_callback,
-                    audio_file=audio_file,
-                    audio_file_path=temp_audio_file_path,
-                )
-                return result
-        except Exception as e:
-            logger.error(f"Failed to transcribe audio: {e}")
-        finally:
-            import os
+    @ability("generate_image")
+    async def generate_image(
+        cls, prompt: str, size: str = "1024x1024"
+    ) -> Dict[str, Any]:
+        if not prompt or not prompt.strip():
+            raise InvalidInputExternalError("an image needs a prompt")
+        result: Dict[str, Any] = await cls.rotate_capable(
+            IMAGES, "image", prompt, image_size(size)
+        )
+        return result
 
-            if os.path.exists(temp_audio_file_path):
-                os.remove(temp_audio_file_path)
-                logger.debug(f"File '{temp_audio_file_path}' deleted successfully.")
-            else:
-                logger.debug(
-                    f"File '{temp_audio_file_path}' does not exist, nothing to delete."
-                )
+    @classmethod
+    @ability("transcribe")
+    async def transcribe(
+        cls,
+        audio_base64: str,
+        filename: str = "audio.mp3",
+        language: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """The text spoken in the audio (mp3, wav, m4a, ogg, webm, flac)."""
+        result: Dict[str, Any] = await cls.rotate_capable(
+            TRANSCRIPTION, "transcribe", audio_bytes(audio_base64), filename, language
+        )
+        return result
 
-    # Bind the module-level abstract provider base class so
-    # ``EXT_AI.AbstractProvider`` resolves per the AbstractStaticExtension
-    # contract (see zephyrex/extensions/email/EXT_EMail.py for the same
-    # pattern).
-    AbstractProvider = AbstractAIProvider
+    @classmethod
+    @ability("speak")
+    async def speak(cls, text: str, voice: Optional[str] = None) -> Dict[str, Any]:
+        """``text`` as speech: base64 audio and its content type."""
+        result: Dict[str, Any] = await cls.rotate_capable(
+            SPEECH, "speak", speech_text(text), voice
+        )
+        return result
 
+    @classmethod
+    @ability("ai_usage")
+    async def ai_usage(cls) -> List[Dict[str, Any]]:
+        """Tokens used per model instance: input and output totals."""
+        from zephyrex.logic.BLL_Providers import ProviderInstanceUsageManager
 
-def provider_callback(provider_instance, **kwargs):
-    providers = EXT_AI.providers
-    for provider in providers:
-        if provider.name.lower() == provider_instance.model_name.lower():
-            bond = provider.bond_instance(provider_instance)
-            if not bond:
-                return {
-                    "success": False,
-                    "error": "Provider could not be bonded",
-                }
-
-            import base64
-
-            audio_file = kwargs["audio_file"]
-            audio_file_path = kwargs["audio_file_path"]
-
-            decoded_data = base64.b64decode(audio_file)
-
-            with open(audio_file_path, "wb") as file:
-                file.write(decoded_data)
-
-            return provider.transcribe_audio(bond, audio_path=audio_file_path, **kwargs)
-
-    return {
-        "success": False,
-        "error": f"No provider found for model '{provider_instance.model_name}'",
-    }
+        root = cls.root
+        if root is None:
+            return []
+        usages = ProviderInstanceUsageManager(
+            model_registry=root.model_registry, requester_id=env("ROOT_ID")
+        )
+        totals: Dict[str, Dict[str, Any]] = {}
+        for instance in cls.instances_of():
+            entry = {**instance, "input_tokens": 0, "output_tokens": 0}
+            for row in usages.list(provider_instance_id=instance["id"]):
+                if row.key in ("input_tokens", "output_tokens"):
+                    entry[row.key] += row.value or 0
+            totals[instance["id"]] = entry
+        return list(totals.values())

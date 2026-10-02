@@ -261,6 +261,11 @@ EXTERNAL_API_PROVIDER_ENV_VARS: Dict[str, List[str]] = {
         "ALIEXPRESS_APP_SECRET",
         "ALIEXPRESS_ACCESS_TOKEN",
     ],
+    # AI: real keys, each live test making one short call.
+    "openai_key": ["OPENAI_API_KEY"],
+    "anthropic_key": ["ANTHROPIC_API_KEY"],
+    "gemini_key": ["GEMINI_API_KEY"],
+    "elevenlabs_key": ["ELEVENLABS_API_KEY"],
     # SendGrid sandbox.
     "sendgrid": ["SENDGRID_API_KEY"],
     # Twilio sandbox.

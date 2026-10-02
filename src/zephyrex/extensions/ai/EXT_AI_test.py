@@ -1,191 +1,350 @@
-from typing import List
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""AI: neutral messages, tools, texts, audio and sizes checked before any
+call; the neutral shape translated to the OpenAI and Anthropic wire
+formats and their documented answers read back; each ability rotated only
+over providers that offer it; and the tokens a chat uses recorded."""
+
+import base64
+import json
 
 import pytest
+from fastapi import HTTPException
 
-from zephyrex.extensions.AbstractEXTTest import (
-    AbstractEXTTest,
-    ExtensionTestConfig,
-    ExtensionTestType,
+from zephyrex.extensions.ai.EXT_AI import (
+    EXT_AI,
+    MAX_AUDIO_BYTES,
+    audio_bytes,
+    checked_messages,
+    checked_texts,
+    checked_tools,
+    flatten_messages,
+    image_size,
+    speech_text,
 )
-from zephyrex.extensions.ai.EXT_AI import EXT_AI
+from zephyrex.extensions.ai.OpenAICompatible import openai_answer, openai_messages
+from zephyrex.extensions.ai.PRV_Anthropic import (
+    PRV_Anthropic_AI,
+    anthropic_answer,
+    anthropic_request,
+)
+from zephyrex.extensions.ai.PRV_ElevenLabs import PRV_ElevenLabs_AI
+from zephyrex.extensions.ExternalErrors import InvalidInputExternalError
+from zephyrex.logic.BLL_Providers import ProviderInstanceUsageManager
+from zephyrex.lib.Environment import env
 
-
-class TestEXTAI(AbstractEXTTest):
-    """
-    Test suite for EXT_AI extension.
-
-    Tests extension initialization, AI capabilities, abilities, and provider integration.
-    Focuses on testing AI functionality, provider management, and static extension
-    metadata rather than component loading.
-
-    Test areas:
-    - Extension metadata and configuration
-    - AI capabilities and abilities
-    - Multi-provider integration (OpenAI, Anthropic, etc.)
-    - Provider ability discovery
-    - Text generation, embeddings, image generation capabilities
-    - Extension lifecycle and configuration validation
-    """
-
-    # Configure the test class
-    extension_class = EXT_AI
-    test_config = ExtensionTestConfig(
-        test_types={
-            ExtensionTestType.STRUCTURE,
-            ExtensionTestType.METADATA,
-            ExtensionTestType.DEPENDENCIES,
-            ExtensionTestType.ABILITIES,
-            ExtensionTestType.ENVIRONMENT,
+TOOL = {
+    "type": "function",
+    "function": {
+        "name": "weather",
+        "description": "The weather in a city",
+        "parameters": {
+            "type": "object",
+            "properties": {"city": {"type": "string"}},
+            "required": ["city"],
         },
-        expected_abilities={
-            "manage_ai_providers",
-            "configure_ai_models",
-            "track_ai_usage",
-            "optimize_model_selection",
-        },
+    },
+}
+CONVERSATION = [
+    {"role": "system", "content": "Be brief."},
+    {"role": "user", "content": "Weather in Oslo?", "images": ["https://x.test/a.png"]},
+    {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [
+            {"id": "call_1", "name": "weather", "arguments": '{"city": "Oslo"}'}
+        ],
+    },
+    {"role": "tool", "tool_call_id": "call_1", "content": "4 °C, rain"},
+]
+
+
+class TestChecks:
+    def test_messages(self):
+        checked = checked_messages(CONVERSATION)
+        assert [m["role"] for m in checked] == ["system", "user", "assistant", "tool"]
+        assert checked[2]["tool_calls"][0]["name"] == "weather"
+
+    @pytest.mark.parametrize(
+        "messages",
+        [
+            [],
+            "hello",
+            [{"role": "robot", "content": "x"}],
+            [{"role": "user", "content": 3}],
+            [{"role": "assistant", "content": "x", "images": ["https://x.test/a.png"]}],
+            [{"role": "user", "content": "x", "images": ["file:///etc/passwd"]}],
+            [{"role": "tool", "content": "x"}],
+            [
+                {
+                    "role": "assistant",
+                    "tool_calls": [{"id": "1", "name": "f", "arguments": {}}],
+                }
+            ],
+        ],
     )
+    def test_malformed_messages(self, messages):
+        with pytest.raises(InvalidInputExternalError):
+            checked_messages(messages)
 
-    # Expected extension properties
-    expected_abilities = [
-        "manage_ai_providers",
-        "configure_ai_models",
-        "track_ai_usage",
-        "optimize_model_selection",
-    ]
+    def test_tools(self):
+        assert checked_tools(None) is None and checked_tools([]) is None
+        assert checked_tools([TOOL]) == [TOOL]
+        for bad in ({"type": "function"}, [{"type": "code"}], ["weather"]):
+            with pytest.raises(InvalidInputExternalError):
+                checked_tools(bad)
 
-    expected_capabilities = [
-        "text_generation",
-        "embedding_generation",
-        "image_generation",
-        "audio_transcription",
-        "text_to_speech",
-    ]
+    def test_texts_audio_speech_and_sizes(self):
+        assert checked_texts("one") == ["one"]
+        with pytest.raises(InvalidInputExternalError):
+            checked_texts(["", "x"])
+        assert audio_bytes(base64.b64encode(b"ID3").decode()) == b"ID3"
+        with pytest.raises(InvalidInputExternalError):
+            audio_bytes("not base64!")
+        assert MAX_AUDIO_BYTES == 25 * 1024 * 1024
+        with pytest.raises(InvalidInputExternalError):
+            speech_text("x" * 5000)
+        assert image_size("1024x1024") == "1024x1024"
+        with pytest.raises(InvalidInputExternalError):
+            image_size("640x480")
 
-    def test_extension_metadata(self):
-        """Test that extension has proper metadata."""
-        assert self.extension_class.name == "ai"
-        assert self.extension_class.friendly_name == "AI Framework"
-        assert self.extension_class.version == "2.0.0"
-        assert (
-            "AI extension providing comprehensive" in self.extension_class.description
+    def test_flatten(self):
+        flat = flatten_messages(checked_messages(CONVERSATION))
+        assert 'Assistant (tool call): weather({"city": "Oslo"})' in flat
+        assert flat.startswith("System: Be brief.")
+
+
+class TestOpenAIFormat:
+    def test_messages(self):
+        wire = openai_messages(checked_messages(CONVERSATION))
+        assert wire[1]["content"][1] == {
+            "type": "image_url",
+            "image_url": {"url": "https://x.test/a.png"},
+        }
+        assert wire[2]["tool_calls"] == [
+            {
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "weather", "arguments": '{"city": "Oslo"}'},
+            }
+        ]
+        assert wire[3] == {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "content": "4 °C, rain",
+        }
+
+    def test_answer_with_tool_calls(self):
+        answer = openai_answer(
+            {
+                "model": "gpt-5-mini-2025-08-07",
+                "choices": [
+                    {
+                        "finish_reason": "tool_calls",
+                        "message": {
+                            "role": "assistant",
+                            "content": None,
+                            "tool_calls": [
+                                {
+                                    "id": "call_9",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "weather",
+                                        "arguments": '{"city":"Bergen"}',
+                                    },
+                                }
+                            ],
+                        },
+                    }
+                ],
+                "usage": {"prompt_tokens": 50, "completion_tokens": 12},
+            },
+            "gpt-5-mini",
         )
-
-    def test_extension_dependencies(self):
-        """Test that extension has proper dependencies configured."""
-        assert hasattr(self.extension_class, "dependencies")
-        assert self.extension_class.dependencies is not None
-
-        # Check for required tiktoken dependency
-        pip_deps = [
-            dep for dep in self.extension_class.dependencies.pip if not dep.optional
+        assert answer["message"]["tool_calls"] == [
+            {"id": "call_9", "name": "weather", "arguments": '{"city":"Bergen"}'}
         ]
-        assert any(dep.name == "tiktoken" for dep in pip_deps)
+        assert answer["finish_reason"] == "tool_calls"
+        assert answer["usage"] == {"input_tokens": 50, "output_tokens": 12}
+        assert answer["model"] == "gpt-5-mini-2025-08-07"
 
-    def test_extension_abilities(self):
-        """Test that extension has expected abilities."""
-        abilities = self.extension_class.abilities
 
-        for expected_ability in self.expected_abilities:
-            assert expected_ability in abilities, f"Missing ability: {expected_ability}"
-
-    def test_extension_env_vars(self):
-        """Test that extension has proper environment variables."""
-        assert hasattr(self.extension_class, "_env")
-        env_vars = self.extension_class._env
-
-        expected_env_vars = [
-            "AI_DEFAULT_MODEL",
-            "AI_MAX_TOKENS",
-            "AI_TEMPERATURE",
-            "AI_REQUEST_TIMEOUT",
+class TestAnthropicFormat:
+    def test_request(self):
+        body = anthropic_request(checked_messages(CONVERSATION), [TOOL])
+        assert body["system"] == "Be brief."
+        user, assistant, result = body["messages"]
+        assert user["content"][1] == {
+            "type": "image",
+            "source": {"type": "url", "url": "https://x.test/a.png"},
+        }
+        assert assistant["content"] == [
+            {
+                "type": "tool_use",
+                "id": "call_1",
+                "name": "weather",
+                "input": {"city": "Oslo"},
+            }
         ]
+        assert result == {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "call_1",
+                    "content": "4 °C, rain",
+                }
+            ],
+        }
+        assert body["tools"][0]["input_schema"]["required"] == ["city"]
 
-        for env_var in expected_env_vars:
-            assert env_var in env_vars, f"Missing environment variable: {env_var}"
+    def test_consecutive_tool_results_share_a_turn(self):
+        body = anthropic_request(
+            checked_messages(
+                [
+                    {"role": "user", "content": "go"},
+                    {
+                        "role": "assistant",
+                        "tool_calls": [
+                            {"id": "a", "name": "f", "arguments": "{}"},
+                            {"id": "b", "name": "f", "arguments": "{}"},
+                        ],
+                    },
+                    {"role": "tool", "tool_call_id": "a", "content": "1"},
+                    {"role": "tool", "tool_call_id": "b", "content": "2"},
+                ]
+            ),
+            None,
+        )
+        assert [t["role"] for t in body["messages"]] == ["user", "assistant", "user"]
+        assert len(body["messages"][2]["content"]) == 2
 
-    def test_provider_discovery(self):
-        """Test that providers can be discovered."""
-        providers = self.extension_class.providers
-        assert isinstance(providers, list)
-        # Providers may be empty if not installed, but should be a list
+    def test_a_base64_image(self):
+        body = anthropic_request(
+            checked_messages(
+                [
+                    {
+                        "role": "user",
+                        "content": "x",
+                        "images": ["data:image/png;base64,iVBO"],
+                    }
+                ]
+            ),
+            None,
+        )
+        assert body["messages"][0]["content"][1]["source"] == {
+            "type": "base64",
+            "media_type": "image/png",
+            "data": "iVBO",
+        }
 
-    def test_has_capability(self):
-        """Test the has_ability method."""
-        # Test with known capability
-        if hasattr(self.extension_class, "has_ability"):
-            assert self.extension_class.has_ability("manage_ai_providers")
-            # Test with unknown capability
-            assert not self.extension_class.has_ability("unknown_capability")
-        else:
-            # Fallback to checking abilities directly
-            assert "manage_ai_providers" in self.extension_class.abilities
-
-    def test_conversations_available(self):
-        """Test the conversations_available property if it exists."""
-        # This should return a boolean regardless of whether conversations is available
-        if hasattr(self.extension_class, "conversations_available"):
-            result = self.extension_class.conversations_available
-            assert isinstance(result, bool)
-        else:
-            # Skip if property doesn't exist
-            pytest.skip("conversations_available property not found")
-
-    def test_ai_meta_abilities_exist(self):
-        """Test that AI meta abilities exist."""
-        assert hasattr(self.extension_class, "manage_ai_providers")
-        assert callable(getattr(self.extension_class, "manage_ai_providers"))
-
-        assert hasattr(self.extension_class, "configure_ai_models")
-        assert callable(getattr(self.extension_class, "configure_ai_models"))
-
-        assert hasattr(self.extension_class, "track_ai_usage")
-        assert callable(getattr(self.extension_class, "track_ai_usage"))
-
-        assert hasattr(self.extension_class, "optimize_model_selection")
-        assert callable(getattr(self.extension_class, "optimize_model_selection"))
-
-    def test_abstract_provider_class_exists(self):
-        """Test that AbstractProvider class exists."""
-        assert hasattr(self.extension_class, "AbstractProvider")
-        abstract_provider = self.extension_class.AbstractProvider
-
-        # Test that it has the expected abstract methods
-        expected_methods = [
-            "bond_instance",
-            "get_platform_name",
-            "services",
-            "generate_text",
-            "generate_embeddings",
+    def test_answer(self):
+        answer = anthropic_answer(
+            {
+                "model": "claude-sonnet-4-5-20250929",
+                "stop_reason": "tool_use",
+                "content": [
+                    {"type": "text", "text": "Checking."},
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_1",
+                        "name": "weather",
+                        "input": {"city": "Oslo"},
+                    },
+                ],
+                "usage": {"input_tokens": 30, "output_tokens": 9},
+            },
+            "claude-sonnet-4-5",
+        )
+        assert answer["message"]["content"] == "Checking."
+        assert answer["message"]["tool_calls"] == [
+            {
+                "id": "toolu_1",
+                "name": "weather",
+                "arguments": json.dumps({"city": "Oslo"}),
+            }
         ]
+        assert answer["finish_reason"] == "tool_calls"
 
-        for method_name in expected_methods:
-            assert hasattr(
-                abstract_provider, method_name
-            ), f"Missing method: {method_name}"
 
-    def test_meta_abilities_execution(self):
-        """Test that meta abilities can be executed."""
-        # Test that methods exist and are callable
-        assert hasattr(self.extension_class, "manage_ai_providers")
-        assert callable(getattr(self.extension_class, "manage_ai_providers"))
+ANTHROPIC_REPLY = json.dumps(
+    {
+        "model": "claude-sonnet-4-5",
+        "stop_reason": "end_turn",
+        "content": [{"type": "text", "text": "Hello."}],
+        "usage": {"input_tokens": 7, "output_tokens": 3},
+    }
+).encode()
 
-        assert hasattr(self.extension_class, "track_ai_usage")
-        assert callable(getattr(self.extension_class, "track_ai_usage"))
 
-        assert hasattr(self.extension_class, "configure_ai_models")
-        assert callable(getattr(self.extension_class, "configure_ai_models"))
+class TestRotation:
+    @pytest.fixture
+    def models(self, local_http_server, provider_instance, rotation_over, monkeypatch):
+        server = local_http_server(
+            {
+                "/messages": (
+                    200,
+                    {"Content-Type": "application/json"},
+                    ANTHROPIC_REPLY,
+                ),
+                "/text-to-speech/voice1?output_format=mp3_44100_128": (
+                    200,
+                    {"Content-Type": "audio/mpeg"},
+                    b"ID3fake-mp3",
+                ),
+            }
+        )
+        claude = provider_instance(
+            PRV_Anthropic_AI, api_key="k", settings={"base_url": server.base_url}
+        )
+        voice = provider_instance(
+            PRV_ElevenLabs_AI,
+            api_key="k",
+            settings={"base_url": server.base_url, "voice": "voice1"},
+        )
+        monkeypatch.setattr(
+            EXT_AI, "_root_rotation_cache", rotation_over(voice, claude)
+        )
+        return server, claude, voice
 
-        assert hasattr(self.extension_class, "optimize_model_selection")
-        assert callable(getattr(self.extension_class, "optimize_model_selection"))
+    async def test_chat_skips_a_speech_only_provider(self, models):
+        server, _, _ = models
+        answer = await EXT_AI.chat([{"role": "user", "content": "Hi"}])
+        assert answer["message"]["content"] == "Hello."
+        assert [r.path for r in server.requests] == ["/messages"]
 
-    def test_extension_structure(self):
-        """Test that extension has proper structure."""
-        # Test extension type
-        if hasattr(self.extension_class.AbstractProvider, "extension_type"):
-            assert self.extension_class.AbstractProvider.extension_type == "ai"
+    async def test_speech_skips_a_chat_only_provider(self, models):
+        server, _, _ = models
+        spoken = await EXT_AI.speak("Hello there")
+        assert base64.b64decode(spoken["audio_base64"]) == b"ID3fake-mp3"
+        assert spoken["content_type"] == "audio/mpeg"
+        assert len(server.requests) == 1
 
-        # Test that providers are properly linked
-        if self.extension_class.providers:
-            for provider in self.extension_class.providers:
-                if hasattr(provider, "extension_type"):
-                    assert provider.extension_type == "ai"
+    async def test_no_provider_offers_it(self, models):
+        with pytest.raises(HTTPException) as raised:
+            await EXT_AI.embed(["text"])
+        assert raised.value.status_code == 503
+
+    async def test_generate_text(self, models):
+        assert (await EXT_AI.generate_text("Hi"))["text"] == "Hello."
+
+    async def test_tokens_are_recorded(self, models, extension_app):
+        _, claude, _ = models
+        await PRV_Anthropic_AI.chat(claude, [{"role": "user", "content": "Hi"}])
+        rows = ProviderInstanceUsageManager(
+            model_registry=extension_app.state.model_registry,
+            requester_id=env("ROOT_ID"),
+        ).list(provider_instance_id=claude.id)
+        assert sorted((r.key, r.value) for r in rows) == [
+            ("input_tokens", 7),
+            ("output_tokens", 3),
+        ]
+        usage = {u["id"]: u for u in await EXT_AI.ai_usage()}
+        assert usage[str(claude.id)]["output_tokens"] == 3
+
+    async def test_input_is_checked_before_any_call(self, models):
+        server, _, _ = models
+        with pytest.raises(InvalidInputExternalError):
+            await EXT_AI.chat([{"role": "robot", "content": "x"}])
+        with pytest.raises(InvalidInputExternalError):
+            await EXT_AI.transcribe("not base64!")
+        assert server.requests == []

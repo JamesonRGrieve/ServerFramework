@@ -21,7 +21,7 @@ instance lifecycle — runs for real against the database.
 
 import json
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from zephyrex.extensions.ai_agents.AbilityInvoker import (
     AbilityAccessDenied,
@@ -42,6 +42,12 @@ from zephyrex.extensions.ai_agents.BLL_AI_Agents import (
 from zephyrex.extensions.ai_agents.MemoryProvider import default_memory_provider
 from zephyrex.lib.Environment import env
 from zephyrex.lib.Logging import logger
+
+# The model transport: (messages, tools) -> {"success", "message"} or
+# {"success": False, "error"}.
+ChatTransport = Callable[
+    [List[Dict[str, Any]], Optional[List[Dict[str, Any]]]], Awaitable[Dict[str, Any]]
+]
 
 # Bounded tool loop: how many model<->tool round trips a single turn may take
 # before it is forced to conclude. Prevents a runaway tool-calling turn.
@@ -114,7 +120,7 @@ class AgentTurnExecutor:
         self,
         model_registry: Any,
         requester_id: str,
-        chat_fn: Optional[Callable[[List[Dict], Optional[List[Dict]]], Dict]] = None,
+        chat_fn: Optional[ChatTransport] = None,
         max_steps: int = DEFAULT_MAX_STEPS,
         tool_mode: str = "native",
         memory_provider: Optional[Any] = None,
@@ -237,7 +243,7 @@ class AgentTurnExecutor:
         tool_calls_made = 0
 
         for _step in range(self.max_steps):
-            result = chat_fn(messages, tools)
+            result = await chat_fn(messages, tools)
             if not result.get("success"):
                 raise ToolInvocationError(result.get("error", "model call failed"))
             message = result["message"]
@@ -921,19 +927,18 @@ class AgentTurnExecutor:
 
     # -- model transport ---------------------------------------------------
 
-    def _make_rotation_chat(
-        self, agent: Any, acting_requester: str
-    ) -> Callable[[List[Dict], Optional[List[Dict]]], Dict]:
+    def _make_rotation_chat(self, agent: Any, acting_requester: str) -> ChatTransport:
         """Default chat transport: native chat over the agent's rotation, with
-        the rotation's failover across the agent's provider instances."""
+        the rotation's failover across the agent's model instances. The
+        tokens each turn uses are recorded against the agent's user."""
 
-        def chat(messages: List[Dict], tools: Optional[List[Dict]]) -> Dict:
+        async def chat(
+            messages: List[Dict[str, Any]], tools: Optional[List[Dict[str, Any]]]
+        ) -> Dict[str, Any]:
             rotation_id = getattr(agent, "rotation_id", None)
             if not rotation_id:
-                return {
-                    "success": False,
-                    "error": "agent has no rotation configured",
-                }
+                return {"success": False, "error": "agent has no rotation configured"}
+            from zephyrex.extensions.ai.EXT_AI import EXT_AI
             from zephyrex.logic.BLL_Providers import RotationManager
 
             rotation = RotationManager(
@@ -941,39 +946,19 @@ class AgentTurnExecutor:
                 target_id=rotation_id,
                 model_registry=self.model_registry,
             )
-
-            def callback(provider_instance, **_kwargs):
-                provider_cls = self._ai_provider_for(provider_instance)
-                if provider_cls is None:
-                    raise ToolInvocationError(
-                        f"no AI provider for instance "
-                        f"{getattr(provider_instance, 'model_name', '?')}"
-                    )
-                bonded = provider_cls.bond_instance(provider_instance)
-                if bonded is None:
-                    raise ToolInvocationError("could not bond provider instance")
-                res = provider_cls.chat(bonded, messages=messages, tools=tools)
-                if not res.get("success"):
-                    raise ToolInvocationError(res.get("error", "chat failed"))
-                return res
-
             try:
-                return rotation.rotate(callback, ability="chat_completion")
+                answer = await rotation.arotate(
+                    EXT_AI.provider_call("chat"),
+                    messages,
+                    tools,
+                    requester_id=acting_requester,
+                    ability="chat",
+                )
             except Exception as exc:
                 return {"success": False, "error": str(exc)}
+            return {"success": True, **answer}
 
         return chat
-
-    @staticmethod
-    def _ai_provider_for(provider_instance: Any) -> Optional[type]:
-        """Match a provider instance to its AI provider class by name."""
-        from zephyrex.extensions.ai.EXT_AI import EXT_AI
-
-        target = (getattr(provider_instance, "model_name", "") or "").lower()
-        for provider in EXT_AI.providers:
-            if getattr(provider, "name", "").lower() == target:
-                return provider
-        return None
 
     def _make_provider_instance_resolver(
         self, acting_requester: str

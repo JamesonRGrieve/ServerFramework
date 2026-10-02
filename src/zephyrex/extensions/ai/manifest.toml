@@ -5,8 +5,8 @@
 # Manifest_parity_test keeps the two in step.
 
 name = "ai"
-version = "2.0.0"
-description = "AI extension providing comprehensive AI model capabilities via Provider Rotation System"
+version = "3.0.0"
+description = "AI chat, embeddings, images, transcription and speech across hosted and self-hosted models"
 author = "ZephyrexTechnologies"
 entry_module = "EXT_AI"
 minimum_framework_version = "0.0.0"

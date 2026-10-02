@@ -1,13 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""A real local HTTP server for tests that fetch over the network: each
-path answers a fixed status, headers and body. It listens on loopback,
-which the SSRF guard refuses, so the fixture also allows its host in
+"""A real local HTTP server for tests that call over the network: each
+path answers a fixed status, headers and body, whatever the method, and
+every request it receives is recorded. It listens on loopback, which the
+SSRF guard refuses, so the fixture also allows its host in
 ``EGRESS_ALLOWED_HOSTS`` for the test."""
 
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Callable, Dict, Iterator, Mapping, Tuple
+from typing import Callable, Dict, Iterator, List, Mapping, Tuple
 
 import pytest
 
@@ -15,14 +16,35 @@ Route = Tuple[int, Mapping[str, str], bytes]
 
 
 @dataclass(frozen=True)
+class ReceivedRequest:
+    method: str
+    path: str
+    headers: Mapping[str, str]
+    body: bytes
+
+
+@dataclass(frozen=True)
 class LocalServer:
     base_url: str
     host: str
+    requests: List[ReceivedRequest] = field(default_factory=list)
 
 
-def _handler(routes: Mapping[str, Route]) -> type:
+def _handler(routes: Mapping[str, Route], received: List[ReceivedRequest]) -> type:
     class Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            self.do_GET()
+
         def do_GET(self) -> None:
+            length = int(self.headers.get("Content-Length") or 0)
+            received.append(
+                ReceivedRequest(
+                    self.command,
+                    self.path,
+                    {k.lower(): v for k, v in self.headers.items()},
+                    self.rfile.read(length) if length else b"",
+                )
+            )
             status, headers, body = routes.get(self.path, (404, {}, b""))
             self.send_response(status)
             for name, value in headers.items():
@@ -49,13 +71,14 @@ def local_http_server(
     servers = []
 
     def _start(routes: Dict[str, Route], allow: bool = True) -> LocalServer:
-        server = ThreadingHTTPServer(("127.0.0.1", 0), _handler(routes))
+        received: List[ReceivedRequest] = []
+        server = ThreadingHTTPServer(("127.0.0.1", 0), _handler(routes, received))
         threading.Thread(target=server.serve_forever, daemon=True).start()
         servers.append(server)
         host = f"127.0.0.1:{server.server_address[1]}"
         if allow:
             monkeypatch.setenv("EGRESS_ALLOWED_HOSTS", host)
-        return LocalServer(f"http://{host}", host)
+        return LocalServer(f"http://{host}", host, received)
 
     yield _start
     for server in servers:

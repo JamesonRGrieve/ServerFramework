@@ -65,7 +65,7 @@ class ScriptedChat:
         self.responses = responses
         self.calls = []
 
-    def __call__(self, messages, tools):
+    async def __call__(self, messages, tools):
         index = len(self.calls)
         self.calls.append({"messages": list(messages), "tools": tools})
         return self.responses[min(index, len(self.responses) - 1)]

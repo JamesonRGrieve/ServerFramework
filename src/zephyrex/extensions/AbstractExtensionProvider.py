@@ -1989,6 +1989,25 @@ class AbstractStaticExtension(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"{cls.name} has no provider {provider_name!r}",
             )
+        return await cls.rotate_among([provider_name], method_name, *args, **kwargs)
+
+    @classmethod
+    async def rotate_capable(
+        cls, ability_name: str, method_name: str, *args: Any, **kwargs: Any
+    ) -> Any:
+        """:meth:`rotate_provider` over only the instances of providers that
+        declare ``ability_name``: for an operation not every provider of the
+        extension offers (speech from a chat-only model). 503 when the
+        rotation holds no instance of one."""
+        capable = [p.name for p in cls.providers if ability_name in p._abilities]
+        return await cls.rotate_among(capable, method_name, *args, **kwargs)
+
+    @classmethod
+    async def rotate_among(
+        cls, provider_names: List[str], method_name: str, *args: Any, **kwargs: Any
+    ) -> Any:
+        """:meth:`rotate_provider` over only the instances of the providers
+        named. 503 when the rotation holds no instance of one."""
         root = cls.root
         if root is None:
             raise HTTPException(
@@ -2001,16 +2020,19 @@ class AbstractStaticExtension(
         )
 
         registry, requester_id = root.model_registry, env("ROOT_ID")
-        provider = ProviderManager(
-            model_registry=registry, requester_id=requester_id
-        ).get(name=provider_name)
+        providers = ProviderManager(model_registry=registry, requester_id=requester_id)
         instances = ProviderInstanceManager(
             model_registry=registry, requester_id=requester_id
-        ).list(provider_id=provider.id)
+        )
+        instance_ids = [
+            instance.id
+            for name in provider_names
+            for instance in instances.list(provider_id=providers.get(name=name).id)
+        ]
         return await root.arotate(
             cls.provider_call(method_name),
             *args,
-            provider_instance_ids=[instance.id for instance in instances],
+            provider_instance_ids=instance_ids,
             **kwargs,
         )
 

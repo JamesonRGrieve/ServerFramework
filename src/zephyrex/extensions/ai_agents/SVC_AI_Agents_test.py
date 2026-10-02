@@ -42,7 +42,7 @@ class _ScriptedChat:
         self.content = content
         self.calls = 0
 
-    def __call__(self, messages, tools):
+    async def __call__(self, messages, tools):
         self.calls += 1
         return _text(self.content)
 
@@ -58,11 +58,13 @@ class TestInvocationMonitorService(ExtensionServerMixin):
 
         prepare_test_registry()
         worker_id = os.environ.get("PYTEST_XDIST_WORKER", "")
-        prefix = f"test.invocation_monitor.{worker_id}" if worker_id else "test.invocation_monitor"
+        prefix = (
+            f"test.invocation_monitor.{worker_id}"
+            if worker_id
+            else "test.invocation_monitor"
+        )
         wanted = ("ai_agents", "ai", "email", "conversations", "ai_prompts")
-        names = list(wanted) + [
-            c for c in CORE_COMPANION_EXTENSIONS if c not in wanted
-        ]
+        names = list(wanted) + [c for c in CORE_COMPANION_EXTENSIONS if c not in wanted]
         app = instance(db_prefix=prefix, extensions=",".join(names))
         yield TestClient(app)
 
@@ -156,9 +158,7 @@ class TestInvocationMonitorService(ExtensionServerMixin):
         self, admin_a, model_registry
     ):
         agent = self._agent(admin_a, model_registry)
-        trigger = self._timer_trigger(
-            agent.id, admin_a, model_registry, one_shot=True
-        )
+        trigger = self._timer_trigger(agent.id, admin_a, model_registry, one_shot=True)
 
         await self._monitor(model_registry).update()
 
@@ -175,9 +175,7 @@ class TestInvocationMonitorService(ExtensionServerMixin):
         services = EXT_AI_Agents.register_services(
             model_registry=model_registry, requester_id=env("ROOT_ID")
         )
-        assert any(
-            isinstance(s, InvocationMonitorService) for s in services
-        )
+        assert any(isinstance(s, InvocationMonitorService) for s in services)
 
     async def test_boot_helper_starts_services(self, model_registry):
         # The generic, extension-agnostic boot helper must discover and start the
