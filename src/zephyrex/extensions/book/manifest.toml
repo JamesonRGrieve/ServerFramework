@@ -6,10 +6,10 @@
 
 name = "book"
 version = "1.0.0"
-description = "Book creation, editing, and publishing extension"
+description = "Books written chapter by chapter, exported as Markdown, HTML or EPUB"
 author = "ZephyrexTechnologies"
 entry_module = "EXT_Book"
 minimum_framework_version = "0.0.0"
 
-pip_dependencies = []
+pip_dependencies = ["ebooklib>=0.20", "markdown-it-py>=3.0"]
 system_dependencies = []
