@@ -6,7 +6,7 @@
 
 name = "social"
 version = "1.0.0"
-description = "Social media integration extension providing comprehensive social media integration abilities via Provider Rotation System"
+description = "Publish and read posts on X, Facebook, Instagram, Threads, TikTok and Postiz channels"
 author = "ZephyrexTechnologies"
 entry_module = "EXT_Social"
 minimum_framework_version = "0.0.0"

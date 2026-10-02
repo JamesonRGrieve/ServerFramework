@@ -211,6 +211,13 @@ EXTERNAL_API_PROVIDER_ENV_VARS: Dict[str, List[str]] = {
     "nextcloud_test": ["NEXTCLOUD_URL", "NEXTCLOUD_USERNAME", "NEXTCLOUD_APP_PASSWORD"],
     # Math: a Wolfram|Alpha AppID (the free developer tier).
     "wolfram_alpha": ["WOLFRAM_ALPHA_APPID"],
+    # Social: test accounts, read only (profile and recent posts).
+    "x_test": ["X_ACCESS_TOKEN"],
+    "facebook_test": ["FACEBOOK_PAGE_TOKEN", "FACEBOOK_PAGE_ID"],
+    "instagram_test": ["INSTAGRAM_ACCESS_TOKEN", "INSTAGRAM_USER_ID"],
+    "threads_test": ["THREADS_ACCESS_TOKEN"],
+    "tiktok_test": ["TIKTOK_ACCESS_TOKEN"],
+    "postiz_test": ["POSTIZ_API_KEY", "POSTIZ_INTEGRATION_ID"],
     # SendGrid sandbox.
     "sendgrid": ["SENDGRID_API_KEY"],
     # Twilio sandbox.
