@@ -6,10 +6,10 @@
 
 name = "cad"
 version = "1.0.0"
-description = "3D model generation using various CAD tools"
+description = "Parametric CAD: OpenSCAD code compiled to STL, 3MF and more"
 author = "ZephyrexTechnologies"
 entry_module = "EXT_CAD"
 minimum_framework_version = "0.0.0"
 
 pip_dependencies = []
-system_dependencies = []
+system_dependencies = ["openscad"]
