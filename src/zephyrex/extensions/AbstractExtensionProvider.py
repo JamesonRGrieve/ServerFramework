@@ -2015,6 +2015,80 @@ class AbstractStaticExtension(
         )
 
     @classmethod
+    async def rotate_on_instance(
+        cls, instance_ref: str, method_name: str, *args: Any, **kwargs: Any
+    ) -> Any:
+        """:meth:`rotate_provider` on one provider instance, named by its id
+        or its name: for an operation on a device that instance is (a
+        printer, a camera), which no other instance can stand in for. It is
+        still retried as the rotation retries. 404 when no instance of this
+        extension's providers in the rotation goes by ``instance_ref``."""
+        root = cls.root
+        if root is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"No {cls.name} provider is configured",
+            )
+        from zephyrex.logic.BLL_Providers import (
+            ProviderInstanceManager,
+            ProviderManager,
+        )
+
+        registry, requester_id = root.model_registry, env("ROOT_ID")
+        providers = ProviderManager(model_registry=registry, requester_id=requester_id)
+        own = {providers.get(name=provider.name).id for provider in cls.providers}
+        instances = ProviderInstanceManager(
+            model_registry=registry, requester_id=requester_id
+        )
+        matches = [
+            instance
+            for instance in (
+                instances.list(id=instance_ref) or instances.list(name=instance_ref)
+            )
+            if instance.provider_id in own
+        ]
+        if not matches:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"{cls.name} has no instance {instance_ref!r}",
+            )
+        return await root.arotate(
+            cls.provider_call(method_name),
+            *args,
+            provider_instance_ids=[matches[0].id],
+            **kwargs,
+        )
+
+    @classmethod
+    def instances_of(cls) -> List[Dict[str, Any]]:
+        """This extension's provider instances: id, name, provider."""
+        root = cls.root
+        if root is None:
+            return []
+        from zephyrex.logic.BLL_Providers import (
+            ProviderInstanceManager,
+            ProviderManager,
+        )
+
+        registry, requester_id = root.model_registry, env("ROOT_ID")
+        providers = ProviderManager(model_registry=registry, requester_id=requester_id)
+        instances = ProviderInstanceManager(
+            model_registry=registry, requester_id=requester_id
+        )
+        found = []
+        for provider in cls.providers:
+            record = providers.get(name=provider.name)
+            for instance in instances.list(provider_id=record.id) or []:
+                found.append(
+                    {
+                        "id": str(instance.id),
+                        "name": instance.name,
+                        "provider": provider.name,
+                    }
+                )
+        return found
+
+    @classmethod
     def get_rotation_provider_instances_seed_data(cls) -> List[Dict[str, Any]]:
         """Seed rows linking this extension's root rotation to every instance
         of its providers.
