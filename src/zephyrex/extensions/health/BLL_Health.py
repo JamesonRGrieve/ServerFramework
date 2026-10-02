@@ -1,759 +1,270 @@
-from datetime import datetime
-from enum import Enum
-from typing import ClassVar, Dict, List, Optional
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""A person's own health log: activities, meals, weigh-ins and sleep.
 
-from pydantic import BaseModel, Field
-from sqlalchemy.orm import Session
+Each record belongs to the user who logged it and nobody else (no team
+sharing: this is health data). Values are range-checked on the way in,
+and a night's sleep duration is computed from its bed and wake times.
+"""
+
+from datetime import UTC, datetime, timedelta
+from typing import Any, ClassVar, Dict, Literal, Optional, Type
+
 from fastapi import HTTPException
+from pydantic import Field
 
-from zephyrex.pydantic2.sqlalchemy import DatabaseMixin
 from zephyrex.logic.AbstractLogicManager import (
     AbstractBLLManager,
-    BaseMixinModel,
+    ApplicationModel,
     DateSearchModel,
+    ModelMeta,
     StringSearchModel,
     UpdateMixinModel,
 )
 from zephyrex.logic.BLL_Auth import UserModel
+from zephyrex.pydantic2.fastapi import RouterMixin
+from zephyrex.pydantic2.registry import BaseModel
+
+ActivityKind = Literal[
+    "running",
+    "walking",
+    "cycling",
+    "swimming",
+    "strength",
+    "yoga",
+    "hiking",
+    "other",
+]
+MealKind = Literal["breakfast", "lunch", "dinner", "snack"]
+MAX_MINUTES = 24 * 60
+MAX_SLEEP = timedelta(hours=24)
 
 
-# Health provider type constants
-class HealthProviderType:
-    FITBIT = "fitbit"
-    APPLE_HEALTH = "apple_health"
-    GOOGLE_FIT = "google_fit"
-    MYFITNESSPAL = "myfitnesspal"
-    STRAVA = "strava"
-    GARMIN = "garmin"
-    WITHINGS = "withings"
-
-    @classmethod
-    def values(cls):
-        return [
-            cls.FITBIT,
-            cls.APPLE_HEALTH,
-            cls.GOOGLE_FIT,
-            cls.MYFITNESSPAL,
-            cls.STRAVA,
-            cls.GARMIN,
-            cls.WITHINGS,
-        ]
-
-
-class HealthProviderModel(
-    BaseMixinModel, UpdateMixinModel, UserModel.Reference.ID, DatabaseMixin
+class HealthActivityModel(
+    ApplicationModel,
+    UpdateMixinModel,
+    UserModel.Reference.Optional,
+    metaclass=ModelMeta,
 ):
-    provider_name: str = Field(..., description="Name of the health provider")
-    provider_type: str = Field(..., description="Type of health provider")
-    enabled: bool = Field(True, description="Whether the provider is enabled")
-    username: Optional[str] = Field(None, description="Username for the provider")
-    credentials: Optional[Dict] = Field(None, description="Provider credentials")
-
-    # Database metadata
-    table_comment: ClassVar[str] = (
-        "Health data provider configurations for users including credentials and settings"
-    )
-
-    class ReferenceID:
-        healthprovider_id: str = Field(..., description="The ID of the health provider")
-
-        class Optional:
-            healthprovider_id: Optional[str] = None
-
-        class Search:
-            healthprovider_id: Optional[StringSearchModel] = None
-
-    class Create(BaseModel, UserModel.Reference.ID):
-        provider_name: str = Field(..., description="Name of the health provider")
-        provider_type: str = Field(..., description="Type of health provider")
-        enabled: bool = Field(True, description="Whether the provider is enabled")
-        username: Optional[str] = Field(None, description="Username for the provider")
-        credentials: Optional[Dict] = Field(None, description="Provider credentials")
-
-    class Update(BaseModel):
-        provider_name: Optional[str] = Field(
-            None, description="Name of the health provider"
-        )
-        enabled: Optional[bool] = Field(
-            None, description="Whether the provider is enabled"
-        )
-        username: Optional[str] = Field(None, description="Username for the provider")
-        credentials: Optional[Dict] = Field(None, description="Provider credentials")
-
-    class Search(
-        BaseMixinModel.Search, UpdateMixinModel.Search, UserModel.Reference.ID.Search
-    ):
-        provider_name: Optional[StringSearchModel] = None
-        provider_type: Optional[str] = None
-        enabled: Optional[bool] = None
-        username: Optional[StringSearchModel] = None
-
-
-class HealthProviderReferenceModel(HealthProviderModel.Reference.ID):
-    health_provider: Optional[HealthProviderModel] = None
-
-    class Optional(HealthProviderModel.Reference.ID.Optional):
-        health_provider: Optional[HealthProviderModel] = None
-
-
-class HealthProviderNetworkModel:
-    class POST(BaseModel):
-        health_provider: HealthProviderModel.Create
-
-    class PUT(BaseModel):
-        health_provider: HealthProviderModel.Update
-
-    class SEARCH(BaseModel):
-        health_provider: HealthProviderModel.Search
-
-    class ResponseSingle(BaseModel):
-        health_provider: HealthProviderModel
-
-    class ResponsePlural(BaseModel):
-        health_providers: List[HealthProviderModel]
-
-
-# Activity type constants
-class ActivityType:
-    RUNNING = "running"
-    WALKING = "walking"
-    CYCLING = "cycling"
-    SWIMMING = "swimming"
-    WEIGHTLIFTING = "weightlifting"
-    YOGA = "yoga"
-    HIKING = "hiking"
-    OTHER = "other"
-
-
-class ActivityRecordModel(
-    BaseMixinModel,
-    UserModel.Reference.ID,
-    HealthProviderModel.Reference.ID,
-    DatabaseMixin,
-):
-    date: datetime = Field(..., description="Date of the activity")
-    activity_type: str = Field(..., description="Type of activity")
-    duration_minutes: int = Field(..., description="Duration in minutes")
-    calories_burned: Optional[float] = Field(None, description="Calories burned")
+    Manager: ClassVar[Type["HealthActivityManager"]]
+    performed_at: datetime = Field(..., description="When the activity started")
+    kind: ActivityKind = Field(..., description="What was done")
+    duration_minutes: int = Field(..., description="How long it lasted")
+    calories_burned: Optional[float] = Field(None, description="kcal")
     steps: Optional[int] = Field(None, description="Steps taken")
-    distance_km: Optional[float] = Field(None, description="Distance in kilometers")
-    heart_rate_avg: Optional[int] = Field(None, description="Average heart rate")
-    heart_rate_max: Optional[int] = Field(None, description="Maximum heart rate")
-    metadata: Optional[Dict] = Field(None, description="Additional activity metadata")
+    distance_km: Optional[float] = Field(None, description="Distance covered")
+    heart_rate_avg: Optional[int] = Field(None, description="Average beats per minute")
+    heart_rate_max: Optional[int] = Field(None, description="Peak beats per minute")
+    notes: Optional[str] = Field(None, description="Free-form notes")
 
-    # Database metadata
-    table_comment: ClassVar[str] = (
-        "User activity and exercise records with metrics like calories, steps, and heart rate"
-    )
+    table_comment: ClassVar[str] = "A user's logged physical activities"
 
-    class ReferenceID:
-        activityrecord_id: str = Field(..., description="The ID of the activity record")
-
-        class Optional:
-            activityrecord_id: Optional[str] = None
-
-        class Search:
-            activityrecord_id: Optional[StringSearchModel] = None
-
-    class Create(BaseModel, UserModel.Reference.ID, HealthProviderModel.Reference.ID):
-        date: datetime = Field(..., description="Date of the activity")
-        activity_type: str = Field(..., description="Type of activity")
-        duration_minutes: int = Field(..., description="Duration in minutes")
-        calories_burned: Optional[float] = Field(None, description="Calories burned")
-        steps: Optional[int] = Field(None, description="Steps taken")
-        distance_km: Optional[float] = Field(None, description="Distance in kilometers")
-        heart_rate_avg: Optional[int] = Field(None, description="Average heart rate")
-        heart_rate_max: Optional[int] = Field(None, description="Maximum heart rate")
-        metadata: Optional[Dict] = Field(
-            None, description="Additional activity metadata"
-        )
+    class Create(BaseModel):
+        performed_at: datetime
+        kind: ActivityKind
+        duration_minutes: int = Field(..., ge=1, le=MAX_MINUTES)
+        calories_burned: Optional[float] = Field(None, ge=0, le=20_000)
+        steps: Optional[int] = Field(None, ge=0, le=200_000)
+        distance_km: Optional[float] = Field(None, ge=0, le=1_000)
+        heart_rate_avg: Optional[int] = Field(None, ge=20, le=260)
+        heart_rate_max: Optional[int] = Field(None, ge=20, le=260)
+        notes: Optional[str] = Field(None, max_length=2_000)
 
     class Update(BaseModel):
-        date: Optional[datetime] = Field(None, description="Date of the activity")
-        activity_type: Optional[str] = Field(None, description="Type of activity")
-        duration_minutes: Optional[int] = Field(None, description="Duration in minutes")
-        calories_burned: Optional[float] = Field(None, description="Calories burned")
-        steps: Optional[int] = Field(None, description="Steps taken")
-        distance_km: Optional[float] = Field(None, description="Distance in kilometers")
-        heart_rate_avg: Optional[int] = Field(None, description="Average heart rate")
-        heart_rate_max: Optional[int] = Field(None, description="Maximum heart rate")
-        metadata: Optional[Dict] = Field(
-            None, description="Additional activity metadata"
-        )
+        performed_at: Optional[datetime] = None
+        kind: Optional[ActivityKind] = None
+        duration_minutes: Optional[int] = Field(None, ge=1, le=MAX_MINUTES)
+        calories_burned: Optional[float] = Field(None, ge=0, le=20_000)
+        steps: Optional[int] = Field(None, ge=0, le=200_000)
+        distance_km: Optional[float] = Field(None, ge=0, le=1_000)
+        heart_rate_avg: Optional[int] = Field(None, ge=20, le=260)
+        heart_rate_max: Optional[int] = Field(None, ge=20, le=260)
+        notes: Optional[str] = Field(None, max_length=2_000)
 
-    class Search(
-        BaseMixinModel.Search,
-        UserModel.Reference.ID.Search,
-        HealthProviderModel.Reference.ID.Search,
-    ):
-        date: Optional[DateSearchModel] = None
-        activity_type: Optional[str] = None
+    class Search(ApplicationModel.Search):
+        performed_at: Optional[DateSearchModel] = None
+        kind: Optional[StringSearchModel] = None
+
+
+class HealthMealModel(
+    ApplicationModel,
+    UpdateMixinModel,
+    UserModel.Reference.Optional,
+    metaclass=ModelMeta,
+):
+    Manager: ClassVar[Type["HealthMealManager"]]
+    eaten_at: datetime = Field(..., description="When it was eaten")
+    kind: MealKind = Field(..., description="Which meal")
+    food: str = Field(..., description="What was eaten")
+    serving_size: Optional[float] = Field(None, description="How much")
+    serving_unit: Optional[str] = Field(None, description="g, ml, cup, …")
+    calories: float = Field(..., description="kcal")
+    protein_g: Optional[float] = Field(None, description="Protein, grams")
+    carbs_g: Optional[float] = Field(None, description="Carbohydrate, grams")
+    fat_g: Optional[float] = Field(None, description="Fat, grams")
+    fiber_g: Optional[float] = Field(None, description="Fibre, grams")
+    sugar_g: Optional[float] = Field(None, description="Sugar, grams")
+    sodium_mg: Optional[float] = Field(None, description="Sodium, milligrams")
+
+    table_comment: ClassVar[str] = "A user's logged meals and their nutrients"
+
+    class Create(BaseModel):
+        eaten_at: datetime
+        kind: MealKind
+        food: str = Field(..., min_length=1, max_length=300)
+        serving_size: Optional[float] = Field(None, gt=0)
+        serving_unit: Optional[str] = Field(None, max_length=30)
+        calories: float = Field(..., ge=0, le=20_000)
+        protein_g: Optional[float] = Field(None, ge=0, le=2_000)
+        carbs_g: Optional[float] = Field(None, ge=0, le=2_000)
+        fat_g: Optional[float] = Field(None, ge=0, le=2_000)
+        fiber_g: Optional[float] = Field(None, ge=0, le=2_000)
+        sugar_g: Optional[float] = Field(None, ge=0, le=2_000)
+        sodium_mg: Optional[float] = Field(None, ge=0, le=100_000)
+
+    class Update(BaseModel):
+        eaten_at: Optional[datetime] = None
+        kind: Optional[MealKind] = None
+        food: Optional[str] = Field(None, min_length=1, max_length=300)
+        serving_size: Optional[float] = Field(None, gt=0)
+        serving_unit: Optional[str] = Field(None, max_length=30)
+        calories: Optional[float] = Field(None, ge=0, le=20_000)
+        protein_g: Optional[float] = Field(None, ge=0, le=2_000)
+        carbs_g: Optional[float] = Field(None, ge=0, le=2_000)
+        fat_g: Optional[float] = Field(None, ge=0, le=2_000)
+        fiber_g: Optional[float] = Field(None, ge=0, le=2_000)
+        sugar_g: Optional[float] = Field(None, ge=0, le=2_000)
+        sodium_mg: Optional[float] = Field(None, ge=0, le=100_000)
+
+    class Search(ApplicationModel.Search):
+        eaten_at: Optional[DateSearchModel] = None
+        kind: Optional[StringSearchModel] = None
+        food: Optional[StringSearchModel] = None
+
+
+class HealthWeightModel(
+    ApplicationModel,
+    UpdateMixinModel,
+    UserModel.Reference.Optional,
+    metaclass=ModelMeta,
+):
+    Manager: ClassVar[Type["HealthWeightManager"]]
+    measured_at: datetime = Field(..., description="When it was measured")
+    weight_kg: float = Field(..., description="Body weight, kilograms")
+    body_fat_percent: Optional[float] = Field(None, description="Body fat, percent")
+    notes: Optional[str] = Field(None, description="Free-form notes")
+
+    table_comment: ClassVar[str] = "A user's weigh-ins"
+
+    class Create(BaseModel):
+        measured_at: datetime
+        weight_kg: float = Field(..., gt=0, le=700)
+        body_fat_percent: Optional[float] = Field(None, ge=0, le=100)
+        notes: Optional[str] = Field(None, max_length=2_000)
+
+    class Update(BaseModel):
+        measured_at: Optional[datetime] = None
+        weight_kg: Optional[float] = Field(None, gt=0, le=700)
+        body_fat_percent: Optional[float] = Field(None, ge=0, le=100)
+        notes: Optional[str] = Field(None, max_length=2_000)
+
+    class Search(ApplicationModel.Search):
+        measured_at: Optional[DateSearchModel] = None
+
+
+class HealthSleepModel(
+    ApplicationModel,
+    UpdateMixinModel,
+    UserModel.Reference.Optional,
+    metaclass=ModelMeta,
+):
+    Manager: ClassVar[Type["HealthSleepManager"]]
+    bedtime: datetime = Field(..., description="When the night's sleep began")
+    wake_time: datetime = Field(..., description="When it ended")
+    duration_minutes: int = Field(0, description="Bed to wake (kept by the server)")
+    deep_minutes: Optional[int] = Field(None, description="Deep sleep")
+    light_minutes: Optional[int] = Field(None, description="Light sleep")
+    rem_minutes: Optional[int] = Field(None, description="REM sleep")
+    awake_minutes: Optional[int] = Field(None, description="Awake in bed")
+    quality: Optional[int] = Field(None, description="Quality score, 0-100")
+
+    table_comment: ClassVar[str] = "A user's nights of sleep"
+
+    # duration_minutes is set by the manager from bedtime and wake_time.
+    class Create(BaseModel):
+        bedtime: datetime
+        wake_time: datetime
+        duration_minutes: int = 0
+        deep_minutes: Optional[int] = Field(None, ge=0, le=MAX_MINUTES)
+        light_minutes: Optional[int] = Field(None, ge=0, le=MAX_MINUTES)
+        rem_minutes: Optional[int] = Field(None, ge=0, le=MAX_MINUTES)
+        awake_minutes: Optional[int] = Field(None, ge=0, le=MAX_MINUTES)
+        quality: Optional[int] = Field(None, ge=0, le=100)
+
+    class Update(BaseModel):
+        bedtime: Optional[datetime] = None
+        wake_time: Optional[datetime] = None
         duration_minutes: Optional[int] = None
+        deep_minutes: Optional[int] = Field(None, ge=0, le=MAX_MINUTES)
+        light_minutes: Optional[int] = Field(None, ge=0, le=MAX_MINUTES)
+        rem_minutes: Optional[int] = Field(None, ge=0, le=MAX_MINUTES)
+        awake_minutes: Optional[int] = Field(None, ge=0, le=MAX_MINUTES)
+        quality: Optional[int] = Field(None, ge=0, le=100)
 
-
-class ActivityRecordReferenceModel(ActivityRecordModel.Reference.ID):
-    activity_record: Optional[ActivityRecordModel] = None
-
-    class Optional(ActivityRecordModel.Reference.ID.Optional):
-        activity_record: Optional[ActivityRecordModel] = None
-
-
-class ActivityRecordNetworkModel:
-    class POST(BaseModel):
-        activity_record: ActivityRecordModel.Create
-
-    class PUT(BaseModel):
-        activity_record: ActivityRecordModel.Update
-
-    class SEARCH(BaseModel):
-        activity_record: ActivityRecordModel.Search
-
-    class ResponseSingle(BaseModel):
-        activity_record: ActivityRecordModel
-
-    class ResponsePlural(BaseModel):
-        activity_records: List[ActivityRecordModel]
-
-
-# Meal type constants
-class MealType:
-    BREAKFAST = "breakfast"
-    LUNCH = "lunch"
-    DINNER = "dinner"
-    SNACK = "snack"
-
-
-class NutritionRecordModel(
-    BaseMixinModel,
-    UserModel.Reference.ID,
-    HealthProviderModel.Reference.ID,
-    DatabaseMixin,
-):
-    date: datetime = Field(..., description="Date of the meal")
-    meal_type: str = Field(..., description="Type of meal")
-    food_name: str = Field(..., description="Name of the food")
-    serving_size: float = Field(..., description="Size of the serving")
-    serving_unit: str = Field(..., description="Unit of the serving (e.g., g, oz)")
-    calories: float = Field(..., description="Calories in the serving")
-    protein_g: Optional[float] = Field(None, description="Protein in grams")
-    carbs_g: Optional[float] = Field(None, description="Carbohydrates in grams")
-    fat_g: Optional[float] = Field(None, description="Fat in grams")
-    fiber_g: Optional[float] = Field(None, description="Fiber in grams")
-    sugar_g: Optional[float] = Field(None, description="Sugar in grams")
-    sodium_mg: Optional[float] = Field(None, description="Sodium in milligrams")
-    metadata: Optional[Dict] = Field(None, description="Additional nutrition metadata")
-
-    # Database metadata
-    table_comment: ClassVar[str] = (
-        "User nutrition and food intake records with detailed macronutrient information"
-    )
-
-    class ReferenceID:
-        nutritionrecord_id: str = Field(
-            ..., description="The ID of the nutrition record"
-        )
-
-        class Optional:
-            nutritionrecord_id: Optional[str] = None
-
-        class Search:
-            nutritionrecord_id: Optional[StringSearchModel] = None
-
-    class Create(BaseModel, UserModel.Reference.ID, HealthProviderModel.Reference.ID):
-        date: datetime = Field(..., description="Date of the meal")
-        meal_type: str = Field(..., description="Type of meal")
-        food_name: str = Field(..., description="Name of the food")
-        serving_size: float = Field(..., description="Size of the serving")
-        serving_unit: str = Field(..., description="Unit of the serving (e.g., g, oz)")
-        calories: float = Field(..., description="Calories in the serving")
-        protein_g: Optional[float] = Field(None, description="Protein in grams")
-        carbs_g: Optional[float] = Field(None, description="Carbohydrates in grams")
-        fat_g: Optional[float] = Field(None, description="Fat in grams")
-        fiber_g: Optional[float] = Field(None, description="Fiber in grams")
-        sugar_g: Optional[float] = Field(None, description="Sugar in grams")
-        sodium_mg: Optional[float] = Field(None, description="Sodium in milligrams")
-        metadata: Optional[Dict] = Field(
-            None, description="Additional nutrition metadata"
-        )
-
-    class Update(BaseModel):
-        date: Optional[datetime] = Field(None, description="Date of the meal")
-        meal_type: Optional[str] = Field(None, description="Type of meal")
-        food_name: Optional[str] = Field(None, description="Name of the food")
-        serving_size: Optional[float] = Field(None, description="Size of the serving")
-        serving_unit: Optional[str] = Field(None, description="Unit of the serving")
-        calories: Optional[float] = Field(None, description="Calories in the serving")
-        protein_g: Optional[float] = Field(None, description="Protein in grams")
-        carbs_g: Optional[float] = Field(None, description="Carbohydrates in grams")
-        fat_g: Optional[float] = Field(None, description="Fat in grams")
-        fiber_g: Optional[float] = Field(None, description="Fiber in grams")
-        sugar_g: Optional[float] = Field(None, description="Sugar in grams")
-        sodium_mg: Optional[float] = Field(None, description="Sodium in milligrams")
-        metadata: Optional[Dict] = Field(
-            None, description="Additional nutrition metadata"
-        )
-
-    class Search(
-        BaseMixinModel.Search,
-        UserModel.Reference.ID.Search,
-        HealthProviderModel.Reference.ID.Search,
-    ):
-        date: Optional[DateSearchModel] = None
-        meal_type: Optional[str] = None
-        food_name: Optional[StringSearchModel] = None
-
-
-class NutritionRecordReferenceModel(NutritionRecordModel.Reference.ID):
-    nutrition_record: Optional[NutritionRecordModel] = None
-
-    class Optional(NutritionRecordModel.Reference.ID.Optional):
-        nutrition_record: Optional[NutritionRecordModel] = None
-
-
-class NutritionRecordNetworkModel:
-    class POST(BaseModel):
-        nutrition_record: NutritionRecordModel.Create
-
-    class PUT(BaseModel):
-        nutrition_record: NutritionRecordModel.Update
-
-    class SEARCH(BaseModel):
-        nutrition_record: NutritionRecordModel.Search
-
-    class ResponseSingle(BaseModel):
-        nutrition_record: NutritionRecordModel
-
-    class ResponsePlural(BaseModel):
-        nutrition_records: List[NutritionRecordModel]
-
-
-class WeightRecordModel(
-    BaseMixinModel,
-    UserModel.Reference.ID,
-    HealthProviderModel.Reference.ID,
-    DatabaseMixin,
-):
-    date: datetime = Field(..., description="Date of the weight measurement")
-    weight_kg: float = Field(..., description="Weight in kilograms")
-    bmi: Optional[float] = Field(None, description="Body Mass Index")
-    body_fat_percentage: Optional[float] = Field(
-        None, description="Body fat percentage"
-    )
-    lean_mass_kg: Optional[float] = Field(None, description="Lean mass in kilograms")
-    fat_mass_kg: Optional[float] = Field(None, description="Fat mass in kilograms")
-    notes: Optional[str] = Field(None, description="Additional notes")
-
-    # Database metadata
-    table_comment: ClassVar[str] = (
-        "User weight measurements and body composition data with BMI and fat percentage"
-    )
-
-    class ReferenceID:
-        weightrecord_id: str = Field(..., description="The ID of the weight record")
-
-        class Optional:
-            weightrecord_id: Optional[str] = None
-
-        class Search:
-            weightrecord_id: Optional[StringSearchModel] = None
-
-    class Create(BaseModel, UserModel.Reference.ID, HealthProviderModel.Reference.ID):
-        date: datetime = Field(..., description="Date of the weight measurement")
-        weight_kg: float = Field(..., description="Weight in kilograms")
-        bmi: Optional[float] = Field(None, description="Body Mass Index")
-        body_fat_percentage: Optional[float] = Field(
-            None, description="Body fat percentage"
-        )
-        lean_mass_kg: Optional[float] = Field(
-            None, description="Lean mass in kilograms"
-        )
-        fat_mass_kg: Optional[float] = Field(None, description="Fat mass in kilograms")
-        notes: Optional[str] = Field(None, description="Additional notes")
-
-    class Update(BaseModel):
-        date: Optional[datetime] = Field(
-            None, description="Date of the weight measurement"
-        )
-        weight_kg: Optional[float] = Field(None, description="Weight in kilograms")
-        bmi: Optional[float] = Field(None, description="Body Mass Index")
-        body_fat_percentage: Optional[float] = Field(
-            None, description="Body fat percentage"
-        )
-        lean_mass_kg: Optional[float] = Field(
-            None, description="Lean mass in kilograms"
-        )
-        fat_mass_kg: Optional[float] = Field(None, description="Fat mass in kilograms")
-        notes: Optional[str] = Field(None, description="Additional notes")
-
-    class Search(
-        BaseMixinModel.Search,
-        UserModel.Reference.ID.Search,
-        HealthProviderModel.Reference.ID.Search,
-    ):
-        date: Optional[DateSearchModel] = None
-        weight_kg: Optional[float] = None
-        bmi: Optional[float] = None
-
-
-class WeightRecordReferenceModel(WeightRecordModel.Reference.ID):
-    weight_record: Optional[WeightRecordModel] = None
-
-    class Optional(WeightRecordModel.Reference.ID.Optional):
-        weight_record: Optional[WeightRecordModel] = None
-
-
-class WeightRecordNetworkModel:
-    class POST(BaseModel):
-        weight_record: WeightRecordModel.Create
-
-    class PUT(BaseModel):
-        weight_record: WeightRecordModel.Update
-
-    class SEARCH(BaseModel):
-        weight_record: WeightRecordModel.Search
-
-    class ResponseSingle(BaseModel):
-        weight_record: WeightRecordModel
-
-    class ResponsePlural(BaseModel):
-        weight_records: List[WeightRecordModel]
-
-
-class SleepRecordModel(
-    BaseMixinModel,
-    UserModel.Reference.ID,
-    HealthProviderModel.Reference.ID,
-    DatabaseMixin,
-):
-    sleep_date: datetime = Field(..., description="Date of the sleep (day it started)")
-    bedtime: datetime = Field(..., description="Time went to bed")
-    wake_time: datetime = Field(..., description="Time woke up")
-    sleep_duration_minutes: int = Field(
-        ..., description="Total sleep duration in minutes"
-    )
-    deep_sleep_minutes: Optional[int] = Field(None, description="Deep sleep in minutes")
-    light_sleep_minutes: Optional[int] = Field(
-        None, description="Light sleep in minutes"
-    )
-    rem_sleep_minutes: Optional[int] = Field(None, description="REM sleep in minutes")
-    awake_minutes: Optional[int] = Field(
-        None, description="Time awake during sleep in minutes"
-    )
-    sleep_quality_score: Optional[int] = Field(None, description="Sleep quality score")
-    metadata: Optional[Dict] = Field(None, description="Additional sleep metadata")
-
-    # Database metadata
-    table_comment: ClassVar[str] = (
-        "User sleep records with detailed sleep stage breakdown and quality metrics"
-    )
-
-    class ReferenceID:
-        sleeprecord_id: str = Field(..., description="The ID of the sleep record")
-
-        class Optional:
-            sleeprecord_id: Optional[str] = None
-
-        class Search:
-            sleeprecord_id: Optional[StringSearchModel] = None
-
-    class Create(BaseModel, UserModel.Reference.ID, HealthProviderModel.Reference.ID):
-        sleep_date: datetime = Field(
-            ..., description="Date of the sleep (day it started)"
-        )
-        bedtime: datetime = Field(..., description="Time went to bed")
-        wake_time: datetime = Field(..., description="Time woke up")
-        sleep_duration_minutes: int = Field(
-            ..., description="Total sleep duration in minutes"
-        )
-        deep_sleep_minutes: Optional[int] = Field(
-            None, description="Deep sleep in minutes"
-        )
-        light_sleep_minutes: Optional[int] = Field(
-            None, description="Light sleep in minutes"
-        )
-        rem_sleep_minutes: Optional[int] = Field(
-            None, description="REM sleep in minutes"
-        )
-        awake_minutes: Optional[int] = Field(
-            None, description="Time awake during sleep in minutes"
-        )
-        sleep_quality_score: Optional[int] = Field(
-            None, description="Sleep quality score"
-        )
-        metadata: Optional[Dict] = Field(None, description="Additional sleep metadata")
-
-    class Update(BaseModel):
-        sleep_date: Optional[datetime] = Field(None, description="Date of the sleep")
-        bedtime: Optional[datetime] = Field(None, description="Time went to bed")
-        wake_time: Optional[datetime] = Field(None, description="Time woke up")
-        sleep_duration_minutes: Optional[int] = Field(
-            None, description="Sleep duration in minutes"
-        )
-        deep_sleep_minutes: Optional[int] = Field(
-            None, description="Deep sleep in minutes"
-        )
-        light_sleep_minutes: Optional[int] = Field(
-            None, description="Light sleep in minutes"
-        )
-        rem_sleep_minutes: Optional[int] = Field(
-            None, description="REM sleep in minutes"
-        )
-        awake_minutes: Optional[int] = Field(
-            None, description="Time awake during sleep"
-        )
-        sleep_quality_score: Optional[int] = Field(
-            None, description="Sleep quality score"
-        )
-        metadata: Optional[Dict] = Field(None, description="Additional sleep metadata")
-
-    class Search(
-        BaseMixinModel.Search,
-        UserModel.Reference.ID.Search,
-        HealthProviderModel.Reference.ID.Search,
-    ):
-        sleep_date: Optional[DateSearchModel] = None
+    class Search(ApplicationModel.Search):
         bedtime: Optional[DateSearchModel] = None
-        wake_time: Optional[DateSearchModel] = None
-        sleep_duration_minutes: Optional[int] = None
 
 
-class SleepRecordReferenceModel(SleepRecordModel.Reference.ID):
-    sleep_record: Optional[SleepRecordModel] = None
-
-    class Optional(SleepRecordModel.Reference.ID.Optional):
-        sleep_record: Optional[SleepRecordModel] = None
-
-
-class SleepRecordNetworkModel:
-    class POST(BaseModel):
-        sleep_record: SleepRecordModel.Create
-
-    class PUT(BaseModel):
-        sleep_record: SleepRecordModel.Update
-
-    class SEARCH(BaseModel):
-        sleep_record: SleepRecordModel.Search
-
-    class ResponseSingle(BaseModel):
-        sleep_record: SleepRecordModel
-
-    class ResponsePlural(BaseModel):
-        sleep_records: List[SleepRecordModel]
+def moment(value: Any) -> datetime:
+    """A datetime (or its ISO text) in UTC; a naive one is taken as UTC."""
+    parsed = datetime.fromisoformat(value) if isinstance(value, str) else value
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
-class HealthProviderManager(AbstractBLLManager):
-    Model = HealthProviderModel
-    ReferenceModel = HealthProviderReferenceModel
-    NetworkModel = HealthProviderNetworkModel
-
-    def __init__(
-        self,
-        requester_id: str,
-        target_user_id: Optional[str] = None,
-        target_team_id: Optional[str] = None,
-        db: Optional[Session] = None,
-    ):
-        super().__init__(
-            requester_id=requester_id,
-            target_id=target_user_id,
-            target_team_id=target_team_id,
-            db=db,
+def sleep_minutes(bedtime: Any, wake_time: Any) -> int:
+    """Minutes from bed to waking: after bedtime, within a day."""
+    asleep = moment(wake_time) - moment(bedtime)
+    if asleep <= timedelta(0) or asleep > MAX_SLEEP:
+        raise HTTPException(
+            status_code=422,
+            detail="wake_time must come after bedtime, within 24 hours",
         )
-        self._activities = None
-        self._nutrition = None
-        self._weight = None
-        self._sleep = None
-
-    def create(self, create_model: Model.Create) -> Model:
-        # Validate provider type
-        if create_model.provider_type not in HealthProviderType.values():
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid provider type: {create_model.provider_type}. Must be one of: {', '.join(HealthProviderType.values())}",
-            )
-        return super().create(create_model)
-
-    def update(self, update_model: Model.Update, id: str) -> Model:
-        # Validate provider type if provided
-        if (
-            hasattr(update_model, "provider_type")
-            and update_model.provider_type is not None
-        ):
-            if update_model.provider_type not in HealthProviderType.values():
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Invalid provider type: {update_model.provider_type}. Must be one of: {', '.join(HealthProviderType.values())}",
-                )
-        return super().update(update_model, id)
-
-    @property
-    def activities(self):
-        if self._activities is None:
-            self._activities = ActivityRecordManager(
-                requester_id=self.requester.id,
-                target_user_id=self.target_user_id,
-                target_team_id=self.target_team_id,
-                db=self.db,
-            )
-        return self._activities
-
-    @property
-    def nutrition(self):
-        if self._nutrition is None:
-            self._nutrition = NutritionRecordManager(
-                requester_id=self.requester.id,
-                target_user_id=self.target_user_id,
-                target_team_id=self.target_team_id,
-                db=self.db,
-            )
-        return self._nutrition
-
-    @property
-    def weight(self):
-        if self._weight is None:
-            self._weight = WeightRecordManager(
-                requester_id=self.requester.id,
-                target_user_id=self.target_user_id,
-                target_team_id=self.target_team_id,
-                db=self.db,
-            )
-        return self._weight
-
-    @property
-    def sleep(self):
-        if self._sleep is None:
-            self._sleep = SleepRecordManager(
-                requester_id=self.requester.id,
-                target_user_id=self.target_user_id,
-                target_team_id=self.target_team_id,
-                db=self.db,
-            )
-        return self._sleep
+    return int(asleep.total_seconds() // 60)
 
 
-class ActivityRecordManager(AbstractBLLManager):
-    Model = ActivityRecordModel
-    ReferenceModel = ActivityRecordReferenceModel
-    NetworkModel = ActivityRecordNetworkModel
-
-    def __init__(
-        self,
-        requester_id: str,
-        target_user_id: Optional[str] = None,
-        target_team_id: Optional[str] = None,
-        db: Optional[Session] = None,
-    ):
-        super().__init__(
-            requester_id=requester_id,
-            target_id=target_user_id,
-            target_team_id=target_team_id,
-            db=db,
-        )
-        self._providers = None
-
-    @property
-    def providers(self):
-        if self._providers is None:
-            self._providers = HealthProviderManager(
-                requester_id=self.requester.id,
-                target_user_id=self.target_user_id,
-                target_team_id=self.target_team_id,
-                db=self.db,
-            )
-        return self._providers
+class HealthActivityManager(AbstractBLLManager, RouterMixin):
+    _model = HealthActivityModel
 
 
-class NutritionRecordManager(AbstractBLLManager):
-    Model = NutritionRecordModel
-    ReferenceModel = NutritionRecordReferenceModel
-    NetworkModel = NutritionRecordNetworkModel
-
-    def __init__(
-        self,
-        requester_id: str,
-        target_user_id: Optional[str] = None,
-        target_team_id: Optional[str] = None,
-        db: Optional[Session] = None,
-    ):
-        super().__init__(
-            requester_id=requester_id,
-            target_id=target_user_id,
-            target_team_id=target_team_id,
-            db=db,
-        )
-        self._providers = None
-
-    @property
-    def providers(self):
-        if self._providers is None:
-            self._providers = HealthProviderManager(
-                requester_id=self.requester.id,
-                target_user_id=self.target_user_id,
-                target_team_id=self.target_team_id,
-                db=self.db,
-            )
-        return self._providers
+class HealthMealManager(AbstractBLLManager, RouterMixin):
+    _model = HealthMealModel
 
 
-class WeightRecordManager(AbstractBLLManager):
-    Model = WeightRecordModel
-    ReferenceModel = WeightRecordReferenceModel
-    NetworkModel = WeightRecordNetworkModel
-
-    def __init__(
-        self,
-        requester_id: str,
-        target_user_id: Optional[str] = None,
-        target_team_id: Optional[str] = None,
-        db: Optional[Session] = None,
-    ):
-        super().__init__(
-            requester_id=requester_id,
-            target_id=target_user_id,
-            target_team_id=target_team_id,
-            db=db,
-        )
-        self._providers = None
-
-    @property
-    def providers(self):
-        if self._providers is None:
-            self._providers = HealthProviderManager(
-                requester_id=self.requester.id,
-                target_user_id=self.target_user_id,
-                target_team_id=self.target_team_id,
-                db=self.db,
-            )
-        return self._providers
+class HealthWeightManager(AbstractBLLManager, RouterMixin):
+    _model = HealthWeightModel
 
 
-class SleepRecordManager(AbstractBLLManager):
-    Model = SleepRecordModel
-    ReferenceModel = SleepRecordReferenceModel
-    NetworkModel = SleepRecordNetworkModel
+class HealthSleepManager(AbstractBLLManager, RouterMixin):
+    _model = HealthSleepModel
 
-    def __init__(
-        self,
-        requester_id: str,
-        target_user_id: Optional[str] = None,
-        target_team_id: Optional[str] = None,
-        db: Optional[Session] = None,
-    ):
-        super().__init__(
-            requester_id=requester_id,
-            target_id=target_user_id,
-            target_team_id=target_team_id,
-            db=db,
-        )
-        self._providers = None
+    def _timed(self, fields: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            **fields,
+            "duration_minutes": sleep_minutes(fields["bedtime"], fields["wake_time"]),
+        }
 
-    @property
-    def providers(self):
-        if self._providers is None:
-            self._providers = HealthProviderManager(
-                requester_id=self.requester.id,
-                target_user_id=self.target_user_id,
-                target_team_id=self.target_team_id,
-                db=self.db,
-            )
-        return self._providers
+    def create(self, **kwargs: Any) -> Any:
+        if isinstance(kwargs.get("entities"), list):
+            kwargs["entities"] = [self._timed(entity) for entity in kwargs["entities"]]
+            return super().create(**kwargs)
+        return super().create(**self._timed(kwargs))
+
+    def update(self, id: str, **kwargs: Any) -> Any:
+        kwargs.pop("duration_minutes", None)
+        if kwargs.get("bedtime") is not None or kwargs.get("wake_time") is not None:
+            existing = self.get(id=id)
+            bedtime = kwargs.get("bedtime") or existing.bedtime
+            wake_time = kwargs.get("wake_time") or existing.wake_time
+            kwargs["duration_minutes"] = sleep_minutes(bedtime, wake_time)
+        return super().update(id, **kwargs)

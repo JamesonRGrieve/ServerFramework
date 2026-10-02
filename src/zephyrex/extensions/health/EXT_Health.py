@@ -1,281 +1,199 @@
-"""
-Health tracking extension for AGInfrastructure.
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""A personal health log: activities, meals, weigh-ins and sleep, with a
+summary over any period.
 
-Provides health and fitness data tracking abilities including step counts,
-heart rate, weight, sleep, and other biometric/wellness data, delegated to
-whichever health provider is configured for this extension instance.
+The records (``BLL_Health``) belong to the user who logged them, through
+the API. The abilities do the same for an agent acting for a user: each
+takes that user's ``requester_id`` and works on their records only.
 """
 
-from typing import Any, List, Set
+from datetime import datetime
+from typing import Any, ClassVar, Dict, List, Mapping, Optional, Set, Tuple, Type
 
 from zephyrex.extensions.AbstractExtensionProvider import (
     AbstractStaticExtension,
     ability,
 )
-from zephyrex.lib.Dependencies import EXT_Dependency, PIP_Dependency
-from zephyrex.lib.Logging import logger
+from zephyrex.extensions.ExternalErrors import InvalidInputExternalError
+from zephyrex.extensions.health.BLL_Health import (
+    HealthActivityManager,
+    HealthMealManager,
+    HealthSleepManager,
+    HealthWeightManager,
+    moment,
+)
+from zephyrex.extensions.health.Summary import summarize
+from zephyrex.lib.Dependencies import Dependencies
+
+# kind -> (its manager, the field that dates a record)
+KINDS: Mapping[str, Tuple[Type[Any], str]] = {
+    "activity": (HealthActivityManager, "performed_at"),
+    "meal": (HealthMealManager, "eaten_at"),
+    "weight": (HealthWeightManager, "measured_at"),
+    "sleep": (HealthSleepManager, "bedtime"),
+}
+MAX_RECORDS = 1_000
+
+
+def _fields(**values: Any) -> Dict[str, Any]:
+    return {key: value for key, value in values.items() if value is not None}
 
 
 class EXT_Health(AbstractStaticExtension):
-    """
-    Health tracking extension for AGInfrastructure.
-
-    Provides comprehensive health tracking abilities via Provider Rotation System,
-    including fitness data collection, wellness monitoring, health analysis and
-    biometric data tracking.
-    """
-
-    # Extension metadata
-    name = "health"
-    friendly_name = "Health & Fitness Tracking"
-    version = "1.0.0"
-    description = (
-        "Health extension providing comprehensive health tracking and "
-        "fitness data abilities via Provider Rotation System"
+    name: ClassVar[str] = "health"
+    version: ClassVar[str] = "1.0.0"
+    description: ClassVar[str] = (
+        "A personal health log of activities, meals, weight and sleep"
     )
 
-    # Extension dependencies
-    ext_dependencies = [
-        EXT_Dependency(
-            name="labels",
-            friendly_name="Labels Extension",
-            optional=True,
-            reason="Optional labels for health data categorization",
-        ),
-    ]
+    _env: ClassVar[Dict[str, Any]] = {}
+    dependencies: ClassVar[Dependencies] = Dependencies([])
+    _abilities: ClassVar[Set[str]] = {
+        "log_activity",
+        "log_meal",
+        "log_weight",
+        "log_sleep",
+        "list_health_records",
+        "delete_health_record",
+        "health_summary",
+    }
 
-    pip_dependencies = [
-        PIP_Dependency(
-            name="aiohttp",
-            friendly_name="Async HTTP Client",
-            optional=False,
-            semver=">=3.8.0",
-            reason="HTTP requests for health data APIs",
-        ),
-    ]
+    @classmethod
+    def _manager(cls, requester_id: str, kind: str) -> Any:
+        if kind not in KINDS:
+            raise InvalidInputExternalError(
+                f"kind must be one of {', '.join(KINDS)}, not {kind!r}"
+            )
+        return cls.as_requester(KINDS[kind][0], requester_id)
 
-    sys_dependencies: List[Any] = []
+    @classmethod
+    def _log(cls, requester_id: str, record_kind: str, **fields: Any) -> Dict[str, Any]:
+        created = cls._manager(requester_id, record_kind).create(**_fields(**fields))
+        return dict(created.model_dump(mode="json"))
 
-    # Capabilities this extension provides
-    capabilities = [
-        "health_tracking",
-        "fitness_data",
-        "wellness_monitoring",
-        "health_analysis",
-        "biometric_data",
-    ]
+    @classmethod
+    def _between(
+        cls, requester_id: str, kind: str, start: datetime, end: datetime
+    ) -> List[Any]:
+        if moment(end) <= moment(start):
+            raise InvalidInputExternalError("the end must be after the start")
+        manager = cls._manager(requester_id, kind)
+        field = KINDS[kind][1]
+        found: List[Any] = manager.search(
+            **{field: {"after": moment(start), "before": moment(end)}},
+            sort_by=field,
+            limit=MAX_RECORDS,
+        )
+        return found
 
-    # Database tables owned by this extension
-    db_tables: List[Any] = []
+    @classmethod
+    @ability("log_activity")
+    async def log_activity(
+        cls,
+        requester_id: str,
+        performed_at: datetime,
+        kind: str,
+        duration_minutes: int,
+        calories_burned: Optional[float] = None,
+        steps: Optional[int] = None,
+        distance_km: Optional[float] = None,
+        notes: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        return cls._log(
+            requester_id,
+            "activity",
+            performed_at=performed_at,
+            kind=kind,
+            duration_minutes=duration_minutes,
+            calories_burned=calories_burned,
+            steps=steps,
+            distance_km=distance_km,
+            notes=notes,
+        )
 
-    def __init__(self, **kwargs):
-        # AbstractStaticExtension does not define its own __init__, so avoid
-        # forwarding arbitrary kwargs up the MRO to object.__init__ (which
-        # rejects them). Configuration is exposed via instance attributes
-        # instead, mirroring the other AGInfrastructure extensions.
-        super().__init__()
+    @classmethod
+    @ability("log_meal")
+    async def log_meal(
+        cls,
+        requester_id: str,
+        eaten_at: datetime,
+        kind: str,
+        food: str,
+        calories: float,
+        protein_g: Optional[float] = None,
+        carbs_g: Optional[float] = None,
+        fat_g: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        return cls._log(
+            requester_id,
+            "meal",
+            eaten_at=eaten_at,
+            kind=kind,
+            food=food,
+            calories=calories,
+            protein_g=protein_g,
+            carbs_g=carbs_g,
+            fat_g=fat_g,
+        )
 
-        for key, value in kwargs.items():
-            setattr(self, key, value)
+    @classmethod
+    @ability("log_weight")
+    async def log_weight(
+        cls,
+        requester_id: str,
+        measured_at: datetime,
+        weight_kg: float,
+        body_fat_percent: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        return cls._log(
+            requester_id,
+            "weight",
+            measured_at=measured_at,
+            weight_kg=weight_kg,
+            body_fat_percent=body_fat_percent,
+        )
 
-        # Give each instance its own copy of the mutable class-level
-        # capability list so register_capability() on one instance can never
-        # leak into the class default (and therefore into sibling instances).
-        self.capabilities = list(type(self).capabilities)
+    @classmethod
+    @ability("log_sleep")
+    async def log_sleep(
+        cls,
+        requester_id: str,
+        bedtime: datetime,
+        wake_time: datetime,
+        quality: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        return cls._log(
+            requester_id, "sleep", bedtime=bedtime, wake_time=wake_time, quality=quality
+        )
 
-        # Provider instance reference
-        self.provider = None
-
-    def on_initialize(self) -> bool:
-        """
-        Initialize the Health extension.
-        """
-        logger.debug("Initializing Health Extension...")
-
-        try:
-            # Create provider instance
-            self._create_provider()
-
-            # Register capabilities
-            self.register_capability("health_tracking")
-            self.register_capability("fitness_data")
-            self.register_capability("wellness_monitoring")
-            self.register_capability("health_analysis")
-            self.register_capability("biometric_data")
-
-            logger.debug("Health extension initialized successfully")
-            return True
-
-        except Exception as e:
-            logger.error(f"Failed to initialize Health extension: {str(e)}")
-            return False
-
-    def _create_provider(self):
-        """
-        Create the appropriate health provider instance.
-        """
-        try:
-            provider_class = self.load_provider()
-            if provider_class:
-                settings = getattr(self, "settings", {}) or {}
-                self.provider = provider_class(
-                    api_key=getattr(self, "api_key", ""),
-                    agent_name=getattr(self, "agent_name", ""),
-                    conversation_id=getattr(self, "conversation_id", ""),
-                    conversation_name=getattr(self, "conversation_name", ""),
-                    user=getattr(self, "user", ""),
-                    **settings,
-                )
-                logger.debug("Health provider created successfully")
-            else:
-                logger.warning("No health provider class found")
-                self.provider = None
-
-        except Exception as e:
-            logger.error(f"Failed to initialize health provider: {str(e)}")
-            self.provider = None
-
-    def load_provider(self):
-        """
-        Load the appropriate provider class for this extension.
-        This is a placeholder method that should be implemented based on your provider loading logic.
-        """
-        # This should be implemented based on your specific provider loading mechanism
-        return None
-
-    def get_capabilities(self) -> Set[str]:
-        """Return the capabilities this extension provides."""
-        return set(self.capabilities)
-
-    def register_capability(self, capability: str):
-        """Register a new capability."""
-        if capability not in self.capabilities:
-            self.capabilities.append(capability)
-
-    def get_registered_capabilities(self) -> Set[str]:
-        """Return currently registered capabilities."""
-        return set(self.capabilities)
-
-    def has_capability(self, capability: str) -> bool:
-        """Check if this extension has a specific capability."""
-        return capability in self.capabilities
-
-    @ability("track_health_data")
-    async def track_health_data(
-        self, data_type: str = "", value: str = "", timestamp: str = ""
-    ) -> str:
-        """
-        Track a single health data point (e.g. steps, weight, heart rate).
-
-        Args:
-            data_type: The kind of health metric being recorded (e.g. "steps").
-            value: The value to record for the metric.
-            timestamp: ISO-8601 timestamp for the reading. Defaults to "" and
-                is interpreted by the provider as "now".
-        """
-        if not self.provider:
-            return await self._no_provider_warning()
-
-        try:
-            return self.provider.track_health_data(data_type, value, timestamp)
-        except Exception as e:
-            return f"Failed to track health data: {str(e)}"
-
-    @ability("get_health_summary")
-    async def get_health_summary(self, user: str = "", period: str = "week") -> str:
-        """
-        Get a summary of tracked health data for a user over a period.
-
-        Args:
-            user: The user identifier to summarize health data for.
-            period: The time window to summarize (e.g. "day", "week", "month", "year").
-        """
-        if not self.provider:
-            return await self._no_provider_warning()
-
-        try:
-            return self.provider.get_health_summary(user, period)
-        except Exception as e:
-            return f"Failed to get health summary: {str(e)}"
-
-    @ability("analyze_fitness_trends")
-    async def analyze_fitness_trends(
-        self, user: str = "", metric: str = "steps"
-    ) -> str:
-        """
-        Analyze fitness trends for a user across a given metric.
-
-        Args:
-            user: The user identifier to analyze trends for.
-            metric: The fitness metric to analyze (e.g. "steps", "calories").
-        """
-        if not self.provider:
-            return await self._no_provider_warning()
-
-        try:
-            return self.provider.analyze_fitness_trends(user, metric)
-        except Exception as e:
-            return f"Failed to analyze fitness trends: {str(e)}"
-
-    async def _no_provider_warning(self, *args, **kwargs) -> str:
-        """Return a warning message when no provider is configured."""
-        return "Health provider not configured. Please check your configuration."
-
-    def get_required_permissions(self) -> List[str]:
-        """Return the list of permissions required by this extension."""
+    @classmethod
+    @ability("list_health_records")
+    async def list_health_records(
+        cls, requester_id: str, kind: str, start: datetime, end: datetime
+    ) -> List[Dict[str, Any]]:
+        """One kind of record (activity, meal, weight, sleep) in a period,
+        earliest first."""
         return [
-            "health:read",
-            "health:write",
-            "health:analyze",
-            "fitness:track",
+            record.model_dump(mode="json")
+            for record in cls._between(requester_id, kind, start, end)
         ]
 
-    def on_start(self) -> bool:
-        """
-        Start the Health extension.
-        """
-        try:
-            logger.debug("Health extension started successfully")
-            return True
-        except Exception as e:
-            logger.error(f"Failed to start Health extension: {e}")
-            return False
+    @classmethod
+    @ability("delete_health_record")
+    async def delete_health_record(
+        cls, requester_id: str, kind: str, record_id: str
+    ) -> Dict[str, Any]:
+        cls._manager(requester_id, kind).delete(record_id)
+        return {"id": record_id, "kind": kind, "deleted": True}
 
-    def on_stop(self) -> bool:
-        """
-        Stop the Health extension.
-        """
-        try:
-            if self.provider:
-                # Clean up provider resources if needed
-                self.provider = None
-
-            logger.debug("Health extension stopped successfully")
-            return True
-        except Exception as e:
-            logger.error(f"Error stopping Health extension: {e}")
-            return False
-
-    def on_startup(self):
-        """
-        Called during application startup.
-        """
-        logger.debug("Health extension startup hook called")
-
-    def on_shutdown(self):
-        """
-        Called during application shutdown.
-        """
-        logger.debug("Health extension shutdown hook called")
-
-    def validate_config(self) -> List[str]:
-        """
-        Validate the extension configuration.
-        """
-        issues = []
-
-        settings = getattr(self, "settings", None)
-        if not settings:
-            issues.append("Extension settings not provided")
-
-        return issues
+    @classmethod
+    @ability("health_summary")
+    async def health_summary(
+        cls, requester_id: str, start: datetime, end: datetime
+    ) -> Dict[str, Any]:
+        """Activity, nutrition, weight change and sleep over a period."""
+        return summarize(
+            start,
+            end,
+            *(cls._between(requester_id, kind, start, end) for kind in KINDS),
+        )

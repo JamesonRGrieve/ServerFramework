@@ -6,7 +6,7 @@
 
 name = "health"
 version = "1.0.0"
-description = "Health extension providing comprehensive health tracking and fitness data abilities via Provider Rotation System"
+description = "A personal health log of activities, meals, weight and sleep"
 author = "ZephyrexTechnologies"
 entry_module = "EXT_Health"
 minimum_framework_version = "0.0.0"
