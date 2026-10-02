@@ -114,6 +114,18 @@ class TestBooks(ExtensionServerMixin):
             text = response.text
             assert text.index("First.") < text.index("Second.")
 
+    def test_export_downloads_with_the_session_cookie(self, server, admin_a, book):
+        """A browser's plain link sends the session cookie, not a header."""
+        from zephyrex.lib.SessionCookies import SESSION_COOKIE
+
+        response = server.get(
+            f"/v1/book/{book['id']}/export",
+            params={"format": "html"},
+            headers={"Cookie": f"{SESSION_COOKIE}={admin_a.jwt}"},
+        )
+        assert response.status_code == 200, response.text
+        assert "attachment" in response.headers["content-disposition"]
+
     def test_an_unknown_export_format(self, server, admin_a, book):
         response = server.get(
             f"/v1/book/{book['id']}/export",
