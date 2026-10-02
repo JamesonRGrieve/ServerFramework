@@ -230,6 +230,10 @@ EXTERNAL_API_PROVIDER_ENV_VARS: Dict[str, List[str]] = {
     "octoprint_test": ["OCTOPRINT_URL", "OCTOPRINT_API_KEY"],
     "moonraker_test": ["MOONRAKER_URL"],
     "prusalink_test": ["PRUSALINK_URL", "PRUSALINK_PASSWORD"],
+    # Crypto: funded test-network wallets (each pays itself a dust amount).
+    "bitcoin_testnet_wallet": ["BITCOIN_TESTNET_WIF"],
+    "sepolia_wallet": ["SEPOLIA_PRIVATE_KEY", "SEPOLIA_RPC_URL"],
+    "solana_devnet_wallet": ["SOLANA_DEVNET_SECRET"],
     # SendGrid sandbox.
     "sendgrid": ["SENDGRID_API_KEY"],
     # Twilio sandbox.

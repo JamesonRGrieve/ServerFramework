@@ -1,609 +1,255 @@
-from unittest.mock import MagicMock, patch
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""Crypto wallets: exact amounts, Bitcoin coin selection, key generation
+that round-trips, transactions signed here (checked by parsing them
+back), address checks per chain and network, watch-only wallets that
+cannot send, real reads on Bitcoin mainnet, Sepolia and Solana devnet,
+and live sends from funded test wallets."""
 
+from decimal import Decimal
+
+import httpx
 import pytest
 
-from zephyrex.extensions.crypto.EXT_Crypto import EXT_Crypto
+from zephyrex.extensions.crypto.EXT_Crypto import EXT_Crypto, from_units, to_units
+from zephyrex.extensions.crypto.PRV_Bitcoin import (
+    DUST_SATS,
+    PRV_Bitcoin_Crypto,
+    select_coins,
+    vsize,
+)
+from zephyrex.extensions.crypto.PRV_Ethereum import PRV_Ethereum_Crypto
+from zephyrex.extensions.crypto.PRV_Solana import PRV_Solana_Crypto
+from zephyrex.extensions.ExternalErrors import InvalidInputExternalError
+
+GENESIS = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
+SEPOLIA_RPC = "https://ethereum-sepolia-rpc.publicnode.com"
+SOLANA_DEVNET = "https://api.devnet.solana.com"
+ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
 
 
-class TestCryptoExtension:
-    """Test cases for Crypto Extension."""
+def _online(url: str) -> bool:
+    try:
+        httpx.head(url, timeout=5)
+        return True
+    except httpx.HTTPError:
+        return False
 
-    @pytest.fixture
-    def extension(self):
-        """Create an EXT_Crypto instance for testing."""
-        return EXT_Crypto()
 
-    def test_extension_metadata(self, extension):
-        """Test extension metadata is correctly set."""
-        assert extension.name == "crypto"
-        assert extension.version == "1.0.0"
-        assert "cryptocurrency" in extension.description.lower()
-        assert "blockchain" in extension.description.lower()
+def reachable(url: str) -> pytest.MarkDecorator:
+    return pytest.mark.xfail(not _online(url), reason=f"{url} is unreachable")
 
-    def test_dependencies(self, extension):
-        """Test extension dependencies are properly defined."""
-        # Check extension dependencies
-        ext_deps = {dep.name for dep in extension.ext_dependencies}
-        assert "core" in ext_deps
-        assert "labels" in ext_deps
 
-        # Check pip dependencies
-        pip_deps = {dep.name for dep in extension.pip_dependencies}
-        assert "solana" in pip_deps
-        assert "bitcoin" in pip_deps
-        assert "web3" in pip_deps
-        assert "requests" in pip_deps
-        assert "cryptography" in pip_deps
+def utxo(value: int, confirmed: bool = True, n: int = 0) -> dict:
+    return {
+        "txid": f"{n:064x}",
+        "vout": 0,
+        "value": value,
+        "status": {"confirmed": confirmed},
+    }
 
-        # Check sys dependencies
-        assert isinstance(extension.sys_dependencies, list)
 
-    def test_capabilities(self, extension):
-        """Test extension capabilities are properly defined."""
-        expected_capabilities = {
-            "wallet_management",
-            "transaction_creation",
-            "balance_checking",
-            "blockchain_interaction",
-            "token_operations",
-            "transaction_monitoring",
-        }
-        assert set(extension.capabilities) == expected_capabilities
+class TestAmounts:
+    @pytest.mark.parametrize(
+        "amount, decimals, units",
+        [
+            ("0.0005", 8, 50_000),
+            ("1", 18, 10**18),
+            (Decimal("0.1"), 9, 100_000_000),
+            ("0.000000001", 9, 1),
+            (3, 8, 300_000_000),
+        ],
+    )
+    def test_exact(self, amount, decimals, units):
+        assert to_units(amount, decimals) == units
 
-    def test_initialization(self, extension):
-        """Test extension initialization."""
-        assert hasattr(extension, "blockchain")
-        assert hasattr(extension, "api_uri")
-        assert hasattr(extension, "wallet_address")
-        assert hasattr(extension, "wallet_private_key")
-        assert hasattr(extension, "provider")
-        assert hasattr(extension, "commands")
+    @pytest.mark.parametrize("amount", ["0.000000001", "0", "-1", "abc", "nan", "inf"])
+    def test_refused(self, amount):
+        with pytest.raises(InvalidInputExternalError):
+            to_units(amount, 8)
 
-    def test_default_configuration(self, extension):
-        """Test default configuration values."""
-        assert extension.blockchain == "solana"
-        assert extension.api_uri == ""
-        assert extension.wallet_address == ""
-        assert extension.wallet_private_key == ""
+    def test_display(self):
+        assert from_units(50_000, 8) == "0.0005"
+        assert from_units(10**18, 18) == "1"
+        assert from_units(0, 9) == "0"
 
-    @patch("zephyrex.extensions.crypto.EXT_Crypto.logger")
-    def test_on_initialize_success(self, mock_logger, extension):
-        """Test successful extension initialization."""
-        with patch.object(extension, "_create_provider"), patch.object(
-            extension, "_register_commands"
-        ), patch.object(extension, "register_capability"):
 
-            result = extension.on_initialize()
-            assert result is True
-            mock_logger.debug.assert_called()
-
-    @patch("zephyrex.extensions.crypto.EXT_Crypto.logger")
-    def test_on_initialize_failure(self, mock_logger, extension):
-        """Test extension initialization failure."""
-        with patch.object(
-            extension, "_create_provider", side_effect=Exception("Test error")
-        ):
-            result = extension.on_initialize()
-            assert result is False
-            mock_logger.error.assert_called()
-
-    def test_create_provider_solana(self, extension):
-        """Test Solana provider creation."""
-        extension.blockchain = "solana"
-
-        with patch("zephyrex.extensions.crypto.Solana.SolanaProvider") as mock_provider:
-            mock_instance = MagicMock()
-            mock_provider.return_value = mock_instance
-
-            extension._create_provider()
-
-            assert extension.provider == mock_instance
-            mock_provider.assert_called_once()
-
-    def test_create_provider_bitcoin(self, extension):
-        """Test Bitcoin provider creation."""
-        extension.blockchain = "bitcoin"
-
-        with patch(
-            "zephyrex.extensions.crypto.BitCoin.BitcoinProvider"
-        ) as mock_provider:
-            mock_instance = MagicMock()
-            mock_provider.return_value = mock_instance
-
-            extension._create_provider()
-
-            assert extension.provider == mock_instance
-            mock_provider.assert_called_once()
-
-    def test_create_provider_ethereum(self, extension):
-        """Test Ethereum provider creation."""
-        extension.blockchain = "ethereum"
-
-        with patch(
-            "zephyrex.extensions.crypto.Ethereum.EthereumProvider"
-        ) as mock_provider:
-            mock_instance = MagicMock()
-            mock_provider.return_value = mock_instance
-
-            extension._create_provider()
-
-            assert extension.provider == mock_instance
-            mock_provider.assert_called_once()
-
-    def test_create_provider_unsupported_blockchain(self, extension):
-        """Test provider creation with unsupported blockchain."""
-        extension.blockchain = "unsupported_blockchain"
-
-        with patch("zephyrex.extensions.crypto.EXT_Crypto.logger") as mock_logger:
-            extension._create_provider()
-
-            assert extension.provider is None
-            mock_logger.error.assert_called_with(
-                "Unsupported blockchain: unsupported_blockchain"
-            )
-
-    def test_create_provider_import_error(self, extension):
-        """Test provider creation with import error."""
-        extension.blockchain = "solana"
-
-        with patch(
-            "zephyrex.extensions.crypto.Solana.SolanaProvider",
-            side_effect=ImportError("Module not found"),
-        ), patch("zephyrex.extensions.crypto.EXT_Crypto.logger") as mock_logger:
-
-            extension._create_provider()
-
-            assert extension.provider is None
-            mock_logger.warning.assert_called()
-
-    def test_register_commands_with_provider(self, extension):
-        """Test command registration when provider is available."""
-        mock_provider = MagicMock()
-        mock_provider.commands = {"test_command": MagicMock()}
-        extension.provider = mock_provider
-
-        extension._register_commands()
-
-        assert extension.commands == mock_provider.commands
-
-    def test_register_commands_without_provider(self, extension):
-        """Test command registration when provider is not available."""
-        extension.provider = None
-        extension.blockchain = "solana"
-
-        extension._register_commands()
-
-        assert len(extension.commands) == 4
-        assert "Create SOLANA Wallet" in extension.commands
-        assert "Get SOLANA Wallet Balance" in extension.commands
-        assert "Send SOLANA Token" in extension.commands
-        assert "Get SOLANA Transaction" in extension.commands
-
-    @pytest.mark.asyncio
-    async def test_no_provider_warning(self, extension):
-        """Test warning message when no provider is available."""
-        extension.blockchain = "solana"
-
-        result = await extension._no_provider_warning()
-
-        assert "No crypto provider available for solana" in result
-
-    def test_capability_management(self, extension):
-        """Test capability management methods."""
-        # Test register_capability
-        extension.register_capability("test_capability")
-        assert "test_capability" in extension.capabilities
-
-        # Test get_registered_capabilities
-        capabilities = extension.get_registered_capabilities()
-        assert isinstance(capabilities, set)
-        assert "test_capability" in capabilities
-
-        # Test get_capabilities
-        capabilities = extension.get_capabilities()
-        assert isinstance(capabilities, set)
-
-        # Test has_capability
-        assert extension.has_capability("test_capability") is True
-        assert extension.has_capability("nonexistent_capability") is False
-
-    @pytest.mark.asyncio
-    async def test_create_wallet_success(self, extension):
-        """Test successful wallet creation."""
-        mock_provider = MagicMock()
-        mock_provider.create_wallet = MagicMock(
-            return_value="wallet_created_successfully"
+class TestCoinSelection:
+    def test_largest_first_with_change(self):
+        inputs, fee, change = select_coins(
+            [utxo(10_000, n=1), utxo(90_000, n=2), utxo(50_000, False, n=3)],
+            50_000,
+            2.0,
         )
-        extension.provider = mock_provider
+        assert [u["value"] for u in inputs] == [90_000]
+        assert fee == 2 * vsize(1, 2)
+        assert change == 90_000 - 50_000 - fee
 
-        result = await extension.create_wallet()
+    def test_dust_change_goes_to_the_fee(self):
+        fee_rate = 1.0
+        amount = 100_000 - vsize(1, 2) - DUST_SATS + 1
+        inputs, fee, change = select_coins([utxo(100_000)], amount, fee_rate)
+        assert change == 0 and fee == 100_000 - amount
 
-        assert result["success"] is True
-        assert result["result"] == "wallet_created_successfully"
-        assert result["blockchain"] == "solana"
-        mock_provider.create_wallet.assert_called_once()
+    def test_unconfirmed_funds_do_not_count(self):
+        with pytest.raises(InvalidInputExternalError, match="insufficient"):
+            select_coins([utxo(1_000_000, confirmed=False)], 1_000, 1.0)
 
-    @pytest.mark.asyncio
-    async def test_create_wallet_no_provider(self, extension):
-        """Test wallet creation without provider."""
-        extension.provider = None
 
-        result = await extension.create_wallet()
-
-        assert result["success"] is False
-        assert "No crypto provider available" in result["message"]
-
-    @pytest.mark.asyncio
-    async def test_get_wallet_balance_success(self, extension):
-        """Test successful wallet balance retrieval."""
-        mock_provider = MagicMock()
-        mock_provider.get_wallet_balance = MagicMock(return_value=1.5)
-        extension.provider = mock_provider
-        extension.wallet_address = "test_wallet_address"
-
-        result = await extension.get_wallet_balance("test_wallet_address")
-
-        assert result["success"] is True
-        assert result["balance"] == 1.5
-        assert result["wallet_address"] == "test_wallet_address"
-        assert result["blockchain"] == "solana"
-        mock_provider.get_wallet_balance.assert_called_once_with("test_wallet_address")
-
-    @pytest.mark.asyncio
-    async def test_get_wallet_balance_no_provider(self, extension):
-        """Test wallet balance retrieval without provider."""
-        extension.provider = None
-
-        result = await extension.get_wallet_balance()
-
-        assert result["success"] is False
-        assert "No crypto provider available" in result["message"]
-
-    @pytest.mark.asyncio
-    async def test_send_native_token_success(self, extension):
-        """Test successful native token sending."""
-        mock_provider = MagicMock()
-        mock_provider.send_native_token = MagicMock(return_value="transaction_hash_123")
-        extension.provider = mock_provider
-
-        result = await extension.send_native_token("recipient_wallet", 0.5)
-
-        assert result["success"] is True
-        assert result["result"] == "transaction_hash_123"
-        assert result["to_wallet"] == "recipient_wallet"
-        assert result["amount"] == 0.5
-        assert result["blockchain"] == "solana"
-        mock_provider.send_native_token.assert_called_once_with(
-            None, "recipient_wallet", 0.5
+class TestKeys:
+    def test_bitcoin(self, provider_instance):
+        created = EXT_Crypto._chain("bitcoin").generate("testnet")
+        assert created["address"].startswith("tb1q")
+        instance = provider_instance(
+            PRV_Bitcoin_Crypto,
+            api_key=created["private_key"],
+            settings={"network": "testnet"},
         )
+        assert PRV_Bitcoin_Crypto.address(instance) == created["address"]
 
-    @pytest.mark.asyncio
-    async def test_send_native_token_no_provider(self, extension):
-        """Test native token sending without provider."""
-        extension.provider = None
-
-        result = await extension.send_native_token("recipient_wallet", 0.5)
-
-        assert result["success"] is False
-        assert "No crypto provider available" in result["message"]
-
-    @pytest.mark.asyncio
-    async def test_get_transaction_info_success(self, extension):
-        """Test successful transaction info retrieval."""
-        mock_provider = MagicMock()
-        mock_transaction_info = {
-            "hash": "tx_123",
-            "status": "confirmed",
-            "amount": 1.0,
-            "fee": 0.001,
-        }
-        mock_provider.get_transaction_info = MagicMock(
-            return_value=mock_transaction_info
+    def test_ethereum(self, provider_instance):
+        created = PRV_Ethereum_Crypto.generate(None)
+        assert len(created["mnemonic"].split()) == 12
+        instance = provider_instance(
+            PRV_Ethereum_Crypto, api_key=created["private_key"]
         )
-        extension.provider = mock_provider
+        assert PRV_Ethereum_Crypto.address(instance) == created["address"]
 
-        result = await extension.get_transaction_info("tx_123")
+    def test_solana(self, provider_instance):
+        created = PRV_Solana_Crypto.generate(None)
+        instance = provider_instance(PRV_Solana_Crypto, api_key=created["private_key"])
+        assert PRV_Solana_Crypto.address(instance) == created["address"]
 
-        assert result["success"] is True
-        assert result["result"] == mock_transaction_info
-        assert result["tx_signature"] == "tx_123"
-        assert result["blockchain"] == "solana"
-        mock_provider.get_transaction_info.assert_called_once_with("tx_123")
 
-    @pytest.mark.asyncio
-    async def test_get_transaction_info_no_provider(self, extension):
-        """Test transaction info retrieval without provider."""
-        extension.provider = None
+class TestSigning:
+    def test_a_bitcoin_payment_signs_and_parses_back(self):
+        from bitcoinlib.keys import Key
+        from bitcoinlib.transactions import Transaction
 
-        result = await extension.get_transaction_info("tx_123")
-
-        assert result["success"] is False
-        assert "No crypto provider available" in result["message"]
-
-    @pytest.mark.asyncio
-    async def test_get_wallet_transactions_success(self, extension):
-        """Test successful wallet transactions retrieval."""
-        mock_provider = MagicMock()
-        mock_transactions = [
-            {"hash": "tx_1", "amount": 1.0},
-            {"hash": "tx_2", "amount": 0.5},
+        key = Key(network="testnet")
+        to = Key(network="testnet").address(encoding="bech32", script_type="p2wpkh")
+        raw = PRV_Bitcoin_Crypto.sign(
+            key, "testnet", [utxo(100_000, n=7)], to, 60_000, 39_000
+        )
+        parsed = Transaction.parse_hex(raw, network="testnet")
+        assert [(o.address, o.value) for o in parsed.outputs] == [
+            (to, 60_000),
+            (key.address(encoding="bech32", script_type="p2wpkh"), 39_000),
         ]
-        mock_provider.get_wallet_transactions = MagicMock(
-            return_value=mock_transactions
+        assert parsed.witness_type == "segwit"
+
+    def test_a_solana_transfer_signs(self):
+        from solders.hash import Hash
+        from solders.keypair import Keypair
+        from solders.transaction import Transaction
+
+        payer, to = Keypair(), Keypair().pubkey()
+        raw = PRV_Solana_Crypto.signed_transfer(payer, to, 5_000, Hash.default())
+        Transaction.from_bytes(raw).verify()
+
+
+class TestAddresses:
+    def test_a_testnet_address_is_refused_on_mainnet(self):
+        testnet = PRV_Bitcoin_Crypto.generate("testnet")["address"]
+        with pytest.raises(InvalidInputExternalError):
+            PRV_Bitcoin_Crypto.checked_address(testnet, "bitcoin")
+        assert PRV_Bitcoin_Crypto.checked_address(GENESIS, "bitcoin") == GENESIS
+
+    @pytest.mark.parametrize(
+        "check, address",
+        [
+            (PRV_Ethereum_Crypto.checked_address, "0x123"),
+            (PRV_Ethereum_Crypto.checked_address, GENESIS),
+            (PRV_Solana_Crypto.checked_address, "0xabc"),
+        ],
+    )
+    def test_malformed(self, check, address):
+        with pytest.raises(InvalidInputExternalError):
+            check(address)
+
+    async def test_a_watch_only_wallet_cannot_send(self, provider_instance):
+        instance = provider_instance(PRV_Bitcoin_Crypto, settings={"address": GENESIS})
+        with pytest.raises(InvalidInputExternalError, match="watch-only"):
+            await PRV_Bitcoin_Crypto.send_amount(instance, GENESIS, "0.0001")
+
+    def test_an_rpc_url_on_the_private_network_is_refused(self, provider_instance):
+        instance = provider_instance(
+            PRV_Ethereum_Crypto, settings={"rpc_url": "http://169.254.169.254/"}
         )
-        extension.provider = mock_provider
-        extension.wallet_address = "test_wallet"
+        with pytest.raises(InvalidInputExternalError):
+            PRV_Ethereum_Crypto.endpoint(instance, "rpc_url")
 
-        result = await extension.get_wallet_transactions("test_wallet", 5)
 
-        assert result["success"] is True
-        assert result["transactions"] == mock_transactions
-        assert result["count"] == 2
-        assert result["wallet_address"] == "test_wallet"
-        mock_provider.get_wallet_transactions.assert_called_once_with("test_wallet", 5)
+class TestChainReads:
+    @reachable("https://blockstream.info")
+    async def test_bitcoin_mainnet(self, provider_instance, rotation_over, monkeypatch):
+        wallet = provider_instance(PRV_Bitcoin_Crypto, settings={"address": GENESIS})
+        monkeypatch.setattr(EXT_Crypto, "_root_rotation_cache", rotation_over(wallet))
+        balance = await EXT_Crypto.get_balance(wallet.name)
+        assert balance["address"] == GENESIS and balance["units"] >= 50 * 10**8
+        fees = await EXT_Crypto.estimate_fee(wallet.name)
+        assert fees["sats_per_vbyte"] > 0
+        history = await EXT_Crypto.list_transactions(wallet.name, limit=2)
+        assert history and history[0]["tx_id"]
 
-    @pytest.mark.asyncio
-    async def test_get_wallet_transactions_no_provider(self, extension):
-        """Test wallet transactions retrieval without provider."""
-        extension.provider = None
-
-        result = await extension.get_wallet_transactions("test_wallet")
-
-        assert result["success"] is False
-        assert "No crypto provider available" in result["message"]
-
-    @pytest.mark.asyncio
-    async def test_get_wallet_transactions_not_supported(self, extension):
-        """Test wallet transactions retrieval when not supported by provider."""
-        mock_provider = MagicMock()
-        # Provider doesn't have get_wallet_transactions method
-        del mock_provider.get_wallet_transactions
-        extension.provider = mock_provider
-        extension.blockchain = "bitcoin"
-
-        result = await extension.get_wallet_transactions("test_wallet")
-
-        assert result["success"] is False
-        assert "Transaction history not supported for bitcoin" in result["message"]
-
-    @pytest.mark.asyncio
-    async def test_ability_error_handling(self, extension):
-        """Test error handling in abilities."""
-        mock_provider = MagicMock()
-        mock_provider.create_wallet = MagicMock(side_effect=Exception("Provider error"))
-        extension.provider = mock_provider
-
-        result = await extension.create_wallet()
-
-        assert result["success"] is False
-        assert "Error creating wallet" in result["message"]
-
-    def test_lifecycle_methods(self, extension):
-        """Test extension lifecycle methods."""
-        # Test on_start
-        assert extension.on_start() is True
-
-        # Test on_stop
-        extension.provider = MagicMock()
-        assert extension.on_stop() is True
-        assert extension.provider is None
-
-        # Test on_startup and on_shutdown
-        extension.on_startup()  # Should not raise exception
-        extension.on_shutdown()  # Should not raise exception
-
-    def test_validate_config_success(self, extension):
-        """Test successful configuration validation."""
-        with patch("builtins.__import__"):
-            issues = extension.validate_config()
-            assert isinstance(issues, list)
-
-    def test_validate_config_missing_requests(self, extension):
-        """Test configuration validation with missing requests library."""
-        with patch("builtins.__import__", side_effect=ImportError("Module not found")):
-            issues = extension.validate_config()
-
-            assert len(issues) > 0
-            assert any("Requests library not installed" in issue for issue in issues)
-
-    def test_validate_config_missing_cryptography(self, extension):
-        """Test configuration validation with missing cryptography library."""
-
-        def mock_import(name, *args, **kwargs):
-            if name == "cryptography":
-                raise ImportError("Module not found")
-            return MagicMock()
-
-        with patch("builtins.__import__", side_effect=mock_import):
-            issues = extension.validate_config()
-
-            assert any(
-                "Cryptography library not installed" in issue for issue in issues
-            )
-
-    def test_validate_config_no_blockchain(self, extension):
-        """Test configuration validation with no blockchain."""
-        extension.blockchain = ""
-
-        issues = extension.validate_config()
-
-        assert any("Blockchain not specified" in issue for issue in issues)
-
-    def test_validate_config_unsupported_blockchain(self, extension):
-        """Test configuration validation with unsupported blockchain."""
-        extension.blockchain = "unsupported"
-
-        issues = extension.validate_config()
-
-        assert any("Unsupported blockchain: unsupported" in issue for issue in issues)
-
-    def test_validate_config_solana_missing_library(self, extension):
-        """Test configuration validation when Solana library is missing."""
-        extension.blockchain = "solana"
-
-        def mock_import(name, *args, **kwargs):
-            if name == "solana":
-                raise ImportError("Module not found")
-            return MagicMock()
-
-        with patch("builtins.__import__", side_effect=mock_import):
-            issues = extension.validate_config()
-
-            assert any("Solana library not installed" in issue for issue in issues)
-
-    def test_validate_config_bitcoin_missing_library(self, extension):
-        """Test configuration validation when Bitcoin library is missing."""
-        extension.blockchain = "bitcoin"
-
-        def mock_import(name, *args, **kwargs):
-            if name == "bitcoin":
-                raise ImportError("Module not found")
-            return MagicMock()
-
-        with patch("builtins.__import__", side_effect=mock_import):
-            issues = extension.validate_config()
-
-            assert any("Bitcoin library not installed" in issue for issue in issues)
-
-    def test_validate_config_ethereum_missing_library(self, extension):
-        """Test configuration validation when Ethereum library is missing."""
-        extension.blockchain = "ethereum"
-
-        def mock_import(name, *args, **kwargs):
-            if name == "web3":
-                raise ImportError("Module not found")
-            return MagicMock()
-
-        with patch("builtins.__import__", side_effect=mock_import):
-            issues = extension.validate_config()
-
-            assert any("Web3 library not installed" in issue for issue in issues)
-
-    def test_validate_config_private_key_warning(self, extension):
-        """Test configuration validation with private key warning."""
-        extension.wallet_private_key = "test_private_key"
-
-        issues = extension.validate_config()
-
-        assert any("WARNING: Private key detected" in issue for issue in issues)
-
-    def test_get_required_permissions(self, extension):
-        """Test required permissions."""
-        permissions = extension.get_required_permissions()
-        assert isinstance(permissions, list)
-        assert len(permissions) > 0
-
-        expected_permissions = [
-            "crypto:wallet:create",
-            "crypto:wallet:read",
-            "crypto:transactions:create",
-            "crypto:transactions:read",
-            "crypto:balance:read",
-            "crypto:token:send",
-        ]
-        assert set(permissions) == set(expected_permissions)
-
-    def test_custom_configuration(self):
-        """Test extension with custom configuration."""
-        extension = EXT_Crypto(
-            blockchain="ethereum",
-            api_uri="https://mainnet.infura.io",
-            wallet_address="0x123...",
-            wallet_private_key="test_key",
+    @reachable(SEPOLIA_RPC)
+    async def test_sepolia(self, provider_instance):
+        wallet = provider_instance(
+            PRV_Ethereum_Crypto,
+            settings={"address": ZERO_ADDRESS, "rpc_url": SEPOLIA_RPC},
         )
+        balance = await PRV_Ethereum_Crypto.balance(wallet, None)
+        assert balance["units"] >= 0
+        fees = await PRV_Ethereum_Crypto.fee_estimate(wallet)
+        assert Decimal(fees["max_fee_gwei"]) > 0
 
-        assert extension.blockchain == "ethereum"
-        assert extension.api_uri == "https://mainnet.infura.io"
-        assert extension.wallet_address == "0x123..."
-        assert extension.wallet_private_key == "test_key"
-
-    def test_provider_with_commands(self, extension):
-        """Test provider that has commands attribute."""
-        mock_provider = MagicMock()
-        mock_provider.commands = {
-            "create_wallet": MagicMock(),
-            "send_token": MagicMock(),
-        }
-        extension.provider = mock_provider
-
-        extension._register_commands()
-
-        assert extension.commands == mock_provider.commands
-
-    def test_provider_without_commands(self, extension):
-        """Test provider that doesn't have commands attribute."""
-        mock_provider = MagicMock()
-        del mock_provider.commands  # Remove commands attribute
-        extension.provider = mock_provider
-        extension.blockchain = "bitcoin"
-
-        extension._register_commands()
-
-        # Should fall back to placeholder commands
-        assert "Create BITCOIN Wallet" in extension.commands
-
-    @pytest.mark.asyncio
-    async def test_all_abilities_with_different_blockchains(self, extension):
-        """Test all abilities work with different blockchains."""
-        for blockchain in ["solana", "bitcoin", "ethereum"]:
-            extension.blockchain = blockchain
-            extension.provider = None
-
-            # All abilities should return provider not available error
-            result = await extension.create_wallet()
-            assert result["success"] is False
-            assert f"No crypto provider available for {blockchain}" in result["message"]
-
-            result = await extension.get_wallet_balance()
-            assert result["success"] is False
-
-            result = await extension.send_native_token("test_wallet", 1.0)
-            assert result["success"] is False
-
-            result = await extension.get_transaction_info("test_tx")
-            assert result["success"] is False
-
-    def test_provider_settings_passed(self, extension):
-        """Test that settings are passed to provider."""
-        extension.settings = {"custom_setting": "value"}
-        extension.blockchain = "solana"
-
-        with patch("zephyrex.extensions.crypto.Solana.SolanaProvider") as mock_provider:
-            extension._create_provider()
-
-            # Check that settings were passed to provider
-            mock_provider.assert_called_once()
-            call_kwargs = mock_provider.call_args[1]
-            assert "custom_setting" in call_kwargs
-            assert call_kwargs["custom_setting"] == "value"
-
-    def test_provider_with_extension_id(self, extension):
-        """Test that extension ID is passed to provider."""
-        extension.blockchain = "solana"
-
-        with patch("zephyrex.extensions.crypto.Solana.SolanaProvider") as mock_provider:
-            extension._create_provider()
-
-            mock_provider.assert_called_once()
-            call_kwargs = mock_provider.call_args[1]
-            assert call_kwargs["extension_id"] == "crypto"
-
-    def test_provider_with_wallet_credentials(self, extension):
-        """Test that wallet credentials are passed to provider."""
-        extension.blockchain = "solana"
-        extension.api_uri = "https://api.mainnet-beta.solana.com"
-        extension.wallet_address = "test_address"
-        extension.wallet_private_key = "test_key"
-
-        with patch("zephyrex.extensions.crypto.Solana.SolanaProvider") as mock_provider:
-            extension._create_provider()
-
-            mock_provider.assert_called_once()
-            call_kwargs = mock_provider.call_args[1]
-            assert call_kwargs["api_uri"] == "https://api.mainnet-beta.solana.com"
-            assert call_kwargs["wallet_address"] == "test_address"
-            assert call_kwargs["wallet_private_key"] == "test_key"
+    @reachable(SOLANA_DEVNET)
+    async def test_solana_devnet(self, provider_instance):
+        fresh = PRV_Solana_Crypto.generate(None)["address"]
+        wallet = provider_instance(
+            PRV_Solana_Crypto, settings={"address": fresh, "rpc_url": SOLANA_DEVNET}
+        )
+        assert (await PRV_Solana_Crypto.balance(wallet, None))["units"] == 0
+        assert (await PRV_Solana_Crypto.fee_estimate(wallet))["transfer_fee_units"] > 0
 
 
-if __name__ == "__main__":
-    pytest.main([__file__])
+class TestLiveSends:
+    """A funded test wallet pays itself the smallest amount."""
+
+    @pytest.mark.external_api(provider="bitcoin_testnet_wallet")
+    async def test_bitcoin(self, provider_instance, sandbox_credentials_for):
+        creds = sandbox_credentials_for("bitcoin_testnet_wallet")
+        wallet = provider_instance(
+            PRV_Bitcoin_Crypto,
+            api_key=creds["BITCOIN_TESTNET_WIF"],
+            settings={"network": "testnet"},
+        )
+        sent = await PRV_Bitcoin_Crypto.send_amount(
+            wallet, PRV_Bitcoin_Crypto.address(wallet), "0.00001"
+        )
+        assert len(sent["tx_id"]) == 64
+
+    @pytest.mark.external_api(provider="sepolia_wallet")
+    async def test_sepolia(self, provider_instance, sandbox_credentials_for):
+        creds = sandbox_credentials_for("sepolia_wallet")
+        wallet = provider_instance(
+            PRV_Ethereum_Crypto,
+            api_key=creds["SEPOLIA_PRIVATE_KEY"],
+            settings={"rpc_url": creds["SEPOLIA_RPC_URL"]},
+        )
+        sent = await PRV_Ethereum_Crypto.send_amount(
+            wallet, PRV_Ethereum_Crypto.address(wallet), "0.000001"
+        )
+        assert sent["tx_id"].startswith("0x")
+
+    @pytest.mark.external_api(provider="solana_devnet_wallet")
+    async def test_solana(self, provider_instance, sandbox_credentials_for):
+        creds = sandbox_credentials_for("solana_devnet_wallet")
+        wallet = provider_instance(
+            PRV_Solana_Crypto,
+            api_key=creds["SOLANA_DEVNET_SECRET"],
+            settings={"rpc_url": SOLANA_DEVNET},
+        )
+        sent = await PRV_Solana_Crypto.send_amount(
+            wallet, PRV_Solana_Crypto.address(wallet), "0.000001"
+        )
+        assert sent["tx_id"]

@@ -1,462 +1,333 @@
-import inspect
-from typing import Any, Dict, List, Optional, Set
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""Cryptocurrency wallets on Bitcoin, Ethereum and EVM-compatible chains,
+and Solana: create wallets, read balances, transactions and fees, and
+send coins and tokens.
 
-from zephyrex.extensions.AbstractExtensionProvider import AbstractStaticExtension, ability
-from zephyrex.lib.Dependencies import EXT_Dependency, PIP_Dependency
-from zephyrex.lib.Logging import logger
+Each provider instance is one wallet on one network: its private key a
+write-only setting (or only an ``address``, for a watch-only wallet).
+Every ability names the wallet (the instance's name or id) and acts with
+it alone. Who may create, read and send is decided by permissions, as
+for every extension: these abilities move real money.
+
+Amounts are decimal strings in the chain's coin (``"0.0005"`` BTC) and
+are converted exactly to its smallest unit; more decimals than the coin
+has are refused rather than rounded.
+"""
+
+from abc import abstractmethod
+from decimal import Decimal, InvalidOperation
+from typing import Any, ClassVar, Dict, List, Optional, Set, Union
+
+from fastapi import HTTPException, status
+
+from zephyrex.extensions.AbstractExtensionProvider import (
+    AbstractProviderInstance,
+    AbstractStaticExtension,
+    AbstractStaticProvider,
+    ability,
+)
+from zephyrex.extensions.ExternalErrors import (
+    InvalidInputExternalError,
+    PermanentExternalError,
+    TransientExternalError,
+)
+from zephyrex.lib.Dependencies import Dependencies
+from zephyrex.lib.ProviderHTTPClient import SSRFGuardError, validate_outbound_url
+from zephyrex.logic.BLL_Providers import ProviderInstanceModel
+
+CRYPTO_REQUEST_TIMEOUT_SECONDS = 30.0
+DEFAULT_TRANSACTIONS = 10
+MAX_TRANSACTIONS = 100
+
+Amount = Union[str, int, Decimal]
+
+
+def to_units(amount: Amount, decimals: int) -> int:
+    """``amount`` of a coin with ``decimals`` places, in its smallest unit,
+    exactly. Positive amounts only; no rounding."""
+    try:
+        value = Decimal(str(amount).strip())
+    except (InvalidOperation, ValueError) as exc:
+        raise InvalidInputExternalError(f"{amount!r} is not an amount") from exc
+    if not value.is_finite() or value <= 0:
+        raise InvalidInputExternalError("an amount must be a positive number")
+    scaled = value.scaleb(decimals)
+    if scaled != scaled.to_integral_value():
+        raise InvalidInputExternalError(
+            f"{amount} has more than {decimals} decimal places"
+        )
+    return int(scaled)
+
+
+def from_units(units: int, decimals: int) -> str:
+    """Smallest units as a plain decimal string of the coin."""
+    text = format(Decimal(units).scaleb(-decimals), "f")
+    return text.rstrip("0").rstrip(".") if "." in text else text
+
+
+def transaction_limit(limit: int) -> int:
+    if not 1 <= limit <= MAX_TRANSACTIONS:
+        raise InvalidInputExternalError(f"limit must be 1-{MAX_TRANSACTIONS}")
+    return limit
+
+
+class AbstractCryptoProvider(AbstractStaticProvider):
+    """A blockchain; each instance is one wallet on one of its networks."""
+
+    name: ClassVar[str] = ""
+    friendly_name: ClassVar[str] = ""
+    description: ClassVar[str] = ""
+    symbol: ClassVar[str] = ""
+    decimals: ClassVar[int] = 0
+    _abilities: ClassVar[Set[str]] = {
+        "wallet_address",
+        "get_balance",
+        "send",
+        "get_transaction",
+        "list_transactions",
+        "estimate_fee",
+        "get_token_balance",
+        "send_token",
+    }
+    _env: ClassVar[Dict[str, Any]] = {}
+    http_timeout_seconds: ClassVar[float] = CRYPTO_REQUEST_TIMEOUT_SECONDS
+
+    @classmethod
+    def bond_instance(cls, instance: ProviderInstanceModel) -> AbstractProviderInstance:
+        return AbstractProviderInstance(instance)
+
+    @classmethod
+    def private_key(cls, instance: ProviderInstanceModel) -> str:
+        key = cls.setting(instance, "api_key")
+        if not key:
+            raise InvalidInputExternalError(
+                "This wallet is watch-only (it holds no private key)", provider=cls.name
+            )
+        return str(key)
+
+    @classmethod
+    def endpoint(cls, instance: ProviderInstanceModel, key: str) -> str:
+        """A configured node or API address, held to the SSRF guard."""
+        url = str(cls.setting(instance, key) or "").rstrip("/")
+        if not url:
+            raise TransientExternalError(
+                f"{cls.friendly_name} {key} not configured", provider=cls.name
+            )
+        try:
+            validate_outbound_url(url)
+        except SSRFGuardError as exc:
+            raise InvalidInputExternalError(str(exc), provider=cls.name) from exc
+        return url
+
+    @classmethod
+    def amount(cls, units: int) -> Dict[str, Any]:
+        return {
+            "amount": from_units(units, cls.decimals),
+            "units": units,
+            "symbol": cls.symbol,
+        }
+
+    @classmethod
+    def no_tokens(cls) -> PermanentExternalError:
+        return PermanentExternalError(
+            f"{cls.friendly_name} has no tokens this extension handles",
+            provider=cls.name,
+        )
+
+    @classmethod
+    @abstractmethod
+    def generate(cls, network: Optional[str]) -> Dict[str, Any]:
+        """A new key pair: ``address`` and ``private_key`` (and a
+        ``mnemonic`` where the chain has one)."""
+
+    @classmethod
+    @abstractmethod
+    def address(cls, instance: ProviderInstanceModel) -> str:
+        """The wallet's address (from its key, or its watch-only address)."""
+
+    @classmethod
+    @abstractmethod
+    async def balance(
+        cls, instance: ProviderInstanceModel, address: Optional[str]
+    ) -> Dict[str, Any]: ...
+
+    @classmethod
+    @abstractmethod
+    async def send(
+        cls, instance: ProviderInstanceModel, to: str, units: int
+    ) -> Dict[str, Any]:
+        """Sign and broadcast a payment of ``units``; its transaction id."""
+
+    @classmethod
+    @abstractmethod
+    async def transaction(
+        cls, instance: ProviderInstanceModel, tx_id: str
+    ) -> Dict[str, Any]: ...
+
+    @classmethod
+    @abstractmethod
+    async def transactions(
+        cls, instance: ProviderInstanceModel, address: Optional[str], limit: int
+    ) -> List[Dict[str, Any]]: ...
+
+    @classmethod
+    @abstractmethod
+    async def fee_estimate(cls, instance: ProviderInstanceModel) -> Dict[str, Any]: ...
+
+    @classmethod
+    def network(cls, instance: ProviderInstanceModel) -> str:
+        """The network the wallet is on, as configured."""
+        return str(cls.setting(instance, "network") or "")
+
+    @classmethod
+    async def describe(cls, instance: ProviderInstanceModel) -> Dict[str, Any]:
+        return {
+            "address": cls.address(instance),
+            "chain": cls.name,
+            "network": cls.network(instance),
+            "symbol": cls.symbol,
+            "watch_only": not cls.setting(instance, "api_key"),
+        }
+
+    @classmethod
+    async def send_amount(
+        cls, instance: ProviderInstanceModel, to: str, amount: Amount
+    ) -> Dict[str, Any]:
+        units = to_units(amount, cls.decimals)
+        sent = await cls.send(instance, to, units)
+        return {**sent, **cls.amount(units), "to": to, "provider": cls.name}
+
+    @classmethod
+    async def token_balance(
+        cls, instance: ProviderInstanceModel, token: str, address: Optional[str]
+    ) -> Dict[str, Any]:
+        raise cls.no_tokens()
+
+    @classmethod
+    async def send_token(
+        cls, instance: ProviderInstanceModel, token: str, to: str, amount: str
+    ) -> Dict[str, Any]:
+        raise cls.no_tokens()
+
+    @classmethod
+    def services(cls) -> List[str]:
+        return ["crypto_wallet"]
 
 
 class EXT_Crypto(AbstractStaticExtension):
-    """
-    Cryptocurrency extension for AGInfrastructure.
-    Provides blockchain interaction functionality for multiple blockchains
-    including Solana, Bitcoin, and Ethereum.
+    name: ClassVar[str] = "crypto"
+    version: ClassVar[str] = "1.0.0"
+    description: ClassVar[str] = (
+        "Cryptocurrency wallets on Bitcoin, Ethereum (and EVM chains) and Solana"
+    )
 
-    Component loading (DB, BLL, EP) is handled automatically by the import system
-    based on file naming conventions.
-    """
+    _env: ClassVar[Dict[str, Any]] = {}
+    dependencies: ClassVar[Dependencies] = Dependencies([])
+    _abilities: ClassVar[Set[str]] = {
+        "list_wallets",
+        "create_wallet",
+        *AbstractCryptoProvider._abilities,
+    }
 
-    # Extension metadata
-    name = "crypto"
-    version = "1.0.0"
-    description = "Cryptocurrency extension for blockchain interactions"
+    @classmethod
+    def _chain(cls, chain: str) -> Any:
+        for provider in cls.providers:
+            if provider.name == chain:
+                return provider
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"chain must be one of {', '.join(p.name for p in cls.providers)}",
+        )
 
-    # Define dependencies
-    ext_dependencies = [
-        EXT_Dependency(
-            name="core",
-            friendly_name="Core Extension",
-            optional=False,
-            reason="Required for base cryptocurrency functionality",
-        ),
-        EXT_Dependency(
-            name="labels",
-            friendly_name="Labels Extension",
-            optional=True,
-            reason="Optional for labeling and organizing crypto transactions",
-        ),
-    ]
+    @classmethod
+    @ability("list_wallets")
+    async def list_wallets(cls) -> List[Dict[str, Any]]:
+        """The configured wallets: id, name and chain."""
+        return cls.instances_of()
 
-    pip_dependencies = [
-        PIP_Dependency(
-            name="solana",
-            friendly_name="Solana Python SDK",
-            optional=True,
-            reason="Required for Solana blockchain integration",
-            semver=">=0.30.0",
-        ),
-        PIP_Dependency(
-            name="bitcoin",
-            friendly_name="Bitcoin Python Library",
-            optional=True,
-            reason="Required for Bitcoin blockchain integration",
-            semver=">=1.1.42",
-        ),
-        PIP_Dependency(
-            name="web3",
-            friendly_name="Web3.py Ethereum Library",
-            optional=True,
-            reason="Required for Ethereum blockchain integration",
-            semver=">=6.0.0",
-        ),
-        PIP_Dependency(
-            name="requests",
-            friendly_name="HTTP Requests Library",
-            optional=False,
-            reason="Required for API communications with blockchain networks",
-            semver=">=2.28.0",
-        ),
-        PIP_Dependency(
-            name="cryptography",
-            friendly_name="Cryptography Library",
-            optional=False,
-            reason="Required for secure wallet operations",
-            semver=">=3.0.0",
-        ),
-    ]
+    @classmethod
+    @ability("create_wallet")
+    async def create_wallet(
+        cls, chain: str, network: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """A new key pair on ``chain`` (``network`` for Bitcoin: bitcoin,
+        testnet, testnet4 or signet). The private key is shown once: keep
+        it in a wallet instance's write-only key setting."""
+        created: Dict[str, Any] = cls._chain(chain).generate(network)
+        return {**created, "chain": chain}
 
-    sys_dependencies = []
-
-    # Define database tables (none for this extension)
-    db_tables = []
-
-    # Define what capabilities this extension provides
-    capabilities = [
-        "wallet_management",
-        "transaction_creation",
-        "balance_checking",
-        "blockchain_interaction",
-        "token_operations",
-        "transaction_monitoring",
-    ]
-
-    def __init__(
-        self,
-        blockchain: str = "solana",
-        api_uri: str = "",
-        wallet_address: str = "",
-        wallet_private_key: str = "",
-        **kwargs,
-    ):
-        """
-        Initialize the cryptocurrency extension.
-        """
-        super().__init__(**kwargs)
-
-        self.blockchain = blockchain.lower()
-        self.api_uri = api_uri
-        self.wallet_address = wallet_address
-        self.wallet_private_key = wallet_private_key
-        self.provider = None
-        self.commands = {}
-
-    def on_initialize(self) -> bool:
-        """Initialize the cryptocurrency extension with the appropriate provider."""
-        logger.debug("Initializing Cryptocurrency Extension...")
-
-        try:
-            self._create_provider()
-            self._register_commands()
-
-            # Register capabilities
-            for capability in self.capabilities:
-                self.register_capability(capability)
-
-            logger.debug("Cryptocurrency extension initialized successfully")
-            return True
-
-        except Exception as e:
-            logger.error(f"Failed to initialize Cryptocurrency extension: {str(e)}")
-            return False
-
-    def _create_provider(self):
-        """Create the appropriate cryptocurrency provider based on blockchain."""
-        try:
-            if self.blockchain == "solana":
-                try:
-                    from zephyrex.extensions.crypto.Solana import SolanaProvider
-
-                    self.provider = SolanaProvider(
-                        api_uri=self.api_uri,
-                        wallet_address=self.wallet_address,
-                        wallet_private_key=self.wallet_private_key,
-                        extension_id=self.name,
-                        **getattr(self, "settings", {}),
-                    )
-                    logger.debug("Solana provider created successfully")
-
-                except ImportError as e:
-                    logger.warning(f"Could not import Solana provider: {e}")
-                    self.provider = None
-
-            elif self.blockchain == "bitcoin":
-                try:
-                    from zephyrex.extensions.crypto.BitCoin import BitcoinProvider
-
-                    self.provider = BitcoinProvider(
-                        api_uri=self.api_uri,
-                        wallet_address=self.wallet_address,
-                        wallet_private_key=self.wallet_private_key,
-                        extension_id=self.name,
-                        **getattr(self, "settings", {}),
-                    )
-                    logger.debug("Bitcoin provider created successfully")
-
-                except ImportError as e:
-                    logger.warning(f"Could not import Bitcoin provider: {e}")
-                    self.provider = None
-
-            elif self.blockchain == "ethereum":
-                try:
-                    from zephyrex.extensions.crypto.Ethereum import EthereumProvider
-
-                    self.provider = EthereumProvider(
-                        api_uri=self.api_uri,
-                        wallet_address=self.wallet_address,
-                        wallet_private_key=self.wallet_private_key,
-                        extension_id=self.name,
-                        **getattr(self, "settings", {}),
-                    )
-                    logger.debug("Ethereum provider created successfully")
-
-                except ImportError as e:
-                    logger.warning(f"Could not import Ethereum provider: {e}")
-                    self.provider = None
-
-            else:
-                logger.error(f"Unsupported blockchain: {self.blockchain}")
-                self.provider = None
-
-        except Exception as e:
-            logger.error(f"Error creating cryptocurrency provider: {str(e)}")
-            self.provider = None
-
-    def _register_commands(self):
-        """Register commands based on available provider."""
-        if self.provider and hasattr(self.provider, "commands"):
-            self.commands = self.provider.commands
-        else:
-            # Provide placeholder commands that warn about missing provider
-            blockchain_name = self.blockchain.upper()
-            self.commands = {
-                f"Create {blockchain_name} Wallet": self._no_provider_warning,
-                f"Get {blockchain_name} Wallet Balance": self._no_provider_warning,
-                f"Send {blockchain_name} Token": self._no_provider_warning,
-                f"Get {blockchain_name} Transaction": self._no_provider_warning,
-            }
-
-    async def _no_provider_warning(self, *args, **kwargs) -> str:
-        """Warning message when a provider is not available."""
-        return f"No crypto provider available for {self.blockchain}. Please check your configuration."
-
-    @staticmethod
-    async def _call_provider(method: Any, *args: Any, **kwargs: Any) -> Any:
-        """Invoke a provider method, awaiting it only if it returns an awaitable.
-
-        Blockchain providers are heterogeneous: Solana's SDK is async-only
-        while Bitcoin/Ethereum's SDKs are synchronous. This lets callers
-        treat every provider ability uniformly regardless of which kind
-        backs `self.provider`.
-        """
-        result = method(*args, **kwargs)
-        if inspect.isawaitable(result):
-            result = await result
+    @classmethod
+    @ability("wallet_address")
+    async def wallet_address(cls, wallet: str) -> Dict[str, Any]:
+        result: Dict[str, Any] = await cls.rotate_on_instance(wallet, "describe")
         return result
 
-    def register_capability(self, capability: str):
-        """Register a new capability."""
-        if capability not in self.capabilities:
-            self.capabilities.append(capability)
-
-    def get_registered_capabilities(self) -> Set[str]:
-        """Return currently registered capabilities."""
-        return set(self.capabilities)
-
-    def get_capabilities(self) -> Set[str]:
-        """Return the capabilities this extension provides."""
-        return set(self.capabilities)
-
-    @ability("create_wallet")
-    async def create_wallet(self) -> Dict[str, Any]:
-        """Create a new cryptocurrency wallet."""
-        try:
-            if not self.provider:
-                return {"success": False, "message": await self._no_provider_warning()}
-
-            result = await self._call_provider(self.provider.create_wallet)
-            return {"success": True, "result": result, "blockchain": self.blockchain}
-
-        except Exception as e:
-            logger.error(f"Error creating wallet: {e}")
-            return {"success": False, "message": f"Error creating wallet: {str(e)}"}
-
-    @ability("get_wallet_balance")
-    async def get_wallet_balance(
-        self, wallet_address: Optional[str] = None
+    @classmethod
+    @ability("get_balance")
+    async def get_balance(
+        cls, wallet: str, address: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Get the balance of a wallet."""
-        try:
-            if not self.provider:
-                return {"success": False, "message": await self._no_provider_warning()}
+        """The wallet's balance, or ``address``'s on the wallet's network."""
+        result: Dict[str, Any] = await cls.rotate_on_instance(
+            wallet, "balance", address
+        )
+        return result
 
-            balance = await self._call_provider(
-                self.provider.get_wallet_balance, wallet_address
-            )
-            return {
-                "success": True,
-                "balance": balance,
-                "wallet_address": wallet_address or self.wallet_address,
-                "blockchain": self.blockchain,
-            }
+    @classmethod
+    @ability("send")
+    async def send(cls, wallet: str, to: str, amount: str) -> Dict[str, Any]:
+        """Send ``amount`` of the chain's coin from the wallet to ``to``."""
+        result: Dict[str, Any] = await cls.rotate_on_instance(
+            wallet, "send_amount", to, amount
+        )
+        return result
 
-        except Exception as e:
-            logger.error(f"Error getting wallet balance: {e}")
-            return {
-                "success": False,
-                "message": f"Error getting wallet balance: {str(e)}",
-            }
+    @classmethod
+    @ability("get_transaction")
+    async def get_transaction(cls, wallet: str, tx_id: str) -> Dict[str, Any]:
+        result: Dict[str, Any] = await cls.rotate_on_instance(
+            wallet, "transaction", tx_id
+        )
+        return result
 
-    @ability("send_native_token")
-    async def send_native_token(self, to_wallet: str, amount: float) -> Dict[str, Any]:
-        """Send native tokens from one wallet to another."""
-        try:
-            if not self.provider:
-                return {"success": False, "message": await self._no_provider_warning()}
+    @classmethod
+    @ability("list_transactions")
+    async def list_transactions(
+        cls,
+        wallet: str,
+        address: Optional[str] = None,
+        limit: int = DEFAULT_TRANSACTIONS,
+    ) -> List[Dict[str, Any]]:
+        result: List[Dict[str, Any]] = await cls.rotate_on_instance(
+            wallet, "transactions", address, transaction_limit(limit)
+        )
+        return result
 
-            result = await self._call_provider(
-                self.provider.send_native_token, None, to_wallet, amount
-            )
-            return {
-                "success": True,
-                "result": result,
-                "to_wallet": to_wallet,
-                "amount": amount,
-                "blockchain": self.blockchain,
-            }
+    @classmethod
+    @ability("estimate_fee")
+    async def estimate_fee(cls, wallet: str) -> Dict[str, Any]:
+        result: Dict[str, Any] = await cls.rotate_on_instance(wallet, "fee_estimate")
+        return result
 
-        except Exception as e:
-            logger.error(f"Error sending native token: {e}")
-            return {
-                "success": False,
-                "message": f"Error sending native token: {str(e)}",
-            }
-
-    @ability("get_transaction_info")
-    async def get_transaction_info(self, tx_signature: str) -> Dict[str, Any]:
-        """Get information about a specific transaction."""
-        try:
-            if not self.provider:
-                return {"success": False, "message": await self._no_provider_warning()}
-
-            result = await self._call_provider(
-                self.provider.get_transaction_info, tx_signature
-            )
-            return {
-                "success": True,
-                "result": result,
-                "tx_signature": tx_signature,
-                "blockchain": self.blockchain,
-            }
-
-        except Exception as e:
-            logger.error(f"Error getting transaction info: {e}")
-            return {
-                "success": False,
-                "message": f"Error getting transaction info: {str(e)}",
-            }
-
-    @ability("get_wallet_transactions")
-    async def get_wallet_transactions(
-        self, wallet_address: Optional[str] = None, limit: int = 10
+    @classmethod
+    @ability("get_token_balance")
+    async def get_token_balance(
+        cls, wallet: str, token: str, address: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Get recent transactions for a wallet."""
-        try:
-            if not self.provider:
-                return {"success": False, "message": await self._no_provider_warning()}
+        """An ERC-20 (EVM) or SPL (Solana) token balance, by the token's
+        contract or mint address."""
+        result: Dict[str, Any] = await cls.rotate_on_instance(
+            wallet, "token_balance", token, address
+        )
+        return result
 
-            # Check if provider has this method
-            if hasattr(self.provider, "get_wallet_transactions"):
-                transactions = await self._call_provider(
-                    self.provider.get_wallet_transactions, wallet_address, limit
-                )
-                return {
-                    "success": True,
-                    "transactions": transactions,
-                    "count": len(transactions) if transactions else 0,
-                    "wallet_address": wallet_address or self.wallet_address,
-                }
-            else:
-                return {
-                    "success": False,
-                    "message": f"Transaction history not supported for {self.blockchain}",
-                }
-
-        except Exception as e:
-            logger.error(f"Error getting wallet transactions: {e}")
-            return {
-                "success": False,
-                "message": f"Error getting wallet transactions: {str(e)}",
-            }
-
-    def on_start(self) -> bool:
-        """Start the Cryptocurrency extension."""
-        try:
-            logger.debug("Cryptocurrency extension started successfully")
-            return True
-        except Exception as e:
-            logger.error(f"Failed to start Cryptocurrency extension: {e}")
-            return False
-
-    def on_stop(self) -> bool:
-        """Stop the Cryptocurrency extension."""
-        try:
-            if self.provider:
-                # Clean up provider resources if needed
-                self.provider = None
-
-            logger.debug("Cryptocurrency extension stopped successfully")
-            return True
-        except Exception as e:
-            logger.error(f"Error stopping Cryptocurrency extension: {e}")
-            return False
-
-    def validate_config(self) -> List[str]:
-        """Validate the extension configuration."""
-        issues = []
-
-        # Check for required Python packages
-        try:
-            import requests
-        except ImportError:
-            issues.append(
-                "Requests library not installed - API communications will not work"
-            )
-
-        try:
-            import cryptography
-        except ImportError:
-            issues.append(
-                "Cryptography library not installed - secure operations will not work"
-            )
-
-        # Blockchain-specific validation
-        if not self.blockchain:
-            issues.append("Blockchain not specified")
-        elif self.blockchain not in ["solana", "bitcoin", "ethereum"]:
-            issues.append(f"Unsupported blockchain: {self.blockchain}")
-
-        # Check blockchain-specific libraries
-        if self.blockchain == "solana":
-            try:
-                import solana
-            except ImportError:
-                issues.append(
-                    "Solana library not installed - Solana operations will not work"
-                )
-
-        elif self.blockchain == "bitcoin":
-            try:
-                import bitcoin
-            except ImportError:
-                issues.append(
-                    "Bitcoin library not installed - Bitcoin operations will not work"
-                )
-
-        elif self.blockchain == "ethereum":
-            try:
-                import web3
-            except ImportError:
-                issues.append(
-                    "Web3 library not installed - Ethereum operations will not work"
-                )
-
-        # Security warnings for private keys
-        if self.wallet_private_key:
-            issues.append(
-                "WARNING: Private key detected in configuration - ensure secure storage"
-            )
-
-        return issues
-
-    def get_required_permissions(self) -> List[str]:
-        """Return the list of permissions required by this extension."""
-        return [
-            "crypto:wallet:create",
-            "crypto:wallet:read",
-            "crypto:transactions:create",
-            "crypto:transactions:read",
-            "crypto:balance:read",
-            "crypto:token:send",
-        ]
-
-    def on_startup(self):
-        """Called during application startup."""
-        logger.debug("Cryptocurrency extension startup hook called")
-
-    def on_shutdown(self):
-        """Called during application shutdown."""
-        logger.debug("Cryptocurrency extension shutdown hook called")
-
-    def has_capability(self, capability: str) -> bool:
-        """Check if this extension has a specific capability."""
-        return capability in self.capabilities
+    @classmethod
+    @ability("send_token")
+    async def send_token(
+        cls, wallet: str, token: str, to: str, amount: str
+    ) -> Dict[str, Any]:
+        """Send an ERC-20 token (EVM chains)."""
+        result: Dict[str, Any] = await cls.rotate_on_instance(
+            wallet, "send_token", token, to, amount
+        )
+        return result

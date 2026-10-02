@@ -6,10 +6,10 @@
 
 name = "crypto"
 version = "1.0.0"
-description = "Cryptocurrency extension for blockchain interactions"
+description = "Cryptocurrency wallets on Bitcoin, Ethereum (and EVM chains) and Solana"
 author = "ZephyrexTechnologies"
 entry_module = "EXT_Crypto"
 minimum_framework_version = "0.0.0"
 
-pip_dependencies = []
+pip_dependencies = ["bitcoinlib>=0.7.9", "eth-account>=0.13", "solana>=0.40", "solders>=0.29", "web3>=7.0"]
 system_dependencies = []
