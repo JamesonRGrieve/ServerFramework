@@ -225,6 +225,11 @@ EXTERNAL_API_PROVIDER_ENV_VARS: Dict[str, List[str]] = {
     # Web search: a Brave Search API key, and a SearXNG server with JSON output.
     "brave_test": ["BRAVE_SEARCH_API_KEY"],
     "searxng_test": ["SEARXNG_URL"],
+    # 3D printing: test printers on a LAN this machine may reach (their hosts
+    # also listed in EGRESS_ALLOWED_HOSTS), read only.
+    "octoprint_test": ["OCTOPRINT_URL", "OCTOPRINT_API_KEY"],
+    "moonraker_test": ["MOONRAKER_URL"],
+    "prusalink_test": ["PRUSALINK_URL", "PRUSALINK_PASSWORD"],
     # SendGrid sandbox.
     "sendgrid": ["SENDGRID_API_KEY"],
     # Twilio sandbox.

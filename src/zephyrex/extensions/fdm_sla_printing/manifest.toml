@@ -6,7 +6,7 @@
 
 name = "fdm_sla_printing"
 version = "1.0.0"
-description = "3D Printer extension for monitoring and controlling 3D printers"
+description = "3D printer status and control through OctoPrint, Moonraker or PrusaLink"
 author = "ZephyrexTechnologies"
 entry_module = "EXT_FDMSLAPrinting"
 minimum_framework_version = "0.0.0"
