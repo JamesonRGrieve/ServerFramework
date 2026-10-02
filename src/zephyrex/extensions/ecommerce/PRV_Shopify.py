@@ -1,355 +1,419 @@
-import logging
-import os
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""Shopify, through the GraphQL Admin API (Shopify's REST Admin API is
+legacy for new apps). The instance's API key is an Admin API access token
+(a custom app's, or an app's after OAuth) with the orders, products,
+inventory, fulfillments and returns scopes; ``shop_domain`` is the
+store's ``<name>.myshopify.com``.
 
-import requests
+A price change sets the SKU's variant price; a refund on an approved
+return is issued through Shopify's refund flow, not here.
+"""
 
-from .PRV_ECommerce import AbstractEcommerceProvider
+import re
+from datetime import datetime
+from typing import Any, ClassVar, Dict, List, Mapping, Optional, Tuple
+
+from zephyrex.extensions.AbstractExtensionProvider import InstanceSetting
+from zephyrex.extensions.ecommerce.EXT_ECommerce import (
+    AbstractEcommerceProvider,
+    a_return,
+    item,
+    order,
+    product,
+)
+from zephyrex.extensions.ExternalErrors import InvalidInputExternalError
+from zephyrex.logic.BLL_Providers import ProviderInstanceModel
+
+DEFAULT_API_VERSION = "2026-10"
+LINE_ITEMS = 50
+_SHOP_DOMAIN = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}\.myshopify\.com$")
+_RETURN_STATUSES = {
+    "REQUESTED": "requested",
+    "OPEN": "approved",
+    "CLOSED": "closed",
+    "DECLINED": "rejected",
+    "CANCELED": "closed",
+}
+ORDER_FIELDS = """
+  id name createdAt cancelledAt email
+  displayFinancialStatus displayFulfillmentStatus
+  customer { displayName }
+  totalPriceSet { shopMoney { amount currencyCode } }
+  shippingAddress { name address1 address2 city province zip countryCodeV2 phone }
+  lineItems(first: %d) {
+    nodes { sku title quantity originalUnitPriceSet { shopMoney { amount } } }
+  }
+""" % (LINE_ITEMS)
 
 
-class ShopifyProvider(AbstractEcommerceProvider):
-    """
-    Shopify provider implementation.
-    Handles Shopify API interactions for store management.
-    """
+def gid(kind: str, value: str) -> str:
+    """A Shopify global id from a bare number or a gid."""
+    value = value.strip()
+    if value.startswith("gid://shopify/"):
+        return value
+    if not value.isdigit():
+        raise InvalidInputExternalError(f"{value!r} is not a Shopify {kind} id")
+    return f"gid://shopify/{kind}/{value}"
 
-    def _configure_provider(self, **kwargs) -> None:
-        self.friendly_name = "Shopify"
-        self.access_token = kwargs.get("SHOPIFY_ACCESS_TOKEN", None)
-        self.shop_name = kwargs.get("SHOPIFY_SHOP_NAME", "")
-        self.api_version = kwargs.get("SHOPIFY_API_VERSION", "2023-10")
-        self.api_key = kwargs.get("SHOPIFY_API_KEY", os.getenv("SHOPIFY_API_KEY", ""))
-        self.api_secret = os.getenv("SHOPIFY_API_SECRET", "")
 
-        self.register_capability("order_management")
-        self.register_capability("inventory_management")
-        self.register_capability("product_management")
-        self.register_capability("returns_management")
-        self.register_capability("customer_management")
-        self.register_capability("reporting")
+def short(global_id: str) -> str:
+    return global_id.rsplit("/", 1)[-1]
 
-    @staticmethod
-    def services() -> List[str]:
-        return ["ecommerce", "shopify"]
 
-    def verify_user(self):
-        """
-        Verify the user's authentication with Shopify.
-        If verification fails, raises an exception.
-        """
-        logging.info(f"Verifying user with Shopify shop: {self.shop_name}")
+def shopify_status(node: Mapping[str, Any]) -> str:
+    if node.get("cancelledAt"):
+        return "cancelled"
+    financial = node.get("displayFinancialStatus")
+    fulfillment = node.get("displayFulfillmentStatus")
+    if financial in ("REFUNDED",):
+        return "refunded"
+    if fulfillment == "FULFILLED":
+        return "shipped"
+    if financial in ("PENDING", "AUTHORIZED", "EXPIRED"):
+        return "pending"
+    return "processing"
 
-        headers = {
-            "X-Shopify-Access-Token": self.access_token,
-            "Content-Type": "application/json",
+
+def shopify_order(node: Mapping[str, Any]) -> Dict[str, Any]:
+    money = (node.get("totalPriceSet") or {}).get("shopMoney") or {}
+    return order(
+        short(node["id"]),
+        status=shopify_status(node),
+        order_number=node.get("name"),
+        customer_name=(node.get("customer") or {}).get("displayName"),
+        customer_email=node.get("email"),
+        total=money.get("amount"),
+        currency=money.get("currencyCode"),
+        order_date=node.get("createdAt"),
+        shipping_address=node.get("shippingAddress"),
+        line_items=[
+            item(
+                line.get("sku"),
+                line.get("title"),
+                line.get("quantity"),
+                ((line.get("originalUnitPriceSet") or {}).get("shopMoney") or {}).get(
+                    "amount"
+                ),
+            )
+            for line in (node.get("lineItems") or {}).get("nodes", [])
+        ],
+    )
+
+
+class PRV_Shopify_ECommerce(AbstractEcommerceProvider):
+    name: ClassVar[str] = "shopify"
+    friendly_name: ClassVar[str] = "Shopify"
+    description: ClassVar[str] = "A Shopify store"
+    instance_settings: ClassVar[Tuple[InstanceSetting, ...]] = (
+        InstanceSetting(
+            "api_key", "Admin API access token", secret=True, field="api_key"
+        ),
+        InstanceSetting("shop_domain", "The store's <name>.myshopify.com"),
+        InstanceSetting(
+            "api_version", "Admin API version", default=DEFAULT_API_VERSION
+        ),
+    )
+
+    @classmethod
+    def _endpoint(cls, instance: ProviderInstanceModel) -> str:
+        domain = cls.required(instance, "shop_domain").strip().lower()
+        if not _SHOP_DOMAIN.match(domain):
+            raise InvalidInputExternalError(
+                f"{domain!r} is not a <name>.myshopify.com domain", provider=cls.name
+            )
+        version = cls.setting(instance, "api_version") or DEFAULT_API_VERSION
+        return f"https://{domain}/admin/api/{version}/graphql.json"
+
+    @classmethod
+    async def graphql(
+        cls,
+        instance: ProviderInstanceModel,
+        query: str,
+        variables: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """A query's ``data``; GraphQL errors and mutation userErrors are
+        the caller's."""
+        answer = await cls.http().post(
+            cls._endpoint(instance),
+            json={"query": query, "variables": variables or {}},
+            headers={"X-Shopify-Access-Token": cls.required(instance, "api_key")},
+        )
+        if answer.get("errors"):
+            raise InvalidInputExternalError(
+                f"Shopify: {answer['errors'][0].get('message', answer['errors'])}",
+                provider=cls.name,
+            )
+        data: Dict[str, Any] = answer.get("data") or {}
+        for payload in data.values():
+            errors = (
+                (payload or {}).get("userErrors") if isinstance(payload, dict) else None
+            )
+            if errors:
+                raise InvalidInputExternalError(
+                    f"Shopify: {errors[0].get('message')}", provider=cls.name
+                )
+        return data
+
+    @classmethod
+    async def orders(
+        cls, instance: ProviderInstanceModel, since: datetime, limit: int
+    ) -> List[Dict[str, Any]]:
+        data = await cls.graphql(
+            instance,
+            "query($first: Int!, $query: String!) { orders(first: $first, "
+            "query: $query, sortKey: CREATED_AT, reverse: true) { nodes {"
+            + ORDER_FIELDS
+            + "} } }",
+            {"first": limit, "query": f"created_at:>={since.date().isoformat()}"},
+        )
+        return [shopify_order(node) for node in data["orders"]["nodes"]]
+
+    @classmethod
+    async def order(
+        cls, instance: ProviderInstanceModel, order_id: str
+    ) -> Dict[str, Any]:
+        data = await cls.graphql(
+            instance,
+            "query($id: ID!) { order(id: $id) {" + ORDER_FIELDS + "} }",
+            {"id": gid("Order", order_id)},
+        )
+        if not data.get("order"):
+            raise InvalidInputExternalError(
+                f"no order {order_id}", provider=cls.name, upstream_status=404
+            )
+        return shopify_order(data["order"])
+
+    @classmethod
+    async def cancel_order(
+        cls, instance: ProviderInstanceModel, order_id: str, reason: str
+    ) -> Dict[str, Any]:
+        await cls.graphql(
+            instance,
+            "mutation($id: ID!, $note: String) { orderCancel(orderId: $id, "
+            "reason: OTHER, refund: false, restock: true, notifyCustomer: true, "
+            "staffNote: $note) { job { id } userErrors: orderCancelUserErrors "
+            "{ message } } }",
+            {"id": gid("Order", order_id), "note": reason},
+        )
+        return await cls.order(instance, order_id)
+
+    @classmethod
+    async def fulfill_order(
+        cls,
+        instance: ProviderInstanceModel,
+        order_id: str,
+        tracking_number: Optional[str],
+        carrier: Optional[str],
+    ) -> Dict[str, Any]:
+        data = await cls.graphql(
+            instance,
+            "query($id: ID!) { order(id: $id) { fulfillmentOrders(first: 10) "
+            "{ nodes { id status } } } }",
+            {"id": gid("Order", order_id)},
+        )
+        open_orders = [
+            node["id"]
+            for node in (data.get("order") or {})
+            .get("fulfillmentOrders", {})
+            .get("nodes", [])
+            if node.get("status") in ("OPEN", "IN_PROGRESS")
+        ]
+        if not open_orders:
+            raise InvalidInputExternalError(
+                "the order has nothing left to fulfill", provider=cls.name
+            )
+        fulfillment: Dict[str, Any] = {
+            "lineItemsByFulfillmentOrder": [
+                {"fulfillmentOrderId": fulfillment_order}
+                for fulfillment_order in open_orders
+            ],
+            "notifyCustomer": True,
+        }
+        if tracking_number:
+            fulfillment["trackingInfo"] = {
+                "number": tracking_number,
+                **({"company": carrier} if carrier else {}),
+            }
+        created = await cls.graphql(
+            instance,
+            "mutation($fulfillment: FulfillmentInput!) { fulfillmentCreate("
+            "fulfillment: $fulfillment) { fulfillment { id status } "
+            "userErrors { message } } }",
+            {"fulfillment": fulfillment},
+        )
+        shipped = created["fulfillmentCreate"]["fulfillment"]
+        return {
+            "order_id": order_id,
+            "fulfillment_id": short(shipped["id"]),
+            "provider": cls.name,
         }
 
-        url = f"https://{self.shop_name}.myshopify.com/admin/api/{self.api_version}/shop.json"
-
-        try:
-            response = requests.get(url, headers=headers)
-
-            if response.status_code != 200:
-                raise Exception(f"Shopify user verification failed: {response.text}")
-        except Exception as e:
-            logging.error(f"Error verifying Shopify user: {str(e)}")
-            raise Exception(f"Shopify user verification failed: {str(e)}")
-
-    async def get_orders(
-        self,
-        status: str = "any",
-        start_date: Optional[datetime] = None,
-        end_date: Optional[datetime] = None,
-        limit: int = 50,
-    ) -> List[Dict]:
-        try:
-            self.verify_user()
-
-            if not start_date:
-                start_date = datetime.now() - timedelta(days=30)
-            if not end_date:
-                end_date = datetime.now()
-
-            headers = {
-                "X-Shopify-Access-Token": self.access_token,
-                "Content-Type": "application/json",
-            }
-
-            params = {
-                "status": status,
-                "created_at_min": start_date.isoformat(),
-                "created_at_max": end_date.isoformat(),
-                "limit": limit,
-            }
-
-            url = f"https://{self.shop_name}.myshopify.com/admin/api/{self.api_version}/orders.json"
-
-            response = requests.get(url, headers=headers, params=params)
-
-            if response.status_code != 200:
-                raise Exception(f"Failed to fetch Shopify orders: {response.text}")
-
-            orders = []
-            for order in response.json().get("orders", []):
-                orders.append(
-                    {
-                        "id": order["id"],
-                        "order_number": order["order_number"],
-                        "customer": order.get("customer", {}),
-                        "total_price": order["total_price"],
-                        "created_at": order["created_at"],
-                        "financial_status": order["financial_status"],
-                        "fulfillment_status": order["fulfillment_status"],
-                        "line_items": order["line_items"],
-                    }
+    @classmethod
+    async def products(
+        cls, instance: ProviderInstanceModel, limit: int
+    ) -> List[Dict[str, Any]]:
+        data = await cls.graphql(
+            instance,
+            "query($first: Int!) { shop { currencyCode } products(first: $first, "
+            "sortKey: UPDATED_AT, reverse: true) { nodes { id title description "
+            "status onlineStoreUrl images(first: 5) { nodes { url } } "
+            "variants(first: 1) { nodes { sku price inventoryQuantity } } } } }",
+            {"first": limit},
+        )
+        currency = data["shop"]["currencyCode"]
+        found = []
+        for node in data["products"]["nodes"]:
+            variant = ((node.get("variants") or {}).get("nodes") or [{}])[0]
+            found.append(
+                product(
+                    short(node["id"]),
+                    sku=variant.get("sku"),
+                    title=node.get("title"),
+                    description=node.get("description"),
+                    price=variant.get("price"),
+                    currency=currency,
+                    quantity=variant.get("inventoryQuantity"),
+                    images=[
+                        i["url"] for i in (node.get("images") or {}).get("nodes", [])
+                    ],
+                    is_active=node.get("status") == "ACTIVE",
+                    url=node.get("onlineStoreUrl"),
                 )
+            )
+        return found
 
-            return orders
+    @classmethod
+    async def _variant(
+        cls, instance: ProviderInstanceModel, sku: str
+    ) -> Dict[str, Any]:
+        data = await cls.graphql(
+            instance,
+            "query($query: String!) { productVariants(first: 2, query: $query) "
+            "{ nodes { id sku product { id } inventoryItem { id } } } }",
+            {"query": f'sku:"{sku}"'},
+        )
+        matches = [v for v in data["productVariants"]["nodes"] if v.get("sku") == sku]
+        if len(matches) != 1:
+            raise InvalidInputExternalError(
+                f"{len(matches)} variants have SKU {sku!r}", provider=cls.name
+            )
+        found: Dict[str, Any] = matches[0]
+        return found
 
-        except Exception as e:
-            logging.error(f"Error retrieving Shopify orders: {str(e)}")
-            return []
-
-    async def acknowledge_order(self, order_id: str) -> str:
-        try:
-            self.verify_user()
-            # Shopify doesn't have a formal acknowledgment process
-            # This is a placeholder implementation
-            return "Order acknowledged successfully."
-        except Exception as e:
-            logging.error(f"Error acknowledging Shopify order: {str(e)}")
-            return f"Failed to acknowledge order: {str(e)}"
-
-    async def cancel_order(self, order_id: str, reason: str) -> str:
-        try:
-            self.verify_user()
-
-            headers = {
-                "X-Shopify-Access-Token": self.access_token,
-                "Content-Type": "application/json",
-            }
-
-            data = {"reason": reason}
-
-            url = f"https://{self.shop_name}.myshopify.com/admin/api/{self.api_version}/orders/{order_id}/cancel.json"
-
-            response = requests.post(url, headers=headers, json=data)
-
-            if response.status_code != 200:
-                raise Exception(f"Failed to cancel Shopify order: {response.text}")
-
-            return "Order cancelled successfully."
-
-        except Exception as e:
-            logging.error(f"Error cancelling Shopify order: {str(e)}")
-            return f"Failed to cancel order: {str(e)}"
-
-    async def get_inventory(self, sku_list: Optional[List[str]] = None) -> List[Dict]:
-        try:
-            self.verify_user()
-
-            headers = {
-                "X-Shopify-Access-Token": self.access_token,
-                "Content-Type": "application/json",
-            }
-
-            url = f"https://{self.shop_name}.myshopify.com/admin/api/{self.api_version}/inventory_levels.json"
-
-            # If SKUs are provided, we'll need to first get the inventory item IDs
-            if sku_list:
-                # This implementation would need to first fetch product variants by SKU
-                # and then get their inventory levels
-                pass
-
-            response = requests.get(url, headers=headers)
-
-            if response.status_code != 200:
-                raise Exception(f"Failed to fetch Shopify inventory: {response.text}")
-
-            inventory = []
-            for item in response.json().get("inventory_levels", []):
-                inventory.append(
-                    {
-                        "inventory_item_id": item["inventory_item_id"],
-                        "location_id": item["location_id"],
-                        "available": item["available"],
-                        "updated_at": item["updated_at"],
-                    }
-                )
-
-            return inventory
-
-        except Exception as e:
-            logging.error(f"Error retrieving Shopify inventory: {str(e)}")
-            return []
-
-    async def update_inventory(self, sku: str, quantity: int) -> str:
-        try:
-            self.verify_user()
-
-            # First, we need to find the inventory_item_id for this SKU
-            headers = {
-                "X-Shopify-Access-Token": self.access_token,
-                "Content-Type": "application/json",
-            }
-
-            # This would typically involve looking up the variant first
-            # Simplified implementation for example purposes
-
-            # After finding the inventory_item_id and location_id:
-            data = {
-                "inventory_item_id": "inventory_item_id_placeholder",
-                "location_id": "location_id_placeholder",
-                "available": quantity,
-            }
-
-            url = f"https://{self.shop_name}.myshopify.com/admin/api/{self.api_version}/inventory_levels/set.json"
-
-            # Placeholder implementation
-            return "Inventory updated successfully."
-
-        except Exception as e:
-            logging.error(f"Error updating Shopify inventory: {str(e)}")
-            return f"Failed to update inventory: {str(e)}"
-
-    async def get_products(self, limit: int = 50, offset: int = 0) -> List[Dict]:
-        try:
-            self.verify_user()
-
-            headers = {
-                "X-Shopify-Access-Token": self.access_token,
-                "Content-Type": "application/json",
-            }
-
-            params = {"limit": limit, "page": (offset // limit) + 1}
-
-            url = f"https://{self.shop_name}.myshopify.com/admin/api/{self.api_version}/products.json"
-
-            response = requests.get(url, headers=headers, params=params)
-
-            if response.status_code != 200:
-                raise Exception(f"Failed to fetch Shopify products: {response.text}")
-
-            products = []
-            for product in response.json().get("products", []):
-                products.append(
-                    {
-                        "id": product["id"],
-                        "title": product["title"],
-                        "vendor": product["vendor"],
-                        "product_type": product["product_type"],
-                        "created_at": product["created_at"],
-                        "updated_at": product["updated_at"],
-                        "variants": product["variants"],
-                        "status": product["status"],
-                    }
-                )
-
-            return products
-
-        except Exception as e:
-            logging.error(f"Error retrieving Shopify products: {str(e)}")
-            return []
-
-    async def update_product(self, sku: str, updates: Dict) -> str:
-        try:
-            self.verify_user()
-
-            # First, we need to find the product ID for this SKU
-            headers = {
-                "X-Shopify-Access-Token": self.access_token,
-                "Content-Type": "application/json",
-            }
-
-            # This would typically involve looking up the product/variant first
-            # Simplified implementation for example purposes
-
-            data = {"product": updates}
-
-            url = f"https://{self.shop_name}.myshopify.com/admin/api/{self.api_version}/products/product_id_placeholder.json"
-
-            # Placeholder implementation
-            return "Product updated successfully."
-
-        except Exception as e:
-            logging.error(f"Error updating Shopify product: {str(e)}")
-            return f"Failed to update product: {str(e)}"
-
-    async def get_returns(
-        self,
-        start_date: Optional[datetime] = None,
-        end_date: Optional[datetime] = None,
-        limit: int = 50,
-    ) -> List[Dict]:
-        try:
-            self.verify_user()
-
-            # Shopify handles returns as order refunds
-            if not start_date:
-                start_date = datetime.now() - timedelta(days=30)
-            if not end_date:
-                end_date = datetime.now()
-
-            headers = {
-                "X-Shopify-Access-Token": self.access_token,
-                "Content-Type": "application/json",
-            }
-
-            # This would typically require getting orders and then checking for refunds
-            # Simplified implementation for example purposes
-
-            return []
-
-        except Exception as e:
-            logging.error(f"Error retrieving Shopify returns: {str(e)}")
-            return []
-
-    async def process_return(
-        self, return_id: str, action: str, refund_amount: Optional[float] = None
-    ) -> str:
-        try:
-            self.verify_user()
-
-            # In Shopify, returns are processed as refunds on orders
-            headers = {
-                "X-Shopify-Access-Token": self.access_token,
-                "Content-Type": "application/json",
-            }
-
-            data = {
-                "refund": {
-                    "note": f"Return processed with action: {action}",
-                    "shipping": {"full_refund": True},
-                    "refund_line_items": [],
+    @classmethod
+    async def set_inventory(
+        cls, instance: ProviderInstanceModel, sku: str, quantity: int
+    ) -> Dict[str, Any]:
+        variant = await cls._variant(instance, sku)
+        locations = await cls.graphql(
+            instance, "{ locations(first: 1) { nodes { id } } }"
+        )
+        location = locations["locations"]["nodes"][0]["id"]
+        await cls.graphql(
+            instance,
+            "mutation($input: InventorySetQuantitiesInput!) { "
+            "inventorySetQuantities(input: $input) { inventoryAdjustmentGroup "
+            "{ reason } userErrors { message } } }",
+            {
+                "input": {
+                    "name": "available",
+                    "reason": "correction",
+                    "quantities": [
+                        {
+                            "inventoryItemId": variant["inventoryItem"]["id"],
+                            "locationId": location,
+                            "quantity": quantity,
+                            "changeFromQuantity": None,
+                        }
+                    ],
                 }
-            }
+            },
+        )
+        return {"sku": sku, "quantity": quantity, "provider": cls.name}
 
-            if refund_amount:
-                data["refund"]["amount"] = refund_amount
+    @classmethod
+    async def update_product(
+        cls, instance: ProviderInstanceModel, sku: str, changes: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        variant = await cls._variant(instance, sku)
+        product_changes = {
+            key: value
+            for key, value in (
+                ("title", changes.get("title")),
+                ("descriptionHtml", changes.get("description")),
+            )
+            if value is not None
+        }
+        if product_changes:
+            await cls.graphql(
+                instance,
+                "mutation($product: ProductUpdateInput!) { productUpdate("
+                "product: $product) { product { id } userErrors { message } } }",
+                {"product": {"id": variant["product"]["id"], **product_changes}},
+            )
+        if "price" in changes:
+            await cls.graphql(
+                instance,
+                "mutation($product: ID!, $variants: [ProductVariantsBulkInput!]!) { "
+                "productVariantsBulkUpdate(productId: $product, variants: $variants) "
+                "{ productVariants { id } userErrors { message } } }",
+                {
+                    "product": variant["product"]["id"],
+                    "variants": [{"id": variant["id"], "price": changes["price"]}],
+                },
+            )
+        return {"sku": sku, "changed": sorted(changes), "provider": cls.name}
 
-            # Placeholder implementation
-            return f"Return {action.lower()}ed successfully."
+    @classmethod
+    async def returns(
+        cls, instance: ProviderInstanceModel, since: datetime, limit: int
+    ) -> List[Dict[str, Any]]:
+        data = await cls.graphql(
+            instance,
+            "query($first: Int!, $query: String!) { orders(first: $first, "
+            "query: $query, sortKey: UPDATED_AT, reverse: true) { nodes { id "
+            "returns(first: 10) { nodes { id status } } } } }",
+            {
+                "first": limit,
+                "query": f"updated_at:>={since.date().isoformat()} AND return_status:*",
+            },
+        )
+        found = []
+        for node in data["orders"]["nodes"]:
+            for entry in (node.get("returns") or {}).get("nodes", []):
+                found.append(
+                    a_return(
+                        short(entry["id"]),
+                        status=_RETURN_STATUSES.get(str(entry.get("status")), "other"),
+                        platform_order_id=short(node["id"]),
+                    )
+                )
+        return found[:limit]
 
-        except Exception as e:
-            logging.error(f"Error processing Shopify return: {str(e)}")
-            return f"Failed to process return: {str(e)}"
-
-    async def generate_report(
-        self,
-        report_type: str,
-        start_date: Optional[datetime] = None,
-        end_date: Optional[datetime] = None,
-    ) -> str:
-        try:
-            self.verify_user()
-
-            # Shopify has built-in reports but doesn't have a direct API for report generation
-            # This would typically involve collecting data and formatting it
-
-            # Placeholder implementation
-            return "Report generated successfully."
-
-        except Exception as e:
-            logging.error(f"Error generating Shopify report: {str(e)}")
-            return f"Failed to generate report: {str(e)}"
+    @classmethod
+    async def process_return(
+        cls,
+        instance: ProviderInstanceModel,
+        return_id: str,
+        action: str,
+        refund: Optional[str],
+    ) -> Dict[str, Any]:
+        if refund is not None:
+            raise cls.cannot("refund here", "issue it through Shopify's refund flow")
+        mutation = (
+            "mutation($input: ReturnApproveRequestInput!) { returnApproveRequest("
+            "input: $input) { return { id status } userErrors { message } } }"
+            if action == "approve"
+            else "mutation($input: ReturnDeclineRequestInput!) { returnDeclineRequest("
+            "input: $input) { return { id status } userErrors { message } } }"
+        )
+        payload: Dict[str, Any] = {"id": gid("Return", return_id)}
+        if action == "reject":
+            payload["declineReason"] = "OTHER"
+        data = await cls.graphql(instance, mutation, {"input": payload})
+        result = next(iter(data.values()))["return"]
+        return {
+            "return_id": return_id,
+            "status": _RETURN_STATUSES.get(str(result.get("status")), "other"),
+            "provider": cls.name,
+        }

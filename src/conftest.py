@@ -234,6 +234,33 @@ EXTERNAL_API_PROVIDER_ENV_VARS: Dict[str, List[str]] = {
     "bitcoin_testnet_wallet": ["BITCOIN_TESTNET_WIF"],
     "sepolia_wallet": ["SEPOLIA_PRIVATE_KEY", "SEPOLIA_RPC_URL"],
     "solana_devnet_wallet": ["SOLANA_DEVNET_SECRET"],
+    # E-commerce: test stores (or sandboxes), read only.
+    "shopify_store": ["SHOPIFY_TOKEN", "SHOPIFY_SHOP"],
+    "woocommerce_store": ["WOOCOMMERCE_KEY", "WOOCOMMERCE_SECRET", "WOOCOMMERCE_URL"],
+    "etsy_store": [
+        "ETSY_KEYSTRING",
+        "ETSY_SHARED_SECRET",
+        "ETSY_REFRESH_TOKEN",
+        "ETSY_SHOP_ID",
+    ],
+    "ebay_store": [
+        "EBAY_CLIENT_ID",
+        "EBAY_CLIENT_SECRET",
+        "EBAY_REFRESH_TOKEN",
+        "EBAY_ENVIRONMENT",
+    ],
+    "amazon_store": [
+        "AMAZON_LWA_CLIENT_ID",
+        "AMAZON_LWA_CLIENT_SECRET",
+        "AMAZON_REFRESH_TOKEN",
+        "AMAZON_SELLER_ID",
+    ],
+    "walmart_store": ["WALMART_CLIENT_ID", "WALMART_CLIENT_SECRET"],
+    "aliexpress_store": [
+        "ALIEXPRESS_APP_KEY",
+        "ALIEXPRESS_APP_SECRET",
+        "ALIEXPRESS_ACCESS_TOKEN",
+    ],
     # SendGrid sandbox.
     "sendgrid": ["SENDGRID_API_KEY"],
     # Twilio sandbox.

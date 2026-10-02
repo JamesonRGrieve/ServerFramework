@@ -1,429 +1,311 @@
-import logging
-import os
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""WooCommerce, through its REST API v3 at the store's ``site_url``. The
+instance's API key is a REST consumer key and ``consumer_secret`` its
+secret (WooCommerce → Settings → Advanced → REST API), sent as HTTP Basic
+over HTTPS.
 
-import requests
+WooCommerce has refunds rather than returns: a "return" here is a refund
+on an order (its id ``<order id>:<refund id>``), and approving one is
+refunding an order (``return_id`` the order's id) through its payment
+gateway. Shipping has no tracking field in WooCommerce core; the
+tracking is added to the order as a customer note.
+"""
 
-from .PRV_ECommerce import AbstractEcommerceProvider
+from datetime import datetime
+from typing import Any, ClassVar, Dict, List, Mapping, Optional, Tuple
 
-# The official ``woocommerce`` SDK is optional — this provider talks to the
-# WooCommerce REST API (``/wp-json/wc/v3/...``) directly via ``requests`` so
-# it works with zero extra dependencies. The guarded import only records
-# whether the SDK happens to be installed (surfaced via ``sdk_available``);
-# it is never used to make calls.
-try:
-    import woocommerce as woocommerce_sdk
-except ImportError:
-    woocommerce_sdk = None  # type: ignore[assignment]
+import httpx
+
+from zephyrex.extensions.AbstractExtensionProvider import InstanceSetting
+from zephyrex.extensions.ecommerce.EXT_ECommerce import (
+    AbstractEcommerceProvider,
+    a_return,
+    item,
+    order,
+    product,
+)
+from zephyrex.extensions.ExternalErrors import InvalidInputExternalError
+from zephyrex.lib.ProviderHTTPClient import path_segment
+from zephyrex.logic.BLL_Providers import ProviderInstanceModel
+
+API_PATH = "/wp-json/wc/v3"
+REFUNDED_ORDERS_SCANNED = 50
+_STATUSES = {
+    "pending": "pending",
+    "on-hold": "pending",
+    "processing": "processing",
+    "completed": "shipped",
+    "cancelled": "cancelled",
+    "refunded": "refunded",
+    "failed": "cancelled",
+}
 
 
-class WooCommerceProvider(AbstractEcommerceProvider):
-    """
-    WooCommerce provider implementation.
-    Handles WooCommerce REST API (``/wp-json/wc/v3``) interactions for
-    WordPress-based store management, authenticated via consumer key/secret.
-    """
+def woo_order(found: Mapping[str, Any]) -> Dict[str, Any]:
+    billing = found.get("billing") or {}
+    name = " ".join(
+        part for part in (billing.get("first_name"), billing.get("last_name")) if part
+    )
+    return order(
+        found["id"],
+        status=_STATUSES.get(str(found.get("status")), "other"),
+        order_number=found.get("number"),
+        customer_name=name or None,
+        customer_email=billing.get("email"),
+        total=found.get("total"),
+        currency=found.get("currency"),
+        # WooCommerce writes its GMT times without an offset.
+        order_date=(
+            f"{found['date_created_gmt']}+00:00"
+            if found.get("date_created_gmt")
+            else None
+        ),
+        shipping_address=found.get("shipping"),
+        line_items=[
+            item(
+                line.get("sku"),
+                line.get("name"),
+                line.get("quantity"),
+                line.get("price"),
+            )
+            for line in found.get("line_items", [])
+        ],
+    )
 
-    def _configure_provider(self, **kwargs) -> None:
-        self.friendly_name = "WooCommerce"
-        self.store_url = kwargs.get("WOOCOMMERCE_STORE_URL", "").rstrip("/")
-        self.api_version = kwargs.get("WOOCOMMERCE_API_VERSION", "wc/v3")
-        self.consumer_key = kwargs.get(
-            "WOOCOMMERCE_CONSUMER_KEY", os.getenv("WOOCOMMERCE_CONSUMER_KEY", "")
+
+class PRV_WooCommerce_ECommerce(AbstractEcommerceProvider):
+    name: ClassVar[str] = "woocommerce"
+    friendly_name: ClassVar[str] = "WooCommerce"
+    description: ClassVar[str] = "A WooCommerce store"
+    instance_settings: ClassVar[Tuple[InstanceSetting, ...]] = (
+        InstanceSetting("api_key", "REST consumer key", secret=True, field="api_key"),
+        InstanceSetting("consumer_secret", "REST consumer secret", secret=True),
+        InstanceSetting("site_url", "The store's address (https://shop.example.com)"),
+    )
+
+    @classmethod
+    async def _call(
+        cls, instance: ProviderInstanceModel, method: str, path: str, **kwargs: Any
+    ) -> Any:
+        site = cls.required(instance, "site_url").rstrip("/")
+        if not site.startswith("https://"):
+            raise InvalidInputExternalError(
+                "WooCommerce keys travel only over https", provider=cls.name
+            )
+        return await cls.http().request(
+            method,
+            f"{site}{API_PATH}{path}",
+            auth=httpx.BasicAuth(
+                cls.required(instance, "api_key"),
+                cls.required(instance, "consumer_secret"),
+            ),
+            **kwargs,
         )
-        self.consumer_secret = os.getenv("WOOCOMMERCE_CONSUMER_SECRET", "")
-        self.sdk_available = woocommerce_sdk is not None
 
-        self.register_capability("order_management")
-        self.register_capability("inventory_management")
-        self.register_capability("product_management")
-        self.register_capability("returns_management")
-        self.register_capability("reporting")
+    @classmethod
+    async def orders(
+        cls, instance: ProviderInstanceModel, since: datetime, limit: int
+    ) -> List[Dict[str, Any]]:
+        found = await cls._call(
+            instance,
+            "GET",
+            "/orders",
+            params={
+                "after": since.isoformat(),
+                "per_page": min(limit, 100),
+                "orderby": "date",
+                "order": "desc",
+            },
+        )
+        return [woo_order(entry) for entry in found][:limit]
 
-    @staticmethod
-    def services() -> List[str]:
-        return ["ecommerce", "woocommerce"]
+    @classmethod
+    async def order(
+        cls, instance: ProviderInstanceModel, order_id: str
+    ) -> Dict[str, Any]:
+        found = await cls._call(
+            instance, "GET", f"/orders/{path_segment(order_id, 'order id')}"
+        )
+        return woo_order(found)
 
-    def _auth(self):
-        return (self.consumer_key, self.consumer_secret)
+    @classmethod
+    async def _note(
+        cls, instance: ProviderInstanceModel, order_id: str, note: str
+    ) -> None:
+        await cls._call(
+            instance,
+            "POST",
+            f"/orders/{path_segment(order_id, 'order id')}/notes",
+            json={"note": note, "customer_note": True},
+        )
 
-    def _api_url(self, path: str) -> str:
-        return f"{self.store_url}/wp-json/{self.api_version}/{path.lstrip('/')}"
+    @classmethod
+    async def cancel_order(
+        cls, instance: ProviderInstanceModel, order_id: str, reason: str
+    ) -> Dict[str, Any]:
+        found = await cls._call(
+            instance,
+            "PUT",
+            f"/orders/{path_segment(order_id, 'order id')}",
+            json={"status": "cancelled"},
+        )
+        if reason:
+            await cls._note(instance, order_id, f"Cancelled: {reason}")
+        return woo_order(found)
 
-    def verify_user(self):
-        """
-        Verify the user's authentication with WooCommerce.
-        If verification fails, raises an exception.
-        """
-        logging.info(f"Verifying user with WooCommerce store: {self.store_url}")
-
-        try:
-            response = requests.get(self._api_url("system_status"), auth=self._auth())
-
-            if response.status_code != 200:
-                raise Exception(
-                    f"WooCommerce user verification failed: {response.text}"
-                )
-        except Exception as e:
-            logging.error(f"Error verifying WooCommerce user: {str(e)}")
-            raise Exception(f"WooCommerce user verification failed: {str(e)}")
-
-    async def get_orders(
-        self,
-        status: str = "any",
-        start_date: Optional[datetime] = None,
-        end_date: Optional[datetime] = None,
-        limit: int = 50,
-    ) -> List[Dict]:
-        try:
-            self.verify_user()
-
-            if not start_date:
-                start_date = datetime.now() - timedelta(days=30)
-            if not end_date:
-                end_date = datetime.now()
-
-            params = {
-                "per_page": limit,
-                "after": start_date.isoformat(),
-                "before": end_date.isoformat(),
-            }
-            if status and status != "any":
-                params["status"] = status
-
-            response = requests.get(
-                self._api_url("orders"), params=params, auth=self._auth()
+    @classmethod
+    async def fulfill_order(
+        cls,
+        instance: ProviderInstanceModel,
+        order_id: str,
+        tracking_number: Optional[str],
+        carrier: Optional[str],
+    ) -> Dict[str, Any]:
+        await cls._call(
+            instance,
+            "PUT",
+            f"/orders/{path_segment(order_id, 'order id')}",
+            json={"status": "completed"},
+        )
+        if tracking_number:
+            await cls._note(
+                instance,
+                order_id,
+                f"Shipped{f' with {carrier}' if carrier else ''}: tracking {tracking_number}",
             )
+        return {"order_id": order_id, "status": "shipped", "provider": cls.name}
 
-            if response.status_code != 200:
-                raise Exception(f"Failed to fetch WooCommerce orders: {response.text}")
-
-            orders = []
-            for order in response.json():
-                orders.append(
-                    {
-                        "id": order["id"],
-                        "order_number": order.get("number", order["id"]),
-                        "customer": order.get("billing", {}),
-                        "total_price": order["total"],
-                        "created_at": order["date_created"],
-                        "status": order["status"],
-                        "line_items": order.get("line_items", []),
-                    }
-                )
-
-            return orders
-
-        except Exception as e:
-            logging.error(f"Error retrieving WooCommerce orders: {str(e)}")
-            return []
-
-    async def acknowledge_order(self, order_id: str) -> str:
-        try:
-            self.verify_user()
-
-            response = requests.put(
-                self._api_url(f"orders/{order_id}"),
-                auth=self._auth(),
-                json={"status": "processing"},
+    @classmethod
+    async def products(
+        cls, instance: ProviderInstanceModel, limit: int
+    ) -> List[Dict[str, Any]]:
+        currency = await cls._call(instance, "GET", "/data/currencies/current")
+        found = await cls._call(
+            instance,
+            "GET",
+            "/products",
+            params={
+                "per_page": min(limit, 100),
+                "orderby": "modified",
+                "order": "desc",
+            },
+        )
+        return [
+            product(
+                entry["id"],
+                sku=entry.get("sku"),
+                title=entry.get("name"),
+                description=entry.get("description"),
+                price=entry.get("price"),
+                currency=currency.get("code"),
+                quantity=entry.get("stock_quantity"),
+                images=[
+                    image["src"]
+                    for image in entry.get("images", [])
+                    if image.get("src")
+                ],
+                is_active=entry.get("status") == "publish",
+                url=entry.get("permalink"),
             )
+            for entry in found
+        ][:limit]
 
-            if response.status_code != 200:
-                raise Exception(
-                    f"Failed to acknowledge WooCommerce order: {response.text}"
-                )
-
-            return "Order acknowledged successfully."
-
-        except Exception as e:
-            logging.error(f"Error acknowledging WooCommerce order: {str(e)}")
-            return f"Failed to acknowledge order: {str(e)}"
-
-    async def cancel_order(self, order_id: str, reason: str) -> str:
-        try:
-            self.verify_user()
-
-            response = requests.put(
-                self._api_url(f"orders/{order_id}"),
-                auth=self._auth(),
-                json={"status": "cancelled", "customer_note": reason},
+    @classmethod
+    async def _product_id(cls, instance: ProviderInstanceModel, sku: str) -> int:
+        found = await cls._call(instance, "GET", "/products", params={"sku": sku})
+        if len(found) != 1:
+            raise InvalidInputExternalError(
+                f"{len(found)} products have SKU {sku!r}", provider=cls.name
             )
+        return int(found[0]["id"])
 
-            if response.status_code != 200:
-                raise Exception(f"Failed to cancel WooCommerce order: {response.text}")
+    @classmethod
+    async def set_inventory(
+        cls, instance: ProviderInstanceModel, sku: str, quantity: int
+    ) -> Dict[str, Any]:
+        product_id = await cls._product_id(instance, sku)
+        await cls._call(
+            instance,
+            "PUT",
+            f"/products/{product_id}",
+            json={"manage_stock": True, "stock_quantity": quantity},
+        )
+        return {"sku": sku, "quantity": quantity, "provider": cls.name}
 
-            return "Order cancelled successfully."
-
-        except Exception as e:
-            logging.error(f"Error cancelling WooCommerce order: {str(e)}")
-            return f"Failed to cancel order: {str(e)}"
-
-    async def get_inventory(self, sku_list: Optional[List[str]] = None) -> List[Dict]:
-        try:
-            self.verify_user()
-
-            inventory = []
-
-            if sku_list:
-                for sku in sku_list:
-                    response = requests.get(
-                        self._api_url("products"),
-                        params={"sku": sku},
-                        auth=self._auth(),
-                    )
-
-                    if response.status_code != 200:
-                        raise Exception(
-                            f"Failed to fetch WooCommerce inventory for SKU {sku}: {response.text}"
-                        )
-
-                    for product in response.json():
-                        inventory.append(self._inventory_entry(product))
-            else:
-                response = requests.get(self._api_url("products"), auth=self._auth())
-
-                if response.status_code != 200:
-                    raise Exception(
-                        f"Failed to fetch WooCommerce inventory: {response.text}"
-                    )
-
-                for product in response.json():
-                    inventory.append(self._inventory_entry(product))
-
-            return inventory
-
-        except Exception as e:
-            logging.error(f"Error retrieving WooCommerce inventory: {str(e)}")
-            return []
-
-    @staticmethod
-    def _inventory_entry(product: Dict) -> Dict:
-        return {
-            "product_id": product["id"],
-            "sku": product.get("sku", ""),
-            "available": product.get("stock_quantity"),
-            "stock_status": product.get("stock_status"),
-            "updated_at": product.get("date_modified"),
+    @classmethod
+    async def update_product(
+        cls, instance: ProviderInstanceModel, sku: str, changes: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        product_id = await cls._product_id(instance, sku)
+        body = {
+            woo: changes[ours]
+            for ours, woo in (
+                ("title", "name"),
+                ("description", "description"),
+                ("price", "regular_price"),
+            )
+            if ours in changes
         }
+        await cls._call(instance, "PUT", f"/products/{product_id}", json=body)
+        return {"sku": sku, "changed": sorted(changes), "provider": cls.name}
 
-    async def update_inventory(self, sku: str, quantity: int) -> str:
-        try:
-            self.verify_user()
-
-            lookup = requests.get(
-                self._api_url("products"), params={"sku": sku}, auth=self._auth()
-            )
-
-            if lookup.status_code != 200:
-                raise Exception(
-                    f"Failed to look up WooCommerce SKU {sku}: {lookup.text}"
+    @classmethod
+    async def returns(
+        cls, instance: ProviderInstanceModel, since: datetime, limit: int
+    ) -> List[Dict[str, Any]]:
+        refunded = await cls._call(
+            instance,
+            "GET",
+            "/orders",
+            params={
+                "status": "refunded,completed,processing",
+                "modified_after": since.isoformat(),
+                "per_page": REFUNDED_ORDERS_SCANNED,
+            },
+        )
+        found: List[Dict[str, Any]] = []
+        for entry in refunded:
+            if not entry.get("refunds"):
+                continue
+            for refund in await cls._call(
+                instance, "GET", f"/orders/{int(entry['id'])}/refunds"
+            ):
+                found.append(
+                    a_return(
+                        f"{entry['id']}:{refund['id']}",
+                        status="refunded",
+                        platform_order_id=entry["id"],
+                        reason=refund.get("reason"),
+                        refund=str(refund.get("amount", "")).lstrip("-"),
+                        currency=entry.get("currency"),
+                    )
                 )
+        return found[:limit]
 
-            products = lookup.json()
-            if not products:
-                raise Exception(f"No WooCommerce product found for SKU {sku}")
-
-            product_id = products[0]["id"]
-
-            response = requests.put(
-                self._api_url(f"products/{product_id}"),
-                auth=self._auth(),
-                json={"manage_stock": True, "stock_quantity": quantity},
-            )
-
-            if response.status_code != 200:
-                raise Exception(
-                    f"Failed to update WooCommerce inventory: {response.text}"
-                )
-
-            return "Inventory updated successfully."
-
-        except Exception as e:
-            logging.error(f"Error updating WooCommerce inventory: {str(e)}")
-            return f"Failed to update inventory: {str(e)}"
-
-    async def get_products(self, limit: int = 50, offset: int = 0) -> List[Dict]:
-        try:
-            self.verify_user()
-
-            params = {"per_page": limit, "page": (offset // limit) + 1}
-
-            response = requests.get(
-                self._api_url("products"), params=params, auth=self._auth()
-            )
-
-            if response.status_code != 200:
-                raise Exception(
-                    f"Failed to fetch WooCommerce products: {response.text}"
-                )
-
-            products = []
-            for product in response.json():
-                products.append(
-                    {
-                        "id": product["id"],
-                        "title": product["name"],
-                        "sku": product.get("sku", ""),
-                        "price": product.get("price", ""),
-                        "status": product.get("status"),
-                        "type": product.get("type"),
-                        "created_at": product.get("date_created"),
-                        "updated_at": product.get("date_modified"),
-                    }
-                )
-
-            return products
-
-        except Exception as e:
-            logging.error(f"Error retrieving WooCommerce products: {str(e)}")
-            return []
-
-    async def update_product(self, sku: str, updates: Dict) -> str:
-        try:
-            self.verify_user()
-
-            lookup = requests.get(
-                self._api_url("products"), params={"sku": sku}, auth=self._auth()
-            )
-
-            if lookup.status_code != 200:
-                raise Exception(
-                    f"Failed to look up WooCommerce SKU {sku}: {lookup.text}"
-                )
-
-            products = lookup.json()
-            if not products:
-                raise Exception(f"No WooCommerce product found for SKU {sku}")
-
-            product_id = products[0]["id"]
-
-            response = requests.put(
-                self._api_url(f"products/{product_id}"),
-                auth=self._auth(),
-                json=updates,
-            )
-
-            if response.status_code != 200:
-                raise Exception(
-                    f"Failed to update WooCommerce product: {response.text}"
-                )
-
-            return "Product updated successfully."
-
-        except Exception as e:
-            logging.error(f"Error updating WooCommerce product: {str(e)}")
-            return f"Failed to update product: {str(e)}"
-
-    async def get_returns(
-        self,
-        start_date: Optional[datetime] = None,
-        end_date: Optional[datetime] = None,
-        limit: int = 50,
-    ) -> List[Dict]:
-        try:
-            self.verify_user()
-
-            # WooCommerce core has no dedicated returns endpoint; refunded
-            # orders are the closest analog (mirrors how Shopify treats
-            # returns as order refunds).
-            if not start_date:
-                start_date = datetime.now() - timedelta(days=30)
-            if not end_date:
-                end_date = datetime.now()
-
-            params = {
-                "status": "refunded",
-                "per_page": limit,
-                "after": start_date.isoformat(),
-                "before": end_date.isoformat(),
-            }
-
-            response = requests.get(
-                self._api_url("orders"), params=params, auth=self._auth()
-            )
-
-            if response.status_code != 200:
-                raise Exception(f"Failed to fetch WooCommerce returns: {response.text}")
-
-            returns = []
-            for order in response.json():
-                returns.append(
-                    {
-                        "id": order["id"],
-                        "order_id": order["id"],
-                        "status": order["status"],
-                        "total": order.get("total"),
-                        "created_at": order.get("date_created"),
-                    }
-                )
-
-            return returns
-
-        except Exception as e:
-            logging.error(f"Error retrieving WooCommerce returns: {str(e)}")
-            return []
-
+    @classmethod
     async def process_return(
-        self, return_id: str, action: str, refund_amount: Optional[float] = None
-    ) -> str:
-        try:
-            self.verify_user()
-
-            # In WooCommerce, returns are processed as refunds on orders.
-            data: Dict[str, str] = {"reason": f"Return processed with action: {action}"}
-            if refund_amount is not None:
-                data["amount"] = str(refund_amount)
-
-            response = requests.post(
-                self._api_url(f"orders/{return_id}/refunds"),
-                auth=self._auth(),
-                json=data,
+        cls,
+        instance: ProviderInstanceModel,
+        return_id: str,
+        action: str,
+        refund: Optional[str],
+    ) -> Dict[str, Any]:
+        if action == "reject":
+            raise cls.cannot("reject a return", "WooCommerce has refunds, not returns")
+        if refund is None:
+            raise InvalidInputExternalError(
+                "approving a WooCommerce return refunds an order: give the refund",
+                provider=cls.name,
             )
-
-            if response.status_code not in (200, 201):
-                raise Exception(
-                    f"Failed to process WooCommerce return: {response.text}"
-                )
-
-            return f"Return {action.lower()}ed successfully."
-
-        except Exception as e:
-            logging.error(f"Error processing WooCommerce return: {str(e)}")
-            return f"Failed to process return: {str(e)}"
-
-    async def generate_report(
-        self,
-        report_type: str,
-        start_date: Optional[datetime] = None,
-        end_date: Optional[datetime] = None,
-    ) -> str:
-        try:
-            self.verify_user()
-
-            if not start_date:
-                start_date = datetime.now() - timedelta(days=30)
-            if not end_date:
-                end_date = datetime.now()
-
-            params = {
-                "date_min": start_date.date().isoformat(),
-                "date_max": end_date.date().isoformat(),
-            }
-
-            response = requests.get(
-                self._api_url(f"reports/{report_type}"),
-                params=params,
-                auth=self._auth(),
-            )
-
-            if response.status_code != 200:
-                raise Exception(
-                    f"Failed to generate WooCommerce report: {response.text}"
-                )
-
-            return "Report generated successfully."
-
-        except Exception as e:
-            logging.error(f"Error generating WooCommerce report: {str(e)}")
-            return f"Failed to generate report: {str(e)}"
+        created = await cls._call(
+            instance,
+            "POST",
+            f"/orders/{path_segment(return_id, 'order id')}/refunds",
+            json={"amount": refund, "api_refund": True},
+        )
+        return {
+            "return_id": f"{return_id}:{created['id']}",
+            "status": "refunded",
+            "refund": refund,
+            "provider": cls.name,
+        }

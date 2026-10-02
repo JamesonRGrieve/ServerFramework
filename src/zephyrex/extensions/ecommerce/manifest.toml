@@ -6,7 +6,7 @@
 
 name = "ecommerce"
 version = "1.0.0"
-description = "E-commerce marketplace integration for various platforms including Walmart, Amazon, Shopify, etc."
+description = "Orders, products, inventory and returns across Shopify, WooCommerce, Etsy, eBay, Amazon, Walmart and AliExpress"
 author = "ZephyrexTechnologies"
 entry_module = "EXT_ECommerce"
 minimum_framework_version = "0.0.0"
