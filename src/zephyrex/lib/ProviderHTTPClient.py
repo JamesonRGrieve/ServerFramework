@@ -35,7 +35,7 @@ import socket
 import weakref
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Mapping, Optional, Tuple, Type
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import httpx
 from pydantic import BaseModel
@@ -366,6 +366,10 @@ def get_sync_client(policy: ClientPolicy) -> httpx.Client:
 # ----- Response classification ---------------------------------------------
 
 
+# How much of an error body a typed error carries.
+ERROR_BODY_BYTES = 512
+
+
 def _classify_response(response: httpx.Response, provider: Optional[str]) -> None:
     """Raise the appropriate `BaseExternalError` subclass for non-2xx."""
     status = response.status_code
@@ -390,7 +394,7 @@ def _safe_response_text(response: httpx.Response) -> str:
     catch every disclosure, so the safer default is a tighter cap.
     """
     try:
-        return response.text[:512]
+        return response.text[:ERROR_BODY_BYTES]
     except Exception:
         return "<unreadable response body>"
 
@@ -440,6 +444,22 @@ def _maybe_warn_version_without_header(provider: Any) -> None:
         name,
         version,
     )
+
+
+DEFAULT_MAX_REDIRECTS = 5
+
+
+@dataclass(frozen=True)
+class FetchedResource:
+    """A body read by ``ProviderHTTPClient.fetch``: where it was finally
+    found (after redirects), its status and content type, and its bytes,
+    ``truncated`` when the cap cut it short."""
+
+    url: str
+    status: int
+    content_type: str
+    body: bytes
+    truncated: bool
 
 
 class ProviderHTTPClient:
@@ -551,6 +571,82 @@ class ProviderHTTPClient:
         return self.policy.timeout
 
     # --- Public verb methods (async) ---
+
+    async def fetch(
+        self,
+        url: str,
+        *,
+        max_bytes: int,
+        max_redirects: int = DEFAULT_MAX_REDIRECTS,
+        headers: Optional[Mapping[str, str]] = None,
+    ) -> FetchedResource:
+        """GET ``url`` for its body, read no further than ``max_bytes``
+        (the rest is dropped and ``truncated`` set), following up to
+        ``max_redirects`` redirects, each of them checked by the SSRF
+        guard as the first address was: a public page cannot redirect
+        the server into its own network."""
+        current = url
+        merged_headers = self._build_headers(headers, None, None)
+        client = get_async_client(self.policy)
+        for _ in range(max_redirects + 1):
+            try:
+                validate_outbound_url(current)
+            except SSRFGuardError as exc:
+                raise InvalidInputExternalError(
+                    f"Outbound URL refused by SSRF guard: {exc}",
+                    provider=self.provider_name,
+                )
+            self._acquire_rate_token(None)
+            try:
+                async with client.stream(
+                    "GET",
+                    current,
+                    headers=merged_headers,
+                    timeout=self._resolve_timeout(None),
+                ) as response:
+                    if response.is_redirect and response.headers.get("location"):
+                        current = urljoin(current, response.headers["location"])
+                        continue
+                    body = bytearray()
+                    truncated = False
+                    async for chunk in response.aiter_bytes():
+                        body.extend(chunk)
+                        if len(body) > max_bytes:
+                            del body[max_bytes:]
+                            truncated = True
+                            break
+            except httpx.TimeoutException as exc:
+                raise TransientExternalError(
+                    f"Timeout fetching {_where(current)}",
+                    provider=self.provider_name,
+                    cause=exc,
+                )
+            except httpx.RequestError as exc:
+                raise TransientExternalError(
+                    f"Network error fetching {_where(current)}: {exc!s}",
+                    provider=self.provider_name,
+                    cause=exc,
+                )
+            if not 200 <= response.status_code < 300:
+                raise map_upstream_status(
+                    response.status_code,
+                    f"Upstream returned status {response.status_code}",
+                    provider=self.provider_name,
+                    upstream_payload=_redact_secret(
+                        bytes(body[:ERROR_BODY_BYTES]).decode("utf-8", "replace")
+                    ),
+                )
+            return FetchedResource(
+                url=current,
+                status=response.status_code,
+                content_type=response.headers.get("content-type", ""),
+                body=bytes(body),
+                truncated=truncated,
+            )
+        raise InvalidInputExternalError(
+            f"{_where(url)} redirected more than {max_redirects} times",
+            provider=self.provider_name,
+        )
 
     async def request(
         self,
