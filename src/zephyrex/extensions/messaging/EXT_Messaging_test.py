@@ -15,11 +15,7 @@ from zephyrex.extensions.ExternalErrors import (
     PermanentExternalError,
     TransientExternalError,
 )
-from zephyrex.extensions.messaging.EXT_Messaging import (
-    EXT_Messaging,
-    history_limit,
-    path_segment,
-)
+from zephyrex.extensions.messaging.EXT_Messaging import EXT_Messaging, history_limit
 from zephyrex.extensions.messaging.PRV_Discord import PRV_Discord_Messaging
 from zephyrex.extensions.messaging.PRV_Facebook import PRV_Facebook_Messaging
 from zephyrex.extensions.messaging.PRV_Microsoft import PRV_Microsoft_Messaging
@@ -65,11 +61,6 @@ class TestExtension:
 
     def test_history_is_bounded(self):
         assert history_limit(0) == 1 and history_limit(10_000) == 100
-
-    @pytest.mark.parametrize("value", ["../x", "a/b", "a b", ""])
-    def test_an_id_cannot_leave_its_path_segment(self, value):
-        with pytest.raises(InvalidInputExternalError):
-            path_segment(value, "channel")
 
 
 class TestRefusals:

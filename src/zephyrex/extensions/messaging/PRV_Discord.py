@@ -10,10 +10,8 @@ from typing import Any, ClassVar, Dict, List, Tuple
 
 from zephyrex.extensions.AbstractExtensionProvider import InstanceSetting
 from zephyrex.extensions.ExternalErrors import TransientExternalError
-from zephyrex.extensions.messaging.EXT_Messaging import (
-    AbstractMessagingProvider,
-    path_segment,
-)
+from zephyrex.extensions.messaging.EXT_Messaging import AbstractMessagingProvider
+from zephyrex.lib.ProviderHTTPClient import path_segment
 from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 
 DISCORD_API = "https://discord.com/api/v10"

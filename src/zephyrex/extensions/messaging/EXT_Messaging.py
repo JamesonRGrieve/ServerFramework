@@ -13,10 +13,8 @@ and so on. An operation a platform cannot do is refused with a
 ``PermanentExternalError`` that says why.
 """
 
-import json
-import re
 from abc import abstractmethod
-from typing import Any, ClassVar, Dict, List, Set, Type
+from typing import Any, ClassVar, Dict, List, Set
 
 from zephyrex.extensions.AbstractExtensionProvider import (
     AbstractProviderInstance,
@@ -25,7 +23,6 @@ from zephyrex.extensions.AbstractExtensionProvider import (
     ability,
 )
 from zephyrex.extensions.ExternalErrors import (
-    AuthExternalError,
     InvalidInputExternalError,
     PermanentExternalError,
 )
@@ -35,54 +32,10 @@ from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 MESSAGING_REQUEST_TIMEOUT_SECONDS = 15.0
 DEFAULT_HISTORY_LIMIT = 20
 MAX_HISTORY_LIMIT = 100
-_PATH_SAFE = re.compile(r"^[A-Za-z0-9_.:@+=-]+$")
-
-
-def path_segment(value: str, what: str) -> str:
-    """``value`` as one URL path segment (an id), refused otherwise: it is
-    interpolated into a path, where ``../x`` would reach another endpoint."""
-    if not _PATH_SAFE.match(value):
-        raise InvalidInputExternalError(f"{what} {value!r} is not a valid id")
-    return value
 
 
 def history_limit(limit: int) -> int:
     return max(1, min(limit, MAX_HISTORY_LIMIT))
-
-
-# Meta's Graph API answers a bad token with HTTP 400 and error code 190
-# (OAuthException), not 401.
-META_GRAPH_API = "https://graph.facebook.com/v21.0"
-_META_INVALID_TOKEN = 190
-
-
-async def meta_graph_post(
-    provider: Type["AbstractMessagingProvider"],
-    path: str,
-    payload: Dict[str, Any],
-    token: str,
-) -> Dict[str, Any]:
-    """POST ``payload`` to Meta's Graph API ``path`` with ``token``; a
-    refused token is an ``AuthExternalError`` (so the rotation moves on)."""
-    try:
-        answer: Dict[str, Any] = await provider.http().post(
-            f"{META_GRAPH_API}/{path}",
-            json=payload,
-            headers={"Authorization": f"Bearer {token}"},
-        )
-    except InvalidInputExternalError as exc:
-        try:
-            code = json.loads(str(exc.upstream_payload))["error"]["code"]
-        except (ValueError, KeyError, TypeError):
-            raise exc from None
-        if code == _META_INVALID_TOKEN:
-            raise AuthExternalError(
-                "Meta refused the access token",
-                provider=provider.name,
-                upstream_status=exc.upstream_status,
-            ) from exc
-        raise
-    return answer
 
 
 class AbstractMessagingProvider(AbstractStaticProvider):

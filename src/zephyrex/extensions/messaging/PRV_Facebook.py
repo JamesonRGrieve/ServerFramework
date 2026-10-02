@@ -12,10 +12,8 @@ from typing import Any, ClassVar, Dict, List, Tuple
 
 from zephyrex.extensions.AbstractExtensionProvider import InstanceSetting
 from zephyrex.extensions.ExternalErrors import TransientExternalError
-from zephyrex.extensions.messaging.EXT_Messaging import (
-    AbstractMessagingProvider,
-    meta_graph_post,
-)
+from zephyrex.extensions.messaging.EXT_Messaging import AbstractMessagingProvider
+from zephyrex.lib.MetaGraph import meta_graph
 from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 
 
@@ -43,15 +41,16 @@ class PRV_Facebook_Messaging(AbstractMessagingProvider):
             raise TransientExternalError(
                 "Messenger Page token not configured", provider=cls.name
             )
-        sent = await meta_graph_post(
+        sent = await meta_graph(
             cls,
+            "POST",
             "me/messages",
-            {
+            token,
+            json_body={
                 "recipient": {"id": recipient},
                 "messaging_type": "RESPONSE",
                 "message": {"text": text},
             },
-            token,
         )
         return {
             "message_id": sent["message_id"],

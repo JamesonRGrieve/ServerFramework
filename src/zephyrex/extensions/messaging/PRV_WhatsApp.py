@@ -14,11 +14,9 @@ from typing import Any, ClassVar, Dict, List, Tuple
 
 from zephyrex.extensions.AbstractExtensionProvider import InstanceSetting
 from zephyrex.extensions.ExternalErrors import TransientExternalError
-from zephyrex.extensions.messaging.EXT_Messaging import (
-    AbstractMessagingProvider,
-    meta_graph_post,
-    path_segment,
-)
+from zephyrex.extensions.messaging.EXT_Messaging import AbstractMessagingProvider
+from zephyrex.lib.MetaGraph import meta_graph
+from zephyrex.lib.ProviderHTTPClient import path_segment
 from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 
 
@@ -56,16 +54,17 @@ class PRV_WhatsApp_Messaging(AbstractMessagingProvider):
                 "WhatsApp access token and phone_number_id not configured",
                 provider=cls.name,
             )
-        sent = await meta_graph_post(
+        sent = await meta_graph(
             cls,
+            "POST",
             f"{path_segment(number, 'WhatsApp phone_number_id')}/messages",
-            {
+            token,
+            json_body={
                 "messaging_product": "whatsapp",
                 "to": recipient.lstrip("+"),
                 "type": "text",
                 "text": {"body": text},
             },
-            token,
         )
         return {
             "message_id": sent["messages"][0]["id"],

@@ -30,6 +30,7 @@ import functools
 import ipaddress
 import logging
 import os
+import re
 import socket
 import weakref
 from dataclasses import dataclass, field
@@ -113,6 +114,17 @@ def _where(url: str) -> str:
     segment, API keys travel as parameters)."""
     parsed = urlparse(url)
     return f"{parsed.scheme}://{parsed.netloc}" if parsed.netloc else "<url>"
+
+
+_PATH_SAFE = re.compile(r"^[A-Za-z0-9_.:@+=-]+$")
+
+
+def path_segment(value: str, what: str) -> str:
+    """``value`` as one URL path segment (an id), refused otherwise: it is
+    interpolated into a path, where ``../x`` would reach another endpoint."""
+    if not _PATH_SAFE.match(value) or set(value) == {"."}:
+        raise InvalidInputExternalError(f"{what} {value!r} is not a valid id")
+    return value
 
 
 def _allowed_hosts() -> List[str]:

@@ -25,8 +25,21 @@ from zephyrex.lib.ProviderHTTPClient import (
     get_async_client,
     get_sync_client,
     get_traceparent,
+    path_segment,
     set_traceparent,
 )
+
+
+@pytest.mark.parametrize("value", ["123456", "C0123ABC", "a.b@c:d+e=f-g_h"])
+def test_an_id_is_one_path_segment(value):
+    assert path_segment(value, "id") == value
+
+
+@pytest.mark.parametrize("value", ["../x", "a/b", "a b", "", "..", ".", "a?b", "a#b"])
+def test_an_id_cannot_leave_its_path_segment(value):
+    """``..`` alone passed the old check and climbed one path level."""
+    with pytest.raises(InvalidInputExternalError):
+        path_segment(value, "id")
 
 
 @pytest.fixture(autouse=True)
