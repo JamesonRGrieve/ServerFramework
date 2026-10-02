@@ -1941,6 +1941,27 @@ class AbstractStaticExtension(
         return call
 
     @classmethod
+    def as_requester(cls, manager_class: Type[Any], requester_id: str) -> Any:
+        """``manager_class`` acting as ``requester_id`` on the running app's
+        registry: what an ability that reads or writes a user's records
+        works through, under that user's permissions. 400 without a
+        requester; 503 before an app is running."""
+        from zephyrex.pydantic2.registry import ModelRegistry
+
+        if not requester_id or not str(requester_id).strip():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"{cls.name}: requester_id names the user acted for",
+            )
+        registry = ModelRegistry.attached()
+        if registry is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"{cls.name}: no running app to act in",
+            )
+        return manager_class(model_registry=registry, requester_id=requester_id)
+
+    @classmethod
     async def rotate_provider(cls, method_name: str, *args: Any, **kwargs: Any) -> Any:
         """Run ``method_name`` on the provider serving each instance of this
         extension's root rotation, with failover: the provider method gets the

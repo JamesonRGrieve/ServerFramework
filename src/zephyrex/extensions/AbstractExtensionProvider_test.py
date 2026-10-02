@@ -1511,3 +1511,44 @@ class TestExtensionRegistryDeniesOverride:
         registry.register_extension(Ext1)
         with pytest.raises(Exception):
             registry.register_extension(Ext2)
+
+
+class TestAsRequester:
+    """A data ability works through a manager acting as a named user."""
+
+    class _Manager:
+        def __init__(self, model_registry: Any, requester_id: str) -> None:
+            self.model_registry, self.requester_id = model_registry, requester_id
+
+    class _Ext(AbstractStaticExtension):
+        name = "as_requester_probe"
+        description = "probe"
+
+    def test_the_manager_acts_as_the_requester(self, monkeypatch):
+        from zephyrex.pydantic2.registry import ModelRegistry
+
+        registry = object()
+        monkeypatch.setattr(
+            ModelRegistry, "attached", classmethod(lambda cls: registry)
+        )
+        manager = self._Ext.as_requester(self._Manager, "user-1")
+        assert manager.model_registry is registry
+        assert manager.requester_id == "user-1"
+
+    @pytest.mark.parametrize("requester", ["", "   "])
+    def test_a_requester_is_required(self, requester):
+        from fastapi import HTTPException
+
+        with pytest.raises(HTTPException) as raised:
+            self._Ext.as_requester(self._Manager, requester)
+        assert raised.value.status_code == 400
+
+    def test_no_running_app_is_503(self, monkeypatch):
+        from fastapi import HTTPException
+
+        from zephyrex.pydantic2.registry import ModelRegistry
+
+        monkeypatch.setattr(ModelRegistry, "attached", classmethod(lambda cls: None))
+        with pytest.raises(HTTPException) as raised:
+            self._Ext.as_requester(self._Manager, "user-1")
+        assert raised.value.status_code == 503
