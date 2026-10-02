@@ -434,6 +434,29 @@ class ProviderSettingsCatalogue(BaseModel):
     settings: List[InstanceSettingInfo]
 
 
+class InstanceOwner(BaseModel):
+    """Whose records a provider instance's work produces: the requester to
+    write them as, and the user and team they belong to."""
+
+    requester_id: str
+    user_id: Optional[str] = None
+    team_id: Optional[str] = None
+
+
+def instance_owner(model_registry: Any, provider_instance_id: str) -> InstanceOwner:
+    """The owner of a provider instance (an account, a store): its user,
+    else whoever created it, else root. Records an instance's work
+    produces are written as this owner, so whoever can see the instance
+    sees them; a root instance's stay root's."""
+    instance = ProviderInstanceManager(
+        model_registry=model_registry, requester_id=env("ROOT_ID")
+    ).get(id=provider_instance_id)
+    owner = instance.user_id or instance.created_by_user_id or env("ROOT_ID")
+    return InstanceOwner(
+        requester_id=str(owner), user_id=instance.user_id, team_id=instance.team_id
+    )
+
+
 def provider_class_named(model_registry: Any, name: str) -> Optional[Any]:
     """The loaded provider class called ``name``, among the attached app's
     extensions; None when no loaded extension has one."""

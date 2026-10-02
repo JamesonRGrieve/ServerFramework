@@ -14,7 +14,6 @@ from typing import Any, ClassVar, Dict, List, Optional, Type
 
 from pydantic import Field
 
-from zephyrex.lib.Environment import env
 from zephyrex.logic.AbstractLogicManager import (
     AbstractBLLManager,
     ApplicationModel,
@@ -23,7 +22,7 @@ from zephyrex.logic.AbstractLogicManager import (
     StringSearchModel,
 )
 from zephyrex.logic.BLL_Auth import TeamModel, UserModel
-from zephyrex.logic.BLL_Providers import ProviderInstanceManager
+from zephyrex.logic.BLL_Providers import instance_owner
 from zephyrex.pydantic2.fastapi import RouterMixin
 from zephyrex.pydantic2.fastapi.types import RouteType
 from zephyrex.pydantic2.registry import BaseModel
@@ -91,15 +90,12 @@ def record_publication(
     """Record a post a platform accepted, as its account's owner; the
     record's id. ``post`` names the provider, the instance and the
     platform's post id and address."""
-    instance = ProviderInstanceManager(
-        model_registry=model_registry, requester_id=env("ROOT_ID")
-    ).get(id=post["provider_instance_id"])
-    owner = instance.user_id or instance.created_by_user_id or env("ROOT_ID")
+    owner = instance_owner(model_registry, post["provider_instance_id"])
     created = SocialPublicationManager(
-        model_registry=model_registry, requester_id=str(owner)
+        model_registry=model_registry, requester_id=owner.requester_id
     ).create(
-        user_id=instance.user_id,
-        team_id=instance.team_id,
+        user_id=owner.user_id,
+        team_id=owner.team_id,
         provider=post["provider"],
         provider_instance_id=post["provider_instance_id"],
         platform_post_id=post["platform_post_id"],
