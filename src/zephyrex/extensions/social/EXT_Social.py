@@ -35,7 +35,6 @@ from zephyrex.extensions.ExternalErrors import (
     TransientExternalError,
 )
 from zephyrex.lib.Dependencies import Dependencies
-from zephyrex.lib.Environment import env
 from zephyrex.lib.MetaGraph import meta_graph
 from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 
@@ -204,23 +203,14 @@ class EXT_Social(AbstractStaticExtension):
     @classmethod
     def _record(cls, content: str, media_urls: List[str], post: Dict[str, Any]) -> str:
         """Record an accepted post; its publication id."""
-        from zephyrex.extensions.social.BLL_Social import SocialPublicationManager
+        from zephyrex.extensions.social.BLL_Social import record_publication
 
         root = cls.root
         if root is None:
             raise TransientExternalError("No social rotation to record against")
-        created = SocialPublicationManager(
-            model_registry=root.model_registry, requester_id=env("ROOT_ID")
-        ).create(
-            provider=post["provider"],
-            provider_instance_id=post["provider_instance_id"],
-            platform_post_id=post["platform_post_id"],
-            url=post["url"],
-            content=content,
-            media_urls=media_urls or None,
-            published_at=datetime.now(UTC),
+        return record_publication(
+            root.model_registry, post, content, media_urls, datetime.now(UTC)
         )
-        return str(created.id)
 
     @classmethod
     @ability("publish_post")

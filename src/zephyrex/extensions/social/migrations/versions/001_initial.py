@@ -57,6 +57,20 @@ def upgrade() -> None:
             comment="When the platform accepted it",
         ),
         sa.Column(
+            "team_id",
+            sa.String(),
+            sa.ForeignKey("teams.id"),
+            nullable=True,
+            comment="Optional foreign key to TeamModel",
+        ),
+        sa.Column(
+            "user_id",
+            sa.String(),
+            sa.ForeignKey("users.id"),
+            nullable=True,
+            comment="Optional foreign key to UserModel",
+        ),
+        sa.Column(
             "created_by_user_id",
             sa.String(),
             sa.ForeignKey("users.id"),
