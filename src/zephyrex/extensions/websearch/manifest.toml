@@ -6,7 +6,7 @@
 
 name = "websearch"
 version = "1.0.0"
-description = "Provides web search capabilities using various search engines"
+description = "Web search through Brave Search or SearXNG, and reading web pages"
 author = "ZephyrexTechnologies"
 entry_module = "EXT_Websearch"
 minimum_framework_version = "0.0.0"

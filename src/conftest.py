@@ -222,6 +222,9 @@ EXTERNAL_API_PROVIDER_ENV_VARS: Dict[str, List[str]] = {
     "google_calendar_test": ["GOOGLE_CALENDAR_TOKEN"],
     "microsoft_calendar_test": ["MICROSOFT_GRAPH_TOKEN"],
     "calendly_test": ["CALENDLY_TOKEN"],
+    # Web search: a Brave Search API key, and a SearXNG server with JSON output.
+    "brave_test": ["BRAVE_SEARCH_API_KEY"],
+    "searxng_test": ["SEARXNG_URL"],
     # SendGrid sandbox.
     "sendgrid": ["SENDGRID_API_KEY"],
     # Twilio sandbox.
@@ -908,6 +911,7 @@ from conftest_factories import (  # noqa: F401
     make_team_b,
     make_user_b,
 )
+from conftest_http import local_http_server  # noqa: F401
 
 
 @pytest.fixture(scope="session")

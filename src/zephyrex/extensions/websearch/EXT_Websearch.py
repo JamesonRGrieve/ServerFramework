@@ -1,355 +1,258 @@
-from typing import Any, Dict, List, Set
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""Web search and page reading.
+
+``web_search`` asks a search engine (Brave Search's API or a SearXNG
+server) through the rotation, failing over between them. ``fetch_page``
+reads one page here: through the SSRF guard on the address and every
+redirect (a page cannot steer the server into its own network), reading
+at most ``MAX_PAGE_BYTES``, text pages only. ``research`` searches and
+reads the top results.
+
+A result is ``{title, url, snippet, provider}``; a page is ``{url,
+title, text, links, truncated}``.
+"""
+
+import asyncio
+from abc import abstractmethod
+from html.parser import HTMLParser
+from typing import Any, ClassVar, Dict, List, Optional, Set, Tuple
+from urllib.parse import urljoin, urlparse
 
 from zephyrex.extensions.AbstractExtensionProvider import (
+    AbstractProviderInstance,
     AbstractStaticExtension,
+    AbstractStaticProvider,
     ability,
 )
-from zephyrex.lib.Dependencies import EXT_Dependency, PIP_Dependency
-from zephyrex.lib.Logging import logger
+from zephyrex.extensions.ExternalErrors import (
+    BaseExternalError,
+    InvalidInputExternalError,
+)
+from zephyrex.lib.Dependencies import Dependencies
+from zephyrex.lib.ProviderHTTPClient import ClientPolicy, ProviderHTTPClient
+from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 
-SUPPORTED_PROVIDER_TYPES = ("brave", "google", "playwright")
+SEARCH_REQUEST_TIMEOUT_SECONDS = 15.0
+PAGE_REQUEST_TIMEOUT_SECONDS = 20.0
+DEFAULT_RESULTS = 10
+MAX_RESULTS = 20
+MAX_PAGE_BYTES = 2 * 1024 * 1024
+DEFAULT_PAGE_CHARS = 20_000
+MAX_PAGE_CHARS = 200_000
+MAX_LINKS = 100
+MAX_RESEARCH_PAGES = 5
+TEXT_TYPES = ("text/html", "application/xhtml+xml", "text/plain", "application/json")
+# Elements whose text is not the page's content.
+_SKIPPED = {"script", "style", "noscript", "template", "svg", "head"}
+_BLOCKS = {"p", "div", "br", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6", "section"}
+
+
+class PageText(HTMLParser):
+    """An HTML page's title, readable text and outgoing links."""
+
+    def __init__(self, base_url: str) -> None:
+        super().__init__(convert_charrefs=True)
+        self.base_url = base_url
+        self.title = ""
+        self.links: List[Dict[str, str]] = []
+        self._chunks: List[str] = []
+        self._skipping = 0
+        self._in_title = False
+        self._anchor: Optional[str] = None
+        self._anchor_text: List[str] = []
+
+    def handle_starttag(self, tag: str, attrs: List[Tuple[str, Optional[str]]]) -> None:
+        if tag in _SKIPPED:
+            self._skipping += 1
+        if tag == "title":
+            self._in_title = True
+        if tag in _BLOCKS:
+            self._chunks.append("\n")
+        if tag == "a":
+            href = dict(attrs).get("href")
+            self._anchor = urljoin(self.base_url, href) if href else None
+            self._anchor_text = []
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in _SKIPPED and self._skipping:
+            self._skipping -= 1
+        if tag in _BLOCKS:
+            self._chunks.append("\n")
+        if tag == "title":
+            self._in_title = False
+        if tag == "a" and self._anchor:
+            if urlparse(self._anchor).scheme in ("http", "https"):
+                self.links.append(
+                    {
+                        "text": " ".join("".join(self._anchor_text).split()),
+                        "url": self._anchor,
+                    }
+                )
+            self._anchor = None
+
+    def handle_data(self, data: str) -> None:
+        if self._in_title:
+            self.title += data
+        if self._skipping:
+            return
+        self._chunks.append(data)
+        if self._anchor is not None:
+            self._anchor_text.append(data)
+
+    def text(self) -> str:
+        lines = (" ".join(line.split()) for line in "".join(self._chunks).splitlines())
+        return "\n".join(line for line in lines if line)
+
+
+def plain(html: str) -> str:
+    """A fragment's text, tags dropped (search snippets carry <strong>)."""
+    parser = PageText("")
+    parser.feed(html)
+    return parser.text().replace("\n", " ")
+
+
+def result_limit(limit: int) -> int:
+    if not 1 <= limit <= MAX_RESULTS:
+        raise InvalidInputExternalError(f"limit must be 1-{MAX_RESULTS}")
+    return limit
+
+
+def read_page(
+    url: str, content_type: str, body: bytes, max_chars: int, truncated: bool
+) -> Dict[str, Any]:
+    """A fetched page's title, text (at most ``max_chars``) and links."""
+    media_type = content_type.split(";")[0].strip().lower()
+    if media_type not in TEXT_TYPES:
+        raise InvalidInputExternalError(
+            f"{url} is {media_type or 'of no stated type'}, not a text page"
+        )
+    charset = "utf-8"
+    for parameter in content_type.split(";")[1:]:
+        name, _, value = parameter.strip().partition("=")
+        if name.lower() == "charset" and value:
+            charset = value.strip('"')
+    try:
+        decoded = body.decode(charset, errors="replace")
+    except LookupError:
+        decoded = body.decode("utf-8", errors="replace")
+    title, links = "", []
+    if media_type in ("text/html", "application/xhtml+xml"):
+        parser = PageText(url)
+        parser.feed(decoded)
+        title, text, links = " ".join(parser.title.split()), parser.text(), parser.links
+    else:
+        text = decoded
+    if len(text) > max_chars:
+        text, truncated = text[:max_chars], True
+    unique: Dict[str, Dict[str, str]] = {}
+    for link in links:
+        unique.setdefault(link["url"], link)
+    return {
+        "url": url,
+        "title": title,
+        "text": text,
+        "links": list(unique.values())[:MAX_LINKS],
+        "truncated": truncated,
+    }
+
+
+class AbstractWebsearchProvider(AbstractStaticProvider):
+    """A web search engine."""
+
+    name: ClassVar[str] = ""
+    friendly_name: ClassVar[str] = ""
+    description: ClassVar[str] = ""
+    _abilities: ClassVar[Set[str]] = {"web_search", "research"}
+    _env: ClassVar[Dict[str, Any]] = {}
+    http_timeout_seconds: ClassVar[float] = SEARCH_REQUEST_TIMEOUT_SECONDS
+
+    @classmethod
+    def bond_instance(cls, instance: ProviderInstanceModel) -> AbstractProviderInstance:
+        return AbstractProviderInstance(instance)
+
+    @classmethod
+    def result(cls, title: str, url: str, snippet: str) -> Dict[str, Any]:
+        return {"title": title, "url": url, "snippet": snippet, "provider": cls.name}
+
+    @classmethod
+    @abstractmethod
+    async def search(
+        cls, instance: ProviderInstanceModel, query: str, limit: int
+    ) -> List[Dict[str, Any]]:
+        """Results for ``query``, best first."""
+
+    @classmethod
+    def services(cls) -> List[str]:
+        return ["websearch"]
 
 
 class EXT_Websearch(AbstractStaticExtension):
-    """
-    Web search extension for AGInfrastructure.
+    name: ClassVar[str] = "websearch"
+    version: ClassVar[str] = "1.0.0"
+    description: ClassVar[str] = (
+        "Web search through Brave Search or SearXNG, and reading web pages"
+    )
 
-    Provides web search, website scraping, and AI-powered web research
-    across multiple providers:
-    - Brave Search (default): HTTP + BeautifulSoup, no browser required
-    - Google Custom Search: JSON API, result metadata only
-    - Playwright: headless browser for JavaScript-rendered pages
+    _env: ClassVar[Dict[str, Any]] = {}
+    dependencies: ClassVar[Dependencies] = Dependencies([])
+    _abilities: ClassVar[Set[str]] = {"web_search", "fetch_page", "research"}
 
-    Component loading (DB, BLL, EP) is handled automatically by the import
-    system based on file naming conventions.
-    """
+    @classmethod
+    @ability("web_search")
+    async def web_search(
+        cls, query: str, limit: int = DEFAULT_RESULTS
+    ) -> List[Dict[str, Any]]:
+        """Search the web."""
+        if not query.strip():
+            raise InvalidInputExternalError("a search needs a query")
+        result: List[Dict[str, Any]] = await cls.rotate_provider(
+            "search", query, result_limit(limit)
+        )
+        return result
 
-    # Extension metadata
-    name = "websearch"
-    version = "1.0.0"
-    description = "Provides web search capabilities using various search engines"
+    @classmethod
+    @ability("fetch_page")
+    async def fetch_page(
+        cls, url: str, max_chars: int = DEFAULT_PAGE_CHARS
+    ) -> Dict[str, Any]:
+        """Read a web page's title, text and links."""
+        if not 1 <= max_chars <= MAX_PAGE_CHARS:
+            raise InvalidInputExternalError(f"max_chars must be 1-{MAX_PAGE_CHARS}")
+        client = ProviderHTTPClient(
+            policy=ClientPolicy(timeout=PAGE_REQUEST_TIMEOUT_SECONDS),
+            provider_name=cls.name,
+        )
+        fetched = await client.fetch(
+            url,
+            max_bytes=MAX_PAGE_BYTES,
+            headers={"Accept": "text/html,application/xhtml+xml,text/plain;q=0.9"},
+        )
+        return read_page(
+            fetched.url,
+            fetched.content_type,
+            fetched.body,
+            max_chars,
+            fetched.truncated,
+        )
 
-    # Define dependencies
-    ext_dependencies = [
-        EXT_Dependency(
-            name="memories",
-            friendly_name="Memories Extension",
-            optional=True,
-            reason="Optional memory storage for search results",
-        ),
-    ]
+    @classmethod
+    @ability("research")
+    async def research(cls, query: str, pages: int = 3) -> Dict[str, Any]:
+        """Search, then read the top ``pages`` results (a page that cannot
+        be read says why)."""
+        if not 1 <= pages <= MAX_RESEARCH_PAGES:
+            raise InvalidInputExternalError(f"pages must be 1-{MAX_RESEARCH_PAGES}")
+        results = await cls.web_search(query, pages)
 
-    pip_dependencies = [
-        PIP_Dependency(
-            name="beautifulsoup4",
-            friendly_name="Beautiful Soup 4",
-            optional=False,
-            semver=">=4.11.0",
-            reason="HTML parsing for web search and scraping",
-        ),
-        PIP_Dependency(
-            name="requests",
-            friendly_name="HTTP Requests Library",
-            optional=False,
-            semver=">=2.28.0",
-            reason="HTTP requests for web search and scraping",
-        ),
-        PIP_Dependency(
-            name="google-api-python-client",
-            friendly_name="Google API Client",
-            optional=True,
-            semver=">=2.0.0",
-            reason="Google Custom Search integration",
-        ),
-        PIP_Dependency(
-            name="playwright",
-            friendly_name="Playwright",
-            optional=True,
-            semver=">=1.28.0",
-            reason="Headless-browser search/scraping of JavaScript-rendered pages",
-        ),
-    ]
-
-    sys_dependencies: List[Any] = []
-
-    # Define database tables (none for this extension)
-    db_tables: List[Any] = []
-
-    # Define what capabilities this extension provides
-    capabilities = [
-        "web_search",
-        "website_scraping",
-        "ai_web_research",
-        "content_extraction",
-        "search_aggregation",
-    ]
-
-    def __init__(
-        self,
-        provider_type: str = "brave",
-        api_key: str = "",
-        agent_name: str = "",
-        conversation_name: str = "",
-        conversation_id: str = "",
-        user: str = "",
-        **kwargs: Any,
-    ):
-        super().__init__()
-
-        self.provider_type = provider_type.lower()
-        self.api_key = api_key
-        self.agent_name = agent_name
-        self.conversation_name = conversation_name
-        self.conversation_id = conversation_id
-        self.user = user
-        self.settings: Dict[str, Any] = kwargs
-        self.provider = None
-        self.commands: Dict[str, Any] = {}
-
-        # Give each instance its own copy of the mutable class-level
-        # capability list so register_capability() on one instance can never
-        # leak into the class default (and therefore into sibling instances).
-        self.capabilities = list(type(self).capabilities)
-
-    def on_initialize(self) -> bool:
-        """Initialize the Websearch extension with the appropriate provider."""
-        logger.debug("Initializing Websearch Extension...")
-
-        try:
-            self._create_provider()
-            self._register_commands()
-
-            for capability in self.capabilities:
-                self.register_capability(capability)
-
-            logger.debug("Websearch extension initialized successfully")
-            return True
-
-        except Exception as e:
-            logger.error(f"Failed to initialize Websearch extension: {str(e)}")
-            return False
-
-    def _create_provider(self) -> None:
-        """Create the appropriate websearch provider based on provider_type."""
-        provider_mapping = {
-            "brave": (
-                "zephyrex.extensions.websearch.PRV_BraveSearch",
-                "BraveSearchProvider",
-            ),
-            "google": (
-                "zephyrex.extensions.websearch.PRV_GoogleSearch",
-                "GoogleSearchProvider",
-            ),
-            "playwright": (
-                "zephyrex.extensions.websearch.PRV_Playwright",
-                "PlaywrightProvider",
-            ),
-        }
-
-        if self.provider_type not in provider_mapping:
-            logger.error(f"Unsupported websearch provider: {self.provider_type}")
-            self.provider = None
-            return
-
-        module_name, class_name = provider_mapping[self.provider_type]
-
-        try:
-            module = __import__(module_name, fromlist=[class_name])
-            provider_class = getattr(module, class_name)
-
-            self.provider = provider_class(
-                api_key=self.api_key,
-                agent_name=self.agent_name,
-                conversation_name=self.conversation_name,
-                conversation_id=self.conversation_id,
-                user=self.user,
-                extension_id=self.name,
-                **self.settings,
-            )
-            logger.debug(
-                f"Websearch provider for {self.provider_type} created successfully"
-            )
-
-        except ImportError as e:
-            logger.warning(
-                f"Could not import websearch provider for {self.provider_type}: {e}"
-            )
-            self.provider = None
-        except Exception as e:
-            logger.error(f"Error creating websearch provider: {str(e)}")
-            self.provider = None
-
-    def _register_commands(self) -> None:
-        """Register commands based on available provider."""
-        if self.provider:
-            self.commands = {
-                "Search The Web": self.search_the_web,
-                "Scrape Websites": self.scrape_websites,
-                "Agent Web Research": self.agent_websearch,
-            }
-        else:
-            platform_name = self.provider_type.upper()
-            self.commands = {
-                f"Search The Web ({platform_name})": self._no_provider_warning,
+        async def read(found: Dict[str, Any]) -> Dict[str, Any]:
+            try:
+                page = await cls.fetch_page(found["url"])
+            except BaseExternalError as exc:
+                return {**found, "error": str(exc)}
+            return {
+                **found,
+                "title": page["title"] or found["title"],
+                "text": page["text"],
             }
 
-    async def _no_provider_warning(self, *args: Any, **kwargs: Any) -> str:
-        """Return a warning message when no provider is configured."""
-        return f"No websearch provider available for {self.provider_type}. Please check your configuration."
-
-    def register_capability(self, capability: str) -> None:
-        """Register a new capability."""
-        if capability not in self.capabilities:
-            self.capabilities.append(capability)
-
-    def get_registered_capabilities(self) -> Set[str]:
-        """Return currently registered capabilities."""
-        return set(self.capabilities)
-
-    def get_capabilities(self) -> Set[str]:
-        """Return the capabilities this extension provides."""
-        return set(self.capabilities)
-
-    @ability("search_the_web")
-    async def search_the_web(self, query: str) -> str:
-        """
-        Search the web for information.
-        """
-        if not self.provider:
-            return await self._no_provider_warning()
-
-        try:
-            text_content, link_list = self.provider.web_search(query)
-
-            if isinstance(link_list, list) and link_list:
-                link_md = "\n".join(
-                    (
-                        f"- [{link[0]}]({link[1]})"
-                        if isinstance(link, tuple)
-                        else f"- {link}"
-                    )
-                    for link in link_list[:10]
-                )
-                return f"{text_content}\n\n### Found Links\n{link_md}"
-            return text_content
-        except Exception as e:
-            return f"Failed to search the web: {str(e)}"
-
-    @ability("scrape_websites")
-    async def scrape_websites(
-        self, user_input: str = "", summarize_content: bool = False
-    ) -> str:
-        """
-        Scrape content from websites.
-        """
-        if not self.provider:
-            return await self._no_provider_warning()
-
-        try:
-            return self.provider.scrape_websites(
-                user_input=user_input,
-                summarize_content=summarize_content,
-            )
-        except Exception as e:
-            return f"Failed to scrape websites: {str(e)}"
-
-    @ability("agent_websearch")
-    async def agent_websearch(
-        self,
-        user_input: str = "What are the latest breakthroughs in AI?",
-        search_string: str = "",
-        websearch_depth: int = 0,
-    ) -> str:
-        """
-        Perform AI-powered web research.
-        """
-        if not self.provider:
-            return await self._no_provider_warning()
-
-        try:
-            return self.provider.websearch_agent(
-                user_input=user_input,
-                search_string=search_string,
-                websearch_depth=websearch_depth,
-            )
-        except Exception as e:
-            return f"Failed to perform agent websearch: {str(e)}"
-
-    def on_start(self) -> bool:
-        """
-        Start the Websearch extension.
-        """
-        try:
-            logger.debug("Websearch extension started successfully")
-            return True
-        except Exception as e:
-            logger.error(f"Failed to start Websearch extension: {e}")
-            return False
-
-    def on_stop(self) -> bool:
-        """
-        Stop the Websearch extension.
-        """
-        try:
-            if self.provider:
-                # Clean up provider resources if needed
-                self.provider = None
-
-            logger.debug("Websearch extension stopped successfully")
-            return True
-        except Exception as e:
-            logger.error(f"Error stopping Websearch extension: {e}")
-            return False
-
-    def validate_config(self) -> List[str]:
-        """
-        Validate the extension configuration.
-        """
-        issues = []
-
-        try:
-            import bs4  # noqa: F401
-        except ImportError:
-            issues.append("BeautifulSoup4 not installed - HTML parsing will not work")
-
-        try:
-            import requests  # noqa: F401
-        except ImportError:
-            issues.append(
-                "Requests library not installed - web search/scraping will not work"
-            )
-
-        if not self.provider_type:
-            issues.append("Websearch provider type not specified")
-        elif self.provider_type not in SUPPORTED_PROVIDER_TYPES:
-            issues.append(f"Unsupported websearch provider: {self.provider_type}")
-
-        if self.provider_type == "google" and not self.api_key:
-            issues.append("Google Search integration requires an API key")
-
-        return issues
-
-    def get_required_permissions(self) -> List[str]:
-        """Return the list of permissions required by this extension."""
-        return [
-            "web:search",
-            "web:scrape",
-            "web:browse",
-            "internet:access",
-        ]
-
-    def on_startup(self) -> None:
-        """
-        Called during application startup.
-        """
-        logger.debug("Websearch extension startup hook called")
-
-    def on_shutdown(self) -> None:
-        """
-        Called during application shutdown.
-        """
-        logger.debug("Websearch extension shutdown hook called")
-
-    def has_capability(self, capability: str) -> bool:
-        """Check if this extension has a specific capability."""
-        return capability in self.capabilities
+        return {"query": query, "results": await asyncio.gather(*map(read, results))}

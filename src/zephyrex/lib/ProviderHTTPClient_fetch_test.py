@@ -4,10 +4,6 @@ followed and each one checked by the SSRF guard (a public page cannot
 bounce the server into a private address), redirect loops, and typed
 errors."""
 
-import threading
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Iterator, Tuple
-
 import pytest
 
 from zephyrex.extensions.ExternalErrors import InvalidInputExternalError
@@ -29,40 +25,9 @@ ROUTES = {
 }
 
 
-class Handler(BaseHTTPRequestHandler):
-    def do_GET(self) -> None:
-        status, headers, body = ROUTES.get(self.path, (404, {}, b""))
-        self.send_response(status)
-        for name, value in headers.items():
-            self.send_header(name, value)
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        try:
-            self.wfile.write(body)
-        except (BrokenPipeError, ConnectionResetError):
-            pass  # The client stopped reading at its cap.
-
-    def log_message(self, *args: object) -> None:
-        pass
-
-
-@pytest.fixture(scope="module")
-def local_server() -> Iterator[Tuple[str, str]]:
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    host = f"127.0.0.1:{server.server_address[1]}"
-    yield f"http://{host}", host
-    server.shutdown()
-    server.server_close()
-
-
 @pytest.fixture
-def base(local_server: Tuple[str, str], monkeypatch: pytest.MonkeyPatch) -> str:
-    """The local server, which only an explicit egress allowance reaches."""
-    url, host = local_server
-    monkeypatch.setenv("EGRESS_ALLOWED_HOSTS", host)
-    return url
+def base(local_http_server) -> str:
+    return str(local_http_server(ROUTES).base_url)
 
 
 @pytest.fixture
@@ -102,7 +67,9 @@ async def test_an_error_status_is_typed(client, base):
     assert raised.value.upstream_status == 404
 
 
-async def test_a_private_address_is_refused_without_an_allowance(client, local_server):
-    url, _ = local_server
+async def test_a_private_address_is_refused_without_an_allowance(
+    client, local_http_server
+):
+    server = local_http_server(ROUTES, allow=False)
     with pytest.raises(InvalidInputExternalError, match="SSRF"):
-        await client.fetch(f"{url}/small", max_bytes=CAP)
+        await client.fetch(f"{server.base_url}/small", max_bytes=CAP)
