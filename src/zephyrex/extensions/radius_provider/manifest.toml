@@ -5,15 +5,15 @@
 # Manifest_parity_test keeps the two in step.
 
 name = "radius_provider"
-version = "1.0.0"
-description = "Run this server as a RADIUS authenticator and accounting server."
+version = "2.0.0"
+description = "Answer RADIUS PAP logins from network gear against framework accounts"
 author = "ZephyrexTechnologies"
 entry_module = "EXT_RADIUSProvider"
 minimum_framework_version = "0.0.0"
 
-pip_dependencies = []
+pip_dependencies = ["pyrad>=2.5.4"]
 system_dependencies = []
 
 [[extension_dependencies]]
-name = "auth_session"
-optional = false
+name = "auth_lockout"
+optional = true
