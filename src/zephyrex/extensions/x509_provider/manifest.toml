@@ -5,15 +5,11 @@
 # Manifest_parity_test keeps the two in step.
 
 name = "x509_provider"
-version = "1.0.0"
-description = "Run this server as a Certificate Authority for client certificates."
+version = "2.0.0"
+description = "Run this server as a certificate authority issuing TLS client certificates to its users from their CSRs, with revocation and a CRL."
 author = "ZephyrexTechnologies"
 entry_module = "EXT_X509Provider"
 minimum_framework_version = "0.0.0"
 
-pip_dependencies = []
+pip_dependencies = ["cryptography>=45.0.0"]
 system_dependencies = []
-
-[[extension_dependencies]]
-name = "auth_session"
-optional = false
