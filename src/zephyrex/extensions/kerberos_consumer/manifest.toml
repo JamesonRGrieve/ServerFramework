@@ -5,15 +5,15 @@
 # Manifest_parity_test keeps the two in step.
 
 name = "kerberos_consumer"
-version = "1.0.0"
-description = "Authenticate users via Kerberos/SPNEGO/GSSAPI against an external KDC."
+version = "2.0.0"
+description = "Sign in with Kerberos: HTTP Negotiate (SPNEGO) single sign-on against Active Directory or MIT realms."
 author = "ZephyrexTechnologies"
 entry_module = "EXT_KerberosConsumer"
 minimum_framework_version = "0.0.0"
 
-pip_dependencies = []
-system_dependencies = []
+pip_dependencies = ["gssapi>=1.12.0"]
+system_dependencies = ["libkrb5-dev"]
 
 [[extension_dependencies]]
 name = "auth_session"
-optional = false
+optional = true
