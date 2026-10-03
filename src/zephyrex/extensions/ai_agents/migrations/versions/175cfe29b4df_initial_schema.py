@@ -277,9 +277,7 @@ def upgrade() -> None:
             nullable=False,
             comment="Memory key (unique per agent)",
         ),
-        sa.Column(
-            "content", sa.String(), nullable=False, comment="Memory content"
-        ),
+        sa.Column("content", sa.String(), nullable=False, comment="Memory content"),
         sa.Column("agent_id", sa.String(), nullable=False, comment="ID of the agent"),
         sa.Column("id", sa.String(), nullable=False),
         sa.Column("created_at", sa.DateTime(), nullable=True),

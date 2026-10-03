@@ -10,7 +10,10 @@ import uuid
 
 import pytest
 
-from zephyrex.extensions.ai_agents.BLL_AI_Agents import AgentAbilityManager, AgentManager
+from zephyrex.extensions.ai_agents.BLL_AI_Agents import (
+    AgentAbilityManager,
+    AgentManager,
+)
 from zephyrex.extensions.AbstractEXTTest import ExtensionServerMixin
 from zephyrex.lib.Environment import env
 
@@ -28,11 +31,18 @@ class TestAgentAbility(ExtensionServerMixin):
 
         prepare_test_registry()
         worker_id = os.environ.get("PYTEST_XDIST_WORKER", "")
-        prefix = f"test.agent_ability.{worker_id}" if worker_id else "test.agent_ability"
-        wanted = ("ai_agents", "ai", "email", "conversations", "ai_prompts")
-        names = list(wanted) + [
-            c for c in CORE_COMPANION_EXTENSIONS if c not in wanted
-        ]
+        prefix = (
+            f"test.agent_ability.{worker_id}" if worker_id else "test.agent_ability"
+        )
+        wanted = (
+            "ai_agents",
+            "ai",
+            "email",
+            "conversations",
+            "ai_prompts",
+            "ai_memories",
+        )
+        names = list(wanted) + [c for c in CORE_COMPANION_EXTENSIONS if c not in wanted]
         app = instance(db_prefix=prefix, extensions=",".join(names))
         yield TestClient(app)
 

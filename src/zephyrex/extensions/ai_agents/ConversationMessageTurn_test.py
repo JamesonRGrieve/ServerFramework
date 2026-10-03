@@ -34,10 +34,15 @@ class TestConversationMessageTurn(ExtensionServerMixin):
         prepare_test_registry()
         worker_id = os.environ.get("PYTEST_XDIST_WORKER", "")
         prefix = f"test.convo_turn.{worker_id}" if worker_id else "test.convo_turn"
-        wanted = ("ai_agents", "ai", "email", "conversations", "ai_prompts")
-        names = list(wanted) + [
-            c for c in CORE_COMPANION_EXTENSIONS if c not in wanted
-        ]
+        wanted = (
+            "ai_agents",
+            "ai",
+            "email",
+            "conversations",
+            "ai_prompts",
+            "ai_memories",
+        )
+        names = list(wanted) + [c for c in CORE_COMPANION_EXTENSIONS if c not in wanted]
         app = instance(db_prefix=prefix, extensions=",".join(names))
         yield TestClient(app)
 
@@ -150,9 +155,7 @@ class TestConversationMessageTurn(ExtensionServerMixin):
 
         assert self._instances(agent.id, admin_a, model_registry) == []
 
-    def test_trigger_for_non_participant_does_not_fire(
-        self, admin_a, model_registry
-    ):
+    def test_trigger_for_non_participant_does_not_fire(self, admin_a, model_registry):
         # A triggered agent that is NOT in the conversation must not fire.
         _agent_in, conversation = self._agent_in_conversation(admin_a, model_registry)
         with AgentManager(

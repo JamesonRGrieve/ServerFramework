@@ -7,7 +7,9 @@ from zephyrex.database.DB_Auth_test import TestTeam as CoreTeamTests
 from zephyrex.database.DB_Auth_test import TestUser as CoreUserTests
 from zephyrex.database.DB_Extensions_test import TestAbility as CoreAbilityTests
 from zephyrex.database.DB_Providers_test import TestProvider as CoreProviderTests
-from zephyrex.database.DB_Providers_test import TestProviderInstance as CoreProviderInstanceTests
+from zephyrex.database.DB_Providers_test import (
+    TestProviderInstance as CoreProviderInstanceTests,
+)
 from zephyrex.database.DB_Providers_test import TestRotation as CoreRotationTests
 from zephyrex.extensions.AbstractEXTTest import ExtensionServerMixin
 from zephyrex.extensions.ai_agents.BLL_AI_Agents import (
@@ -26,7 +28,9 @@ from zephyrex.extensions.ai_agents.BLL_AI_Agents import (
     ProviderInstanceAgentModel,
 )
 from zephyrex.extensions.ai_agents.EXT_AI_Agents import EXT_AI_Agents
-from zephyrex.extensions.ai_prompts.DB_AI_Prompts_test import TestPrompt as ExtPromptTests
+from zephyrex.extensions.ai_prompts.DB_AI_Prompts_test import (
+    TestPrompt as ExtPromptTests,
+)
 from zephyrex.extensions.conversations.DB_Conversations_test import (
     TestArtifact as ExtArtifactTests,
 )

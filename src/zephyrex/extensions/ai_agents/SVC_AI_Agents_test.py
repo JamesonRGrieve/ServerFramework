@@ -63,7 +63,14 @@ class TestInvocationMonitorService(ExtensionServerMixin):
             if worker_id
             else "test.invocation_monitor"
         )
-        wanted = ("ai_agents", "ai", "email", "conversations", "ai_prompts")
+        wanted = (
+            "ai_agents",
+            "ai",
+            "email",
+            "conversations",
+            "ai_prompts",
+            "ai_memories",
+        )
         names = list(wanted) + [c for c in CORE_COMPANION_EXTENSIONS if c not in wanted]
         app = instance(db_prefix=prefix, extensions=",".join(names))
         yield TestClient(app)

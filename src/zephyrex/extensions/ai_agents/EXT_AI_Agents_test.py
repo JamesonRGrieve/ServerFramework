@@ -128,12 +128,13 @@ class TestEXTAIAgents(AbstractEXTTest):
         # Check extension dependencies
         dependencies = self.extension_class.dependencies
         ext_deps = dependencies.ext
-        assert len(ext_deps) == 3
-
         dep_names = [dep.name for dep in ext_deps]
-        assert "ai" in dep_names
-        assert "ai_prompts" in dep_names
-        assert "conversations" in dep_names
+        assert sorted(dep_names) == [
+            "ai",
+            "ai_memories",
+            "ai_prompts",
+            "conversations",
+        ]
 
         # Check that all extension dependencies are required (not optional)
         for dep in ext_deps:

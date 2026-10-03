@@ -83,6 +83,12 @@ class EXT_AI_Agents(AbstractStaticExtension):
                 reason="Required for prompting agents",
                 optional=False,
             ),
+            EXT_Dependency(
+                name="ai_memories",
+                friendly_name="Long-term memory",
+                reason="Agents keep and recall their long-term memories there",
+                optional=False,
+            ),
             PIP_Dependency(
                 name="tiktoken",
                 friendly_name="TikToken",

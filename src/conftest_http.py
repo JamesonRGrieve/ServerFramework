@@ -1,18 +1,19 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """A real local HTTP server for tests that call over the network: each
-path answers a fixed status, headers and body, whatever the method, and
-every request it receives is recorded. It listens on loopback, which the
-SSRF guard refuses, so the fixture also allows its host in
+path answers a fixed status, headers and body, or a function of the request
+received (an API whose answer depends on what is sent), whatever the
+method, and every request it receives is recorded. It listens on loopback,
+which the SSRF guard refuses, so the fixture also allows its host in
 ``EGRESS_ALLOWED_HOSTS`` for the test."""
 
 import threading
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Callable, Dict, Iterator, List, Mapping, Tuple
+from typing import Callable, Dict, Iterator, List, Mapping, Tuple, Union
 
 import pytest
 
-Route = Tuple[int, Mapping[str, str], bytes]
+Answer = Tuple[int, Mapping[str, str], bytes]
 
 
 @dataclass(frozen=True)
@@ -21,6 +22,9 @@ class ReceivedRequest:
     path: str
     headers: Mapping[str, str]
     body: bytes
+
+
+Route = Union[Answer, Callable[[ReceivedRequest], Answer]]
 
 
 @dataclass(frozen=True)
@@ -37,15 +41,15 @@ def _handler(routes: Mapping[str, Route], received: List[ReceivedRequest]) -> ty
 
         def do_GET(self) -> None:
             length = int(self.headers.get("Content-Length") or 0)
-            received.append(
-                ReceivedRequest(
-                    self.command,
-                    self.path,
-                    {k.lower(): v for k, v in self.headers.items()},
-                    self.rfile.read(length) if length else b"",
-                )
+            request = ReceivedRequest(
+                self.command,
+                self.path,
+                {k.lower(): v for k, v in self.headers.items()},
+                self.rfile.read(length) if length else b"",
             )
-            status, headers, body = routes.get(self.path, (404, {}, b""))
+            received.append(request)
+            route = routes.get(self.path, (404, {}, b""))
+            status, headers, body = route(request) if callable(route) else route
             self.send_response(status)
             for name, value in headers.items():
                 self.send_header(name, value)

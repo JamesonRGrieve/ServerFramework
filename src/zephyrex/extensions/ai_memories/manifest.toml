@@ -5,11 +5,15 @@
 # Manifest_parity_test keeps the two in step.
 
 name = "ai_memories"
-version = "1.0.0"
-description = "AI Memories extension providing comprehensive memory management and conversation history capabilities via long-term storage, retrieval, and consolidation"
+version = "2.0.0"
+description = "Long-term memories in the app database, recalled by meaning or by words"
 author = "ZephyrexTechnologies"
 entry_module = "EXT_AI_Memories"
 minimum_framework_version = "0.0.0"
 
 pip_dependencies = []
 system_dependencies = []
+
+[[extension_dependencies]]
+name = "ai"
+optional = true

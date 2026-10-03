@@ -33,9 +33,15 @@ from zephyrex.extensions.conversations.BLL_Conversations_test import (
 from zephyrex.logic.AbstractBLLTest import AbstractBLLTest
 from zephyrex.logic.BLL_Auth_test import TestTeamManager as CoreTeamManagerTests
 from zephyrex.logic.BLL_Auth_test import TestUserManager as CoreUserManagerTests
-from zephyrex.logic.BLL_Extensions_test import TestAbilityManager as CoreAbilityManagerTests
-from zephyrex.logic.BLL_Providers_test import TestProviderManager as CoreProviderManagerTests
-from zephyrex.logic.BLL_Providers_test import TestRotationManager as CoreRotationManagerTests
+from zephyrex.logic.BLL_Extensions_test import (
+    TestAbilityManager as CoreAbilityManagerTests,
+)
+from zephyrex.logic.BLL_Providers_test import (
+    TestProviderManager as CoreProviderManagerTests,
+)
+from zephyrex.logic.BLL_Providers_test import (
+    TestRotationManager as CoreRotationManagerTests,
+)
 
 # Set default test configuration for all test classes
 AbstractBLLTest.test_config = ClassOfTestsConfig(
@@ -427,7 +433,10 @@ class TestProviderInstanceAgentAbilityManager(AbstractBLLTest, ExtensionServerMi
             agent = agent_manager.create(name=f"Test Agent {faker.word()}")
 
         # Create provider instance
-        from zephyrex.logic.BLL_Providers import ProviderInstanceManager, ProviderManager
+        from zephyrex.logic.BLL_Providers import (
+            ProviderInstanceManager,
+            ProviderManager,
+        )
 
         with ProviderManager(
             requester_id=admin_a.id, model_registry=model_registry
@@ -932,7 +941,9 @@ class TestConversationManagerWithAgentHook(
         """Test that creating a conversation automatically creates an associated agent."""
         # Force import the BLL_AI_Agents module to ensure hooks are registered
         import zephyrex.extensions.ai_agents.BLL_AI_Agents
-        from zephyrex.extensions.conversations.BLL_Conversations import ConversationManager
+        from zephyrex.extensions.conversations.BLL_Conversations import (
+            ConversationManager,
+        )
 
         # Debug: Check if the hook is registered
         print(

@@ -66,7 +66,9 @@ class InvocationMonitorService(AbstractService):
 
     def _owns(self, trigger_id: str) -> bool:
         """Whether this worker owns the trigger, via consistent hashing."""
-        shard = int(sha256(trigger_id.encode()).hexdigest()[-1], 16) % self.total_workers
+        shard = (
+            int(sha256(trigger_id.encode()).hexdigest()[-1], 16) % self.total_workers
+        )
         return shard == self.worker_id
 
     # -- polling -----------------------------------------------------------
@@ -131,9 +133,7 @@ class InvocationMonitorService(AbstractService):
                 f"croniter not installed; skipping schedule trigger {trigger.id}"
             )
         except Exception as exc:
-            logger.debug(
-                f"Could not seed cron next_fire_at for {trigger.id}: {exc}"
-            )
+            logger.debug(f"Could not seed cron next_fire_at for {trigger.id}: {exc}")
         return False
 
     # -- firing ------------------------------------------------------------

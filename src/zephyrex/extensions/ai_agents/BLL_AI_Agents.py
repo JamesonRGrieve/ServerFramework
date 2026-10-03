@@ -6,7 +6,10 @@ from fastapi import HTTPException
 from pydantic import BaseModel, Field
 
 from zephyrex.extensions.ai_prompts.BLL_AI_Prompts import PromptModel
-from zephyrex.extensions.conversations.BLL_Conversations import ArtifactModel, MessageModel
+from zephyrex.extensions.conversations.BLL_Conversations import (
+    ArtifactModel,
+    MessageModel,
+)
 from zephyrex.lib.Environment import env
 from zephyrex.pydantic2.fastapi import AuthType, RouterMixin
 from zephyrex.logic.AbstractLogicManager import (
@@ -221,9 +224,7 @@ class InvocationTriggerModel(
     next_fire_at: Optional[datetime] = Field(
         None, description="Next scheduled fire time (schedule/timer)"
     )
-    fire_count: int = Field(
-        0, description="Number of times this trigger has fired"
-    )
+    fire_count: int = Field(0, description="Number of times this trigger has fired")
 
     table_comment: ClassVar[str] = (
         "An InvocationTrigger is a standing listener that triggers an Agent to "
@@ -239,9 +240,7 @@ class InvocationTriggerModel(
         UserModel.Reference.ID.Optional,
         TeamModel.Reference.ID.Optional,
     ):
-        invocation_type: str = Field(
-            ..., description="'schedule' | 'timer' | 'event'"
-        )
+        invocation_type: str = Field(..., description="'schedule' | 'timer' | 'event'")
         enabled: Optional[bool] = Field(True)
         cron: Optional[str] = Field(None)
         interval_seconds: Optional[int] = Field(None)
@@ -334,15 +333,11 @@ class InvocationInstanceModel(
     payload: Optional[str] = Field(
         None, description="Prompt/context handed to this specific firing"
     )
-    error: Optional[str] = Field(
-        None, description="Error detail when status='failed'"
-    )
+    error: Optional[str] = Field(None, description="Error detail when status='failed'")
     started_at: Optional[datetime] = Field(
         None, description="When the turn began executing"
     )
-    completed_at: Optional[datetime] = Field(
-        None, description="When the turn finished"
-    )
+    completed_at: Optional[datetime] = Field(None, description="When the turn finished")
 
     table_comment: ClassVar[str] = (
         "An InvocationInstance is a single firing of an InvocationTrigger — one "
@@ -482,7 +477,9 @@ class ConversationAgentManager(AbstractBLLManager, RouterMixin):
 
     @property
     def conversations(self):
-        from zephyrex.extensions.conversations.BLL_Conversations import ConversationManager
+        from zephyrex.extensions.conversations.BLL_Conversations import (
+            ConversationManager,
+        )
 
         return ConversationManager(
             requester_id=self.requester_id,
@@ -493,7 +490,9 @@ class ConversationAgentManager(AbstractBLLManager, RouterMixin):
 
     @property
     def context_prompts(self):
-        from zephyrex.extensions.ai_agents.BLL_AI_Agents import AgentContextPromptManager
+        from zephyrex.extensions.ai_agents.BLL_AI_Agents import (
+            AgentContextPromptManager,
+        )
 
         return AgentContextPromptManager(
             requester_id=self.requester_id,
@@ -816,7 +815,9 @@ class ProjectManager(AbstractBLLManager, RouterMixin):
 
     @property
     def context_prompts(self):
-        from zephyrex.extensions.ai_agents.BLL_AI_Agents import ProjectContextPromptManager
+        from zephyrex.extensions.ai_agents.BLL_AI_Agents import (
+            ProjectContextPromptManager,
+        )
 
         return ProjectContextPromptManager(
             requester_id=self.requester_id,
@@ -827,7 +828,9 @@ class ProjectManager(AbstractBLLManager, RouterMixin):
 
     @property
     def context_providers(self):
-        from zephyrex.extensions.ai_agents.BLL_AI_Agents import ProjectContextProviderManager
+        from zephyrex.extensions.ai_agents.BLL_AI_Agents import (
+            ProjectContextProviderManager,
+        )
 
         return ProjectContextProviderManager(
             requester_id=self.requester_id,
@@ -878,7 +881,10 @@ class ProjectContextProviderManager(AbstractBLLManager, RouterMixin):
         from zephyrex.logic.BLL_Providers import ProviderManager
 
         _validate_fk(
-            self, getattr(entity, "project_id", None), ProjectManager, "Project not found"
+            self,
+            getattr(entity, "project_id", None),
+            ProjectManager,
+            "Project not found",
         )
         _validate_fk(
             self,
@@ -921,7 +927,10 @@ class ProjectContextPromptManager(AbstractBLLManager, RouterMixin):
         from zephyrex.extensions.ai_prompts.BLL_AI_Prompts import PromptManager
 
         _validate_fk(
-            self, getattr(entity, "project_id", None), ProjectManager, "Project not found"
+            self,
+            getattr(entity, "project_id", None),
+            ProjectManager,
+            "Project not found",
         )
         _validate_fk(
             self, getattr(entity, "prompt_id", None), PromptManager, "Prompt not found"
@@ -1138,9 +1147,7 @@ class ActivityManager(AbstractBLLManager, RouterMixin):
             model_registry=self.model_registry,
         )
 
-    def get_hierarchy_for_instance(
-        self, invocation_instance_id: str
-    ) -> Dict[str, Any]:
+    def get_hierarchy_for_instance(self, invocation_instance_id: str) -> Dict[str, Any]:
         """Get the activity hierarchy for a single turn (invocation instance),
         keyed under ``activities`` (root activity id -> {activity, children})."""
         return {
@@ -1455,9 +1462,7 @@ class AgentMemoryManager(AbstractBLLManager, RouterMixin):
     def as_dict(self, agent_id: str) -> Dict[str, str]:
         """Return the agent's short-term memory as a ``{key: content}`` map for
         injection into the turn prompt."""
-        return {
-            entry.key: entry.content for entry in self.list(agent_id=agent_id)
-        }
+        return {entry.key: entry.content for entry in self.list(agent_id=agent_id)}
 
 
 # Extension hooks for integrating AI agents with other models

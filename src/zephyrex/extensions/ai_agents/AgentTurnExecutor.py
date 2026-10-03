@@ -39,7 +39,7 @@ from zephyrex.extensions.ai_agents.BLL_AI_Agents import (
     ConversationAgentManager,
     InvocationInstanceManager,
 )
-from zephyrex.extensions.ai_agents.MemoryProvider import default_memory_provider
+from zephyrex.extensions.ai_memories.BLL_AI_Memories import MemoryManager
 from zephyrex.lib.Environment import env
 from zephyrex.lib.Logging import logger
 
@@ -48,6 +48,10 @@ from zephyrex.lib.Logging import logger
 ChatTransport = Callable[
     [List[Dict[str, Any]], Optional[List[Dict[str, Any]]]], Awaitable[Dict[str, Any]]
 ]
+
+# Long-term memories a recall returns, and that a turn's prompt carries.
+RECALL_LIMIT = 5
+PROMPT_MEMORY_LIMIT = 10
 
 # Bounded tool loop: how many model<->tool round trips a single turn may take
 # before it is forced to conclude. Prevents a runaway tool-calling turn.
@@ -123,14 +127,11 @@ class AgentTurnExecutor:
         chat_fn: Optional[ChatTransport] = None,
         max_steps: int = DEFAULT_MAX_STEPS,
         tool_mode: str = "native",
-        memory_provider: Optional[Any] = None,
     ) -> None:
         self.model_registry = model_registry
         self.requester_id = requester_id
         self._chat_fn_override = chat_fn
         self.max_steps = max_steps
-        # Long-term memory backend (SQLite by default; injectable for tests).
-        self._memory_provider = memory_provider
         # "native"  -> pass a tools=[...] catalog, read structured tool_calls.
         # "in_band" -> pass no tools; the model expresses tool calls as fenced
         #              ```tool JSON blocks in its text, which we parse. Needed
@@ -340,6 +341,9 @@ class AgentTurnExecutor:
         permitted is refused, recorded, and fed back to the model, never
         silently performed.
         """
+        if not name:
+            return "Tool call refused: it named no ability.", False
+
         activities = ActivityManager(
             requester_id=acting_requester, model_registry=self.model_registry
         )
@@ -363,7 +367,7 @@ class AgentTurnExecutor:
                 )
             if name == MEMORIZE_ABILITY:
                 return (
-                    self._do_memorize(
+                    await self._do_memorize(
                         arguments, instance, root, agent, acting_requester, ability_ids
                     ),
                     False,
@@ -377,7 +381,7 @@ class AgentTurnExecutor:
                 )
             if name == RECALL_ABILITY:
                 return (
-                    self._do_recall(
+                    await self._do_recall(
                         arguments, instance, root, agent, acting_requester, ability_ids
                     ),
                     False,
@@ -468,22 +472,21 @@ class AgentTurnExecutor:
         conversations = ConversationManager(
             requester_id=acting_requester, model_registry=self.model_registry
         )
-        # Agent messages carry no user_id (the convention for agent-authored
-        # messages) — this is also the loop guard the conversation-message hook
-        # relies on to avoid re-triggering itself on the agent's own reply.
+        # Agent messages carry no author — this is also the loop guard the
+        # conversation-message hook relies on to avoid re-triggering itself on
+        # the agent's own reply.
         message_fields: Dict[str, Any] = {
             "conversation_id": conversation_id,
             "content": text,
-            "user_id": None,
         }
         # Link the message back to this turn when the field is available (added
         # to MessageModel by the ai_agents augmentation hook).
         try:
-            conversations.messages.create(
+            conversations.messages.create_agent_message(
                 invocation_instance_id=instance.id, **message_fields
             )
         except TypeError:
-            conversations.messages.create(**message_fields)
+            conversations.messages.create_agent_message(**message_fields)
 
         activities.create(
             invocation_instance_id=instance.id,
@@ -497,12 +500,12 @@ class AgentTurnExecutor:
 
     # -- memory (self) abilities ------------------------------------------
 
-    @property
-    def memory_provider(self) -> Any:
-        """Long-term memory backend (lazily the configured default)."""
-        if self._memory_provider is None:
-            self._memory_provider = default_memory_provider()
-        return self._memory_provider
+    def _long_term(self, acting_requester: str) -> MemoryManager:
+        """Long-term memory (the ai_memories store), kept for the agent's
+        user."""
+        return MemoryManager(
+            requester_id=acting_requester, model_registry=self.model_registry
+        )
 
     def _memory_manager(self, acting_requester: str) -> AgentMemoryManager:
         return AgentMemoryManager(
@@ -523,11 +526,11 @@ class AgentTurnExecutor:
             state=state,
         )
 
-    def _do_memorize(
+    async def _do_memorize(
         self, arguments, instance, root, agent, acting_requester, ability_ids
     ) -> str:
         """Save a memory: short-term (keyed working memory) by default, or
-        long-term (durable provider store) when ``long`` is true."""
+        long-term (the ai_memories store) when ``long`` is true."""
         args = self._parse_arguments(arguments)
         key = args.get("key")
         content = args.get("body") or args.get("content") or ""
@@ -535,7 +538,7 @@ class AgentTurnExecutor:
         if not content:
             return "Nothing memorized (empty content)."
         if long:
-            self.memory_provider.store(agent.id, content, key=key)
+            await self._long_term(acting_requester).keep(agent.id, content, key=key)
             result = f"Stored to long-term memory{f' under {key!r}' if key else ''}."
         else:
             if not key:
@@ -576,15 +579,17 @@ class AgentTurnExecutor:
         )
         return result
 
-    def _do_recall(
+    async def _do_recall(
         self, arguments, instance, root, agent, acting_requester, ability_ids
     ) -> str:
         """Search long-term memory and return the matches to the model."""
         args = self._parse_arguments(arguments)
         query = args.get("search") or args.get("query") or args.get("about") or ""
-        results = self.memory_provider.recall(agent.id, query, limit=5)
+        results = await self._long_term(acting_requester).recall(
+            agent.id, str(query), RECALL_LIMIT
+        )
         if results:
-            body = "\n".join(f"- {r.get('content','')}" for r in results)
+            body = "\n".join(f"- {r.content}" for r in results)
         else:
             body = "(no matching long-term memories)"
         self._record_self_activity(
@@ -916,14 +921,12 @@ class AgentTurnExecutor:
 
     def _agent_memory(self, agent: Any, acting_requester: str) -> str:
         """Long-term memory injected into the prompt: the agent's most recent
-        durable memories from the memory provider (recall on demand is the
+        memories from the ai_memories store (recall on demand is the
         `recall` ability)."""
-        try:
-            memories = self.memory_provider.recent(agent.id, limit=10)
-            snippets = [m.get("content", "") for m in (memories or [])]
-            return "\n".join(f"- {s}" for s in snippets if s) or "none"
-        except Exception:
-            return "none"
+        memories = self._long_term(acting_requester).recent(
+            agent.id, PROMPT_MEMORY_LIMIT
+        )
+        return "\n".join(f"- {m.content}" for m in memories if m.content) or "none"
 
     # -- model transport ---------------------------------------------------
 
@@ -1017,7 +1020,7 @@ class AgentTurnExecutor:
                     requester_id=acting_requester, model_registry=self.model_registry
                 ).get(id=trigger_message_id)
                 if getattr(message, "conversation_id", None):
-                    return message.conversation_id
+                    return str(message.conversation_id)
             except Exception:
                 pass
         try:
@@ -1025,7 +1028,7 @@ class AgentTurnExecutor:
                 requester_id=acting_requester, model_registry=self.model_registry
             ).list(agent_id=agent.id, active=True)
             if links:
-                return links[0].conversation_id
+                return str(links[0].conversation_id)
         except Exception:
             pass
         return None
@@ -1187,7 +1190,7 @@ def ensure_ability(
     )
     existing = ability_manager.list(name=name)
     if existing:
-        return existing[0].id
+        return str(existing[0].id)
 
     extension_manager = ExtensionManager(
         requester_id=env("ROOT_ID"), model_registry=model_registry
@@ -1198,4 +1201,6 @@ def ensure_ability(
         if ext_matches
         else extension_manager.create(name=extension_name).id
     )
-    return ability_manager.create(name=name, extension_id=extension_id, meta=True).id
+    return str(
+        ability_manager.create(name=name, extension_id=extension_id, meta=True).id
+    )

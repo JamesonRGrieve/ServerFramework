@@ -24,7 +24,18 @@ import asyncio
 import inspect
 import json
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union, get_args, get_origin
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    List,
+    Optional,
+    Set,
+    Tuple,
+    Union,
+    get_args,
+    get_origin,
+)
 
 from zephyrex.lib.Logging import logger
 
@@ -89,7 +100,9 @@ def _json_type_for(annotation: Any) -> Tuple[str, bool]:
     if origin is Union:
         non_none = [a for a in get_args(annotation) if a is not type(None)]
         optional = len(non_none) < len(get_args(annotation))
-        inner_type = _PY_TO_JSON_TYPE.get(non_none[0], "string") if non_none else "string"
+        inner_type = (
+            _PY_TO_JSON_TYPE.get(non_none[0], "string") if non_none else "string"
+        )
         return inner_type, optional
     if origin in (list, List):
         return "array", False
@@ -267,7 +280,9 @@ class AbilityInvoker:
     # -- invocation -------------------------------------------------------
 
     @staticmethod
-    def _coerce_arguments(arguments: Union[str, Dict[str, Any], None]) -> Dict[str, Any]:
+    def _coerce_arguments(
+        arguments: Union[str, Dict[str, Any], None],
+    ) -> Dict[str, Any]:
         """Normalise a tool call's arguments to a dict (models emit a JSON str)."""
         if arguments is None:
             return {}
@@ -350,9 +365,7 @@ class AbilityInvoker:
                 f"No provider instance resolver configured to run provider "
                 f"ability {resolved.name!r}"
             )
-        picked = self.provider_instance_resolver(
-            resolved.extension_name, resolved.name
-        )
+        picked = self.provider_instance_resolver(resolved.extension_name, resolved.name)
         if picked is None:
             raise ToolInvocationError(
                 f"No entitled provider instance available for ability "
@@ -372,9 +385,7 @@ class AbilityInvoker:
             )
         return method(bonded, **call_args)
 
-    def _invoke_meta(
-        self, resolved: ResolvedAbility, call_args: Dict[str, Any]
-    ) -> Any:
+    def _invoke_meta(self, resolved: ResolvedAbility, call_args: Dict[str, Any]) -> Any:
         """Call a meta ability, threading the model registry when accepted."""
         try:
             signature = inspect.signature(resolved.method)

@@ -139,11 +139,18 @@ class TestAbilityInvokerIntegration(ExtensionServerMixin):
 
         prepare_test_registry()
         worker_id = os.environ.get("PYTEST_XDIST_WORKER", "")
-        prefix = f"test.ability_invoker.{worker_id}" if worker_id else "test.ability_invoker"
-        wanted = ("ai_agents", "ai", "email", "conversations", "ai_prompts")
-        names = list(wanted) + [
-            c for c in CORE_COMPANION_EXTENSIONS if c not in wanted
-        ]
+        prefix = (
+            f"test.ability_invoker.{worker_id}" if worker_id else "test.ability_invoker"
+        )
+        wanted = (
+            "ai_agents",
+            "ai",
+            "email",
+            "conversations",
+            "ai_prompts",
+            "ai_memories",
+        )
+        names = list(wanted) + [c for c in CORE_COMPANION_EXTENSIONS if c not in wanted]
         app = instance(db_prefix=prefix, extensions=",".join(names))
         yield TestClient(app)
 
@@ -180,9 +187,7 @@ class TestAbilityInvokerIntegration(ExtensionServerMixin):
     async def test_invoke_meta_ability_when_allowed(self, model_registry):
         # email_status is a real, local meta ability (reads env, no network).
         invoker = AbilityInvoker(model_registry=model_registry, requester_id="req")
-        result = await invoker.invoke(
-            "email_status", {}, allowed={"email_status"}
-        )
+        result = await invoker.invoke("email_status", {}, allowed={"email_status"})
         assert result["success"] is True
         assert isinstance(result["content"], dict)
         assert result["content"]["extension"] == "email"

@@ -85,7 +85,14 @@ class TestAgentTurnExecutor(ExtensionServerMixin):
         prefix = (
             f"test.turn_executor.{worker_id}" if worker_id else "test.turn_executor"
         )
-        wanted = ("ai_agents", "ai", "email", "conversations", "ai_prompts")
+        wanted = (
+            "ai_agents",
+            "ai",
+            "email",
+            "conversations",
+            "ai_prompts",
+            "ai_memories",
+        )
         names = list(wanted) + [c for c in CORE_COMPANION_EXTENSIONS if c not in wanted]
         app = instance(db_prefix=prefix, extensions=",".join(names))
         yield TestClient(app)
@@ -241,6 +248,23 @@ class TestAgentTurnExecutor(ExtensionServerMixin):
         assert len(children) == 1
         assert children[0].title == "Denied: manage_agents"
 
+    async def test_unnamed_tool_call_is_refused(self, admin_a, model_registry):
+        # A malformed model reply can carry a tool call with no name; it is
+        # refused back to the model and nothing runs.
+        agent = self._agent(admin_a, model_registry)
+        instance = self._instance(agent.id, admin_a, model_registry)
+        chat = ScriptedChat([_tool(None, "{}"), _text("ok")])
+        executor = AgentTurnExecutor(
+            model_registry=model_registry, requester_id=admin_a.id, chat_fn=chat
+        )
+        summary = await executor.run(instance.id)
+
+        assert summary["status"] == "succeeded"
+        acts = self._activities(instance.id, admin_a, model_registry)
+        assert [a for a in acts if a.parent_id is not None] == []
+        fed_back = json.dumps(chat.calls[1]["messages"])
+        assert "named no ability" in fed_back
+
     async def test_chat_failure_marks_instance_failed(self, admin_a, model_registry):
         agent = self._agent(admin_a, model_registry)
         instance = self._instance(agent.id, admin_a, model_registry)
@@ -280,10 +304,20 @@ class TestAgentTurnExecutor(ExtensionServerMixin):
         ) as mem:
             assert mem.as_dict(agent.id).get("fav_color") == "blue"
 
-    async def test_memorize_long_term(self, admin_a, model_registry, tmp_path):
-        from zephyrex.extensions.ai_agents.MemoryProvider import SQLiteMemoryProvider
+    @pytest.fixture
+    def no_embedding_model(self, monkeypatch):
+        """Long-term memories are kept and recalled by their words: no
+        embedding model (instances seeded from the environment are never
+        called)."""
+        from zephyrex.extensions.ai.EXT_AI import EXT_AI
 
-        provider = SQLiteMemoryProvider(db_path=str(tmp_path / "ltm.db"))
+        monkeypatch.setattr(EXT_AI, "root", None)
+
+    async def test_memorize_long_term(
+        self, admin_a, model_registry, no_embedding_model
+    ):
+        from zephyrex.extensions.ai_memories.BLL_AI_Memories import MemoryManager
+
         agent = self._agent(admin_a, model_registry)
         self._grant(agent.id, "memorize", admin_a, model_registry)
         instance = self._instance(agent.id, admin_a, model_registry)
@@ -292,13 +326,15 @@ class TestAgentTurnExecutor(ExtensionServerMixin):
             model_registry=model_registry,
             requester_id=admin_a.id,
             chat_fn=ScriptedChat([_tool("memorize", args), _text("done")]),
-            memory_provider=provider,
         )
         await executor.run(instance.id)
 
-        hits = provider.recall(agent.id, "deadline")
-        assert len(hits) == 1
-        assert "Friday" in hits[0]["content"]
+        # Kept in the app database, for the agent's user.
+        hits = await MemoryManager(
+            requester_id=admin_a.id, model_registry=model_registry
+        ).recall(agent.id, "deadline", 5)
+        assert [h.content for h in hits] == ["the deadline is Friday"]
+        assert hits[0].user_id == admin_a.id
 
     async def test_trim_short_term(self, admin_a, model_registry):
         from zephyrex.extensions.ai_agents.BLL_AI_Agents import AgentMemoryManager
@@ -324,12 +360,13 @@ class TestAgentTurnExecutor(ExtensionServerMixin):
         ) as mem:
             assert mem.as_dict(agent.id) == {"b": "2"}
 
-    async def test_recall_long_term(self, admin_a, model_registry, tmp_path):
-        from zephyrex.extensions.ai_agents.MemoryProvider import SQLiteMemoryProvider
+    async def test_recall_long_term(self, admin_a, model_registry, no_embedding_model):
+        from zephyrex.extensions.ai_memories.BLL_AI_Memories import MemoryManager
 
-        provider = SQLiteMemoryProvider(db_path=str(tmp_path / "ltm.db"))
         agent = self._agent(admin_a, model_registry)
-        provider.store(agent.id, "James prefers concise answers")
+        await MemoryManager(
+            requester_id=admin_a.id, model_registry=model_registry
+        ).keep(agent.id, "James prefers concise answers")
         self._grant(agent.id, "recall", admin_a, model_registry)
         instance = self._instance(agent.id, admin_a, model_registry)
         args = json.dumps({"query": "concise"})
@@ -337,7 +374,6 @@ class TestAgentTurnExecutor(ExtensionServerMixin):
             model_registry=model_registry,
             requester_id=admin_a.id,
             chat_fn=ScriptedChat([_tool("recall", args), _text("ok")]),
-            memory_provider=provider,
         )
         await executor.run(instance.id)
 

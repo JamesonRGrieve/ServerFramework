@@ -11,7 +11,9 @@ from zephyrex.endpoints.EP_Auth_test import TestTeamEndpoints as CoreTeamEndpoin
 from zephyrex.endpoints.EP_Auth_test import (
     TestUserAndSessionEndpoints as CoreUserAndSessionEndpointTests,
 )
-from zephyrex.endpoints.EP_Providers_test import TestProviderEndpoints as ProviderEndpointTests
+from zephyrex.endpoints.EP_Providers_test import (
+    TestProviderEndpoints as ProviderEndpointTests,
+)
 from zephyrex.endpoints.EP_Providers_test import (
     TestProviderInstanceEndpoints as ProviderInstanceEndpointTests,
 )
@@ -327,9 +329,7 @@ class TestProviderInstanceAgentEndpoints(AbstractEPTest, ExtensionServerMixin):
 
 @pytest.mark.ep
 @pytest.mark.provider_instance_agent_ability
-class TestProviderInstanceAgentAbilityEndpoints(
-    AbstractEPTest, ExtensionServerMixin
-):
+class TestProviderInstanceAgentAbilityEndpoints(AbstractEPTest, ExtensionServerMixin):
     """Tests for the Provider Instance Agent Ability endpoints."""
 
     extension_class = EXT_AI_Agents
@@ -1037,9 +1037,7 @@ class TestActivityEndpoints(AbstractEPTest, ExtensionServerMixin):
     def test_POST_201_child(self, server, admin_a, team_a, parent=None, api_key=None):
         """Test creating a child activity (nested under parent activity)."""
         if not parent:
-            parent_activity = self._create(
-                server, admin_a.jwt, admin_a.id, team_a.id
-            )
+            parent_activity = self._create(server, admin_a.jwt, admin_a.id, team_a.id)
         else:
             parent_activity = parent
 
