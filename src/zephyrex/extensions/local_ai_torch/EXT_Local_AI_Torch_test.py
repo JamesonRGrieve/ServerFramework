@@ -1,941 +1,414 @@
-"""
-Test suite for Local AI PyTorch extension.
-Tests PyTorch extension metadata and abstract PyTorch provider interface.
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""PyTorch models, run for real on the CPU: tiny public models downloaded
+once into the shared cache (xfail when they are not cached and Hugging
+Face is unreachable), checked against their SHA-256 and pinned commit.
+
+- trl-internal-testing/tiny-Qwen2ForCausalLM-2.5 (5 MB of random
+  weights, a real tokenizer and chat template): chat and completion.
+- sentence-transformers/all-MiniLM-L6-v2 (91 MB): embeddings.
+- openai/whisper-tiny (151 MB): transcription, of the JFK inaugural
+  sample from Xenova/transformers.js-docs.
+
+And what a model repository could do to the server, served by a real
+local server: pickled weights and a repository's own code never run.
 """
 
-from typing import Dict, List, Set
-from unittest.mock import MagicMock
+import base64
+import hashlib
+import json
+import math
+import pickle
+import struct
+from pathlib import Path
 
+import httpx
+import numpy as np
 import pytest
 
+from zephyrex.extensions.ExternalErrors import (
+    InvalidInputExternalError,
+    PermanentExternalError,
+)
+from zephyrex.extensions.local_ai.LocalModels import (
+    LOADED_MODELS,
+    download_verified,
+    holds,
+    model_spec,
+    models_root,
+)
 from zephyrex.extensions.local_ai_torch.EXT_Local_AI_Torch import EXT_Local_AI_Torch
-from zephyrex.lib.Dependencies import Dependencies, PIP_Dependency
+from zephyrex.extensions.local_ai_torch.PRV_Torch_Embedding import (
+    PRV_Torch_Embedding,
+    pooled,
+)
+from zephyrex.extensions.local_ai_torch.PRV_Torch_Speech import (
+    PRV_Torch_Speech,
+    resampled,
+    wav_samples,
+)
+from zephyrex.extensions.local_ai_torch.PRV_Torch_TextGeneration import (
+    PRV_Torch_TextGeneration,
+)
+from zephyrex.lib.Environment import env
+from zephyrex.logic.BLL_Providers import ProviderInstanceUsageManager
+
+QWEN = {
+    "repo": "trl-internal-testing/tiny-Qwen2ForCausalLM-2.5",
+    "revision": "ce8d0bf270b28c8fab026ced69fe8aa14b0f0eda",
+    "files": {
+        "added_tokens.json": "58b54bbe36fc752f79a24a271ef66a0a0830054b4dfad94bde757d851968060b",
+        "chat_template.jinja": "cd8e9439f0570856fd70470bf8889ebd8b5d1107207f67a5efb46e342330527f",
+        "config.json": "114c0f6f53f591bb5bd28e54f6aedc534171e797581b5f10078646ea468035d9",
+        "generation_config.json": "fd7be13576a65237b59df8656aeb8af61b94368650e2c13ae2f1ba95266c98e4",
+        "merges.txt": "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5",
+        "model.safetensors": "653e6a0513543f691f5926b7deb442fe9a179d82cbcd59dddaf3de109c9f5f70",
+        "special_tokens_map.json": "76862e765266b85aa9459767e33cbaf13970f327a0e88d1c65846c2ddd3a1ecd",
+        "tokenizer.json": "9c5ae00e602b8860cbd784ba82a8aa14e8feecec692e7076590d014d7b7fdafa",
+        "tokenizer_config.json": "0a04a9d7d4a62b28482bdfe726c122756de85714fb64166ace92ae75b8f57614",
+        "vocab.json": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910",
+    },
+}
+MINILM = {
+    "repo": "sentence-transformers/all-MiniLM-L6-v2",
+    "revision": "1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+    "files": {
+        "config.json": "953f9c0d463486b10a6871cc2fd59f223b2c70184f49815e7efbcab5d8908b41",
+        "model.safetensors": "53aa51172d142c89d9012cce15ae4d6cc0ca6895895114379cacb4fab128d9db",
+        "special_tokens_map.json": "303df45a03609e4ead04bc3dc1536d0ab19b5358db685b6f3da123d05ec200e3",
+        "tokenizer.json": "be50c3628f2bf5bb5e3a7f17b1f74611b2561a3a27eeab05e5aa30f411572037",
+        "tokenizer_config.json": "acb92769e8195aabd29b7b2137a9e6d6e25c476a4f15aa4355c233426c61576b",
+        "vocab.txt": "07eced375cec144d27c900241f3e339478dec958f92fddbc551f295c992038a3",
+    },
+}
+WHISPER = {
+    "repo": "openai/whisper-tiny",
+    "revision": "169d4a4341b33bc18d8881c4b69c2e104e1cc0af",
+    "files": {
+        "added_tokens.json": "9715fd2243b6f06a5858b5e32950d2853f73dd5bc201aafcf76f5082a2d8acd1",
+        "config.json": "ffdccec4f3211f4c63310f2b7098f309fe70f3952cedc5e4d11e43f5b2379b98",
+        "generation_config.json": "a5d5325911f16e74001a72fa13d6e208eee51548f994646de1f4b4cc8b35b512",
+        "merges.txt": "2df2990a395e35e8dfbc7511e08c12d56018d8d04691e0133e5d63b21e154dc6",
+        "model.safetensors": "7ebd0e69e78190ffe1438491fa05cc1f5c1aa3a4c4db3bc1723adbb551ea2395",
+        "normalizer.json": "bf1c507dc8724ca9cf9903640dacfb69dae2f00edee4f21ceba106a7392f26dd",
+        "preprocessor_config.json": "9b5cd03a36fbb8a627c64d98a5b5b126ead95a77720723944487311f0110b666",
+        "special_tokens_map.json": "e67ae3a0aaa99abcd9f187138e12db1f65c16a14761c50ef10eef2c174a7a691",
+        "tokenizer.json": "27fc476bfe7f17299480be2273fc0608e4d5a99aba2ab5dec5374b4482d1a566",
+        "tokenizer_config.json": "2a4c4281cf9f51ac6ccc406fdc711a087afe6530f671fa7b80953edc498275ce",
+        "vocab.json": "8f680bba319e01a653d2e8a5dbc17a9157179e0576e6ce74ce0c06356c6e24f9",
+    },
+}
+JFK_URL = (
+    "https://huggingface.co/datasets/Xenova/transformers.js-docs/resolve/"
+    "fbe92bd97d48f3ec17779d8d8f2964e1c6bc7634/jfk.wav"
+)
+JFK_SHA256 = "aa81c2552465568567e670f3823117e633900d16bd6202346a72f3c8464c74c8"
+HELLO = [{"role": "user", "content": "Say hello."}]
 
 
-class ConcretePyTorchProvider:
-    """Concrete implementation of AbstractPyTorchExtensionProvider for testing"""
-
-    # Static provider metadata
-    name = "test_pytorch"
-    version = "1.0.0"
-    description = "Test PyTorch provider"
-
-    # Link to parent extension (REQUIRED for Provider Rotation System)
-    extension = EXT_Local_AI_Torch
-
-    # Add unified dependencies using the Dependencies class
-    dependencies = Dependencies(
-        [
-            PIP_Dependency(
-                name="torch",
-                friendly_name="PyTorch",
-                semver=">=1.12.0",
-                reason="PyTorch model support",
-            ),
-            PIP_Dependency(
-                name="transformers",
-                friendly_name="HuggingFace Transformers",
-                semver=">=4.20.0",
-                reason="HuggingFace model support",
-            ),
-        ]
-    )
-
-    # Initialize static abilities for testing
-    abilities = {
-        "text_generation",
-        "embedding_generation",
-        "image_generation",
-        "speech_to_text",
-        "text_to_speech",
-        "vision_language_chat",
-        "multi_modal",
-        "streaming_generation",
-        "beam_search",
-        "advanced_sampling",
+def settings(model, **extra):
+    return {
+        "repo": model["repo"],
+        "revision": model["revision"],
+        "files": json.dumps(model["files"]),
+        **extra,
     }
 
-    @classmethod
-    def get_abilities(cls) -> Set[str]:
-        """Get PyTorch-specific abilities for rotation system."""
-        return cls.abilities
 
-    @classmethod
-    def load_model(
-        cls,
-        model_id: str,
-        device: str = "auto",
-        torch_dtype: str = "auto",
-        load_in_4bit: bool = False,
-        load_in_8bit: bool = False,
-        **kwargs,
-    ) -> Dict:
-        """Mock implementation for testing"""
-        return {
-            "success": True,
-            "model_id": model_id,
-            "framework": "pytorch",
-            "device": device if device != "auto" else "cpu",
-            "torch_dtype": torch_dtype,
-            "quantization": {
-                "4bit": load_in_4bit,
-                "8bit": load_in_8bit,
-            },
-            "status": "loaded",
-            "memory_usage_mb": 1536,
-            "parameter_count": "7B",
-        }
+def cached(model) -> bool:
+    spec = model_spec(
+        None, model["repo"], model["revision"], json.dumps(model["files"]), "test"
+    )
+    root = models_root()
+    return all(spec.local_path(root, f, "test").is_file() for f in spec.files)
 
-    @classmethod
-    def unload_model(cls, model_id: str) -> Dict:
-        """Mock implementation for testing"""
-        return {
-            "success": True,
-            "model_id": model_id,
-            "status": "unloaded",
-            "memory_freed_mb": 1536,
-        }
 
-    @classmethod
-    def generate_text(
-        cls,
-        prompt: str,
-        max_tokens: int = 512,
-        temperature: float = 0.7,
-        top_p: float = 0.9,
-        top_k: int = 50,
-        do_sample: bool = True,
-        num_beams: int = None,
-        repetition_penalty: float = 1.0,
-        stream: bool = False,
-        **kwargs,
-    ) -> Dict:
-        """Mock implementation for testing"""
-        generation_method = "beam_search" if num_beams and num_beams > 1 else "sampling"
-        return {
-            "success": True,
-            "text": f"PyTorch generated response to: {prompt[:30]}...",
-            "tokens_used": min(len(prompt.split()) + 30, max_tokens),
-            "temperature": temperature,
-            "top_p": top_p,
-            "top_k": top_k,
-            "generation_method": generation_method,
-            "num_beams": num_beams,
-            "framework": "pytorch",
-            "stream": stream,
-        }
+def online() -> bool:
+    try:
+        httpx.head("https://huggingface.co", timeout=10)
+        return True
+    except httpx.HTTPError:
+        return False
 
-    @classmethod
-    def generate_embeddings(cls, text: str, normalize: bool = True, **kwargs) -> Dict:
-        """Mock implementation for testing"""
-        # Generate a test embedding (768 dimensions for PyTorch)
-        embedding = [0.02] * 768
-        return {
-            "success": True,
-            "embeddings": embedding,
-            "dimensions": len(embedding),
-            "normalized": normalize,
-            "text_length": len(text),
-            "framework": "pytorch",
-            "model_type": "sentence-transformer",
-        }
 
-    @classmethod
-    def generate_image(
-        cls,
-        prompt: str,
-        negative_prompt: str = None,
-        height: int = 512,
-        width: int = 512,
-        num_inference_steps: int = 20,
-        guidance_scale: float = 7.5,
-        **kwargs,
-    ) -> Dict:
-        """Mock implementation for testing"""
-        return {
-            "success": True,
-            "image_data_base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
-            "width": width,
-            "height": height,
-            "steps": num_inference_steps,
-            "guidance_scale": guidance_scale,
-            "prompt": prompt,
-            "negative_prompt": negative_prompt,
-            "framework": "pytorch",
-            "model_type": "diffusion",
-        }
+needs_models = pytest.mark.xfail(
+    not all(cached(m) for m in (QWEN, MINILM, WHISPER)) and not online(),
+    reason="the test models are not cached and huggingface.co is unreachable",
+)
 
-    @classmethod
-    def speech_to_text(
-        cls, audio_data: bytes, language: str = "auto", **kwargs
-    ) -> Dict:
-        """Mock implementation for testing"""
-        return {
-            "success": True,
-            "text": "This is a transcribed text from audio",
-            "language": language,
-            "confidence": 0.95,
-            "audio_duration_seconds": 10.5,
-            "framework": "pytorch",
-            "model_type": "whisper",
-        }
 
-    @classmethod
-    def text_to_speech(cls, text: str, voice: str = "default", **kwargs) -> Dict:
-        """Mock implementation for testing"""
-        return {
-            "success": True,
-            "audio_data_base64": "UklGRnoGAABXQVZFZm10IBAAAAABAAEA",
-            "voice": voice,
-            "text_length": len(text),
-            "audio_duration_seconds": len(text) * 0.1,
-            "framework": "pytorch",
-            "model_type": "tts",
-        }
+def cosine(a, b):
+    return sum(x * y for x, y in zip(a, b)) / (
+        math.sqrt(sum(x * x for x in a)) * math.sqrt(sum(y * y for y in b))
+    )
 
-    @classmethod
-    def vision_language_chat(cls, image_data: bytes, prompt: str, **kwargs) -> Dict:
-        """Mock implementation for testing"""
-        return {
-            "success": True,
-            "text": f"Vision-language response about the image: {prompt}",
-            "image_analyzed": True,
-            "prompt": prompt,
-            "framework": "pytorch",
-            "model_type": "vision-language",
-        }
 
-    @classmethod
-    def select_optimal_device(cls) -> str:
-        """Mock implementation for testing"""
-        return "cuda"  # Assume CUDA is available for testing
+def wav(samples: np.ndarray, rate: int, width: int = 2, channels: int = 1) -> bytes:
+    """A PCM WAV file, written by hand so the reader is checked against
+    the format rather than against itself."""
+    scale = 2 ** (8 * width - 1) - 1
+    kind = {1: np.uint8, 2: np.int16, 4: np.int32}[width]
+    values = np.repeat(samples, channels) * scale
+    data: bytes = (values + (128 if width == 1 else 0)).astype(kind).tobytes()
+    header = struct.pack(
+        "<4sI4s4sIHHIIHH4sI",
+        b"RIFF",
+        36 + len(data),
+        b"WAVE",
+        b"fmt ",
+        16,
+        1,
+        channels,
+        rate,
+        rate * channels * width,
+        channels * width,
+        8 * width,
+        b"data",
+        len(data),
+    )
+    return header + data
 
-    @classmethod
-    def optimize_memory_settings(
-        cls, model_config: Dict, available_memory_gb: float = 8.0
-    ) -> Dict:
-        """Mock implementation for testing"""
-        optimized_config = model_config.copy()
 
-        if available_memory_gb < 4:
-            optimized_config["load_in_4bit"] = True
-            optimized_config["device_map"] = "auto"
-        elif available_memory_gb < 8:
-            optimized_config["load_in_8bit"] = True
-        else:
-            optimized_config["torch_dtype"] = "float16"
-            optimized_config["use_flash_attention"] = True
+@pytest.fixture
+def models(provider_instance, rotation_over, monkeypatch):
+    text = provider_instance(
+        PRV_Torch_TextGeneration, settings=settings(QWEN, max_tokens="24")
+    )
+    encoder = provider_instance(PRV_Torch_Embedding, settings=settings(MINILM))
+    speech = provider_instance(PRV_Torch_Speech, settings=settings(WHISPER))
+    monkeypatch.setattr(
+        EXT_Local_AI_Torch,
+        "_root_rotation_cache",
+        rotation_over(text, encoder, speech),
+    )
+    yield text, encoder, speech
+    for instance in (text, encoder, speech):
+        LOADED_MODELS.unload(str(instance.id))
 
-        return {
-            "success": True,
-            "original_config": model_config,
-            "optimized_config": optimized_config,
-            "memory_optimizations": ["quantization", "device_mapping"],
-            "estimated_memory_usage_gb": min(available_memory_gb * 0.8, 6.0),
-        }
 
-    @classmethod
-    def configure_multi_gpu(
-        cls, model_config: Dict, gpu_count: int = 1, gpu_memory: List[float] = None
-    ) -> Dict:
-        """Mock implementation for testing"""
-        if gpu_count <= 1:
-            return {"success": True, "config": model_config, "multi_gpu": False}
+@pytest.fixture
+async def jfk() -> bytes:
+    target = models_root() / "test-audio" / "jfk.wav"
+    if not holds(target, JFK_SHA256):
+        await download_verified(JFK_URL, target, JFK_SHA256, provider="test")
+    return target.read_bytes()
 
-        optimized_config = model_config.copy()
-        device_map = {}
-        for i in range(gpu_count):
-            device_map[i] = f"{100 // gpu_count}%"
 
-        optimized_config["device_map"] = device_map
+@needs_models
+class TestModels:
+    async def test_chat_in_the_neutral_shape(self, models, extension_app):
+        text, _, _ = models
+        answer = await EXT_Local_AI_Torch.chat(HELLO, max_tokens=8, temperature=0)
+        assert answer["message"]["role"] == "assistant"
+        assert isinstance(answer["message"]["content"], str)
+        assert answer["model"] == QWEN["repo"]
+        assert answer["finish_reason"] in ("stop", "length")
+        assert answer["usage"]["input_tokens"] > 5
+        assert 0 < answer["usage"]["output_tokens"] <= 8
+        rows = ProviderInstanceUsageManager(
+            model_registry=extension_app.state.model_registry,
+            requester_id=env("ROOT_ID"),
+        ).list(provider_instance_id=text.id)
+        assert {r.key for r in rows} == {"input_tokens", "output_tokens"}
 
-        return {
-            "success": True,
-            "original_config": model_config,
-            "optimized_config": optimized_config,
-            "multi_gpu": True,
-            "gpu_count": gpu_count,
-            "device_map": device_map,
-        }
+    async def test_greedy_completion_is_repeatable_and_capped(self, models):
+        first = await EXT_Local_AI_Torch.complete_text("Hello", 500, 0)
+        second = await EXT_Local_AI_Torch.complete_text("Hello", 500, 0)
+        assert first["text"] == second["text"]
+        assert first["usage"]["output_tokens"] <= 24
 
-    @classmethod
-    def can_handle_model(cls, model_id: str) -> bool:
-        """Mock implementation for testing"""
-        # Simulate HuggingFace model detection
-        huggingface_patterns = [
-            "microsoft/",
-            "openai/",
-            "facebook/",
-            "google/",
-            "stabilityai/",
-            "runwayml/",
-        ]
-        return (
-            any(pattern in model_id for pattern in huggingface_patterns)
-            or "/" in model_id
+    async def test_generation_stops_at_the_deadline(self, provider_instance):
+        slow = provider_instance(
+            PRV_Torch_TextGeneration,
+            settings=settings(QWEN, max_tokens="2000", timeout_seconds="0.01"),
         )
-
-    @classmethod
-    def get_model_capabilities(cls, model_id: str) -> Set[str]:
-        """Mock implementation for testing"""
-        capabilities = set()
-
-        # Simulate capability detection based on model ID
-        if "gpt" in model_id.lower() or "llama" in model_id.lower():
-            capabilities.add("text_generation")
-        if "bert" in model_id.lower() or "sentence" in model_id.lower():
-            capabilities.add("embedding_generation")
-        if "stable-diffusion" in model_id.lower():
-            capabilities.add("image_generation")
-        if "whisper" in model_id.lower():
-            capabilities.add("speech_to_text")
-        if "llava" in model_id.lower() or "clip" in model_id.lower():
-            capabilities.add("vision_language_chat")
-
-        return capabilities if capabilities else {"text_generation"}
-
-    @classmethod
-    def estimate_model_memory(cls, model_id: str) -> float:
-        """Mock implementation for testing"""
-        # Simulate memory estimation based on model name
-        if "7b" in model_id.lower():
-            return 14.0  # GB
-        elif "13b" in model_id.lower():
-            return 26.0
-        elif "large" in model_id.lower():
-            return 6.0
-        else:
-            return 3.0  # Default small model
-
-    @classmethod
-    def bond_instance(cls, instance):
-        """Bond provider instance for rotation system."""
-        return cls()
-
-    @classmethod
-    def services(cls) -> List[str]:
-        """Return list of services provided by this provider."""
-        return ["ai", "ml", "multimodal", "huggingface", "pytorch"]
-
-    @classmethod
-    def has_ability(cls, ability: str) -> bool:
-        """Check if provider has a specific ability."""
-        return ability in cls.abilities
-
-
-@pytest.mark.local_ai
-@pytest.mark.pytorch
-class TestEXTLocalAI_PyTorch:
-    """
-    Test suite for EXT_Local_AI_Torch extension.
-
-    Tests PyTorch extension metadata and abstract provider interface.
-    Only tests functionality that actually exists in the implementation.
-
-    Test areas:
-    - Extension metadata (name, version, description, dependencies)
-    - Abstract PyTorch provider class structure
-    - Provider inheritance and linkage
-    - PyTorch-specific functionality
-    - Multi-modal capabilities
-    - Hardware optimization for PyTorch models
-    """
-
-    def test_extension_metadata(self):
-        """Test PyTorch extension metadata."""
-        assert EXT_Local_AI_Torch.name == "local_ai_pytorch"
-        assert EXT_Local_AI_Torch.friendly_name == "PyTorch Model Support"
-        assert EXT_Local_AI_Torch.version == "1.0.0"
-        assert "pytorch" in EXT_Local_AI_Torch.description.lower()
-        assert "huggingface" in EXT_Local_AI_Torch.description.lower()
-
-    def test_extension_dependencies(self):
-        """Test PyTorch extension dependencies."""
-        assert hasattr(EXT_Local_AI_Torch, "dependencies")
-        assert isinstance(EXT_Local_AI_Torch.dependencies, list)
-        assert "local_ai" in EXT_Local_AI_Torch.dependencies
-
-    def test_extension_class_structure(self):
-        """Test PyTorch extension class structure."""
-        # Test that EXT_Local_AI_Torch is properly defined
-        assert hasattr(EXT_Local_AI_Torch, "name")
-        assert hasattr(EXT_Local_AI_Torch, "friendly_name")
-        assert hasattr(EXT_Local_AI_Torch, "version")
-        assert hasattr(EXT_Local_AI_Torch, "description")
-        assert hasattr(EXT_Local_AI_Torch, "dependencies")
-
-        # Test inheritance
-        from zephyrex.extensions.AbstractExtensionProvider import AbstractStaticExtension
-
-        assert issubclass(EXT_Local_AI_Torch, AbstractStaticExtension)
-
-    def test_concrete_provider_metadata(self):
-        """Test concrete PyTorch provider metadata."""
-        assert ConcretePyTorchProvider.name == "test_pytorch"
-        assert ConcretePyTorchProvider.version == "1.0.0"
-        assert ConcretePyTorchProvider.description == "Test PyTorch provider"
-
-    def test_concrete_provider_methods_implementation(self):
-        """Test that concrete provider implements required PyTorch methods."""
-        # Test that all expected PyTorch methods exist and are callable
-        pytorch_methods = [
-            "load_model",
-            "unload_model",
-            "generate_text",
-            "generate_embeddings",
-            "generate_image",
-            "speech_to_text",
-            "text_to_speech",
-            "vision_language_chat",
-            "select_optimal_device",
-            "optimize_memory_settings",
-            "configure_multi_gpu",
-            "can_handle_model",
-            "get_model_capabilities",
-            "estimate_model_memory",
-            "get_abilities",
-        ]
-
-        for method_name in pytorch_methods:
-            assert hasattr(ConcretePyTorchProvider, method_name)
-            assert callable(getattr(ConcretePyTorchProvider, method_name))
-
-    def test_concrete_provider_pytorch_model_loading(self):
-        """Test concrete provider PyTorch model loading functionality."""
-        # Test load_model with PyTorch-specific parameters
-        result = ConcretePyTorchProvider.load_model(
-            model_id="microsoft/DialoGPT-medium",
-            device="cuda",
-            torch_dtype="float16",
-            load_in_8bit=True,
-        )
-        assert isinstance(result, dict)
-        assert result["success"] is True
-        assert result["framework"] == "pytorch"
-        assert result["device"] == "cuda"
-        assert result["quantization"]["8bit"] is True
-
-        # Test unload_model
-        result = ConcretePyTorchProvider.unload_model("microsoft/DialoGPT-medium")
-        assert isinstance(result, dict)
-        assert result["success"] is True
-        assert "memory_freed_mb" in result
-
-    def test_concrete_provider_pytorch_text_generation(self):
-        """Test concrete provider PyTorch text generation functionality."""
-        # Test generate_text with advanced parameters
-        result = ConcretePyTorchProvider.generate_text(
-            prompt="What is machine learning?",
-            max_tokens=256,
-            temperature=0.8,
-            top_p=0.9,
-            top_k=50,
-            num_beams=4,
-            repetition_penalty=1.1,
-        )
-        assert isinstance(result, dict)
-        assert result["success"] is True
-        assert "text" in result
-        assert result["framework"] == "pytorch"
-        assert result["generation_method"] == "beam_search"
-        assert result["num_beams"] == 4
-
-    def test_concrete_provider_pytorch_embedding_generation(self):
-        """Test concrete provider PyTorch embedding generation functionality."""
-        # Test generate_embeddings
-        result = ConcretePyTorchProvider.generate_embeddings(
-            text="PyTorch models provide flexible deep learning capabilities",
-            normalize=True,
-        )
-        assert isinstance(result, dict)
-        assert result["success"] is True
-        assert "embeddings" in result
-        assert isinstance(result["embeddings"], list)
-        assert result["dimensions"] == 768
-        assert result["normalized"] is True
-        assert result["framework"] == "pytorch"
-
-    def test_concrete_provider_multimodal_capabilities(self):
-        """Test concrete provider multi-modal capabilities."""
-        # Test generate_image
-        result = ConcretePyTorchProvider.generate_image(
-            prompt="A beautiful landscape",
-            negative_prompt="blurry, low quality",
-            height=512,
-            width=512,
-        )
-        assert isinstance(result, dict)
-        assert result["success"] is True
-        assert "image_data_base64" in result
-        assert result["framework"] == "pytorch"
-        assert result["model_type"] == "diffusion"
-
-        # Test speech_to_text
-        result = ConcretePyTorchProvider.speech_to_text(
-            audio_data=b"fake_audio_data",
-            language="en",
-        )
-        assert isinstance(result, dict)
-        assert result["success"] is True
-        assert "text" in result
-        assert result["framework"] == "pytorch"
-        assert result["model_type"] == "whisper"
-
-        # Test text_to_speech
-        result = ConcretePyTorchProvider.text_to_speech(
-            text="Hello, this is a test speech synthesis",
-            voice="female",
-        )
-        assert isinstance(result, dict)
-        assert result["success"] is True
-        assert "audio_data_base64" in result
-        assert result["framework"] == "pytorch"
-
-        # Test vision_language_chat
-        result = ConcretePyTorchProvider.vision_language_chat(
-            image_data=b"fake_image_data",
-            prompt="What do you see in this image?",
-        )
-        assert isinstance(result, dict)
-        assert result["success"] is True
-        assert "text" in result
-        assert result["image_analyzed"] is True
-        assert result["framework"] == "pytorch"
-
-    def test_concrete_provider_pytorch_hardware_optimization(self):
-        """Test concrete provider PyTorch hardware optimization functionality."""
-        # Test select_optimal_device
-        device = ConcretePyTorchProvider.select_optimal_device()
-        assert isinstance(device, str)
-        assert device in ["cuda", "mps", "cpu"]
-
-        # Test optimize_memory_settings with medium memory (should use 8-bit)
-        config = {"model_id": "test/model", "device": "auto"}
-        result = ConcretePyTorchProvider.optimize_memory_settings(
-            config, available_memory_gb=4.0
-        )
-        assert isinstance(result, dict)
-        assert result["success"] is True
-        assert "optimized_config" in result
-        optimized_config = result["optimized_config"]
-        assert optimized_config.get("load_in_8bit") is True  # Due to medium memory
-
-        # Test with very low memory (should use 4-bit)
-        result = ConcretePyTorchProvider.optimize_memory_settings(
-            config, available_memory_gb=2.0
-        )
-        optimized_config = result["optimized_config"]
-        assert optimized_config.get("load_in_4bit") is True  # Due to very low memory
-
-        # Test with high memory
-        result = ConcretePyTorchProvider.optimize_memory_settings(
-            config, available_memory_gb=16.0
-        )
-        optimized_config = result["optimized_config"]
-        assert optimized_config.get("torch_dtype") == "float16"
-        assert optimized_config.get("use_flash_attention") is True
-
-    def test_concrete_provider_pytorch_multi_gpu_configuration(self):
-        """Test concrete provider PyTorch multi-GPU configuration functionality."""
-        config = {"model_id": "test/model"}
-
-        # Test single GPU (no multi-GPU optimization)
-        result = ConcretePyTorchProvider.configure_multi_gpu(config, gpu_count=1)
-        assert isinstance(result, dict)
-        assert result["success"] is True
-        assert result["multi_gpu"] is False
-
-        # Test multi-GPU configuration
-        result = ConcretePyTorchProvider.configure_multi_gpu(
-            config, gpu_count=4, gpu_memory=[8.0, 8.0, 8.0, 8.0]
-        )
-        assert isinstance(result, dict)
-        assert result["success"] is True
-        assert result["multi_gpu"] is True
-        assert result["gpu_count"] == 4
-        assert "device_map" in result["optimized_config"]
-
-    def test_concrete_provider_pytorch_model_compatibility(self):
-        """Test concrete provider PyTorch model compatibility functionality."""
-        # Test can_handle_model with HuggingFace models
-        assert (
-            ConcretePyTorchProvider.can_handle_model("microsoft/DialoGPT-medium")
-            is True
-        )
-        assert ConcretePyTorchProvider.can_handle_model("openai/whisper-large") is True
-        assert (
-            ConcretePyTorchProvider.can_handle_model("stabilityai/stable-diffusion-xl")
-            is True
-        )
-        assert ConcretePyTorchProvider.can_handle_model("custom/model") is True
-        assert ConcretePyTorchProvider.can_handle_model("local_model_file") is False
-
-        # Test get_model_capabilities
-        capabilities = ConcretePyTorchProvider.get_model_capabilities(
-            "microsoft/DialoGPT-medium"
-        )
-        assert isinstance(capabilities, set)
-        assert "text_generation" in capabilities
-
-        capabilities = ConcretePyTorchProvider.get_model_capabilities(
-            "openai/whisper-large"
-        )
-        assert "speech_to_text" in capabilities
-
-    def test_concrete_provider_pytorch_memory_estimation(self):
-        """Test concrete provider PyTorch memory estimation functionality."""
-        # Test estimate_model_memory
-        memory_7b = ConcretePyTorchProvider.estimate_model_memory("test/model-7b")
-        assert isinstance(memory_7b, float)
-        assert memory_7b == 14.0
-
-        memory_13b = ConcretePyTorchProvider.estimate_model_memory("test/model-13b")
-        assert memory_13b == 26.0
-
-        memory_default = ConcretePyTorchProvider.estimate_model_memory("test/model")
-        assert memory_default == 3.0
-
-    def test_concrete_provider_pytorch_abilities(self):
-        """Test concrete provider PyTorch-specific abilities."""
-        abilities = ConcretePyTorchProvider.get_abilities()
-        assert isinstance(abilities, set)
-
-        # PyTorch-specific abilities
-        expected_pytorch_abilities = {
-            "multi_modal",
-            "streaming_generation",
-            "beam_search",
-            "advanced_sampling",
-            "image_generation",
-            "speech_to_text",
-            "text_to_speech",
-            "vision_language_chat",
-        }
-
-        for ability in expected_pytorch_abilities:
-            assert ability in abilities, f"Missing PyTorch ability: {ability}"
-
-        # General AI abilities
-        assert "text_generation" in abilities
-        assert "embedding_generation" in abilities
-
-    def test_concrete_provider_utility_methods(self):
-        """Test concrete provider utility methods."""
-        # Test services
-        services = ConcretePyTorchProvider.services()
-        assert isinstance(services, list)
-        assert "multimodal" in services
-        assert "huggingface" in services
-        assert "pytorch" in services
-
-        # Test has_ability
-        assert ConcretePyTorchProvider.has_ability("multi_modal") is True
-        assert ConcretePyTorchProvider.has_ability("beam_search") is True
-        assert ConcretePyTorchProvider.has_ability("nonexistent_ability") is False
-
-    def test_concrete_provider_dependencies_structure(self):
-        """Test concrete provider dependencies structure."""
-        assert hasattr(ConcretePyTorchProvider, "dependencies")
-        assert isinstance(ConcretePyTorchProvider.dependencies, Dependencies)
-
-        # Test that it has pip dependencies
-        pip_deps = ConcretePyTorchProvider.dependencies.pip
-        assert len(pip_deps) >= 2
-        dep_names = [dep.name for dep in pip_deps]
-        assert "torch" in dep_names
-        assert "transformers" in dep_names
-
-    def test_concrete_provider_bond_instance_method(self):
-        """Test concrete provider bond_instance method."""
-        mock_instance = MagicMock()
-        result = ConcretePyTorchProvider.bond_instance(mock_instance)
-        assert result is not None
-
-    def test_provider_discovery(self):
-        """Test provider discovery functionality."""
-        providers = EXT_Local_AI_Torch.providers()
-        assert isinstance(providers, list), "Providers should be a list"
-        # Providers list may be empty in test environment, which is acceptable
-
-    def test_pytorch_quantization_support(self):
-        """Test PyTorch quantization support."""
-        # Test 4-bit quantization
-        result = ConcretePyTorchProvider.load_model(
-            model_id="test/model",
-            load_in_4bit=True,
-        )
-        assert result["quantization"]["4bit"] is True
-
-        # Test 8-bit quantization
-        result = ConcretePyTorchProvider.load_model(
-            model_id="test/model",
-            load_in_8bit=True,
-        )
-        assert result["quantization"]["8bit"] is True
-
-    def test_pytorch_streaming_generation(self):
-        """Test PyTorch streaming generation support."""
-        result = ConcretePyTorchProvider.generate_text(
-            prompt="Stream this response",
-            stream=True,
-        )
-        assert result["success"] is True
-        assert result["stream"] is True
-
-    def test_pytorch_beam_search_generation(self):
-        """Test PyTorch beam search generation support."""
-        result = ConcretePyTorchProvider.generate_text(
-            prompt="Generate with beam search",
-            num_beams=4,
-        )
-        assert result["success"] is True
-        assert result["generation_method"] == "beam_search"
-        assert result["num_beams"] == 4
-
-    def test_pytorch_advanced_sampling(self):
-        """Test PyTorch advanced sampling capabilities."""
-        abilities = ConcretePyTorchProvider.get_abilities()
-        assert "advanced_sampling" in abilities
-
-        # Test with advanced sampling parameters
-        result = ConcretePyTorchProvider.generate_text(
-            prompt="Test advanced sampling",
-            temperature=0.8,
-            top_p=0.9,
-            top_k=50,
-            do_sample=True,
-        )
-        assert result["success"] is True
-        assert result["top_p"] == 0.9
-        assert result["top_k"] == 50
-
-    def test_pytorch_device_optimization(self):
-        """Test PyTorch device optimization."""
-        # Test auto device selection
-        device = ConcretePyTorchProvider.select_optimal_device()
-        assert device in ["cuda", "mps", "cpu"]
-
-        # Test device-specific loading
-        result = ConcretePyTorchProvider.load_model(
-            model_id="test/model",
-            device="cuda",
-        )
-        assert result["device"] == "cuda"
-
-    def test_gpt2_haiku_integration(self):
-        """Integration test: Download GPT-2, mount, generate haiku, dismount."""
-        import asyncio
-        import httpx
-        import json
-        from datetime import datetime
-
-        async def run_integration_test():
-            client = httpx.AsyncClient(base_url="http://localhost:8000")
-            model_id = "openai-community/gpt2"
-
-            try:
-                # Step 1: Clean up - try to delete model if it exists
-                try:
-                    status_response = await client.get(
-                        f"/v1/ai/local/models/status/{model_id}"
-                    )
-                    if status_response.status_code == 200:
-                        status_data = status_response.json()
-                        if (
-                            status_data.get("success")
-                            and status_data.get("status") == "mounted"
-                        ):
-                            # Unmount first
-                            unmount_response = await client.post(
-                                "/v1/ai/local/models/unmount",
-                                json={"provider_instance_id": model_id},
-                            )
-                            if unmount_response.status_code == 200:
-                                print(f"Unmounted existing model: {model_id}")
-                except Exception:
-                    pass  # Model doesn't exist, continue
-
-                # Step 2: Queue model download
-                download_request = {
-                    "model_id": model_id,
-                    "model_format": "pytorch",
-                    "priority": "high",
-                }
-
-                download_response = await client.post(
-                    "/v1/ai/local/models/download/queue", json=download_request
-                )
-                assert (
-                    download_response.status_code == 200
-                ), f"Download queue failed: {download_response.text}"
-                download_data = download_response.json()
-                assert download_data[
-                    "success"
-                ], f"Download queue not successful: {download_data}"
-                download_id = download_data.get("download_id")
-                print(f"Queued download for {model_id}, download_id: {download_id}")
-
-                # Step 3: Wait for download completion (with timeout)
-                max_wait_seconds = 300  # 5 minutes timeout
-                start_time = datetime.now()
-
-                while (datetime.now() - start_time).seconds < max_wait_seconds:
-                    if download_id:
-                        status_response = await client.get(
-                            f"/v1/ai/local/models/download/status/{download_id}"
-                        )
-                        if status_response.status_code == 200:
-                            status_data = status_response.json()
-                            download_status = status_data.get("status", "unknown")
-                            print(f"Download status: {download_status}")
-
-                            if download_status == "completed":
-                                print(f"Download completed for {model_id}")
-                                break
-                            elif download_status == "failed":
-                                assert (
-                                    False
-                                ), f"Download failed: {status_data.get('error', 'Unknown error')}"
-
-                    await asyncio.sleep(10)  # Wait 10 seconds before checking again
-                else:
-                    assert False, f"Download timeout after {max_wait_seconds} seconds"
-
-                # Step 4: Mount the model
-                mount_request = {
-                    "model_id": model_id,
-                    "device": "auto",
-                    "auto_fit": True,
-                    "context_size": 1024,
-                    "use_beam_search": False,
-                    "cache_offload": True,
-                }
-
-                mount_response = await client.post(
-                    "/v1/ai/local/models/mount", json=mount_request
-                )
-                assert (
-                    mount_response.status_code == 200
-                ), f"Mount failed: {mount_response.text}"
-                mount_data = mount_response.json()
-                assert mount_data["success"], f"Mount not successful: {mount_data}"
-                provider_instance_id = mount_data.get("provider_instance_id", model_id)
-                print(f"Mounted model {model_id} as instance {provider_instance_id}")
-
-                # Step 5: Generate haiku using OpenAI compatible endpoint
-                haiku_prompt = "Write a haiku about artificial intelligence:"
-                chat_request = {
-                    "model": model_id,
-                    "messages": [
-                        {
-                            "role": "system",
-                            "content": "You are a poet. Write only haiku (5-7-5 syllable poems).",
-                        },
-                        {"role": "user", "content": haiku_prompt},
-                    ],
-                    "max_tokens": 50,
-                    "temperature": 0.8,
-                    "stop": ["\n\n"],
-                }
-
-                chat_response = await client.post(
-                    "/v1/ai/local/openai/v1/chat/completions", json=chat_request
-                )
-                assert (
-                    chat_response.status_code == 200
-                ), f"Chat completion failed: {chat_response.text}"
-                chat_data = chat_response.json()
-
-                # Verify response structure
-                assert "choices" in chat_data, "Chat response missing 'choices'"
-                assert len(chat_data["choices"]) > 0, "Chat response has no choices"
-                assert (
-                    "message" in chat_data["choices"][0]
-                ), "Chat choice missing 'message'"
-                assert (
-                    "content" in chat_data["choices"][0]["message"]
-                ), "Chat message missing 'content'"
-
-                haiku_content = chat_data["choices"][0]["message"]["content"].strip()
-                print(f"Generated haiku:\n{haiku_content}")
-
-                # Basic validation of haiku content
-                assert len(haiku_content) > 10, "Haiku content too short"
-                assert len(haiku_content) < 200, "Haiku content too long"
-                lines = haiku_content.split("\n")
-                assert len(lines) >= 3, "Haiku should have at least 3 lines"
-
-                # Check for AI-related words (basic content validation)
-                ai_words = [
-                    "ai",
-                    "artificial",
-                    "intelligence",
-                    "machine",
-                    "digital",
-                    "silicon",
-                    "mind",
-                    "neural",
-                    "algorithm",
-                ]
-                content_lower = haiku_content.lower()
-                has_ai_theme = any(word in content_lower for word in ai_words)
-                assert (
-                    has_ai_theme
-                ), f"Haiku doesn't seem to be about AI: {haiku_content}"
-
-                print("✓ Haiku generation successful and validated")
-
-                # Step 6: Dismount the model
-                unmount_request = {"provider_instance_id": provider_instance_id}
-
-                unmount_response = await client.post(
-                    "/v1/ai/local/models/unmount", json=unmount_request
-                )
-                assert (
-                    unmount_response.status_code == 200
-                ), f"Unmount failed: {unmount_response.text}"
-                unmount_data = unmount_response.json()
-                assert unmount_data[
-                    "success"
-                ], f"Unmount not successful: {unmount_data}"
-                print(f"Successfully dismounted model {provider_instance_id}")
-
-                # Step 7: Verify model is unmounted
-                final_status_response = await client.get(
-                    f"/v1/ai/local/models/status/{model_id}"
-                )
-                if final_status_response.status_code == 200:
-                    final_status_data = final_status_response.json()
-                    if final_status_data.get("success"):
-                        final_status = final_status_data.get("status", "unknown")
-                        assert (
-                            final_status != "mounted"
-                        ), f"Model still mounted after dismount: {final_status}"
-                        print(f"✓ Model status after dismount: {final_status}")
-
-                print("✓ Integration test completed successfully!")
-                return True
-
-            except Exception as e:
-                print(f"Integration test failed: {str(e)}")
-                # Cleanup attempt
-                try:
-                    await client.post(
-                        "/v1/ai/local/models/unmount",
-                        json={"provider_instance_id": model_id},
-                    )
-                except:
-                    pass
-                raise
-            finally:
-                await client.aclose()
-
-        # Run the async test
         try:
-            result = asyncio.run(run_integration_test())
-            assert result, "Integration test did not complete successfully"
-        except Exception as e:
-            # Mark as skipped if server is not running (for CI/testing without server)
-            pytest.skip(
-                f"Integration test skipped - server may not be running: {str(e)}"
+            answer = await PRV_Torch_TextGeneration.continue_text(slow, "Hi", None, 0)
+        finally:
+            LOADED_MODELS.unload(str(slow.id))
+        assert answer["finish_reason"] == "length"
+        assert answer["usage"]["output_tokens"] < 2000
+
+    async def test_embeddings(self, models):
+        found = await EXT_Local_AI_Torch.embed(
+            [
+                "The cat sat on the mat.",
+                "A kitten is sitting on a rug.",
+                "Quarterly revenue rose by four percent.",
+            ]
+        )
+        assert found["dimensions"] == 384 and found["model"] == MINILM["repo"]
+        cat, kitten, revenue = found["embeddings"]
+        assert math.isclose(sum(v * v for v in cat), 1.0, rel_tol=1e-4)
+        assert cosine(cat, kitten) > cosine(cat, revenue) + 0.2
+
+    async def test_transcription(self, models, jfk):
+        found = await EXT_Local_AI_Torch.transcribe(
+            base64.b64encode(jfk).decode(), "jfk.wav", "en"
+        )
+        assert "ask not what your country can do for you" in found["text"].lower()
+        assert found["model"] == WHISPER["repo"]
+
+    async def test_audio_longer_than_allowed(self, provider_instance, jfk):
+        short = provider_instance(
+            PRV_Torch_Speech, settings=settings(WHISPER, max_audio_seconds="5")
+        )
+        with pytest.raises(InvalidInputExternalError, match="at most 5 seconds"):
+            await PRV_Torch_Speech.transcribe(short, jfk, "jfk.wav", None)
+        assert LOADED_MODELS.get(str(short.id)) is None
+
+    async def test_listed_and_unloaded(self, models):
+        text, encoder, _ = models
+        await EXT_Local_AI_Torch.load_model(encoder.name)
+        listed = {m["id"]: m for m in await EXT_Local_AI_Torch.list_local_models()}
+        assert (
+            listed[str(encoder.id)]["loaded"] and listed[str(encoder.id)]["downloaded"]
+        )
+        assert listed[str(text.id)]["abilities"] == ["chat", "text_completion"]
+        assert not (await EXT_Local_AI_Torch.unload_model(encoder.name))["loaded"]
+
+
+class Planted:
+    """Pickled weights that, if unpickled, leave a file behind."""
+
+    def __init__(self, marker: Path) -> None:
+        self.marker = marker
+
+    def __reduce__(self):
+        return (Path.touch, (self.marker,))
+
+
+REVISION = "0123456789abcdef0123456789abcdef01234567"
+
+
+class TestHostileRepositories:
+    @pytest.fixture
+    def serve(self, local_http_server, set_env, tmp_path):
+        """Serve ``files`` as repository ``repo`` from the allowed source,
+        into a scratch models directory: the settings declaring them."""
+        set_env("LOCAL_AI_MODELS_DIR", str(tmp_path / "models"))
+
+        def _serve(repo, files):
+            server = local_http_server(
+                {
+                    f"/{repo}/resolve/{REVISION}/{path}": (200, {}, body)
+                    for path, body in files.items()
+                }
             )
+            set_env("LOCAL_AI_MODEL_SOURCES", server.base_url)
+            return {
+                "source": server.base_url,
+                "repo": repo,
+                "revision": REVISION,
+                "files": json.dumps(
+                    {p: hashlib.sha256(b).hexdigest() for p, b in files.items()}
+                ),
+            }
+
+        return _serve
+
+    async def test_pickled_weights_never_load(self, serve, provider_instance, tmp_path):
+        marker = tmp_path / "unpickled"
+        config = {"model_type": "gpt2", "n_layer": 1, "n_head": 1, "n_embd": 4}
+        declared = serve(
+            "hostile/pickle",
+            {
+                "config.json": json.dumps(config).encode(),
+                "pytorch_model.bin": pickle.dumps(Planted(marker)),
+            },
+        )
+        instance = provider_instance(PRV_Torch_TextGeneration, settings=declared)
+        with pytest.raises(PermanentExternalError, match="could not be loaded"):
+            await PRV_Torch_TextGeneration.load(instance)
+        assert not marker.exists()
+        assert LOADED_MODELS.get(str(instance.id)) is None
+
+    async def test_a_repositorys_own_code_never_runs(
+        self, serve, provider_instance, tmp_path
+    ):
+        marker = tmp_path / "imported"
+        code = f"import pathlib\npathlib.Path({str(marker)!r}).touch()\n".encode()
+        config = {
+            "model_type": "hostile",
+            "architectures": ["HostileModel"],
+            "auto_map": {
+                "AutoConfig": "configuration_hostile.HostileConfig",
+                "AutoModel": "modeling_hostile.HostileModel",
+            },
+        }
+        declared = serve(
+            "hostile/code",
+            {
+                "config.json": json.dumps(config).encode(),
+                "configuration_hostile.py": code,
+                "modeling_hostile.py": code,
+            },
+        )
+        instance = provider_instance(PRV_Torch_Embedding, settings=declared)
+        with pytest.raises(PermanentExternalError, match="could not be loaded"):
+            await PRV_Torch_Embedding.load(instance)
+        assert not marker.exists()
+
+
+class TestAudio:
+    def test_wav_samples(self):
+        tone = np.sin(np.linspace(0, 20 * np.pi, 800)).astype(np.float32)
+        for width in (1, 2, 4):
+            samples, rate = wav_samples(wav(tone, 8000, width, channels=2))
+            assert rate == 8000 and len(samples) == 800
+            assert np.allclose(samples, tone, atol=0.02)
+
+    def test_resampled(self):
+        samples = np.arange(8000, dtype=np.float32) / 8000
+        found = resampled(samples, 8000, 16000)
+        assert len(found) == 16000 and found.dtype == np.float32
+        assert np.allclose(found[::2][:-1], samples[:-1], atol=1e-3)
+
+    @pytest.mark.parametrize("audio", [b"ID3 not wav", b"", b"RIFF\x00\x00"])
+    def test_only_wav(self, audio):
+        with pytest.raises(InvalidInputExternalError, match="WAV"):
+            wav_samples(audio)
+
+    async def test_a_language_is_a_code_or_name(self, provider_instance):
+        speech = provider_instance(PRV_Torch_Speech, settings=settings(WHISPER))
+        with pytest.raises(InvalidInputExternalError, match="language"):
+            await PRV_Torch_Speech.transcribe(
+                speech, wav(np.zeros(160, np.float32), 16000), "a.wav", "../en"
+            )
+
+
+class TestRefusals:
+    @pytest.fixture
+    def text(self, provider_instance):
+        return provider_instance(PRV_Torch_TextGeneration, settings=settings(QWEN))
+
+    async def test_tools_and_images(self, text):
+        tool = {"type": "function", "function": {"name": "f", "parameters": {}}}
+        with pytest.raises(PermanentExternalError, match="tool calls"):
+            await PRV_Torch_TextGeneration.chat(text, HELLO, tools=[tool])
+        with pytest.raises(PermanentExternalError, match="images"):
+            await PRV_Torch_TextGeneration.chat(
+                text,
+                [{"role": "user", "content": "x", "images": ["https://x.test/a.png"]}],
+            )
+
+    @pytest.mark.parametrize(
+        "setting", [{"device": "cuda; rm -rf /"}, {"dtype": "float8"}]
+    )
+    async def test_device_and_dtype(self, provider_instance, setting):
+        instance = provider_instance(
+            PRV_Torch_TextGeneration, settings=settings(QWEN, **setting)
+        )
+        with pytest.raises(PermanentExternalError, match="misconfigured"):
+            PRV_Torch_TextGeneration.pretrained(None, instance, Path("."))
+
+
+def test_pooling():
+    import torch
+
+    hidden = torch.tensor([[[1.0, 0.0], [3.0, 4.0], [9.0, 9.0]]])
+    mask = torch.tensor([[1, 1, 0]])
+    assert pooled(hidden, mask, "mean", False).tolist() == [[2.0, 2.0]]
+    assert pooled(hidden, mask, "cls", False).tolist() == [[1.0, 0.0]]
+    assert torch.allclose(
+        pooled(hidden, mask, "mean", True), torch.tensor([[0.7071, 0.7071]]), atol=1e-4
+    )

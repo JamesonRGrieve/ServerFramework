@@ -5,11 +5,15 @@
 # Manifest_parity_test keeps the two in step.
 
 name = "local_ai_torch"
-version = "2.0.0"
-description = "PyTorch model extension providing transformer model support via HuggingFace with advanced configuration and hardware optimization"
+version = "3.0.0"
+description = "PyTorch models on this server through transformers: chat, text completion, embeddings and transcription"
 author = "ZephyrexTechnologies"
 entry_module = "EXT_Local_AI_Torch"
 minimum_framework_version = "0.0.0"
 
-pip_dependencies = []
+pip_dependencies = ["torch>=2.13.0", "transformers>=5.15.1"]
 system_dependencies = []
+
+[[extension_dependencies]]
+name = "local_ai"
+optional = false

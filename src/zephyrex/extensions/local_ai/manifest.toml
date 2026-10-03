@@ -5,11 +5,15 @@
 # Manifest_parity_test keeps the two in step.
 
 name = "local_ai"
-version = "2.0.0"
-description = "Local AI extension providing comprehensive AI model capabilities with advanced configuration, hardware optimization, and request prioritization via Provider Rotation System"
+version = "3.0.0"
+description = "Models run on this server's own hardware: pinned, checksum-verified downloads and the models held in memory"
 author = "ZephyrexTechnologies"
 entry_module = "EXT_Local_AI"
 minimum_framework_version = "0.0.0"
 
-pip_dependencies = []
+pip_dependencies = ["psutil>=5.9.0"]
 system_dependencies = []
+
+[[extension_dependencies]]
+name = "ai"
+optional = false

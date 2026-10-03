@@ -5,11 +5,15 @@
 # Manifest_parity_test keeps the two in step.
 
 name = "local_ai_gguf"
-version = "2.0.0"
-description = "GGUF model extension providing quantized model support via llama.cpp with advanced configuration and hardware optimization"
+version = "3.0.0"
+description = "GGUF models on this server through llama.cpp: chat, text completion and embeddings"
 author = "ZephyrexTechnologies"
 entry_module = "EXT_Local_AI_GGUF"
 minimum_framework_version = "0.0.0"
 
-pip_dependencies = []
+pip_dependencies = ["llama-cpp-python>=0.3.35"]
 system_dependencies = []
+
+[[extension_dependencies]]
+name = "local_ai"
+optional = false
