@@ -1,158 +1,81 @@
-"""Tests for the oauth_consumer extension."""
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""The extension itself: its migration creates exactly the models' tables,
+it registers its grant, and it refuses to run without encryption."""
 
-import os
-
-os.environ.setdefault("JWT_SECRET", "x" * 32)
-os.environ.setdefault("ALLOW_PLAINTEXT_SECRETS", "true")
-os.environ.setdefault("PYTEST_CURRENT_TEST", "oauth_consumer_test")
+import importlib.util
+from pathlib import Path
+from types import ModuleType
 
 import pytest
-from fastapi import HTTPException
+import sqlalchemy as sa
+from alembic.migration import MigrationContext
+from alembic.operations import Operations
 
+from zephyrex.extensions.AbstractEXTTest import ExtensionServerMixin
 from zephyrex.extensions.oauth_consumer.BLL_OAuthConsumer import (
-    OAuthConsumerManager,
-    OAuthCallbackRequest,
-    UserOAuthLinkModel,
+    GRANT_TYPE,
+    OAuthIdentityModel,
+    OAuthLoginStateModel,
 )
-from zephyrex.extensions.oauth_consumer.EXT_OAuthConsumer import (
-    EXT_OAuthConsumer,
-)
-from zephyrex.extensions.oauth_consumer.IdPRegistry import (
-    get_idp,
-    list_idps,
-)
-from zephyrex.extensions.oauth_consumer.PRV_AbstractIdP import (
-    AbstractIdPProvider,
-)
-from zephyrex.lib.ReplayCache import (
-    InMemoryReplayCache,
-    set_replay_cache,
-)
-from zephyrex.logic.BLL_Auth import (
-    InvalidGrantError,
-    PasswordlessGrantRegistry,
-)
+from zephyrex.extensions.oauth_consumer.EXT_OAuthConsumer import EXT_OAuthConsumer
+from zephyrex.logic.BLL_Auth import PasswordlessGrantRegistry
+
+_MIGRATION = Path(__file__).parent / "migrations" / "versions" / "001_initial.py"
 
 
-class TestIdPRegistry:
-    def test_four_idps_self_registered(self):
-        # Force-import each so the register_idp(...) calls execute.
-        from zephyrex.extensions.oauth_consumer import (  # noqa: F401
-            Amazon,
-            GitHub,
-            Google,
-            Microsoft,
-        )
-
-        names = set(list_idps())
-        for expected in ("amazon", "github", "google", "microsoft"):
-            assert expected in names
-
-    def test_each_idp_has_authorize_url(self):
-        from zephyrex.extensions.oauth_consumer import (  # noqa: F401
-            Amazon,
-            GitHub,
-            Google,
-            Microsoft,
-        )
-
-        for name in ("amazon", "github", "google", "microsoft"):
-            cls = get_idp(name)
-            instance = cls()
-            assert getattr(
-                instance, "AUTHORIZE_URL", None
-            ), f"{name} IdP missing AUTHORIZE_URL"
-
-    def test_unknown_idp_raises(self):
-        with pytest.raises(ValueError):
-            get_idp("does-not-exist")
+def _load_migration() -> ModuleType:
+    spec = importlib.util.spec_from_file_location("oauth_consumer_initial", _MIGRATION)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
-class TestExtensionMetadata:
-    def test_name(self):
-        assert EXT_OAuthConsumer.name == "oauth_consumer"
-
-    def test_grant_registered(self):
-        # BLL import side-effect registers oauth_consumer with the
-        # PasswordlessGrantRegistry.
-        from zephyrex.extensions.oauth_consumer import (  # noqa: F401
-            BLL_OAuthConsumer,
-        )
-
-        assert "oauth_consumer" in PasswordlessGrantRegistry.list_grant_types()
+def _shape(table: sa.Table) -> dict:
+    return {c.name: (c.type.python_type, c.nullable) for c in table.columns}
 
 
-class TestStateCSRF:
-    def setup_method(self):
-        # Fresh in-memory cache per test so state isolation is guaranteed.
-        set_replay_cache(InMemoryReplayCache())
+class TestMigration(ExtensionServerMixin):
+    extension_class = EXT_OAuthConsumer
 
-    def _manager(self):
-        m = OAuthConsumerManager.__new__(OAuthConsumerManager)
-        m.model_registry = None
-        return m
-
-    def test_callback_without_state_rejected(self):
-        manager = self._manager()
-        with pytest.raises(InvalidGrantError):
-            import asyncio
-
-            asyncio.run(
-                manager.complete_callback(
-                    provider="google", code="x", redirect_uri="https://x", state=""
-                )
-            )
-
-    def test_callback_with_unknown_state_rejected(self):
-        manager = self._manager()
-        with pytest.raises(InvalidGrantError):
-            import asyncio
-
-            asyncio.run(
-                manager.complete_callback(
-                    provider="google",
-                    code="x",
-                    redirect_uri="https://x",
-                    state="never-issued",
-                )
-            )
+    def test_upgrade_creates_the_models_tables_and_downgrade_drops_them(self, server):
+        base = server.app.state.model_registry.DB.manager.Base
+        engine = sa.create_engine("sqlite://")
+        migration = _load_migration()
+        assert migration.branch_labels == ("ext_oauth_consumer",)
+        with engine.begin() as connection:
+            with Operations.context(MigrationContext.configure(connection)):
+                migration.upgrade()
+                inspector = sa.inspect(connection)
+                for model in (OAuthIdentityModel, OAuthLoginStateModel):
+                    table = model.DB(base).__table__
+                    created = sa.Table(
+                        table.name, sa.MetaData(), autoload_with=connection
+                    )
+                    assert _shape(created) == _shape(table), table.name
+                    assert {i["name"] for i in inspector.get_indexes(table.name)} == {
+                        i.name for i in table.indexes
+                    }
+                migration.upgrade()
+                migration.downgrade()
+                assert not sa.inspect(connection).get_table_names()
 
 
-class TestRequestSchema:
-    def test_state_is_required(self):
-        # Pydantic should reject a callback request that omits state now
-        # that the field is no longer Optional.
-        from pydantic import ValidationError
+class TestExtension:
+    def test_the_grant_is_registered(self):
+        assert GRANT_TYPE in PasswordlessGrantRegistry.list_grant_types()
 
-        with pytest.raises(ValidationError):
-            OAuthCallbackRequest(provider="google", code="abc")
+    def test_it_refuses_to_run_without_an_encryption_key(self, set_env):
+        set_env("FRAMEWORK_FERNET_KEY", "")
+        set_env("MFA_FERNET_KEY", "")
+        set_env("ALLOW_PLAINTEXT_SECRETS", "false")
+        assert EXT_OAuthConsumer.on_initialize() is False
+        assert EXT_OAuthConsumer.validate_config()
 
+    def test_it_runs_with_one(self):
+        assert EXT_OAuthConsumer.on_initialize() is True
+        assert EXT_OAuthConsumer.validate_config() == []
 
-class TestPreAccountTakeoverGuard:
-    """Refuse to auto-link an IdP identity to a local account when the
-    IdP did not confirm the email is verified. Prevents CWE-287
-    (pre-account takeover by email claim)."""
-
-    def test_idp_provider_contract_documents_email_verified(self):
-        # The abstract contract requires concrete IdPs to surface
-        # ``email_verified``. The docstring is the contract; assert the
-        # method exists.
-        assert hasattr(AbstractIdPProvider, "get_user_info")
-
-    def test_each_idp_returns_email_verified_in_profile_shape(self):
-        # All four IdPs construct profiles with ``email_verified`` keys.
-        # We can't make live calls, but we can inspect the source for
-        # the key.
-        from zephyrex.extensions.oauth_consumer import (
-            Amazon,
-            GitHub,
-            Google,
-            Microsoft,
-        )
-        import inspect
-
-        for module in (Amazon, GitHub, Google, Microsoft):
-            source = inspect.getsource(module)
-            assert (
-                "email_verified" in source
-            ), f"{module.__name__} must surface email_verified in profile"
+    @pytest.mark.parametrize("ability", sorted(EXT_OAuthConsumer._abilities))
+    def test_each_declared_ability_is_implemented(self, ability):
+        assert callable(getattr(EXT_OAuthConsumer, ability))

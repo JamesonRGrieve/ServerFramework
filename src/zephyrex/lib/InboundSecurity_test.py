@@ -1199,41 +1199,6 @@ class TestExecuteFileTimeout:
         assert "timeout" in source.lower(), "execute_file should have a timeout"
 
 
-class TestOAuthProviderTimeout:
-    """Legacy OAuth providers have request timeout."""
-
-    @pytest.mark.parametrize(
-        "provider_file",
-        [
-            "src/zephyrex/extensions/auth_oauth2_client/Amazon.py",
-            "src/zephyrex/extensions/auth_oauth2_client/Google.py",
-            "src/zephyrex/extensions/auth_oauth2_client/Microsoft.py",
-        ],
-    )
-    def test_requests_calls_have_timeout(self, provider_file):
-        with open(provider_file) as f:
-            source = f.read()
-        import re
-
-        calls = re.findall(r"requests\.(get|post)\(.*?\)", source, re.DOTALL)
-        for call in calls:
-            assert (
-                "timeout" in source
-            ), f"{provider_file} has requests calls without timeout"
-
-
-class TestTokenNotLogged:
-    """OAuth revocation does not log token prefix."""
-
-    def test_no_token_prefix_in_revoke_log(self):
-        with open(
-            "src/zephyrex/extensions/auth_oauth2_client/EXT_Auth_OAuth2Client.py"
-        ) as f:
-            source = f.read()
-        assert "token[:10]" not in source, "Token prefix should not be logged"
-        assert "token[:8]" not in source, "Token prefix should not be logged"
-
-
 class TestAttachmentFilenameSanitization:
     """Email attachment filenames stripped of path separators."""
 

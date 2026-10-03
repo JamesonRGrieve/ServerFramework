@@ -5,8 +5,8 @@
 # Manifest_parity_test keeps the two in step.
 
 name = "oauth_consumer"
-version = "1.0.0"
-description = "Authenticate users against external OAuth2 Identity Providers (Google, GitHub, Microsoft, Amazon Cognito)."
+version = "2.0.0"
+description = "Sign in with Google, Microsoft, GitHub, Amazon, Forgejo or any OpenID Connect provider (OAuth 2.0 with PKCE)"
 author = "ZephyrexTechnologies"
 entry_module = "EXT_OAuthConsumer"
 minimum_framework_version = "0.0.0"
@@ -17,3 +17,7 @@ system_dependencies = []
 [[extension_dependencies]]
 name = "auth_session"
 optional = false
+
+[[extension_dependencies]]
+name = "auth_invitations"
+optional = true

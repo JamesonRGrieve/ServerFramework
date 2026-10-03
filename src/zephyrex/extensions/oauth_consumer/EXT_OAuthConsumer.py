@@ -1,65 +1,63 @@
-"""OAuth consumer extension manifest.
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""Sign in with another identity provider: OAuth 2.0 and OpenID Connect.
 
-"Login with Google/GitHub/Microsoft/Amazon". This extension wires:
-- A ``UserOAuthLinkModel`` table that records (user_id, provider, provider_user_id).
-- A ``PasswordlessGrantRegistry`` entry for ``"oauth_consumer"`` so issued
-  sessions are tagged like every other passwordless grant.
-- IdP provider modules (Amazon, GitHub, Google, Microsoft) auto-registered
-  with the IdPRegistry on import.
+One sign-in engine for every provider. Google, Microsoft, GitHub, Amazon
+and Forgejo are named providers; any other OpenID provider (Keycloak,
+Auth0, Okta, Entra ID, Cognito…) is the ``oidc`` provider, configured by
+its issuer. Each provider instance is one client registration; its client
+secret is a write-only setting. The flow, the identities and the routes
+live in ``BLL_OAuthConsumer``; the protocol in ``IdentityProvider``.
 
-The complementary ``oauth_provider`` extension implements the *server* side
-(third parties authenticate against this server's OAuth2 issuer).
+The complementary ``oauth_provider`` extension is the server side: other
+applications signing in against this server.
 """
 
 from typing import Any, ClassVar, Dict, List, Set
 
-from zephyrex.extensions.AbstractExtensionProvider import AbstractStaticExtension
-from zephyrex.lib.Dependencies import Dependencies, PIP_Dependency
+from zephyrex.extensions.AbstractExtensionProvider import (
+    AbstractStaticExtension,
+    ability,
+)
+from zephyrex.lib.Dependencies import Dependencies, EXT_Dependency
 from zephyrex.lib.Logging import logger
 
 
 class EXT_OAuthConsumer(AbstractStaticExtension):
     name: ClassVar[str] = "oauth_consumer"
-    version: ClassVar[str] = "1.0.0"
+    version: ClassVar[str] = "2.0.0"
     description: ClassVar[str] = (
-        "Authenticate users against external OAuth2 Identity Providers "
-        "(Google, GitHub, Microsoft, Amazon Cognito)."
+        "Sign in with Google, Microsoft, GitHub, Amazon, Forgejo or any "
+        "OpenID Connect provider (OAuth 2.0 with PKCE)"
     )
 
-    _env: ClassVar[Dict[str, Any]] = {
-        "OAUTH_CONSUMER_REDIRECT_URI": "",
-        "GOOGLE_CLIENT_ID": "",
-        "GOOGLE_CLIENT_SECRET": "",
-        "GITHUB_CLIENT_ID": "",
-        "GITHUB_CLIENT_SECRET": "",
-        "MICROSOFT_CLIENT_ID": "",
-        "MICROSOFT_CLIENT_SECRET": "",
-        "AWS_CLIENT_ID": "",
-        "AWS_CLIENT_SECRET": "",
-        "AWS_USER_POOL_ID": "",
-        "AWS_REGION": "",
-    }
+    _env: ClassVar[Dict[str, Any]] = {"OAUTH_CONSUMER_REDIRECT_URIS": ""}
 
     dependencies: ClassVar[Dependencies] = Dependencies(
         [
-            PIP_Dependency(
-                name="requests",
-                friendly_name="HTTP requests library",
-                semver=">=2.31.0",
-                reason="HTTP requests to external IdP token + userinfo endpoints",
+            EXT_Dependency(
+                name="auth_session",
+                friendly_name="Sessions",
+                reason="A sign-in issues a persisted session",
+            ),
+            EXT_Dependency(
+                name="auth_invitations",
+                friendly_name="Invitations",
+                optional=True,
+                reason="REGISTRATION_MODE=invite admits a new user by invitation",
             ),
         ]
     )
 
     _abilities: ClassVar[Set[str]] = {
-        "oauth_consumer_authorize",
-        "oauth_consumer_callback",
+        "list_oauth_providers",
+        "list_oauth_identities",
+        "oauth_access_token",
     }
-    _providers: ClassVar[List] = []
-    extension_dependencies: ClassVar[List[str]] = ["auth_session"]
 
     @classmethod
     def on_initialize(cls) -> bool:
+        """Provider tokens and PKCE verifiers are stored encrypted: without
+        an encryption key the extension refuses to run."""
         from zephyrex.lib.SecretEncryption import (
             MissingFernetKeyError,
             assert_encryption_available,
@@ -67,45 +65,70 @@ class EXT_OAuthConsumer(AbstractStaticExtension):
 
         try:
             assert_encryption_available()
-        except MissingFernetKeyError as e:
-            logger.error(f"oauth_consumer refusing to initialize: {e}")
+        except MissingFernetKeyError as exc:
+            logger.error("oauth_consumer refusing to initialize: %s", exc)
             return False
-
-        # Force-import the IdP modules so they self-register with IdPRegistry.
-        from zephyrex.extensions.oauth_consumer import (  # noqa: F401
-            Amazon,
-            GitHub,
-            Google,
-            Microsoft,
-        )
-
-        # Force-import BLL so the PasswordlessGrantRegistry entry is set.
-        from zephyrex.extensions.oauth_consumer import (  # noqa: F401
-            BLL_OAuthConsumer,
-        )
         from zephyrex.extensions.oauth_consumer.BLL_OAuthConsumer import (
             register_merge_participation,
         )
 
         register_merge_participation()
-        logger.debug("oauth_consumer initialized")
         return True
 
     @classmethod
     def validate_config(cls) -> List[str]:
-        from zephyrex.lib.Environment import env as _env
         from zephyrex.lib.SecretEncryption import (
             MissingFernetKeyError,
             assert_encryption_available,
         )
 
-        issues: List[str] = []
-        if not _env("OAUTH_CONSUMER_REDIRECT_URI"):
-            issues.append(
-                "OAUTH_CONSUMER_REDIRECT_URI is unset; callback flow will use empty redirect"
-            )
         try:
             assert_encryption_available()
-        except MissingFernetKeyError as e:
-            issues.append(str(e))
-        return issues
+        except MissingFernetKeyError as exc:
+            return [str(exc)]
+        return []
+
+    @classmethod
+    @ability("list_oauth_providers")
+    async def list_oauth_providers(cls) -> List[Dict[str, Any]]:
+        """The providers users can sign in with: the name to pass as
+        ``provider``, the provider, its display name and kind."""
+        from zephyrex.extensions.oauth_consumer.BLL_OAuthConsumer import (
+            OAuthConsumerManager,
+        )
+        from zephyrex.lib.Environment import env
+
+        manager = cls.as_requester(OAuthConsumerManager, env("ROOT_ID"))
+        listed = manager.providers_list()
+        return [entry.model_dump() for entry in listed.providers]
+
+    @classmethod
+    @ability("list_oauth_identities")
+    async def list_oauth_identities(cls, requester_id: str) -> List[Dict[str, Any]]:
+        """The requester's identities at providers (no tokens)."""
+        from zephyrex.extensions.oauth_consumer.BLL_OAuthConsumer import (
+            OAuthIdentityManager,
+            OAuthIdentityView,
+        )
+
+        manager = cls.as_requester(OAuthIdentityManager, requester_id)
+        return [
+            OAuthIdentityView.of(identity).model_dump(mode="json")
+            for identity in manager.list() or []
+        ]
+
+    @classmethod
+    @ability("oauth_access_token")
+    async def oauth_access_token(
+        cls, requester_id: str, identity_id: str
+    ) -> Dict[str, Any]:
+        """A current access token at the provider for one of the
+        requester's identities, refreshed when it lapsed."""
+        from zephyrex.extensions.oauth_consumer.BLL_OAuthConsumer import (
+            OAuthIdentityManager,
+            current_access_token,
+        )
+
+        manager = cls.as_requester(OAuthIdentityManager, requester_id)
+        token = await current_access_token(manager, identity_id)
+        return token.model_dump(mode="json")

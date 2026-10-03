@@ -70,7 +70,7 @@ def test_logins_close_every_session_they_open(server, ledger):
     [
         "zephyrex.logic.BLL_Auth.user",
         "zephyrex.lib.SingleUseToken",
-        "zephyrex.extensions.auth_oauth2_client.BLL_Auth_OAuth2Client",
+        "zephyrex.extensions.oauth_consumer.IdentityProvider",
     ],
 )
 def test_tokens_are_decoded_by_pyjwt_itself(module):
