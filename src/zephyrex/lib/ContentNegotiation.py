@@ -258,6 +258,12 @@ def _coerce_text(text: str | None) -> Any:
 # ---------------------------------------------------------------------------
 
 
+def _is_json_suffix(media_type: str) -> bool:
+    """A JSON-based media type by its structured-syntax suffix (RFC 6839),
+    such as application/scim+json: read and written as JSON."""
+    return media_type.endswith("+json")
+
+
 def resolve_request_format(content_type: str | None) -> str | None:
     """Return the canonical format key for the given ``Content-Type`` header.
 
@@ -269,6 +275,8 @@ def resolve_request_format(content_type: str | None) -> str | None:
         return DEFAULT_FORMAT
     media_type = content_type.split(";")[0].strip().lower()
     if not media_type or media_type in ("application/json", "text/json"):
+        return DEFAULT_FORMAT
+    if _is_json_suffix(media_type):
         return DEFAULT_FORMAT
     if media_type == MIME_FORM:
         return "form"
@@ -319,10 +327,12 @@ def resolve_response_format(
                 best_q = q
                 best_key = DEFAULT_FORMAT
             continue
-        key = _MEDIA_TYPE_MAP.get(media)  # type: ignore[assignment]
-        if key is not None and q > best_q:
+        offered = (
+            DEFAULT_FORMAT if _is_json_suffix(media) else _MEDIA_TYPE_MAP.get(media)
+        )
+        if offered is not None and q > best_q:
             best_q = q
-            best_key = key
+            best_key = offered
 
     return best_key
 

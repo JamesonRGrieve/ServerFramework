@@ -331,6 +331,21 @@ class BodySizeLimitMiddleware:
 MAX_JSON_DEPTH: int = 32
 
 
+def _etag_listed(if_none_match: str, opaque_tag: str) -> bool:
+    """Whether an If-None-Match header names ``opaque_tag``, by the weak
+    comparison RFC 9110 §13.1.2 prescribes: ``*``, or any listed tag
+    equal to it once its ``W/`` prefix and quotes are set aside."""
+    for listed in if_none_match.split(","):
+        tag = listed.strip()
+        if tag == "*":
+            return True
+        if tag.startswith("W/"):
+            tag = tag[2:]
+        if tag.strip('"') == opaque_tag:
+            return True
+    return False
+
+
 class ETagMiddleware:
     """ASGI middleware that adds ETag headers to GET 200 responses and
     handles conditional requests (If-None-Match → 304).
@@ -356,7 +371,7 @@ class ETagMiddleware:
         if_none_match = None
         for raw_name, raw_value in scope.get("headers") or []:
             if raw_name.decode("latin-1").lower() == "if-none-match":
-                if_none_match = raw_value.decode("latin-1").strip().strip('"')
+                if_none_match = raw_value.decode("latin-1")
                 break
 
         response_started = {"status": 0, "headers": []}
@@ -374,17 +389,16 @@ class ETagMiddleware:
                     headers = response_started["headers"]
                     full_body = b"".join(body_parts)
 
-                    if status == 200 and full_body:
+                    # A route that set its own ETag (a resource version) owns
+                    # the validator and its conditional requests.
+                    route_etag = any(k.lower() == b"etag" for k, _ in headers)
+                    if status == 200 and full_body and not route_etag:
                         import hashlib
 
                         etag = hashlib.sha256(full_body).hexdigest()[:16]
                         weak_etag = f'W/"{etag}"'
 
-                        if if_none_match and if_none_match in (
-                            etag,
-                            weak_etag,
-                            f'"{etag}"',
-                        ):
+                        if if_none_match and _etag_listed(if_none_match, etag):
                             await send(
                                 {
                                     "type": "http.response.start",

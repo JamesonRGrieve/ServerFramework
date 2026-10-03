@@ -6,9 +6,13 @@ import time
 
 import pytest
 
+from fastapi import FastAPI, Response
+from fastapi.testclient import TestClient
+
 from zephyrex.lib.InboundSecurity import (
     AnomalyDetector,
     CORSPolicyError,
+    ETagMiddleware,
     LockoutPolicy,
     LockoutTracker,
     NoOpAnomalyDetector,
@@ -18,6 +22,47 @@ from zephyrex.lib.InboundSecurity import (
     rate_limit,
     validate_cors_config,
 )
+
+
+def _etag_app() -> TestClient:
+    app = FastAPI()
+    app.add_middleware(ETagMiddleware)
+
+    @app.get("/plain")
+    def plain() -> dict:
+        return {"value": 1}
+
+    @app.get("/versioned")
+    def versioned(response: Response) -> dict:
+        response.headers["ETag"] = 'W/"v7"'
+        return {"value": 1}
+
+    return TestClient(app)
+
+
+class TestETagMiddleware:
+    def test_a_body_hash_validator_and_304(self):
+        client = _etag_app()
+        etag = client.get("/plain").headers["etag"]
+        assert etag.startswith('W/"')
+        bare = etag.removeprefix("W/")
+        for offered in (etag, bare, f'"other", {etag}', "*"):
+            answer = client.get("/plain", headers={"If-None-Match": offered})
+            assert answer.status_code == 304, offered
+        assert (
+            client.get("/plain", headers={"If-None-Match": '"other"'}).status_code
+            == 200
+        )
+
+    def test_a_routes_own_etag_is_the_only_one(self):
+        """A route that versions its resource owns the validator: the body
+        hash is not added beside it, nor does it answer If-None-Match."""
+        client = _etag_app()
+        response = client.get("/versioned")
+        assert response.headers.get_list("etag") == ['W/"v7"']
+        body_hash = _etag_app().get("/plain").headers["etag"]
+        answered = client.get("/versioned", headers={"If-None-Match": body_hash})
+        assert answered.status_code == 200
 
 
 class TestCORSValidation:

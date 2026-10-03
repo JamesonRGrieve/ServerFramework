@@ -134,6 +134,15 @@ class TestResolveRequestFormat:
             == "form"
         )
 
+    def test_a_json_suffix_is_json(self) -> None:
+        """RFC 6839: application/scim+json (RFC 7644 §3.8) is JSON."""
+        assert resolve_request_format("application/scim+json") == "json"
+        assert resolve_response_format("application/scim+json") == "json"
+        assert (
+            resolve_response_format("application/scim+json, application/yaml;q=0.5")
+            == "json"
+        )
+
     def test_form_is_never_a_response_format(self) -> None:
         assert resolve_response_format("application/x-www-form-urlencoded") is None
 
