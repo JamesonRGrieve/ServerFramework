@@ -1,61 +1,104 @@
-"""Trusted proxy header authentication consumer extension manifest.
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""Sign in as the user a trusted, authenticating reverse proxy asserts.
 
-Authenticate local users based on trusted proxy headers (X-Forwarded-User,
-X-Remote-User, etc.) set by a reverse proxy that has already performed
-authentication. Only trusts headers from configured proxy IP addresses.
+``POST /v1/auth/proxy/login`` reads the identity an upstream proxy that has
+already authenticated the user puts in a request header, maps it to a local
+user through a link made on first sign-in, and issues the same session as
+password login. Users list and remove their links at ``/v1/auth/proxy``.
+See ``BLL_ProxyAuthConsumer`` for the trust and mapping rules.
 
-The complementary ``proxy_auth_provider`` extension implements the *server*
-side (this server sets proxy headers for downstream services).
+- ``PROXY_AUTH_CONSUMER_TRUSTED_PROXIES``: comma-separated addresses or
+  CIDRs of the proxies whose headers are believed (as the app sees the
+  peer). Empty: no header is ever believed.
+- ``PROXY_AUTH_CONSUMER_USER_HEADER``: the header naming the user. Default
+  ``X-Forwarded-User``.
+- ``PROXY_AUTH_CONSUMER_NAME_HEADER``: a new account's display name.
+  Default ``X-Forwarded-Name``.
+- ``PROXY_AUTH_CONSUMER_EMAIL_HEADER``: the user's email. Default
+  ``X-Forwarded-Email``. Read only when
+- ``PROXY_AUTH_CONSUMER_TRUST_EMAIL`` is true: the proxy has verified the
+  emails it asserts, so one may sign in to the account that has it.
+
+The complementary ``proxy_auth_provider`` extension implements the other
+side (this server setting proxy headers for downstream services).
 """
 
 from typing import Any, ClassVar, Dict, List, Set
 
-from zephyrex.extensions.AbstractExtensionProvider import AbstractStaticExtension
-from zephyrex.lib.Dependencies import Dependencies
-from zephyrex.lib.Logging import logger
+from zephyrex.extensions.AbstractExtensionProvider import (
+    AbstractStaticExtension,
+    ability,
+)
+from zephyrex.lib.Dependencies import Dependencies, EXT_Dependency
+from zephyrex.lib.InboundSecurity import _parse_trusted_proxies
+from zephyrex.lib.Environment import env
 
 
 class EXT_ProxyAuthConsumer(AbstractStaticExtension):
     name: ClassVar[str] = "proxy_auth_consumer"
-    version: ClassVar[str] = "1.0.0"
+    version: ClassVar[str] = "2.0.0"
     description: ClassVar[str] = (
-        "Authenticate users via trusted proxy headers (X-Forwarded-User)."
+        "Sign in as the user a trusted, authenticating reverse proxy asserts "
+        "in a request header (X-Forwarded-User, Remote-User)."
     )
 
     _env: ClassVar[Dict[str, Any]] = {
-        "PROXY_AUTH_CONSUMER_HEADER": "X-Forwarded-User",
-        "PROXY_AUTH_CONSUMER_EMAIL_HEADER": "X-Forwarded-Email",
-        "PROXY_AUTH_CONSUMER_NAME_HEADER": "X-Forwarded-Name",
-        "PROXY_AUTH_CONSUMER_GROUPS_HEADER": "X-Forwarded-Groups",
         "PROXY_AUTH_CONSUMER_TRUSTED_PROXIES": "",
-        "PROXY_AUTH_CONSUMER_AUTO_CREATE_USERS": "false",
+        "PROXY_AUTH_CONSUMER_USER_HEADER": "X-Forwarded-User",
+        "PROXY_AUTH_CONSUMER_NAME_HEADER": "X-Forwarded-Name",
+        "PROXY_AUTH_CONSUMER_EMAIL_HEADER": "X-Forwarded-Email",
+        "PROXY_AUTH_CONSUMER_TRUST_EMAIL": "false",
     }
 
-    dependencies: ClassVar[Dependencies] = Dependencies([])
+    dependencies: ClassVar[Dependencies] = Dependencies(
+        [
+            EXT_Dependency(
+                name="auth_session",
+                friendly_name="Sessions",
+                optional=True,
+                reason="Persists the sessions sign-in issues, so they can be revoked",
+            ),
+            EXT_Dependency(
+                name="auth_invitations",
+                friendly_name="Invitations",
+                optional=True,
+                reason="REGISTRATION_MODE=invite admits a new user by invitation",
+            ),
+        ]
+    )
 
-    _abilities: ClassVar[Set[str]] = {
-        "proxy_auth_consumer_authenticate",
-    }
-    _providers: ClassVar[List] = []
-    extension_dependencies: ClassVar[List[str]] = ["auth_session"]
-
-    @classmethod
-    def on_initialize(cls) -> bool:
-        from zephyrex.extensions.proxy_auth_consumer import (  # noqa: F401
-            BLL_ProxyAuthConsumer,
-        )
-
-        logger.debug("proxy_auth_consumer initialized")
-        return True
+    _abilities: ClassVar[Set[str]] = {"proxy_auth_linked_identities"}
 
     @classmethod
     def validate_config(cls) -> List[str]:
-        from zephyrex.lib.Environment import env as _env
-
-        issues: List[str] = []
-        if not _env("PROXY_AUTH_CONSUMER_TRUSTED_PROXIES"):
-            issues.append(
+        raw = (env("PROXY_AUTH_CONSUMER_TRUSTED_PROXIES") or "").strip()
+        if not raw:
+            return [
                 "PROXY_AUTH_CONSUMER_TRUSTED_PROXIES is unset; "
-                "proxy auth headers will be rejected from all sources"
-            )
-        return issues
+                "proxy sign-in is refused from every address"
+            ]
+        try:
+            _parse_trusted_proxies(raw)
+        except ValueError as exc:
+            return [f"PROXY_AUTH_CONSUMER_TRUSTED_PROXIES: {exc}"]
+        return []
+
+    @classmethod
+    @ability("proxy_auth_linked_identities")
+    async def proxy_auth_linked_identities(
+        cls, requester_id: str
+    ) -> List[Dict[str, Any]]:
+        """The proxy identities that sign in as ``requester_id``."""
+        from zephyrex.extensions.proxy_auth_consumer.BLL_ProxyAuthConsumer import (
+            UserProxyAuthLinkManager,
+        )
+
+        manager = cls.as_requester(UserProxyAuthLinkManager, requester_id)
+        return [
+            {
+                "id": str(link.id),
+                "identity": link.identity,
+                "last_login_at": link.last_login_at,
+            }
+            for link in manager.list(user_id=requester_id) or []
+        ]

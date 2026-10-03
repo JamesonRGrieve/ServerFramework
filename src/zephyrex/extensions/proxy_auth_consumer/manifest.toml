@@ -5,8 +5,8 @@
 # Manifest_parity_test keeps the two in step.
 
 name = "proxy_auth_consumer"
-version = "1.0.0"
-description = "Authenticate users via trusted proxy headers (X-Forwarded-User)."
+version = "2.0.0"
+description = "Sign in as the user a trusted, authenticating reverse proxy asserts in a request header (X-Forwarded-User, Remote-User)."
 author = "ZephyrexTechnologies"
 entry_module = "EXT_ProxyAuthConsumer"
 minimum_framework_version = "0.0.0"
@@ -16,4 +16,8 @@ system_dependencies = []
 
 [[extension_dependencies]]
 name = "auth_session"
-optional = false
+optional = true
+
+[[extension_dependencies]]
+name = "auth_invitations"
+optional = true
