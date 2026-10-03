@@ -5,8 +5,8 @@
 # Manifest_parity_test keeps the two in step.
 
 name = "forward_auth_consumer"
-version = "1.0.0"
-description = "Authenticate via forward auth subrequest (Traefik/nginx auth_request)."
+version = "2.0.0"
+description = "Sign in through a forward-auth service (Authelia, oauth2-proxy, Authentik), verified by a subrequest to an operator-declared endpoint."
 author = "ZephyrexTechnologies"
 entry_module = "EXT_ForwardAuthConsumer"
 minimum_framework_version = "0.0.0"
@@ -16,4 +16,8 @@ system_dependencies = []
 
 [[extension_dependencies]]
 name = "auth_session"
-optional = false
+optional = true
+
+[[extension_dependencies]]
+name = "auth_invitations"
+optional = true
