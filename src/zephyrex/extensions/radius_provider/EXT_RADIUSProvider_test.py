@@ -207,23 +207,28 @@ class TestRADIUSProvider(ExtensionServerMixin):
 
     @pytest.fixture(scope="module")
     def listener(self, server, nas_clients) -> Iterator[RADIUSAuthService]:
-        """The app's own lifespan starts the listener, as in production."""
+        """The app's own lifespan starts the listener, as in production. The
+        listener reads its settings as it starts, so they are patched only
+        until it listens; other modules' apps never see them."""
+        from contextlib import ExitStack
+
         from zephyrex.lib import Environment
 
-        with pytest.MonkeyPatch.context() as patch:
-            for name, value in (
-                ("RUN_BACKGROUND_SERVICES", "true"),
-                ("RADIUS_PROVIDER_BIND_ADDRESS", NAS_HOST),
-                ("RADIUS_PROVIDER_AUTH_PORT", "0"),
-            ):
-                patch.setenv(name, value)
-                if hasattr(Environment.settings, name):
-                    patch.setattr(Environment.settings, name, value)
-            with server:
+        with ExitStack() as running:
+            with pytest.MonkeyPatch.context() as patch:
+                for name, value in (
+                    ("RUN_BACKGROUND_SERVICES", "true"),
+                    ("RADIUS_PROVIDER_BIND_ADDRESS", NAS_HOST),
+                    ("RADIUS_PROVIDER_AUTH_PORT", "0"),
+                ):
+                    patch.setenv(name, value)
+                    if hasattr(Environment.settings, name):
+                        patch.setattr(Environment.settings, name, value)
+                running.enter_context(server)
                 service = ServiceRegistry.get(SERVICE_ID)
                 assert isinstance(service, RADIUSAuthService)
                 assert service.listening.wait(LISTEN_TIMEOUT_SECONDS)
-                yield service
+            yield service
 
     @pytest.fixture
     def port(self, listener: RADIUSAuthService) -> int:
