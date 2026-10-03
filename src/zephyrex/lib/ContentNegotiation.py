@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 import tomllib
 from typing import Any
+from urllib.parse import parse_qsl
 from xml.etree.ElementTree import Element, indent, tostring
 
 from defusedxml.ElementTree import fromstring as xml_fromstring
@@ -52,6 +53,9 @@ MIME_YAML_ALT = "application/x-yaml"
 MIME_TOML = "application/toml"
 MIME_XML = "application/xml"
 MIME_XML_ALT = "text/xml"
+# Accepted on requests only (HTML forms, OAuth token requests, SAML's
+# HTTP-POST binding); never offered as a response format.
+MIME_FORM = "application/x-www-form-urlencoded"
 
 # Map every recognized media type to its canonical key.
 _MEDIA_TYPE_MAP: dict[str, str] = {
@@ -137,7 +141,20 @@ def deserialize(body: str | bytes, fmt: str) -> Any:
         return tomllib.loads(body)
     if fmt == "xml":
         return _xml_to_dict(body)
+    if fmt == "form":
+        return _form_to_dict(body)
     raise ValueError(f"Unsupported deserialization format: {fmt}")
+
+
+def _form_to_dict(body: str) -> dict[str, str]:
+    """A form body as one string per field. A field given twice is refused
+    (RFC 6749 §3.2): which value a reader takes would be ambiguous."""
+    fields: dict[str, str] = {}
+    for name, value in parse_qsl(body, keep_blank_values=True, strict_parsing=True):
+        if name in fields:
+            raise ValueError(f"Form field {name!r} given more than once")
+        fields[name] = value
+    return fields
 
 
 # ---------------------------------------------------------------------------
@@ -253,6 +270,8 @@ def resolve_request_format(content_type: str | None) -> str | None:
     media_type = content_type.split(";")[0].strip().lower()
     if not media_type or media_type in ("application/json", "text/json"):
         return DEFAULT_FORMAT
+    if media_type == MIME_FORM:
+        return "form"
     return _MEDIA_TYPE_MAP.get(media_type)
 
 

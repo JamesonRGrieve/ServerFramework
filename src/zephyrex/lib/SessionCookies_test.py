@@ -12,6 +12,7 @@ from zephyrex.lib.SessionCookies import (
     CSRF_COOKIE,
     SESSION_COOKIE,
     SessionCookieMiddleware,
+    accept_cross_site_writes,
     clear_session_cookies,
     set_session_cookies,
 )
@@ -208,6 +209,34 @@ def test_an_allowlisted_origin_may_write(client, monkeypatch):
         monkeypatch.delenv("APP_CORS_ALLOWED_ORIGINS")
         refresh_settings()
     assert response.status_code == 200
+
+
+@pytest.fixture
+def cross_site_echo():
+    """``/echo`` declared as a path other sites may write to."""
+    from zephyrex.lib import SessionCookies
+
+    accept_cross_site_writes("/echo")
+    try:
+        yield
+    finally:
+        SessionCookies._CROSS_SITE_WRITE_PATHS.pop()
+
+
+def test_a_declared_path_takes_cross_site_writes_without_the_session(
+    client, cross_site_echo
+):
+    """An IdP's form post (Origin: the IdP) reaches the route, but never as
+    the signed-in user: the session cookie is not turned into a bearer."""
+    _logged_in(client)
+    response = client.post("/echo", headers={"Origin": "https://idp.example"})
+    assert response.status_code == 200
+    assert response.json() == {"authorization": None}
+
+
+def test_a_declared_path_matches_whole_paths_only(client, cross_site_echo):
+    response = client.post("/echo/more", headers={"Origin": "https://evil.example"})
+    assert response.status_code == 403
 
 
 def test_logout_clears_both_cookies(client):

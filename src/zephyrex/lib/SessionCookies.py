@@ -26,6 +26,7 @@ site could open a socket as the signed-in user.
 
 import hmac
 import json
+import re
 import secrets
 from http.cookies import CookieError, SimpleCookie
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
@@ -39,6 +40,22 @@ CSRF_COOKIE = "zx_csrf"
 CSRF_HEADER = "x-csrf-token"
 _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 _CSRF_TOKEN_BYTES = 32
+
+# Paths other sites' pages may write to: a SAML HTTP-POST binding endpoint,
+# an OAuth token endpoint a browser app calls. Such a write reaches the app
+# without the session (its cookie is never turned into a bearer), so the
+# route cannot act as the user.
+_CROSS_SITE_WRITE_PATHS: List[re.Pattern[str]] = []
+
+
+def accept_cross_site_writes(path_pattern: str) -> None:
+    """Let other sites post to paths matching ``path_pattern`` (a regular
+    expression matched against the whole path), without the session."""
+    _CROSS_SITE_WRITE_PATHS.append(re.compile(path_pattern))
+
+
+def _cross_site_write_path(path: str) -> bool:
+    return any(pattern.fullmatch(path) for pattern in _CROSS_SITE_WRITE_PATHS)
 
 
 def set_session_cookies(response: Response, token: str, max_age: int) -> None:
@@ -159,6 +176,13 @@ class SessionCookieMiddleware:
             return
         headers: List[Tuple[bytes, bytes]] = scope["headers"]
         present = {name.lower(): value for name, value in headers}
+        if (
+            scope["type"] == "http"
+            and scope["method"] not in _SAFE_METHODS
+            and _cross_site_write_path(scope["path"])
+        ):
+            await self.app(scope, receive, send)
+            return
         if scope["type"] == "http" and _forged_cross_site(scope["method"], present):
             await self._refuse(send, "Cross-site request refused")
             return

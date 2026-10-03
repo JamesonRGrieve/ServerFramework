@@ -1077,6 +1077,7 @@ class ProviderInstanceModel(
         user_id: Optional[str] | None = None
         team_id: Optional[str] | None = None
         scope: Optional[Literal["root", "system", "team", "user"]] | None = None
+        enabled: Optional[bool] | None = None
         # Item 36: residency region (optional; consumed by residency extension).
         region: Optional[str] | None = None
         # Item 10: per-instance AuthStrategy override (optional).
@@ -1096,6 +1097,10 @@ class ProviderInstanceModel(
         region: Optional[StringSearchModel] | None = None
         # Item 10: per-instance AuthStrategy override (search-by-name).
         auth_strategy_name: Optional[StringSearchModel] | None = None
+
+
+# Instance scopes that speak for the operator rather than a user or team.
+OPERATOR_SCOPES = frozenset({"root", "system"})
 
 
 class ProviderInstanceManager(AbstractBLLManager, RouterMixin):
@@ -1175,8 +1180,31 @@ class ProviderInstanceManager(AbstractBLLManager, RouterMixin):
             )
         return self._ability  # type: ignore[return-value]
 
+    # Only the caller's own id may be claimed as an instance's user.
+    _CALLER_OWNED_FIELDS: ClassVar[tuple] = ("user_id",)
+
+    def _refuse_operator_scope(self, scope: Optional[str]) -> None:
+        """An instance in the root or system scope speaks for the operator
+        (an extension may trust what it vouches for), so only ROOT and
+        SYSTEM may put one there."""
+        from zephyrex.database.StaticPermissions import is_root_id, is_system_id
+
+        if scope not in OPERATOR_SCOPES:
+            return
+        requester_id = self.requester.id
+        if not (is_root_id(requester_id) or is_system_id(requester_id)):
+            raise HTTPException(
+                status_code=403,
+                detail=f"Only the operator may create {scope}-scoped instances",
+            )
+
+    def update(self, id: str, **kwargs) -> Any:
+        self._refuse_operator_scope(kwargs.get("scope"))
+        return super().update(id, **kwargs)
+
     def create_validation(self, entity):
         """Validate provider instance creation - check that provider exists."""
+        self._refuse_operator_scope(entity.scope)
         # Use ROOT_ID to bypass permission filtering for pure existence checks
         if entity.provider_id:
             provider = ProviderModel.DB(self.model_registry.DB.manager.Base).get(

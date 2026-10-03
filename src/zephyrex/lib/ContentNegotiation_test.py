@@ -15,6 +15,7 @@ import tomli_w
 import yaml
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from pydantic import BaseModel
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
@@ -43,6 +44,13 @@ from zephyrex.lib.ContentNegotiation import (
 # ---------------------------------------------------------------------------
 
 SAMPLE_DICT = {"name": "Alice", "age": 30, "active": True}
+
+
+class Token(BaseModel):
+    """A token request body, as an OAuth client form-posts it."""
+
+    grant_type: str
+    code: str
 SAMPLE_LIST = [
     {"name": "Alice", "age": 30},
     {"name": "Bob", "age": 25},
@@ -119,6 +127,57 @@ class TestResolveRequestFormat:
 
     def test_unknown_returns_none_for_415(self) -> None:
         assert resolve_request_format("text/plain") is None
+
+    def test_form(self) -> None:
+        assert (
+            resolve_request_format("application/x-www-form-urlencoded; charset=utf-8")
+            == "form"
+        )
+
+    def test_form_is_never_a_response_format(self) -> None:
+        assert resolve_response_format("application/x-www-form-urlencoded") is None
+
+
+class TestFormBodies:
+    def test_one_string_per_field(self) -> None:
+        body = "grant_type=authorization_code&code=a%2Bb&redirect_uri=&scope=x+y"
+        assert deserialize(body, "form") == {
+            "grant_type": "authorization_code",
+            "code": "a+b",
+            "redirect_uri": "",
+            "scope": "x y",
+        }
+
+    def test_a_repeated_field_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="more than once"):
+            deserialize("code=one&code=two", "form")
+
+    def test_a_malformed_body_is_refused(self) -> None:
+        with pytest.raises(ValueError):
+            deserialize("no-equals-sign", "form")
+
+    def test_the_route_reads_a_form_as_json(self) -> None:
+        app = FastAPI()
+        app.add_middleware(ContentNegotiationMiddleware)
+
+        @app.post("/token")
+        def token(body: Token) -> dict:
+            return body.model_dump()
+
+        client = TestClient(app)
+        answer = client.post(
+            "/token",
+            content="grant_type=authorization_code&code=abc",
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        assert answer.status_code == 200
+        assert answer.json() == {"grant_type": "authorization_code", "code": "abc"}
+        repeated = client.post(
+            "/token",
+            content="grant_type=a&grant_type=b&code=abc",
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        assert repeated.status_code == 422
 
 
 # ---------------------------------------------------------------------------

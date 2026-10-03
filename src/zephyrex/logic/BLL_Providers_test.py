@@ -1,6 +1,11 @@
+import uuid
+
+import pytest
 from faker import Faker
+from fastapi import HTTPException
 
 from zephyrex.AbstractTest import ParentEntity
+from zephyrex.lib.Environment import env
 from zephyrex.logic.AbstractBLLTest import AbstractBLLTest
 from zephyrex.logic.BLL_Providers import (
     ProviderExtensionAbilityManager,
@@ -109,6 +114,64 @@ class TestProviderInstanceManager(AbstractBLLTest):
             test_class=TestProviderManager,
         ),
     ]
+
+    def _provider_id(self, model_registry) -> str:
+        with ProviderManager(
+            requester_id=env("ROOT_ID"), model_registry=model_registry
+        ) as providers:
+            return str(providers.create(name=f"Scope Provider {uuid.uuid4()}").id)
+
+    @pytest.mark.parametrize("scope", ["root", "system"])
+    def test_only_the_operator_creates_operator_scoped_instances(
+        self, admin_a, server, model_registry, scope
+    ):
+        """An extension may trust what a root- or system-scoped instance
+        vouches for (a keytab, a signing key), so a user may not make one."""
+        provider_id = self._provider_id(model_registry)
+        with ProviderInstanceManager(
+            requester_id=admin_a.id, model_registry=model_registry
+        ) as instances:
+            with pytest.raises(HTTPException) as refused:
+                instances.create(
+                    name=f"Claimed {uuid.uuid4()}", provider_id=provider_id, scope=scope
+                )
+            assert refused.value.status_code == 403
+            mine = instances.create(
+                name=f"Mine {uuid.uuid4()}", provider_id=provider_id
+            )
+            with pytest.raises(HTTPException) as refused:
+                instances.update(mine.id, scope=scope)
+            assert refused.value.status_code == 403
+        with ProviderInstanceManager(
+            requester_id=env("ROOT_ID"), model_registry=model_registry
+        ) as instances:
+            made = instances.create(
+                name=f"Operator {uuid.uuid4()}", provider_id=provider_id, scope=scope
+            )
+            assert made.scope == scope
+
+    def test_an_instance_names_only_its_creator_as_user(
+        self, admin_a, admin_b, server, model_registry
+    ):
+        provider_id = self._provider_id(model_registry)
+        with ProviderInstanceManager(
+            requester_id=admin_a.id, model_registry=model_registry
+        ) as instances:
+            with pytest.raises(HTTPException) as refused:
+                instances.create(
+                    name=f"Theirs {uuid.uuid4()}",
+                    provider_id=provider_id,
+                    user_id=admin_b.id,
+                )
+            assert refused.value.status_code == 403
+
+    def test_an_instance_can_be_disabled(self, admin_a, server, model_registry):
+        provider_id = self._provider_id(model_registry)
+        with ProviderInstanceManager(
+            requester_id=admin_a.id, model_registry=model_registry
+        ) as instances:
+            made = instances.create(name=f"Off {uuid.uuid4()}", provider_id=provider_id)
+            assert instances.update(made.id, enabled=False).enabled is False
 
 
 class TestProviderInstanceUsageManager(AbstractBLLTest):
