@@ -1,75 +1,82 @@
-"""SAML 2.0 Identity Provider extension manifest.
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""This server as a SAML 2.0 Identity Provider for external Service
+Providers: apps that let users sign in with their account here.
 
-This server acts as a SAML 2.0 Identity Provider (IdP), issuing signed
-assertions to registered Service Providers. Supports HTTP-POST and
-HTTP-Redirect bindings, configurable attribute statements, and single
-logout.
+Setting it up:
 
-The complementary ``saml_consumer`` extension implements the *client* side
-(Service Provider authenticating against an external IdP).
+1. Give the IdP a signing key: a ``saml_idp_signing_key`` provider instance
+   with ``signing_certificate`` and ``signing_key`` (the key is a secret
+   setting, stored encrypted and never returned), or the
+   ``SAML_PROVIDER_SIGNING_CERTIFICATE`` / ``SAML_PROVIDER_SIGNING_KEY``
+   environment values.
+2. Set ``SAML_PROVIDER_BASE_URL`` to the origin SPs reach the server at
+   (``SERVER_URI`` otherwise); the entity id is
+   ``<base>/v1/saml_provider/metadata`` unless ``SAML_PROVIDER_ENTITY_ID``
+   names another. ``SAML_PROVIDER_LOGIN_URL`` is where a browser without a
+   session is sent to sign in (``/user`` by default).
+3. As root, register each SP at ``/v1/saml_provider/service_provider``:
+   entity id, ACS URLs (matched exactly), its certificate (to verify its
+   signed AuthnRequests, and to encrypt assertions to it), whether its
+   requests must be signed, its NameID format and the attributes it gets.
+
+IdP-initiated sign-in (``GET /v1/saml_provider/initiate?sp=<entity id>``)
+is off for every SP; set ``allow_idp_initiated`` on an SP's registration to
+allow it for that SP. The protocol is described in ``BLL_SAMLProvider``.
 """
 
-from typing import Any, ClassVar, Dict, List, Set
+from typing import Any, ClassVar, Dict, Set
 
-from zephyrex.extensions.AbstractExtensionProvider import AbstractStaticExtension
-from zephyrex.lib.Dependencies import Dependencies, PIP_Dependency
-from zephyrex.lib.Logging import logger
+from fastapi import HTTPException
+
+from zephyrex.extensions.AbstractExtensionProvider import (
+    AbstractStaticExtension,
+    ability,
+)
+from zephyrex.extensions.saml_provider.BLL_SAMLProvider import (
+    metadata_document,
+    off_loop,
+)
+from zephyrex.lib.Dependencies import Dependencies, PIP_Dependency, SYS_Dependency
+from zephyrex.pydantic2.registry import ModelRegistry
 
 
 class EXT_SAMLProvider(AbstractStaticExtension):
     name: ClassVar[str] = "saml_provider"
-    version: ClassVar[str] = "1.0.0"
+    version: ClassVar[str] = "2.0.0"
     description: ClassVar[str] = "Run this server as a SAML 2.0 Identity Provider."
 
     _env: ClassVar[Dict[str, Any]] = {
+        "SAML_PROVIDER_BASE_URL": "",
         "SAML_PROVIDER_ENTITY_ID": "",
-        "SAML_PROVIDER_SSO_URL": "",
-        "SAML_PROVIDER_SLO_URL": "",
-        "SAML_PROVIDER_CERT_PATH": "",
-        "SAML_PROVIDER_KEY_PATH": "",
-        "SAML_PROVIDER_ASSERTION_TTL_MINUTES": "5",
-        "SAML_PROVIDER_SIGN_ASSERTIONS": "true",
-        "SAML_PROVIDER_SIGN_RESPONSES": "true",
+        "SAML_PROVIDER_LOGIN_URL": "/user",
+        "SAML_PROVIDER_ASSERTION_LIFETIME_SECONDS": "300",
     }
 
     dependencies: ClassVar[Dependencies] = Dependencies(
         [
             PIP_Dependency(
                 name="pysaml2",
-                friendly_name="SAML 2.0 library",
-                semver=">=7.0.0",
-                reason="SAML assertion generation, signing, and IdP metadata",
+                friendly_name="pysaml2",
+                semver=">=7.5.5",
+                reason="SAML 2.0 messages, metadata, signatures and encryption",
+            ),
+            SYS_Dependency.for_apt(
+                "xmlsec1",
+                "xmlsec1",
+                friendly_name="xmlsec1",
+                reason="Signs and encrypts the IdP's XML (pysaml2 runs it)",
             ),
         ]
     )
 
-    _abilities: ClassVar[Set[str]] = {
-        "saml_provider_sso",
-        "saml_provider_slo",
-        "saml_provider_metadata",
-        "saml_provider_manage_sp",
-    }
-    _providers: ClassVar[List] = []
-    extension_dependencies: ClassVar[List[str]] = ["auth_session"]
+    _abilities: ClassVar[Set[str]] = {"saml_idp_metadata"}
 
     @classmethod
-    def on_initialize(cls) -> bool:
-        from zephyrex.extensions.saml_provider import (  # noqa: F401
-            BLL_SAMLProvider,
-        )
-
-        logger.debug("saml_provider initialized")
-        return True
-
-    @classmethod
-    def validate_config(cls) -> List[str]:
-        from zephyrex.lib.Environment import env as _env
-
-        issues: List[str] = []
-        if not _env("SAML_PROVIDER_ENTITY_ID"):
-            issues.append("SAML_PROVIDER_ENTITY_ID is unset; IdP metadata incomplete")
-        if not _env("SAML_PROVIDER_CERT_PATH"):
-            issues.append(
-                "SAML_PROVIDER_CERT_PATH is unset; assertion signing will fail"
-            )
-        return issues
+    @ability("saml_idp_metadata")
+    async def saml_idp_metadata(cls) -> Dict[str, str]:
+        """The IdP's entity id and SAML metadata, to give an SP."""
+        registry = ModelRegistry.attached()
+        if registry is None:
+            raise HTTPException(status_code=503, detail=f"{cls.name}: no running app")
+        entity_id, metadata = await off_loop(lambda: metadata_document(registry))
+        return {"entity_id": entity_id, "metadata": metadata}
