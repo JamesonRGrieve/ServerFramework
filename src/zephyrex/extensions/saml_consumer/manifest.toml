@@ -5,14 +5,14 @@
 # Manifest_parity_test keeps the two in step.
 
 name = "saml_consumer"
-version = "1.0.0"
-description = "Authenticate users via SAML 2.0 against an external Identity Provider."
+version = "2.0.0"
+description = "Sign in through external SAML 2.0 identity providers"
 author = "ZephyrexTechnologies"
 entry_module = "EXT_SAMLConsumer"
 minimum_framework_version = "0.0.0"
 
-pip_dependencies = []
-system_dependencies = []
+pip_dependencies = ["defusedxml>=0.7.1", "pysaml2>=7.5.5,<8"]
+system_dependencies = ["xmlsec1"]
 
 [[extension_dependencies]]
 name = "auth_session"
