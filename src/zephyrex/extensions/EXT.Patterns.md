@@ -1466,32 +1466,30 @@ class EXT_MyExtension(AbstractStaticExtension):
 
 #### 5c. Federation matrix tests
 
-Every extension that federates an external upstream gets 4 quadrants × 5 CRUD = 20 cells of homologation coverage automatically once it advertises a `federation_matrix_fixtures` classmethod (or relies on the OpenAPI/SDL shape from §5a/5b). The classmethod returns one or more `FederationFixture` instances; the framework's programmatic test generator emits a `Test_Federation_<extension>_<type>_Matrix` class per fixture into `extensions/Federation_Matrix_test.py`'s globals, and pytest collects them on the next run.
+Every extension that federates an external upstream gets 4 quadrants × 5 CRUD = 20 cells of homologation coverage automatically once it ships a test-only `federation_fixtures_test.py` beside its code (or relies on the OpenAPI/SDL shape from §5a/5b). Its `federation_matrix_fixtures()` returns one or more `FederationFixture` instances; the framework's programmatic test generator imports the module and emits a `Test_Federation_<extension>_<type>_Matrix` class per fixture into `extensions/Federation_Matrix_test.py`'s globals, and pytest collects them on the next run. Canned seed data is test data: it never goes on the extension class.
 
 ```python
-class EXT_MyExtension(AbstractStaticExtension):
-    @classmethod
-    def federation_matrix_fixtures(cls):
-        from zephyrex.extensions.AbstractFederationMatrixTest import (
-            FederationFixture,
-        )
+# extensions/my_extension/federation_fixtures_test.py
+from zephyrex.extensions.AbstractFederationMatrixTest import FederationFixture
 
-        return [
-            FederationFixture(
-                name="EXT_MyExtension.Customer",
-                upstream_kind="rest",                 # | "gql"
-                transport=cls.federation_rest_transport_factory(),
-                sample_id="cus_test",                 # seeded id the upstream knows
-                type_name="Customer",                 # the lifted Pydantic class
-                sdl_or_spec=cls.openapi_spec_provider(),
-                create_payload={"name": "X"},         # body for create-test
-                update_payload={"name": "Y"},         # body for update-test
-                operations_supported=["get", "list", "create", "update", "delete"],
-                crud_map={"get": "get_customer", "list": "list_customer", ...},
-                requires_credentials=False,           # in-process upstream by default
-                credentials_present=lambda: bool(os.getenv("MY_API_KEY")),
-            )
-        ]
+
+def federation_matrix_fixtures() -> list[FederationFixture]:
+    return [
+        FederationFixture(
+            name="EXT_MyExtension.Customer",
+            upstream_kind="rest",                 # | "gql"
+            transport=in_process_transport(SPEC, SEED),  # a test upstream
+            sample_id="cus_test",                 # seeded id the upstream knows
+            type_name="Customer",                 # the lifted Pydantic class
+            sdl_or_spec=SPEC,
+            create_payload={"name": "X"},         # body for create-test
+            update_payload={"name": "Y"},         # body for update-test
+            operations_supported=["get", "list", "create", "update", "delete"],
+            crud_map={"get": "get_customer", "list": "list_customer", ...},
+            requires_credentials=False,           # in-process upstream by default
+            credentials_present=lambda: bool(env("MY_API_KEY")),
+        )
+    ]
 ```
 
 The matrix asserts that the same logical operation through `/graphql` and through the REST surface returns equivalent payloads on every shared field. In-process upstreams (a tiny FastAPI ASGI app served via `httpx.ASGITransport`) are the default for CI determinism; live upstreams activate when `requires_credentials=True` and `credentials_present()` returns True (otherwise pytest auto-xfails per [EXT.Test.External.md](EXT.Test.External.md)).
@@ -1606,11 +1604,11 @@ local REST surf │   GQL→REST   │   REST→REST   │
 
 **To get matrix coverage for your extension:**
 
-1. Declare a `federation_matrix_fixtures` classmethod returning one or more `FederationFixture` instances (see Step 5c above). Each fixture exercises one upstream type through the matrix.
+1. Ship a test-only `federation_fixtures_test.py` whose `federation_matrix_fixtures()` returns one or more `FederationFixture` instances (see Step 5c above). Each fixture exercises one upstream type through the matrix.
 2. Pytest's collection hook in `extensions/Federation_Matrix_test.py` calls `generate_matrix_tests(target_namespace=globals())` at import time, which mutates the test module's globals to inject one `Test_Federation_<extension>_<type>_Matrix` class per discovered fixture.
 3. Run `pytest extensions/Federation_Matrix_test.py -v` and the matrix runs against your upstream alongside the framework's reference suites and every other extension's matrix.
 
-**In-process by default, live runs gated on credentials.** The reference fixtures bind to in-process FastAPI ASGI apps so CI is deterministic. Real-upstream runs activate when the fixture's `requires_credentials=True` and `credentials_present()` returns True; otherwise pytest auto-xfails the suite per [EXT.Test.External.md](EXT.Test.External.md). The bundled `EXT_Payment` (Stripe) and `EXT_EMail` (SendGrid) extensions show both shapes.
+**In-process by default, live runs gated on credentials.** The reference fixtures bind to in-process FastAPI ASGI apps so CI is deterministic. Real-upstream runs activate when the fixture's `requires_credentials=True` and `credentials_present()` returns True; otherwise pytest auto-xfails the suite per [EXT.Test.External.md](EXT.Test.External.md). Payment's `federation_fixtures_test.py` shows the shape.
 
 **No mocks.** The matrix uses real Pydantic models, real `Pydantic2{Strawberry,FastAPI}` projections, real `RESTUpstreamTransport` / `GQLUpstreamTransport`, and real httpx ASGI transports. A failing cell points at a real divergence between surfaces, not a quirk of how the test set up its fakes.
 
@@ -1698,7 +1696,7 @@ local REST surf │   GQL→REST   │   REST→REST   │
 4. **Server Isolation**: Run tests with only the target extension loaded
 5. **Environment Consistency**: Maintain consistent environment configuration across tests
 6. **Extension Linking**: Always link providers to parent extensions for test inheritance
-7. **Federation Matrix Coverage**: When the extension federates an external upstream, declare a `federation_matrix_fixtures` classmethod so the programmatic test generator emits 4×CRUD = 20 cells of homologation coverage automatically. In-process upstreams cover CI; live-credential runs activate when the fixture's `requires_credentials` and `credentials_present()` are True.
+7. **Federation Matrix Coverage**: When the extension federates an external upstream, ship its fixtures in a test-only `federation_fixtures_test.py` so the programmatic test generator emits 4×CRUD = 20 cells of homologation coverage automatically. In-process upstreams cover CI; live-credential runs activate when the fixture's `requires_credentials` and `credentials_present()` are True.
 
 ### Testing and Validation
 1. **Static Testing**: Test all functionality through class methods without instantiation

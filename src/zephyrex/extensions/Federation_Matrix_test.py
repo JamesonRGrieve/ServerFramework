@@ -291,3 +291,20 @@ def test_matrix_generator_emits_classes_for_every_extension_fixture() -> None:
         assert cls_name.endswith("_Matrix")
         # Classes must be subclasses of the matrix base.
         assert issubclass(cls, AbstractFederationMatrixTest)
+
+
+def test_every_payment_fixture_gets_its_matrix() -> None:
+    """Payment's fixtures live in its test-only module, and each one gets a
+    generated class. (On ``EXT_Payment`` they generated none: the generator
+    walked ``ExtensionRegistry.extensions`` on the class, an attribute only
+    registry instances have.)"""
+    from zephyrex.extensions.payment.federation_fixtures_test import (
+        federation_matrix_fixtures,
+    )
+
+    names = [fixture.name for fixture in federation_matrix_fixtures()]
+    assert names and len(set(names)) == len(names)
+    expected = {
+        "Test_Federation_" + name.replace(".", "_") + "_Matrix" for name in names
+    }
+    assert expected <= set(_GENERATED)

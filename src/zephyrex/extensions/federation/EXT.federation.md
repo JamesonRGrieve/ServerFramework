@@ -135,9 +135,9 @@ Item 16's acceptance criteria say "regardless of upstream wire format, both inbo
 
 `extensions/AbstractFederationMatrixTest.py` is the base class. Subclasses provide a `FederationFixture` declaring the upstream kind, a built transport, sample IDs, and supported operations. The base class then exhaustively walks the 20 cells, asserting each succeeds and that REST/GQL surface payloads agree on shared fields.
 
-`extensions/Federation_Matrix_Generator.py` provides programmatic generation. Any extension can advertise its federation surface in three ways:
+`extensions/Federation_Matrix_Generator.py` provides programmatic generation. A bundled extension ships explicit fixtures in a test-only `federation_fixtures_test.py` module whose `federation_matrix_fixtures()` returns them (canned seed data stays out of production code); the generator imports every such module. An extension can also advertise its federation surface in three ways:
 
-1. `federation_matrix_fixtures: classmethod -> Iterable[FederationFixture]` — explicit (preferred).
+1. `federation_matrix_fixtures: classmethod -> Iterable[FederationFixture]` — explicit.
 2. `openapi_spec_provider: classmethod -> dict` — the generator synthesizes a minimal-viable fixture per `components.schemas` entry.
 3. `graphql_sdl_provider: classmethod -> str` — same, per object type in the SDL.
 
@@ -145,7 +145,7 @@ Item 16's acceptance criteria say "regardless of upstream wire format, both inbo
 
 In-process upstreams are the default for CI determinism. Live upstreams activate when the fixture's `requires_credentials=True` and `credentials_present()` returns True; otherwise pytest auto-xfails the suite per `EXT.Test.External.md`.
 
-The `EXT_Payment` (Stripe) and `EXT_EMail` (SendGrid) extensions ship `federation_matrix_fixtures` classmethods that return Stripe/SendGrid resource fixtures bound to in-process REST upstreams. Real-credential runs activate when `STRIPE_API_KEY` / `SENDGRID_API_KEY` are set.
+Payment ships `payment/federation_fixtures_test.py`: fixtures for every resource of the Stripe, Square, PayPal, Moneris and Helcim REST APIs, bound to in-process REST upstreams. `EXT_EMail` (SendGrid) declares a `federation_matrix_fixtures` classmethod.
 
 ## Module map
 

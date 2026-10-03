@@ -8,6 +8,10 @@ tests, so adding a new external upstream automatically buys you 4 quadrants
 
 How discovery works:
 
+* Every bundled extension that ships a test-only
+  ``federation_fixtures_test`` module contributes its
+  ``federation_matrix_fixtures()`` (canned seed data stays out of the
+  extension's production code). Payment's REST providers do.
 * Every extension whose ``AbstractStaticExtension`` subclass declares one
   or more of the well-known schema-descriptor classvars is candidate:
     - ``federation_matrix_fixtures: Iterable[FederationFixture]`` —
@@ -33,6 +37,8 @@ Two execution modes:
 
 from __future__ import annotations
 
+import importlib
+from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional
 
 from zephyrex.extensions.AbstractFederationMatrixTest import (
@@ -40,6 +46,9 @@ from zephyrex.extensions.AbstractFederationMatrixTest import (
     FederationFixture,
 )
 from zephyrex.lib.Logging import logger
+
+# The test-only module in which a bundled extension ships its fixtures.
+TEST_ONLY_FIXTURES_MODULE = "federation_fixtures_test"
 
 # ---------------------------------------------------------------------------
 # Discovery
@@ -49,7 +58,9 @@ from zephyrex.lib.Logging import logger
 def discover_extension_fixtures() -> List[FederationFixture]:
     """Walk the loaded extensions and gather every advertised fixture.
 
-    Extensions advertise their federation surface in any of three ways:
+    Bundled extensions' test-only fixture modules come first
+    (:func:`bundled_fixture_modules`). Extensions also advertise their
+    federation surface in any of three ways:
 
     1. ``federation_matrix_fixtures`` — explicit list of
        :class:`FederationFixture` instances. Preferred.
@@ -69,7 +80,7 @@ def discover_extension_fixtures() -> List[FederationFixture]:
     except ImportError:
         return []
 
-    fixtures: List[FederationFixture] = []
+    fixtures: List[FederationFixture] = bundled_fixture_modules()
     extensions = getattr(ExtensionRegistry, "extensions", None) or []
     for ext in extensions:
         explicit = getattr(ext, "federation_matrix_fixtures", None)
@@ -96,6 +107,31 @@ def discover_extension_fixtures() -> List[FederationFixture]:
                 logger.debug(
                     "graphql_sdl_provider for %s raised: %s", ext.__name__, exc
                 )
+    return fixtures
+
+
+def bundled_fixture_modules() -> List[FederationFixture]:
+    """Every bundled extension's ``federation_fixtures_test`` module's
+    ``federation_matrix_fixtures()``, in extension-name order.
+
+    Canned upstream seed data is test data: an extension ships it in this
+    test-only module (never packaged with its code) rather than on its
+    extension class. A module that fails to import or build its fixtures
+    fails collection: a matrix that quietly generates nothing proves
+    nothing."""
+    import zephyrex.extensions as bundled
+
+    fixtures: List[FederationFixture] = []
+    module_files = sorted(
+        path
+        for root in bundled.__path__
+        for path in Path(root).glob(f"*/{TEST_ONLY_FIXTURES_MODULE}.py")
+    )
+    for path in module_files:
+        module = importlib.import_module(
+            f"{bundled.__name__}.{path.parent.name}.{TEST_ONLY_FIXTURES_MODULE}"
+        )
+        fixtures.extend(module.federation_matrix_fixtures())
     return fixtures
 
 
@@ -228,6 +264,7 @@ def generate_matrix_tests(
 
 
 __all__ = [
+    "bundled_fixture_modules",
     "discover_extension_fixtures",
     "generate_matrix_tests",
 ]
