@@ -263,6 +263,8 @@ EXTERNAL_API_PROVIDER_ENV_VARS: Dict[str, List[str]] = {
     ],
     # AI: real keys, each live test making one short call.
     "openai_key": ["OPENAI_API_KEY"],
+    # Fine-tuning: lists the account's jobs and the newest job's events (no spend).
+    "openai_fine_tuning": ["OPENAI_API_KEY"],
     "anthropic_key": ["ANTHROPIC_API_KEY"],
     "gemini_key": ["GEMINI_API_KEY"],
     "elevenlabs_key": ["ELEVENLABS_API_KEY"],

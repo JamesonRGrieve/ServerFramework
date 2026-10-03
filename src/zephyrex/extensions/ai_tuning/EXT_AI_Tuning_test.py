@@ -1,836 +1,769 @@
-from unittest.mock import MagicMock, patch
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""AI tuning: the dataset and parameter checks; OpenAI's fine-tuning wire
+(what is sent, as a local server receives it, and the documented answers
+read back); the local job table (owned by the requester, read-only over
+REST, mirroring the provider); the routes and abilities, which reach
+only accounts the caller can see; refused keys typed as auth failures,
+including a real call with a bogus key (xfail when OpenAI is
+unreachable); and a read-only live call with a real key."""
 
+import json
+import uuid
+from typing import Any, Dict
+
+import httpx
 import pytest
+from fastapi import HTTPException
 
+from zephyrex.extensions.AbstractEXTTest import ExtensionServerMixin
+from zephyrex.extensions.ai_tuning.BLL_AI_Tuning import TuningJobManager
 from zephyrex.extensions.ai_tuning.EXT_AI_Tuning import EXT_AI_Tuning
+from zephyrex.extensions.ai_tuning.PRV_OpenAI_Tuning import PRV_OpenAI_Tuning
+from zephyrex.extensions.ai_tuning.TuningProvider import (
+    MAX_DATASET_BYTES,
+    MAX_PAGE,
+    checked_dataset,
+    checked_hyperparameters,
+    checked_limit,
+    checked_model,
+    checked_seed,
+    checked_suffix,
+)
+from zephyrex.extensions.ExternalErrors import (
+    AuthExternalError,
+    InvalidInputExternalError,
+    TransientExternalError,
+)
+from zephyrex.lib.Environment import env
+from zephyrex.logic.BLL_Providers import (
+    ProviderInstanceManager,
+    ProviderInstanceModel,
+    ProviderInstanceSettingManager,
+)
 
-
-class TestEXTAITuning:
-    """
-    Test suite for EXT_AI_Tuning extension.
-
-    Tests extension initialization, model tuning capabilities, abilities, and training
-    functionality. Focuses on testing training job creation, management, hyperparameter
-    optimization, and model evaluation functionality rather than component loading.
-
-    Test areas:
-    - Extension metadata and configuration
-    - Training capabilities and abilities (job creation, training control)
-    - PyTorch and ML framework integration
-    - Training orchestration and monitoring
-    - Hyperparameter optimization and model evaluation
-    - Distributed training and checkpoint management
-    - Experiment tracking and metrics collection
-    """
-
-    expected_abilities = [
-        "create_tuning_job",
-        "start_training",
-        "pause_training",
-        "resume_training",
-        "stop_training",
-        "get_training_status",
-        "optimize_hyperparameters",
-        "evaluate_model",
+JSON = {"Content-Type": "application/json"}
+EXAMPLE = {
+    "messages": [
+        {"role": "system", "content": "Marv is a sarcastic chatbot."},
+        {"role": "user", "content": "What's the capital of France?"},
+        {"role": "assistant", "content": "Paris, as if everyone doesn't know."},
     ]
+}
+DATASET = "\n".join(json.dumps(EXAMPLE) for _ in range(10)) + "\n"
+JOB_ID = "ftjob-abc123"
+TUNED = "ft:gpt-4o-mini-2024-07-18:my-org:marv:7p4lURel"
+BOGUS = "sk-bogus-0000000000000000000000000000"
 
-    expected_capabilities = [
-        "model_fine_tuning",
-        "hyperparameter_optimization",
-        "training_orchestration",
-        "model_evaluation",
-        "distributed_training",
-        "checkpoint_management",
-        "metrics_tracking",
-    ]
-
-    @pytest.fixture
-    def extension(self):
-        """Create an EXT_AI_Tuning instance for testing."""
-        return EXT_AI_Tuning()
-
-    @pytest.fixture
-    def mock_torch_available(self):
-        """Mock PyTorch library availability"""
-        mock_torch = MagicMock()
-        mock_torch.cuda.is_available.return_value = True
-        mock_torch.cuda.device_count.return_value = 2
-        mock_torch.device.return_value = "cuda:0"
-
-        # Mock CUDA amp
-        mock_amp = MagicMock()
-        mock_torch.cuda.amp.GradScaler.return_value = mock_amp
-
-        with patch.dict("sys.modules", {"torch": mock_torch}):
-            yield mock_torch
-
-    @pytest.fixture
-    def mock_torch_cpu_only(self):
-        """Mock PyTorch library with CPU only"""
-        mock_torch = MagicMock()
-        mock_torch.cuda.is_available.return_value = False
-        mock_torch.cuda.device_count.return_value = 0
-        mock_torch.device.return_value = "cpu"
-
-        with patch.dict("sys.modules", {"torch": mock_torch}):
-            yield mock_torch
-
-    @pytest.fixture
-    def mock_optuna_available(self):
-        """Mock Optuna library availability"""
-        mock_optuna = MagicMock()
-
-        with patch.dict("sys.modules", {"optuna": mock_optuna}):
-            yield mock_optuna
-
-    @pytest.fixture
-    def mock_wandb_available(self):
-        """Mock Weights & Biases library availability"""
-        mock_wandb = MagicMock()
-
-        with patch.dict("sys.modules", {"wandb": mock_wandb}):
-            yield mock_wandb
-
-    @pytest.fixture
-    def mock_tensorboard_available(self):
-        """Mock TensorBoard library availability"""
-        mock_tensorboard = MagicMock()
-        mock_writer = MagicMock()
-        mock_tensorboard.utils.tensorboard.SummaryWriter.return_value = mock_writer
-
-        with patch.dict(
-            "sys.modules",
-            {
-                "torch.utils.tensorboard": mock_tensorboard.utils.tensorboard,
-                "tensorboard": mock_tensorboard,
+# OpenAI's documented answers (API reference: files, fine_tuning.job,
+# fine_tuning.job.event, fine_tuning.job.checkpoint).
+FILE = {
+    "id": "file-abc123",
+    "object": "file",
+    "bytes": 120000,
+    "created_at": 1677610602,
+    "filename": "training.jsonl",
+    "purpose": "fine-tune",
+}
+JOB = {
+    "object": "fine_tuning.job",
+    "id": JOB_ID,
+    "model": "gpt-4o-mini-2024-07-18",
+    "created_at": 1721764800,
+    "fine_tuned_model": None,
+    "organization_id": "org-123",
+    "result_files": [],
+    "status": "validating_files",
+    "validation_file": "file-abc123",
+    "training_file": "file-abc123",
+    "hyperparameters": {"n_epochs": 3, "batch_size": "auto"},
+    "method": {
+        "type": "supervised",
+        "supervised": {
+            "hyperparameters": {
+                "batch_size": "auto",
+                "learning_rate_multiplier": "auto",
+                "n_epochs": 3,
+            }
+        },
+    },
+    "seed": 42,
+    "error": None,
+    "trained_tokens": None,
+    "finished_at": None,
+    "metadata": None,
+}
+SUCCEEDED = {
+    **JOB,
+    "status": "succeeded",
+    "fine_tuned_model": TUNED,
+    "trained_tokens": 5768,
+    "finished_at": 1721768400,
+}
+CANCELLED = {**JOB, "status": "cancelled"}
+EVENTS = {
+    "object": "list",
+    "data": [
+        {
+            "object": "fine_tuning.job.event",
+            "id": "ft-event-ddTJfwuMVpfLXseO0Am0Gqjm",
+            "created_at": 1721764800,
+            "level": "info",
+            "message": "Fine tuning job successfully completed",
+            "data": None,
+            "type": "message",
+        },
+        {
+            "object": "fine_tuning.job.event",
+            "id": "ft-event-tyiGuB72evQncpH87xe505Sv",
+            "created_at": 1721764700,
+            "level": "info",
+            "message": "Step 100/100: training loss=0.12",
+            "data": {"step": 100, "train_loss": 0.12},
+            "type": "metrics",
+        },
+    ],
+    "has_more": True,
+}
+CHECKPOINTS = {
+    "object": "list",
+    "data": [
+        {
+            "object": "fine_tuning.job.checkpoint",
+            "id": "ftckpt_zc4Q7MP6XxulcVzj4MZdwsAB",
+            "created_at": 1721764867,
+            "fine_tuned_model_checkpoint": f"{TUNED}:ckpt-step-2000",
+            "metrics": {
+                "full_valid_loss": 0.134,
+                "full_valid_mean_token_accuracy": 0.874,
             },
+            "fine_tuning_job_id": JOB_ID,
+            "step_number": 2000,
+        }
+    ],
+    "first_id": "ftckpt_zc4Q7MP6XxulcVzj4MZdwsAB",
+    "last_id": "ftckpt_zc4Q7MP6XxulcVzj4MZdwsAB",
+    "has_more": False,
+}
+JOBS = {"object": "list", "data": [SUCCEEDED], "has_more": False}
+
+
+def answer(body: Any, status: int = 200):
+    return (status, JSON, json.dumps(body).encode())
+
+
+OPENAI = {
+    "/files": answer(FILE),
+    "/fine_tuning/jobs": answer(JOB),
+    "/fine_tuning/jobs?limit=20": answer(JOBS),
+    f"/fine_tuning/jobs/{JOB_ID}": answer(SUCCEEDED),
+    f"/fine_tuning/jobs/{JOB_ID}/cancel": answer(CANCELLED),
+    f"/fine_tuning/jobs/{JOB_ID}/events?limit=20": answer(EVENTS),
+    f"/fine_tuning/jobs/{JOB_ID}/events?limit=5&after=ft-event-x": answer(EVENTS),
+    f"/fine_tuning/jobs/{JOB_ID}/checkpoints?limit=10": answer(CHECKPOINTS),
+}
+
+
+def auth(user) -> Dict[str, str]:
+    return {"Authorization": f"Bearer {user.jwt}"}
+
+
+def dataset(*examples: Any, count: int = 10) -> str:
+    rows = list(examples) + [EXAMPLE] * (count - len(examples))
+    return "\n".join(r if isinstance(r, str) else json.dumps(r) for r in rows)
+
+
+def _online(url: str) -> bool:
+    try:
+        httpx.head(url, timeout=5)
+        return True
+    except httpx.HTTPError:
+        return False
+
+
+class TestChecks:
+    def test_a_chat_dataset(self):
+        assert checked_dataset(DATASET) == DATASET.encode()
+        assert checked_dataset(DATASET.rstrip("\n")) == DATASET.rstrip("\n").encode()
+
+    async def test_the_validate_ability_counts_examples(self):
+        found = await EXT_AI_Tuning.validate_tuning_dataset(DATASET)
+        assert found == {"examples": 10, "bytes": len(DATASET.encode())}
+
+    def test_tool_calls_tools_and_weights_are_chat_format(self):
+        example = {
+            "messages": [
+                {"role": "user", "content": "Weather in Paris?"},
+                {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "id": "call_id",
+                            "type": "function",
+                            "function": {"name": "weather", "arguments": "{}"},
+                        }
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "call_id", "content": "12C"},
+                {"role": "assistant", "content": "12C.", "weight": 1},
+            ],
+            "tools": [{"type": "function", "function": {"name": "weather"}}],
+            "parallel_tool_calls": False,
+        }
+        checked_dataset(dataset(example))
+
+    @pytest.mark.parametrize(
+        "example, reason",
+        [
+            ("{not json", "line 1 is not JSON"),
+            ("[1, 2]", "line 1 is not a JSON object"),
+            ({"prompt": "a", "completion": "b"}, "unexpected keys"),
+            ({"messages": []}, "messages is a non-empty list"),
+            ({"messages": [{"role": "user", "content": "hi"}]}, "assistant message"),
+            ({"messages": [{"role": "robot", "content": "hi"}]}, "role is one of"),
+            ({"messages": [{"role": "user"}]}, "a user message has content"),
+            (
+                {"messages": [{"role": "assistant", "content": 5}]},
+                "content is text",
+            ),
+            (
+                {"messages": [{"role": "assistant", "content": "a", "weight": 2}]},
+                "weight is 0 or 1",
+            ),
+            (
+                {
+                    "messages": [
+                        {"role": "user", "content": "a", "weight": 1},
+                        {"role": "assistant", "content": "b"},
+                    ]
+                },
+                "weight is 0 or 1",
+            ),
+            (
+                {"messages": [{"role": "assistant", "content": "a"}], "tools": {}},
+                "tools is a list",
+            ),
+        ],
+    )
+    def test_a_bad_example_names_its_line(self, example, reason):
+        with pytest.raises(InvalidInputExternalError, match=reason):
+            checked_dataset(dataset(example))
+
+    def test_an_empty_line_inside(self):
+        with pytest.raises(InvalidInputExternalError, match="line 2 is empty"):
+            checked_dataset(dataset(json.dumps(EXAMPLE), "  "))
+
+    def test_too_few_examples(self):
+        with pytest.raises(InvalidInputExternalError, match="not 9"):
+            checked_dataset(dataset(count=9))
+
+    def test_too_large(self):
+        with pytest.raises(InvalidInputExternalError, match="MiB"):
+            checked_dataset("x" * (MAX_DATASET_BYTES + 1))
+
+    @pytest.mark.parametrize("data", ["", "   ", None, 7])
+    def test_not_text(self, data):
+        with pytest.raises(InvalidInputExternalError, match="JSONL text"):
+            checked_dataset(data)
+
+    def test_hyperparameters(self):
+        assert checked_hyperparameters(None, None, None) == {}
+        assert checked_hyperparameters(3, 8, 2) == {
+            "n_epochs": 3,
+            "batch_size": 8,
+            "learning_rate_multiplier": 2.0,
+        }
+        for bad in ((0, None, None), (True, None, None), (None, 1.5, None)):
+            with pytest.raises(InvalidInputExternalError):
+                checked_hyperparameters(*bad)
+        with pytest.raises(InvalidInputExternalError):
+            checked_hyperparameters(None, None, -0.1)
+
+    def test_names_seed_and_limits(self):
+        assert checked_model("gpt-4o-mini-2024-07-18") == "gpt-4o-mini-2024-07-18"
+        assert checked_suffix(None) is None and checked_suffix("marv") == "marv"
+        assert checked_seed(None) is None and checked_seed(42) == 42
+        assert checked_limit(MAX_PAGE) == MAX_PAGE
+        for check, bad in (
+            (checked_model, ""),
+            (checked_model, "m" * 257),
+            (checked_suffix, "s" * 65),
+            (checked_suffix, ""),
+            (checked_seed, "1"),
+            (checked_limit, 0),
+            (checked_limit, MAX_PAGE + 1),
         ):
-            yield mock_tensorboard
+            with pytest.raises(InvalidInputExternalError):
+                check(bad)
 
-    def test_extension_metadata(self, extension):
-        """Test extension metadata and basic attributes"""
-        assert extension.name == "ai_tuning"
-        assert extension.version == "1.0.0"
-        assert "AI Tuning extension" in extension.description
-        assert hasattr(extension, "capabilities")
-        assert hasattr(extension, "ext_dependencies")
-        assert hasattr(extension, "pip_dependencies")
-        assert hasattr(extension, "db_tables")
 
-    def test_dependencies_structure(self, extension):
-        """Test that dependencies are properly structured"""
-        # Check extension dependencies
-        assert len(extension.ext_dependencies) == 2
-        ext_deps = {dep.name: dep for dep in extension.ext_dependencies}
+class TestTuning(ExtensionServerMixin):
+    extension_class = EXT_AI_Tuning
 
-        assert "core" in ext_deps
-        assert not ext_deps["core"].optional
+    @pytest.fixture(scope="module")
+    def provider_ids(self, server, admin_a) -> Dict[str, str]:
+        providers = server.get("/v1/provider", headers=auth(admin_a)).json()[
+            "providers"
+        ]
+        return {p["name"]: p["id"] for p in providers}
 
-        assert "ai_tasks" in ext_deps
-        assert ext_deps["ai_tasks"].optional
+    @pytest.fixture
+    def account(self, server, provider_ids):
+        """A provider instance ``owner`` adds, at ``base_url`` when given."""
+        registry = server.app.state.model_registry
 
-        # Check pip dependencies
-        assert len(extension.pip_dependencies) == 7
-        pip_deps = {dep.name: dep for dep in extension.pip_dependencies}
+        def _add(owner, base_url=None, api_key="sk-test", provider=None):
+            response = server.post(
+                "/v1/provider/instance",
+                json={
+                    "provider_instance": {
+                        "name": f"tuning-{uuid.uuid4().hex}",
+                        "provider_id": provider_ids[provider or PRV_OpenAI_Tuning.name],
+                        "api_key": api_key,
+                    }
+                },
+                headers=auth(owner),
+            )
+            assert response.status_code == 201, response.text
+            created: Dict[str, Any] = response.json()["provider_instance"]
+            if base_url:
+                ProviderInstanceSettingManager(
+                    model_registry=registry, requester_id=env("ROOT_ID")
+                ).create(
+                    provider_instance_id=created["id"], key="base_url", value=base_url
+                )
+            return created
 
-        assert "torch" in pip_deps
-        assert ">=2.0.0" in pip_deps["torch"].semver
-        assert not pip_deps["torch"].optional
+        return _add
 
-        assert "transformers" in pip_deps
-        assert not pip_deps["transformers"].optional
+    @pytest.fixture
+    def openai(self, local_http_server, account, admin_a):
+        server = local_http_server(OPENAI)
+        return server, account(admin_a, server.base_url)
 
-        assert "datasets" in pip_deps
-        assert not pip_deps["datasets"].optional
-
-        assert "accelerate" in pip_deps
-        assert pip_deps["accelerate"].optional
-
-        assert "optuna" in pip_deps
-        assert pip_deps["optuna"].optional
-
-    def test_db_tables_structure(self, extension):
-        """AI Tuning currently has no DB-layer models; db_tables stays an empty list."""
-        assert isinstance(extension.db_tables, list)
-        assert extension.db_tables == []
-
-    def test_training_constants_structure(self, extension):
-        """Test that training constants are properly defined"""
-        training_types = extension.get_training_types()
-        assert isinstance(training_types, dict)
-        assert "fine_tuning" in training_types
-        assert "full_training" in training_types
-        assert "hyperparameter_search" in training_types
-
-        statuses = extension.get_training_statuses()
-        assert isinstance(statuses, dict)
-        assert "pending" in statuses
-        assert "running" in statuses
-        assert "completed" in statuses
-        assert "failed" in statuses
-
-        model_types = extension.get_model_types()
-        assert isinstance(model_types, dict)
-        assert "transformers" in model_types
-        assert "computer_vision" in model_types
-
-    def test_initialization_with_gpu(self, mock_torch_available):
-        """Test extension initialization with GPU available"""
-        extension = EXT_AI_Tuning(
-            enable_distributed_training=True,
-            max_concurrent_jobs=3,
-            mixed_precision=True,
-            enable_experiment_tracking=True,
+    def instance(self, server, instance_id) -> ProviderInstanceModel:
+        return ProviderInstanceModel.model_validate(
+            ProviderInstanceManager(
+                model_registry=server.app.state.model_registry,
+                requester_id=env("ROOT_ID"),
+            ).get(id=instance_id),
+            from_attributes=True,
         )
 
-        assert extension.enable_distributed_training is True
-        assert extension.max_concurrent_jobs == 3
-        assert extension.mixed_precision is True
-        assert extension.enable_experiment_tracking is True
-
-    def test_initialization_cpu_only(self, mock_torch_cpu_only):
-        """Test extension initialization with CPU only"""
-        extension = EXT_AI_Tuning(
-            enable_distributed_training=False,
-            mixed_precision=False,
-            auto_resume_training=False,
+    def submit(self, server, user, account_id, **fields):
+        return server.post(
+            "/v1/tuning_job/submit",
+            json={
+                "provider_instance_id": account_id,
+                "base_model": "gpt-4o-mini-2024-07-18",
+                "training_data": DATASET,
+                **fields,
+            },
+            headers=auth(user),
         )
 
-        assert extension.enable_distributed_training is False
-        assert extension.mixed_precision is False
-        assert extension.auto_resume_training is False
+    # The wire, as the local server receives it.
 
-    def test_initialization_with_custom_settings(self):
-        """Test extension initialization with custom settings"""
-        extension = EXT_AI_Tuning(
-            checkpoint_interval=1000,
-            max_training_time_hours=48,
-            tensorboard_log_dir="/custom/logs",
+    async def test_the_upload_is_a_fine_tune_file(self, server, openai):
+        upstream, account = openai
+        uploaded = await PRV_OpenAI_Tuning.upload_dataset(
+            self.instance(server, account["id"]), DATASET.encode(), "training.jsonl"
         )
+        assert uploaded == {
+            "file_id": "file-abc123",
+            "bytes": 120000,
+            "filename": "training.jsonl",
+        }
+        sent = upstream.requests[0]
+        assert sent.method == "POST" and sent.path == "/files"
+        assert sent.headers["content-type"].startswith("multipart/form-data")
+        assert sent.headers["authorization"] == "Bearer sk-test"
+        assert b'name="purpose"' in sent.body and b"fine-tune" in sent.body
+        assert b'filename="training.jsonl"' in sent.body
+        assert DATASET.encode() in sent.body
 
-        assert extension.checkpoint_interval == 1000
-        assert extension.max_training_time_hours == 48
-        assert extension.tensorboard_log_dir == "/custom/logs"
+    async def test_a_job_sends_only_what_was_asked(self, server, openai):
+        upstream, account = openai
+        instance = self.instance(server, account["id"])
+        job = await PRV_OpenAI_Tuning.create_job(
+            instance, "gpt-4o-mini-2024-07-18", "file-abc123", None, None, {}, None
+        )
+        assert json.loads(upstream.requests[0].body) == {
+            "model": "gpt-4o-mini-2024-07-18",
+            "training_file": "file-abc123",
+        }
+        assert job["provider_job_id"] == JOB_ID
+        assert job["status"] == "validating_files"
+        assert job["hyperparameters"] == {
+            "batch_size": "auto",
+            "learning_rate_multiplier": "auto",
+            "n_epochs": 3,
+        }
 
-    @patch("zephyrex.extensions.ai_tuning.EXT_AI_Tuning.logger")
-    def test_on_initialize_success_with_gpu(
-        self, mock_logger, mock_torch_available, mock_wandb_available
+    async def test_hyperparameters_go_under_the_supervised_method(self, server, openai):
+        upstream, account = openai
+        await PRV_OpenAI_Tuning.create_job(
+            self.instance(server, account["id"]),
+            "gpt-4o-mini-2024-07-18",
+            "file-abc123",
+            "file-def456",
+            "marv",
+            {"n_epochs": 3},
+            42,
+        )
+        assert json.loads(upstream.requests[0].body) == {
+            "model": "gpt-4o-mini-2024-07-18",
+            "training_file": "file-abc123",
+            "validation_file": "file-def456",
+            "suffix": "marv",
+            "seed": 42,
+            "method": {
+                "type": "supervised",
+                "supervised": {"hyperparameters": {"n_epochs": 3}},
+            },
+        }
+
+    async def test_a_finished_job_names_the_tuned_model(self, server, openai):
+        upstream, account = openai
+        job = await PRV_OpenAI_Tuning.get_job(
+            self.instance(server, account["id"]), JOB_ID
+        )
+        assert job["fine_tuned_model"] == TUNED and job["trained_tokens"] == 5768
+        assert job["finished_at"].isoformat() == "2024-07-23T21:00:00+00:00"
+        assert upstream.requests[0].method == "GET"
+
+    async def test_cancel_posts_to_the_job(self, server, openai):
+        upstream, account = openai
+        job = await PRV_OpenAI_Tuning.cancel_job(
+            self.instance(server, account["id"]), JOB_ID
+        )
+        assert job["status"] == "cancelled"
+        assert upstream.requests[0].method == "POST"
+        assert upstream.requests[0].path == f"/fine_tuning/jobs/{JOB_ID}/cancel"
+
+    async def test_events_page_after_a_cursor(self, server, openai):
+        upstream, account = openai
+        page = await PRV_OpenAI_Tuning.job_events(
+            self.instance(server, account["id"]), JOB_ID, "ft-event-x", 5
+        )
+        assert page["has_more"] is True
+        assert page["data"][1] == {
+            "id": "ft-event-tyiGuB72evQncpH87xe505Sv",
+            "created_at": "2024-07-23T19:58:20+00:00",
+            "level": "info",
+            "message": "Step 100/100: training loss=0.12",
+            "type": "metrics",
+            "data": {"step": 100, "train_loss": 0.12},
+        }
+
+    async def test_a_job_id_is_one_path_segment(self, server, openai):
+        upstream, account = openai
+        with pytest.raises(InvalidInputExternalError, match="not a valid id"):
+            await PRV_OpenAI_Tuning.get_job(
+                self.instance(server, account["id"]), "../files"
+            )
+        assert not upstream.requests
+
+    async def test_an_account_without_a_key_calls_nothing(
+        self, server, openai, account, admin_a
     ):
-        """Test successful extension initialization with GPU"""
-        with patch.object(EXT_AI_Tuning, "_register_tuning_hooks") as mock_hooks:
-            extension = EXT_AI_Tuning()
-            result = extension.on_initialize()
+        upstream, _ = openai
+        keyless = account(admin_a, upstream.base_url, api_key=None)
+        with pytest.raises(InvalidInputExternalError, match="no API key"):
+            await PRV_OpenAI_Tuning.list_jobs(
+                self.instance(server, keyless["id"]), None, 20
+            )
+        assert not upstream.requests
 
-            assert result is True
-            mock_hooks.assert_called_once()
-
-    @patch("zephyrex.extensions.ai_tuning.EXT_AI_Tuning.logger")
-    def test_on_initialize_failure(self, mock_logger):
-        """Test extension initialization failure handling"""
-        with patch.object(
-            EXT_AI_Tuning,
-            "_initialize_training_environment",
-            side_effect=Exception("Test error"),
-        ):
-            extension = EXT_AI_Tuning()
-            result = extension.on_initialize()
-
-            assert result is False
-
-    def test_initialize_training_environment_with_gpu(self, mock_torch_available):
-        """Test training environment initialization with GPU"""
-        extension = EXT_AI_Tuning()
-        extension._initialize_training_environment()
-
-        assert hasattr(extension, "device")
-        assert hasattr(extension, "gpu_count")
-
-    def test_initialize_training_environment_no_torch(self):
-        """Test training environment initialization without PyTorch"""
-        with patch.dict("sys.modules", {"torch": None}):
-            extension = EXT_AI_Tuning()
-            extension._initialize_training_environment()
-
-            assert extension.device == "cpu"
-            assert extension.gpu_count == 0
-
-    def test_initialize_experiment_tracking_with_wandb(self, mock_wandb_available):
-        """Test experiment tracking initialization with W&B"""
-        extension = EXT_AI_Tuning()
-        extension._initialize_experiment_tracking()
-
-        assert hasattr(extension, "wandb_available")
-
-    def test_initialize_experiment_tracking_with_tensorboard(
-        self, mock_tensorboard_available
+    @pytest.mark.parametrize(
+        "status, body, error",
+        [
+            (401, {"error": {"code": "invalid_api_key"}}, AuthExternalError),
+            (500, {"error": {"message": "boom"}}, TransientExternalError),
+        ],
+    )
+    async def test_failures_are_typed(
+        self, server, local_http_server, account, admin_a, status, body, error
     ):
-        """Test experiment tracking initialization with TensorBoard"""
-        extension = EXT_AI_Tuning()
-        extension._initialize_experiment_tracking()
-
-        assert hasattr(extension, "tensorboard_available")
-
-    def test_get_capabilities(self, extension):
-        """Test getting extension capabilities"""
-        capabilities = extension.get_capabilities()
-
-        assert isinstance(capabilities, set)
-        for expected_capability in self.expected_capabilities:
-            assert expected_capability in capabilities
-
-    def test_register_capability(self, extension):
-        """Test registering new capability"""
-        new_capability = "test_tuning_capability"
-        extension.register_capability(new_capability)
-
-        assert new_capability in extension.capabilities
-        assert new_capability in extension.get_registered_capabilities()
-
-    @pytest.mark.asyncio
-    async def test_create_tuning_job_success(self, extension):
-        """Test successful tuning job creation"""
-        with patch("uuid.uuid4") as mock_uuid:
-            mock_uuid.return_value.hex = "test-job-id"
-            mock_uuid.return_value.__str__.return_value = "test-job-id"
-
-            result = await extension.create_tuning_job(
-                job_name="test_training",
-                model_type="transformers",
-                base_model="bert-base-uncased",
-                training_type="fine_tuning",
-                hyperparameters={"learning_rate": 0.001},
+        upstream = local_http_server(
+            {"/fine_tuning/jobs?limit=20": answer(body, status)}
+        )
+        refused = account(admin_a, upstream.base_url)
+        with pytest.raises(error):
+            await PRV_OpenAI_Tuning.list_jobs(
+                self.instance(server, refused["id"]), None, 20
             )
 
-            assert result["success"] is True
-            assert "job" in result
-            assert result["job"]["job_name"] == "test_training"
-            assert result["job"]["model_type"] == "transformers"
-            assert result["job"]["base_model"] == "bert-base-uncased"
+    async def test_a_refused_request_carries_openais_reason(
+        self, server, local_http_server, account, admin_a
+    ):
+        reason = "Model gpt-9 is not available for fine-tuning or does not exist."
+        upstream = local_http_server(
+            {"/fine_tuning/jobs": answer({"error": {"message": reason}}, 400)}
+        )
+        refused = account(admin_a, upstream.base_url)
+        with pytest.raises(InvalidInputExternalError, match="not available"):
+            await PRV_OpenAI_Tuning.create_job(
+                self.instance(server, refused["id"]),
+                "gpt-9",
+                "file-1",
+                None,
+                None,
+                {},
+                None,
+            )
 
-    @pytest.mark.asyncio
-    async def test_create_tuning_job_with_config(self, extension):
-        """Test tuning job creation with detailed configuration"""
-        dataset_config = {
-            "train_path": "/data/train.json",
-            "val_path": "/data/val.json",
+    async def test_a_lan_address_needs_an_egress_allowance(
+        self, server, account, admin_a
+    ):
+        lan = account(admin_a, "http://192.168.1.20:8000/v1")
+        with pytest.raises(InvalidInputExternalError, match="SSRF"):
+            await PRV_OpenAI_Tuning.list_jobs(
+                self.instance(server, lan["id"]), None, 20
+            )
+
+    # The routes and the table.
+
+    def test_submit_uploads_starts_and_records_the_job(self, server, openai, admin_a):
+        upstream, account = openai
+        response = self.submit(
+            server,
+            admin_a,
+            account["id"],
+            validation_data=DATASET,
+            suffix="marv",
+            n_epochs=3,
+        )
+        assert response.status_code == 200, response.text
+        job = response.json()
+        assert job["user_id"] == admin_a.id
+        assert job["provider"] == "openai_fine_tuning"
+        assert job["provider_instance_id"] == account["id"]
+        assert job["provider_job_id"] == JOB_ID
+        assert job["status"] == "validating_files"
+        assert job["suffix"] == "marv" and job["fine_tuned_model"] is None
+        assert [r.path for r in upstream.requests] == [
+            "/files",
+            "/files",
+            "/fine_tuning/jobs",
+        ]
+        assert b'filename="validation.jsonl"' in upstream.requests[1].body
+        sent = json.loads(upstream.requests[2].body)
+        assert sent["validation_file"] == "file-abc123"
+        assert sent["method"]["supervised"]["hyperparameters"] == {"n_epochs": 3}
+
+    def test_a_bad_dataset_is_refused_before_any_upload(self, server, openai, admin_a):
+        upstream, account = openai
+        response = self.submit(
+            server, admin_a, account["id"], training_data=dataset(count=3)
+        )
+        assert response.status_code == 400, response.text
+        assert "examples" in response.text
+        assert not upstream.requests
+
+    def test_another_user_cannot_train_on_the_account(self, server, openai, admin_b):
+        upstream, account = openai
+        response = self.submit(server, admin_b, account["id"])
+        assert response.status_code == 404, response.text
+        assert not upstream.requests
+
+    def test_an_account_of_another_kind_is_refused(
+        self, server, local_http_server, account, admin_a
+    ):
+        upstream = local_http_server(OPENAI)
+        chat = account(admin_a, upstream.base_url, provider="openai")
+        response = self.submit(server, admin_a, chat["id"])
+        assert response.status_code == 400, response.text
+        assert "not a fine-tuning account" in response.text
+        assert not upstream.requests
+
+    def test_a_refused_key_is_a_bad_gateway(
+        self, server, local_http_server, account, admin_a
+    ):
+        upstream = local_http_server(
+            {"/files": answer({"error": {"code": "invalid_api_key"}}, 401)}
+        )
+        refused = account(admin_a, upstream.base_url, api_key="sk-wrong")
+        response = self.submit(server, admin_a, refused["id"])
+        assert response.status_code == 502, response.text
+        assert "refused" in response.text
+
+    def test_refresh_and_cancel_mirror_the_provider(self, server, openai, admin_a):
+        _, account = openai
+        job = self.submit(server, admin_a, account["id"]).json()
+
+        refreshed = server.post(
+            f"/v1/tuning_job/{job['id']}/refresh", json={}, headers=auth(admin_a)
+        )
+        assert refreshed.status_code == 200, refreshed.text
+        found = refreshed.json()
+        assert found["status"] == "succeeded" and found["fine_tuned_model"] == TUNED
+        assert found["trained_tokens"] == 5768 and found["finished_at"]
+
+        stored = server.get(f"/v1/tuning_job/{job['id']}", headers=auth(admin_a))
+        assert stored.json()["tuning_job"]["fine_tuned_model"] == TUNED
+
+        cancelled = server.post(
+            f"/v1/tuning_job/{job['id']}/cancel", json={}, headers=auth(admin_a)
+        )
+        assert cancelled.status_code == 200, cancelled.text
+        assert cancelled.json()["status"] == "cancelled"
+
+    def test_events_checkpoints_and_the_accounts_jobs(self, server, openai, admin_a):
+        _, account = openai
+        job = self.submit(server, admin_a, account["id"]).json()
+
+        events = server.get(f"/v1/tuning_job/{job['id']}/events", headers=auth(admin_a))
+        assert events.status_code == 200, events.text
+        assert events.json()["data"][0]["message"].startswith("Fine tuning job")
+
+        checkpoints = server.get(
+            f"/v1/tuning_job/{job['id']}/checkpoints", headers=auth(admin_a)
+        )
+        assert checkpoints.status_code == 200, checkpoints.text
+        checkpoint = checkpoints.json()["data"][0]
+        assert checkpoint["model"] == f"{TUNED}:ckpt-step-2000"
+        assert checkpoint["step"] == 2000
+        assert checkpoint["metrics"]["full_valid_loss"] == 0.134
+
+        jobs = server.get(
+            f"/v1/tuning_job/account/{account['id']}/jobs", headers=auth(admin_a)
+        )
+        assert jobs.status_code == 200, jobs.text
+        assert jobs.json()["data"][0]["fine_tuned_model"] == TUNED
+
+    def test_a_job_is_its_owners_alone(self, server, openai, admin_a, admin_b):
+        upstream, account = openai
+        job = self.submit(server, admin_a, account["id"]).json()
+        made = len(upstream.requests)
+
+        assert (
+            server.get(f"/v1/tuning_job/{job['id']}", headers=auth(admin_b)).status_code
+            == 404
+        )
+        theirs = server.get("/v1/tuning_job", headers=auth(admin_b)).json()
+        assert job["id"] not in [row["id"] for row in theirs["tuning_jobs"]]
+        for action in ("refresh", "cancel"):
+            response = server.post(
+                f"/v1/tuning_job/{job['id']}/{action}", json={}, headers=auth(admin_b)
+            )
+            assert response.status_code == 404, response.text
+        events = server.get(f"/v1/tuning_job/{job['id']}/events", headers=auth(admin_b))
+        assert events.status_code == 404
+        assert len(upstream.requests) == made
+
+    def test_the_table_is_read_only_over_rest(self, server):
+        paths = server.app.openapi()["paths"]
+        writes = {
+            (method, path)
+            for path, operations in paths.items()
+            if path.startswith("/v1/tuning_job")
+            for method in operations
+            if method != "get"
         }
-        training_config = {"batch_size": 16, "num_epochs": 3}
-
-        result = await extension.create_tuning_job(
-            job_name="advanced_training",
-            model_type="computer_vision",
-            base_model="resnet50",
-            dataset_config=dataset_config,
-            training_config=training_config,
-        )
-
-        assert result["success"] is True
-        assert result["job"]["dataset_config"] == dataset_config
-        assert result["job"]["training_config"] == training_config
-
-    @pytest.mark.asyncio
-    async def test_create_tuning_job_invalid_data(self, extension):
-        """Test tuning job creation with invalid data"""
-        # Mock validation to return False
-        with patch.object(extension, "_validate_tuning_job_data", return_value=False):
-            result = await extension.create_tuning_job(
-                job_name="",  # Invalid empty name
-                model_type="",
-                base_model="",
-            )
-
-            assert result["success"] is False
-            assert "Invalid tuning job configuration" in result["message"]
-
-    @pytest.mark.asyncio
-    async def test_start_training_success(self, extension):
-        """Test successful training start"""
-        # First create a job
-        with patch("uuid.uuid4") as mock_uuid:
-            mock_uuid.return_value.__str__.return_value = "test-job-id"
-
-            await extension.create_tuning_job(
-                job_name="test_job",
-                model_type="transformers",
-                base_model="bert-base-uncased",
-            )
-
-            result = await extension.start_training(job_id="test-job-id")
-
-            assert result["success"] is True
-            assert result["job_id"] == "test-job-id"
-            assert "training_info" in result
-
-    @pytest.mark.asyncio
-    async def test_start_training_job_not_found(self, extension):
-        """Test training start with non-existent job"""
-        result = await extension.start_training(job_id="non-existent-job")
-
-        assert result["success"] is False
-        assert "Job not found" in result["message"]
-
-    @pytest.mark.asyncio
-    async def test_start_training_concurrent_limit(self, extension):
-        """Test training start with concurrent job limit"""
-        extension.max_concurrent_jobs = 1
-
-        # Create and start first job
-        with patch("uuid.uuid4") as mock_uuid:
-            mock_uuid.return_value.__str__.return_value = "job1"
-            await extension.create_tuning_job(
-                job_name="job1", model_type="transformers", base_model="bert"
-            )
-            await extension.start_training(job_id="job1")
-
-            # Create second job
-            mock_uuid.return_value.__str__.return_value = "job2"
-            await extension.create_tuning_job(
-                job_name="job2", model_type="transformers", base_model="bert"
-            )
-
-            # Try to start second job (should fail due to limit)
-            result = await extension.start_training(job_id="job2")
-
-            assert result["success"] is False
-            assert "Maximum concurrent jobs reached" in result["message"]
-
-    @pytest.mark.asyncio
-    async def test_pause_training_success(self, extension):
-        """Test successful training pause"""
-        # Create and start a job
-        with patch("uuid.uuid4") as mock_uuid:
-            mock_uuid.return_value.__str__.return_value = "test-job-id"
-
-            await extension.create_tuning_job(
-                job_name="test_job", model_type="transformers", base_model="bert"
-            )
-            await extension.start_training(job_id="test-job-id")
-
-            result = await extension.pause_training(job_id="test-job-id")
-
-            assert result["success"] is True
-            assert result["job_id"] == "test-job-id"
-            assert "checkpoint" in result
-
-    @pytest.mark.asyncio
-    async def test_pause_training_not_running(self, extension):
-        """Test pause training when job is not running"""
-        with patch("uuid.uuid4") as mock_uuid:
-            mock_uuid.return_value.__str__.return_value = "test-job-id"
-
-            await extension.create_tuning_job(
-                job_name="test_job", model_type="transformers", base_model="bert"
-            )
-
-            result = await extension.pause_training(job_id="test-job-id")
-
-            assert result["success"] is False
-            assert "not running" in result["message"]
-
-    @pytest.mark.asyncio
-    async def test_resume_training_success(self, extension):
-        """Test successful training resume"""
-        # Create, start, and pause a job
-        with patch("uuid.uuid4") as mock_uuid:
-            mock_uuid.return_value.__str__.return_value = "test-job-id"
-
-            await extension.create_tuning_job(
-                job_name="test_job", model_type="transformers", base_model="bert"
-            )
-            await extension.start_training(job_id="test-job-id")
-            await extension.pause_training(job_id="test-job-id")
-
-            result = await extension.resume_training(job_id="test-job-id")
-
-            assert result["success"] is True
-            assert result["job_id"] == "test-job-id"
-
-    @pytest.mark.asyncio
-    async def test_resume_training_not_paused(self, extension):
-        """Test resume training when job is not paused"""
-        with patch("uuid.uuid4") as mock_uuid:
-            mock_uuid.return_value.__str__.return_value = "test-job-id"
-
-            await extension.create_tuning_job(
-                job_name="test_job", model_type="transformers", base_model="bert"
-            )
-
-            result = await extension.resume_training(job_id="test-job-id")
-
-            assert result["success"] is False
-            assert "not paused" in result["message"]
-
-    @pytest.mark.asyncio
-    async def test_stop_training_success(self, extension):
-        """Test successful training stop"""
-        # Create and start a job
-        with patch("uuid.uuid4") as mock_uuid:
-            mock_uuid.return_value.__str__.return_value = "test-job-id"
-
-            await extension.create_tuning_job(
-                job_name="test_job", model_type="transformers", base_model="bert"
-            )
-            await extension.start_training(job_id="test-job-id")
-
-            result = await extension.stop_training(
-                job_id="test-job-id", save_checkpoint=True
-            )
-
-            assert result["success"] is True
-            assert result["job_id"] == "test-job-id"
-            assert "final_checkpoint" in result
-
-    @pytest.mark.asyncio
-    async def test_stop_training_no_checkpoint(self, extension):
-        """Test training stop without saving checkpoint"""
-        # Create and start a job
-        with patch("uuid.uuid4") as mock_uuid:
-            mock_uuid.return_value.__str__.return_value = "test-job-id"
-
-            await extension.create_tuning_job(
-                job_name="test_job", model_type="transformers", base_model="bert"
-            )
-            await extension.start_training(job_id="test-job-id")
-
-            result = await extension.stop_training(
-                job_id="test-job-id", save_checkpoint=False
-            )
-
-            assert result["success"] is True
-            assert result["final_checkpoint"] is None
-
-    @pytest.mark.asyncio
-    async def test_get_training_status_success(self, extension):
-        """Test getting training status"""
-        # Create a job
-        with patch("uuid.uuid4") as mock_uuid:
-            mock_uuid.return_value.__str__.return_value = "test-job-id"
-
-            await extension.create_tuning_job(
-                job_name="test_job", model_type="transformers", base_model="bert"
-            )
-
-            result = await extension.get_training_status(job_id="test-job-id")
-
-            assert result["success"] is True
-            assert "job" in result
-            assert result["job"]["status"] == "pending"
-
-    @pytest.mark.asyncio
-    async def test_get_training_status_with_metrics(self, extension):
-        """Test getting training status with metrics"""
-        # Create and start a job
-        with patch("uuid.uuid4") as mock_uuid:
-            mock_uuid.return_value.__str__.return_value = "test-job-id"
-
-            await extension.create_tuning_job(
-                job_name="test_job", model_type="transformers", base_model="bert"
-            )
-            await extension.start_training(job_id="test-job-id")
-
-            result = await extension.get_training_status(job_id="test-job-id")
-
-            assert result["success"] is True
-            assert "current_metrics" in result["job"]
-
-    @pytest.mark.asyncio
-    async def test_get_training_status_not_found(self, extension):
-        """Test getting status of non-existent job"""
-        result = await extension.get_training_status(job_id="non-existent")
-
-        assert result["success"] is False
-        assert "Job not found" in result["message"]
-
-    @pytest.mark.asyncio
-    async def test_optimize_hyperparameters_success(self, mock_optuna_available):
-        """Test successful hyperparameter optimization"""
-        extension = EXT_AI_Tuning()
-
-        base_config = {"model_type": "transformers", "base_model": "bert"}
-        search_space = {"learning_rate": [0.0001, 0.01], "batch_size": [8, 32]}
-
-        result = await extension.optimize_hyperparameters(
-            base_job_config=base_config,
-            search_space=search_space,
-            n_trials=5,
-        )
-
-        assert result["success"] is True
-        assert "study_id" in result
-        assert "optimization_config" in result
-
-    @pytest.mark.asyncio
-    async def test_optimize_hyperparameters_no_optuna(self, extension):
-        """Test hyperparameter optimization without Optuna"""
-        with patch.dict("sys.modules", {"optuna": None}):
-            result = await extension.optimize_hyperparameters(
-                base_job_config={},
-                search_space={},
-            )
-
-            assert result["success"] is False
-            assert "Optuna not available" in result["message"]
-
-    @pytest.mark.asyncio
-    async def test_evaluate_model_success(self, extension):
-        """Test successful model evaluation"""
-        result = await extension.evaluate_model(
-            model_path="/models/test_model",
-            evaluation_dataset="test_dataset",
-            metrics=["accuracy", "f1_score"],
-            batch_size=16,
-        )
-
-        assert result["success"] is True
-        assert "evaluation_id" in result
-        assert "config" in result
-        assert "result" in result
-
-    @pytest.mark.asyncio
-    async def test_evaluate_model_default_metrics(self, extension):
-        """Test model evaluation with default metrics"""
-        result = await extension.evaluate_model(
-            model_path="/models/test_model",
-            evaluation_dataset="test_dataset",
-        )
-
-        assert result["success"] is True
-        assert result["config"]["metrics"] == ["accuracy", "loss", "f1_score"]
-
-    def test_validate_tuning_job_data_dict_valid(self, extension):
-        """Test tuning job data validation with valid dictionary"""
-        job_data = {
-            "job_name": "test_job",
-            "model_type": "transformers",
-            "base_model": "bert-base-uncased",
+        assert writes == {
+            ("post", "/v1/tuning_job/search"),
+            ("post", "/v1/tuning_job/submit"),
+            ("post", "/v1/tuning_job/{job_id}/refresh"),
+            ("post", "/v1/tuning_job/{job_id}/cancel"),
         }
-        result = extension._validate_tuning_job_data(job_data)
-        assert result is True
 
-    def test_validate_tuning_job_data_dict_invalid(self, extension):
-        """Test tuning job data validation with invalid dictionary"""
-        job_data = {"job_name": "test_job"}  # Missing required fields
-        result = extension._validate_tuning_job_data(job_data)
-        assert result is False
+    def _fields(self, account_id: str) -> Dict[str, Any]:
+        from datetime import UTC, datetime
 
-    def test_validate_tuning_job_data_object_valid(self, extension):
-        """Test tuning job data validation with valid object"""
-        job_data = MagicMock()
-        job_data.job_name = "test_job"
-        job_data.model_type = "transformers"
-
-        result = extension._validate_tuning_job_data(job_data)
-        assert result is True
-
-    def test_validate_config_all_libraries_available(self):
-        """Test configuration validation when all libraries are available"""
-        mock_libs = {
-            "torch": MagicMock(),
-            "transformers": MagicMock(),
-            "datasets": MagicMock(),
+        return {
+            "provider": "openai_fine_tuning",
+            "provider_instance_id": account_id,
+            "provider_job_id": f"ftjob-{uuid.uuid4().hex}",
+            "base_model": "gpt-4o-mini-2024-07-18",
+            "status": "queued",
+            "refreshed_at": datetime.now(UTC),
         }
-        mock_libs["torch"].cuda.is_available.return_value = True
 
-        with patch.dict("sys.modules", mock_libs):
-            extension = EXT_AI_Tuning()
-            issues = extension.validate_config()
+    def test_the_owner_is_the_requester(self, server, openai, admin_a, admin_b):
+        _, account = openai
+        registry = server.app.state.model_registry
+        jobs = TuningJobManager(model_registry=registry, requester_id=admin_b.id)
+        named = jobs.create(**self._fields(account["id"]), user_id=admin_a.id)
+        assert named.user_id == admin_b.id
+        batch = jobs.create(
+            entities=[
+                {**self._fields(account["id"]), "user_id": admin_a.id},
+                self._fields(account["id"]),
+            ]
+        )
+        assert [job.user_id for job in batch] == [admin_b.id, admin_b.id]
 
-            assert len(issues) == 0
+        as_root = TuningJobManager(model_registry=registry, requester_id=env("ROOT_ID"))
+        assert (
+            as_root.create(**self._fields(account["id"]), user_id=admin_a.id).user_id
+            == admin_a.id
+        )
 
-    def test_validate_config_missing_torch(self):
-        """Test configuration validation with missing PyTorch"""
-        with patch.dict("sys.modules", {"torch": None}):
-            extension = EXT_AI_Tuning()
-            issues = extension.validate_config()
+    def test_an_update_never_moves_the_owner(self, server, openai, admin_a, admin_b):
+        _, account = openai
+        registry = server.app.state.model_registry
+        jobs = TuningJobManager(model_registry=registry, requester_id=admin_a.id)
+        job = jobs.create(**self._fields(account["id"]))
+        moved = jobs.update(job.id, user_id=admin_b.id, status="running")
+        assert moved.user_id == admin_a.id and moved.status == "running"
 
-            assert len(issues) >= 1
-            issue_text = " ".join(issues).lower()
-            assert "pytorch" in issue_text or "torch" in issue_text
+    # The abilities.
 
-    def test_validate_config_no_cuda(self):
-        """Test configuration validation without CUDA"""
-        mock_torch = MagicMock()
-        mock_torch.cuda.is_available.return_value = False
+    async def test_abilities_act_for_the_requester(
+        self, server, openai, admin_a, admin_b
+    ):
+        _, account = openai
+        made = await EXT_AI_Tuning.create_tuning_job(
+            admin_a.id, account["id"], "gpt-4o-mini-2024-07-18", DATASET
+        )
+        assert made["user_id"] == admin_a.id
+        listed = await EXT_AI_Tuning.list_tuning_jobs(admin_a.id)
+        assert made["id"] in [job["id"] for job in listed]
+        refreshed = await EXT_AI_Tuning.refresh_tuning_job(admin_a.id, made["id"])
+        assert refreshed["fine_tuned_model"] == TUNED
+        checkpoints = await EXT_AI_Tuning.tuning_job_checkpoints(admin_a.id, made["id"])
+        assert checkpoints["data"][0]["step"] == 2000
+        events = await EXT_AI_Tuning.tuning_job_events(admin_a.id, made["id"])
+        assert len(events["data"]) == 2
+        jobs = await EXT_AI_Tuning.list_provider_tuning_jobs(admin_a.id, account["id"])
+        assert jobs["data"][0]["provider_job_id"] == JOB_ID
 
-        with patch.dict("sys.modules", {"torch": mock_torch}):
-            extension = EXT_AI_Tuning()
-            issues = extension.validate_config()
+        with pytest.raises(HTTPException) as raised:
+            await EXT_AI_Tuning.get_tuning_job(admin_b.id, made["id"])
+        assert raised.value.status_code == 404
+        with pytest.raises(HTTPException) as raised:
+            await EXT_AI_Tuning.create_tuning_job(
+                admin_b.id, account["id"], "gpt-4o-mini-2024-07-18", DATASET
+            )
+        assert raised.value.status_code == 404
 
-            assert any("CUDA not available" in issue for issue in issues)
+    async def test_abilities_need_a_requester(self, server):
+        with pytest.raises(HTTPException) as raised:
+            await EXT_AI_Tuning.list_tuning_jobs("")
+        assert raised.value.status_code == 400
 
-    def test_get_required_permissions(self, extension):
-        """Test getting required permissions"""
-        permissions = extension.get_required_permissions()
+    # Real OpenAI.
 
-        assert isinstance(permissions, list)
-        assert len(permissions) == 9
-        assert "tuning:create" in permissions
-        assert "tuning:start" in permissions
-        assert "models:evaluate" in permissions
-        assert "checkpoints:create" in permissions
+    async def test_openai_refuses_a_bogus_key(self, server, account, admin_a):
+        if not _online("https://api.openai.com"):
+            pytest.xfail("https://api.openai.com is unreachable")
+        bogus = account(admin_a, api_key=BOGUS)
+        with pytest.raises(AuthExternalError):
+            await PRV_OpenAI_Tuning.list_jobs(
+                self.instance(server, bogus["id"]), None, 1
+            )
 
-    def test_on_start_success(self):
-        """Test successful extension start"""
-        extension = EXT_AI_Tuning(auto_resume_training=False)
-        result = extension.on_start()
-
-        assert result is True
-
-    def test_on_start_with_auto_resume(self):
-        """Test extension start with auto-resume enabled"""
-        extension = EXT_AI_Tuning(auto_resume_training=True)
-        with patch.object(extension, "_resume_training_jobs") as mock_resume:
-            result = extension.on_start()
-
-            assert result is True
-            mock_resume.assert_called_once()
-
-    def test_on_stop_success(self, extension):
-        """Test successful extension stop"""
-        # Add some jobs
-        extension.active_jobs["job1"] = {"status": "running"}
-        extension.active_jobs["job2"] = {"status": "pending"}
-        extension.training_metrics["job1"] = {"loss": 0.5}
-
-        result = extension.on_stop()
-
-        assert result is True
-        assert len(extension.active_jobs) == 0
-        assert len(extension.training_metrics) == 0
-
-    def test_has_capability(self, extension):
-        """Test capability checking"""
-        assert extension.has_capability("model_fine_tuning") is True
-        assert extension.has_capability("hyperparameter_optimization") is True
-        assert extension.has_capability("non_existent_capability") is False
-
-    def test_get_active_jobs(self, extension):
-        """Test getting active jobs"""
-        extension.active_jobs["job1"] = {"name": "test_job1"}
-        extension.active_jobs["job2"] = {"name": "test_job2"}
-
-        active = extension.get_active_jobs()
-
-        assert isinstance(active, dict)
-        assert len(active) == 2
-        assert "job1" in active
-        assert "job2" in active
-
-    def test_get_training_metrics(self, extension):
-        """Test getting training metrics for a job"""
-        extension.training_metrics["job1"] = {"loss": 0.5, "accuracy": 0.85}
-
-        metrics = extension.get_training_metrics("job1")
-        assert metrics == {"loss": 0.5, "accuracy": 0.85}
-
-        metrics_none = extension.get_training_metrics("nonexistent")
-        assert metrics_none is None
-
-    def test_get_model_registry(self, extension):
-        """Test getting model registry"""
-        registry = extension.get_model_registry()
-
-        assert isinstance(registry, dict)
-        assert "active_models" in registry
-        assert "completed_models" in registry
-        assert "failed_models" in registry
-
-    def test_abilities_discovery(self):
-        """Test that all expected abilities are registered on the extension class.
-
-        Abilities are discovered from ``@ability``-decorated methods at class
-        definition time (``AbstractStaticExtension.__init_subclass__`` ->
-        ``_discover_static_abilities_with_validation``) and exposed via the
-        ``abilities`` classproperty — there is no per-instance ``abilities``
-        dict or ``execute_ability()`` dispatcher in the current framework.
-        """
-        for expected_ability in self.expected_abilities:
-            assert expected_ability in EXT_AI_Tuning.abilities
-
-    def test_tuning_hooks_registration(self, extension):
-        """Registering tuning hooks should not raise.
-
-        Validation/tracking now run inline from ``create_tuning_job`` and
-        ``start_training`` (see ``_register_tuning_hooks`` docstring) rather
-        than through a hook-factory indirection layer.
-        """
-        extension._register_tuning_hooks()
-
-    def test_lifecycle_methods_integration(self, extension):
-        """Test integration of lifecycle methods"""
-        # Test startup
-        extension.on_startup()
-
-        # Test shutdown
-        extension.on_shutdown()
-
-        # These methods should not raise exceptions
-
-    @pytest.mark.asyncio
-    async def test_create_checkpoint_success(self, extension):
-        """Test checkpoint creation"""
-        # Setup training metrics
-        extension.training_metrics["job1"] = {"step": 100, "epoch": 2}
-
-        checkpoint = await extension._create_checkpoint("job1")
-
-        assert "checkpoint_id" in checkpoint
-        assert checkpoint["job_id"] == "job1"
-        assert checkpoint["step"] == 100
-        assert checkpoint["epoch"] == 2
-
-    @pytest.mark.asyncio
-    async def test_start_training_process_success(self, extension):
-        """Test internal training process start"""
-        job_data = {"job_name": "test", "model_type": "transformers"}
-
-        result = await extension._start_training_process("job1", job_data)
-
-        assert "process_id" in result
-        assert "started_at" in result
-        assert "job1" in extension.training_metrics
-
-    @pytest.mark.asyncio
-    async def test_run_hyperparameter_optimization(self, extension):
-        """Test hyperparameter optimization execution"""
-        config = {"n_trials": 5, "objective": "loss"}
-
-        result = await extension._run_hyperparameter_optimization("study1", config)
-
-        assert "best_params" in result
-        assert "best_value" in result
-        assert "trials_completed" in result
-
-    @pytest.mark.asyncio
-    async def test_run_model_evaluation(self, extension):
-        """Test model evaluation execution"""
-        config = {"model_path": "/model", "metrics": ["accuracy"]}
-
-        result = await extension._run_model_evaluation("eval1", config)
-
-        assert "metrics" in result
-        assert "evaluation_time_minutes" in result
-        assert "samples_evaluated" in result
-
-    def test_distributed_training_setup(self, mock_torch_available):
-        """Test distributed training setup"""
-        # Mock distributed module
-        mock_dist = MagicMock()
-        with patch.dict("sys.modules", {"torch.distributed": mock_dist}):
-            extension = EXT_AI_Tuning()
-            extension.gpu_count = 2
-            extension._setup_distributed_training()
-
-            # Should not raise exceptions
-
-    def test_model_registry_initialization(self, extension):
-        """Test model registry initialization"""
-        extension._initialize_model_registry()
-
-        assert "active_models" in extension.model_registry
-        assert "completed_models" in extension.model_registry
-        assert "failed_models" in extension.model_registry
-
-
-if __name__ == "__main__":
-    pytest.main([__file__])
+    @pytest.mark.external_api(provider="openai_fine_tuning")
+    async def test_live_jobs_and_events(
+        self, server, account, admin_a, sandbox_credentials_for
+    ):
+        """Read-only: the account's jobs, and the newest job's events."""
+        key = sandbox_credentials_for("openai_fine_tuning")["OPENAI_API_KEY"]
+        live = self.instance(server, account(admin_a, api_key=key)["id"])
+        page = await PRV_OpenAI_Tuning.list_jobs(live, None, 1)
+        assert isinstance(page["has_more"], bool)
+        for job in page["data"]:
+            events = await PRV_OpenAI_Tuning.job_events(
+                live, job["provider_job_id"], None, 1
+            )
+            assert isinstance(events["data"], list)
