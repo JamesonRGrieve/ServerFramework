@@ -1235,12 +1235,12 @@ class UserManager(AbstractBLLManager, RouterMixin):
             ],
         )
 
-        if not credentials or not credentials[0].password_hash:
+        if not credentials or not credentials[0]["password_hash"]:
             return False
 
         try:
             return bcrypt.checkpw(
-                password.encode(), credentials[0].password_hash.encode()
+                password.encode(), credentials[0]["password_hash"].encode()
             )
         except Exception:
             return False

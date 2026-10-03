@@ -262,10 +262,18 @@ logger.level("VERBOSE", no=5, color="<blue>")
 logger.level("SQL", no=3, color="<magenta>")
 
 _log_format_setting = env("LOG_FORMAT")
+# diagnose=False: a traceback never prints its frames' local variables,
+# which hold passwords, hashes and tokens.
 if _log_format_setting.lower() == "json":
-    logger.add(sys.stdout, level=log_level, filter=format_with_timezone, serialize=True)
+    logger.add(
+        sys.stdout,
+        level=log_level,
+        filter=format_with_timezone,
+        serialize=True,
+        diagnose=False,
+    )
 else:
-    logger.add(sys.stdout, level=log_level, filter=format_with_timezone)
+    logger.add(sys.stdout, level=log_level, filter=format_with_timezone, diagnose=False)
 
 
 # ---------------------------------------------------------------------------

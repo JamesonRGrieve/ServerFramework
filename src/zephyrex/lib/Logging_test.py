@@ -153,3 +153,37 @@ class TestStdlibCallingConventions:
     def test_percent_arguments_are_still_redacted(self, captured_records):
         logger.info("login with password=%s", "CANARY-PW-424242")
         assert "CANARY-PW-424242" not in captured_records[-1]["message"]
+
+
+_LOG_A_FAILURE_WITH_A_SECRET_LOCAL = """
+from zephyrex.lib.Logging import logger
+
+def check(password):
+    raise ValueError("bad credentials")
+
+try:
+    check("CANARY-LOCAL-737373")
+except ValueError:
+    logger.exception("login failed")
+"""
+
+
+@pytest.mark.security
+@pytest.mark.parametrize("log_format", ["text", "json"])
+def test_a_traceback_never_prints_frame_locals(log_format):
+    """loguru's default ``diagnose=True`` annotates each traceback frame with
+    its local variables, which printed a user's password and bcrypt hash."""
+    import os
+    import subprocess
+    from pathlib import Path
+
+    src = Path(__file__).resolve().parents[2]
+    result = subprocess.run(
+        [sys.executable, "-c", _LOG_A_FAILURE_WITH_A_SECRET_LOCAL],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env={**os.environ, "PYTHONPATH": str(src), "LOG_FORMAT": log_format},
+    )
+    assert "login failed" in result.stdout
+    assert "CANARY-LOCAL-737373" not in result.stdout + result.stderr

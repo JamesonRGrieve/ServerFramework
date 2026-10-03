@@ -2917,6 +2917,24 @@ class TestUserCredentialManager(AbstractBLLTest):
         ParentEntity(name="user", foreign_key="user_id", test_class=TestUserManager),
     ]
 
+    def test_verify_password(self, server, model_registry):
+        """The current password verifies and another does not (credential
+        rows come back as dicts, which the check once read as attributes)."""
+        from zephyrex.logic.BLL_Auth import UserManager
+
+        user = UserManager.register(
+            {
+                "email": f"verify_{uuid.uuid4().hex[:8]}@example.com",
+                "username": f"verify_{uuid.uuid4().hex[:8]}",
+                "display_name": "Verify Password User",
+                "password": "VerifyPassword123!",
+            },
+            model_registry,
+        )
+        manager = UserManager(requester_id=user.id, model_registry=model_registry)
+        assert manager.verify_password(user.id, "VerifyPassword123!") is True
+        assert manager.verify_password(user.id, "WrongPassword123!") is False
+
     def test_change_password(self, admin_a, team_a, server, model_registry):
         """Test changing a user's password and verify changed_at is updated correctly."""
         self.server = server
