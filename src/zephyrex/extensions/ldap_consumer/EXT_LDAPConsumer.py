@@ -1,75 +1,103 @@
-"""LDAP consumer extension manifest.
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""Sign in to this server with directory credentials: OpenLDAP, Active
+Directory, FreeIPA (see BLL_LDAPConsumer for the flow, LDAPClient for the
+protocol).
 
-Authenticate local users against an external LDAP or Active Directory server.
-Binds with the user's credentials (or a service account for search-then-bind)
-and resolves group memberships for role mapping.
+The abilities are the administrator's: they list the configured
+directories, check one is reachable, and look a person up in one, acting
+as the server (directories are its configuration, not a user's).
 
-The complementary ``ldap_provider`` extension implements the *server* side
-(this server exposes an LDAP-compatible interface for third-party consumers).
-"""
+The complementary ``ldap_provider`` extension is the other side: this
+server answering LDAP for third-party consumers."""
 
+import asyncio
 from typing import Any, ClassVar, Dict, List, Set
 
-from zephyrex.extensions.AbstractExtensionProvider import AbstractStaticExtension
-from zephyrex.lib.Dependencies import Dependencies, PIP_Dependency
-from zephyrex.lib.Logging import logger
+from zephyrex.extensions.AbstractExtensionProvider import (
+    AbstractStaticExtension,
+    ability,
+)
+from zephyrex.extensions.ldap_consumer.BLL_LDAPConsumer import (
+    LdapLoginManager,
+    client_for,
+)
+from zephyrex.extensions.ldap_consumer.LDAPClient import ALLOW_PLAINTEXT_LOOPBACK
+from zephyrex.lib.Dependencies import Dependencies, EXT_Dependency, PIP_Dependency
+from zephyrex.lib.Environment import env
 
 
 class EXT_LDAPConsumer(AbstractStaticExtension):
     name: ClassVar[str] = "ldap_consumer"
-    version: ClassVar[str] = "1.0.0"
+    version: ClassVar[str] = "2.0.0"
     description: ClassVar[str] = (
-        "Authenticate users against an external LDAP/Active Directory server."
+        "Sign in with directory credentials (OpenLDAP, Active Directory, FreeIPA)"
     )
 
-    _env: ClassVar[Dict[str, Any]] = {
-        "LDAP_CONSUMER_HOST": "",
-        "LDAP_CONSUMER_PORT": "389",
-        "LDAP_CONSUMER_USE_SSL": "false",
-        "LDAP_CONSUMER_USE_STARTTLS": "false",
-        "LDAP_CONSUMER_BIND_DN": "",
-        "LDAP_CONSUMER_BIND_PASSWORD": "",
-        "LDAP_CONSUMER_BASE_DN": "",
-        "LDAP_CONSUMER_USER_SEARCH_FILTER": "(uid={username})",
-        "LDAP_CONSUMER_GROUP_SEARCH_BASE": "",
-        "LDAP_CONSUMER_GROUP_SEARCH_FILTER": "(member={dn})",
-        "LDAP_CONSUMER_TIMEOUT_SECONDS": "10",
-    }
-
+    _env: ClassVar[Dict[str, Any]] = {ALLOW_PLAINTEXT_LOOPBACK: "false"}
     dependencies: ClassVar[Dependencies] = Dependencies(
         [
             PIP_Dependency(
                 name="ldap3",
-                friendly_name="LDAP v3 client library",
-                semver=">=2.9.0",
-                reason="LDAP bind and search against external directory servers",
+                friendly_name="ldap3",
+                semver=">=2.9.1",
+                reason="LDAP search and bind against the directory",
+            ),
+            EXT_Dependency(
+                name="auth_session",
+                friendly_name="Sessions",
+                reason="A directory sign-in issues a revocable session",
+            ),
+            EXT_Dependency(
+                name="auth_lockout",
+                friendly_name="Account lockout",
+                optional=True,
+                reason="Failed directory sign-ins count toward a user's lockout",
             ),
         ]
     )
-
     _abilities: ClassVar[Set[str]] = {
-        "ldap_consumer_authenticate",
-        "ldap_consumer_search",
+        "list_ldap_directories",
+        "check_ldap_directory",
+        "find_ldap_account",
     }
-    _providers: ClassVar[List] = []
-    extension_dependencies: ClassVar[List[str]] = ["auth_session"]
 
     @classmethod
-    def on_initialize(cls) -> bool:
-        from zephyrex.extensions.ldap_consumer import (  # noqa: F401
-            BLL_LDAPConsumer,
-        )
-
-        logger.debug("ldap_consumer initialized")
-        return True
+    def _registry(cls) -> Any:
+        manager = cls.as_requester(LdapLoginManager, env("ROOT_ID"))
+        return manager.model_registry
 
     @classmethod
-    def validate_config(cls) -> List[str]:
-        from zephyrex.lib.Environment import env as _env
+    @ability("list_ldap_directories")
+    async def list_ldap_directories(cls) -> List[Dict[str, Any]]:
+        """The enabled directories: id, name, host and how each is secured."""
+        manager = cls.as_requester(LdapLoginManager, env("ROOT_ID"))
+        return [
+            {"id": d.id, "name": d.name, "host": d.host, "security": d.security}
+            for d in manager.enabled_directories()
+        ]
 
-        issues: List[str] = []
-        if not _env("LDAP_CONSUMER_HOST"):
-            issues.append("LDAP_CONSUMER_HOST is unset; LDAP authentication will fail")
-        if not _env("LDAP_CONSUMER_BASE_DN"):
-            issues.append("LDAP_CONSUMER_BASE_DN is unset; user search will fail")
-        return issues
+    @classmethod
+    @ability("check_ldap_directory")
+    async def check_ldap_directory(cls, directory_id: str) -> Dict[str, Any]:
+        """Reach the directory securely and bind as its service account."""
+        client = client_for(cls._registry(), directory_id)
+        await asyncio.to_thread(client.check)
+        return {"reachable": True, "security": client.settings.security}
+
+    @classmethod
+    @ability("find_ldap_account")
+    async def find_ldap_account(
+        cls, directory_id: str, username: str
+    ) -> Dict[str, Any]:
+        """The person ``username`` names in the directory: DN, stable id,
+        email, display name and groups."""
+        client = client_for(cls._registry(), directory_id)
+        account = await asyncio.to_thread(client.find, username)
+        return {
+            "dn": account.dn,
+            "external_id": account.external_id,
+            "username": account.username,
+            "email": account.email,
+            "display_name": account.display_name,
+            "groups": list(account.groups),
+        }

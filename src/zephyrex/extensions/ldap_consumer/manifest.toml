@@ -5,15 +5,19 @@
 # Manifest_parity_test keeps the two in step.
 
 name = "ldap_consumer"
-version = "1.0.0"
-description = "Authenticate users against an external LDAP/Active Directory server."
+version = "2.0.0"
+description = "Sign in with directory credentials (OpenLDAP, Active Directory, FreeIPA)"
 author = "ZephyrexTechnologies"
 entry_module = "EXT_LDAPConsumer"
 minimum_framework_version = "0.0.0"
 
-pip_dependencies = []
+pip_dependencies = ["ldap3>=2.9.1"]
 system_dependencies = []
 
 [[extension_dependencies]]
 name = "auth_session"
 optional = false
+
+[[extension_dependencies]]
+name = "auth_lockout"
+optional = true
