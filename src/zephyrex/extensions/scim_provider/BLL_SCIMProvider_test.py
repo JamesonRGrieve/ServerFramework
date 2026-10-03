@@ -9,6 +9,7 @@ import uuid
 from typing import Any, Callable, Dict, Iterator, List
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from zephyrex.extensions.AbstractEXTTest import ExtensionServerMixin
@@ -109,8 +110,8 @@ class TestRoutes(ExtensionServerMixin):
         self, server, admin_a, admin_b, team_a, users_target
     ):
         """A user's target gets the owner and the members of the owner's
-        teams, and no one else: not a user the framework lets the owner
-        read (any user can read a user record), who shares no team."""
+        teams, and no one else: not a user who shares no team with the
+        owner."""
         provider, instance = users_target
         teammate = create_user(server, email=generate_test_email("teammate"))
         add_user_to_team(server, teammate.id, team_a.id, env("USER_ROLE_ID"))
@@ -136,11 +137,14 @@ class TestRoutes(ExtensionServerMixin):
         assert provider.by_name("Users", admin_b.email) == []
         assert provider.by_name("Users", hidden) == []
         assert provider.by_name("Groups", team_a.name)
-        # The framework itself lets admin_a read that user; the target
-        # still does not get it.
-        assert UserManager(
-            model_registry=server.app.state.model_registry, requester_id=admin_a.id
-        ).get(id=made.id)
+        # This used to assert admin_a could read that user: the framework let
+        # any user read every user record (the hole User_visibility_test
+        # covers). A user who shares no team with admin_a is now a 404.
+        with pytest.raises(HTTPException) as refused:
+            UserManager(
+                model_registry=server.app.state.model_registry, requester_id=admin_a.id
+            ).get(id=made.id)
+        assert refused.value.status_code == 404
         assert provider.violations == []
 
         mine = server.get("/v1/scim_link", headers=auth(admin_a)).json()["scim_links"]

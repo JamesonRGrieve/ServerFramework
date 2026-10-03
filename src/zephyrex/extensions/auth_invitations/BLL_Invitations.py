@@ -421,8 +421,10 @@ class InvitationManager(AbstractBLLManager, RouterMixin):
                     raise HTTPException(
                         status_code=400, detail=f"user {user_id} already invited"
                     )
+            # The invitee is usually someone the inviter shares no team with,
+            # so cannot read: the server addresses the invitation to them.
             user_manager = UserManager(
-                requester_id=self.requester.id,
+                requester_id=env("ROOT_ID"),
                 target_id=user_id,
                 model_registry=self.model_registry,
             )
@@ -433,7 +435,13 @@ class InvitationManager(AbstractBLLManager, RouterMixin):
             # The row the invited user answers with (PATCH takes an invitee
             # id or a code, and a direct invitation may have no code).
             self._add_invitee(invitation, user.email)
-            invitation.user = user
+            # The inviter is shown the invitee's record only if they could
+            # read it anyway.
+            readable = UserManager(
+                requester_id=self.requester.id, model_registry=self.model_registry
+            ).list(id=user.id)
+            if readable:
+                invitation.user = readable[0]
         return invitation
 
     @staticmethod
@@ -453,8 +461,10 @@ class InvitationManager(AbstractBLLManager, RouterMixin):
         invitation itself so ``create`` need not re-read what it just wrote
         (a creator may not be able to read a team's invitations)."""
         invitation_id = invitation.id
+        # Which account an address belongs to is the server's to resolve:
+        # the inviter can read only the users they share a team with.
         user_manager = UserManager(
-            requester_id=self.requester.id, model_registry=self.model_registry
+            requester_id=env("ROOT_ID"), model_registry=self.model_registry
         )
         user_id = None
         try:

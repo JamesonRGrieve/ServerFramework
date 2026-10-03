@@ -4,9 +4,9 @@
 A target is a ``scim_target`` provider instance. What it is given is read
 through the framework's managers *as the instance's owner*: a root (or
 system) instance pushes every user and team; any other owner's instance
-only the owner, the owner's teams (with their sub-teams) and their
-members, since the framework lets every user read any user record and a
-target is an export to a third party. A ``team_id`` setting narrows it to
+only the owner, the owner's teams (with their sub-teams) and those of
+their members the owner can read, since a target is an export to a third
+party. A ``team_id`` setting narrows it to
 that team, its sub-teams, and their members.
 
 Each local record a target knows of has a link (``ScimLinkModel``): the
@@ -337,9 +337,8 @@ class SCIMSync:
 
         A root (or system) target is given every team, or the ``team_id``
         team. Any other owner's target is bounded by the owner's own
-        teams, whatever else the framework lets the owner read (every
-        user can read any user record): it is given those teams, or the
-        ``team_id`` team only where it lies within them."""
+        teams: it is given those teams, or the ``team_id`` team only where
+        it lies within them."""
         if self.unrestricted and not self.scope_team_id:
             return None
         if self._scope_teams is None:

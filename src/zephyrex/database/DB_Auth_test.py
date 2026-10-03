@@ -74,10 +74,13 @@ class TestUser(AbstractDBTest):
             id=user_id,
         )
 
-    def test_real_accounts_visible_without_shared_team(self, server, model_registry):
-        """Every real account is VIEW-visible to an authenticated user, even
-        with no shared team, so identifiers surfaced through related entities
-        resolve (StaticPermissions' users-table rule)."""
+    def test_real_accounts_invisible_without_shared_team(self, server, model_registry):
+        """A user who shares no team with the requester is a 404.
+
+        This test used to assert the opposite (every real account VIEW-visible
+        to any authenticated user), which was the hole that let any user read
+        the whole directory; see User_visibility_test. Server-side lookups of
+        an arbitrary account run as ROOT or SYSTEM."""
         self._server = server
         self.model_registry = model_registry
         self.ensure_model(server)
@@ -85,9 +88,9 @@ class TestUser(AbstractDBTest):
         create_team(server, team_user.id, name="Permission Test Team")
         isolated_user = create_user(server, email=generate_test_email("perm_isolated"))
 
-        retrieved = self._get_user_as(team_user.id, isolated_user.id)
-        assert retrieved is not None, "Real account is not visible for VIEW"
-        assert retrieved["id"] == isolated_user.id, "Retrieved wrong user"
+        with pytest.raises(HTTPException) as denied:
+            self._get_user_as(team_user.id, isolated_user.id)
+        assert denied.value.status_code == 404
 
     @pytest.mark.parametrize("system_id_var", ["ROOT_ID", "SYSTEM_ID", "TEMPLATE_ID"])
     def test_system_accounts_are_not_visible(

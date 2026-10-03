@@ -46,6 +46,7 @@ from zephyrex.logic.BLL_Auth._shared import _mfa_sources
 from zephyrex.testing.factories import (
     INTERNAL_ACCOUNTS,
     TEST_PASSWORD,
+    add_user_to_team,
     create_user,
     generate_test_email,
     internal_account_email,
@@ -196,6 +197,32 @@ class TestUserManager(AbstractBLLTest):
             admin_a.id,
             model_registry=model_registry,
         )
+
+    def _create_teammate(self, admin_a, team_a, server, model_registry, key):
+        """A newly registered user who joins team_a: a requester reads only
+        the users they share a live team with (User_visibility_test)."""
+        user = self._create(
+            admin_a.id, team_a.id, key, server=server, model_registry=model_registry
+        )
+        add_user_to_team(server, user.id, team_a.id, env("USER_ROLE_ID"))
+        return user
+
+    # The inherited get/list read a freshly registered stranger as admin_a,
+    # which only worked while every user could read every user record.
+    def test_get(self, admin_a, team_a, server, model_registry):
+        self.server = server
+        self.model_registry = model_registry
+        self._create_teammate(admin_a, team_a, server, model_registry, "get")
+        self._get(admin_a.id, team_a.id, model_registry=model_registry)
+        self._get_assert("get_result")
+
+    def test_list(self, admin_a, team_a, server, model_registry):
+        self.server = server
+        self.model_registry = model_registry
+        for key in ("list_1", "list_2", "list_3"):
+            self._create_teammate(admin_a, team_a, server, model_registry, key)
+        self._list(admin_a.id, team_a.id, model_registry=model_registry)
+        self._list_assert("list_result")
 
     # User records self-set ``created_by_user_id`` to the new user's id (see
     # AbstractDatabaseEntity.create), so admin_a has no permission claim on

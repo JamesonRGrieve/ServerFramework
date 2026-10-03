@@ -236,8 +236,14 @@ Some models override default permission behavior:
 
 **User Model:**
 - Users can always see their own records
-- Can see other users in teams they have access to
-- Special handling for system user records
+- Can see the users they share a live team with: both memberships enabled,
+  unexpired and not deleted, in a team that is not deleted. The requester's
+  side reaches up through parent teams, as for team-scoped records; a pending
+  invitation is not a shared team
+- An explicit Permission row on the user grants view
+- ROOT and SYSTEM see everyone; anyone else is a 404 and absent from list and
+  search, so server-side lookups of arbitrary accounts (login, registration,
+  invitation acceptance, external sign-in) run as ROOT or SYSTEM
 
 **Permission Model:**
 - Requires SHARE permission on target resource to manage permissions

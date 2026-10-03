@@ -969,6 +969,7 @@ def _get_admin_accessible_team_ids_cte(
     declarative_base,
     max_depth: int = 5,
     unique_suffix: str = "",
+    memberships_only: bool = False,
 ) -> CTE:
     """
     Generates a recursive CTE to find all team IDs accessible by a user,
@@ -980,6 +981,9 @@ def _get_admin_accessible_team_ids_cte(
         declarative_base: The declarative base to use for accessing SQLAlchemy models
         max_depth: Maximum depth for recursion (default: 5)
         unique_suffix: Optional suffix to make CTE name unique (default: "")
+        memberships_only: Only the user's live memberships count, and only in
+            teams that are not deleted (the walk to parents stops at a deleted
+            one); a pending invitation is not a membership.
 
     Returns:
         CTE: Common table expression with accessible team IDs
@@ -1002,7 +1006,7 @@ def _get_admin_accessible_team_ids_cte(
     # Create a unique CTE name using the suffix if provided
     cte_name = f"admin_accessible_teams_cte{unique_suffix}"
 
-    base_selects = [
+    membership_select = (
         select(
             user_team_db_cls.team_id.label("id"),
             user_team_db_cls.role_id.label("role_id"),
@@ -1011,7 +1015,13 @@ def _get_admin_accessible_team_ids_cte(
         .where(user_team_db_cls.user_id == user_id)
         .where(user_team_db_cls.enabled == True)
         .where(_active(user_team_db_cls))
-    ]
+    )
+    if memberships_only:
+        live_team_ids = select(team_db_cls.id).where(team_db_cls.deleted_at.is_(None))
+        membership_select = membership_select.where(
+            user_team_db_cls.team_id.in_(live_team_ids)
+        )
+    base_selects = [membership_select]
 
     # Invitations that target the user directly should also expose the team
     # hierarchy. The invitation entity is owned by the ``auth_invitations``
@@ -1019,7 +1029,11 @@ def _get_admin_accessible_team_ids_cte(
     # rows, which the ``base_selects`` above already cover.
     invitation_db_class_hook = _invitation_hooks["invitation_db_class"]
     invitee_db_class_hook = _invitation_hooks["invitee_db_class"]
-    if invitation_db_class_hook is not None and invitee_db_class_hook is not None:
+    if (
+        not memberships_only
+        and invitation_db_class_hook is not None
+        and invitee_db_class_hook is not None
+    ):
         invitation_db_cls = invitation_db_class_hook(declarative_base)
         invitee_db_cls = invitee_db_class_hook(declarative_base)
 
@@ -1085,6 +1099,13 @@ def _get_admin_accessible_team_ids_cte(
         .where(team_alias.parent_id.isnot(None))
         .where(cte_alias.c.depth < max_depth)
     )
+    if memberships_only:
+        parent_alias = aliased(team_db_cls, name=f"{cte_name}_parent")
+        recursive_term = recursive_term.where(
+            team_alias.parent_id.in_(
+                select(parent_alias.id).where(parent_alias.deleted_at.is_(None))
+            )
+        )
 
     recursive_cte = recursive_cte.union(recursive_term)
 
@@ -1505,38 +1526,35 @@ def generate_permission_filter(
             # blocks unrelated records.
             pass
 
-    # 5. Special Table Logic for Users
+    # 5. Special Table Logic for Users. A user sees themselves, and for VIEW
+    # the users they share a live team with: both memberships enabled,
+    # unexpired and not deleted, in a team that is not deleted, the
+    # requester's side reaching up through parent teams as team-scoped
+    # records do. A pending invitation is not a shared team. ROOT and SYSTEM
+    # returned above; an explicit Permission row on the user (section 4)
+    # also grants. Anyone else is invisible, so a server-side lookup of an
+    # arbitrary account (login, registration, invitation acceptance) runs as
+    # ROOT or SYSTEM, never as the requester.
     if resource_db_cls.__tablename__ == "users":
-        # Users can see themselves
         conditions.append(resource_db_cls.id == user_id)
 
-        # Users can see any user that belongs to a team they're on, or child teams
         if required_permission_level == PermissionType.VIEW:
-            # Get all teams the user has access to
-            user_team_ids = select(accessible_team_ids_cte.c.id)
-
-            # Find all users on those teams
-            users_on_accessible_teams = exists().where(
-                and_(
-                    user_team_db_cls.user_id
-                    == resource_db_cls.id,  # The user record being accessed
-                    user_team_db_cls.team_id.in_(user_team_ids),
-                    user_team_db_cls.enabled == True,
-                    _active(user_team_db_cls),
-                )
+            shared_team_ids_cte = _get_admin_accessible_team_ids_cte(
+                user_id,
+                db,
+                declarative_base,
+                max_depth=5,
+                unique_suffix=f"{unique_suffix}_members",
+                memberships_only=True,
             )
-            conditions.append(users_on_accessible_teams)
-
-            # Non-root, non-system users (i.e. all real accounts) are visible
-            # for VIEW so authenticated callers can resolve identifiers
-            # surfaced through related entities (extension hooks validating
-            # entity.user_id, manager-layer cross-references, etc). Edit and
-            # delete still go through the manager-layer self-only checks.
             conditions.append(
-                and_(
-                    resource_db_cls.id != ROOT_ID,
-                    resource_db_cls.id != SYSTEM_ID,
-                    resource_db_cls.id != TEMPLATE_ID,
+                exists().where(
+                    and_(
+                        user_team_db_cls.user_id == resource_db_cls.id,
+                        user_team_db_cls.team_id.in_(select(shared_team_ids_cte.c.id)),
+                        user_team_db_cls.enabled == True,
+                        _active(user_team_db_cls),
+                    )
                 )
             )
 

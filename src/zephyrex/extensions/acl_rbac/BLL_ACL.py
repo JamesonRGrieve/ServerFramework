@@ -17,6 +17,7 @@ from typing import ClassVar, Optional, Self, Type
 from fastapi import HTTPException
 from pydantic import Field, model_validator
 
+from zephyrex.lib.Environment import env
 from zephyrex.pydantic2.registry import BaseModel
 from zephyrex.pydantic2.fastapi import RouterMixin
 from zephyrex.logic.AbstractLogicManager import (
@@ -132,10 +133,14 @@ class PermissionManager(AbstractBLLManager, RouterMixin):
 
     def create_validation(self, entity):
         if entity.user_id:
+            # A grant names who receives it, usually someone the granter shares
+            # no team with and so cannot read: the server checks the account
+            # exists, and the granter learns nothing more about it.
             user = UserModel.DB(self.model_registry.DB.manager.Base).get(
-                requester_id=self.requester.id,
+                requester_id=env("SYSTEM_ID"),
                 model_registry=self.model_registry,
                 id=entity.user_id,
+                allow_nonexistent=True,
             )
             if not user:
                 raise HTTPException(status_code=404, detail="User not found")
