@@ -469,6 +469,59 @@ class TestNotificationRoutesOverHTTP(ExtensionServerMixin):
         response = server.patch(f"{USER_NOTIFICATIONS}/{row_id}/read", json={})
         assert response.status_code == 401, response.text
 
+    def test_a_custom_save_is_held_to_if_match(self, server, admin_a):
+        """A custom route writing the record its path names honours
+        If-Match like a generic PUT: stale is 412 with the record as it
+        stands and nothing written; the current version saves."""
+        row_id = self._deliver(server, admin_a, "http versioned")
+        fetched = server.get(
+            f"{USER_NOTIFICATIONS}/{row_id}", headers=_bearer(admin_a.jwt)
+        )
+        etag = fetched.headers["etag"]
+
+        stale = server.patch(
+            f"{USER_NOTIFICATIONS}/{row_id}/read",
+            json={},
+            headers={**_bearer(admin_a.jwt), "If-Match": '"1970-01-01T00:00:00"'},
+        )
+        assert stale.status_code == 412, stale.text
+        assert stale.json()["current"]["id"] == row_id
+        assert stale.headers["etag"] == etag
+        assert self._state(server, admin_a, row_id)["read"] is False
+
+        read = server.patch(
+            f"{USER_NOTIFICATIONS}/{row_id}/read",
+            json={},
+            headers={**_bearer(admin_a.jwt), "If-Match": etag},
+        )
+        assert read.status_code == 200, read.text
+        # The read moved the version on: the old ETag is now stale.
+        again = server.patch(
+            f"{USER_NOTIFICATIONS}/{row_id}/acknowledge",
+            json={},
+            headers={**_bearer(admin_a.jwt), "If-Match": etag},
+        )
+        assert again.status_code == 412, again.text
+        assert self._state(server, admin_a, row_id)["acknowledged"] is False
+
+    def test_a_custom_save_without_if_match_is_428_when_required(
+        self, server, admin_a, monkeypatch
+    ):
+        from zephyrex.lib import Environment
+        from zephyrex.lib.Preconditions import IF_MATCH_REQUIRED_SETTING
+
+        row_id = self._deliver(server, admin_a, "http required")
+        monkeypatch.setenv(IF_MATCH_REQUIRED_SETTING, "true")
+        monkeypatch.setattr(Environment.settings, IF_MATCH_REQUIRED_SETTING, "true")
+        refused = server.patch(
+            f"{USER_NOTIFICATIONS}/{row_id}/read",
+            json={},
+            headers=_bearer(admin_a.jwt),
+        )
+        assert refused.status_code == 428, refused.text
+        assert refused.json() == {"detail": "If-Match required"}
+        assert self._state(server, admin_a, row_id)["read"] is False
+
     def test_mark_unknown_row_is_404(self, server, admin_a):
         response = server.patch(
             f"{USER_NOTIFICATIONS}/00000000-0000-0000-0000-000000000000/read",

@@ -987,6 +987,16 @@ def build_app(model_registry: ModelRegistry):
             # Fallback to string representation
             return str(obj)
 
+    from zephyrex.lib.Preconditions import PreconditionError
+
+    # 412/428: the precondition contract's own body, ``{detail, current}``
+    # (a batch adds ``stale_ids``) and ``{detail: "If-Match required"}``.
+    @app.exception_handler(PreconditionError)
+    async def precondition_handler(request: Request, exc: PreconditionError):
+        return JSONResponse(
+            status_code=exc.status_code, content=exc.body(), headers=exc.headers
+        )
+
     # Add exception handler for HTTPException to ensure JSON serializable details
     @app.exception_handler(HTTPException)
     async def http_exception_handler(request: Request, exc: HTTPException):

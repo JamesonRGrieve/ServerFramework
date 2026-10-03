@@ -25,6 +25,13 @@ from sqlalchemy import and_
 from sqlalchemy.orm import Session, joinedload
 
 from zephyrex.lib.Logging import logger
+from zephyrex.lib.Preconditions import (
+    PreconditionFailed,
+    PreconditionRequired,
+    expected_version,
+    missing_is_refused,
+    table_of,
+)
 from zephyrex.lib.TypeUnions import is_union, non_none_args
 from zephyrex.pydantic2.registry import obj_to_dict
 from zephyrex.pydantic2.fastapi import AuthType, CustomRouteSpec, RouteType
@@ -1789,19 +1796,68 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
 
         return filter_condition
 
-    _require_etag: ClassVar[bool] = False
+    def _visible_payload(self, entity: Any) -> Any:
+        """The record as the requester may see it (field ACL applied), as
+        JSON-ready data: the ``current`` a 412 answers with."""
+        from fastapi.encoders import jsonable_encoder
 
-    def _compute_entity_etag(self, entity) -> str:
-        """Compute a weak ETag from the entity's updated_at timestamp."""
-        import hashlib
+        from zephyrex.pydantic2.fastapi import (
+            apply_field_acl_to_payload,
+            serialize_for_response,
+        )
 
-        ts = getattr(entity, "updated_at", None) or getattr(entity, "created_at", "")
-        return f'W/"{hashlib.sha256(str(ts).encode()).hexdigest()[:16]}"'
+        payload = serialize_for_response(entity)
+        visible = apply_field_acl_to_payload(
+            payload, self, self.model_registry.apply(self.Model)
+        )
+        return jsonable_encoder(visible)
+
+    def visible_current(self, id: str) -> Any:
+        """The record as it now stands for the requester, JSON-ready: what a
+        412 (``zephyrex.lib.Preconditions``) answers a stale write with."""
+        return self._visible_payload(self.get(id=id))
+
+    def _refuse_stale_batch(self, ids: Sequence[str]) -> None:
+        """Refuse a whole batch before any write when one of its records is
+        stale (412 listing every stale id) or, when If-Match is required,
+        names none (428 listing them)."""
+        table = table_of(self)
+        if table is None:
+            return
+        missing: List[str] = []
+        stale: List[str] = []
+        current: List[Any] = []
+        for entity_id in ids:
+            bound, if_match = expected_version(table, entity_id)
+            if not bound:
+                continue
+            if if_match is None:
+                if missing_is_refused():
+                    missing.append(entity_id)
+                continue
+            try:
+                entity = self.get(id=entity_id)
+            except HTTPException as err:
+                # A record the requester cannot reach is reported per item
+                # by the write itself.
+                if err.status_code == 404:
+                    continue
+                raise
+            if not if_match.matches(entity):
+                stale.append(entity_id)
+                current.append(self._visible_payload(entity))
+        if missing:
+            raise PreconditionRequired(missing_ids=missing)
+        if stale:
+            raise PreconditionFailed(current, stale_ids=stale)
 
     def update(self, id: str, **kwargs) -> ModelT:
-        """Update an entity by ID."""
-        if_match = kwargs.pop("_if_match", None)
+        """Update an entity by ID.
 
+        A request that names the record's version (If-Match, bound by the
+        HTTP layer through ``zephyrex.lib.Preconditions``) is refused by the
+        database write when the record has moved on since.
+        """
         # Drop audit/identity fields from the inbound payload. Server-managed
         # bookkeeping (updated_at, updated_by_user_id, etc.) must not be
         # client-controllable.
@@ -1821,19 +1877,6 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
 
         # Get the entity before update (for after hooks)
         entity_before = self.get(id=id)
-
-        if self._require_etag and not if_match:
-            raise HTTPException(
-                status_code=428,
-                detail="Precondition Required — If-Match header missing",
-            )
-        if if_match and entity_before:
-            current_etag = self._compute_entity_etag(entity_before)
-            if if_match.strip('"') not in current_etag:
-                raise HTTPException(
-                    status_code=412,
-                    detail="Precondition Failed — entity has been modified",
-                )
 
         updated_entity = self.DB.update(
             requester_id=self.requester.id,
@@ -1886,6 +1929,7 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
         results = []
         errors = []
 
+        self._refuse_stale_batch([item["id"] for item in items if item.get("id")])
         for item in items:
             entity_id = item.get("id", "unknown")
             try:
@@ -1912,7 +1956,8 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
         return results
 
     def delete(self, id: str) -> None:
-        """Delete an entity by ID."""
+        """Delete an entity by ID (held, like ``update``, to the request's
+        If-Match)."""
         cache = _entity_cache
         if cache is not None and self._caches_entities:
             try:
@@ -1948,6 +1993,7 @@ class AbstractBLLManager(ABC, Generic[ModelT]):
         errors: List[Dict[str, Any]] = []
         successful = 0
 
+        self._refuse_stale_batch(ids)
         for entity_id in ids:
             try:
                 self.delete(id=entity_id)

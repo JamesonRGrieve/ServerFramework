@@ -331,28 +331,15 @@ class BodySizeLimitMiddleware:
 MAX_JSON_DEPTH: int = 32
 
 
-def _etag_listed(if_none_match: str, opaque_tag: str) -> bool:
-    """Whether an If-None-Match header names ``opaque_tag``, by the weak
-    comparison RFC 9110 §13.1.2 prescribes: ``*``, or any listed tag
-    equal to it once its ``W/`` prefix and quotes are set aside."""
-    for listed in if_none_match.split(","):
-        tag = listed.strip()
-        if tag == "*":
-            return True
-        if tag.startswith("W/"):
-            tag = tag[2:]
-        if tag.strip('"') == opaque_tag:
-            return True
-    return False
-
-
 class ETagMiddleware:
     """ASGI middleware that adds ETag headers to GET 200 responses and
     handles conditional requests (If-None-Match → 304).
 
-    ETag is a weak validator computed from SHA-256 of the response body.
-    Only applies to GET requests returning 200 with a JSON-family
-    content type.
+    A single-record route sets its record's version as the ETag
+    (``zephyrex.lib.Preconditions``), which stands alone; every other 200
+    gets a weak validator from the SHA-256 of its body. If-None-Match is
+    answered against whichever ETag the response carries, by weak
+    comparison (RFC 9110 §13.1.2).
     """
 
     def __init__(self, app: Any) -> None:
@@ -389,16 +376,29 @@ class ETagMiddleware:
                     headers = response_started["headers"]
                     full_body = b"".join(body_parts)
 
-                    # A route that set its own ETag (a resource version) owns
-                    # the validator and its conditional requests.
-                    route_etag = any(k.lower() == b"etag" for k, _ in headers)
-                    if status == 200 and full_body and not route_etag:
-                        import hashlib
+                    if status == 200 and full_body:
+                        # A route that set its own ETag (a single record's
+                        # version) owns the validator; any other answer is
+                        # validated by a hash of its body. Both answer
+                        # If-None-Match.
+                        etag = next(
+                            (
+                                value.decode("latin-1")
+                                for key, value in headers
+                                if key.lower() == b"etag"
+                            ),
+                            None,
+                        )
+                        if etag is None:
+                            import hashlib
 
-                        etag = hashlib.sha256(full_body).hexdigest()[:16]
-                        weak_etag = f'W/"{etag}"'
+                            digest = hashlib.sha256(full_body).hexdigest()[:16]
+                            etag = f'W/"{digest}"'
+                            headers.append((b"etag", etag.encode("latin-1")))
 
-                        if if_none_match and _etag_listed(if_none_match, etag):
+                        from zephyrex.lib.Preconditions import none_match_hits
+
+                        if if_none_match and none_match_hits(if_none_match, etag):
                             await send(
                                 {
                                     "type": "http.response.start",
@@ -408,14 +408,11 @@ class ETagMiddleware:
                                         for k, v in headers
                                         if k.decode("latin-1").lower()
                                         not in ("content-length", "content-type")
-                                    ]
-                                    + [(b"etag", weak_etag.encode("latin-1"))],
+                                    ],
                                 }
                             )
                             await send({"type": "http.response.body", "body": b""})
                             return
-
-                        headers.append((b"etag", weak_etag.encode("latin-1")))
 
                     await send(
                         {

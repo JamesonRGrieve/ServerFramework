@@ -40,6 +40,7 @@ from fastapi import HTTPException, Request, Response, status
 from pydantic import BaseModel, TypeAdapter
 
 from zephyrex.lib.InboundSecurity import carry_rate_limit
+from zephyrex.lib.Preconditions import IF_MATCH_HEADER, expect_route_version
 from zephyrex.pydantic2.fastapi.resource import (
     create_manager_factory,
     handle_resource_operation_error,
@@ -348,7 +349,9 @@ def _make_rest_endpoint(
     and an authenticated route answers 401 without them. The method is
     invoked through its bound hook wrapper so registered hooks fire, and an
     ``async`` method's result is awaited. Failures map to HTTP responses the
-    same way CRUD routes map them.
+    same way CRUD routes map them. A write route's If-Match holds any write
+    it makes to the record of this manager its path names
+    (``zephyrex.lib.Preconditions.expect_route_version``).
     """
     binding = _RouteBinding.build(manager_cls, method_name, spec)
     auth_type = spec.auth_type
@@ -364,9 +367,15 @@ def _make_rest_endpoint(
                 auth_type,
             )(request=request)
             arguments = await binding.arguments(request, response)
-            result = getattr(manager, method_name)(**arguments)
-            if inspect.isawaitable(result):
-                result = await result
+            with expect_route_version(
+                manager,
+                request.method,
+                request.path_params,
+                request.headers.get(IF_MATCH_HEADER),
+            ):
+                result = getattr(manager, method_name)(**arguments)
+                if inspect.isawaitable(result):
+                    result = await result
             if spec.response_class is not None:
                 return _checked_response(result, spec.response_class)
             output = _coerce_output(result, spec.output_model)

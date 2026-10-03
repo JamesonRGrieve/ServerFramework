@@ -98,6 +98,9 @@ class AppSettings(BaseModel):
     REGISTRATION_DISABLED: str = "false"
     REGISTRATION_MODE: Literal["open", "invite", "closed"] = "open"
     SEED_DATA: str = "true"
+    # Optimistic concurrency (zephyrex.lib.Preconditions): a write that names
+    # no If-Match is accepted while false; true refuses it with 428.
+    IF_MATCH_REQUIRED: str = "false"
 
     ROOT_ID: str = "FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF"
     SYSTEM_ID: str = "FFFFFFFF-FFFF-FFFF-AAAA-FFFFFFFFFFFF"

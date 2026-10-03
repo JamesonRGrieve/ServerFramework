@@ -45,6 +45,7 @@ from zephyrex.lib.ContentNegotiation import (
 from zephyrex.lib.Environment import env, inflection
 from zephyrex.lib.InboundSecurity import reset_rate_limit_counts
 from zephyrex.lib.Logging import logger
+from zephyrex.lib.Preconditions import entity_etag
 from zephyrex.lib.TypeUnions import is_union, non_none_args
 from zephyrex.pydantic2.registry import PydanticUtility
 from zephyrex.lib.Scalability import (
@@ -2416,6 +2417,109 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
             self.get_update_endpoint(fake_id, {}),
             {"entity": update_data},
         )
+
+    # ------------------------------------------------------------------
+    # Optimistic concurrency (zephyrex.lib.Preconditions): every entity's
+    # single-record answers carry its version as the ETag, and a write
+    # naming a version that is no longer current is refused with 412.
+    # ------------------------------------------------------------------
+
+    # A version no record has: 1970 predates every stamped timestamp.
+    STALE_IF_MATCH = '"1970-01-01T00:00:00"'
+
+    def _run_like(self, test_name: str) -> None:
+        """Run only where the generic ``test_name`` runs as written: skipped
+        with it, and skipped where the entity replaces it with its own (its
+        routes then differ from the generic ones, as the self-scoped user's
+        ``DELETE /v1/user/{id}``, which deletes the requester)."""
+        self.reason_to_skip(test_name)
+        for cls in type(self).__mro__:
+            if cls is AbstractEPTest:
+                break
+            if test_name in vars(cls):
+                pytest.skip(f"{type(self).__name__} replaces {test_name}")
+
+    def _versioned(self, server: Any, admin_a: Any, team_a: Any, key: str):
+        """A fresh record, its nested-path ids, write headers and its ETag
+        (``"<updated_at or created_at>"``, copied from the row)."""
+        entity = self._create(server, admin_a.jwt, admin_a.id, team_a.id, key=key)
+        etag = entity_etag(entity)
+        assert etag is not None, f"{self.entity_name}: the row carries no version"
+        return (
+            entity,
+            self._extract_path_parent_ids(entity),
+            self._get_appropriate_headers(admin_a.jwt),
+            etag,
+        )
+
+    def _update_body(self) -> Dict[str, Any]:
+        update_data: Dict[str, Any] = {}
+        if self.string_field_to_update:
+            update_data[self.string_field_to_update] = f"Updated {self.faker.word()}"
+        return {self.entity_name: update_data}
+
+    def test_GET_200_etag_is_the_version(self, server: Any, admin_a: Any, team_a: Any):
+        """GET of one record answers with its version as the ETag, and a
+        conditional GET naming it is 304."""
+        self._run_like("test_GET_200_id")
+        entity, parent_ids, headers, etag = self._versioned(
+            server, admin_a, team_a, "etag_get"
+        )
+        endpoint = self.get_detail_endpoint(entity["id"], parent_ids)
+        response = server.get(endpoint, headers=headers)
+        assert response.status_code == 200, response.text
+        body = self._assert_entity_in_response(response)
+        assert response.headers.get_list("etag") == [entity_etag(body)]
+        assert response.headers["etag"] == etag
+        unchanged = server.get(endpoint, headers={**headers, "If-None-Match": etag})
+        assert unchanged.status_code == 304, unchanged.text
+
+    def test_PUT_412_stale_if_match(self, server: Any, admin_a: Any, team_a: Any):
+        """A save naming a version that is no longer current is refused with
+        412 and the record as it stands; naming the current one saves, and
+        the answer carries the new version."""
+        self._run_like("test_PUT_200")
+        entity, parent_ids, headers, etag = self._versioned(
+            server, admin_a, team_a, "etag_put"
+        )
+        endpoint = self.get_update_endpoint(entity["id"], parent_ids)
+
+        stale = server.put(
+            endpoint,
+            json=self._update_body(),
+            headers={**headers, "If-Match": self.STALE_IF_MATCH},
+        )
+        assert stale.status_code == 412, stale.text
+        refused = stale.json()
+        assert refused["detail"]
+        assert refused["current"]["id"] == entity["id"]
+        assert entity_etag(refused["current"]) == etag
+
+        saved = server.put(
+            endpoint, json=self._update_body(), headers={**headers, "If-Match": etag}
+        )
+        assert saved.status_code == 200, saved.text
+        assert saved.headers["etag"] == entity_etag(
+            self._assert_entity_in_response(saved)
+        )
+
+    def test_DELETE_412_stale_if_match(self, server: Any, admin_a: Any, team_a: Any):
+        """A delete naming a stale version is refused (412) and the record
+        stays; naming the current one deletes it."""
+        self._run_like("test_DELETE_204")
+        entity, parent_ids, headers, etag = self._versioned(
+            server, admin_a, team_a, "etag_delete"
+        )
+        endpoint = self.get_delete_endpoint(entity["id"], parent_ids)
+
+        stale = server.delete(
+            endpoint, headers={**headers, "If-Match": self.STALE_IF_MATCH}
+        )
+        assert stale.status_code == 412, stale.text
+        assert stale.json()["current"]["id"] == entity["id"]
+
+        deleted = server.delete(endpoint, headers={**headers, "If-Match": etag})
+        assert deleted.status_code == 204, deleted.text
 
     def _delete_assert(
         self,

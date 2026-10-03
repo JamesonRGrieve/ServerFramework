@@ -30,6 +30,12 @@ from zephyrex.database.StaticPermissions import (
     validate_columns,
 )
 from zephyrex.lib.Environment import env
+from zephyrex.lib.Preconditions import (
+    PreconditionError,
+    StaleVersionError,
+    claim_expected_version,
+    expected_version,
+)
 from zephyrex.lib.TypeUnions import is_optional, non_none_args
 from zephyrex.lib.Logging import logger
 from zephyrex.pydantic2.registry import obj_to_dict
@@ -66,6 +72,11 @@ def with_session(func):
 
             result = func(cls, requester_id, model_registry, *args, **kwargs)
             return result
+        except (StaleVersionError, PreconditionError):
+            # A client's stale or missing If-Match: an expected outcome, not
+            # an error.
+            session.rollback()
+            raise
         except Exception as e:
             logger.error(e)
             logger.debug(f"Rolling back {func.__name__}...")
@@ -226,6 +237,32 @@ def _check_creator_ownership(entity, requester_id: str) -> None:
             status_code=403,
             detail="Only system users can modify records created by SYSTEM",
         )
+
+
+def _locked_for(query: Query, db_cls, target_id: Any) -> Query:
+    """A write the request holds to a version (If-Match, bound through
+    ``zephyrex.lib.Preconditions``) locks its row (``SELECT ... FOR UPDATE``
+    where the database has row locks), so no other write lands between the
+    version check and the commit. SQLite has no row locks; its single writer
+    refuses a write whose read snapshot went stale instead."""
+    if target_id is None:
+        return query
+    _, if_match = expected_version(db_cls.__tablename__, str(target_id))
+    if if_match is None:
+        return query
+    return query.with_for_update(of=db_cls)
+
+
+def _check_version(entity) -> None:
+    """Hold the write to the version the request's If-Match names for this
+    row: ``StaleVersionError`` when the locked row has moved on, 428 when
+    If-Match is required and the request sent none. Every write path
+    (generic routes, custom routes, managers, direct database writes) meets
+    this check; a row no request named is not affected."""
+    table = type(entity).__tablename__
+    if_match = claim_expected_version(table, str(entity.id))
+    if if_match is not None and not if_match.matches(entity):
+        raise StaleVersionError(table, str(entity.id))
 
 
 def _filter_dict_fields(entity_dict: dict, fields: List[str]) -> None:
@@ -1406,7 +1443,12 @@ class UpdateMixin(SoftDeleteMixin):
         allow_nonexistent: bool = False,
         **kwargs,
     ) -> T:
-        """Update a database entity with new properties."""
+        """Update a database entity with new properties.
+
+        A request holding this row to the version its client read (If-Match)
+        locks the row, and a version it no longer matches raises
+        ``StaleVersionError`` before anything is written.
+        """
         from zephyrex.database.StaticPermissions import (
             PermissionResult,
             PermissionType,
@@ -1445,11 +1487,15 @@ class UpdateMixin(SoftDeleteMixin):
             )
             additional_filters.append(permission_filter)
 
-        query = build_query(
-            db,
+        query = _locked_for(
+            build_query(
+                db,
+                db_cls,
+                filters=filters + additional_filters,
+                **kwargs,
+            ),
             db_cls,
-            filters=filters + additional_filters,
-            **kwargs,
+            kwargs.get("id"),
         )
 
         try:
@@ -1467,6 +1513,7 @@ class UpdateMixin(SoftDeleteMixin):
 
         _require_system_user(cls, requester_id, "modify")
         _check_creator_ownership(entity, requester_id)
+        _check_version(entity)
 
         # Copy updated properties to avoid modifying the input
         updated = dict(new_properties)
@@ -1532,7 +1579,8 @@ class UpdateMixin(SoftDeleteMixin):
     ):
         """
         Soft delete a database entity by setting deleted_at and deleted_by_user_id.
-        Enforces permission checks and system flag restrictions.
+        Enforces permission checks and system flag restrictions, and the
+        version the request's If-Match names (see ``update``).
         """
         from zephyrex.database.StaticPermissions import (
             PermissionResult,
@@ -1569,11 +1617,15 @@ class UpdateMixin(SoftDeleteMixin):
             )
             additional_filters.append(permission_filter)
 
-        query = build_query(
-            db,
+        query = _locked_for(
+            build_query(
+                db,
+                db_cls,
+                filters=filters + additional_filters,
+                **kwargs,
+            ),
             db_cls,
-            filters=filters + additional_filters,
-            **kwargs,
+            kwargs.get("id"),
         )
 
         try:
@@ -1590,6 +1642,7 @@ class UpdateMixin(SoftDeleteMixin):
 
         _require_system_user(cls, requester_id, "delete")
         _check_creator_ownership(entity, requester_id)
+        _check_version(entity)
 
         # Non-system users can only delete records they created
         if hasattr(entity, "created_by_user_id"):

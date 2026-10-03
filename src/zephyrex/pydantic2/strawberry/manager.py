@@ -1,6 +1,7 @@
 import inspect
 import json
 import sys
+from contextlib import contextmanager
 from enum import Enum, IntEnum
 from types import ModuleType
 from typing import (
@@ -12,6 +13,7 @@ from typing import (
     FrozenSet,
     Hashable,
     Iterable,
+    Iterator,
     List,
     Optional,
     Protocol,
@@ -27,12 +29,14 @@ from typing import (
 import strawberry
 import stringcase
 from broadcaster import Broadcast
+from graphql import GraphQLError
 from pydantic import BaseModel
 from strawberry.types import Info
 
 from zephyrex.lib.AbstractPydantic2 import ErrorHandlerMixin
 from zephyrex.lib.Environment import inflection
 from zephyrex.lib.Logging import logger
+from zephyrex.lib.Preconditions import PreconditionError, expect_versions
 from zephyrex.lib.TypeUnions import unwrap_optional
 from zephyrex.pydantic2.fastapi.types import AuthType, RouterMixin, RouteType
 from zephyrex.pydantic2.manager_contract import (
@@ -67,6 +71,31 @@ _UNSET: Any = object()
 # reverse field within one request reuses one DataLoader, so their loads
 # coalesce into a single batched ``manager.list(<fk> IN (...))`` query.
 _REVERSE_NAV_LOADER_KEY: str = "_reverse_nav_dataloaders"
+
+# GraphQL error codes for a refused ``ifMatch``, by HTTP status.
+_PRECONDITION_CODES: Dict[int, str] = {
+    412: "PRECONDITION_FAILED",
+    428: "PRECONDITION_REQUIRED",
+}
+
+
+@contextmanager
+def _mutation_precondition(
+    manager: Any, entity_id: str, if_match: Optional[str]
+) -> Iterator[None]:
+    """A mutation's ``ifMatch`` holds its write as a REST If-Match does. A
+    refusal is a GraphQL error whose extensions carry the REST body
+    (``current`` for a stale one) with its ``code`` and HTTP ``status``."""
+    try:
+        with expect_versions(manager, {entity_id: if_match}):
+            yield
+    except PreconditionError as exc:
+        extensions = {
+            "code": _PRECONDITION_CODES[exc.status_code],
+            "status": exc.status_code,
+            **exc.body(),
+        }
+        raise GraphQLError(exc.message, extensions=extensions) from exc
 
 
 def _is_plain_pydantic_model(candidate: Any) -> TypeGuard[Type[BaseModel]]:
@@ -1494,7 +1523,9 @@ class GraphQLManager(ErrorHandlerMixin):
         if self._is_self_scoped(manager_class):
 
             async def user_update_resolver(
-                input: input_type, info: Info  # type: ignore[valid-type]
+                input: input_type,  # type: ignore[valid-type]
+                info: Info,
+                if_match: Optional[str] = None,
             ) -> return_type:  # type: ignore[valid-type]
                 try:
                     manager, requester_id = self._authenticated_manager(
@@ -1503,7 +1534,8 @@ class GraphQLManager(ErrorHandlerMixin):
                     data = self._convert_input_to_dict(input)
 
                     # For users, always update the requester (no ID parameter allowed)
-                    result = manager.update(requester_id, **data)
+                    with _mutation_precondition(manager, requester_id, if_match):
+                        result = manager.update(requester_id, **data)
 
                     await self._publish_mutation_event(
                         return_type.__name__.lower(),
@@ -1522,13 +1554,19 @@ class GraphQLManager(ErrorHandlerMixin):
             )
         else:
 
-            async def resolver(id: str, input: input_type, info: Info) -> return_type:  # type: ignore[valid-type]
+            async def resolver(
+                id: str,
+                input: input_type,  # type: ignore[valid-type]
+                info: Info,
+                if_match: Optional[str] = None,
+            ) -> return_type:  # type: ignore[valid-type]
                 try:
                     manager, _ = self._authenticated_manager(manager_class, info)
                     data = self._convert_input_to_dict(input)
 
                     # Call manager.update with same signature as REST API
-                    result = manager.update(id, **data)
+                    with _mutation_precondition(manager, id, if_match):
+                        result = manager.update(id, **data)
 
                     await self._publish_mutation_event(
                         return_type.__name__.lower(),
@@ -1553,14 +1591,17 @@ class GraphQLManager(ErrorHandlerMixin):
         # Special handling for user delete mutations - users can only delete themselves
         if self._is_self_scoped(manager_class):
 
-            async def user_delete_resolver(info: Info) -> bool:
+            async def user_delete_resolver(
+                info: Info, if_match: Optional[str] = None
+            ) -> bool:
                 try:
                     manager, requester_id = self._authenticated_manager(
                         manager_class, info
                     )
 
                     # For users, always delete the requester (no ID parameter allowed)
-                    manager.delete(id=requester_id)
+                    with _mutation_precondition(manager, requester_id, if_match):
+                        manager.delete(id=requester_id)
 
                     await self._publish_mutation_event(
                         manager_class.__name__.lower(),
@@ -1570,6 +1611,9 @@ class GraphQLManager(ErrorHandlerMixin):
                     )
 
                     return True
+                except GraphQLError:
+                    # A refused precondition is an error, not a quiet false.
+                    raise
                 except Exception as e:
                     logger.error(f"Error in {field_name} resolver: {e}")
                     return False
@@ -1579,12 +1623,15 @@ class GraphQLManager(ErrorHandlerMixin):
             )
         else:
 
-            async def resolver(id: str, info: Info) -> bool:
+            async def resolver(
+                id: str, info: Info, if_match: Optional[str] = None
+            ) -> bool:
                 try:
                     manager, _ = self._authenticated_manager(manager_class, info)
 
                     # Call manager.delete with same signature as REST API
-                    manager.delete(id=id)
+                    with _mutation_precondition(manager, id, if_match):
+                        manager.delete(id=id)
 
                     await self._publish_mutation_event(
                         manager_class.__name__.lower(),
@@ -1594,6 +1641,9 @@ class GraphQLManager(ErrorHandlerMixin):
                     )
 
                     return True
+                except GraphQLError:
+                    # A refused precondition is an error, not a quiet false.
+                    raise
                 except Exception as e:
                     logger.error(f"Error in {field_name} resolver: {e}")
                     return False

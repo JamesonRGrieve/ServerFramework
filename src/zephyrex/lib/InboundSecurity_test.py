@@ -56,13 +56,28 @@ class TestETagMiddleware:
 
     def test_a_routes_own_etag_is_the_only_one(self):
         """A route that versions its resource owns the validator: the body
-        hash is not added beside it, nor does it answer If-None-Match."""
+        hash is not added beside it, nor does the body hash answer its
+        If-None-Match."""
         client = _etag_app()
         response = client.get("/versioned")
         assert response.headers.get_list("etag") == ['W/"v7"']
         body_hash = _etag_app().get("/plain").headers["etag"]
         answered = client.get("/versioned", headers={"If-None-Match": body_hash})
         assert answered.status_code == 200
+
+    def test_a_routes_own_etag_answers_if_none_match(self):
+        """A record's version ETag answers a conditional GET with 304, the
+        same as a body hash does (it once fell through to a full 200)."""
+        client = _etag_app()
+        for offered in ('W/"v7"', '"v7"', f'"v6", W/"v7"', "*"):
+            answered = client.get("/versioned", headers={"If-None-Match": offered})
+            assert answered.status_code == 304, offered
+            assert answered.headers.get_list("etag") == ['W/"v7"']
+            assert answered.content == b""
+        assert (
+            client.get("/versioned", headers={"If-None-Match": '"v6"'}).status_code
+            == 200
+        )
 
 
 class TestCORSValidation:

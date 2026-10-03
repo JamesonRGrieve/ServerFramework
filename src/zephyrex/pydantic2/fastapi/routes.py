@@ -16,6 +16,7 @@ from fastapi import (
     APIRouter,
     Body,
     Depends,
+    Header,
     HTTPException,
     Path,
     Query,
@@ -25,11 +26,19 @@ from fastapi import (
 )
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel as RouteModel
 from pydantic import ValidationError, create_model
 
 from zephyrex.lib.Environment import inflection
 from zephyrex.lib.InboundSecurity import carry_rate_limit
 from zephyrex.lib.Logging import logger
+from zephyrex.lib.Preconditions import (
+    IF_MATCH_HEADER,
+    VERSION_FIELDS,
+    etag_headers,
+    expect_route_version,
+    expect_versions,
+)
 from zephyrex.pydantic2.util import manager_resource_name
 
 from .types import AuthType, CustomRouteConfig, RouteType
@@ -63,6 +72,29 @@ from .resource import (
 if TYPE_CHECKING:
     from zephyrex.pydantic2.manager_contract import ManagerContract as ManagerContract
     from .types import NetworkModelProtocol as NetworkModelProtocol
+
+# The If-Match request header of a single-record write: the record's ETag as
+# the client read it. Missing is accepted unless IF_MATCH_REQUIRED is set.
+_IF_MATCH = Header(
+    default=None,
+    alias=IF_MATCH_HEADER,
+    description="The record's ETag as last read; a stale one is refused (412)",
+)
+# A batch delete names the version of each record it deletes in one If-Match
+# list (`"<v1>", "<v2>"`); a record at none of them refuses the batch.
+_BATCH_IF_MATCH = Header(
+    default=None,
+    alias=IF_MATCH_HEADER,
+    description="The ETags of the records as last read; one stale refuses all (412)",
+)
+
+
+class BatchTarget(RouteModel):
+    """A batch update target: the record's id and, optionally, the ETag the
+    client read it at."""
+
+    id: str
+    if_match: Optional[str] = None
 
 
 def register_route(
@@ -449,6 +481,14 @@ def _build_get_route(
             registry = getattr(actual_manager, "model_registry", None)
             _validate_includes(include_param, target_model, resource_name, registry)
 
+            # The record's version is its ETag (If-Match / If-None-Match); a
+            # projection that leaves the timestamps out still carries it.
+            version_headers: Dict[str, str] = {}
+            if fields_param and not set(fields_param) & set(VERSION_FIELDS):
+                version_headers = etag_headers(
+                    actual_manager.get(id=id, **parent_scope)
+                )
+
             result = actual_manager.get(
                 id=id, include=include_param, fields=fields_param, **parent_scope
             )
@@ -465,6 +505,7 @@ def _build_get_route(
             # Ensure the manager return value is serialized into plain data
             # so Pydantic can validate it reliably (models -> dicts)
             serialized_result = serialize_for_response(result)
+            version_headers = version_headers or etag_headers(serialized_result)
 
             # Check if fields are specified early to avoid validation errors
             fields_selection = _normalize_projection_values(query_params.fields)
@@ -561,6 +602,7 @@ def _build_get_route(
                 return JSONResponse(
                     content=jsonable_encoder({resource_name: projected_entity}),
                     status_code=status.HTTP_200_OK,
+                    headers=version_headers,
                 )
 
             if include_selection:
@@ -571,16 +613,11 @@ def _build_get_route(
                 return JSONResponse(
                     content=jsonable_encoder({resource_name: populated}),
                     status_code=status.HTTP_200_OK,
+                    headers=version_headers,
                 )
 
-            # If we reach here without fields or includes, return the response_model_instance
-            # Note: response_model_instance is only created when fields_selection is empty
-            if fields_selection:
-                # This shouldn't happen since we return early for fields, but handle it just in case
-                return JSONResponse(
-                    content=jsonable_encoder({resource_name: serialized_entity}),
-                    status_code=status.HTTP_200_OK,
-                )
+            # Without fields or includes, the response_model_instance built
+            # above (fields_selection is empty here) is the body.
             # Item 45 — for the Pydantic-validated path, also re-render
             # with field-acl filtering applied so the contract holds
             # uniformly across all return shapes.
@@ -606,6 +643,7 @@ def _build_get_route(
                 return JSONResponse(
                     content=jsonable_encoder(content),
                     status_code=status.HTTP_200_OK,
+                    headers=version_headers,
                 )
             content = response_model_instance.model_dump()
             if _links:
@@ -613,6 +651,7 @@ def _build_get_route(
             return JSONResponse(
                 content=jsonable_encoder(content),
                 status_code=status.HTTP_200_OK,
+                headers=version_headers,
             )
         except Exception as err:
             handle_resource_operation_error(err)
@@ -1070,6 +1109,7 @@ def _build_create_route(
         openapi_extra=_multiformat_request_body_extra(),
     )
     async def create_resource(
+        response: Response,
         request: Dict = Depends(get_request_info),
         body: Dict = Body(...),
         manager=Depends(manager_factory),
@@ -1144,6 +1184,7 @@ def _build_create_route(
 
                 logger.debug(f"Payload to ResponseSingle: {payload}")
                 toReturn = network_model.ResponseSingle(**payload)
+                response.headers.update(etag_headers(created_dict))
                 logger.debug(f"ResponseSingle type: {type(toReturn)}")
                 logger.debug(
                     f"ResponseSingle dict: {toReturn.model_dump() if hasattr(toReturn, 'model_dump') else toReturn}"
@@ -1190,35 +1231,27 @@ def _build_update_route(
         openapi_extra=_multiformat_request_body_extra(),
     )
     async def update_resource(
+        response: Response,
         request: Dict = Depends(get_request_info),
         id: str = Path(..., description=f"{stringcase.titlecase(resource_name)} ID"),
         # see get_resource() above: dynamic attr-as-annotation, live at runtime
         body: network_model.PUT = Body(...),
+        if_match: Optional[str] = _IF_MATCH,
         manager=Depends(manager_factory),
     ):
         try:
             update_data = extract_body_data(body, resource_name, resource_name_plural)
 
-            # actual_manager: Any = get_manager(manager, manager_property)
-            # result = actual_manager.update(id, **update_data)
-            # print(f"Type of result: {type(result)}")
-
-            # # Apply include/fields if specified
-            # if hasattr(body, "include") or hasattr(body, "fields"):
-            #     result = actual_manager.get(
-            #         id=id,
-            #         include=getattr(body, "include", None),
-            #         fields=getattr(body, "fields", None),
-            #     )
-
-            # Serialize update result for reliable validation
             # The update runs as the caller: a record the caller cannot see is
             # a 404 for them, never retried with elevated privileges.
             actual_manager = get_manager(manager, manager_property)
-            update_result = actual_manager.update(id, **update_data)  # type: ignore[arg-type]
+            with expect_versions(actual_manager, {id: if_match}):
+                update_result = actual_manager.update(id, **update_data)  # type: ignore[arg-type]
             if (resp := _render_degradation_sentinel(update_result)) is not None:
                 return resp
             serialized_update = serialize_for_response(update_result)
+            version_headers = etag_headers(serialized_update)
+            response.headers.update(version_headers)
 
             # Honor projection/includes requested in the PUT body (body may have
             # top-level 'fields' and/or 'include'). If the caller asked for
@@ -1296,6 +1329,7 @@ def _build_update_route(
                     return JSONResponse(
                         content=jsonable_encoder({resource_name: projected}),
                         status_code=status.HTTP_200_OK,
+                        headers=version_headers,
                     )
 
                 if include_selection:
@@ -1305,6 +1339,7 @@ def _build_update_route(
                     return JSONResponse(
                         content=jsonable_encoder({resource_name: populated}),
                         status_code=status.HTTP_200_OK,
+                        headers=version_headers,
                     )
 
                 return network_model.ResponseSingle(**{resource_name: serialized_fresh})
@@ -1336,11 +1371,13 @@ def _build_delete_route(
     )
     async def delete_resource(
         id: str = Path(..., description=f"{stringcase.titlecase(resource_name)} ID"),
+        if_match: Optional[str] = _IF_MATCH,
         manager=Depends(manager_factory),
     ):
         try:
             actual_manager: Any = get_manager(manager, manager_property)
-            actual_manager.delete(id=id)
+            with expect_versions(actual_manager, {id: if_match}):
+                actual_manager.delete(id=id)
             return Response(status_code=status.HTTP_204_NO_CONTENT)
         except Exception as err:
             handle_resource_operation_error(err)
@@ -1594,12 +1631,13 @@ def _build_batch_update_route(
     path = ""
     summary = f"Batch update {resource_name_plural}"
 
-    # Create dynamic batch update model
+    # Create dynamic batch update model: each target is an id, or an id with
+    # the version (ETag) the client read it at.
     BatchUpdateModel = create_model(  # type: ignore[call-overload]
         f"{stringcase.capitalcase(resource_name)}BatchUpdateModel",
         **{
             resource_name: (Dict[str, Any], ...),
-            "target_ids": (List[str], ...),
+            "target_ids": (List[Union[str, BatchTarget]], ...),
         },
     )
 
@@ -1624,13 +1662,20 @@ def _build_batch_update_route(
     ):
         try:
             update_data = getattr(body, resource_name)
-            target_ids = body.target_ids  # type: ignore[attr-defined]
+            targets = [
+                target if isinstance(target, BatchTarget) else BatchTarget(id=target)
+                for target in body.target_ids  # type: ignore[attr-defined]
+            ]
 
-            items = [{"id": id, "data": update_data} for id in target_ids]
+            items = [{"id": target.id, "data": update_data} for target in targets]
 
             actual_manager: Any = get_manager(manager, manager_property)
             try:
-                updated_items = actual_manager.batch_update(items=items)
+                with expect_versions(
+                    actual_manager,
+                    {target.id: target.if_match for target in targets},
+                ):
+                    updated_items = actual_manager.batch_update(items=items)
             except HTTPException as batch_err:
                 if batch_err.status_code == 207:
                     return JSONResponse(
@@ -1668,6 +1713,7 @@ def _build_batch_delete_route(
         target_ids: str = Query(
             ..., description=f"Comma-separated list of {resource_name_plural} IDs"
         ),
+        if_match: Optional[str] = _BATCH_IF_MATCH,
         manager=Depends(manager_factory),
     ):
         try:
@@ -1680,7 +1726,11 @@ def _build_batch_delete_route(
 
             actual_manager: Any = get_manager(manager, manager_property)
             try:
-                actual_manager.batch_delete(ids=ids_list)
+                with expect_versions(
+                    actual_manager,
+                    {entity_id: if_match for entity_id in ids_list},
+                ):
+                    actual_manager.batch_delete(ids=ids_list)
             except HTTPException as batch_err:
                 if batch_err.status_code == 207:
                     return JSONResponse(
@@ -1871,8 +1921,13 @@ def register_custom_route(
             }
 
             if request.method in _BODY_METHODS:
-                result = method_func(**method_args, body=await _json_body(request))
-            else:
+                method_args["body"] = await _json_body(request)
+            with expect_route_version(
+                manager,
+                request.method,
+                request.path_params,
+                request.headers.get(IF_MATCH_HEADER),
+            ):
                 result = method_func(**method_args)
 
             if (resp := _render_degradation_sentinel(result)) is not None:
