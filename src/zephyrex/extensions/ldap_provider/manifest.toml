@@ -5,15 +5,11 @@
 # Manifest_parity_test keeps the two in step.
 
 name = "ldap_provider"
-version = "1.0.0"
-description = "Run this server as an LDAP directory for third-party consumers."
+version = "2.0.0"
+description = "Serve this server's users and teams as a read-only LDAP directory"
 author = "ZephyrexTechnologies"
 entry_module = "EXT_LDAPProvider"
 minimum_framework_version = "0.0.0"
 
-pip_dependencies = []
+pip_dependencies = ["ldap3>=2.9.1", "pyasn1>=0.6.1"]
 system_dependencies = []
-
-[[extension_dependencies]]
-name = "auth_session"
-optional = false

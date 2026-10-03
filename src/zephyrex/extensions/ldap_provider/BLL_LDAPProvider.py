@@ -1,120 +1,174 @@
-"""LDAP provider BLL: this server acts as an LDAP directory.
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""LDAP service accounts: the identities legacy applications bind as to
+read the directory.
 
-Exposes the local user store as an LDAP directory tree so third-party
-applications can bind and search against this server. The ``ldap3``
-library is imported lazily at usage time.
+A service account is configured by the server (ROOT or SYSTEM; over the
+API that is the system key, as for every system entity). Its secret is
+write-only: it is taken on create or update, stored only as a bcrypt
+hash, and never returned. A service account binds as
+``cn=<name>,ou=services,<base DN>`` and reads the whole directory; it is
+not an entry in the tree itself.
 """
 
-from typing import ClassVar, List, Optional
+import re
+from typing import Any, ClassVar, Dict, List, Optional
 
-from pydantic import BaseModel, Field
+import bcrypt
+from fastapi import HTTPException
+from pydantic import Field
 
+from zephyrex.database.StaticPermissions import is_root_id, is_system_id
+from zephyrex.lib.Environment import env
 from zephyrex.logic.AbstractLogicManager import (
     AbstractBLLManager,
     ApplicationModel,
     ModelMeta,
+    NameMixinModel,
     StringSearchModel,
     UpdateMixinModel,
 )
+from zephyrex.logic.BLL_Auth._shared import _BCRYPT_ROUNDS, _DUMMY_BCRYPT_HASH
+from zephyrex.pydantic2.fastapi import AuthType, RouterMixin
+from zephyrex.pydantic2.registry import BaseModel
+
+SERVICE_ACCOUNT_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+MIN_SECRET_LENGTH = 16
+# bcrypt hashes at most this many bytes; a longer secret would be silently
+# truncated, so it is refused instead.
+MAX_SECRET_BYTES = 72
 
 
-# ---------------------------------------------------------------------------
-# Database model
-# ---------------------------------------------------------------------------
+def _valid_name(name: Optional[str]) -> str:
+    if not name or not SERVICE_ACCOUNT_NAME.match(name):
+        raise HTTPException(
+            status_code=422,
+            detail="A service account name is 1-64 letters, digits, '.', '_' or '-'",
+        )
+    return name
 
 
-class LDAPDirectoryEntryModel(
+def _secret_hash(secret: Optional[str]) -> str:
+    if not isinstance(secret, str) or len(secret) < MIN_SECRET_LENGTH:
+        raise HTTPException(
+            status_code=422,
+            detail=f"A service account secret is at least {MIN_SECRET_LENGTH} characters",
+        )
+    raw = secret.encode()
+    if len(raw) > MAX_SECRET_BYTES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"A service account secret is at most {MAX_SECRET_BYTES} bytes",
+        )
+    return bcrypt.hashpw(raw, bcrypt.gensalt(rounds=_BCRYPT_ROUNDS)).decode()
+
+
+def secret_matches(secret: str, secret_hash: Optional[str]) -> bool:
+    """Whether ``secret`` is the one hashed as ``secret_hash``. Without a
+    hash the same bcrypt work is done, so an unknown account takes as long
+    to refuse as a wrong secret."""
+    raw = secret.encode()
+    if not secret_hash or len(raw) > MAX_SECRET_BYTES:
+        bcrypt.checkpw(raw[:MAX_SECRET_BYTES], _DUMMY_BCRYPT_HASH)
+        return False
+    return bcrypt.checkpw(raw, secret_hash.encode())
+
+
+class LdapServiceAccountModel(
     ApplicationModel,
     UpdateMixinModel,
+    NameMixinModel,
     metaclass=ModelMeta,
 ):
-    """An entry in the LDAP directory served by this instance."""
+    """An identity a legacy application binds to the LDAP directory as."""
 
-    dn: str = Field(..., description="Distinguished name of this entry")
-    object_class: str = Field(
-        "inetOrgPerson", description="Space-delimited LDAP objectClass values"
+    description: Optional[str] = Field(None, description="What uses this account")
+    enabled: bool = Field(True, description="Whether the account may bind")
+    # Write-only: excluded from every serialization; only the bind reads it.
+    secret_hash: Optional[str] = Field(
+        None, exclude=True, description="bcrypt hash of the bind secret"
     )
-    user_id: Optional[str] = Field(
-        None, description="Local user ID this entry represents (if a person entry)"
-    )
-    attributes_json: str = Field(
-        "{}", description="JSON-encoded LDAP attributes for this entry"
-    )
-    parent_dn: Optional[str] = Field(
-        None, description="Parent entry DN for tree traversal"
-    )
-    is_enabled: bool = Field(True, description="Whether this entry is visible in search results")
 
-    table_comment: ClassVar[str] = "LDAP directory entries served by this instance"
+    table_comment: ClassVar[str] = (
+        "Service accounts that bind to this server's LDAP directory"
+    )
+    is_system_entity: ClassVar[bool] = True
 
-    class Create(BaseModel):
-        dn: str
-        object_class: str = "inetOrgPerson"
-        user_id: Optional[str] = None
-        attributes_json: str = "{}"
-        parent_dn: Optional[str] = None
-        is_enabled: bool = True
+    class Create(BaseModel, NameMixinModel):
+        description: Optional[str] = None
+        enabled: bool = True
+        secret: Optional[str] = Field(
+            None, exclude=True, description="The bind secret (write-only)"
+        )
+        # Server-computed from ``secret``; whatever a caller sends is replaced.
+        secret_hash: Optional[str] = None
 
     class Update(BaseModel):
-        object_class: Optional[str] = None
-        attributes_json: Optional[str] = None
-        is_enabled: Optional[bool] = None
+        description: Optional[str] = None
+        enabled: Optional[bool] = None
+        secret: Optional[str] = Field(
+            None, exclude=True, description="A new bind secret (write-only)"
+        )
+        secret_hash: Optional[str] = None
 
-    class Search(ApplicationModel.Search, UpdateMixinModel.Search):
-        dn: Optional[StringSearchModel] = None
-        user_id: Optional[StringSearchModel] = None
-        parent_dn: Optional[StringSearchModel] = None
-        is_enabled: Optional[bool] = None
-
-
-class LDAPProviderConfigModel(
-    ApplicationModel,
-    UpdateMixinModel,
-    metaclass=ModelMeta,
-):
-    """Server-side LDAP provider configuration."""
-
-    listen_port: int = Field(3389, description="Port the LDAP server listens on")
-    base_dn: str = Field(..., description="Root DN for the directory tree")
-    tls_cert_path: Optional[str] = Field(
-        None, description="Path to TLS certificate for LDAPS"
-    )
-    tls_key_path: Optional[str] = Field(
-        None, description="Path to TLS private key for LDAPS"
-    )
-    realm: Optional[str] = Field(None, description="Authentication realm name")
-    max_connections: int = Field(100, description="Maximum concurrent LDAP connections")
-    is_enabled: bool = Field(True)
-
-    table_comment: ClassVar[str] = "LDAP provider server configuration"
-
-    class Create(BaseModel):
-        listen_port: int = 3389
-        base_dn: str
-        tls_cert_path: Optional[str] = None
-        tls_key_path: Optional[str] = None
-        realm: Optional[str] = None
-        max_connections: int = 100
-        is_enabled: bool = True
-
-    class Update(BaseModel):
-        listen_port: Optional[int] = None
-        base_dn: Optional[str] = None
-        tls_cert_path: Optional[str] = None
-        tls_key_path: Optional[str] = None
-        realm: Optional[str] = None
-        max_connections: Optional[int] = None
-        is_enabled: Optional[bool] = None
-
-    class Search(ApplicationModel.Search, UpdateMixinModel.Search):
-        base_dn: Optional[StringSearchModel] = None
-        is_enabled: Optional[bool] = None
+    class Search(
+        ApplicationModel.Search, UpdateMixinModel.Search, NameMixinModel.Search
+    ):
+        description: Optional[StringSearchModel] = None
+        enabled: Optional[bool] = None
 
 
-# ---------------------------------------------------------------------------
-# Manager
-# ---------------------------------------------------------------------------
+class LdapServiceAccountManager(AbstractBLLManager, RouterMixin):
+    _model = LdapServiceAccountModel
 
+    prefix: ClassVar[Optional[str]] = "/v1/ldap/service-account"
+    tags: ClassVar[Optional[List[str]]] = ["LDAP Directory"]
+    auth_type: ClassVar[AuthType] = AuthType.JWT
 
-class LDAPProviderManager(AbstractBLLManager):
-    _model = LDAPProviderConfigModel
+    def _require_server_side(self) -> None:
+        requester_id = self.requester.id
+        if not (is_root_id(requester_id) or is_system_id(requester_id)):
+            raise HTTPException(
+                status_code=403,
+                detail="LDAP service accounts are configured by the server only",
+            )
+
+    def _named(self, name: str) -> List[Any]:
+        Account = LdapServiceAccountModel.DB(self.model_registry.DB.manager.Base)
+        found: List[Any] = Account.list(
+            requester_id=env("ROOT_ID"),
+            model_registry=self.model_registry,
+            filters=[Account.name == name, Account.deleted_at.is_(None)],
+        )
+        return found
+
+    def _prepared(self, fields: Dict[str, Any]) -> Dict[str, Any]:
+        name = _valid_name(fields.get("name"))
+        if self._named(name):
+            raise HTTPException(
+                status_code=409, detail=f"A service account named {name!r} exists"
+            )
+        fields["secret_hash"] = _secret_hash(fields.pop("secret", None))
+        return fields
+
+    def create(self, **kwargs: Any) -> Any:
+        self._require_server_side()
+        if isinstance(kwargs.get("entities"), list):
+            names = [entity.get("name") for entity in kwargs["entities"]]
+            if len(set(names)) != len(names):
+                raise HTTPException(
+                    status_code=409, detail="Service account names repeat"
+                )
+            kwargs["entities"] = [self._prepared(dict(e)) for e in kwargs["entities"]]
+            return super().create(**kwargs)
+        return super().create(**self._prepared(dict(kwargs)))
+
+    def update(self, id: str, **kwargs: Any) -> Any:
+        self._require_server_side()
+        kwargs.pop("secret_hash", None)
+        if "secret" in kwargs:
+            kwargs["secret_hash"] = _secret_hash(kwargs.pop("secret"))
+        return super().update(id, **kwargs)
+
+    def delete(self, id: str) -> None:
+        self._require_server_side()
+        super().delete(id)
