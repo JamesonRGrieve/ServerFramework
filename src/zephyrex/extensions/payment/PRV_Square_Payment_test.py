@@ -1,392 +1,265 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
+"""Square on the wire (a local server answering as Square does), its
+signed notifications, and the real Square sandbox."""
+
 import base64
 import hashlib
 import hmac
-import inspect
+import json
 import uuid
-from dataclasses import dataclass
+from decimal import Decimal
+from typing import Any, Dict
 
 import pytest
-from square import Square
 
-from zephyrex.extensions.payment.BLL_Payment import *  # noqa: F401,F403
-from zephyrex.extensions.payment.PRV_Square_Payment import (
-    PaymentExtensionSquareProvider,
-    Square_CustomerManager,
-    Square_CustomerModel,
-    Square_PaymentModel,
-    Square_SubscriptionModel,
+from zephyrex.extensions.ExternalErrors import (
+    InvalidInputExternalError,
+    PermanentExternalError,
 )
-from zephyrex.lib.Environment import env
+from zephyrex.extensions.payment.EXT_Payment import (
+    CustomerRequest,
+    MoneyAction,
+    PaymentRequest,
+    SubscriptionRequest,
+)
+from zephyrex.extensions.payment.PRV_Square_Payment import (
+    API_VERSION,
+    PRV_Square_Payment,
+    split_name,
+)
 
-# Square's sandbox test nonce for a card that is always approved.
-SANDBOX_APPROVED_CARD = "cnon:card-nonce-ok"
+KEY = "square-signature-key"
+URL = "https://example.test/hooks/square"
+PAYMENT = {
+    "id": "sq_1",
+    "status": "COMPLETED",
+    "amount_money": {"amount": 1000, "currency": "CAD"},
+    "customer_id": "C1",
+}
 
 
-@dataclass(frozen=True)
-class _SquareWebhook:
-    key: str
-    url: str
+def answer(body: Any, status: int = 200):
+    return (status, {"Content-Type": "application/json"}, json.dumps(body).encode())
 
-    def sign(self, payload: bytes, url: str = "") -> str:
-        """Square's signature, computed independently of the SDK: base64
-        HMAC-SHA256 of the notification URL followed by the body."""
-        message = (url or self.url).encode() + payload
-        digest = hmac.new(self.key.encode(), message, hashlib.sha256).digest()
-        return base64.b64encode(digest).decode()
+
+def body(request) -> Dict[str, Any]:
+    parsed: Dict[str, Any] = json.loads(request.body)
+    return parsed
+
+
+def signature(payload: bytes, key: str = KEY, url: str = URL) -> Dict[str, str]:
+    digest = hmac.new(key.encode(), url.encode() + payload, hashlib.sha256).digest()
+    return {"x-square-hmacsha256-signature": base64.b64encode(digest).decode()}
+
+
+def payment_request(**fields: Any) -> PaymentRequest:
+    base: Dict[str, Any] = dict(
+        amount=Decimal("10"),
+        currency="CAD",
+        user_id="u1",
+        idempotency_key="k1",
+        payment_method_id="cnon:card-nonce-ok",
+    )
+    return PaymentRequest(**{**base, **fields})
 
 
 @pytest.fixture
-def square_webhook(monkeypatch) -> _SquareWebhook:
-    webhook = _SquareWebhook(key="sq_sig_key_test", url="https://api.example.test/hook")
-    monkeypatch.setattr(
-        PaymentExtensionSquareProvider,
-        "get_webhook_signature_key",
-        classmethod(lambda cls: webhook.key),
-    )
-    monkeypatch.setattr(
-        PaymentExtensionSquareProvider,
-        "get_webhook_notification_url",
-        classmethod(lambda cls: webhook.url),
-    )
-    return webhook
+def square(local_http_server, provider_instance):
+    def _start(routes):
+        server = local_http_server(routes)
+        instance = provider_instance(
+            PRV_Square_Payment,
+            api_key="EAAA-local",
+            settings={
+                "api_base": server.base_url,
+                "location_id": "L1",
+                "webhook_signature_key": KEY,
+                "webhook_notification_url": URL,
+            },
+        )
+        return server, instance
+
+    return _start
 
 
-@pytest.mark.payment
-@pytest.mark.square
-class TestSquareProvider:
-    """Test suite for Square payment provider.
+class TestWire:
+    def test_names(self):
+        assert split_name("Ada King Lovelace") == ("Ada", "King Lovelace")
+        assert split_name(None) == (None, None)
 
-    Tests provider static methods, payment processing, and Square API
-    integration. Fully compatible with the Provider Rotation System.
-    """
+    async def test_a_payment(self, square):
+        server, instance = square({"/v2/payments": answer({"payment": PAYMENT})})
+        made = await PRV_Square_Payment.create_payment(
+            instance, payment_request(description="order 7", capture=False)
+        )
+        sent = body(server.requests[0])
+        assert sent["amount_money"] == {"amount": 1000, "currency": "CAD"}
+        assert (
+            sent["source_id"] == "cnon:card-nonce-ok" and sent["autocomplete"] is False
+        )
+        assert sent["idempotency_key"] == "k1" and sent["note"] == "order 7"
+        assert server.requests[0].headers["square-version"] == API_VERSION
+        assert made["status"] == "succeeded" and made["amount"] == "10.00"
 
-    provider_class = PaymentExtensionSquareProvider
-    extension_id = "payment"
-
-    @pytest.fixture
-    def square_access_token(self):
-        api_key = env("SQUARE_ACCESS_TOKEN")
-        if not api_key:
-            pytest.xfail("SQUARE_ACCESS_TOKEN environment variable not set")
-        return api_key
-
-    @pytest.fixture
-    def provider_instance(self, square_access_token):
-        class MockProviderInstance:
-            def __init__(self, api_key):
-                self.id = "test_square_instance_id"
-                self.api_key = api_key
-                self.provider_id = "square"
-                self.name = "Test Square Instance"
-
-        return MockProviderInstance(square_access_token)
-
-    def test_provider_structure(self):
-        assert hasattr(PaymentExtensionSquareProvider, "name")
-        assert hasattr(PaymentExtensionSquareProvider, "version")
-        assert hasattr(PaymentExtensionSquareProvider, "description")
-        assert hasattr(PaymentExtensionSquareProvider, "dependencies")
-        assert hasattr(PaymentExtensionSquareProvider, "_env")
-        assert hasattr(PaymentExtensionSquareProvider, "bond_instance")
-        assert hasattr(PaymentExtensionSquareProvider, "get_platform_name")
-
-    def test_provider_metadata(self):
-        assert PaymentExtensionSquareProvider.name == "square"
-        assert isinstance(PaymentExtensionSquareProvider.version, str)
-        assert isinstance(PaymentExtensionSquareProvider.description, str)
-        assert PaymentExtensionSquareProvider.get_platform_name() == "Square"
-
-    def test_provider_dependencies(self):
-        deps = PaymentExtensionSquareProvider.dependencies
-        assert deps is not None
-        assert hasattr(deps, "pip")
-        assert len(deps.pip) > 0
-        squareup_dep = next((dep for dep in deps.pip if dep.name == "squareup"), None)
-        assert squareup_dep is not None
-
-    def test_provider_env_vars(self):
-        env_vars = PaymentExtensionSquareProvider._env
-        assert isinstance(env_vars, dict)
-        assert "SQUARE_ACCESS_TOKEN" in env_vars
-        assert "SQUARE_APP_ID" in env_vars
-        assert "SQUARE_WEBHOOK_SIGNATURE_KEY" in env_vars
-        assert "SQUARE_CURRENCY" in env_vars
-
-    def test_bond_instance_without_api_key(self, monkeypatch):
-        """No key on the instance and none configured: the provider falls back
-        to SQUARE_ACCESS_TOKEN, so it is cleared where ``env()`` reads it."""
-        from zephyrex.lib import Environment
-
-        monkeypatch.setenv("SQUARE_ACCESS_TOKEN", "")
-        if hasattr(Environment.settings, "SQUARE_ACCESS_TOKEN"):
-            monkeypatch.setattr(Environment.settings, "SQUARE_ACCESS_TOKEN", "")
-
-        class MockInstanceWithoutKey:
-            id = "test_id"
-            api_key = None
-
-        instance = MockInstanceWithoutKey()
-        bonded = PaymentExtensionSquareProvider.bond_instance(instance)
-        assert bonded is None
-
-    def test_bond_instance_with_api_key(self, provider_instance):
-        """Bonds a v42+ client: ``square.client.Client`` no longer exists."""
-        bonded = PaymentExtensionSquareProvider.bond_instance(provider_instance)
-        assert bonded is not None
-        assert isinstance(bonded.sdk, Square)
-
-    def test_an_unknown_environment_does_not_bond(self, monkeypatch):
-        monkeypatch.setenv("SQUARE_ENVIRONMENT", "staging")
-        from zephyrex.lib import Environment
-
-        if hasattr(Environment.settings, "SQUARE_ENVIRONMENT"):
-            monkeypatch.setattr(Environment.settings, "SQUARE_ENVIRONMENT", "staging")
-
-        class Instance:
-            id = "test_id"
-            api_key = "token"
-
-        assert PaymentExtensionSquareProvider.bond_instance(Instance()) is None
-
-    def test_provider_methods_are_plain_classmethods(self):
-        """create_payment was declared ``@classmethod`` twice; Python 3.13
-        no longer chains classmethods, so it could not be called there."""
-        for name, member in vars(PaymentExtensionSquareProvider).items():
-            if isinstance(member, classmethod):
-                assert not isinstance(member.__func__, classmethod), name
-        assert inspect.ismethod(PaymentExtensionSquareProvider.create_payment)
-
-    def test_static_configuration_methods(self):
-        access_token = PaymentExtensionSquareProvider.get_access_token()
-        if env("SQUARE_ACCESS_TOKEN"):
-            assert access_token == env("SQUARE_ACCESS_TOKEN")
-
-        app_id = PaymentExtensionSquareProvider.get_app_id()
-        if env("SQUARE_APP_ID"):
-            assert app_id == env("SQUARE_APP_ID")
-
-    def test_currency_and_environment_handling(self):
-        default_currency = PaymentExtensionSquareProvider.get_default_currency()
-        assert isinstance(default_currency, str)
-        assert len(default_currency) == 3
-
-    def test_external_models_exist(self):
-        assert Square_CustomerModel is not None
-        assert hasattr(Square_CustomerModel, "external_resource")
-        assert Square_CustomerModel.external_resource == "customers"
-        assert getattr(Square_CustomerModel, "_is_extension_model", False)
-
-    def test_external_manager_exists(self):
-        assert Square_CustomerManager is not None
-        assert hasattr(Square_CustomerManager, "sync_contact")
-        assert hasattr(Square_CustomerManager, "create_customer")
-        assert callable(Square_CustomerManager.sync_contact)
-        assert callable(Square_CustomerManager.create_customer)
-
-    def test_square_models_structure(self):
-        models = [
-            (Square_CustomerModel, "customers"),
-            (Square_PaymentModel, "payments"),
-            (Square_SubscriptionModel, "subscriptions"),
-        ]
-        for model_class, expected_resource in models:
-            assert hasattr(model_class, "external_resource")
-            assert model_class.external_resource == expected_resource
-            assert getattr(model_class, "_is_extension_model", False)
-
-    def test_services_method(self):
-        services = PaymentExtensionSquareProvider.services()
-        assert isinstance(services, list)
-        assert "payment" in services
-
-    def test_extension_info(self):
-        info = PaymentExtensionSquareProvider.get_extension_info()
-        assert isinstance(info, dict)
-        assert info["platform"] == "Square"
-
-    @pytest.mark.asyncio
-    async def test_process_webhook_invalid_signature(self, provider_instance):
-        try:
-            result = await PaymentExtensionSquareProvider.process_webhook(
-                provider_instance, b'{"test": "data"}', "invalid_signature"
+    async def test_a_payment_needs_a_source(self, square):
+        server, instance = square({})
+        with pytest.raises(InvalidInputExternalError, match="payment_method_id"):
+            await PRV_Square_Payment.create_payment(
+                instance, payment_request(payment_method_id=None)
             )
-            assert isinstance(result, dict)
-            assert "error" in result or not result.get("success", True)
-        except Exception as e:
-            error_msg = str(e).lower()
-            assert any(
-                err in error_msg
-                for err in ["signature", "webhook", "invalid", "verify", "configured"]
-            )
+        assert server.requests == []
 
-    @pytest.mark.asyncio
-    async def test_process_webhook_empty_signature_rejected(self):
-        # #228: Square previously had NO empty-signature guard and would fall
-        # through to an HMAC compare, returning {"success": False}. It must now
-        # reject an empty/missing signature up front — uniform with PayPal /
-        # Moneris / Helcim, which raise before any HMAC is computed. The guard
-        # runs before provider_instance / the signing key are touched.
-        with pytest.raises(Exception) as exc_info:
-            await PaymentExtensionSquareProvider.process_webhook(
-                None, b'{"type": "payment.updated"}', ""
-            )
-        assert "signature" in str(exc_info.value).lower()
-
-    @pytest.mark.asyncio
-    async def test_process_webhook_valid_signature(self, square_webhook):
-        """Square signs the notification URL followed by the body, base64
-        HMAC-SHA256 (developer.squareup.com/docs/webhooks/step3validate)."""
-        payload = b'{"type": "payment.updated", "event_id": "evt_sq_1"}'
-        result = await PaymentExtensionSquareProvider.process_webhook(
-            None, payload, square_webhook.sign(payload)
+    async def test_a_full_refund_takes_whats_left(self, square):
+        partly = {**PAYMENT, "refunded_money": {"amount": 300, "currency": "CAD"}}
+        server, instance = square(
+            {
+                "/v2/payments/sq_1": answer({"payment": partly}),
+                "/v2/refunds": answer(
+                    {
+                        "refund": {
+                            "id": "r1",
+                            "status": "PENDING",
+                            "amount_money": {"amount": 700, "currency": "CAD"},
+                        }
+                    }
+                ),
+            }
         )
-        assert result["success"] is True
-        assert result["event_type"] == "payment.updated"
-        assert result["event_id"] == "evt_sq_1"
-
-    @pytest.mark.asyncio
-    async def test_process_webhook_body_only_digest_refused(self, square_webhook):
-        """The hex digest of the body alone, which the provider used to
-        expect, is not Square's signature: no genuine webhook carried it."""
-        payload = b'{"type": "payment.updated"}'
-        body_only = hmac.new(
-            square_webhook.key.encode(), payload, hashlib.sha256
-        ).hexdigest()
-        result = await PaymentExtensionSquareProvider.process_webhook(
-            None, payload, body_only
+        refund = await PRV_Square_Payment.refund_payment(
+            instance, "sq_1", MoneyAction(currency="CAD", idempotency_key="k2")
         )
-        assert result == {"success": False, "error": "Invalid signature"}
-
-    @pytest.mark.asyncio
-    async def test_process_webhook_signed_for_another_url_refused(self, square_webhook):
-        payload = b'{"type": "payment.updated"}'
-        other = square_webhook.sign(payload, url="https://elsewhere.example/hook")
-        result = await PaymentExtensionSquareProvider.process_webhook(
-            None, payload, other
-        )
-        assert result == {"success": False, "error": "Invalid signature"}
-
-    @pytest.mark.asyncio
-    async def test_process_webhook_wrong_signature_returns_failure(
-        self, square_webhook
-    ):
-        payload = b'{"type": "payment.updated"}'
-        result = await PaymentExtensionSquareProvider.process_webhook(
-            None, payload, "deadbeef_not_the_real_digest"
-        )
-        assert result == {"success": False, "error": "Invalid signature"}
-
-    @pytest.mark.asyncio
-    async def test_process_webhook_needs_the_notification_url(
-        self, square_webhook, monkeypatch
-    ):
-        monkeypatch.setattr(
-            PaymentExtensionSquareProvider,
-            "get_webhook_notification_url",
-            classmethod(lambda cls: ""),
-        )
-        payload = b'{"type": "payment.updated"}'
-        result = await PaymentExtensionSquareProvider.process_webhook(
-            None, payload, square_webhook.sign(payload)
-        )
-        assert result == {
-            "success": False,
-            "error": "Webhook notification URL not configured",
+        assert body(server.requests[1])["amount_money"] == {
+            "amount": 700,
+            "currency": "CAD",
         }
+        assert refund["amount"] == "7.00" and refund["status"] == "pending"
 
-
-@pytest.mark.payment
-@pytest.mark.square
-@pytest.mark.external_api(provider="square")
-class TestSquareSandbox:
-    """Real calls to the Square sandbox through the v42+ SDK; auto-xfailed
-    without SQUARE_ACCESS_TOKEN. The environment is pinned to the sandbox,
-    so a production token fails to authenticate instead of acting."""
-
-    @pytest.fixture(autouse=True)
-    def _sandbox(self, monkeypatch):
-        from zephyrex.lib import Environment
-
-        monkeypatch.setenv("SQUARE_ENVIRONMENT", "sandbox")
-        if hasattr(Environment.settings, "SQUARE_ENVIRONMENT"):
-            monkeypatch.setattr(Environment.settings, "SQUARE_ENVIRONMENT", "sandbox")
-        PaymentExtensionSquareProvider._configure_square()
-        yield
-        monkeypatch.undo()
-        PaymentExtensionSquareProvider._configure_square()
-
-    @pytest.fixture
-    def instance(self):
-        class Instance:
-            id = "square_sandbox"
-            api_key = env("SQUARE_ACCESS_TOKEN")
-
-        return Instance()
-
-    def test_customer_round_trip(self, instance):
-        email = f"zephyrex-test-{uuid.uuid4().hex[:12]}@example.com"
-        created = PaymentExtensionSquareProvider.create_customer(
-            instance, email=email, name="Ada Lovelace", metadata={"user_id": "u-1"}
+    async def test_customers_and_subscriptions(self, square):
+        server, instance = square(
+            {
+                "/v2/customers": answer(
+                    {
+                        "customer": {
+                            "id": "C1",
+                            "email_address": "a@b.c",
+                            "given_name": "Ada",
+                        }
+                    }
+                ),
+                "/v2/subscriptions": answer(
+                    {
+                        "subscription": {
+                            "id": "S1",
+                            "status": "ACTIVE",
+                            "plan_variation_id": "PV",
+                            "customer_id": "C1",
+                            "charged_through_date": "2030-01-31",
+                        }
+                    }
+                ),
+            }
         )
-        assert created["success"] is True, created
-        customer_id = created["customer_id"]
-        try:
-            fetched = PaymentExtensionSquareProvider.get_customer(instance, customer_id)
-            assert fetched["success"] is True, fetched
-            assert fetched["email"] == email
-            assert fetched["name"] == "Ada Lovelace"
-
-            updated = Square_CustomerModel.update_via_provider(
-                instance, customer_id, note="updated by the zephyrex suite"
-            )
-            assert updated["success"] is True, updated
-            assert updated["data"]["note"] == "updated by the zephyrex suite"
-        finally:
-            deleted = Square_CustomerModel.delete_via_provider(instance, customer_id)
-        assert deleted == {"success": True}
-
-    @pytest.fixture
-    def merchant_currency(self, instance) -> str:
-        """The sandbox merchant takes payments only in its own currency."""
-        from square.environment import SquareEnvironment
-
-        client = Square(token=instance.api_key, environment=SquareEnvironment.SANDBOX)
-        currency = client.merchants.get(merchant_id="me").merchant.currency
-        assert currency
-        return str(currency)
-
-    def test_payment_then_full_refund(self, instance, merchant_currency):
-        """A refund with no amount refunds the whole payment: Square
-        requires the amount on every refund, so it is read from the payment."""
-        paid = PaymentExtensionSquareProvider.create_payment(
+        customer = await PRV_Square_Payment.create_customer(
             instance,
-            amount=1.25,
-            currency=merchant_currency,
-            payment_method_id=SANDBOX_APPROVED_CARD,
+            CustomerRequest(
+                email="a@b.c", user_id="u1", idempotency_key="k", name="Ada"
+            ),
         )
-        assert paid["success"] is True, paid
-        assert paid["status"] == "COMPLETED"
-
-        fetched = PaymentExtensionSquareProvider.get_payment(
-            instance, paid["payment_id"]
+        assert customer["customer_id"] == "C1" and customer["name"] == "Ada"
+        made = await PRV_Square_Payment.create_subscription(
+            instance,
+            SubscriptionRequest(
+                plan_id="PV", user_id="u1", idempotency_key="k", customer_id="C1"
+            ),
         )
-        assert fetched["success"] is True, fetched
-        assert fetched["amount"] == 1.25
-        assert fetched["currency"] == merchant_currency
+        assert body(server.requests[1])["location_id"] == "L1"
+        assert made["active"] and made["current_period_end"].day == 31
 
-        refunded = PaymentExtensionSquareProvider.refund_payment(
-            instance, paid["payment_id"]
+    async def test_what_square_cannot_do(self, square):
+        _, instance = square({})
+        with pytest.raises(PermanentExternalError):
+            await PRV_Square_Payment.cancel_subscription(instance, "S1", False)
+
+
+class TestNotifications:
+    PAYLOAD = json.dumps(
+        {
+            "event_id": "e1",
+            "type": "payment.updated",
+            "data": {"type": "payment", "id": "sq_1", "object": {"payment": PAYMENT}},
+        }
+    ).encode()
+
+    async def test_signed_over_the_url_and_body(self, square):
+        _, instance = square({})
+        event = await PRV_Square_Payment.verify_webhook(
+            instance, self.PAYLOAD, signature(self.PAYLOAD)
         )
-        assert refunded["success"] is True, refunded
-        assert refunded["amount"] == 1.25
-        assert refunded["status"] in ("PENDING", "COMPLETED")
+        assert (event["kind"], event["object_id"]) == ("payment", "sq_1")
 
-    def test_a_refused_request_is_an_error_result(self, instance):
-        """Square's status and detail, never its response headers (which
-        carry cookies) reach the caller."""
-        result = PaymentExtensionSquareProvider.get_payment(instance, "no-such-payment")
-        assert result["success"] is False
-        assert result["error"].startswith("Square refused the request (404): ")
-        assert "headers" not in result["error"]
-        assert "cookie" not in result["error"].lower()
+    @pytest.mark.parametrize(
+        "headers",
+        [
+            {},
+            signature(PAYLOAD, url="https://elsewhere.test/"),
+            signature(PAYLOAD, key="x"),
+        ],
+        ids=["unsigned", "other-url", "other-key"],
+    )
+    async def test_refused(self, square, headers):
+        _, instance = square({})
+        with pytest.raises(InvalidInputExternalError):
+            await PRV_Square_Payment.verify_webhook(instance, self.PAYLOAD, headers)
+
+
+@pytest.mark.external_api(provider="square")
+class TestSandbox:
+    """Square's sandbox: a customer, and a payment with its test nonce
+    refunded in full."""
+
+    @pytest.fixture
+    def instance(self, provider_instance, sandbox_credentials_for):
+        creds = sandbox_credentials_for("square")
+        return provider_instance(
+            PRV_Square_Payment,
+            api_key=creds["SQUARE_ACCESS_TOKEN"],
+            settings={"api_base": "https://connect.squareupsandbox.com"},
+        )
+
+    async def test_customer_round_trip(self, instance):
+        made = await PRV_Square_Payment.create_customer(
+            instance,
+            CustomerRequest(
+                email="zephyrex-test@example.com",
+                user_id="u",
+                idempotency_key=str(uuid.uuid4()),
+                name="Zephyrex Test",
+            ),
+        )
+        found = await PRV_Square_Payment.get_customer(instance, made["customer_id"])
+        assert found["email"] == "zephyrex-test@example.com"
+
+    async def test_payment_then_full_refund(self, instance):
+        """In the main location's currency: Square refuses any other."""
+        locations = await PRV_Square_Payment.square(instance, "GET", "/v2/locations")
+        main = next(
+            (
+                location
+                for location in locations.get("locations") or []
+                if location.get("status") == "ACTIVE"
+            ),
+            None,
+        )
+        assert main is not None, "the sandbox account has no active location"
+        paid = await PRV_Square_Payment.create_payment(
+            instance,
+            payment_request(
+                currency=main["currency"], idempotency_key=str(uuid.uuid4())
+            ),
+        )
+        await PRV_Square_Payment.refund_payment(
+            instance,
+            paid["external_id"],
+            MoneyAction(currency=paid["currency"], idempotency_key=str(uuid.uuid4())),
+        )
+        assert paid["status"] == "succeeded"

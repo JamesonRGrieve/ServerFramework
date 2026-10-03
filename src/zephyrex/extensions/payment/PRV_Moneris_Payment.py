@@ -1,618 +1,207 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Moneris payment provider for zephyrex.
+"""Moneris, through the Moneris API (``api.moneris.io``; the sandbox is
+``api.sb.moneris.io``): an API key (``X-Api-Key``), the merchant's
+thirteen-character id (``X-Merchant-Id``) and the pinned ``Api-Version``
+on every request, an ``idempotencyKey`` in every body that moves money.
 
-Integrates with the Moneris REST API (api.sb.moneris.io / api.moneris.io)
-for payment processing, customer management, subscriptions, and webhook
-handling. No third-party SDK — uses ``httpx`` against the REST surface
-directly. Fully static implementation compatible with the Provider
-Rotation System.
+A payment charges a Moneris token (temporary from Moneris Checkout, or
+permanent); amounts are in minor units. Moneris documents no field that
+holds a payment for later capture, so only immediate payments are taken
+here; an authorized payment (made elsewhere) can still be completed.
+Customer records, subscriptions and notifications are not offered:
+Moneris documents no signed notifications, and the earlier verification
+here (an HMAC keyed with the store id, which is not a secret) let anyone
+forge one.
 """
 
-from __future__ import annotations
-
-import json
 import uuid
-from typing import Any, ClassVar, Dict, List, Optional
+from typing import Any, ClassVar, Dict, Mapping, Optional, Set, Tuple
 
-try:
-    import httpx
-except ImportError:
-    httpx = None  # type: ignore[assignment]
-
-from pydantic import BaseModel, Field
-
-from zephyrex.extensions.AbstractExtensionProvider import AbstractProviderInstance_SDK
-from zephyrex.extensions.AbstractExternalModel import (
-    AbstractExternalManager,
-    AbstractExternalModel,
+from zephyrex.extensions.AbstractExtensionProvider import InstanceSetting
+from zephyrex.extensions.ExternalErrors import (
+    InvalidInputExternalError,
+    TransientExternalError,
 )
 from zephyrex.extensions.payment.EXT_Payment import (
     AbstractPaymentProvider,
-    PassthroughExternalModel,
+    MoneyAction,
+    PaymentRequest,
 )
-from zephyrex.lib.Dependencies import Dependencies, PIP_Dependency
-from zephyrex.lib.Environment import env
-from zephyrex.lib.Logging import logger
-from zephyrex.pydantic2.registry import BaseModel
-from zephyrex.logic.AbstractLogicManager import ModelMeta
+from zephyrex.lib.ProviderHTTPClient import path_segment
 from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 
-_SANDBOX_BASE = "https://api.sb.moneris.io"
-_PRODUCTION_BASE = "https://api.moneris.io"
-_API_VERSION = "2024-09-17"
+API_VERSION = "2026-08-14"
+_STATUSES = {
+    "SUCCEEDED": "succeeded",
+    "AUTHORIZED": "authorized",
+    "PROCESSING": "pending",
+    "DECLINED": "failed",
+    "CANCELED": "canceled",
+}
+ORDER_ID_CHARACTERS = 50
+TEMPORARY_TOKEN_PREFIX = "ot-"
 
 
-def _base_url() -> str:
-    mode = (env("MONERIS_ENVIRONMENT") or "testing").lower()
-    if mode in ("production", "live"):
-        return _PRODUCTION_BASE
-    return _SANDBOX_BASE
+def _minor(money: Any) -> Tuple[int, str]:
+    money = money if isinstance(money, Mapping) else {}
+    return int(money.get("amount") or 0), str(money.get("currency") or "CAD")
 
 
-def _default_headers() -> Dict[str, str]:
-    headers: Dict[str, str] = {
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-        "Api-Version": _API_VERSION,
+class PRV_Moneris_Payment(AbstractPaymentProvider):
+    name: ClassVar[str] = "moneris"
+    friendly_name: ClassVar[str] = "Moneris"
+    description: ClassVar[str] = "A Moneris merchant account"
+    _abilities: ClassVar[Set[str]] = {
+        "payment_create",
+        "payment_get",
+        "payment_capture",
+        "payment_refund",
     }
-    merchant_id = env("MONERIS_MERCHANT_ID")
-    if merchant_id:
-        headers["X-Merchant-Id"] = merchant_id
-    api_key = env("MONERIS_API_KEY") or env("MONERIS_STORE_ID")
-    if api_key:
-        headers["X-Api-Key"] = api_key
-    return headers
-
-
-# ============================================================================
-# Moneris Customer External Model
-# ============================================================================
-
-
-class Moneris_CustomerModel(PassthroughExternalModel, metaclass=ModelMeta):
-    """External model for Moneris Customer API resource."""
-
-    class Reference:
-        pass
-
-    external_resource: ClassVar[str] = "customers"
-    _is_extension_model: ClassVar[bool] = True
-    _extension_target: ClassVar[str] = "payment"
-
-    id: str = Field(..., description="Moneris customer ID")
-    email: Optional[str] = Field(None, description="Customer email")
-    first_name: Optional[str] = Field(None, description="Customer first name")
-    last_name: Optional[str] = Field(None, description="Customer last name")
-    phone: Optional[str] = Field(None, description="Customer phone")
-    created_at: Optional[str] = Field(None, description="Creation timestamp")
-
-    class Create(BaseModel):
-        email: Optional[str] = Field(None, description="Customer email")
-        first_name: Optional[str] = Field(None, description="First name")
-        last_name: Optional[str] = Field(None, description="Last name")
-        phone: Optional[str] = Field(None, description="Phone number")
-
-    class Update(BaseModel):
-        email: Optional[str] = Field(None, description="Customer email")
-        first_name: Optional[str] = Field(None, description="First name")
-        last_name: Optional[str] = Field(None, description="Last name")
-        phone: Optional[str] = Field(None, description="Phone number")
-
-    class Search(BaseModel):
-        email: Optional[str] = Field(None, description="Search by email")
-
-    @classmethod
-    def to_external_query_format(
-        cls,
-        query_params: Dict[str, Any],
-        limit: Optional[int] = None,
-        offset: Optional[int] = None,
-        order_by: Optional[List] = None,
-    ) -> Dict[str, Any]:
-        params = dict(query_params)
-        if limit:
-            params["limit"] = min(limit, 20)
-        return params
-
-    @staticmethod
-    def create_via_provider(provider_instance, **kwargs) -> Dict[str, Any]:
-        try:
-            bonded = PaymentExtensionMonerisProvider.bond_instance(provider_instance)
-            if not bonded or not bonded.sdk:
-                return {"success": False, "error": "Failed to bond provider instance"}
-            client: httpx.Client = bonded.sdk
-            resp = client.post("/customers", json=kwargs)
-            if resp.status_code in (200, 201):
-                return {"success": True, "data": resp.json()}
-            return {"success": False, "error": resp.text}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-
-    @staticmethod
-    def get_via_provider(provider_instance, external_id: str) -> Dict[str, Any]:
-        try:
-            bonded = PaymentExtensionMonerisProvider.bond_instance(provider_instance)
-            if not bonded or not bonded.sdk:
-                return {"success": False, "error": "Failed to bond provider instance"}
-            client: httpx.Client = bonded.sdk
-            resp = client.get(f"/customers/{external_id}")
-            if resp.status_code == 200:
-                return {"success": True, "data": resp.json()}
-            return {"success": False, "error": resp.text}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-
-    @staticmethod
-    def list_via_provider(provider_instance, **kwargs) -> Dict[str, Any]:
-        try:
-            bonded = PaymentExtensionMonerisProvider.bond_instance(provider_instance)
-            if not bonded or not bonded.sdk:
-                return {"success": False, "error": "Failed to bond provider instance"}
-            client: httpx.Client = bonded.sdk
-            resp = client.get("/customers", params=kwargs)
-            if resp.status_code == 200:
-                return {"success": True, "data": resp.json()}
-            return {"success": False, "error": resp.text}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-
-    @staticmethod
-    def update_via_provider(
-        provider_instance, external_id: str, **kwargs
-    ) -> Dict[str, Any]:
-        try:
-            bonded = PaymentExtensionMonerisProvider.bond_instance(provider_instance)
-            if not bonded or not bonded.sdk:
-                return {"success": False, "error": "Failed to bond provider instance"}
-            client: httpx.Client = bonded.sdk
-            resp = client.patch(f"/customers/{external_id}", json=kwargs)
-            if resp.status_code == 200:
-                return {"success": True, "data": resp.json()}
-            return {"success": False, "error": resp.text}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-
-    @staticmethod
-    def delete_via_provider(provider_instance, external_id: str) -> Dict[str, Any]:
-        try:
-            bonded = PaymentExtensionMonerisProvider.bond_instance(provider_instance)
-            if not bonded or not bonded.sdk:
-                return {"success": False, "error": "Failed to bond provider instance"}
-            client: httpx.Client = bonded.sdk
-            resp = client.delete(f"/customers/{external_id}")
-            if resp.status_code in (200, 204):
-                return {"success": True}
-            return {"success": False, "error": resp.text}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-
-
-# ============================================================================
-# Moneris Payment / Subscription External Models
-# ============================================================================
-
-
-class Moneris_PaymentModel(AbstractExternalModel, metaclass=ModelMeta):
-    """External model for Moneris Payment API resource."""
-
-    external_resource: ClassVar[str] = "payments"
-    _is_extension_model: ClassVar[bool] = True
-
-    id: str = Field(..., description="Moneris payment ID")
-    amount: Optional[int] = Field(None, description="Amount in cents")
-    currency: Optional[str] = Field(None, description="ISO 4217 currency")
-    payment_status: Optional[str] = Field(None, description="SUCCEEDED, DECLINED, etc.")
-
-
-class Moneris_SubscriptionModel(AbstractExternalModel, metaclass=ModelMeta):
-    """External model for Moneris Subscription API resource."""
-
-    external_resource: ClassVar[str] = "subscriptions"
-    _is_extension_model: ClassVar[bool] = True
-
-    id: str = Field(...)
-    customer_id: Optional[str] = Field(None)
-    status: Optional[str] = Field(None)
-
-
-# ============================================================================
-# Moneris Provider
-# ============================================================================
-
-
-class PaymentExtensionMonerisProvider(AbstractPaymentProvider):
-    """Moneris payment provider for zephyrex.
-
-    Uses the Moneris REST API directly via ``httpx``. Supports payments,
-    customers, subscriptions, refunds, and webhook processing. Fully
-    compatible with the Provider Rotation System.
-    """
-
-    name = "moneris"
-    version = "1.0.0"
-    description = "Moneris payment provider"
-    _currency_env_var: ClassVar[str] = "MONERIS_CURRENCY"
-    _default_currency: ClassVar[str] = "CAD"
-
-    _client: ClassVar[Optional[Any]] = None
-
-    dependencies = Dependencies(
-        [
-            PIP_Dependency(
-                name="httpx",
-                friendly_name="HTTPX HTTP Client",
-                semver=">=0.24.0",
-                reason="Moneris REST API HTTP client",
-            ),
-        ]
+    instance_settings: ClassVar[Tuple[InstanceSetting, ...]] = (
+        InstanceSetting(
+            "api_key", "API key", env="MONERIS_API_KEY", secret=True, field="api_key"
+        ),
+        InstanceSetting(
+            "merchant_id",
+            "The thirteen-character merchant id",
+            env="MONERIS_MERCHANT_ID",
+        ),
+        InstanceSetting(
+            "api_base",
+            "API address (https://api.sb.moneris.io for the sandbox)",
+            default="https://api.moneris.io",
+        ),
     )
 
-    _env = {
-        "MONERIS_STORE_ID": "",
-        "MONERIS_MERCHANT_ID": "",
-        "MONERIS_API_KEY": "",
-        "MONERIS_ENVIRONMENT": "testing",
-        "MONERIS_CURRENCY": "CAD",
-    }
+    refusal_fields: ClassVar[Tuple[str, ...]] = ("detail", "errorMessage")
 
     @classmethod
-    def bond_instance(
-        cls, instance: ProviderInstanceModel
-    ) -> Optional[AbstractProviderInstance_SDK]:
-        if httpx is None:
-            logger.warning("httpx not available for Moneris provider bonding")
-            return None
-        try:
-            headers = _default_headers()
-            api_key = (
-                instance.api_key
-                if hasattr(instance, "api_key") and instance.api_key
-                else headers.get("X-Api-Key")
+    async def moneris(
+        cls,
+        instance: ProviderInstanceModel,
+        method: str,
+        path: str,
+        body: Optional[Dict[str, Any]] = None,
+        *,
+        moves_money: bool = False,
+    ) -> Dict[str, Any]:
+        headers = {
+            "X-Api-Key": cls.required(instance, "api_key"),
+            "X-Merchant-Id": cls.required(instance, "merchant_id"),
+            "Api-Version": API_VERSION,
+            "X-Correlation-Id": str(uuid.uuid4()),
+        }
+        answer = await cls.call(
+            method,
+            cls.endpoint(instance, path),
+            headers=headers,
+            json=body,
+            moves_money=moves_money,
+        )
+        if not isinstance(answer, dict):
+            raise TransientExternalError("Moneris answered without a JSON object")
+        return answer
+
+    @classmethod
+    def payment(
+        cls, instance: ProviderInstanceModel, payment: Mapping[str, Any]
+    ) -> Dict[str, Any]:
+        amount, currency = _minor(payment.get("amount"))
+        return cls.payment_answer(
+            instance,
+            payment.get("paymentId"),
+            status=_STATUSES.get(str(payment.get("paymentStatus")), "pending"),
+            provider_status=payment.get("paymentStatus"),
+            amount=cls.from_minor_units(amount, currency),
+            currency=currency,
+            customer_id=payment.get("customerId"),
+        )
+
+    @classmethod
+    async def create_payment(
+        cls, instance: ProviderInstanceModel, request: PaymentRequest
+    ) -> Dict[str, Any]:
+        if not request.capture:
+            raise cls.cannot("hold a payment for later capture")
+        token = request.payment_method_id
+        if not token:
+            raise InvalidInputExternalError(
+                "A Moneris payment needs payment_method_id: a Moneris token",
+                provider=cls.name,
             )
-            if not api_key:
-                logger.error("No API key available for Moneris provider instance")
-                return None
-            headers["X-Api-Key"] = api_key
-            client = httpx.Client(base_url=_base_url(), headers=headers, timeout=30.0)
-            return AbstractProviderInstance_SDK(client)
-        except Exception as e:
-            logger.error("Failed to bond Moneris provider instance: %s", e)
-            return None
+        if token.startswith(TEMPORARY_TOKEN_PREFIX):
+            method = {"paymentMethodSource": "TEMPORARY_TOKEN", "temporaryToken": token}
+        else:
+            method = {"paymentMethodSource": "PERMANENT_TOKEN", "permanentToken": token}
+        body: Dict[str, Any] = {
+            "idempotencyKey": request.idempotency_key,
+            "orderId": request.idempotency_key[:ORDER_ID_CHARACTERS],
+            "amount": {
+                "amount": cls.to_minor_units(request.amount, request.currency),
+                "currency": request.currency,
+            },
+            "paymentMethod": method,
+        }
+        if request.customer_id:
+            body["customerId"] = request.customer_id
+        payment = await cls.moneris(
+            instance, "POST", "/payments", body, moves_money=True
+        )
+        return cls.payment(instance, payment)
 
     @classmethod
-    def _get_client(cls) -> Optional[Any]:
-        if cls._client is not None:
-            return cls._client
-        if httpx is None:
-            return None
-        headers = _default_headers()
-        if not headers.get("X-Api-Key"):
-            return None
-        cls._client = httpx.Client(base_url=_base_url(), headers=headers, timeout=30.0)
-        return cls._client
+    async def get_payment(
+        cls, instance: ProviderInstanceModel, payment_id: str
+    ) -> Dict[str, Any]:
+        payment = await cls.moneris(
+            instance, "GET", f"/payments/{path_segment(payment_id, 'payment id')}"
+        )
+        return cls.payment(instance, payment)
 
     @classmethod
-    def get_store_id(cls) -> Optional[str]:
-        return env("MONERIS_STORE_ID")
-
-    @classmethod
-    def get_merchant_id(cls) -> Optional[str]:
-        return env("MONERIS_MERCHANT_ID")
-
-    @classmethod
-    def validate_config(cls) -> bool:
-        return bool(cls.get_store_id() and cls.get_merchant_id())
-
-    @classmethod
-    def get_platform_name(cls) -> str:
-        return "Moneris"
-
-    @classmethod
-    def services(cls) -> List[str]:
-        return ["payment", "subscription", "commerce"]
-
-    @classmethod
-
-    # ----- Payment operations ------------------------------------------------
-
-    @classmethod
-    def create_payment(
-        cls,
-        provider_instance: ProviderInstanceModel,
-        amount: float,
-        currency: str = "CAD",
-        customer_id: Optional[str] = None,
-        payment_method_id: Optional[str] = None,
-        description: Optional[str] = None,
-        metadata: Optional[Dict] = None,
-    ) -> Dict:
-        client = cls._get_client()
-        if not client:
-            raise Exception("Moneris client not configured")
-        try:
-            body: Dict[str, Any] = {
-                "idempotencyKey": str(uuid.uuid4()),
-                "amount": {
-                    "amount": cls.to_minor_units(amount, currency),
-                    "currency": currency.upper(),
-                },
-                "automaticCapture": True,
+    async def capture_payment(
+        cls, instance: ProviderInstanceModel, payment_id: str, action: MoneyAction
+    ) -> Dict[str, Any]:
+        body: Dict[str, Any] = {"idempotencyKey": action.idempotency_key}
+        if action.amount is not None:
+            body["amount"] = {
+                "amount": cls.to_minor_units(action.amount, action.currency),
+                "currency": action.currency,
             }
-            if payment_method_id:
-                body["paymentMethod"] = {
-                    "paymentMethodSource": "TOKEN",
-                    "token": {"tokenId": payment_method_id},
-                }
-            if customer_id:
-                body["customerId"] = customer_id
-            if description:
-                body["orderId"] = description
-            resp = client.post("/payments", json=body)
-            if resp.status_code in (200, 201):
-                data = resp.json()
-                return {
-                    "success": True,
-                    "payment_id": data.get("paymentId"),
-                    "amount": amount,
-                    "currency": currency,
-                    "status": data.get("paymentStatus"),
-                }
-            return {"success": False, "error": resp.text}
-        except Exception as e:
-            logger.error("Error creating Moneris payment: %s", e)
-            return {"success": False, "error": str(e)}
+        answer = await cls.moneris(
+            instance,
+            "POST",
+            f"/payments/{path_segment(payment_id, 'payment id')}/complete",
+            body,
+            moves_money=True,
+        )
+        payment = answer.get("payment")
+        return cls.payment(instance, payment if isinstance(payment, dict) else answer)
 
     @classmethod
-    def get_payment(
-        cls, provider_instance: ProviderInstanceModel, payment_id: str
-    ) -> Dict:
-        client = cls._get_client()
-        if not client:
-            raise Exception("Moneris client not configured")
-        try:
-            resp = client.get(f"/payments/{payment_id}")
-            if resp.status_code == 200:
-                data = resp.json()
-                amount_obj = data.get("amount", {})
-                return {
-                    "success": True,
-                    "payment_id": data.get("paymentId"),
-                    "amount": float(
-                        cls.from_minor_units(
-                            amount_obj.get("amount", 0), amount_obj.get("currency")
-                        )
-                    ),
-                    "currency": amount_obj.get("currency", "CAD"),
-                    "status": data.get("paymentStatus"),
-                }
-            return {"success": False, "error": resp.text}
-        except Exception as e:
-            logger.error("Error getting Moneris payment %s: %s", payment_id, e)
-            return {"success": False, "error": str(e)}
-
-    @classmethod
-    def refund_payment(
-        cls,
-        provider_instance: ProviderInstanceModel,
-        payment_id: str,
-        amount: Optional[float] = None,
-        reason: Optional[str] = None,
-    ) -> Dict:
-        client = cls._get_client()
-        if not client:
-            raise Exception("Moneris client not configured")
-        try:
-            body: Dict[str, Any] = {
-                "paymentId": payment_id,
-                "idempotencyKey": str(uuid.uuid4()),
-            }
-            if amount is not None:
-                body["refundAmount"] = {
-                    "amount": cls.to_minor_units(amount),
-                    "currency": cls.get_default_currency(),
-                }
-            if reason:
-                body["reason"] = reason
-            resp = client.post("/refunds", json=body)
-            if resp.status_code in (200, 201):
-                data = resp.json()
-                refund_amount = data.get("refundAmount", {})
-                return {
-                    "success": True,
-                    "refund_id": data.get("refundId"),
-                    "payment_id": payment_id,
-                    "amount": float(
-                        cls.from_minor_units(refund_amount.get("amount", 0))
-                    ),
-                    "reason": reason,
-                    "status": data.get("refundStatus"),
-                }
-            return {"success": False, "error": resp.text}
-        except Exception as e:
-            logger.error("Error refunding Moneris payment %s: %s", payment_id, e)
-            return {"success": False, "error": str(e)}
-
-    @classmethod
-    def create_customer(
-        cls,
-        provider_instance: ProviderInstanceModel,
-        email: str,
-        name: Optional[str] = None,
-        phone: Optional[str] = None,
-        metadata: Optional[Dict] = None,
-    ) -> Dict:
-        client = cls._get_client()
-        if not client:
-            raise Exception("Moneris client not configured")
-        try:
-            body: Dict[str, Any] = {"email": email}
-            if name:
-                parts = name.split(" ", 1)
-                body["firstName"] = parts[0]
-                if len(parts) > 1:
-                    body["lastName"] = parts[1]
-            if phone:
-                body["phone"] = phone
-            resp = client.post("/customers", json=body)
-            if resp.status_code in (200, 201):
-                data = resp.json()
-                return {
-                    "success": True,
-                    "customer_id": data.get("customerId") or data.get("id"),
-                    "email": data.get("email"),
-                    "name": name,
-                    "phone": data.get("phone"),
-                }
-            return {"success": False, "error": resp.text}
-        except Exception as e:
-            logger.error("Error creating Moneris customer: %s", e)
-            return {"success": False, "error": str(e)}
-
-    @classmethod
-    def get_customer(
-        cls, provider_instance: ProviderInstanceModel, customer_id: str
-    ) -> Dict:
-        client = cls._get_client()
-        if not client:
-            raise Exception("Moneris client not configured")
-        try:
-            resp = client.get(f"/customers/{customer_id}")
-            if resp.status_code == 200:
-                data = resp.json()
-                return {
-                    "success": True,
-                    "customer_id": data.get("customerId") or data.get("id"),
-                    "email": data.get("email"),
-                    "name": f"{data.get('firstName', '')} {data.get('lastName', '')}".strip(),
-                    "phone": data.get("phone"),
-                }
-            return {"success": False, "error": resp.text}
-        except Exception as e:
-            logger.error("Error getting Moneris customer %s: %s", customer_id, e)
-            return {"success": False, "error": str(e)}
-
-    @classmethod
-    def create_subscription(
-        cls,
-        provider_instance: ProviderInstanceModel,
-        customer_id: str,
-        price_id: str,
-        payment_method_id: Optional[str] = None,
-        trial_days: Optional[int] = None,
-        metadata: Optional[Dict] = None,
-    ) -> Dict:
-        client = cls._get_client()
-        if not client:
-            raise Exception("Moneris client not configured")
-        try:
-            body: Dict[str, Any] = {
-                "customerId": customer_id,
-                "planId": price_id,
-            }
-            if payment_method_id:
-                body["paymentMethodId"] = payment_method_id
-            resp = client.post("/subscriptions", json=body)
-            if resp.status_code in (200, 201):
-                data = resp.json()
-                return {
-                    "success": True,
-                    "subscription_id": data.get("subscriptionId") or data.get("id"),
-                    "customer_id": customer_id,
-                    "status": data.get("status"),
-                }
-            return {"success": False, "error": resp.text}
-        except Exception as e:
-            logger.error("Error creating Moneris subscription: %s", e)
-            return {"success": False, "error": str(e)}
-
-    @classmethod
-    def cancel_subscription(
-        cls,
-        provider_instance: ProviderInstanceModel,
-        subscription_id: str,
-        immediately: bool = False,
-    ) -> Dict:
-        client = cls._get_client()
-        if not client:
-            raise Exception("Moneris client not configured")
-        try:
-            resp = client.post(f"/subscriptions/{subscription_id}/cancel")
-            if resp.status_code in (200, 201):
-                data = resp.json()
-                return {
-                    "success": True,
-                    "subscription_id": subscription_id,
-                    "status": data.get("status", "cancelled"),
-                    "cancelled_immediately": immediately,
-                }
-            return {"success": False, "error": resp.text}
-        except Exception as e:
-            logger.error(
-                "Error cancelling Moneris subscription %s: %s", subscription_id, e
-            )
-            return {"success": False, "error": str(e)}
-
-    @classmethod
-    async def process_webhook(
-        cls, provider_instance: ProviderInstanceModel, payload: str, signature: str
-    ) -> Dict:
-        """Process a webhook from Moneris with HMAC-SHA256 verification."""
-        if not signature:
-            raise Exception("Webhook signature missing — cannot verify authenticity")
-        secret = cls.get_store_id()
-        if not secret:
-            raise Exception("Webhook secret (store ID) not configured — cannot verify")
-        try:
-            payload_bytes = payload.encode() if isinstance(payload, str) else payload
-            if not cls.verify_hmac_sha256(secret, payload_bytes, signature):
-                raise Exception("Webhook signature verification failed")
-            payload_str = payload if isinstance(payload, str) else payload.decode()
-            event = json.loads(payload_str)
-            event_type = event.get("type") or event.get("event_type", "unknown")
-            return {
-                "success": True,
-                "event_type": event_type,
-                "event_id": event.get("id") or event.get("eventId"),
-                "processed": True,
-            }
-        except Exception as e:
-            logger.error("Error processing Moneris webhook: %s", e)
-            return {"success": False, "error": str(e)}
-
-
-# ============================================================================
-# Moneris Customer Manager
-# ============================================================================
-
-
-class Moneris_CustomerManager(AbstractExternalManager):
-    """Manager for Moneris Customer external API."""
-
-    Model = Moneris_CustomerModel
-    ReferenceModel = Moneris_CustomerModel.Reference
-    provider_class = PaymentExtensionMonerisProvider
-
-    def create_validation(self, entity):
-        if not getattr(entity, "email", None):
-            raise ValueError("Email is required for Moneris customer creation")
-        return True
-
-    @classmethod
-    def sync_contact(cls, *args, **kwargs):
-        try:
-            if hasattr(cls.Model, "get_via_provider"):
-                return cls.Model.get_via_provider(*args, **kwargs)
-        except Exception:
-            pass
-        return None
-
-    @classmethod
-    def create_customer(cls, provider_instance, **kwargs):
-        try:
-            if hasattr(cls.provider_class, "create_customer"):
-                return cls.provider_class.create_customer(provider_instance, **kwargs)
-        except Exception:
-            pass
-        if hasattr(cls.Model, "create_via_provider"):
-            return cls.Model.create_via_provider(provider_instance, **kwargs)
-        return {"success": False, "error": "No customer creation path available"}
+    async def refund_payment(
+        cls, instance: ProviderInstanceModel, payment_id: str, action: MoneyAction
+    ) -> Dict[str, Any]:
+        """Moneris takes the amount on every refund: with none, all of it."""
+        if action.amount is None:
+            current = await cls.get_payment(instance, payment_id)
+            minor = cls.to_minor_units(current["amount"], action.currency)
+        else:
+            minor = cls.to_minor_units(action.amount, action.currency)
+        body: Dict[str, Any] = {
+            "paymentId": payment_id,
+            "idempotencyKey": action.idempotency_key,
+            "refundAmount": {"amount": minor, "currency": action.currency},
+        }
+        if action.reason:
+            body["reason"] = action.reason
+        refund = await cls.moneris(instance, "POST", "/refunds", body, moves_money=True)
+        amount, currency = _minor(refund.get("refundAmount"))
+        return cls.refund_answer(
+            instance,
+            refund.get("refundId"),
+            payment_id=payment_id,
+            status=refund.get("refundStatus"),
+            amount=cls.from_minor_units(amount, currency),
+            currency=currency,
+        )

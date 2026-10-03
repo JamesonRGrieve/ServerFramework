@@ -1,1063 +1,541 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""The payment extension's checks, money arithmetic and provider contract,
+and its abilities end to end: real app, real database, providers answered
+by local servers speaking Stripe's and PayPal's APIs."""
+
+import hashlib
+import hmac
+import json
+import time
+import uuid
 from decimal import Decimal
-from typing import Dict, List, Optional
+from typing import Any, Callable, Dict, Iterator, Mapping, Optional, Tuple
+from urllib.parse import parse_qs
 
 import pytest
+from fastapi import HTTPException
 
-from zephyrex.extensions.payment.EXT_Payment import AbstractPaymentProvider, EXT_Payment
-from zephyrex.lib.Dependencies import Dependencies, PIP_Dependency
-
-
-class ConcretePaymentProvider(AbstractPaymentProvider):
-    """Concrete implementation of AbstractPaymentProvider for testing"""
-
-    # Static provider metadata
-    name = "test_payment"
-    version = "1.0.0"
-    description = "Test payment provider"
-
-    # Link to parent extension (REQUIRED for Provider Rotation System)
-    extension = EXT_Payment
-
-    # Add unified dependencies using the Dependencies class
-    dependencies = Dependencies(
-        [
-            PIP_Dependency(
-                name="stripe",
-                friendly_name="Stripe Python Library",
-                semver=">=5.5.0",
-                reason="Payment processing support",
-            ),
-        ]
-    )
-
-    # Initialize static abilities for testing
-    abilities = {
-        "payment_processing",
-        "subscription_management",
-        "webhook_handling",
-        "customer_management",
-    }
-
-    @classmethod
-    def create_payment(
-        cls,
-        amount: Decimal,
-        currency: str = "USD",
-        customer_id: Optional[str] = None,
-        payment_method_id: Optional[str] = None,
-        description: Optional[str] = None,
-        metadata: Optional[Dict] = None,
-    ) -> Dict:
-        """Mock implementation for testing"""
-        return {
-            "success": True,
-            "payment_id": "test_payment_123",
-            "amount": amount,
-            "currency": currency,
-            "status": "succeeded",
-            "customer_id": customer_id,
-            "payment_method_id": payment_method_id,
-            "description": description,
-            "metadata": metadata or {},
-        }
-
-    @classmethod
-    def get_payment(cls, payment_id: str) -> Dict:
-        """Mock implementation for testing"""
-        return {
-            "success": True,
-            "payment_id": payment_id,
-            "amount": Decimal("50.00"),
-            "currency": "USD",
-            "status": "succeeded",
-        }
-
-    @classmethod
-    def refund_payment(
-        cls,
-        payment_id: str,
-        amount: Optional[Decimal] = None,
-        reason: Optional[str] = None,
-    ) -> Dict:
-        """Mock implementation for testing"""
-        return {
-            "success": True,
-            "refund_id": "test_refund_123",
-            "payment_id": payment_id,
-            "amount": amount or Decimal("50.00"),
-            "reason": reason,
-            "status": "succeeded",
-        }
-
-    @classmethod
-    def create_customer(
-        cls,
-        email: str,
-        name: Optional[str] = None,
-        phone: Optional[str] = None,
-        metadata: Optional[Dict] = None,
-    ) -> Dict:
-        """Mock implementation for testing"""
-        return {
-            "success": True,
-            "customer_id": "test_customer_123",
-            "email": email,
-            "name": name,
-            "phone": phone,
-            "metadata": metadata or {},
-        }
-
-    @classmethod
-    def get_customer(cls, customer_id: str) -> Dict:
-        """Mock implementation for testing"""
-        return {
-            "success": True,
-            "customer_id": customer_id,
-            "email": "test@example.com",
-            "name": "Test Customer",
-        }
-
-    @classmethod
-    def create_subscription(
-        cls,
-        customer_id: str,
-        price_id: str,
-        payment_method_id: Optional[str] = None,
-        trial_days: Optional[int] = None,
-        metadata: Optional[Dict] = None,
-    ) -> Dict:
-        """Mock implementation for testing"""
-        return {
-            "success": True,
-            "subscription_id": "test_subscription_123",
-            "customer_id": customer_id,
-            "price_id": price_id,
-            "payment_method_id": payment_method_id,
-            "trial_days": trial_days,
-            "status": "active",
-            "metadata": metadata or {},
-        }
-
-    @classmethod
-    def cancel_subscription(
-        cls, subscription_id: str, immediately: bool = False
-    ) -> Dict:
-        """Mock implementation for testing"""
-        return {
-            "success": True,
-            "subscription_id": subscription_id,
-            "status": "canceled" if immediately else "cancel_at_period_end",
-            "canceled_at": "2023-01-01T00:00:00Z" if immediately else None,
-            "cancelled_immediately": immediately,
-        }
-
-    @classmethod
-    def process_webhook(cls, payload: str, signature: str) -> Dict:
-        """Mock implementation for testing"""
-        return {
-            "success": True,
-            "event_type": "payment.succeeded",
-            "processed": True,
-            "payload_size": len(payload),
-            "signature_valid": bool(signature),
-        }
-
-    @classmethod
-    def get_platform_name(cls) -> str:
-        """Return the test platform name"""
-        return "TestPayment"
-
-    @classmethod
-    def services(cls) -> List[str]:
-        """Return list of services provided by this provider."""
-        return ["payment", "billing", "subscription", "commerce"]
-
-    @classmethod
-    def bond_instance(cls, instance):
-        """Bond provider instance for rotation system."""
-        return cls
-
-
-@pytest.mark.payment
-class TestEXTPayment:
-    """
-    Test suite for EXT_Payment extension.
-
-    Tests basic extension metadata and abstract provider interface.
-    Only tests functionality that actually exists in the implementation.
-
-    Test areas:
-    - Extension metadata (name, version, description)
-    - Abstract payment provider class structure
-    - Provider inheritance and linkage
-    """
-
-    def test_extension_metadata(self):
-        """Test extension metadata."""
-        assert EXT_Payment.name == "payment"
-        assert EXT_Payment.friendly_name == "Payment Processing"
-        assert EXT_Payment.version == "1.0.0"
-        assert "payment" in EXT_Payment.description.lower()
-        assert "rotation" in EXT_Payment.description.lower()
-
-    def test_extension_class_structure(self):
-        """Test extension class structure."""
-        # Test that EXT_Payment is properly defined
-        assert hasattr(EXT_Payment, "name")
-        assert hasattr(EXT_Payment, "friendly_name")
-        assert hasattr(EXT_Payment, "version")
-        assert hasattr(EXT_Payment, "description")
-
-        # Test inheritance
-        from zephyrex.extensions.AbstractExtensionProvider import (
-            AbstractStaticExtension,
-        )
-
-        assert issubclass(EXT_Payment, AbstractStaticExtension)
-
-    def test_abstract_payment_provider_class_exists(self):
-        """Test that AbstractPaymentProvider class exists and is properly structured."""
-        # Test that the abstract class exists
-        assert AbstractPaymentProvider is not None
-
-        # Test inheritance
-        from zephyrex.extensions.AbstractExtensionProvider import AbstractStaticProvider
-
-        assert issubclass(AbstractPaymentProvider, AbstractStaticProvider)
-
-        # Test extension linkage
-        assert hasattr(AbstractPaymentProvider, "extension_type")
-        assert AbstractPaymentProvider.extension_type == "payment"
-
-    def test_abstract_payment_provider_cannot_be_instantiated(self):
-        """Test that AbstractPaymentProvider cannot be instantiated directly."""
-        with pytest.raises(TypeError):
-            AbstractPaymentProvider()
-
-    def test_concrete_provider_can_inherit_from_abstract(self):
-        """Test that concrete providers can inherit from AbstractPaymentProvider."""
-        # Test that ConcretePaymentProvider inherits properly
-        assert issubclass(ConcretePaymentProvider, AbstractPaymentProvider)
-
-        # Test required attributes exist
-        assert hasattr(ConcretePaymentProvider, "name")
-        assert hasattr(ConcretePaymentProvider, "version")
-        assert hasattr(ConcretePaymentProvider, "description")
-        assert hasattr(ConcretePaymentProvider, "extension")
-
-        # Test extension linkage works
-        assert ConcretePaymentProvider.extension == EXT_Payment
-
-    def test_concrete_provider_metadata(self):
-        """Test concrete provider metadata."""
-        assert ConcretePaymentProvider.name == "test_payment"
-        assert ConcretePaymentProvider.version == "1.0.0"
-        assert ConcretePaymentProvider.description == "Test payment provider"
-
-    def test_concrete_provider_methods_implementation(self):
-        """Test that concrete provider implements required payment methods."""
-        # Test that all expected payment methods exist and are callable
-        payment_methods = [
-            "create_payment",
-            "get_payment",
-            "refund_payment",
-            "create_customer",
-            "get_customer",
-            "create_subscription",
-            "cancel_subscription",
-            "process_webhook",
-            "get_platform_name",
-        ]
-
-        for method_name in payment_methods:
-            assert hasattr(ConcretePaymentProvider, method_name)
-            assert callable(getattr(ConcretePaymentProvider, method_name))
-
-    def test_concrete_provider_payment_functionality(self):
-        """Test concrete provider payment functionality works."""
-        # Test create_payment
-        result = ConcretePaymentProvider.create_payment(
-            amount=Decimal("50.00"),
-            currency="USD",
-            description="Test payment",
-        )
-        assert isinstance(result, dict)
-        assert result["success"] is True
-        assert result["amount"] == Decimal("50.00")
-
-        # Test get_payment
-        result = ConcretePaymentProvider.get_payment("test_payment_123")
-        assert isinstance(result, dict)
-        assert result["success"] is True
-        assert "payment_id" in result
-
-    def test_concrete_provider_customer_functionality(self):
-        """Test concrete provider customer functionality works."""
-        # Test create_customer
-        result = ConcretePaymentProvider.create_customer(
-            email="test@example.com",
-            name="Test Customer",
-        )
-        assert isinstance(result, dict)
-        assert result["success"] is True
-        assert result["email"] == "test@example.com"
-
-        # Test get_customer
-        result = ConcretePaymentProvider.get_customer("test_customer_123")
-        assert isinstance(result, dict)
-        assert result["success"] is True
-        assert "customer_id" in result
-
-    def test_concrete_provider_subscription_functionality(self):
-        """Test concrete provider subscription functionality works."""
-        # Test create_subscription
-        result = ConcretePaymentProvider.create_subscription(
-            customer_id="test_customer_123",
-            price_id="price_123",
-        )
-        assert isinstance(result, dict)
-        assert result["success"] is True
-        assert result["customer_id"] == "test_customer_123"
-
-        # Test cancel_subscription
-        result = ConcretePaymentProvider.cancel_subscription(
-            subscription_id="test_subscription_123",
-        )
-        assert isinstance(result, dict)
-        assert result["success"] is True
-        assert "status" in result
-
-    def test_concrete_provider_webhook_functionality(self):
-        """Test concrete provider webhook functionality works."""
-        result = ConcretePaymentProvider.process_webhook(
-            payload='{"event": "payment.succeeded"}',
-            signature="test_signature",
-        )
-        assert isinstance(result, dict)
-        assert result["success"] is True
-        assert result["processed"] is True
-
-    def test_concrete_provider_utility_methods(self):
-        """Test concrete provider utility methods."""
-        # Test get_platform_name
-        platform_name = ConcretePaymentProvider.get_platform_name()
-        assert platform_name == "TestPayment"
-
-        # Test services
-        services = ConcretePaymentProvider.services()
-        assert isinstance(services, list)
-        assert "payment" in services
-
-    def test_concrete_provider_dependencies_structure(self):
-        """Test concrete provider dependencies structure."""
-        assert hasattr(ConcretePaymentProvider, "dependencies")
-        assert isinstance(ConcretePaymentProvider.dependencies, Dependencies)
-
-        # Test that it has pip dependencies
-        pip_deps = ConcretePaymentProvider.dependencies.pip
-        assert len(pip_deps) >= 1
-        assert any(dep.name == "stripe" for dep in pip_deps)
-
-    def test_concrete_provider_bond_instance_method(self):
-        """Test concrete provider bond_instance method.
-
-        bond_instance for the test provider simply returns the class. We
-        verify that contract using a real provider-instance-shaped object
-        rather than a mock (per AGENTS.md no-mock pillar).
-        """
-
-        class _FakeInstance:
-            """Minimal real stand-in for a provider instance DTO.
-
-            bond_instance only inspects the parameter when overridden by
-            a real provider; this concrete test provider returns ``cls``
-            unconditionally, so any plain object satisfies the contract.
-            """
-
-            id = "test-instance-id"
-            name = "test-instance"
-
-        result = ConcretePaymentProvider.bond_instance(_FakeInstance())
-        assert result is not None
-
-    def test_provider_discovery(self):
-        """Test provider discovery functionality."""
-        providers = EXT_Payment.providers  # Access as a property
-        assert isinstance(providers, list), "Providers should be a list"
-        # Providers list may be empty in test environment, which is acceptable
-
-
-from decimal import Decimal
-from typing import Dict, List, Optional
-
-import pytest
-
-from zephyrex.extensions.payment.EXT_Payment import AbstractPaymentProvider, EXT_Payment
-from zephyrex.lib.Dependencies import Dependencies, PIP_Dependency
+from zephyrex.extensions.AbstractEXTTest import ExtensionServerMixin
+from zephyrex.extensions.ExternalErrors import (
+    InvalidInputExternalError,
+    PermanentExternalError,
+)
+from zephyrex.extensions.payment.EXT_Payment import (
+    AbstractPaymentProvider,
+    EXT_Payment,
+    checked_amount,
+    checked_currency,
+    checked_ip,
+    checked_metadata,
+    checked_trial,
+)
+from zephyrex.extensions.payment.PRV_PayPal_Payment import PRV_PayPal_Payment
+from zephyrex.extensions.payment.PRV_Stripe_Payment import PRV_Stripe_Payment
 from zephyrex.lib.Environment import env
+from zephyrex.logic.BLL_Auth import UserManager
+from zephyrex.logic.BLL_Providers import (
+    ProviderInstanceManager,
+    ProviderInstanceModel,
+    ProviderInstanceSettingManager,
+    ProviderManager,
+    RotationManager,
+    RotationModel,
+    RotationProviderInstanceManager,
+    RotationProviderInstanceModel,
+)
+
+WEBHOOK_SECRET = "whsec_ext_test"
+Answer = Tuple[int, Dict[str, str], bytes]
 
 
-class ConcretePaymentProvider(AbstractPaymentProvider):  # type: ignore[no-redef]
-    """Concrete implementation of AbstractPaymentProvider for testing"""
+def json_answer(body: Any, status: int = 200) -> Answer:
+    return (status, {"Content-Type": "application/json"}, json.dumps(body).encode())
 
-    # Static provider metadata
-    name = "test_payment"
-    version = "1.0.0"
-    description = "Test payment provider"
 
-    # Link to parent extension (REQUIRED for Provider Rotation System)
-    extension = EXT_Payment
+def form_of(request: Any) -> Dict[str, str]:
+    return {k: v[0] for k, v in parse_qs(request.body.decode()).items()}
 
-    # Add unified dependencies using the Dependencies class
-    dependencies = Dependencies(
-        [
-            PIP_Dependency(
-                name="stripe",
-                friendly_name="Stripe Python Library",
-                semver=">=5.5.0",
-                reason="Payment processing support",
-            ),
-        ]
+
+class StripeAccount:
+    """A local server keeping payment intents, customers and subscriptions
+    as Stripe does, for what the abilities send it."""
+
+    def __init__(self) -> None:
+        self.intents: Dict[str, Dict[str, Any]] = {}
+        self.subscriptions: Dict[str, Dict[str, Any]] = {}
+        self.customers: Dict[str, Dict[str, Any]] = {}
+        self.fail_payments = False
+
+    def routes(self) -> "StripeRoutes":
+        return StripeRoutes(self)
+
+    def intent(self, intent_id: str) -> Dict[str, Any]:
+        return self.intents[intent_id]
+
+
+class StripeRoutes(Mapping[str, Callable[[Any], Answer]]):
+    """A route for every path: the account answers it."""
+
+    def __init__(self, account: StripeAccount) -> None:
+        self.account = account
+
+    def __getitem__(self, path: str) -> Callable[[Any], Answer]:
+        return lambda request: self.answer(request, path.split("?")[0])
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(())
+
+    def __len__(self) -> int:
+        return 0
+
+    def answer(self, request: Any, path: str) -> Answer:
+        account = self.account
+        sent = form_of(request) if request.body else {}
+        if path == "/v1/customers" and request.method == "POST":
+            customer: Dict[str, Any] = {
+                "id": f"cus_{len(account.customers) + 1}",
+                "email": sent.get("email"),
+                "name": sent.get("name"),
+            }
+            account.customers[customer["id"]] = customer
+            return json_answer(customer)
+        if path.startswith("/v1/customers/"):
+            return json_answer(account.customers[path.rsplit("/", 1)[1]])
+        if path == "/v1/payment_intents":
+            if account.fail_payments:
+                return json_answer({}, 503)
+            intent: Dict[str, Any] = {
+                "id": f"pi_{len(account.intents) + 1}",
+                "amount": int(sent["amount"]),
+                "currency": sent["currency"],
+                "customer": sent.get("customer"),
+                "status": (
+                    "requires_capture"
+                    if sent.get("capture_method") == "manual"
+                    else "requires_payment_method"
+                ),
+                "client_secret": "secret",
+                "latest_charge": {"amount_refunded": 0, "refunded": False},
+            }
+            account.intents[intent["id"]] = intent
+            return json_answer(intent)
+        if path.startswith("/v1/payment_intents/"):
+            parts = path.split("/")
+            intent = account.intents[parts[3]]
+            if path.endswith("/capture"):
+                intent["status"] = "succeeded"
+            return json_answer(intent)
+        if path == "/v1/refunds":
+            intent = account.intents[sent["payment_intent"]]
+            amount = int(sent.get("amount") or intent["amount"])
+            charge = intent["latest_charge"]
+            charge["amount_refunded"] += amount
+            charge["refunded"] = charge["amount_refunded"] >= intent["amount"]
+            return json_answer(
+                {
+                    "id": "re_1",
+                    "status": "succeeded",
+                    "amount": amount,
+                    "currency": intent["currency"],
+                }
+            )
+        if path == "/v1/subscriptions":
+            subscription: Dict[str, Any] = {
+                "id": f"sub_{len(account.subscriptions) + 1}",
+                "status": "active",
+                "customer": sent["customer"],
+                "current_period_end": 1_900_000_000,
+                "cancel_at_period_end": False,
+                "items": {"data": [{"price": {"id": sent["items[0][price]"]}}]},
+            }
+            account.subscriptions[subscription["id"]] = subscription
+            return json_answer(subscription)
+        if path.startswith("/v1/subscriptions/"):
+            subscription = account.subscriptions[path.rsplit("/", 1)[1]]
+            if sent.get("cancel_at_period_end") == "true":
+                subscription["cancel_at_period_end"] = True
+            if request.method == "DELETE":
+                subscription["status"] = "canceled"
+            return json_answer(subscription)
+        return json_answer({"error": {"message": f"no route {path}"}}, 404)
+
+
+def add_instance(
+    registry: Any,
+    provider: str,
+    api_key: Optional[str],
+    settings: Dict[str, str],
+) -> ProviderInstanceModel:
+    """A root-scope account of the provider named ``provider``, with
+    ``settings``."""
+    root = env("ROOT_ID")
+    record = ProviderManager(model_registry=registry, requester_id=root).get(
+        name=provider
     )
+    instance = ProviderInstanceModel.model_validate(
+        ProviderInstanceManager(model_registry=registry, requester_id=root).create(
+            name=f"{provider}_{uuid.uuid4().hex}",
+            provider_id=record.id,
+            api_key=api_key,
+            scope="root",
+        ),
+        from_attributes=True,
+    )
+    settings_manager = ProviderInstanceSettingManager(
+        model_registry=registry, requester_id=root
+    )
+    for key, value in settings.items():
+        settings_manager.create(provider_instance_id=instance.id, key=key, value=value)
+    return instance
 
-    # Initialize static abilities for testing
-    abilities = {
-        "payment_processing",
-        "subscription_management",
-        "webhook_handling",
-        "customer_management",
-    }
 
-    # Environment variables for testing
-    env = {
-        "CONCRETEPAYMENT_SECRET_KEY": "test_secret",
-        "CONCRETEPAYMENT_WEBHOOK_SECRET": "test_webhook",
-        "CONCRETEPAYMENT_CURRENCY": "USD",
-    }
+def rotation(registry: Any, *instances: ProviderInstanceModel) -> RotationManager:
+    """A rotation trying ``instances`` in order, as the extension's root."""
+    root = env("ROOT_ID")
+    manager = RotationManager(model_registry=registry, requester_id=root)
+    made = RotationModel.model_validate(
+        manager.create(name=f"payment_test_{uuid.uuid4().hex}"), from_attributes=True
+    )
+    links = RotationProviderInstanceManager(model_registry=registry, requester_id=root)
+    parent = None
+    for instance in instances:
+        link = RotationProviderInstanceModel.model_validate(
+            links.create(
+                rotation_id=made.id, provider_instance_id=instance.id, parent_id=parent
+            ),
+            from_attributes=True,
+        )
+        parent = link.id
+    manager.target_id = made.id
+    return manager
 
-    @classmethod
-    def create_payment(
-        cls,
-        amount: Decimal,
-        currency: str = "USD",
-        customer_id: Optional[str] = None,
-        payment_method_id: Optional[str] = None,
-        description: Optional[str] = None,
-        metadata: Optional[Dict] = None,
-    ) -> Dict:
-        """Mock implementation for testing"""
-        return {
-            "success": True,
-            "payment_id": "test_payment_123",
-            "amount": amount,
-            "currency": currency,
-            "status": "succeeded",
-            "customer_id": customer_id,
-            "payment_method_id": payment_method_id,
-            "description": description,
-            "metadata": metadata or {},
+
+def stripe_signed(payload: bytes) -> Dict[str, str]:
+    timestamp = str(int(time.time()))
+    digest = hmac.new(
+        WEBHOOK_SECRET.encode(), f"{timestamp}.".encode() + payload, hashlib.sha256
+    ).hexdigest()
+    return {"Stripe-Signature": f"t={timestamp},v1={digest}"}
+
+
+class TestChecks:
+    @pytest.mark.parametrize("value", ["12.50", 3, Decimal("0.01")])
+    def test_amounts(self, value):
+        assert checked_amount(value) == Decimal(str(value))
+
+    @pytest.mark.parametrize("value", [0, "-1", "nan", "inf", "abc", 1.5, True, "1e9"])
+    def test_refused_amounts(self, value):
+        with pytest.raises(InvalidInputExternalError):
+            checked_amount(value)
+
+    def test_currency(self):
+        assert checked_currency("cad") == "CAD"
+        for bad in ("CA", "C4D", None, "DOLLARS"):
+            with pytest.raises(InvalidInputExternalError):
+                checked_currency(bad)
+
+    def test_metadata_cannot_name_the_user(self):
+        assert checked_metadata({"order": 7}) == {"order": "7"}
+        with pytest.raises(InvalidInputExternalError):
+            checked_metadata({"user_id": "someone-else"})
+        with pytest.raises(InvalidInputExternalError):
+            checked_metadata({str(n): n for n in range(21)})
+
+    def test_trial_and_ip(self):
+        assert checked_trial(14) == 14
+        for bad in (0, 10_000, True):
+            with pytest.raises(InvalidInputExternalError):
+                checked_trial(bad)
+        assert checked_ip("2001:db8::1") == "2001:db8::1"
+        with pytest.raises(InvalidInputExternalError):
+            checked_ip("10.0.0.1; rm")
+
+
+class TestMoney:
+    @pytest.mark.parametrize(
+        "amount, currency, units",
+        [
+            ("1.15", "USD", 115),
+            ("100", "JPY", 100),
+            ("1.234", "BHD", 1234),
+            ("0.005", "USD", 1),
+        ],
+    )
+    def test_minor_units(self, amount, currency, units):
+        assert AbstractPaymentProvider.to_minor_units(amount, currency) == units
+        assert AbstractPaymentProvider.from_minor_units(
+            units, currency
+        ) == AbstractPaymentProvider.to_minor_units(amount, currency) / Decimal(
+            10
+        ) ** AbstractPaymentProvider._currency_exponent(
+            currency
+        )
+
+    def test_format(self):
+        assert AbstractPaymentProvider.format_amount("1.2345", "BHD") == "1.235"
+        assert AbstractPaymentProvider.format_amount("100", "JPY") == "100"
+        assert AbstractPaymentProvider.format_amount(Decimal("1"), "usd") == "1.00"
+
+
+class TestContract:
+    def test_the_providers(self):
+        assert sorted(p.name for p in EXT_Payment.providers) == [
+            "helcim",
+            "moneris",
+            "paypal",
+            "square",
+            "stripe",
+        ]
+
+    @pytest.mark.parametrize("provider", EXT_Payment.providers, ids=lambda p: p.name)
+    def test_every_named_ability_is_implemented(self, provider):
+        """A provider that names an ability (so a rotation picks it) has its
+        own implementation, not the refusing default."""
+        methods = {
+            "payment_create": "create_payment",
+            "payment_get": "get_payment",
+            "payment_capture": "capture_payment",
+            "payment_refund": "refund_payment",
+            "customer_create": "create_customer",
+            "customer_get": "get_customer",
+            "subscription_create": "create_subscription",
+            "subscription_get": "get_subscription",
+            "subscription_cancel": "cancel_subscription",
+            "webhook_process": "verify_webhook",
         }
+        assert provider._abilities <= set(methods)
+        for ability_name in provider._abilities:
+            method = methods[ability_name]
+            assert (
+                getattr(provider, method).__func__
+                is not getattr(AbstractPaymentProvider, method).__func__
+            ), f"{provider.name} names {ability_name} without it"
+        if "subscription_create" in provider._abilities:
+            assert "subscription_get" in provider._abilities
 
-    @classmethod
-    def get_payment(cls, payment_id: str) -> Dict:
-        """Mock implementation for testing"""
-        return {
-            "success": True,
-            "payment_id": payment_id,
-            "amount": Decimal("50.00"),
-            "currency": "USD",
-            "status": "succeeded",
+    def test_the_abilities_are_declared(self):
+        decorated = {
+            getattr(EXT_Payment, name)._ability_info["name"]
+            for name in dir(EXT_Payment)
+            if hasattr(getattr(EXT_Payment, name), "_ability_info")
         }
+        assert decorated == EXT_Payment._abilities
 
-    @classmethod
-    def refund_payment(
-        cls,
-        payment_id: str,
-        amount: Optional[Decimal] = None,
-        reason: Optional[str] = None,
-    ) -> Dict:
-        """Mock implementation for testing"""
-        return {
-            "success": True,
-            "refund_id": "test_refund_123",
-            "payment_id": payment_id,
-            "amount": amount or Decimal("50.00"),
-            "reason": reason,
-            "status": "succeeded",
-        }
-
-    @classmethod
-    def create_customer(
-        cls,
-        email: str,
-        name: Optional[str] = None,
-        phone: Optional[str] = None,
-        metadata: Optional[Dict] = None,
-    ) -> Dict:
-        """Mock implementation for testing"""
-        return {
-            "success": True,
-            "customer_id": "test_customer_123",
-            "email": email,
-            "name": name,
-            "phone": phone,
-            "metadata": metadata or {},
-        }
-
-    @classmethod
-    def get_customer(cls, customer_id: str) -> Dict:
-        """Mock implementation for testing"""
-        return {
-            "success": True,
-            "customer_id": customer_id,
-            "email": "test@example.com",
-            "name": "Test Customer",
-        }
-
-    @classmethod
-    def create_subscription(
-        cls,
-        customer_id: str,
-        price_id: str,
-        payment_method_id: Optional[str] = None,
-        trial_days: Optional[int] = None,
-        metadata: Optional[Dict] = None,
-    ) -> Dict:
-        """Mock implementation for testing"""
-        return {
-            "success": True,
-            "subscription_id": "test_subscription_123",
-            "customer_id": customer_id,
-            "price_id": price_id,
-            "payment_method_id": payment_method_id,
-            "trial_days": trial_days,
-            "status": "active",
-            "metadata": metadata or {},
-        }
-
-    @classmethod
-    def cancel_subscription(
-        cls, subscription_id: str, immediately: bool = False
-    ) -> Dict:
-        """Mock implementation for testing"""
-        return {
-            "success": True,
-            "subscription_id": subscription_id,
-            "status": "canceled" if immediately else "cancel_at_period_end",
-            "canceled_at": "2023-01-01T00:00:00Z" if immediately else None,
-            "cancelled_immediately": immediately,
-        }
-
-    @classmethod
-    def process_webhook(cls, payload: str, signature: str) -> Dict:
-        """Mock implementation for testing"""
-        return {
-            "success": True,
-            "event_type": "payment.succeeded",
-            "processed": True,
-            "payload_size": len(payload),
-            "signature_valid": bool(signature),
-        }
-
-    @classmethod
-    def get_platform_name(cls) -> str:
-        """Return the test platform name"""
-        return "TestPayment"
-
-    @classmethod
-    def services(cls) -> List[str]:
-        """Return list of services provided by this provider."""
-        return ["payment", "billing", "subscription", "commerce"]
-
-    @classmethod
-    def get_abilities(cls) -> set:
-        """Return abilities for testing."""
-        return cls.abilities
-
-    @classmethod
-    def get_extension_info(cls) -> dict:
-        """Return extension info for testing."""
-        return {
-            "extension": cls.extension.name,
-            "provider": cls.name,
-            "name": cls.extension.friendly_name,  # Add the expected 'name' key
-            "version": cls.version,
-            "platform": cls.get_platform_name(),  # Add platform
-            "currency": cls.get_env_value("CONCRETEPAYMENT_CURRENCY", "USD"),
-        }
-
-    @classmethod
-    def get_env_value(cls, key: str, default=None):
-        """Get environment value for testing."""
-        return cls.env.get(key, default)
-
-    @classmethod
-    def get_api_key(cls) -> str:
-        """Get API key for testing."""
-        return cls.env.get("CONCRETEPAYMENT_SECRET_KEY", "")
-
-    @classmethod
-    def get_secret_key(cls) -> str:
-        """Get secret key for testing."""
-        return cls.get_env_value("CONCRETEPAYMENT_SECRET_KEY", "")  # type: ignore[no-any-return]
-
-    @classmethod
-    def validate_config(cls) -> bool:
-        """Validate configuration for testing."""
-        return bool(cls.get_secret_key())
-
-    @classmethod
-    def get_webhook_secret(cls) -> str:
-        """Get webhook secret for testing."""
-        return cls.get_env_value("CONCRETEPAYMENT_WEBHOOK_SECRET", "")  # type: ignore[no-any-return]
-
-    @classmethod
-    def bond_instance(cls, instance):
-        """Bond provider instance for rotation system."""
-        return cls
+    async def test_a_refused_operation_names_the_provider(self, provider_instance):
+        moneris = EXT_Payment.providers[
+            [p.name for p in EXT_Payment.providers].index("moneris")
+        ]
+        instance = provider_instance(moneris)
+        with pytest.raises(PermanentExternalError, match="Moneris's API cannot"):
+            await moneris.get_subscription(instance, "s1")
 
 
-@pytest.mark.payment
-class TestAbstractPaymentProvider:
-    """
-    Test suite for AbstractPaymentProvider base class.
-    Tests the common payment provider interface and static functionality.
-    Fully compatible with the Provider Rotation System.
-    """
-
-    # Configure the test class
-    provider_class = ConcretePaymentProvider
-    extension_id = "payment"
-
-    @classmethod
-    def _check_stripe_configured(cls) -> bool:
-        """Check if Stripe is configured in environment."""
-        return bool(env("STRIPE_SECRET_KEY"))
+class TestAbilities(ExtensionServerMixin):
+    extension_class = EXT_Payment
 
     @pytest.fixture
-    def skip_if_no_stripe_config(self):
-        """Skip test if Stripe is not configured."""
-        if not self._check_stripe_configured():
-            pytest.xfail("Stripe credentials not configured in environment")
+    def registry(self, server) -> Any:
+        return server.app.state.model_registry
 
-    def test_abstract_class_cannot_be_instantiated(self):
-        """Test that AbstractPaymentProvider cannot be instantiated directly."""
-        with pytest.raises(TypeError):
-            AbstractPaymentProvider()
+    @pytest.fixture
+    def stripe(self, server, registry, local_http_server, monkeypatch):
+        """A Stripe account answered locally, alone in the root rotation."""
+        account = StripeAccount()
+        upstream = local_http_server(account.routes())
+        instance = add_instance(
+            registry,
+            PRV_Stripe_Payment.name,
+            "sk_test_local",
+            {"api_base": upstream.base_url, "webhook_secret": WEBHOOK_SECRET},
+        )
+        monkeypatch.setattr(
+            EXT_Payment, "_root_rotation_cache", rotation(registry, instance)
+        )
+        return account, upstream, instance
 
-    def test_static_provider_metadata(self):
-        """Test static provider metadata for rotation system."""
-        assert ConcretePaymentProvider.name == "test_payment"
-        assert ConcretePaymentProvider.version == "1.0.0"
-        assert ConcretePaymentProvider.description == "Test payment provider"
+    @pytest.fixture
+    def fresh_user(self, server):
+        """A user with no customer record yet."""
+        from conftest_factories import create_user
 
-    def test_extension_linkage_for_rotation_system(self):
-        """Test extension linkage required for rotation system."""
-        assert hasattr(ConcretePaymentProvider, "extension")
-        assert ConcretePaymentProvider.extension == EXT_Payment
+        return create_user(server, f"payer_{uuid.uuid4().hex[:8]}@example.com")
 
-    def test_dependencies_structure(self):
-        """Test dependencies structure using unified Dependencies system."""
-        assert hasattr(ConcretePaymentProvider, "dependencies")
-        assert isinstance(ConcretePaymentProvider.dependencies, Dependencies)
+    async def test_abilities_need_a_requester(self, server):
+        with pytest.raises(HTTPException) as raised:
+            await EXT_Payment.payment_list("")
+        assert raised.value.status_code == 400
 
-        # Test dependency properties
-        assert hasattr(ConcretePaymentProvider.dependencies, "pip")
-        pip_deps = ConcretePaymentProvider.dependencies.pip
-        assert len(pip_deps) == 1
-        assert pip_deps[0].name == "stripe"
+    async def test_a_customer_is_made_under_the_requesters_own_email(
+        self, stripe, fresh_user, registry
+    ):
+        account, upstream, instance = stripe
+        made = await EXT_Payment.customer_create(fresh_user.id, name="Ada Lovelace")
+        assert account.customers[made["customer_id"]]["email"] == fresh_user.email
+        user = UserManager(model_registry=registry, requester_id=env("ROOT_ID")).get(
+            id=fresh_user.id
+        )
+        assert (user.external_payment_id, user.payment_instance_id) == (
+            made["customer_id"],
+            str(instance.id),
+        )
+        again = await EXT_Payment.customer_create(fresh_user.id)
+        assert again["customer_id"] == made["customer_id"]
+        assert len(account.customers) == 1
+        assert (await EXT_Payment.customer_get(fresh_user.id))["email"] == (
+            fresh_user.email
+        )
 
-    def test_abilities_registration(self):
-        """Test that payment abilities are available for rotation system."""
-        abilities = ConcretePaymentProvider.get_abilities()
-        expected_abilities = {
-            "payment_processing",
-            "subscription_management",
-            "webhook_handling",
-            "customer_management",
-        }
-
-        for ability in expected_abilities:
-            assert ability in abilities
-
-    def test_services_method(self):
-        """Test the services method returns expected services."""
-        services = ConcretePaymentProvider.services()
-        expected_services = ["payment", "billing", "subscription", "commerce"]
-
-        assert isinstance(services, list)
-        for service in expected_services:
-            assert service in services
-
-    def test_get_extension_info(self):
-        """Test get_extension_info method."""
-        info = ConcretePaymentProvider.get_extension_info()
-
-        assert isinstance(info, dict)
-        assert info["name"] == EXT_Payment.friendly_name  # Use actual extension name
-        assert info["extension"] == "payment"
-        assert info["provider"] == "test_payment"
-        assert info["platform"] == "TestPayment"
-
-    def test_env_property_integration(self):
-        """Test .env property integration with AbstractAPIProvider."""
-        # Test that .env property exists and contains payment-specific vars
-        env = ConcretePaymentProvider.env
-        assert isinstance(env, dict)
-
-        # Should include payment-specific variables
-        expected_vars = [
-            "CONCRETEPAYMENT_SECRET_KEY",
-            "CONCRETEPAYMENT_WEBHOOK_SECRET",
-            "CONCRETEPAYMENT_CURRENCY",
+    async def test_a_payment_is_the_requesters_alone(self, stripe, fresh_user, admin_b):
+        account, _, _ = stripe
+        made = await EXT_Payment.payment_create(
+            fresh_user.id, "12.50", "usd", description="a book"
+        )
+        assert made["user_id"] == fresh_user.id
+        assert (made["amount"], made["currency"], made["status"]) == (
+            "12.50",
+            "USD",
+            "pending",
+        )
+        assert made["client_secret"] == "secret"
+        assert account.intents[made["external_id"]]["amount"] == 1250
+        listed = await EXT_Payment.payment_list(fresh_user.id)
+        assert made["id"] in [payment["id"] for payment in listed]
+        with pytest.raises(HTTPException) as raised:
+            await EXT_Payment.payment_get(admin_b.id, made["id"])
+        assert raised.value.status_code == 404
+        assert made["id"] not in [
+            p["id"] for p in await EXT_Payment.payment_list(admin_b.id)
         ]
 
-        for var in expected_vars:
-            assert var in env
-
-    def test_static_payment_methods(self):
-        """Test static payment methods for rotation system."""
-        # Test create_payment
-        result = ConcretePaymentProvider.create_payment(
-            amount=Decimal("50.00"),
-            currency="USD",
-            description="Test payment",
+    async def test_a_linked_customer_pays_on_their_account(self, stripe, fresh_user):
+        account, _, _ = stripe
+        customer = await EXT_Payment.customer_create(fresh_user.id)
+        made = await EXT_Payment.payment_create(fresh_user.id, 5, "USD")
+        assert (
+            account.intents[made["external_id"]]["customer"] == customer["customer_id"]
         )
+        assert made["customer_id"] == customer["customer_id"]
 
-        assert isinstance(result, dict)
-        assert result["success"] is True
-        assert result["payment_id"] == "test_payment_123"
-        assert result["amount"] == Decimal("50.00")
-        assert result["currency"] == "USD"
-        assert result["status"] == "succeeded"
-
-    def test_static_customer_methods(self):
-        """Test static customer methods for rotation system."""
-        # Test create_customer
-        result = ConcretePaymentProvider.create_customer(
-            email="test@example.com",
-            name="Test Customer",
-            phone="+1234567890",
+    async def test_the_merchant_alone_captures_and_refunds(self, stripe, fresh_user):
+        """A payer refunding (or capturing) their own payment would be the
+        merchant's money: only ROOT or SYSTEM act for the merchant."""
+        account, _, _ = stripe
+        held = await EXT_Payment.payment_create(
+            fresh_user.id, "20", "USD", capture=False
         )
-
-        assert isinstance(result, dict)
-        assert result["success"] is True
-        assert result["email"] == "test@example.com"
-        assert result["name"] == "Test Customer"
-        assert result["phone"] == "+1234567890"
-
-        # Test get_customer
-        result = ConcretePaymentProvider.get_customer("test_customer_123")
-
-        assert isinstance(result, dict)
-        assert result["success"] is True
-        assert result["customer_id"] == "test_customer_123"
-        assert "email" in result
-
-    def test_static_subscription_methods(self):
-        """Test static subscription methods for rotation system."""
-        # Test create_subscription
-        result = ConcretePaymentProvider.create_subscription(
-            customer_id="test_customer_123",
-            price_id="price_123",
-            trial_days=30,
+        assert held["status"] == "authorized"
+        for act in (EXT_Payment.payment_capture, EXT_Payment.payment_refund):
+            with pytest.raises(HTTPException) as raised:
+                await act(fresh_user.id, held["id"])
+            assert raised.value.status_code == 403
+        root = env("ROOT_ID")
+        captured = await EXT_Payment.payment_capture(root, held["id"])
+        assert (
+            captured["status"] == "succeeded" and captured["user_id"] == fresh_user.id
         )
+        part = await EXT_Payment.payment_refund(root, held["id"], amount="5")
+        assert part["refund"]["amount"] == "5.00"
+        assert part["payment"]["amount_refunded"] == "5.00"
+        rest = await EXT_Payment.payment_refund(root, held["id"])
+        assert rest["payment"]["status"] == "refunded"
 
-        assert isinstance(result, dict)
-        assert result["success"] is True
-        assert result["customer_id"] == "test_customer_123"
-        assert result["price_id"] == "price_123"
-        assert result["trial_days"] == 30
-
-        # Test cancel_subscription
-        result = ConcretePaymentProvider.cancel_subscription(
-            subscription_id="test_subscription_123",
-            immediately=True,
+    async def test_an_unclear_payment_is_not_taken_again_elsewhere(
+        self, server, registry, local_http_server, monkeypatch, fresh_user
+    ):
+        """The first account answers 503 to a charge it may have taken: the
+        call fails, and the second account is never asked to charge."""
+        first, second = StripeAccount(), StripeAccount()
+        first.fail_payments = True
+        first_server = local_http_server(first.routes())
+        second_server = local_http_server(second.routes())
+        monkeypatch.setenv(
+            "EGRESS_ALLOWED_HOSTS", f"{first_server.host},{second_server.host}"
         )
-
-        assert isinstance(result, dict)
-        assert result["success"] is True
-        assert result["subscription_id"] == "test_subscription_123"
-        assert result["status"] == "canceled"
-
-    def test_static_webhook_processing(self):
-        """Test static webhook processing for rotation system."""
-        result = ConcretePaymentProvider.process_webhook(
-            payload='{"event": "payment.succeeded"}',
-            signature="test_signature",
-        )
-
-        assert isinstance(result, dict)
-        assert result["success"] is True
-        assert result["processed"] is True
-        assert result["signature_valid"] is True
-
-    def test_static_refund_methods(self):
-        """Test static refund methods for rotation system."""
-        result = ConcretePaymentProvider.refund_payment(
-            payment_id="test_payment_123",
-            amount=Decimal("25.00"),
-            reason="Customer request",
-        )
-
-        assert isinstance(result, dict)
-        assert result["success"] is True
-        assert result["payment_id"] == "test_payment_123"
-        assert result["amount"] == Decimal("25.00")
-        assert result["reason"] == "Customer request"
-
-    def test_get_platform_name_static_method(self):
-        """Test get_platform_name static method."""
-        platform_name = ConcretePaymentProvider.get_platform_name()
-        assert platform_name == "TestPayment"
-
-    def test_abstract_methods_defined(self):
-        """Test that concrete provider implements required payment methods."""
-        # The abstract base class doesn't define abstract methods - providers implement them directly
-        required_methods = [
-            "create_payment",
-            "get_payment",
-            "refund_payment",
-            "create_customer",
-            "get_customer",
-            "create_subscription",
-            "cancel_subscription",
-            "process_webhook",
-            "get_platform_name",
+        instances = [
+            add_instance(
+                registry,
+                PRV_Stripe_Payment.name,
+                "sk_test",
+                {"api_base": upstream.base_url},
+            )
+            for upstream in (first_server, second_server)
         ]
+        monkeypatch.setattr(
+            EXT_Payment, "_root_rotation_cache", rotation(registry, *instances)
+        )
+        with pytest.raises(PermanentExternalError):
+            await EXT_Payment.payment_create(fresh_user.id, "9", "USD")
+        assert first_server.requests and not second_server.requests
+        assert await EXT_Payment.payment_list(fresh_user.id) == []
 
-        for method_name in required_methods:
-            assert hasattr(ConcretePaymentProvider, method_name)
-            method = getattr(ConcretePaymentProvider, method_name)
-            assert callable(method)
-
-    def test_env_var_getters(self):
-        """Test environment variable getter methods using real env dict."""
-        # No-mock pillar: mutate the provider's real env dict and verify the
-        # getters read from it. The getters are pure dict lookups; no need
-        # to patch.
-        original_env = dict(ConcretePaymentProvider.env)
-        try:
-            ConcretePaymentProvider.env["CONCRETEPAYMENT_SECRET_KEY"] = "sk_test_123"
-            ConcretePaymentProvider.env["CONCRETEPAYMENT_WEBHOOK_SECRET"] = (
-                "whsec_test_123"
+    async def test_a_signed_notification_refreshes_the_payment(
+        self, stripe, fresh_user
+    ):
+        account, _, instance = stripe
+        made = await EXT_Payment.payment_create(fresh_user.id, "3", "USD")
+        account.intent(made["external_id"])["status"] = "succeeded"
+        payload = json.dumps(
+            {
+                "id": "evt_1",
+                "type": "payment_intent.succeeded",
+                "data": {
+                    "object": {"object": "payment_intent", "id": made["external_id"]}
+                },
+            }
+        ).encode()
+        event = await EXT_Payment.webhook_process(
+            instance.name, payload, stripe_signed(payload)
+        )
+        assert event["refreshed"] == made["id"]
+        found = await EXT_Payment.payment_list(fresh_user.id)
+        assert [p["status"] for p in found if p["id"] == made["id"]] == ["succeeded"]
+        with pytest.raises(InvalidInputExternalError):
+            await EXT_Payment.webhook_process(
+                instance.name, payload, {"Stripe-Signature": "t=1,v1=00"}
             )
 
-            secret_key = ConcretePaymentProvider.get_secret_key()
-            assert secret_key == "sk_test_123"
+    async def test_subscriptions(self, stripe, fresh_user):
+        account, _, _ = stripe
+        with pytest.raises(HTTPException) as raised:
+            await EXT_Payment.subscription_create(fresh_user.id, "price_1")
+        assert raised.value.status_code == 409
+        await EXT_Payment.customer_create(fresh_user.id)
+        made = await EXT_Payment.subscription_create(fresh_user.id, "price_1")
+        assert made["active"] and made["plan_id"] == "price_1"
+        status = await EXT_Payment.subscription_status(fresh_user.id)
+        assert status["active"]
+        ending = await EXT_Payment.subscription_cancel(fresh_user.id, made["id"])
+        assert ending["cancel_at_period_end"] and ending["active"]
+        account.subscriptions[made["external_id"]]["status"] = "canceled"
+        assert not (await EXT_Payment.subscription_status(fresh_user.id))["active"]
 
-            webhook_secret = ConcretePaymentProvider.get_webhook_secret()
-            assert webhook_secret == "whsec_test_123"
-        finally:
-            ConcretePaymentProvider.env.clear()
-            ConcretePaymentProvider.env.update(original_env)
-
-    def test_validate_config_static_method(self):
-        """Test config validation static method using the real env dict."""
-        # validate_config returns True iff get_secret_key() returns a truthy
-        # value. We populate the real env dict — no patching required.
-        original_env = dict(ConcretePaymentProvider.env)
-        try:
-            ConcretePaymentProvider.env["CONCRETEPAYMENT_SECRET_KEY"] = "sk_test_123"
-            assert ConcretePaymentProvider.validate_config() is True
-        finally:
-            ConcretePaymentProvider.env.clear()
-            ConcretePaymentProvider.env.update(original_env)
-
-    def test_services_consistency(self):
-        """Test that services method returns consistent results."""
-        services1 = ConcretePaymentProvider.services()
-        services2 = ConcretePaymentProvider.services()
-
-        assert services1 == services2
-        assert isinstance(services1, list)
-
-    def test_extension_info_includes_currency(self):
-        """Test that extension info includes currency information."""
-        # No-mock pillar: mutate the real env dict that get_env_value reads.
-        original_env = dict(ConcretePaymentProvider.env)
-        try:
-            ConcretePaymentProvider.env["CONCRETEPAYMENT_CURRENCY"] = "EUR"
-            info = ConcretePaymentProvider.get_extension_info()
-            assert "currency" in info
-            assert info["currency"] == "EUR"
-        finally:
-            ConcretePaymentProvider.env.clear()
-            ConcretePaymentProvider.env.update(original_env)
-
-    def test_static_implementation_completeness(self):
-        """Test that static implementation provides all required methods."""
-        # All abstract methods should be implemented as class methods
-        required_methods = [
-            "create_payment",
-            "get_payment",
-            "refund_payment",
-            "create_customer",
-            "get_customer",
-            "create_subscription",
-            "cancel_subscription",
-            "process_webhook",
-            "get_platform_name",
-        ]
-
-        for method_name in required_methods:
-            assert hasattr(ConcretePaymentProvider, method_name)
-            assert callable(getattr(ConcretePaymentProvider, method_name))
-
-    def test_rotation_system_compatibility(self):
-        """Test compatibility with Provider Rotation System."""
-        # Test that provider has required attributes for rotation
-        assert hasattr(ConcretePaymentProvider, "name")
-        assert hasattr(ConcretePaymentProvider, "extension")
-        assert hasattr(ConcretePaymentProvider, "dependencies")
-
-        # Test that extension linkage works
-        assert ConcretePaymentProvider.extension == EXT_Payment
-
-
-class TestCurrencyConversion:
-    """Currency amount⇄minor-units SSOT (#227).
-
-    Replaces the per-provider ``int(amount*100)`` / ``f"{amount:.2f}"`` / raw-float
-    conversions that rounded differently and hardcoded a 2-decimal assumption.
-    """
-
-    P = AbstractPaymentProvider
-
-    @pytest.mark.parametrize(
-        "amount,currency,expected",
-        [
-            ("1.15", "USD", 115),  # the mischarge: int(1.15*100) truncated to 114
-            ("1.15", "usd", 115),  # case-insensitive
-            ("10.00", "USD", 1000),
-            ("0.01", "USD", 1),
-            ("1.155", "USD", 116),  # HALF_UP rounds up
-            ("1.154", "USD", 115),  # HALF_UP rounds down
-            ("100", "JPY", 100),  # zero-decimal: NOT multiplied by 100
-            ("1000", "JPY", 1000),
-            ("1.234", "BHD", 1234),  # three-decimal
-            ("1.2345", "BHD", 1235),  # three-decimal HALF_UP
-            (Decimal("1.15"), "USD", 115),  # Decimal input
-            (1.15, "USD", 115),  # float input coerced via str()
-            ("1.15", "ZZZ", 115),  # unknown currency → default 2 places
-        ],
-    )
-    def test_to_minor_units(self, amount, currency, expected):
-        assert self.P.to_minor_units(amount, currency) == expected
-
-    @pytest.mark.parametrize(
-        "units,currency,expected",
-        [
-            (115, "USD", Decimal("1.15")),
-            (100, "JPY", Decimal("100")),
-            (1234, "BHD", Decimal("1.234")),
-        ],
-    )
-    def test_from_minor_units(self, units, currency, expected):
-        assert self.P.from_minor_units(units, currency) == expected
-
-    @pytest.mark.parametrize("currency", ["USD", "JPY", "BHD", "EUR", "KWD"])
-    @pytest.mark.parametrize("amount", ["0.01", "1.15", "100", "9999.99", "1"])
-    def test_round_trip_exact_at_currency_precision(self, amount, currency):
-        exp = self.P._currency_exponent(currency)
-        minor = self.P.to_minor_units(amount, currency)
-        back = self.P.from_minor_units(minor, currency)
-        assert back == Decimal(amount).quantize(Decimal(1).scaleb(-exp))
-
-    @pytest.mark.parametrize(
-        "amount,currency,expected",
-        [
-            ("1.15", "USD", "1.15"),
-            ("1.5", "USD", "1.50"),
-            ("1.155", "USD", "1.16"),  # HALF_UP
-            ("100", "JPY", "100"),  # PayPal fix: not "100.00"
-            ("1.2345", "BHD", "1.235"),  # three-decimal HALF_UP (matches to_minor 1235)
-        ],
-    )
-    def test_format_amount(self, amount, currency, expected):
-        assert self.P.format_amount(amount, currency) == expected
-
-    def test_get_default_currency_env_then_default(self, monkeypatch):
-        class _P(AbstractPaymentProvider):
-            _currency_env_var = "TEST_CUR"
-            _default_currency = "CAD"
-
+    async def test_a_paypal_subscription_needs_no_customer(
+        self, server, registry, local_http_server, monkeypatch, fresh_user
+    ):
+        upstream = local_http_server(
+            {
+                "/v1/oauth2/token": json_answer(
+                    {"access_token": "t", "expires_in": 60}
+                ),
+                "/v1/billing/subscriptions": json_answer(
+                    {
+                        "id": "I-1",
+                        "status": "APPROVAL_PENDING",
+                        "plan_id": "P-1",
+                        "links": [{"rel": "approve", "href": "https://paypal.test/a"}],
+                    }
+                ),
+            }
+        )
+        instance = add_instance(
+            registry,
+            PRV_PayPal_Payment.name,
+            "secret",
+            {"api_base": upstream.base_url, "client_id": "client"},
+        )
         monkeypatch.setattr(
-            _P, "get_env_value", classmethod(lambda cls, k, d=None: "GBP")
+            EXT_Payment, "_root_rotation_cache", rotation(registry, instance)
         )
-        assert _P.get_default_currency() == "GBP"
-        # empty env value falls back to the default (matches the deleted overrides)
-        monkeypatch.setattr(_P, "get_env_value", classmethod(lambda cls, k, d=None: ""))
-        assert _P.get_default_currency() == "CAD"
-
-    def test_get_default_currency_no_env_var_uses_classvar(self):
-        # ConcretePaymentProvider sets no _currency_env_var → base default "USD"
-        assert ConcretePaymentProvider.get_default_currency() == "USD"
-
-
-@pytest.mark.payment
-class TestWebhookSignatureVerification:
-    """HMAC-SHA256 webhook-signature SSOT (#228).
-
-    Replaces the four hand-rolled ``hmac.new(...).hexdigest()`` + ``compare_digest``
-    copies (Square, PayPal, Moneris, Helcim) that had diverged — Square notably
-    lacked the empty-signature guard the others enforced. The check must be
-    constant-time and reject an empty/missing signature before computing anything.
-    """
-
-    P = AbstractPaymentProvider
-
-    _SECRET = "whsec_test_secret"
-    _PAYLOAD = b'{"type": "payment.updated", "event_id": "evt_1"}'
-
-    @staticmethod
-    def _sign(secret: str, payload: bytes) -> str:
-        import hashlib
-        import hmac
-
-        return hmac.new(secret.encode(), payload, hashlib.sha256).hexdigest()
-
-    def test_correct_signature_returns_true(self):
-        sig = self._sign(self._SECRET, self._PAYLOAD)
-        assert self.P.verify_hmac_sha256(self._SECRET, self._PAYLOAD, sig) is True
-
-    def test_wrong_signature_returns_false(self):
-        # Well-formed but incorrect digest.
-        wrong = self._sign(self._SECRET, self._PAYLOAD).replace("a", "b", 1)
-        assert self.P.verify_hmac_sha256(self._SECRET, self._PAYLOAD, wrong) is False
-
-    def test_garbage_signature_returns_false(self):
-        assert (
-            self.P.verify_hmac_sha256(self._SECRET, self._PAYLOAD, "not-a-digest")
-            is False
-        )
-
-    def test_signature_under_different_secret_returns_false(self):
-        # A digest that is valid for a *different* key must not verify.
-        sig = self._sign("other_secret", self._PAYLOAD)
-        assert self.P.verify_hmac_sha256(self._SECRET, self._PAYLOAD, sig) is False
-
-    def test_signature_for_tampered_payload_returns_false(self):
-        sig = self._sign(self._SECRET, self._PAYLOAD)
-        assert (
-            self.P.verify_hmac_sha256(self._SECRET, b'{"tampered": true}', sig) is False
-        )
-
-    def test_empty_signature_returns_false(self):
-        # Single empty-signature policy: rejected before any HMAC is computed.
-        assert self.P.verify_hmac_sha256(self._SECRET, self._PAYLOAD, "") is False
-
-    def test_verify_is_available_on_every_concrete_provider(self):
-        # SSOT lives on the abstract base, inherited by all providers (incl. the
-        # four hand-rolled ones this replaced).
-        for module, name in [
-            ("PRV_Square_Payment", "PaymentExtensionSquareProvider"),
-            ("PRV_PayPal_Payment", "PaymentExtensionPayPalProvider"),
-            ("PRV_Moneris_Payment", "PaymentExtensionMonerisProvider"),
-            ("PRV_Helcim_Payment", "PaymentExtensionHelcimProvider"),
-        ]:
-            mod = __import__(f"zephyrex.extensions.payment.{module}", fromlist=[name])
-            provider = getattr(mod, name)
-            sig = self._sign(self._SECRET, self._PAYLOAD)
-            assert provider.verify_hmac_sha256(self._SECRET, self._PAYLOAD, sig) is True
-            assert provider.verify_hmac_sha256(self._SECRET, self._PAYLOAD, "") is False
+        made = await EXT_Payment.subscription_create(fresh_user.id, "P-1")
+        assert made["user_id"] == fresh_user.id and not made["active"]
+        assert made["approval_url"] == "https://paypal.test/a"

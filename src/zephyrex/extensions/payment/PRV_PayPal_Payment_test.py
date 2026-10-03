@@ -1,180 +1,272 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
+"""PayPal on the wire (a local server answering as PayPal does), its
+notifications verified by PayPal, and the real PayPal sandbox."""
+
+import hashlib
+import hmac
+import json
+import uuid
 from decimal import Decimal
+from typing import Any, Dict
 
 import pytest
 
-from zephyrex.extensions.payment.BLL_Payment import *  # noqa: F401,F403
-from zephyrex.extensions.payment.PRV_PayPal_Payment import (
-    PaymentExtensionPayPalProvider,
-    PayPal_CustomerManager,
-    PayPal_CustomerModel,
-    PayPal_OrderModel,
-    PayPal_SubscriptionModel,
+from zephyrex.extensions.ExternalErrors import (
+    AuthExternalError,
+    InvalidInputExternalError,
+    PermanentExternalError,
 )
-from zephyrex.lib.Dependencies import Dependencies
-from zephyrex.lib.Environment import env
+from zephyrex.extensions.payment.EXT_Payment import (
+    MoneyAction,
+    PaymentRequest,
+    SubscriptionRequest,
+)
+from zephyrex.extensions.payment.PRV_PayPal_Payment import PRV_PayPal_Payment
+
+WEBHOOK_ID = "WH-1"
+TOKEN = {"access_token": "A21-local", "expires_in": 3600}
+ORDER = {
+    "id": "O1",
+    "intent": "CAPTURE",
+    "status": "PAYER_ACTION_REQUIRED",
+    "purchase_units": [{"amount": {"currency_code": "USD", "value": "20.00"}}],
+    "links": [{"rel": "payer-action", "href": "https://paypal.test/approve/O1"}],
+}
+CAPTURED = {
+    **ORDER,
+    "status": "COMPLETED",
+    "purchase_units": [
+        {
+            "amount": {"currency_code": "USD", "value": "20.00"},
+            "payments": {
+                "captures": [
+                    {
+                        "id": "CAP1",
+                        "status": "COMPLETED",
+                        "amount": {"currency_code": "USD", "value": "20.00"},
+                    }
+                ]
+            },
+        }
+    ],
+}
+SIGNED_HEADERS = {
+    "paypal-auth-algo": "SHA256withRSA",
+    "paypal-cert-url": "https://api.paypal.com/v1/notifications/certs/CERT",
+    "paypal-transmission-id": "T1",
+    "paypal-transmission-sig": "c2ln",
+    "paypal-transmission-time": "2026-10-03T00:00:00Z",
+}
 
 
-@pytest.mark.payment
-@pytest.mark.paypal
-class TestPayPalProvider:
-    """Test suite for PayPal payment provider.
+def answer(body: Any, status: int = 200):
+    return (status, {"Content-Type": "application/json"}, json.dumps(body).encode())
 
-    Tests provider static methods, payment processing, and PayPal API
-    integration. Fully compatible with the Provider Rotation System.
-    """
 
-    provider_class = PaymentExtensionPayPalProvider
-    extension_id = "payment"
+def body(request) -> Dict[str, Any]:
+    parsed: Dict[str, Any] = json.loads(request.body)
+    return parsed
 
-    @pytest.fixture
-    def paypal_client_id(self):
-        client_id = env("PAYPAL_CLIENT_ID")
-        if not client_id:
-            pytest.xfail("PAYPAL_CLIENT_ID environment variable not set")
-        return client_id
 
-    @pytest.fixture
-    def provider_instance(self, paypal_client_id):
-        class MockProviderInstance:
-            def __init__(self, api_key):
-                self.id = "test_paypal_instance_id"
-                self.api_key = api_key
-                self.provider_id = "paypal"
-                self.name = "Test PayPal Instance"
-
-        return MockProviderInstance(paypal_client_id)
-
-    def test_provider_structure(self):
-        assert hasattr(PaymentExtensionPayPalProvider, "name")
-        assert hasattr(PaymentExtensionPayPalProvider, "version")
-        assert hasattr(PaymentExtensionPayPalProvider, "description")
-        assert hasattr(PaymentExtensionPayPalProvider, "dependencies")
-        assert hasattr(PaymentExtensionPayPalProvider, "_env")
-        assert hasattr(PaymentExtensionPayPalProvider, "bond_instance")
-        assert hasattr(PaymentExtensionPayPalProvider, "get_platform_name")
-
-    def test_provider_metadata(self):
-        assert PaymentExtensionPayPalProvider.name == "paypal"
-        assert isinstance(PaymentExtensionPayPalProvider.version, str)
-        assert isinstance(PaymentExtensionPayPalProvider.description, str)
-        assert PaymentExtensionPayPalProvider.get_platform_name() == "PayPal"
-
-    def test_provider_dependencies(self):
-        deps = PaymentExtensionPayPalProvider.dependencies
-        assert deps is not None
-        assert hasattr(deps, "pip")
-        assert len(deps.pip) > 0
-        paypal_dep = next(
-            (dep for dep in deps.pip if dep.name == "paypalrestsdk"), None
+@pytest.fixture
+def paypal(local_http_server, provider_instance):
+    def _start(routes, **settings):
+        server = local_http_server({"/v1/oauth2/token": answer(TOKEN), **routes})
+        instance = provider_instance(
+            PRV_PayPal_Payment,
+            api_key="secret-local",
+            settings={
+                "api_base": server.base_url,
+                "client_id": "client-local",
+                "webhook_id": WEBHOOK_ID,
+                **settings,
+            },
         )
-        assert paypal_dep is not None
+        return server, instance
 
-    def test_provider_env_vars(self):
-        env_vars = PaymentExtensionPayPalProvider._env
-        assert isinstance(env_vars, dict)
-        assert "PAYPAL_CLIENT_ID" in env_vars
-        assert "PAYPAL_SECRET" in env_vars
-        assert "PAYPAL_WEBHOOK_ID" in env_vars
-        assert "PAYPAL_CURRENCY" in env_vars
+    return _start
 
-    def test_bond_instance_without_credentials(self):
-        class MockInstanceWithoutKey:
-            id = "test_id"
-            api_key = None
 
-        instance = MockInstanceWithoutKey()
-        bonded = PaymentExtensionPayPalProvider.bond_instance(instance)
-        try:
-            import paypalrestsdk
-
-            if not env("PAYPAL_CLIENT_ID") or not env("PAYPAL_SECRET"):
-                assert bonded is None
-        except ImportError:
-            assert bonded is None
-
-    def test_static_configuration_methods(self):
-        client_id = PaymentExtensionPayPalProvider.get_client_id()
-        if env("PAYPAL_CLIENT_ID"):
-            assert client_id == env("PAYPAL_CLIENT_ID")
-
-        client_secret = PaymentExtensionPayPalProvider.get_client_secret()
-        if env("PAYPAL_SECRET"):
-            assert client_secret == env("PAYPAL_SECRET")
-
-    def test_currency_and_environment_handling(self):
-        default_currency = PaymentExtensionPayPalProvider.get_default_currency()
-        assert isinstance(default_currency, str)
-        assert len(default_currency) == 3
-
-    def test_external_models_exist(self):
-        assert PayPal_CustomerModel is not None
-        assert hasattr(PayPal_CustomerModel, "external_resource")
-        assert PayPal_CustomerModel.external_resource == "customers"
-        assert getattr(PayPal_CustomerModel, "_is_extension_model", False)
-
-    def test_external_manager_exists(self):
-        assert PayPal_CustomerManager is not None
-        assert hasattr(PayPal_CustomerManager, "sync_contact")
-        assert hasattr(PayPal_CustomerManager, "create_customer")
-        assert callable(PayPal_CustomerManager.sync_contact)
-        assert callable(PayPal_CustomerManager.create_customer)
-
-    def test_paypal_models_structure(self):
-        models = [
-            (PayPal_CustomerModel, "customers"),
-            (PayPal_OrderModel, "orders"),
-            (PayPal_SubscriptionModel, "subscriptions"),
-        ]
-        for model_class, expected_resource in models:
-            assert hasattr(model_class, "external_resource")
-            assert model_class.external_resource == expected_resource
-            assert getattr(model_class, "_is_extension_model", False)
-
-    def test_services_method(self):
-        services = PaymentExtensionPayPalProvider.services()
-        assert isinstance(services, list)
-        assert "payment" in services
-
-    def test_extension_info(self):
-        info = PaymentExtensionPayPalProvider.get_extension_info()
-        assert isinstance(info, dict)
-        assert info["platform"] == "PayPal"
-
-    def test_create_customer_synthesized(self, provider_instance):
-        """PayPal customer creation is synthesized (no first-class API).
-
-        Verify the provider returns a well-formed customer record.
-        """
-        result = PaymentExtensionPayPalProvider.create_customer(
-            provider_instance, email="test@example.com", name="Test User"
+class TestWire:
+    async def test_an_order_to_approve(self, paypal):
+        server, instance = paypal(
+            {"/v2/checkout/orders": answer(ORDER)}, return_url="https://shop.test/back"
         )
-        assert result["success"] is True
-        assert result["email"] == "test@example.com"
-        assert result["name"] == "Test User"
-        assert result["customer_id"].startswith("PAYPAL-")
+        made = await PRV_PayPal_Payment.create_payment(
+            instance,
+            PaymentRequest(
+                amount=Decimal("20"), currency="USD", user_id="u1", idempotency_key="k1"
+            ),
+        )
+        token_call, order_call = server.requests
+        assert token_call.body == b"grant_type=client_credentials"
+        assert token_call.headers["authorization"].startswith("Basic ")
+        sent = body(order_call)
+        assert sent["intent"] == "CAPTURE"
+        assert sent["purchase_units"][0]["amount"] == {
+            "currency_code": "USD",
+            "value": "20.00",
+        }
+        assert sent["purchase_units"][0]["custom_id"] == "u1"
+        assert sent["payment_source"]["paypal"]["experience_context"]["return_url"] == (
+            "https://shop.test/back"
+        )
+        assert order_call.headers["paypal-request-id"] == "k1"
+        assert made["status"] == "pending"
+        assert made["approval_url"] == "https://paypal.test/approve/O1"
 
-    @pytest.mark.asyncio
-    async def test_process_webhook_no_webhook_id(self, provider_instance):
-        """Without PAYPAL_WEBHOOK_ID the webhook path should refuse."""
-        import os
+    async def test_the_token_is_reused(self, paypal):
+        server, instance = paypal({"/v2/checkout/orders/O1": answer(ORDER)})
+        await PRV_PayPal_Payment.get_payment(instance, "O1")
+        await PRV_PayPal_Payment.get_payment(instance, "O1")
+        paths = [request.path for request in server.requests]
+        assert paths.count("/v1/oauth2/token") == 1
 
-        original = os.environ.pop("PAYPAL_WEBHOOK_ID", None)
-        try:
-            from zephyrex.lib.Environment import refresh_settings
+    async def test_refused_credentials(self, paypal):
+        server, instance = paypal(
+            {"/v1/oauth2/token": answer({"error": "invalid_client"}, 401)}
+        )
+        with pytest.raises(AuthExternalError):
+            await PRV_PayPal_Payment.get_payment(instance, "O1")
 
-            refresh_settings()
-            result = await PaymentExtensionPayPalProvider.process_webhook(
-                provider_instance, '{"event_type": "test"}', "sig"
+    async def test_capture_then_refund(self, paypal):
+        server, instance = paypal(
+            {
+                "/v2/checkout/orders/O1": lambda request: answer(
+                    CAPTURED
+                    if any(r.path.endswith("/capture") for r in server.requests)
+                    else {**ORDER, "status": "APPROVED"}
+                ),
+                "/v2/checkout/orders/O1/capture": answer(CAPTURED),
+                "/v2/payments/captures/CAP1/refund": answer(
+                    {
+                        "id": "R1",
+                        "status": "COMPLETED",
+                        "amount": {"currency_code": "USD", "value": "5.00"},
+                    }
+                ),
+            }
+        )
+        captured = await PRV_PayPal_Payment.capture_payment(
+            instance, "O1", MoneyAction(currency="USD", idempotency_key="k2")
+        )
+        assert captured["status"] == "succeeded"
+        refund = await PRV_PayPal_Payment.refund_payment(
+            instance,
+            "O1",
+            MoneyAction(
+                currency="USD",
+                idempotency_key="k3",
+                amount=Decimal("5"),
+                reason="sorry",
+            ),
+        )
+        sent = body(server.requests[-1])
+        assert sent == {
+            "amount": {"currency_code": "USD", "value": "5.00"},
+            "note_to_payer": "sorry",
+        }
+        assert refund["refund_id"] == "R1" and refund["amount"] == "5.00"
+
+    async def test_a_subscription_needs_no_customer(self, paypal):
+        server, instance = paypal(
+            {
+                "/v1/billing/subscriptions": answer(
+                    {
+                        "id": "I-1",
+                        "status": "APPROVAL_PENDING",
+                        "plan_id": "P-1",
+                        "links": [{"rel": "approve", "href": "https://paypal.test/s"}],
+                    }
+                )
+            }
+        )
+        made = await PRV_PayPal_Payment.create_subscription(
+            instance,
+            SubscriptionRequest(plan_id="P-1", user_id="u1", idempotency_key="k"),
+        )
+        assert body(server.requests[-1]) == {"plan_id": "P-1", "custom_id": "u1"}
+        assert not made["active"] and made["approval_url"] == "https://paypal.test/s"
+
+    async def test_what_paypal_cannot_do(self, paypal):
+        _, instance = paypal({})
+        with pytest.raises(PermanentExternalError):
+            await PRV_PayPal_Payment.cancel_subscription(instance, "I-1", True)
+
+
+class TestNotifications:
+    EVENT = {
+        "id": "WH-EVT-1",
+        "event_type": "CHECKOUT.ORDER.APPROVED",
+        "resource_type": "checkout-order",
+        "resource": {"id": "O1"},
+    }
+    PAYLOAD = json.dumps(EVENT).encode()
+
+    async def test_paypal_vouches_for_it(self, paypal):
+        server, instance = paypal(
+            {
+                "/v1/notifications/verify-webhook-signature": answer(
+                    {"verification_status": "SUCCESS"}
+                )
+            }
+        )
+        event = await PRV_PayPal_Payment.verify_webhook(
+            instance, self.PAYLOAD, SIGNED_HEADERS
+        )
+        asked = body(server.requests[-1])
+        assert asked["webhook_id"] == WEBHOOK_ID
+        assert asked["transmission_sig"] == "c2ln"
+        assert asked["webhook_event"] == self.EVENT
+        assert (event["kind"], event["object_id"]) == ("payment", "O1")
+
+    async def test_a_signature_keyed_with_the_webhook_id_is_refused(self, paypal):
+        """The webhook id is no secret (PayPal lists it, it rides in every
+        notification), yet the old verification took an HMAC keyed with it
+        as proof: anyone could forge a payment notification. PayPal now
+        judges the signature."""
+        server, instance = paypal(
+            {
+                "/v1/notifications/verify-webhook-signature": answer(
+                    {"verification_status": "FAILURE"}
+                )
+            }
+        )
+        forged = hmac.new(WEBHOOK_ID.encode(), self.PAYLOAD, hashlib.sha256).hexdigest()
+        with pytest.raises(InvalidInputExternalError, match="signature is wrong"):
+            await PRV_PayPal_Payment.verify_webhook(
+                instance,
+                self.PAYLOAD,
+                {**SIGNED_HEADERS, "paypal-transmission-sig": forged},
             )
-            # Without a configured webhook id the webhook MUST be refused --
-            # unconditionally, not "if it happens to fail". A verifier that
-            # wrongly accepted (success truthy) slipped past the old conditional.
-            assert result["success"] is False
-            assert "error" in result
-        finally:
-            if original is not None:
-                os.environ["PAYPAL_WEBHOOK_ID"] = original
-                from zephyrex.lib.Environment import refresh_settings
 
-                refresh_settings()
+    async def test_unsigned_is_refused_without_asking(self, paypal):
+        server, instance = paypal({})
+        with pytest.raises(InvalidInputExternalError):
+            await PRV_PayPal_Payment.verify_webhook(instance, self.PAYLOAD, {})
+        assert server.requests == []
+
+
+@pytest.mark.external_api(provider="paypal")
+async def test_sandbox_order(provider_instance, sandbox_credentials_for):
+    """PayPal's sandbox: an order, read back."""
+    creds = sandbox_credentials_for("paypal")
+    instance = provider_instance(
+        PRV_PayPal_Payment,
+        api_key=creds["PAYPAL_SECRET"],
+        settings={
+            "client_id": creds["PAYPAL_CLIENT_ID"],
+            "api_base": "https://api-m.sandbox.paypal.com",
+        },
+    )
+    made = await PRV_PayPal_Payment.create_payment(
+        instance,
+        PaymentRequest(
+            amount=Decimal("1"),
+            currency="USD",
+            user_id="u",
+            idempotency_key=str(uuid.uuid4()),
+        ),
+    )
+    found = await PRV_PayPal_Payment.get_payment(instance, made["external_id"])
+    assert found["status"] == "pending" and found["approval_url"]

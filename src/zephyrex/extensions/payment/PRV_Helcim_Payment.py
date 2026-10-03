@@ -1,548 +1,264 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Helcim payment provider for zephyrex.
+"""Helcim, through its Payment API v2 (``api-token`` header, an
+``idempotency-key`` on every payment request).
 
-Integrates with the Helcim REST API for payment processing, customer
-management, and webhook handling. Uses ``httpx`` against the REST
-surface directly (no third-party SDK). Fully static implementation
-compatible with the Provider Rotation System.
-
-Credentials (HELCIM_API_TOKEN) must be set in the environment before
-the provider becomes active.
+A payment is a purchase (or, ``capture=False``, a pre-authorization) of a
+card token from HelcimPay.js, and needs the payer's IP address, which
+Helcim uses against fraud: so do a capture and a refund. A capture is a
+transaction of its own; the payment's record then names it, since a
+refund is of the capture. Helcim's customers need a billing address,
+which this server does not hold, so customer records and subscriptions
+are not offered. Notifications are verified as Helcim signs them
+(Standard Webhooks): base64 HMAC-SHA256 over
+``<webhook-id>.<webhook-timestamp>.<body>`` with the base64-decoded
+verifier token, within five minutes.
 """
 
-from __future__ import annotations
-
+import base64
+import binascii
 import json
-import uuid
-from typing import Any, ClassVar, Dict, List, Optional
+import time
+from decimal import Decimal
+from typing import Any, ClassVar, Dict, Mapping, Optional, Set, Tuple
 
-try:
-    import httpx
-except ImportError:
-    httpx = None  # type: ignore[assignment]
-
-from pydantic import BaseModel, Field
-
-from zephyrex.extensions.AbstractExtensionProvider import AbstractProviderInstance_SDK
-from zephyrex.extensions.AbstractExternalModel import (
-    AbstractExternalManager,
-    AbstractExternalModel,
+from zephyrex.extensions.AbstractExtensionProvider import InstanceSetting
+from zephyrex.extensions.ExternalErrors import (
+    InvalidInputExternalError,
+    TransientExternalError,
 )
 from zephyrex.extensions.payment.EXT_Payment import (
     AbstractPaymentProvider,
-    PassthroughExternalModel,
+    MoneyAction,
+    PaymentRequest,
+    fresh,
+    hmac_sha256,
+    one_matches,
 )
-from zephyrex.lib.Dependencies import Dependencies, PIP_Dependency
-from zephyrex.lib.Environment import env
-from zephyrex.lib.Logging import logger
-from zephyrex.pydantic2.registry import BaseModel
-from zephyrex.logic.AbstractLogicManager import ModelMeta
+from zephyrex.lib.ProviderHTTPClient import path_segment
 from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 
-_BASE_URL = "https://api.helcim.com/v2"
+_KINDS = {"purchase": "succeeded", "capture": "succeeded", "preauth": "authorized"}
 
 
-def _default_headers() -> Dict[str, str]:
-    headers: Dict[str, str] = {
-        "Content-Type": "application/json",
-        "Accept": "application/json",
+def _transaction_id(value: str) -> int:
+    if not value.isdigit():
+        raise InvalidInputExternalError(f"{value!r} is not a Helcim transaction id")
+    return int(value)
+
+
+class PRV_Helcim_Payment(AbstractPaymentProvider):
+    name: ClassVar[str] = "helcim"
+    friendly_name: ClassVar[str] = "Helcim"
+    description: ClassVar[str] = "A Helcim merchant account"
+    _abilities: ClassVar[Set[str]] = {
+        "payment_create",
+        "payment_get",
+        "payment_capture",
+        "payment_refund",
+        "webhook_process",
     }
-    api_token = env("HELCIM_API_TOKEN")
-    if api_token:
-        headers["api-token"] = api_token
-    return headers
-
-
-# ============================================================================
-# Helcim Customer External Model
-# ============================================================================
-
-
-class Helcim_CustomerModel(PassthroughExternalModel, metaclass=ModelMeta):
-    """External model for Helcim Customer API resource."""
-
-    class Reference:
-        pass
-
-    external_resource: ClassVar[str] = "customers"
-    _is_extension_model: ClassVar[bool] = True
-    _extension_target: ClassVar[str] = "payment"
-
-    id: str = Field(..., description="Helcim customer ID")
-    email: Optional[str] = Field(None, description="Customer email")
-    first_name: Optional[str] = Field(None, description="First name")
-    last_name: Optional[str] = Field(None, description="Last name")
-    phone: Optional[str] = Field(None, description="Phone")
-    company_name: Optional[str] = Field(None, description="Company name")
-
-    class Create(BaseModel):
-        email: Optional[str] = Field(None)
-        first_name: Optional[str] = Field(None)
-        last_name: Optional[str] = Field(None)
-        phone: Optional[str] = Field(None)
-        company_name: Optional[str] = Field(None)
-
-    class Update(BaseModel):
-        email: Optional[str] = Field(None)
-        first_name: Optional[str] = Field(None)
-        last_name: Optional[str] = Field(None)
-        phone: Optional[str] = Field(None)
-
-    class Search(BaseModel):
-        email: Optional[str] = Field(None)
-
-    @classmethod
-    def to_external_query_format(
-        cls,
-        query_params: Dict[str, Any],
-        limit: Optional[int] = None,
-        offset: Optional[int] = None,
-        order_by: Optional[List] = None,
-    ) -> Dict[str, Any]:
-        params = dict(query_params)
-        if limit:
-            params["limit"] = limit
-        return params
-
-    @staticmethod
-    def create_via_provider(provider_instance, **kwargs) -> Dict[str, Any]:
-        try:
-            bonded = PaymentExtensionHelcimProvider.bond_instance(provider_instance)
-            if not bonded or not bonded.sdk:
-                return {"success": False, "error": "Failed to bond provider instance"}
-            client: httpx.Client = bonded.sdk
-            resp = client.post("/customers", json=kwargs)
-            if resp.status_code in (200, 201):
-                return {"success": True, "data": resp.json()}
-            return {"success": False, "error": resp.text}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-
-    @staticmethod
-    def get_via_provider(provider_instance, external_id: str) -> Dict[str, Any]:
-        try:
-            bonded = PaymentExtensionHelcimProvider.bond_instance(provider_instance)
-            if not bonded or not bonded.sdk:
-                return {"success": False, "error": "Failed to bond provider instance"}
-            client: httpx.Client = bonded.sdk
-            resp = client.get(f"/customers/{external_id}")
-            if resp.status_code == 200:
-                return {"success": True, "data": resp.json()}
-            return {"success": False, "error": resp.text}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-
-    @staticmethod
-    def list_via_provider(provider_instance, **kwargs) -> Dict[str, Any]:
-        try:
-            bonded = PaymentExtensionHelcimProvider.bond_instance(provider_instance)
-            if not bonded or not bonded.sdk:
-                return {"success": False, "error": "Failed to bond provider instance"}
-            client: httpx.Client = bonded.sdk
-            resp = client.get("/customers", params=kwargs)
-            if resp.status_code == 200:
-                return {"success": True, "data": resp.json()}
-            return {"success": False, "error": resp.text}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-
-    @staticmethod
-    def update_via_provider(
-        provider_instance, external_id: str, **kwargs
-    ) -> Dict[str, Any]:
-        try:
-            bonded = PaymentExtensionHelcimProvider.bond_instance(provider_instance)
-            if not bonded or not bonded.sdk:
-                return {"success": False, "error": "Failed to bond provider instance"}
-            client: httpx.Client = bonded.sdk
-            resp = client.put(f"/customers/{external_id}", json=kwargs)
-            if resp.status_code == 200:
-                return {"success": True, "data": resp.json()}
-            return {"success": False, "error": resp.text}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-
-    @staticmethod
-    def delete_via_provider(provider_instance, external_id: str) -> Dict[str, Any]:
-        try:
-            bonded = PaymentExtensionHelcimProvider.bond_instance(provider_instance)
-            if not bonded or not bonded.sdk:
-                return {"success": False, "error": "Failed to bond provider instance"}
-            client: httpx.Client = bonded.sdk
-            resp = client.delete(f"/customers/{external_id}")
-            if resp.status_code in (200, 204):
-                return {"success": True}
-            return {"success": False, "error": resp.text}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-
-
-# ============================================================================
-# Helcim Payment / Subscription External Models
-# ============================================================================
-
-
-class Helcim_PaymentModel(AbstractExternalModel, metaclass=ModelMeta):
-    """External model for Helcim Payment (transaction) resource."""
-
-    external_resource: ClassVar[str] = "payment"
-    _is_extension_model: ClassVar[bool] = True
-
-    id: str = Field(..., description="Helcim transaction ID")
-    amount: Optional[float] = Field(None)
-    currency: Optional[str] = Field(None)
-    status: Optional[str] = Field(None)
-    type: Optional[str] = Field(None, description="purchase, preauth, refund, etc.")
-
-
-class Helcim_InvoiceModel(AbstractExternalModel, metaclass=ModelMeta):
-    """External model for Helcim Invoice resource (recurring billing)."""
-
-    external_resource: ClassVar[str] = "invoices"
-    _is_extension_model: ClassVar[bool] = True
-
-    id: str = Field(...)
-    customer_id: Optional[str] = Field(None)
-    status: Optional[str] = Field(None)
-    amount: Optional[float] = Field(None)
-
-
-# ============================================================================
-# Helcim Provider
-# ============================================================================
-
-
-class PaymentExtensionHelcimProvider(AbstractPaymentProvider):
-    """Helcim payment provider for zephyrex.
-
-    Uses the Helcim Commerce API v2 directly via ``httpx``. Supports
-    purchases, pre-auths, refunds, customers, and invoices. Fully
-    compatible with the Provider Rotation System.
-    """
-
-    name = "helcim"
-    version = "1.0.0"
-    description = "Helcim payment provider"
-    _currency_env_var: ClassVar[str] = "HELCIM_CURRENCY"
-    _default_currency: ClassVar[str] = "CAD"
-
-    _client: ClassVar[Optional[Any]] = None
-
-    dependencies = Dependencies(
-        [
-            PIP_Dependency(
-                name="httpx",
-                friendly_name="HTTPX HTTP Client",
-                semver=">=0.24.0",
-                reason="Helcim REST API HTTP client",
-            ),
-        ]
+    instance_settings: ClassVar[Tuple[InstanceSetting, ...]] = (
+        InstanceSetting(
+            "api_key", "API token", env="HELCIM_API_TOKEN", secret=True, field="api_key"
+        ),
+        InstanceSetting(
+            "verifier_token",
+            "The webhook verifier token",
+            env="HELCIM_VERIFIER_TOKEN",
+            secret=True,
+        ),
+        InstanceSetting("api_base", "API address", default="https://api.helcim.com"),
     )
 
-    _env = {
-        "HELCIM_API_TOKEN": "",
-        "HELCIM_CURRENCY": "CAD",
-    }
+    @classmethod
+    def refusal_detail(cls, payload: Any) -> str:
+        try:
+            errors = json.loads(str(payload)).get("errors")
+        except (ValueError, AttributeError):
+            return ""
+        if isinstance(errors, dict):
+            return "; ".join(f"{key}: {value}" for key, value in errors.items())
+        if isinstance(errors, list):
+            return "; ".join(str(error) for error in errors)
+        return str(errors or "")
 
     @classmethod
-    def bond_instance(
-        cls, instance: ProviderInstanceModel
-    ) -> Optional[AbstractProviderInstance_SDK]:
-        if httpx is None:
-            logger.warning("httpx not available for Helcim provider bonding")
-            return None
-        try:
-            headers = _default_headers()
-            api_token = (
-                instance.api_key
-                if hasattr(instance, "api_key") and instance.api_key
-                else headers.get("api-token")
+    async def helcim(
+        cls,
+        instance: ProviderInstanceModel,
+        method: str,
+        path: str,
+        body: Optional[Dict[str, Any]] = None,
+        *,
+        idempotency_key: Optional[str] = None,
+        moves_money: bool = False,
+    ) -> Dict[str, Any]:
+        headers = {"api-token": cls.required(instance, "api_key")}
+        if idempotency_key:
+            headers["idempotency-key"] = idempotency_key
+        answer = await cls.call(
+            method,
+            cls.endpoint(instance, f"/v2{path}"),
+            headers=headers,
+            json=body,
+            moves_money=moves_money,
+        )
+        if not isinstance(answer, dict):
+            raise TransientExternalError("Helcim answered without a JSON object")
+        return answer
+
+    @classmethod
+    def payment(
+        cls, instance: ProviderInstanceModel, transaction: Mapping[str, Any]
+    ) -> Dict[str, Any]:
+        approved = str(transaction.get("status")).upper() == "APPROVED"
+        kind = str(transaction.get("type") or "").lower()
+        return cls.payment_answer(
+            instance,
+            transaction.get("transactionId"),
+            status=_KINDS.get(kind, "succeeded") if approved else "failed",
+            provider_status=f"{kind} {transaction.get('status')}".strip(),
+            amount=str(transaction.get("amount") or "0"),
+            currency=str(transaction.get("currency") or "CAD"),
+            customer_id=transaction.get("customerCode") or None,
+        )
+
+    @classmethod
+    def _ip(cls, customer_ip: Optional[str]) -> str:
+        if not customer_ip:
+            raise InvalidInputExternalError(
+                "Helcim needs customer_ip, the payer's IP address", provider=cls.name
             )
-            if not api_token:
-                logger.error("No API token available for Helcim provider instance")
-                return None
-            headers["api-token"] = api_token
-            client = httpx.Client(base_url=_BASE_URL, headers=headers, timeout=30.0)
-            return AbstractProviderInstance_SDK(client)
-        except Exception as e:
-            logger.error("Failed to bond Helcim provider instance: %s", e)
-            return None
+        return customer_ip
 
     @classmethod
-    def _get_client(cls) -> Optional[Any]:
-        if cls._client is not None:
-            return cls._client
-        if httpx is None:
-            return None
-        headers = _default_headers()
-        if not headers.get("api-token"):
-            return None
-        cls._client = httpx.Client(base_url=_BASE_URL, headers=headers, timeout=30.0)
-        return cls._client
-
-    @classmethod
-    def get_api_token(cls) -> Optional[str]:
-        return env("HELCIM_API_TOKEN")
-
-    @classmethod
-    def validate_config(cls) -> bool:
-        return bool(cls.get_api_token())
-
-    @classmethod
-    def get_platform_name(cls) -> str:
-        return "Helcim"
-
-    @classmethod
-    def services(cls) -> List[str]:
-        return ["payment", "commerce"]
-
-    @classmethod
-    # ----- Payment operations ------------------------------------------------
-
-    @classmethod
-    def create_payment(
-        cls,
-        provider_instance: ProviderInstanceModel,
-        amount: float,
-        currency: str = "CAD",
-        customer_id: Optional[str] = None,
-        payment_method_id: Optional[str] = None,
-        description: Optional[str] = None,
-        metadata: Optional[Dict] = None,
-    ) -> Dict:
-        client = cls._get_client()
-        if not client:
-            raise Exception("Helcim client not configured")
-        try:
-            body: Dict[str, Any] = {
-                "amount": float(cls.format_amount(amount, currency)),
-                "currency": currency.upper(),
-                "idempotencyKey": str(uuid.uuid4()),
-            }
-            if payment_method_id:
-                body["cardToken"] = payment_method_id
-            if customer_id:
-                body["customerId"] = int(customer_id)
-            resp = client.post("/payment/purchase", json=body)
-            if resp.status_code in (200, 201):
-                data = resp.json()
-                return {
-                    "success": True,
-                    "payment_id": str(data.get("transactionId")),
-                    "amount": amount,
-                    "currency": currency,
-                    "status": data.get("status", "APPROVED"),
-                }
-            return {"success": False, "error": resp.text}
-        except Exception as e:
-            logger.error("Error creating Helcim payment: %s", e)
-            return {"success": False, "error": str(e)}
-
-    @classmethod
-    def get_payment(
-        cls, provider_instance: ProviderInstanceModel, payment_id: str
-    ) -> Dict:
-        client = cls._get_client()
-        if not client:
-            raise Exception("Helcim client not configured")
-        try:
-            resp = client.get(f"/payment/transaction/{payment_id}")
-            if resp.status_code == 200:
-                data = resp.json()
-                return {
-                    "success": True,
-                    "payment_id": str(data.get("transactionId")),
-                    "amount": data.get("amount", 0),
-                    "currency": data.get("currency", "CAD"),
-                    "status": data.get("status"),
-                }
-            return {"success": False, "error": resp.text}
-        except Exception as e:
-            logger.error("Error getting Helcim payment %s: %s", payment_id, e)
-            return {"success": False, "error": str(e)}
-
-    @classmethod
-    def refund_payment(
-        cls,
-        provider_instance: ProviderInstanceModel,
-        payment_id: str,
-        amount: Optional[float] = None,
-        reason: Optional[str] = None,
-    ) -> Dict:
-        client = cls._get_client()
-        if not client:
-            raise Exception("Helcim client not configured")
-        try:
-            body: Dict[str, Any] = {
-                "originalTransactionId": int(payment_id),
-                "idempotencyKey": str(uuid.uuid4()),
-            }
-            if amount is not None:
-                body["amount"] = float(cls.format_amount(amount))
-            resp = client.post("/payment/refund", json=body)
-            if resp.status_code in (200, 201):
-                data = resp.json()
-                return {
-                    "success": True,
-                    "refund_id": str(data.get("transactionId")),
-                    "payment_id": payment_id,
-                    "amount": data.get("amount", amount),
-                    "reason": reason,
-                    "status": data.get("status", "APPROVED"),
-                }
-            return {"success": False, "error": resp.text}
-        except Exception as e:
-            logger.error("Error refunding Helcim payment %s: %s", payment_id, e)
-            return {"success": False, "error": str(e)}
-
-    @classmethod
-    def create_customer(
-        cls,
-        provider_instance: ProviderInstanceModel,
-        email: str,
-        name: Optional[str] = None,
-        phone: Optional[str] = None,
-        metadata: Optional[Dict] = None,
-    ) -> Dict:
-        client = cls._get_client()
-        if not client:
-            raise Exception("Helcim client not configured")
-        try:
-            body: Dict[str, Any] = {"contactEmail": email}
-            if name:
-                parts = name.split(" ", 1)
-                body["contactName"] = parts[0]
-                if len(parts) > 1:
-                    body["contactName"] = name
-            if phone:
-                body["contactPhone"] = phone
-            resp = client.post("/customers", json=body)
-            if resp.status_code in (200, 201):
-                data = resp.json()
-                return {
-                    "success": True,
-                    "customer_id": str(data.get("customerId") or data.get("id")),
-                    "email": data.get("contactEmail", email),
-                    "name": name,
-                    "phone": data.get("contactPhone"),
-                }
-            return {"success": False, "error": resp.text}
-        except Exception as e:
-            logger.error("Error creating Helcim customer: %s", e)
-            return {"success": False, "error": str(e)}
-
-    @classmethod
-    def get_customer(
-        cls, provider_instance: ProviderInstanceModel, customer_id: str
-    ) -> Dict:
-        client = cls._get_client()
-        if not client:
-            raise Exception("Helcim client not configured")
-        try:
-            resp = client.get(f"/customers/{customer_id}")
-            if resp.status_code == 200:
-                data = resp.json()
-                return {
-                    "success": True,
-                    "customer_id": str(data.get("customerId") or data.get("id")),
-                    "email": data.get("contactEmail"),
-                    "name": data.get("contactName"),
-                    "phone": data.get("contactPhone"),
-                }
-            return {"success": False, "error": resp.text}
-        except Exception as e:
-            logger.error("Error getting Helcim customer %s: %s", customer_id, e)
-            return {"success": False, "error": str(e)}
-
-    @classmethod
-    def create_subscription(
-        cls,
-        provider_instance: ProviderInstanceModel,
-        customer_id: str,
-        price_id: str,
-        payment_method_id: Optional[str] = None,
-        trial_days: Optional[int] = None,
-        metadata: Optional[Dict] = None,
-    ) -> Dict:
-        """Helcim uses invoices for recurring billing, not subscriptions."""
-        return {
-            "success": False,
-            "error": "Helcim does not support subscriptions directly; use invoices for recurring billing",
+    async def create_payment(
+        cls, instance: ProviderInstanceModel, request: PaymentRequest
+    ) -> Dict[str, Any]:
+        if not request.payment_method_id:
+            raise InvalidInputExternalError(
+                "A Helcim payment needs payment_method_id: a card token",
+                provider=cls.name,
+            )
+        body: Dict[str, Any] = {
+            "amount": float(cls.format_amount(request.amount, request.currency)),
+            "currency": request.currency,
+            "ipAddress": cls._ip(request.customer_ip),
+            "ecommerce": True,
+            "cardData": {"cardToken": request.payment_method_id},
         }
+        if request.customer_id:
+            body["customerCode"] = request.customer_id
+        transaction = await cls.helcim(
+            instance,
+            "POST",
+            "/payment/purchase" if request.capture else "/payment/preauth",
+            body,
+            idempotency_key=request.idempotency_key,
+            moves_money=True,
+        )
+        return cls.payment(instance, transaction)
 
     @classmethod
-    def cancel_subscription(
-        cls,
-        provider_instance: ProviderInstanceModel,
-        subscription_id: str,
-        immediately: bool = False,
-    ) -> Dict:
-        return {
-            "success": False,
-            "error": "Helcim does not support subscriptions directly",
-        }
+    async def get_payment(
+        cls, instance: ProviderInstanceModel, payment_id: str
+    ) -> Dict[str, Any]:
+        transaction = await cls.helcim(
+            instance,
+            "GET",
+            f"/card-transactions/{path_segment(payment_id, 'transaction id')}",
+        )
+        return cls.payment(instance, transaction)
 
     @classmethod
-    async def process_webhook(
-        cls, provider_instance: ProviderInstanceModel, payload: str, signature: str
-    ) -> Dict:
-        """Process a webhook from Helcim with HMAC-SHA256 verification."""
-        if not signature:
-            raise Exception("Webhook signature missing — cannot verify authenticity")
-        secret = cls.get_api_token()
-        if not secret:
-            raise Exception("Webhook secret not configured — cannot verify")
+    async def _amount(
+        cls, instance: ProviderInstanceModel, payment_id: str, action: MoneyAction
+    ) -> Decimal:
+        if action.amount is not None:
+            return action.amount
+        return Decimal((await cls.get_payment(instance, payment_id))["amount"])
+
+    @classmethod
+    async def capture_payment(
+        cls, instance: ProviderInstanceModel, payment_id: str, action: MoneyAction
+    ) -> Dict[str, Any]:
+        amount = await cls._amount(instance, payment_id, action)
+        transaction = await cls.helcim(
+            instance,
+            "POST",
+            "/payment/capture",
+            {
+                "preAuthTransactionId": _transaction_id(payment_id),
+                "amount": float(cls.format_amount(amount, action.currency)),
+                "ipAddress": cls._ip(action.customer_ip),
+            },
+            idempotency_key=action.idempotency_key,
+            moves_money=True,
+        )
+        return cls.payment(instance, transaction)
+
+    @classmethod
+    async def refund_payment(
+        cls, instance: ProviderInstanceModel, payment_id: str, action: MoneyAction
+    ) -> Dict[str, Any]:
+        amount = await cls._amount(instance, payment_id, action)
+        transaction = await cls.helcim(
+            instance,
+            "POST",
+            "/payment/refund",
+            {
+                "originalTransactionId": _transaction_id(payment_id),
+                "amount": float(cls.format_amount(amount, action.currency)),
+                "ipAddress": cls._ip(action.customer_ip),
+            },
+            idempotency_key=action.idempotency_key,
+            moves_money=True,
+        )
+        return cls.refund_answer(
+            instance,
+            transaction.get("transactionId"),
+            payment_id=payment_id,
+            status=transaction.get("status"),
+            amount=str(transaction.get("amount") or amount),
+            currency=str(transaction.get("currency") or action.currency),
+        )
+
+    @classmethod
+    async def verify_webhook(
+        cls, instance: ProviderInstanceModel, payload: bytes, headers: Dict[str, str]
+    ) -> Dict[str, Any]:
         try:
-            payload_bytes = payload.encode() if isinstance(payload, str) else payload
-            if not cls.verify_hmac_sha256(secret, payload_bytes, signature):
-                raise Exception("Webhook signature verification failed")
-            payload_str = payload if isinstance(payload, str) else payload.decode()
-            event = json.loads(payload_str)
-            event_type = event.get("eventName") or event.get("type", "unknown")
-            return {
-                "success": True,
-                "event_type": event_type,
-                "event_id": event.get("id") or event.get("eventId"),
-                "processed": True,
-            }
-        except Exception as e:
-            logger.error("Error processing Helcim webhook: %s", e)
-            return {"success": False, "error": str(e)}
-
-
-# ============================================================================
-# Helcim Customer Manager
-# ============================================================================
-
-
-class Helcim_CustomerManager(AbstractExternalManager):
-    """Manager for Helcim Customer external API."""
-
-    Model = Helcim_CustomerModel
-    ReferenceModel = Helcim_CustomerModel.Reference
-    provider_class = PaymentExtensionHelcimProvider
-
-    def create_validation(self, entity):
-        if not getattr(entity, "email", None):
-            raise ValueError("Email is required for Helcim customer creation")
-        return True
-
-    @classmethod
-    def sync_contact(cls, *args, **kwargs):
+            key = base64.b64decode(
+                cls.required(instance, "verifier_token"), validate=True
+            )
+        except binascii.Error:
+            raise InvalidInputExternalError(
+                "Helcim verifier_token is not base64", provider=cls.name
+            ) from None
+        webhook_id = headers.get("webhook-id", "")
+        timestamp = headers.get("webhook-timestamp", "")
+        signatures = [
+            part.partition(",")[2]
+            for part in headers.get("webhook-signature", "").split()
+            if part.startswith("v1,")
+        ]
+        if not webhook_id or not timestamp or not signatures:
+            raise InvalidInputExternalError("The notification is not signed")
+        signed = f"{webhook_id}.{timestamp}.".encode() + payload
+        expected = base64.b64encode(hmac_sha256(key, signed)).decode()
+        if not one_matches(expected, signatures):
+            raise InvalidInputExternalError("The notification's signature is wrong")
+        if not fresh(timestamp, time.time()):
+            raise InvalidInputExternalError("The notification is too old")
         try:
-            if hasattr(cls.Model, "get_via_provider"):
-                return cls.Model.get_via_provider(*args, **kwargs)
-        except Exception:
-            pass
-        return None
-
-    @classmethod
-    def create_customer(cls, provider_instance, **kwargs):
-        try:
-            if hasattr(cls.provider_class, "create_customer"):
-                return cls.provider_class.create_customer(provider_instance, **kwargs)
-        except Exception:
-            pass
-        if hasattr(cls.Model, "create_via_provider"):
-            return cls.Model.create_via_provider(provider_instance, **kwargs)
-        return {"success": False, "error": "No customer creation path available"}
+            event = json.loads(payload)
+        except ValueError:
+            raise InvalidInputExternalError("The notification is not JSON") from None
+        is_transaction = event.get("type") == "cardTransaction"
+        return cls.event_answer(
+            instance,
+            webhook_id,
+            event_type=event.get("type"),
+            kind="payment" if is_transaction else None,
+            object_id=event.get("id") if is_transaction else None,
+        )

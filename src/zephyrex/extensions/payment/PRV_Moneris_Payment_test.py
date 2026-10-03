@@ -1,203 +1,164 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
+"""Moneris on the wire (a local server answering as the Moneris API
+does), and what it does not offer."""
+
+import hashlib
+import hmac
+import json
+import os
+import uuid
+from decimal import Decimal
+from typing import Any, Dict
+
 import pytest
 
-from zephyrex.extensions.payment.BLL_Payment import *  # noqa: F401,F403
-from zephyrex.extensions.payment.PRV_Moneris_Payment import (
-    Moneris_CustomerManager,
-    Moneris_CustomerModel,
-    Moneris_PaymentModel,
-    Moneris_SubscriptionModel,
-    PaymentExtensionMonerisProvider,
+from zephyrex.extensions.ExternalErrors import (
+    InvalidInputExternalError,
+    PermanentExternalError,
 )
-from zephyrex.lib.Dependencies import Dependencies
-from zephyrex.lib.Environment import env
+from zephyrex.extensions.payment.EXT_Payment import MoneyAction, PaymentRequest
+from zephyrex.extensions.payment.PRV_Moneris_Payment import (
+    API_VERSION,
+    PRV_Moneris_Payment,
+)
+
+MERCHANT = "0123456789101"
+PAYMENT = {
+    "paymentId": "pay_1",
+    "paymentStatus": "SUCCEEDED",
+    "amount": {"amount": 2500, "currency": "CAD"},
+}
 
 
-@pytest.mark.payment
-@pytest.mark.moneris
-class TestMonerisProvider:
-    """Test suite for Moneris payment provider.
+def answer(body: Any, status: int = 200):
+    return (status, {"Content-Type": "application/json"}, json.dumps(body).encode())
 
-    Tests provider static methods, configuration, and model/manager
-    structure. Fully compatible with the Provider Rotation System.
-    """
 
-    provider_class = PaymentExtensionMonerisProvider
-    extension_id = "payment"
+def body(request) -> Dict[str, Any]:
+    parsed: Dict[str, Any] = json.loads(request.body)
+    return parsed
 
-    @pytest.fixture
-    def moneris_store_id(self):
-        store_id = env("MONERIS_STORE_ID")
-        if not store_id:
-            pytest.xfail("MONERIS_STORE_ID environment variable not set")
-        return store_id
 
-    @pytest.fixture
-    def provider_instance(self, moneris_store_id):
-        class MockProviderInstance:
-            def __init__(self, api_key):
-                self.id = "test_moneris_instance_id"
-                self.api_key = api_key
-                self.provider_id = "moneris"
-                self.name = "Test Moneris Instance"
-
-        return MockProviderInstance(moneris_store_id)
-
-    def test_provider_structure(self):
-        assert hasattr(PaymentExtensionMonerisProvider, "name")
-        assert hasattr(PaymentExtensionMonerisProvider, "version")
-        assert hasattr(PaymentExtensionMonerisProvider, "description")
-        assert hasattr(PaymentExtensionMonerisProvider, "dependencies")
-        assert hasattr(PaymentExtensionMonerisProvider, "_env")
-        assert hasattr(PaymentExtensionMonerisProvider, "bond_instance")
-        assert hasattr(PaymentExtensionMonerisProvider, "get_platform_name")
-
-    def test_provider_metadata(self):
-        assert PaymentExtensionMonerisProvider.name == "moneris"
-        assert isinstance(PaymentExtensionMonerisProvider.version, str)
-        assert isinstance(PaymentExtensionMonerisProvider.description, str)
-        assert PaymentExtensionMonerisProvider.get_platform_name() == "Moneris"
-
-    def test_provider_dependencies(self):
-        deps = PaymentExtensionMonerisProvider.dependencies
-        assert deps is not None
-        assert hasattr(deps, "pip")
-        assert len(deps.pip) > 0
-        httpx_dep = next((dep for dep in deps.pip if dep.name == "httpx"), None)
-        assert httpx_dep is not None
-
-    def test_provider_env_vars(self):
-        env_vars = PaymentExtensionMonerisProvider._env
-        assert isinstance(env_vars, dict)
-        assert "MONERIS_STORE_ID" in env_vars
-        assert "MONERIS_MERCHANT_ID" in env_vars
-        assert "MONERIS_ENVIRONMENT" in env_vars
-        assert "MONERIS_CURRENCY" in env_vars
-
-    def test_bond_instance_without_api_key(self):
-        class MockInstanceWithoutKey:
-            id = "test_id"
-            api_key = None
-
-        import os
-
-        original_store = os.environ.pop("MONERIS_STORE_ID", None)
-        original_key = os.environ.pop("MONERIS_API_KEY", None)
-        try:
-            from zephyrex.lib.Environment import refresh_settings
-
-            refresh_settings()
-            instance = MockInstanceWithoutKey()
-            bonded = PaymentExtensionMonerisProvider.bond_instance(instance)
-            assert bonded is None
-        finally:
-            if original_store is not None:
-                os.environ["MONERIS_STORE_ID"] = original_store
-            if original_key is not None:
-                os.environ["MONERIS_API_KEY"] = original_key
-            from zephyrex.lib.Environment import refresh_settings
-
-            refresh_settings()
-
-    def test_bond_instance_with_api_key(self, provider_instance):
-        bonded = PaymentExtensionMonerisProvider.bond_instance(provider_instance)
-        try:
-            import httpx
-
-            assert bonded is not None
-            assert hasattr(bonded, "sdk")
-        except ImportError:
-            assert bonded is None
-
-    def test_static_configuration_methods(self):
-        store_id = PaymentExtensionMonerisProvider.get_store_id()
-        if env("MONERIS_STORE_ID"):
-            assert store_id == env("MONERIS_STORE_ID")
-
-        merchant_id = PaymentExtensionMonerisProvider.get_merchant_id()
-        if env("MONERIS_MERCHANT_ID"):
-            assert merchant_id == env("MONERIS_MERCHANT_ID")
-
-    def test_validate_config(self):
-        has_creds = bool(env("MONERIS_STORE_ID") and env("MONERIS_MERCHANT_ID"))
-        assert PaymentExtensionMonerisProvider.validate_config() == has_creds
-
-    def test_currency_defaults_to_cad(self):
-        default_currency = PaymentExtensionMonerisProvider.get_default_currency()
-        assert isinstance(default_currency, str)
-        assert len(default_currency) == 3
-        if not env("MONERIS_CURRENCY"):
-            assert default_currency == "CAD"
-
-    def test_external_models_exist(self):
-        assert Moneris_CustomerModel is not None
-        assert hasattr(Moneris_CustomerModel, "external_resource")
-        assert Moneris_CustomerModel.external_resource == "customers"
-        assert getattr(Moneris_CustomerModel, "_is_extension_model", False)
-
-    def test_external_manager_exists(self):
-        assert Moneris_CustomerManager is not None
-        assert hasattr(Moneris_CustomerManager, "sync_contact")
-        assert hasattr(Moneris_CustomerManager, "create_customer")
-        assert callable(Moneris_CustomerManager.sync_contact)
-        assert callable(Moneris_CustomerManager.create_customer)
-
-    def test_moneris_models_structure(self):
-        models = [
-            (Moneris_CustomerModel, "customers"),
-            (Moneris_PaymentModel, "payments"),
-            (Moneris_SubscriptionModel, "subscriptions"),
-        ]
-        for model_class, expected_resource in models:
-            assert hasattr(model_class, "external_resource")
-            assert model_class.external_resource == expected_resource
-            assert getattr(model_class, "_is_extension_model", False)
-
-    def test_services_method(self):
-        services = PaymentExtensionMonerisProvider.services()
-        assert isinstance(services, list)
-        assert "payment" in services
-
-    def test_extension_info(self):
-        info = PaymentExtensionMonerisProvider.get_extension_info()
-        assert isinstance(info, dict)
-        assert info["platform"] == "Moneris"
-
-    @pytest.mark.asyncio
-    async def test_process_webhook_valid_json(self, provider_instance, monkeypatch):
-        import hmac as _hmac, hashlib
-
-        monkeypatch.setenv("MONERIS_STORE_ID", "test-store")
-        payload = '{"type": "RECURRING_PAYMENT_CONFIRMED", "id": "evt_123"}'
-        sig = _hmac.new(b"test-store", payload.encode(), hashlib.sha256).hexdigest()
-        result = await PaymentExtensionMonerisProvider.process_webhook(
-            provider_instance,
-            payload,
-            sig,
+@pytest.fixture
+def moneris(local_http_server, provider_instance):
+    def _start(routes):
+        server = local_http_server(routes)
+        instance = provider_instance(
+            PRV_Moneris_Payment,
+            api_key="moneris-key",
+            settings={"api_base": server.base_url, "merchant_id": MERCHANT},
         )
-        assert isinstance(result, dict)
-        assert result["success"] is True
-        assert result["event_type"] == "RECURRING_PAYMENT_CONFIRMED"
-        assert result["event_id"] == "evt_123"
+        return server, instance
 
-    @pytest.mark.asyncio
-    async def test_process_webhook_invalid_json(self, provider_instance):
-        result = await PaymentExtensionMonerisProvider.process_webhook(
-            provider_instance, "not json", "sig"
-        )
-        assert isinstance(result, dict)
+    return _start
 
-    async def test_process_webhook_wrong_signature_rejected(
-        self, provider_instance, monkeypatch
-    ):
-        # Valid JSON with a tampered HMAC must be refused. This isolates the
-        # signature check: a no-op verifier (`return True`) would accept it and
-        # fail this test.
-        monkeypatch.setenv("MONERIS_STORE_ID", "test-store")
-        payload = '{"type": "RECURRING_PAYMENT_CONFIRMED", "id": "evt_123"}'
-        result = await PaymentExtensionMonerisProvider.process_webhook(
-            provider_instance, payload, "deadbeef_not_the_real_hmac"
+
+def payment_request(**fields: Any) -> PaymentRequest:
+    base: Dict[str, Any] = dict(
+        amount=Decimal("25"),
+        currency="CAD",
+        user_id="u1",
+        idempotency_key="8c5b1f2e-0000-4000-8000-000000000001",
+        payment_method_id="ot-temporary",
+    )
+    return PaymentRequest(**{**base, **fields})
+
+
+class TestWire:
+    async def test_a_payment_with_a_temporary_token(self, moneris):
+        server, instance = moneris({"/payments": answer(PAYMENT, 201)})
+        made = await PRV_Moneris_Payment.create_payment(instance, payment_request())
+        call = server.requests[0]
+        sent = body(call)
+        assert sent["amount"] == {"amount": 2500, "currency": "CAD"}
+        assert sent["paymentMethod"] == {
+            "paymentMethodSource": "TEMPORARY_TOKEN",
+            "temporaryToken": "ot-temporary",
+        }
+        assert sent["idempotencyKey"] == payment_request().idempotency_key
+        assert call.headers["x-api-key"] == "moneris-key"
+        assert call.headers["x-merchant-id"] == MERCHANT
+        assert call.headers["api-version"] == API_VERSION
+        assert made["status"] == "succeeded" and made["amount"] == "25.00"
+
+    async def test_a_permanent_token(self, moneris):
+        server, instance = moneris({"/payments": answer(PAYMENT, 201)})
+        await PRV_Moneris_Payment.create_payment(
+            instance, payment_request(payment_method_id="perm-token")
         )
-        assert result["success"] is False
-        assert not result.get("success", True)
-        assert "error" in result
+        assert body(server.requests[0])["paymentMethod"]["paymentMethodSource"] == (
+            "PERMANENT_TOKEN"
+        )
+
+    async def test_a_full_refund_reads_the_amount(self, moneris):
+        server, instance = moneris(
+            {
+                "/payments/pay_1": answer(PAYMENT),
+                "/refunds": answer(
+                    {
+                        "refundId": "ref_1",
+                        "refundStatus": "SUCCEEDED",
+                        "refundAmount": {"amount": 2500, "currency": "CAD"},
+                    },
+                    201,
+                ),
+            }
+        )
+        refund = await PRV_Moneris_Payment.refund_payment(
+            instance, "pay_1", MoneyAction(currency="CAD", idempotency_key="k2")
+        )
+        assert body(server.requests[1])["refundAmount"] == {
+            "amount": 2500,
+            "currency": "CAD",
+        }
+        assert refund["amount"] == "25.00" and refund["status"] == "succeeded"
+
+    async def test_the_problem_detail_is_the_reason(self, moneris):
+        _, instance = moneris(
+            {
+                "/payments": answer(
+                    {"title": "INSUFFICIENT_FUNDS", "detail": "Not enough funds"}, 402
+                )
+            }
+        )
+        with pytest.raises(InvalidInputExternalError, match="Not enough funds"):
+            await PRV_Moneris_Payment.create_payment(instance, payment_request())
+
+    async def test_no_authorization_only(self, moneris):
+        server, instance = moneris({})
+        with pytest.raises(PermanentExternalError):
+            await PRV_Moneris_Payment.create_payment(
+                instance, payment_request(capture=False)
+            )
+        assert server.requests == []
+
+    async def test_a_notification_keyed_with_the_store_id_is_refused(self, moneris):
+        """The old check took an HMAC keyed with the store id (printed on
+        receipts, no secret) as proof, so anyone could forge one. Moneris
+        documents no signed notifications: none is accepted."""
+        _, instance = moneris({})
+        payload = json.dumps({"id": "e1", "type": "payment.succeeded"}).encode()
+        forged = hmac.new(b"store5", payload, hashlib.sha256).hexdigest()
+        with pytest.raises(PermanentExternalError):
+            await PRV_Moneris_Payment.verify_webhook(
+                instance, payload, {"x-signature": forged}
+            )
+
+
+@pytest.mark.external_api(provider="moneris")
+async def test_sandbox_payment_read(provider_instance, sandbox_credentials_for):
+    """Read-only on the Moneris sandbox: an unknown payment is refused."""
+    creds = sandbox_credentials_for("moneris")
+    api_key = os.environ.get("MONERIS_API_KEY")
+    if not api_key:
+        pytest.xfail("The Moneris API authenticates with MONERIS_API_KEY, unset")
+    instance = provider_instance(
+        PRV_Moneris_Payment,
+        api_key=api_key,
+        settings={
+            "merchant_id": creds["MONERIS_MERCHANT_ID"],
+            "api_base": "https://api.sb.moneris.io",
+        },
+    )
+    with pytest.raises(InvalidInputExternalError):
+        await PRV_Moneris_Payment.get_payment(instance, f"none{uuid.uuid4().hex}")

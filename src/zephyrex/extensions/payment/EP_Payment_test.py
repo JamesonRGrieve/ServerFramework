@@ -1,8 +1,11 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""The user endpoints with the payment extension loaded: the core suite,
+plus the customer link fields, which users read but never write."""
+
 import json
 import uuid
 from typing import Any, Dict, List, Optional
 
-import faker
 import pytest
 
 from zephyrex.AbstractTest import ParentEntity, SkipReason, SkipThisTest
@@ -11,9 +14,7 @@ from zephyrex.endpoints.EP_Auth_test import (
 )
 from zephyrex.extensions.AbstractEXTTest import ExtensionServerMixin
 from zephyrex.extensions.payment.EXT_Payment import EXT_Payment
-from zephyrex.lib.Environment import env
 from zephyrex.pydantic2.strawberry import convert_field_name
-from zephyrex.lib.Logging import logger
 
 
 @pytest.mark.ep
@@ -21,15 +22,15 @@ from zephyrex.lib.Logging import logger
 class TestPayment_UserAndSessionEndpoints(
     CoreUserAndSessionEndpointsTests, ExtensionServerMixin
 ):
-    """
-    Tests for the User Management and Session endpoints with payment extension.
-    Tests the same functionality as TestUserAndSessionEndpoints in EP_Auth_test.py,
-    but with payment extension enabled to ensure core functionality still works.
+    """The core user and session endpoint tests, with payment loaded.
+
+    The customer link (``external_payment_id``, ``payment_instance_id``)
+    is server-set: these tests used to write it as the user (create and
+    update payloads), which let a user name another customer as theirs, so
+    the payloads no longer carry it and the writes are tested as refused.
     """
 
-    # Extension configuration for ExtensionServerMixin
     extension_class = EXT_Payment
-    # class_under_test = UserModel
 
     base_endpoint = "user"
     entity_name = "user"
@@ -44,22 +45,7 @@ class TestPayment_UserAndSessionEndpoints(
     system_entity = False
     user_scoped = True
 
-    # Include payment-related fields in related entities
-    related_entities = ["sessions", "credentials", "metadata", "payment_info"]
-
-    @property
-    def create_fields(self):
-        return {
-            **super().create_fields,
-            "external_payment_id": "abc123",  # Payment extension field
-        }
-
-    @property
-    def update_fields(self):
-        return {
-            **super().update_fields,
-            "external_payment_id": "xyz456",
-        }
+    related_entities = ["sessions", "credentials", "metadata"]
 
     _skip_tests = [
         SkipThisTest(
@@ -142,17 +128,12 @@ class TestPayment_UserAndSessionEndpoints(
         minimal: bool = False,
         invalid_data: bool = False,
     ) -> Dict[str, Any]:
-        """Create a payload for user creation with payment extension."""
         if invalid_data:
-            # Invalid data for validation tests
             return {
                 "email": "not_an_email",
                 "password": "short",
-                "display_name": 12345,  # Number instead of string
-                "external_payment_id": 12345,  # Number instead of string
+                "display_name": 12345,
             }
-
-        # Create a secure password
         password = self.faker.password(
             length=12,
             special_chars=True,
@@ -160,329 +141,64 @@ class TestPayment_UserAndSessionEndpoints(
             upper_case=True,
             lower_case=True,
         )
-
-        # Use name for email if provided, otherwise generate unique email with UUID
-        if name and "@" in name:
-            email = name
-        else:
-            # Generate truly unique email using UUID to avoid conflicts
-            email = f"user_{uuid.uuid4().hex[:8]}@example.com"
-
+        email = (
+            name if name and "@" in name else f"user_{uuid.uuid4().hex[:8]}@example.com"
+        )
         if minimal:
-            # Only required fields
             return {"email": email, "password": password}
-        else:
-            # Full payload with payment extension
-            return {
-                "email": email,
-                "password": password,
-                "display_name": name or self.faker.name(),
-                "first_name": self.faker.first_name(),
-                "last_name": self.faker.last_name(),
-                "external_payment_id": None,  # Payment extension field
-                "_test_password": password,  # Store for test verification
-            }
-
-    def test_POST_201_body_with_payment_field(self, server):
-        """Test creating a new user with payment extension field - verifies payment field doesn't break user creation"""
-
-        # Create user data with payment field
-        user_data = self.create_payload()
-        user_data["external_payment_id"] = "abc321"  # Explicitly set payment field
-
-        # Create payload with credentials
-        payload = {
-            "user": {
-                **user_data,
-            }
-        }
-        logger.debug(f"Payload for POST /v1/user: {json.dumps(payload)}")
-        endpoint = "/v1/user"
-        response = server.post(endpoint, json=payload)
-        logger.debug(f"Response status code: {response.status_code}")
-        logger.debug(f"Response content: {response.content}")
-        self._assert_response_status(response, 201, "POST", endpoint, payload)
-
-        # Extract user from response and verify structure
-        response_data = response.json()
-        assert "id" in response_data, "User should have an ID"
-        assert "email" in response_data, "User should have an email"
-
-        # Verify payment extension field is present
-        assert (
-            "external_payment_id" in response_data
-        ), "User should have external_payment_id field"
-        assert (
-            response_data["external_payment_id"] == "abc321"
-        ), "Payment ID should have the value of 'abc321'."
-
-    def test_PUT_200_with_payment_field(  # type: ignore[return]
-        self, server: Any, admin_a: Any
-    ) -> Dict[str, Any]:
-        """Test updating current user profile with payment extension field - verifies payment field updates work"""
-
-        payment_id = "cus_test_stripe_customer_updated"
-
-        payload = {
-            "user": {
-                "display_name": "Updated with Payment",
-                "external_payment_id": payment_id,  # Payment extension field
-            }
+        return {
+            "email": email,
+            "password": password,
+            "display_name": name or self.faker.name(),
+            "first_name": self.faker.first_name(),
+            "last_name": self.faker.last_name(),
+            "_test_password": password,
         }
 
-        endpoint = "/v1/user"
-        response = server.put(
-            endpoint, json=payload, headers=self._get_appropriate_headers(admin_a.jwt)
-        )
-        self._assert_response_status(response, 200, "PUT", endpoint, payload)
-
-        # Verify payment field was updated
-        response_data = response.json()
-        user = response_data[self.entity_name]
-        assert user["external_payment_id"] == payment_id, "Payment ID should be updated"
-        assert (
-            user["display_name"] == "Updated with Payment"
-        ), "Display name should be updated"
-
-    def test_GET_200_with_payment_field(  # type: ignore[return]
-        self, server: Any, admin_a: Any
-    ) -> Dict[str, Any]:
-        """Test retrieving current user profile with payment extension field - verifies payment field is included in responses"""
-
-        endpoint = "/v1/user"
+    def test_GET_200_with_payment_field(self, server: Any, admin_a: Any) -> None:
+        """A user reads their own customer link."""
         response = server.get(
-            endpoint, headers=self._get_appropriate_headers(admin_a.jwt)
+            "/v1/user", headers=self._get_appropriate_headers(admin_a.jwt)
         )
-        self._assert_response_status(response, 200, "GET current user", endpoint)
+        self._assert_response_status(response, 200, "GET current user", "/v1/user")
+        user = response.json()[self.entity_name]
+        assert "external_payment_id" in user and "payment_instance_id" in user
 
-        # Verify payment extension field is present
-        response_data = response.json()
-        user = response_data[self.entity_name]
-        assert (
-            "external_payment_id" in user
-        ), "User should have external_payment_id field"
-
-        self._assert_entity_in_response(response)
-
-    def test_GQL_mutation_create_with_payment(
-        self, server: Any, admin_a: Any, team_a: Any
-    ):
-        """Test GraphQL create mutation for users with payment extension - verifies GraphQL works with payment field"""
-        # Convert entity_name to camelCase for GraphQL mutation name
-        mutation_name = "createUser"
-
-        # Get full payload with all required fields for user creation including payment
-        payload = self.create_payload(
-            name=f"GQL Payment Test {self.faker.word()}",
-            parent_ids=None,
-            team_id=team_a.id,
-            minimal=False,
-            invalid_data=False,
+    def test_PUT_403_payment_field(self, server: Any, admin_a: Any) -> None:
+        response = server.put(
+            "/v1/user",
+            json={"user": {"external_payment_id": "cus_someone_else"}},
+            headers=self._get_appropriate_headers(admin_a.jwt),
         )
+        assert response.status_code == 403, response.text
 
-        # Convert all payload fields to camelCase for GraphQL
-        input_data = {}
-        for key, value in payload.items():
-            if not key.startswith("_"):  # Skip internal test fields
-                camel_case_key = convert_field_name(key)
-                input_data[camel_case_key] = value
-
-        # Use API key for system entities
-        headers = self._get_appropriate_headers(
-            admin_a.jwt, api_key=env("ROOT_API_KEY") if self.system_entity else None
+    def test_GQL_mutation_update_with_payment_is_refused(
+        self, server: Any, admin_a: Any
+    ) -> None:
+        field = convert_field_name("external_payment_id")
+        mutation = (
+            'mutation { updateUser(input: {%s: "cus_someone_else"}) { id %s } }'
+            % (field, field)
         )
-
-        # Convert string_field_to_update to camelCase for GraphQL
-        gql_string_field = convert_field_name(self.string_field_to_update)
-
-        # Build the mutation
-        input_fields = []
-        for key, value in input_data.items():
-            if isinstance(value, str):
-                input_fields.append(f'{key}: "{value}"')
-            elif value is None:
-                input_fields.append(f"{key}: null")
-            else:
-                input_fields.append(f"{key}: {value}")
-
-        input_str = "{" + ", ".join(input_fields) + "}"
-
-        # Build the response fields including payment extension
-        response_fields = ["id", "createdAt", "updatedAt", "externalPaymentId"]
-        if gql_string_field:
-            response_fields.append(gql_string_field)
-
-        mutation = f"""
-        mutation {{
-            {mutation_name}(input: {input_str}) {{
-                {chr(10).join("                " + field for field in response_fields)}
-            }}
-        }}
-        """
-
-        response = server.post(
-            "/graphql",
-            json={"query": mutation},
-            headers=headers,
-        )
-        assert response.status_code == 200
-
-        data = response.json()
-        assert "data" in data, f"No data in response: {json.dumps(data)}"
-
-        # Check for GraphQL errors first
-        if "errors" in data:
-            pytest.fail(
-                f"GraphQL errors in create mutation: {json.dumps(data['errors'])}"
-            )
-
-        assert data["data"] is not None, f"Data is None in response: {json.dumps(data)}"
-        assert (
-            mutation_name in data["data"]
-        ), f"Mutation {mutation_name} not in response"
-
-        # Verify the created entity
-        result = data["data"][mutation_name]
-        assert result is not None, f"Mutation result is None"
-        assert "id" in result, "Created entity missing ID"
-        assert "externalPaymentId" in result, "Created entity missing externalPaymentId"
-        if gql_string_field:
-            assert (
-                gql_string_field in result
-            ), f"Created entity missing {gql_string_field}"
-
-    def test_GQL_mutation_update_with_payment(
-        self, server: Any, admin_a: Any, team_a: Any
-    ):
-        """Test GraphQL update mutation for users with payment extension - verifies GraphQL updates work with payment field"""
-        # For users, update mutation doesn't take an ID and updates the requester
-        update_data = {
-            "display_name": f"Updated GQL Payment {self.faker.word()}",
-            "external_payment_id": "cus_gql_updated_customer",
-        }
-
-        # Convert to camelCase for GraphQL
-        gql_string_field = convert_field_name("display_name")
-        gql_payment_field = convert_field_name("external_payment_id")
-
-        # Build the mutation without an ID parameter
-        input_fields = []
-        for key, value in update_data.items():
-            camel_case_key = convert_field_name(key)
-            if isinstance(value, str):
-                input_fields.append(f'{camel_case_key}: "{value}"')
-            elif value is None:
-                input_fields.append(f"{camel_case_key}: null")
-            else:
-                input_fields.append(f"{camel_case_key}: {value}")
-
-        input_str = "{" + ", ".join(input_fields) + "}"
-
-        # Build the response fields
-        response_fields = [
-            "id",
-            "createdAt",
-            "updatedAt",
-            gql_string_field,
-            gql_payment_field,
-        ]
-
-        mutation = f"""
-        mutation {{
-            updateUser(input: {input_str}) {{
-                {chr(10).join("                " + field for field in response_fields)}
-            }}
-        }}
-        """
-
         response = server.post(
             "/graphql",
             json={"query": mutation},
             headers=self._get_appropriate_headers(admin_a.jwt),
         )
-        assert response.status_code == 200
-
         data = response.json()
-        assert "data" in data, f"No data in response: {json.dumps(data)}"
+        assert data.get("errors"), json.dumps(data)
+        assert not (data.get("data") or {}).get("updateUser")
 
-        # Check for GraphQL errors first
-        if "errors" in data:
-            pytest.fail(
-                f"GraphQL errors in user update mutation: {json.dumps(data['errors'])}"
-            )
-
-        assert data["data"] is not None, f"Data is None in response: {json.dumps(data)}"
-        assert "updateUser" in data["data"], f"Mutation updateUser not in response"
-
-        # Verify the updated entity
-        result = data["data"]["updateUser"]
-        assert result is not None, f"Mutation result is None"
-        assert result["id"] == admin_a.id, "Should update the requesting user"
-        assert (
-            result[gql_string_field] == update_data["display_name"]
-        ), f"Updated entity {gql_string_field} mismatch"
-        assert (
-            result[gql_payment_field] == update_data["external_payment_id"]
-        ), f"Updated entity {gql_payment_field} mismatch"
-
-    def test_subscription_validation_hook_integration(self, server: Any):
-        """Test that subscription validation hook integrates properly with login flow.
-
-        Per AGENTS.md no-mock pillar: rather than patching the hook function,
-        we exercise it through the real login pipeline and verify behavior
-        end-to-end. The hook lives at the BLL boundary; if it's wired up,
-        login still works for a user with no payment record.
-        """
-
-        # Create a user
+    def test_a_new_user_logs_in(self, server: Any) -> None:
+        """Login is untouched for a user with no subscriptions."""
         user_data = self.create_payload()
-        create_response = server.post("/v1/user", json={"user": user_data})
-        self._assert_response_status(
-            create_response, 201, "POST create user", "/v1/user"
+        created = server.post("/v1/user", json={"user": user_data})
+        self._assert_response_status(created, 201, "POST create user", "/v1/user")
+        login = server.post(
+            "/v1/user/authorize",
+            json={
+                "auth": {"email": user_data["email"], "password": user_data["password"]}
+            },
         )
-
-        # Try to login - hook is invoked via the real BLL pipeline
-        auth_payload = {
-            "auth": {
-                "email": user_data["email"],
-                "password": user_data["password"],
-            }
-        }
-
-        login_response = server.post("/v1/user/authorize", json=auth_payload)
-
-        # If login succeeded, the hook ran end-to-end without blocking the
-        # newly-created user (no Stripe customer yet). We verify the
-        # response shape rather than mocking the hook function.
-        if login_response.status_code == 200:
-            response_data = login_response.json()
-            assert "token" in response_data, "Should return auth token"
-
-        # Verify the hook function is wired into the BLL module — its
-        # mere import + callability proves the extension's BLL_Payment
-        # registered it without the test having to patch anything.
-        from zephyrex.extensions.payment.BLL_Payment import (
-            validate_subscription_on_login,
-        )
-
-        assert callable(validate_subscription_on_login), "Hook function should exist"
-
-    def test_payment_field_search_functionality(self, server: Any, admin_a: Any):
-        """Test that payment field can be used for searching/filtering users"""
-
-        # This test verifies that the payment extension field doesn't break search functionality
-        # and can be used for filtering if search endpoints exist
-
-        # Create a user with a specific payment ID
-        user_data = self.create_payload()
-        user_data["external_payment_id"] = "cus_search_test_customer"
-
-        create_response = server.post("/v1/user", json={"user": user_data})
-        self._assert_response_status(
-            create_response, 201, "POST create user", "/v1/user"
-        )
-
-        # Verify the user was created with the payment field
-        response_data = create_response.json()
-        user = response_data.get("user", response_data)
-        assert user["external_payment_id"] == "cus_search_test_customer"
+        assert login.status_code == 200, login.text
+        assert login.json().get("token")

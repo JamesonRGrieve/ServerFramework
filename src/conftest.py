@@ -188,8 +188,8 @@ EXTERNAL_API_PROVIDER_ENV_VARS: Dict[str, List[str]] = {
     "square": ["SQUARE_ACCESS_TOKEN"],
     # PayPal sandbox — client ID and secret for API calls.
     "paypal": ["PAYPAL_CLIENT_ID", "PAYPAL_SECRET"],
-    # Moneris testing — store ID and merchant ID.
-    "moneris": ["MONERIS_STORE_ID", "MONERIS_MERCHANT_ID"],
+    # Moneris testing — the API authenticates with an API key, not the store id.
+    "moneris": ["MONERIS_API_KEY", "MONERIS_MERCHANT_ID"],
     # Helcim — API token.
     "helcim": ["HELCIM_API_TOKEN"],
     # Kanka (wiki) — a campaign-scoped token and that campaign's id.

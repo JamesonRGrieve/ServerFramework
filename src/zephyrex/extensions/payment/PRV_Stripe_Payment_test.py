@@ -1,616 +1,410 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
+"""Stripe on the wire (a local server answering as Stripe does), its
+signed notifications, and the real Stripe test mode."""
+
 import hashlib
 import hmac
-import importlib
-import importlib.util
 import json
 import time
 from decimal import Decimal
-from types import SimpleNamespace
 from typing import Any, Dict
+from urllib.parse import parse_qs
 
+import httpx
 import pytest
 
+from zephyrex.extensions.ExternalErrors import (
+    AuthExternalError,
+    InvalidInputExternalError,
+    PermanentExternalError,
+    TransientExternalError,
+)
+from zephyrex.extensions.payment.EXT_Payment import (
+    CustomerRequest,
+    MoneyAction,
+    PaymentRequest,
+    SubscriptionRequest,
+)
 from zephyrex.extensions.payment.PRV_Stripe_Payment import (
-    PaymentExtensionStripeProvider,
-    Stripe_CustomerManager,
-    Stripe_CustomerModel,
+    API_VERSION,
+    PRV_Stripe_Payment,
+    form,
+    signature_parts,
 )
-from zephyrex.lib.Environment import env
 
-# BLL_Payment's @extension_model decorators apply on import.
-importlib.import_module("zephyrex.extensions.payment.BLL_Payment")
-
-
-@pytest.mark.payment
-@pytest.mark.stripe
-class TestStripeProvider:
-    """
-    Test suite for Stripe payment provider.
-    Tests provider static methods, payment processing, Stripe API integration,
-    and GraphQL functionality for external Stripe models.
-    Fully compatible with the Provider Rotation System.
-    """
-
-    # Configure the test class
-    provider_class = PaymentExtensionStripeProvider
-    extension_id = "payment"
-
-    @pytest.fixture
-    def stripe_api_key(self):
-        """Get Stripe API key from environment or skip test."""
-        api_key = env("STRIPE_SECRET_KEY")
-        if not api_key:
-            pytest.xfail("STRIPE_SECRET_KEY environment variable not set")
-        return api_key
-
-    @pytest.fixture
-    def stripe_publishable_key(self):
-        """Get Stripe publishable key from environment or skip test."""
-        pub_key = env("STRIPE_PUBLISHABLE_KEY")
-        if not pub_key:
-            pytest.xfail("STRIPE_PUBLISHABLE_KEY environment variable not set")
-        return pub_key
-
-    @pytest.fixture
-    def provider_instance(self, stripe_api_key):
-        """Create a real provider instance for testing."""
-
-        class MockProviderInstance:
-            def __init__(self, api_key):
-                self.id = "test_stripe_instance_id"
-                self.api_key = api_key
-                self.provider_id = "stripe"
-                self.name = "Test Stripe Instance"
-
-        return MockProviderInstance(stripe_api_key)
-
-    def test_provider_structure(self):
-        """Test that provider has correct structure."""
-        assert hasattr(PaymentExtensionStripeProvider, "name")
-        assert hasattr(PaymentExtensionStripeProvider, "version")
-        assert hasattr(PaymentExtensionStripeProvider, "description")
-        assert hasattr(PaymentExtensionStripeProvider, "dependencies")
-        assert hasattr(PaymentExtensionStripeProvider, "_env")
-        assert hasattr(PaymentExtensionStripeProvider, "bond_instance")
-        assert hasattr(PaymentExtensionStripeProvider, "get_platform_name")
-
-    def test_provider_metadata(self):
-        """Test provider metadata."""
-        assert PaymentExtensionStripeProvider.name == "stripe"
-        assert isinstance(PaymentExtensionStripeProvider.version, str)
-        assert isinstance(PaymentExtensionStripeProvider.description, str)
-        assert PaymentExtensionStripeProvider.get_platform_name() == "Stripe"
-
-    def test_provider_dependencies(self):
-        """Test provider dependencies."""
-        deps = PaymentExtensionStripeProvider.dependencies
-        assert deps is not None
-        assert hasattr(deps, "pip")
-        assert len(deps.pip) > 0
-
-        # Should have stripe dependency
-        stripe_dep = next((dep for dep in deps.pip if dep.name == "stripe"), None)
-        assert stripe_dep is not None
-
-    def test_provider_env_vars(self):
-        """Test provider environment variables."""
-        env_vars = PaymentExtensionStripeProvider._env
-        assert isinstance(env_vars, dict)
-        assert "STRIPE_API_KEY" in env_vars
-        assert "STRIPE_SECRET_KEY" in env_vars
-        assert "STRIPE_PUBLISHABLE_KEY" in env_vars
-        assert "STRIPE_WEBHOOK_SECRET" in env_vars
-        assert "STRIPE_CURRENCY" in env_vars
-
-    def test_bond_instance_without_api_key(self):
-        """Test bonding instance without API key."""
-
-        class MockInstanceWithoutKey:
-            id = "test_id"
-            api_key = None
-
-        instance = MockInstanceWithoutKey()
-        bonded = PaymentExtensionStripeProvider.bond_instance(instance)
-        assert bonded is None
-
-    def test_bond_instance_with_api_key(self, provider_instance):
-        """Test bonding instance with API key."""
-        bonded = PaymentExtensionStripeProvider.bond_instance(provider_instance)
-
-        # Bonding succeeds exactly when the Stripe SDK is installed.
-        if importlib.util.find_spec("stripe") is not None:
-            assert bonded is not None
-            assert hasattr(bonded, "sdk")
-        else:
-            assert bonded is None
-
-    def test_static_configuration_methods(self):
-        """Test static configuration methods."""
-        # Test secret key retrieval
-        secret_key = PaymentExtensionStripeProvider.get_secret_key()
-        if env("STRIPE_SECRET_KEY"):
-            assert secret_key == env("STRIPE_SECRET_KEY")
-        else:
-            assert secret_key == ""
-
-        # Test publishable key retrieval
-        pub_key = PaymentExtensionStripeProvider.get_publishable_key()
-        if env("STRIPE_PUBLISHABLE_KEY"):
-            assert pub_key == env("STRIPE_PUBLISHABLE_KEY")
-        else:
-            assert pub_key == ""
-
-        # Test webhook secret retrieval
-        webhook_secret = PaymentExtensionStripeProvider.get_webhook_secret()
-        # This might be empty, which is fine
-        assert isinstance(webhook_secret, str)
-
-    def test_stripe_configuration(self):
-        """Test Stripe configuration without real API calls."""
-        # Test configuration method exists
-        assert hasattr(PaymentExtensionStripeProvider, "_configure_stripe")
-
-        # Test that configuration can be called
-        PaymentExtensionStripeProvider._configure_stripe()
-
-        # Check availability flag
-        assert hasattr(PaymentExtensionStripeProvider, "_stripe_available")
-        assert isinstance(PaymentExtensionStripeProvider._stripe_available, bool)
-
-    @pytest.mark.asyncio
-    async def test_payment_abilities_exist(self):
-        """Test that payment ability methods exist."""
-        # Check that the provider has the required payment abilities
-        payment_methods = [
-            "create_payment",
-            "capture_payment",
-            "refund_payment",
-            "create_customer",
-            "create_subscription",
-            "cancel_subscription",
-            "process_webhook",
-        ]
-
-        for method_name in payment_methods:
-            assert hasattr(PaymentExtensionStripeProvider, method_name)
-            method = getattr(PaymentExtensionStripeProvider, method_name)
-            assert callable(method)
-
-    @pytest.mark.asyncio
-    async def test_create_payment_without_api_key(self):
-        """Test creating payment without any API key (instance or class)."""
-
-        class MockInstanceWithoutKey:
-            id = "test_id"
-            api_key = None
-
-        instance = MockInstanceWithoutKey()
-
-        saved = PaymentExtensionStripeProvider._stripe_available
-        saved_client = PaymentExtensionStripeProvider._stripe_client
-        PaymentExtensionStripeProvider._stripe_available = False
-        PaymentExtensionStripeProvider._stripe_client = None
-        try:
-            result = await PaymentExtensionStripeProvider.create_payment(
-                instance,
-                amount=Decimal("10.00"),
-                currency="USD",
-                description="Test payment",
-            )
-            assert isinstance(result, dict)
-            assert "error" in result or "failed" in str(result).lower()
-        except Exception as e:
-            error_msg = str(e).lower()
-            assert any(
-                word in error_msg
-                for word in ["api", "key", "stripe", "config", "not configured"]
-            )
-        finally:
-            PaymentExtensionStripeProvider._stripe_available = saved
-            PaymentExtensionStripeProvider._stripe_client = saved_client
-
-    @pytest.mark.asyncio
-    async def test_create_payment_with_real_api(self, provider_instance):
-        """Test creating payment with real API."""
-        if not env("STRIPE_SECRET_KEY"):
-            pytest.xfail(
-                "STRIPE_SECRET_KEY not set - cannot test real payment creation"
-            )
-
-        # Try to create a payment - this is a real API call
-        try:
-            result = await PaymentExtensionStripeProvider.create_payment(
-                provider_instance,
-                amount=Decimal("1.00"),  # Minimal amount for testing
-                currency="USD",
-                description="Test payment",
-            )
-
-            # Should either succeed or fail with recognizable error
-            assert isinstance(result, dict)
-            if "error" not in result:
-                # If successful, should have payment ID
-                assert "id" in result
-                assert result["id"].startswith("pi_")  # Stripe payment intent ID
-        except Exception as e:
-            # If it fails, should be due to API issues, not code structure
-            error_msg = str(e).lower()
-            expected_errors = ["unauthorized", "invalid", "api", "stripe", "test"]
-            assert any(
-                err in error_msg for err in expected_errors
-            ), f"Unexpected error: {e}"
-
-    @pytest.mark.asyncio
-    async def test_create_customer_with_real_api(self, provider_instance):
-        """Test creating customer with real API."""
-        if not env("STRIPE_SECRET_KEY"):
-            pytest.xfail(
-                "STRIPE_SECRET_KEY not set - cannot test real customer creation"
-            )
-
-        try:
-            result = await PaymentExtensionStripeProvider.create_customer(
-                provider_instance, email="test@example.com", name="Test Customer"
-            )
-
-            # Should either succeed or fail with recognizable error
-            assert isinstance(result, dict)
-            if "error" not in result:
-                # If successful, should have customer ID
-                assert "id" in result
-                assert result["id"].startswith("cus_")  # Stripe customer ID
-        except Exception as e:
-            # If it fails, should be due to API issues
-            error_msg = str(e).lower()
-            expected_errors = ["unauthorized", "invalid", "api", "stripe"]
-            assert any(
-                err in error_msg for err in expected_errors
-            ), f"Unexpected error: {e}"
-
-    def test_external_models_exist(self):
-        """Test that external models are defined."""
-        # Check that external models exist
-        assert Stripe_CustomerModel is not None
-        assert hasattr(Stripe_CustomerModel, "external_resource")
-        assert Stripe_CustomerModel.external_resource == "customers"
-
-        # Check that model has _is_extension_model attribute
-        assert getattr(Stripe_CustomerModel, "_is_extension_model", False)
-
-        # Check that model has _extension_target
-        assert hasattr(Stripe_CustomerModel, "_extension_target")
-
-    def test_external_manager_exists(self):
-        """Test that external manager is defined."""
-        assert Stripe_CustomerManager is not None
-        assert hasattr(Stripe_CustomerManager, "sync_contact")
-        assert hasattr(Stripe_CustomerManager, "create_customer")
-
-        # Manager should be callable
-        assert callable(Stripe_CustomerManager.sync_contact)
-        assert callable(Stripe_CustomerManager.create_customer)
-
-    def test_stripe_models_structure(self):
-        """Test Stripe model structure."""
-        from zephyrex.extensions.payment.PRV_Stripe_Payment import (
-            Stripe_PaymentIntentModel,
-            Stripe_SubscriptionModel,
-            Stripe_ProductModel,
-        )
-
-        # All models should have external_resource
-        models = [
-            (Stripe_CustomerModel, "customers"),
-            (Stripe_PaymentIntentModel, "payment_intents"),
-            (Stripe_SubscriptionModel, "subscriptions"),
-            (Stripe_ProductModel, "products"),
-        ]
-
-        for model_class, expected_resource in models:
-            assert hasattr(model_class, "external_resource")
-            assert model_class.external_resource == expected_resource
-            assert getattr(model_class, "_is_extension_model", False)
-
-    def test_webhook_processing_method(self):
-        """Test webhook processing method exists."""
-        assert hasattr(PaymentExtensionStripeProvider, "process_webhook")
-
-        # Should be async
-        import inspect
-
-        assert inspect.iscoroutinefunction(
-            PaymentExtensionStripeProvider.process_webhook
-        )
-
-    @pytest.mark.asyncio
-    async def test_process_webhook_invalid_signature(self, provider_instance):
-        """Test webhook processing with invalid signature."""
-        try:
-            result = await PaymentExtensionStripeProvider.process_webhook(
-                provider_instance, b'{"test": "data"}', "invalid_signature"
-            )
-            assert isinstance(result, dict)
-            assert "error" in result or not result.get("success", True)
-        except Exception as e:
-            error_msg = str(e).lower()
-            if "not configured" in error_msg or "not available" in error_msg:
-                pytest.skip("Stripe SDK not installed")
-            expected_errors = ["signature", "webhook", "invalid", "verify"]
-            assert any(
-                err in error_msg for err in expected_errors
-            ), f"Unexpected error: {e}"
-
-    def test_currency_and_environment_handling(self):
-        """Test currency and environment configuration."""
-        # Test default currency
-        default_currency = PaymentExtensionStripeProvider.get_default_currency()
-        assert isinstance(default_currency, str)
-        assert len(default_currency) == 3  # Should be ISO currency code
-
-        # Test currency from environment
-        if env("STRIPE_CURRENCY"):
-            assert default_currency == env("STRIPE_CURRENCY")
-        else:
-            assert default_currency == "USD"  # Default fallback
-
-    # ------------------------------------------------------------------
-    # Security: webhook explicit-deny tests.
-    # ------------------------------------------------------------------
-
-    @pytest.mark.security
-    @pytest.mark.asyncio
-    async def test_process_webhook_rejects_tampered_body(self, provider_instance):
-        """A body altered after signing must be rejected."""
-        # The body as altered after signing (it was payment_intent.succeeded).
-        tampered = b'{"id": "evt_1", "type": "payment_intent.refunded"}'
-        # There is no valid signature for it, so use a syntactically
-        # plausible-but-wrong sig to confirm the verify path engages.
-        bogus_sig = "t=1700000000,v1=" + ("00" * 32)
-        try:
-            result = await PaymentExtensionStripeProvider.process_webhook(
-                provider_instance, tampered, bogus_sig
-            )
-            assert isinstance(result, dict)
-            assert "error" in result or not result.get(
-                "success", True
-            ), "Tampered body must surface as error"
-        except Exception as e:
-            err = str(e).lower()
-            assert any(
-                t in err
-                for t in (
-                    "signature",
-                    "webhook",
-                    "invalid",
-                    "verify",
-                    "not configured",
-                    "not available",
-                )
-            ), f"Tampered body raised unexpected error: {e}"
-            if "not configured" in err or "not available" in err:
-                pytest.skip("Stripe SDK not installed")
-
-    @pytest.mark.security
-    @pytest.mark.asyncio
-    async def test_process_webhook_rejects_old_timestamp(self, provider_instance):
-        """A signature whose `t=` is far in the past must be rejected (replay).
-
-        EXPECTED FAIL today if the provider doesn't enforce a max
-        timestamp tolerance.
-        """
-        body = b'{"id": "evt_old", "type": "payment_intent.succeeded"}'
-        old_ts = "1000000000"  # 2001 — definitely older than any tolerance
-        old_sig = f"t={old_ts},v1=" + ("00" * 32)
-        try:
-            result = await PaymentExtensionStripeProvider.process_webhook(
-                provider_instance, body, old_sig
-            )
-            assert isinstance(result, dict)
-            assert "error" in result or not result.get(
-                "success", True
-            ), "Old-timestamp webhook must be rejected"
-        except Exception as e:
-            err = str(e).lower()
-            assert any(
-                t in err
-                for t in (
-                    "timestamp",
-                    "tolerance",
-                    "stale",
-                    "signature",
-                    "not configured",
-                    "not available",
-                )
-            ), f"Old timestamp raised unexpected error: {e}"
-            if "not configured" in err or "not available" in err:
-                pytest.skip("Stripe SDK not installed")
-
-
-_WEBHOOK_SECRET = "whsec_zx_probe_secret"
-
-
-def _stripe_signature(payload: str, secret: str, timestamp: int) -> str:
-    """The Stripe-Signature header Stripe sends for ``payload``."""
-    signed = f"{timestamp}.{payload}".encode()
-    digest = hmac.new(secret.encode(), signed, hashlib.sha256).hexdigest()
-    return f"t={timestamp},v1={digest}"
-
-
-@pytest.mark.payment
-@pytest.mark.stripe
-class TestStripeWebhookVerification:
-    """Signature checking is local HMAC work, so it runs without a live key.
-
-    The provider used to detect a bad signature through ``stripe.error``,
-    which the Stripe SDK no longer has: the branch never ran, and every
-    rejection returned the SDK's exception text to the caller.
-    """
-
-    @pytest.fixture(autouse=True)
-    def configured(self, monkeypatch):
-        monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_zx_probe")
-        monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", _WEBHOOK_SECRET)
-        monkeypatch.setattr(PaymentExtensionStripeProvider, "_stripe_available", False)
-        monkeypatch.setattr(PaymentExtensionStripeProvider, "_stripe_client", None)
-
-    async def _process(self, payload: str, signature: str) -> dict:
-        from datetime import datetime, timezone
-
-        from zephyrex.logic.BLL_Providers import ProviderInstanceModel
-
-        now = datetime.now(timezone.utc)
-        instance = ProviderInstanceModel(
-            id="stripe-instance",
-            provider_id="stripe",
-            name="stripe",
-            created_at=now,
-            created_by_user_id=env("ROOT_ID"),
-            updated_at=now,
-            updated_by_user_id=env("ROOT_ID"),
-        )
-        result: dict = await PaymentExtensionStripeProvider.process_webhook(
-            instance, payload, signature
-        )
-        return result
-
-    @pytest.mark.asyncio
-    async def test_a_correctly_signed_event_is_processed(self):
-        payload = json.dumps(
-            {"id": "evt_1", "type": "payment_intent.succeeded", "data": {"object": {}}}
-        )
-        signature = _stripe_signature(payload, _WEBHOOK_SECRET, int(time.time()))
-        assert await self._process(payload, signature) == {
-            "success": True,
-            "event_type": "payment_intent.succeeded",
-            "event_id": "evt_1",
-            "processed": True,
-        }
-
-    @pytest.mark.security
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        "secret, age",
-        [("whsec_someone_else", 0), (_WEBHOOK_SECRET, 3600)],
-        ids=["wrong-secret", "replayed-stale"],
+SECRET = "whsec_test_secret"
+INTENT = {
+    "id": "pi_1",
+    "object": "payment_intent",
+    "amount": 1250,
+    "currency": "usd",
+    "status": "succeeded",
+    "customer": "cus_1",
+    "client_secret": "pi_1_secret_x",
+    "latest_charge": {"id": "ch_1", "amount_refunded": 0, "refunded": False},
+}
+SUBSCRIPTION = {
+    "id": "sub_1",
+    "object": "subscription",
+    "status": "active",
+    "customer": "cus_1",
+    "current_period_end": 1_900_000_000,
+    "cancel_at_period_end": False,
+    "items": {"data": [{"price": {"id": "price_1"}}]},
+}
+
+
+def answer(body: Any, status: int = 200):
+    return (status, {"Content-Type": "application/json"}, json.dumps(body).encode())
+
+
+def sent(request) -> Dict[str, Any]:
+    return {k: v[0] for k, v in parse_qs(request.body.decode()).items()}
+
+
+def signed(payload: bytes, secret: str = SECRET, at: int = 0) -> Dict[str, str]:
+    timestamp = str(at or int(time.time()))
+    digest = hmac.new(
+        secret.encode(), f"{timestamp}.".encode() + payload, hashlib.sha256
+    ).hexdigest()
+    return {"stripe-signature": f"t={timestamp},v1={digest}"}
+
+
+def request(**fields: Any) -> PaymentRequest:
+    base: Dict[str, Any] = dict(
+        amount=Decimal("12.50"), currency="USD", user_id="u1", idempotency_key="k1"
     )
-    async def test_a_bad_signature_is_rejected_without_detail(self, secret, age):
-        payload = json.dumps({"id": "evt_2", "type": "payment_intent.succeeded"})
-        signature = _stripe_signature(payload, secret, int(time.time()) - age)
-        assert await self._process(payload, signature) == {
-            "success": False,
-            "error": "Invalid signature",
+    return PaymentRequest(**{**base, **fields})
+
+
+@pytest.fixture
+def stripe(local_http_server, provider_instance):
+    def _start(routes, **settings):
+        server = local_http_server(routes)
+        instance = provider_instance(
+            PRV_Stripe_Payment,
+            api_key="sk_test_local",
+            settings={
+                "api_base": server.base_url,
+                "webhook_secret": SECRET,
+                **settings,
+            },
+        )
+        return server, instance
+
+    return _start
+
+
+class TestEncoding:
+    def test_nested_form(self):
+        assert form(
+            {
+                "amount": 5,
+                "confirm": True,
+                "customer": None,
+                "metadata": {"user_id": "u1"},
+                "items": [{"price": "price_1"}],
+            }
+        ) == {
+            "amount": "5",
+            "confirm": "true",
+            "metadata[user_id]": "u1",
+            "items[0][price]": "price_1",
         }
 
-    @pytest.mark.asyncio
-    async def test_a_signed_body_that_is_not_an_event_is_rejected(self):
-        payload = "not json at all"
-        signature = _stripe_signature(payload, _WEBHOOK_SECRET, int(time.time()))
-        assert await self._process(payload, signature) == {
-            "success": False,
-            "error": "Invalid payload",
+    def test_signature_header(self):
+        assert signature_parts("t=12,v1=aa,v0=bb,v1=cc") == ("12", ["aa", "cc"])
+        assert signature_parts("garbage") == (None, [])
+
+
+class TestWire:
+    async def test_a_payment_with_a_card_is_confirmed_once(self, stripe):
+        server, instance = stripe({"/v1/payment_intents": answer(INTENT)})
+        made = await PRV_Stripe_Payment.create_payment(
+            instance,
+            request(
+                payment_method_id="pm_card", customer_id="cus_1", metadata={"o": "7"}
+            ),
+        )
+        (call,) = server.requests
+        body = sent(call)
+        assert body["amount"] == "1250" and body["currency"] == "usd"
+        assert body["payment_method"] == "pm_card" and body["confirm"] == "true"
+        assert body["metadata[user_id]"] == "u1" and body["metadata[o]"] == "7"
+        assert body["capture_method"] == "automatic"
+        assert call.headers["idempotency-key"] == "k1"
+        assert call.headers["stripe-version"] == API_VERSION
+        assert call.headers["authorization"] == "Bearer sk_test_local"
+        assert made["status"] == "succeeded" and made["amount"] == "12.50"
+        assert made["client_secret"] == "pi_1_secret_x"
+        assert made["provider_instance_id"] == str(instance.id)
+
+    async def test_an_authorization_only_is_manual_capture(self, stripe):
+        server, instance = stripe(
+            {"/v1/payment_intents": answer({**INTENT, "status": "requires_capture"})}
+        )
+        made = await PRV_Stripe_Payment.create_payment(instance, request(capture=False))
+        assert sent(server.requests[0])["capture_method"] == "manual"
+        assert made["status"] == "authorized"
+
+    async def test_a_zero_decimal_currency(self, stripe):
+        server, instance = stripe(
+            {
+                "/v1/payment_intents": answer(
+                    {**INTENT, "amount": 500, "currency": "jpy"}
+                )
+            }
+        )
+        made = await PRV_Stripe_Payment.create_payment(
+            instance, request(amount=Decimal("500"), currency="JPY")
+        )
+        assert sent(server.requests[0])["amount"] == "500"
+        assert made["amount"] == "500" and made["currency"] == "JPY"
+
+    async def test_a_refunded_payment_reads_as_refunded(self, stripe):
+        refunded = {
+            **INTENT,
+            "latest_charge": {"amount_refunded": 1250, "refunded": True},
         }
-
-
-class _RecordingResource:
-    """Stands in for one ``StripeClient.v1.<resource>`` service."""
-
-    def __init__(self, calls: list, resource: str, record: dict) -> None:
-        self._calls, self._resource, self._record = calls, resource, record
-
-    def create(self, **params):
-        self._calls.append((self._resource, "create", params))
-        return SimpleNamespace(**self._record)
-
-    def list(self, **params):
-        self._calls.append((self._resource, "list", params))
-        return SimpleNamespace(data=[SimpleNamespace(**self._record)])
-
-
-_PRODUCT: Dict[str, Any] = dict(
-    id="prod_1",
-    name="Plan",
-    description=None,
-    active=True,
-    images=[],
-    metadata={},
-    created=1,
-    updated=1,
-    livemode=False,
-)
-_CUSTOMER: Dict[str, Any] = dict(
-    id="cus_1",
-    email="a@example.com",
-    name="A",
-    phone=None,
-    metadata={},
-    created=1,
-    balance=0,
-    delinquent=False,
-    tax_exempt="none",
-    livemode=False,
-)
-
-
-@pytest.mark.payment
-@pytest.mark.stripe
-class TestStripeExternalResources:
-    """Each external model calls its own Stripe resource.
-
-    The product CRUD methods sat inside Stripe_SubscriptionModel, so product
-    CRUD reached only the abstract stubs (nothing happened) while
-    subscription CRUD would have created and deleted products. Calls also
-    go through the SDK's current ``v1`` namespace.
-    """
-
-    @pytest.fixture
-    def calls(self, monkeypatch) -> list:
-        from zephyrex.extensions.AbstractExtensionProvider import (
-            AbstractProviderInstance_SDK,
+        _, instance = stripe(
+            {"/v1/payment_intents/pi_1?expand%5B%5D=latest_charge": answer(refunded)}
         )
+        found = await PRV_Stripe_Payment.get_payment(instance, "pi_1")
+        assert found["status"] == "refunded" and found["amount_refunded"] == "12.50"
 
-        calls: list = []
-        v1 = SimpleNamespace(
-            products=_RecordingResource(calls, "products", _PRODUCT),
-            customers=_RecordingResource(calls, "customers", _CUSTOMER),
+    async def test_a_refund_keeps_an_unknown_reason_in_metadata(self, stripe):
+        server, instance = stripe(
+            {
+                "/v1/refunds": answer(
+                    {
+                        "id": "re_1",
+                        "status": "succeeded",
+                        "amount": 500,
+                        "currency": "usd",
+                    }
+                )
+            }
         )
-        client = SimpleNamespace(v1=v1)
-        monkeypatch.setattr(
-            PaymentExtensionStripeProvider,
-            "bond_instance",
-            classmethod(lambda cls, instance: AbstractProviderInstance_SDK(client)),
+        refund = await PRV_Stripe_Payment.refund_payment(
+            instance,
+            "pi_1",
+            MoneyAction(
+                currency="USD", idempotency_key="k2", amount=Decimal("5"), reason="late"
+            ),
         )
-        return calls
-
-    def test_product_crud_reaches_products(self, calls):
-        from zephyrex.extensions.payment.PRV_Stripe_Payment import (
-            Stripe_ProductModel,
-        )
-
-        created = Stripe_ProductModel.create_via_provider(None, name="Plan")
-        listed = Stripe_ProductModel.list_via_provider(None, limit=5)
-
-        assert created["success"] is True, created
-        assert created["data"]["id"] == "prod_1"
-        assert listed["success"] is True, listed
-        assert [call[:2] for call in calls] == [
-            ("products", "create"),
-            ("products", "list"),
-        ]
-
-    def test_customer_crud_reaches_customers(self, calls):
-        created = Stripe_CustomerModel.create_via_provider(None, email="a@example.com")
-        assert created["success"] is True, created
-        assert calls == [("customers", "create", {"email": "a@example.com"})]
-
-    def test_subscriptions_carry_no_product_crud(self):
-        from zephyrex.extensions.payment.PRV_Stripe_Payment import (
-            Stripe_SubscriptionModel,
-        )
-
-        own = {
-            name
-            for name in vars(Stripe_SubscriptionModel)
-            if name.endswith("_via_provider")
+        body = sent(server.requests[0])
+        assert body == {
+            "payment_intent": "pi_1",
+            "amount": "500",
+            "metadata[reason]": "late",
         }
-        assert own == {"get_subscription_status_via_provider"}
+        assert refund["amount"] == "5.00" and refund["status"] == "succeeded"
+
+    async def test_capture_of_part(self, stripe):
+        server, instance = stripe({"/v1/payment_intents/pi_1/capture": answer(INTENT)})
+        await PRV_Stripe_Payment.capture_payment(
+            instance,
+            "pi_1",
+            MoneyAction(currency="USD", idempotency_key="k3", amount=Decimal("10")),
+        )
+        assert sent(server.requests[0])["amount_to_capture"] == "1000"
+
+    async def test_customer_and_subscription(self, stripe):
+        server, instance = stripe(
+            {
+                "/v1/customers": answer(
+                    {"id": "cus_1", "email": "a@b.c", "name": "A B"}
+                ),
+                "/v1/subscriptions": answer(SUBSCRIPTION),
+                "/v1/subscriptions/sub_1": answer(
+                    {**SUBSCRIPTION, "cancel_at_period_end": True}
+                ),
+            }
+        )
+        customer = await PRV_Stripe_Payment.create_customer(
+            instance, CustomerRequest(email="a@b.c", user_id="u1", idempotency_key="k")
+        )
+        assert customer["customer_id"] == "cus_1"
+        subscription = await PRV_Stripe_Payment.create_subscription(
+            instance,
+            SubscriptionRequest(
+                plan_id="price_1",
+                user_id="u1",
+                idempotency_key="k",
+                customer_id="cus_1",
+            ),
+        )
+        assert sent(server.requests[1])["items[0][price]"] == "price_1"
+        assert sent(server.requests[1])["payment_behavior"] == "default_incomplete"
+        assert subscription["active"] and subscription["plan_id"] == "price_1"
+        assert subscription["current_period_end"].year == 2030
+        ending = await PRV_Stripe_Payment.cancel_subscription(instance, "sub_1", True)
+        assert sent(server.requests[2]) == {"cancel_at_period_end": "true"}
+        assert ending["cancel_at_period_end"]
+
+    async def test_a_subscription_needs_a_customer(self, stripe):
+        _, instance = stripe({})
+        with pytest.raises(InvalidInputExternalError):
+            await PRV_Stripe_Payment.create_subscription(
+                instance,
+                SubscriptionRequest(plan_id="p", user_id="u", idempotency_key="k"),
+            )
+
+    async def test_an_id_is_one_path_segment(self, stripe):
+        server, instance = stripe({})
+        with pytest.raises(InvalidInputExternalError):
+            await PRV_Stripe_Payment.get_payment(instance, "../v1/customers")
+        assert server.requests == []
+
+
+class TestFailures:
+    async def test_a_declined_card_carries_stripes_reason(self, stripe):
+        declined = {
+            "error": {"type": "card_error", "message": "Your card was declined."}
+        }
+        _, instance = stripe({"/v1/payment_intents": answer(declined, 402)})
+        with pytest.raises(InvalidInputExternalError, match="card was declined"):
+            await PRV_Stripe_Payment.create_payment(instance, request())
+
+    async def test_a_refused_key(self, stripe):
+        _, instance = stripe(
+            {
+                "/v1/customers/cus_1": answer(
+                    {"error": {"message": "Invalid API Key"}}, 401
+                )
+            }
+        )
+        with pytest.raises(AuthExternalError):
+            await PRV_Stripe_Payment.get_customer(instance, "cus_1")
+
+    async def test_an_unclear_answer_to_a_payment_is_not_retried_elsewhere(
+        self, stripe
+    ):
+        """A 5xx after a charge was sent may hide a taken payment: it is
+        permanent (the rotation stops), where a read stays transient."""
+        server, instance = stripe(
+            {
+                "/v1/payment_intents": answer({}, 503),
+                "/v1/customers/cus_1": answer({}, 503),
+            }
+        )
+        with pytest.raises(PermanentExternalError, match="unknown"):
+            await PRV_Stripe_Payment.create_payment(instance, request())
+        with pytest.raises(TransientExternalError):
+            await PRV_Stripe_Payment.get_customer(instance, "cus_1")
+
+    async def test_an_account_without_a_key_calls_nothing(
+        self, local_http_server, provider_instance, set_env
+    ):
+        set_env("STRIPE_API_KEY", "")
+        server = local_http_server({})
+        keyless = provider_instance(
+            PRV_Stripe_Payment, settings={"api_base": server.base_url}
+        )
+        with pytest.raises(TransientExternalError, match="not configured"):
+            await PRV_Stripe_Payment.create_payment(keyless, request())
+        assert server.requests == []
+
+
+class TestNotifications:
+    PAYLOAD = json.dumps(
+        {
+            "id": "evt_1",
+            "type": "payment_intent.succeeded",
+            "data": {"object": {"object": "payment_intent", "id": "pi_1"}},
+        }
+    ).encode()
+
+    async def test_a_signed_notification_names_its_payment(self, stripe):
+        _, instance = stripe({})
+        event = await PRV_Stripe_Payment.verify_webhook(
+            instance, self.PAYLOAD, signed(self.PAYLOAD)
+        )
+        assert (event["event_id"], event["kind"], event["object_id"]) == (
+            "evt_1",
+            "payment",
+            "pi_1",
+        )
+
+    @pytest.mark.parametrize(
+        "headers",
+        [
+            {},
+            {"stripe-signature": "t=1,v1="},
+            signed(PAYLOAD, secret="whsec_other"),
+            signed(PAYLOAD + b" "),
+            signed(PAYLOAD, at=int(time.time()) - 3600),
+        ],
+        ids=["unsigned", "empty", "other-secret", "tampered", "stale"],
+    )
+    async def test_refused(self, stripe, headers):
+        _, instance = stripe({})
+        with pytest.raises(InvalidInputExternalError):
+            await PRV_Stripe_Payment.verify_webhook(instance, self.PAYLOAD, headers)
+
+    async def test_a_charge_names_its_payment_intent(self, stripe):
+        _, instance = stripe({})
+        payload = json.dumps(
+            {
+                "id": "evt_2",
+                "type": "charge.refunded",
+                "data": {"object": {"object": "charge", "payment_intent": "pi_9"}},
+            }
+        ).encode()
+        event = await PRV_Stripe_Payment.verify_webhook(
+            instance, payload, signed(payload)
+        )
+        assert event["object_id"] == "pi_9"
+
+
+def _online() -> bool:
+    try:
+        httpx.head("https://api.stripe.com", timeout=5)
+        return True
+    except httpx.HTTPError:
+        return False
+
+
+class TestRealStripe:
+    async def test_a_bogus_key_is_refused(self, provider_instance):
+        if not _online():
+            pytest.xfail("https://api.stripe.com is unreachable")
+        bogus = provider_instance(PRV_Stripe_Payment, api_key="sk_test_bogus")
+        with pytest.raises(AuthExternalError):
+            await PRV_Stripe_Payment.get_customer(bogus, "cus_none")
+
+    @pytest.mark.external_api(provider="stripe")
+    async def test_test_mode_customer_payment_and_refund(
+        self, provider_instance, sandbox_credentials_for
+    ):
+        """Test mode: a customer, a payment with Stripe's test card, a full
+        refund."""
+        creds = sandbox_credentials_for("stripe")
+        instance = provider_instance(
+            PRV_Stripe_Payment, api_key=creds["STRIPE_API_KEY"]
+        )
+        customer = await PRV_Stripe_Payment.create_customer(
+            instance,
+            CustomerRequest(
+                email="zephyrex-test@example.com",
+                user_id="u",
+                idempotency_key=str(time.time()),
+            ),
+        )
+        paid = await PRV_Stripe_Payment.create_payment(
+            instance,
+            request(
+                payment_method_id="pm_card_visa",
+                customer_id=customer["customer_id"],
+                idempotency_key=f"pay-{time.time()}",
+            ),
+        )
+        assert paid["status"] == "succeeded"
+        await PRV_Stripe_Payment.refund_payment(
+            instance,
+            paid["external_id"],
+            MoneyAction(currency="USD", idempotency_key=f"refund-{time.time()}"),
+        )
+        assert (await PRV_Stripe_Payment.get_payment(instance, paid["external_id"]))[
+            "status"
+        ] == "refunded"

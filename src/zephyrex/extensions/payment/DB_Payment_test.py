@@ -1,6 +1,7 @@
-import pytest
+# SPDX-License-Identifier: AGPL-3.0-or-later
+from typing import Any, Dict, Optional
+
 from faker import Faker
-from typing import Any, Dict, List, Optional
 
 from zephyrex.database.DB_Auth_test import TestUser as CoreUserTests
 from zephyrex.extensions.AbstractEXTTest import ExtensionServerMixin
@@ -36,43 +37,6 @@ class TestPayment_User(CoreUserTests, ExtensionServerMixin):
             **super().update_fields,
             "external_payment_id": "xyz456",
         }
-
-    def test_unique_constraint_with_payment_field(
-        self, db, admin_a, team_a, server, model_registry
-    ):
-        """Test that unique constraints work correctly with payment extension field - verifies constraints still work"""
-        self.db = db
-        self._server = server
-        self.model_registry = model_registry
-        self.ensure_model(server)
-
-        # Create first user
-        user1_email = faker.unique.email()
-        user1_data = {
-            **{k: v() if callable(v) else v for k, v in self.create_fields.items()},
-            "email": user1_email,
-            "external_payment_id": "cus_unique_test_customer",
-        }
-
-        created_user1 = self._CRUD_create_with_data(
-            user1_data, "dict", admin_a.id, team_a.id, "unique_user1"
-        )
-
-        # Try to create second user with same email (should fail due to unique constraint)
-        user2_data = {
-            **{k: v() if callable(v) else v for k, v in self.create_fields.items()},
-            "email": user1_email,  # Same email - should trigger unique constraint
-            "external_payment_id": "cus_different_customer",
-        }
-
-        # This should raise an exception due to unique email constraint
-        try:
-            self._CRUD_create_with_data(
-                user2_data, "dict", admin_a.id, team_a.id, "unique_user2"
-            )
-        except Exception as e:
-            logger.debug(f"Exception raised as expected: {e}")
-            raise
 
     def test_null_payment_field_handling(
         self, db, admin_a, team_a, server, model_registry

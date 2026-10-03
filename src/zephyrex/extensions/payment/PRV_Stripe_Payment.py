@@ -1,1218 +1,431 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""Stripe, through its REST API (form-encoded requests, JSON answers) at
+the pinned API version.
+
+A payment is a PaymentIntent: with a payment method it is confirmed at
+once, otherwise its ``client_secret`` lets the payer's browser confirm it
+(Stripe.js). A subscription is made ``default_incomplete``, so a customer
+with no saved card gets an incomplete subscription to pay rather than a
+refusal. Notifications are verified as Stripe signs them: an HMAC-SHA256
+over ``<timestamp>.<body>`` with the endpoint's signing secret, in the
+``Stripe-Signature`` header, within five minutes.
 """
-Stripe payment provider for AGInfrastructure.
-Provides comprehensive payment processing abilities through Stripe's API.
-Fully static implementation compatible with the Provider Rotation System.
-"""
 
-from datetime import datetime
-from typing import Any, ClassVar, Dict, List, Optional
+import json
+import time
+from datetime import UTC, datetime
+from typing import Any, ClassVar, Dict, List, Mapping, Optional, Set, Tuple
 
-try:
-    import stripe
-except ImportError:
-    stripe = None  # type: ignore[assignment]
-    import warnings
-
-    warnings.warn(
-        "Stripe package currently missing, but in PIP_Dependencies, will likely install on run",
-        ImportWarning,
-    )
-from pydantic import BaseModel, Field
-
-from zephyrex.extensions.AbstractExtensionProvider import AbstractProviderInstance_SDK
-from zephyrex.extensions.AbstractExternalModel import (
-    AbstractExternalManager,
-    AbstractExternalModel,
+from zephyrex.extensions.AbstractExtensionProvider import InstanceSetting
+from zephyrex.extensions.ExternalErrors import (
+    InvalidInputExternalError,
+    TransientExternalError,
 )
 from zephyrex.extensions.payment.EXT_Payment import (
     AbstractPaymentProvider,
-    PassthroughExternalModel,
+    CustomerRequest,
+    MoneyAction,
+    PaymentRequest,
+    SubscriptionRequest,
+    fresh,
+    hmac_sha256,
+    one_matches,
 )
-from zephyrex.lib.Dependencies import Dependencies, PIP_Dependency
-from zephyrex.lib.Environment import env
-from zephyrex.lib.Logging import logger
-from zephyrex.logic.AbstractLogicManager import ModelMeta
+from zephyrex.lib.ProviderHTTPClient import path_segment
 from zephyrex.logic.BLL_Providers import ProviderInstanceModel
 
-# ============================================================================
-# Stripe Customer External Model
-# ============================================================================
-
-
-class Stripe_CustomerModel(PassthroughExternalModel, metaclass=ModelMeta):
-    """External model for Stripe Customer API resource."""
-
-    class Reference:
-        pass
-
-    # Stripe API configuration
-    external_resource: ClassVar[str] = "customers"
-    # Mark as an extension model for framework introspection
-    _is_extension_model: ClassVar[bool] = True
-    # Extension target identifier used by framework
-    _extension_target: ClassVar[str] = "payment"
-
-    # Model fields matching Stripe API exactly
-    id: str = Field(..., description="Stripe customer ID")
-    object: str = Field(default="customer", description="Object type")
-    address: Optional[Dict[str, Any]] = Field(None, description="Customer address")
-    balance: int = Field(0, description="Account balance in cents")
-    created: int = Field(..., description="Creation timestamp")
-    currency: Optional[str] = Field(None, description="Customer currency")
-    default_source: Optional[str] = Field(None, description="Default payment source")
-    delinquent: bool = Field(False, description="Whether customer is delinquent")
-    description: Optional[str] = Field(None, description="Customer description")
-    email: str = Field(..., description="Customer email address")
-    invoice_prefix: Optional[str] = Field(None, description="Invoice prefix")
-    invoice_settings: Optional[Dict[str, Any]] = Field(
-        None, description="Invoice settings"
-    )
-    livemode: bool = Field(False, description="Whether in live mode")
-    metadata: Dict[str, str] = Field(
-        default_factory=dict, description="Custom metadata"
-    )
-    name: Optional[str] = Field(None, description="Customer name")
-    next_invoice_sequence: int = Field(1, description="Next invoice sequence number")
-    phone: Optional[str] = Field(None, description="Customer phone number")
-    preferred_locales: List[str] = Field(
-        default_factory=list, description="Preferred locales"
-    )
-    shipping: Optional[Dict[str, Any]] = Field(None, description="Shipping information")
-    tax_exempt: str = Field("none", description="Tax exempt status")
-    test_clock: Optional[str] = Field(None, description="Test clock ID")
-
-    class Create(BaseModel):
-        """Create model for Stripe Customer."""
-
-        email: str = Field(..., description="Customer email address")
-        name: Optional[str] = Field(None, description="Customer name")
-        phone: Optional[str] = Field(None, description="Customer phone number")
-        description: Optional[str] = Field(None, description="Customer description")
-        address: Optional[Dict[str, Any]] = Field(None, description="Customer address")
-        metadata: Optional[Dict[str, str]] = Field(None, description="Custom metadata")
-
-    class Update(BaseModel):
-        """Update model for Stripe Customer."""
-
-        name: Optional[str] = Field(None, description="Customer name")
-        email: Optional[str] = Field(None, description="Customer email address")
-        phone: Optional[str] = Field(None, description="Customer phone number")
-        description: Optional[str] = Field(None, description="Customer description")
-        address: Optional[Dict[str, Any]] = Field(None, description="Customer address")
-        metadata: Optional[Dict[str, str]] = Field(None, description="Custom metadata")
-
-    class Search(BaseModel):
-        """Search model for Stripe Customer."""
-
-        email: Optional[str] = Field(None, description="Search by email")
-        name: Optional[str] = Field(None, description="Search by name")
-
-    @classmethod
-    def to_external_query_format(
-        cls,
-        query_params: Dict[str, Any],
-        limit: Optional[int] = None,
-        offset: Optional[int] = None,
-        order_by: Optional[List] = None,
-    ) -> Dict[str, Any]:
-        """Convert query parameters to Stripe API format."""
-        external_params = {}
-
-        # Since we're using exact Stripe API field names, no conversion needed
-        for field, value in query_params.items():
-            external_params[field] = value
-
-        # Stripe pagination
-        if limit:
-            external_params["limit"] = min(limit, 100)  # Stripe max is 100
-
-        return external_params
-
-    @staticmethod
-    def create_via_provider(provider_instance, **kwargs) -> Dict[str, Any]:
-        """Create customer via provider instance."""
-        try:
-            # Get bonded instance from provider
-            bonded = PaymentExtensionStripeProvider.bond_instance(provider_instance)
-            if not bonded or not bonded.sdk:
-                return {"success": False, "error": "Failed to bond provider instance"}
-
-            stripe_client = bonded.sdk
-
-            # Prepare customer data with standard Stripe field names
-            customer_data = {}
-            if "email" in kwargs:
-                customer_data["email"] = kwargs["email"]
-            if "name" in kwargs:
-                customer_data["name"] = kwargs["name"]
-            if "phone" in kwargs:
-                customer_data["phone"] = kwargs["phone"]
-            if "description" in kwargs:
-                customer_data["description"] = kwargs["description"]
-            if "address" in kwargs:
-                customer_data["address"] = kwargs["address"]
-            if "metadata" in kwargs:
-                customer_data["metadata"] = kwargs["metadata"]
-
-            # Create customer via Stripe
-            customer = stripe_client.v1.customers.create(**customer_data)
-
-            return {
-                "success": True,
-                "data": {
-                    "id": customer.id,
-                    "email": customer.email,
-                    "name": customer.name,
-                    "phone": customer.phone,
-                    "metadata": customer.metadata,
-                    "object": "customer",
-                    "created": customer.created,
-                    "balance": customer.balance,
-                    "delinquent": customer.delinquent,
-                    "tax_exempt": customer.tax_exempt,
-                    "livemode": customer.livemode,
-                },
-            }
-
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-
-    @staticmethod
-    def get_via_provider(provider_instance, external_id: str) -> Dict[str, Any]:
-        """Get customer via provider instance."""
-        try:
-            # Get bonded instance from provider
-            bonded = PaymentExtensionStripeProvider.bond_instance(provider_instance)
-            if not bonded or not bonded.sdk:
-                return {"success": False, "error": "Failed to bond provider instance"}
-
-            stripe_client = bonded.sdk
-
-            # Get customer via Stripe
-            customer = stripe_client.v1.customers.retrieve(external_id)
-
-            return {
-                "success": True,
-                "data": {
-                    "id": customer.id,
-                    "object": "customer",
-                    "email": customer.email,
-                    "name": customer.name,
-                    "phone": customer.phone,
-                    "metadata": customer.metadata,
-                    "created": customer.created,
-                    "balance": customer.balance,
-                    "delinquent": customer.delinquent,
-                    "tax_exempt": customer.tax_exempt,
-                    "livemode": customer.livemode,
-                },
-            }
-
-        except Exception as e:
-            if "No such customer" in str(e):
-                return {"success": False, "error": "Not found"}
-            return {"success": False, "error": str(e)}
-
-    @staticmethod
-    def list_via_provider(provider_instance, **kwargs) -> Dict[str, Any]:
-        """List customers via provider instance."""
-        try:
-            # Get bonded instance from provider
-            bonded = PaymentExtensionStripeProvider.bond_instance(provider_instance)
-            if not bonded or not bonded.sdk:
-                return {"success": False, "error": "Failed to bond provider instance"}
-
-            stripe_client = bonded.sdk
-
-            # List customers via Stripe
-            customers = stripe_client.v1.customers.list(**kwargs)
-
-            return {
-                "success": True,
-                "data": [
-                    {
-                        "id": customer.id,
-                        "object": "customer",
-                        "email": customer.email,
-                        "name": customer.name,
-                        "phone": customer.phone,
-                        "metadata": customer.metadata,
-                        "created": customer.created,
-                        "balance": customer.balance,
-                        "delinquent": customer.delinquent,
-                        "tax_exempt": customer.tax_exempt,
-                        "livemode": customer.livemode,
-                    }
-                    for customer in customers.data
-                ],
-            }
-
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-
-    @staticmethod
-    def update_via_provider(
-        provider_instance, external_id: str, **kwargs
-    ) -> Dict[str, Any]:
-        """Update customer via provider instance."""
-        try:
-            # Get bonded instance from provider
-            bonded = PaymentExtensionStripeProvider.bond_instance(provider_instance)
-            if not bonded or not bonded.sdk:
-                return {"success": False, "error": "Failed to bond provider instance"}
-
-            stripe_client = bonded.sdk
-
-            # Update customer via Stripe
-            customer = stripe_client.v1.customers.modify(external_id, **kwargs)
-
-            return {
-                "success": True,
-                "data": {
-                    "id": customer.id,
-                    "object": "customer",
-                    "email": customer.email,
-                    "name": customer.name,
-                    "phone": customer.phone,
-                    "metadata": customer.metadata,
-                    "created": customer.created,
-                    "balance": customer.balance,
-                    "delinquent": customer.delinquent,
-                    "tax_exempt": customer.tax_exempt,
-                    "livemode": customer.livemode,
-                },
-            }
-
-        except Exception as e:
-            if "No such customer" in str(e):
-                return {"success": False, "error": "Not found"}
-            return {"success": False, "error": str(e)}
-
-    @staticmethod
-    def delete_via_provider(provider_instance, external_id: str) -> Dict[str, Any]:
-        """Delete customer via provider instance."""
-        try:
-            # Get bonded instance from provider
-            bonded = PaymentExtensionStripeProvider.bond_instance(provider_instance)
-            if not bonded or not bonded.sdk:
-                return {"success": False, "error": "Failed to bond provider instance"}
-
-            stripe_client = bonded.sdk
-
-            # Delete customer via Stripe
-            stripe_client.v1.customers.delete(external_id)
-
-            return {"success": True}
-
-        except Exception as e:
-            if "No such customer" in str(e):
-                return {"success": False, "error": "Not found"}
-            return {"success": False, "error": str(e)}
-
-
-# ============================================================================
-# Stripe Product External Model
-# ============================================================================
-
-
-class Stripe_ProductModel(PassthroughExternalModel, metaclass=ModelMeta):
-    """External model for Stripe Product API resource."""
-
-    class Reference:
-        pass
-
-    # Stripe API configuration
-    external_resource: ClassVar[str] = "products"
-    # Mark as an extension model for framework introspection
-    _is_extension_model: ClassVar[bool] = True
-    # Extension target identifier used by framework
-    _extension_target: ClassVar[str] = "payment"
-
-    # Model fields matching Stripe API exactly
-    id: str = Field(..., description="Stripe product ID")
-    object: str = Field(default="product", description="Object type")
-    active: bool = Field(True, description="Whether the product is active")
-    created: int = Field(..., description="Creation timestamp")
-    default_price: Optional[str] = Field(None, description="Default price ID")
-    description: Optional[str] = Field(None, description="Product description")
-    images: List[str] = Field(default_factory=list, description="Product images")
-    marketing_features: List[Dict[str, Any]] = Field(
-        default_factory=list, description="Marketing features"
-    )
-    livemode: bool = Field(False, description="Whether in live mode")
-    metadata: Dict[str, str] = Field(
-        default_factory=dict, description="Custom metadata"
-    )
-    name: str = Field(..., description="Product name")
-    package_dimensions: Optional[Dict[str, Any]] = Field(
-        None, description="Package dimensions"
-    )
-    shippable: Optional[bool] = Field(None, description="Whether product is shippable")
-    statement_descriptor: Optional[str] = Field(
-        None, description="Statement descriptor"
-    )
-    tax_code: Optional[str] = Field(None, description="Tax code")
-    unit_label: Optional[str] = Field(None, description="Unit label")
-    updated: int = Field(..., description="Last updated timestamp")
-    url: Optional[str] = Field(None, description="Product URL")
-
-    class Create(BaseModel):
-        """Create model for Stripe Product."""
-
-        name: str = Field(..., description="Product name")
-        description: Optional[str] = Field(None, description="Product description")
-        active: Optional[bool] = Field(
-            True, description="Whether the product is active"
-        )
-        images: Optional[List[str]] = Field(None, description="Product images")
-        metadata: Optional[Dict[str, str]] = Field(None, description="Custom metadata")
-        package_dimensions: Optional[Dict[str, Any]] = Field(
-            None, description="Package dimensions"
-        )
-        shippable: Optional[bool] = Field(
-            None, description="Whether product is shippable"
-        )
-        statement_descriptor: Optional[str] = Field(
-            None, description="Statement descriptor"
-        )
-        tax_code: Optional[str] = Field(None, description="Tax code")
-        unit_label: Optional[str] = Field(None, description="Unit label")
-        url: Optional[str] = Field(None, description="Product URL")
-
-    class Update(BaseModel):
-        """Update model for Stripe Product."""
-
-        name: Optional[str] = Field(None, description="Product name")
-        description: Optional[str] = Field(None, description="Product description")
-        active: Optional[bool] = Field(
-            None, description="Whether the product is active"
-        )
-        images: Optional[List[str]] = Field(None, description="Product images")
-        metadata: Optional[Dict[str, str]] = Field(None, description="Custom metadata")
-        package_dimensions: Optional[Dict[str, Any]] = Field(
-            None, description="Package dimensions"
-        )
-        shippable: Optional[bool] = Field(
-            None, description="Whether product is shippable"
-        )
-        statement_descriptor: Optional[str] = Field(
-            None, description="Statement descriptor"
-        )
-        tax_code: Optional[str] = Field(None, description="Tax code")
-        unit_label: Optional[str] = Field(None, description="Unit label")
-        url: Optional[str] = Field(None, description="Product URL")
-
-    class Search(BaseModel):
-        """Search model for Stripe Product."""
-
-        name: Optional[str] = Field(None, description="Search by name")
-        active: Optional[bool] = Field(None, description="Filter by active status")
-        description: Optional[str] = Field(None, description="Search by description")
-
-    @classmethod
-    def to_external_query_format(
-        cls,
-        query_params: Dict[str, Any],
-        limit: Optional[int] = None,
-        offset: Optional[int] = None,
-        order_by: Optional[List] = None,
-    ) -> Dict[str, Any]:
-        """Convert query parameters to Stripe API format."""
-        external_params = {}
-
-        # Since we're using exact Stripe API field names, no conversion needed
-        for field, value in query_params.items():
-            external_params[field] = value
-
-        # Stripe pagination
-        if limit:
-            external_params["limit"] = min(limit, 100)  # Stripe max is 100
-
-        return external_params
-
-    @staticmethod
-    def create_via_provider(provider_instance, **kwargs) -> Dict[str, Any]:
-        """Create product via provider instance."""
-        try:
-            # Get bonded instance from provider
-            bonded = PaymentExtensionStripeProvider.bond_instance(provider_instance)
-            if not bonded or not bonded.sdk:
-                return {"success": False, "error": "Failed to bond provider instance"}
-
-            stripe_client = bonded.sdk
-
-            # Create product via Stripe
-            product = stripe_client.v1.products.create(**kwargs)
-
-            return {
-                "success": True,
-                "data": {
-                    "id": product.id,
-                    "name": product.name,
-                    "description": product.description,
-                    "active": product.active,
-                    "images": product.images,
-                    "metadata": product.metadata,
-                    "object": "product",
-                    "created": product.created,
-                    "updated": product.updated,
-                    "livemode": product.livemode,
-                    "marketing_features": [],
-                },
-            }
-
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-
-    @staticmethod
-    def get_via_provider(provider_instance, external_id: str) -> Dict[str, Any]:
-        """Get product via provider instance."""
-        try:
-            # Get bonded instance from provider
-            bonded = PaymentExtensionStripeProvider.bond_instance(provider_instance)
-            if not bonded or not bonded.sdk:
-                return {"success": False, "error": "Failed to bond provider instance"}
-
-            stripe_client = bonded.sdk
-
-            # Get product via Stripe
-            product = stripe_client.v1.products.retrieve(external_id)
-
-            return {
-                "success": True,
-                "data": {
-                    "id": product.id,
-                    "object": "product",
-                    "name": product.name,
-                    "description": product.description,
-                    "active": product.active,
-                    "images": product.images,
-                    "metadata": product.metadata,
-                    "created": product.created,
-                    "updated": product.updated,
-                    "livemode": product.livemode,
-                    "marketing_features": [],
-                },
-            }
-
-        except Exception as e:
-            if "No such product" in str(e):
-                return {"success": False, "error": "Not found"}
-            return {"success": False, "error": str(e)}
-
-    @staticmethod
-    def list_via_provider(provider_instance, **kwargs) -> Dict[str, Any]:
-        """List products via provider instance."""
-        try:
-            # Get bonded instance from provider
-            bonded = PaymentExtensionStripeProvider.bond_instance(provider_instance)
-            if not bonded or not bonded.sdk:
-                return {"success": False, "error": "Failed to bond provider instance"}
-
-            stripe_client = bonded.sdk
-
-            # List products via Stripe
-            products = stripe_client.v1.products.list(**kwargs)
-
-            return {
-                "success": True,
-                "data": [
-                    {
-                        "id": product.id,
-                        "object": "product",
-                        "name": product.name,
-                        "description": product.description,
-                        "active": product.active,
-                        "images": product.images,
-                        "metadata": product.metadata,
-                        "created": product.created,
-                        "updated": product.updated,
-                        "livemode": product.livemode,
-                        "marketing_features": [],
-                    }
-                    for product in products.data
-                ],
-            }
-
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-
-    @staticmethod
-    def update_via_provider(
-        provider_instance, external_id: str, **kwargs
-    ) -> Dict[str, Any]:
-        """Update product via provider instance."""
-        try:
-            # Get bonded instance from provider
-            bonded = PaymentExtensionStripeProvider.bond_instance(provider_instance)
-            if not bonded or not bonded.sdk:
-                return {"success": False, "error": "Failed to bond provider instance"}
-
-            stripe_client = bonded.sdk
-
-            # Update product via Stripe
-            product = stripe_client.v1.products.modify(external_id, **kwargs)
-
-            return {
-                "success": True,
-                "data": {
-                    "id": product.id,
-                    "object": "product",
-                    "name": product.name,
-                    "description": product.description,
-                    "active": product.active,
-                    "images": product.images,
-                    "metadata": product.metadata,
-                    "created": product.created,
-                    "updated": product.updated,
-                    "livemode": product.livemode,
-                    "marketing_features": [],
-                },
-            }
-
-        except Exception as e:
-            if "No such product" in str(e):
-                return {"success": False, "error": "Not found"}
-            return {"success": False, "error": str(e)}
-
-    @staticmethod
-    def delete_via_provider(provider_instance, external_id: str) -> Dict[str, Any]:
-        """Delete product via provider instance."""
-        try:
-            # Get bonded instance from provider
-            bonded = PaymentExtensionStripeProvider.bond_instance(provider_instance)
-            if not bonded or not bonded.sdk:
-                return {"success": False, "error": "Failed to bond provider instance"}
-
-            stripe_client = bonded.sdk
-
-            # Delete product via Stripe
-            stripe_client.v1.products.delete(external_id)
-
-            return {"success": True}
-
-        except Exception as e:
-            if "No such product" in str(e):
-                return {"success": False, "error": "Not found"}
-            return {"success": False, "error": str(e)}
-
-
-# Minimal additional external models required by tests
-class Stripe_PaymentIntentModel(AbstractExternalModel, metaclass=ModelMeta):
-    """Minimal representation of Stripe PaymentIntent for tests."""
-
-    external_resource: ClassVar[str] = "payment_intents"
-    _is_extension_model: ClassVar[bool] = True
-
-    id: str = Field(...)
-    amount: int = Field(...)
-    currency: str = Field(...)
-    status: str = Field(...)
-
-
-class Stripe_SubscriptionModel(AbstractExternalModel, metaclass=ModelMeta):
-    """Minimal representation of Stripe Subscription for tests."""
-
-    external_resource: ClassVar[str] = "subscriptions"
-    _is_extension_model: ClassVar[bool] = True
-
-    id: str = Field(...)
-    customer: str = Field(...)
-    status: str = Field(...)
-
-    @staticmethod
-    def get_subscription_status_via_provider(
-        provider_instance, user_id: str
-    ) -> Dict[str, Any]:
-        """Return the active subscription status for a given user.
-
-        This is the read-through entrypoint consumed by
-        ``UserManager.get_user_subscription_status`` (Item 74). The
-        rotation system invokes it on the active payment provider; the
-        result reflects the real upstream state, not a hardcoded mock.
-
-        TODO: Implement against Stripe sandbox per Item 15 — the current
-        body returns the schema-correct unknown shape so callers do not
-        crash, but it does not yet hit the Stripe API. Item 15's sandbox
-        wiring (test API key, network-recorded fixtures) is the right
-        place to land the real call.
-        """
-        return {
-            "subscription_id": None,
-            "status": "unknown",
-            "current_period_end": None,
-            "user_id": user_id,
-        }
-
-
-# ============================================================================
-# Reference Model and Network Model
-# ============================================================================
-
-
-# ============================================================================
-# Stripe Provider (must be defined before Manager to avoid circular imports)
-# ============================================================================
-
-
-class PaymentExtensionStripeProvider(AbstractPaymentProvider):
-    """
-    Stripe payment provider for AGInfrastructure.
-    Supports payments, subscriptions, and webhook processing.
-    All functionality is provided through static class methods.
-    Fully compatible with the Provider Rotation System.
-    """
-
-    # Static provider metadata - MUST have proper name for discovery
-    name = "stripe"
-    version = "1.0.0"
-    description = "Stripe payment provider"
-    _currency_env_var: ClassVar[str] = "STRIPE_CURRENCY"
-    _default_currency: ClassVar[str] = "USD"
-
-    # Static client state
-    _stripe_client = None
-    _stripe_available = False
-
-    # Unified dependencies for Stripe provider
-    dependencies = Dependencies(
-        [
-            PIP_Dependency(
-                name="stripe",
-                friendly_name="Stripe Python Library",
-                # Webhooks rely on stripe.SignatureVerificationError and
-                # StripeObject.to_dict(), verified against 15.
-                semver=">=15.0.0",
-                reason="Stripe payment provider support",
-            ),
-        ]
-    )
-
-    # Environment variables required by this provider
-    _env = {
-        "STRIPE_API_KEY": "",
-        "STRIPE_SECRET_KEY": "",
-        "STRIPE_PUBLISHABLE_KEY": "",
-        "STRIPE_WEBHOOK_SECRET": "",
-        "STRIPE_CURRENCY": "USD",
+API_VERSION = "2024-06-20"
+_STATUSES = {
+    "requires_payment_method": "pending",
+    "requires_confirmation": "pending",
+    "requires_action": "pending",
+    "processing": "pending",
+    "requires_capture": "authorized",
+    "succeeded": "succeeded",
+    "canceled": "canceled",
+}
+_ACTIVE = ("active", "trialing")
+# The refund reasons Stripe takes; any other is kept in the metadata.
+_REFUND_REASONS = ("duplicate", "fraudulent", "requested_by_customer")
+_EXPAND = {"expand[0]": "latest_charge"}
+
+
+def _scalar(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
+def form(params: Mapping[str, Any], prefix: str = "") -> Dict[str, str]:
+    """``params`` as Stripe's form encoding: ``metadata[key]``,
+    ``items[0][price]``; None values are left out."""
+    encoded: Dict[str, str] = {}
+    for key, value in params.items():
+        name = f"{prefix}[{key}]" if prefix else str(key)
+        if value is None:
+            continue
+        if isinstance(value, Mapping):
+            encoded.update(form(value, name))
+        elif isinstance(value, (list, tuple)):
+            for index, item in enumerate(value):
+                if isinstance(item, Mapping):
+                    encoded.update(form(item, f"{name}[{index}]"))
+                else:
+                    encoded[f"{name}[{index}]"] = _scalar(item)
+        else:
+            encoded[name] = _scalar(value)
+    return encoded
+
+
+def signature_parts(header: str) -> Tuple[Optional[str], List[str]]:
+    """The timestamp and the v1 signatures of a ``Stripe-Signature``."""
+    timestamp: Optional[str] = None
+    signatures: List[str] = []
+    for part in header.split(","):
+        key, _, value = part.strip().partition("=")
+        if key == "t":
+            timestamp = value
+        elif key == "v1" and value:
+            signatures.append(value)
+    return timestamp, signatures
+
+
+def _moment(seconds: Any) -> Optional[datetime]:
+    if isinstance(seconds, bool) or not isinstance(seconds, int):
+        return None
+    return datetime.fromtimestamp(seconds, UTC)
+
+
+class PRV_Stripe_Payment(AbstractPaymentProvider):
+    name: ClassVar[str] = "stripe"
+    friendly_name: ClassVar[str] = "Stripe"
+    description: ClassVar[str] = "A Stripe account"
+    external_api_version: ClassVar[Optional[str]] = API_VERSION
+    external_api_version_header: ClassVar[Optional[str]] = "Stripe-Version"
+    _abilities: ClassVar[Set[str]] = {
+        "payment_create",
+        "payment_get",
+        "payment_capture",
+        "payment_refund",
+        "customer_create",
+        "customer_get",
+        "subscription_create",
+        "subscription_get",
+        "subscription_cancel",
+        "webhook_process",
     }
+    instance_settings: ClassVar[Tuple[InstanceSetting, ...]] = (
+        InstanceSetting(
+            "api_key",
+            "Secret API key (sk_live_… or sk_test_…)",
+            env="STRIPE_API_KEY",
+            secret=True,
+            field="api_key",
+        ),
+        InstanceSetting(
+            "webhook_secret",
+            "The webhook endpoint's signing secret (whsec_…)",
+            env="STRIPE_WEBHOOK_SECRET",
+            secret=True,
+        ),
+        InstanceSetting("api_base", "API address", default="https://api.stripe.com"),
+    )
+
+    refusal_fields: ClassVar[Tuple[str, ...]] = ("message",)
 
     @classmethod
-    def bond_instance(
-        cls, instance: ProviderInstanceModel
-    ) -> Optional[AbstractProviderInstance_SDK]:
-        """
-        Bond a provider instance with proper Stripe SDK configuration.
-
-        Args:
-            instance: ProviderInstanceModel with API credentials
-
-        Returns:
-            Bonded instance with configured Stripe SDK or None if stripe not available
-        """
-        if stripe is None:
-            logger.warning("Stripe library not available for bonding")
-            return None
-
-        try:
-            api_key = getattr(instance, "api_key", None)
-
-            if not api_key:
-                logger.error("No API key available for Stripe provider instance")
-                return None
-
-            # Create Stripe client with the API key
-            stripe_client = stripe.StripeClient(api_key)
-
-            # Return bonded instance with the SDK
-            return AbstractProviderInstance_SDK(stripe_client)
-
-        except Exception as e:
-            logger.error(f"Failed to bond Stripe provider instance: {e}")
-            return None
+    async def stripe(
+        cls,
+        instance: ProviderInstanceModel,
+        method: str,
+        path: str,
+        params: Optional[Mapping[str, Any]] = None,
+        *,
+        idempotency_key: Optional[str] = None,
+        moves_money: bool = False,
+    ) -> Dict[str, Any]:
+        headers = {"Authorization": f"Bearer {cls.required(instance, 'api_key')}"}
+        url = cls.endpoint(instance, path)
+        options: Dict[str, Any] = {"headers": headers}
+        if method == "GET":
+            options["params"] = dict(params or {})
+        elif params:
+            options["data"] = form(params)
+        answer = await cls.call(
+            method,
+            url,
+            idempotency_key=idempotency_key,
+            moves_money=moves_money,
+            **options,
+        )
+        if not isinstance(answer, dict):
+            raise TransientExternalError("Stripe answered without a JSON object")
+        return answer
 
     @classmethod
-    def _configure_stripe(cls) -> None:
-        """Configure the Stripe client with API credentials."""
-        if stripe is None:
-            cls._stripe_available = False
-            cls._stripe_client = None
-            logger.warning("Stripe library not available")
-            return
+    def payment(
+        cls, instance: ProviderInstanceModel, intent: Mapping[str, Any]
+    ) -> Dict[str, Any]:
+        currency = str(intent.get("currency") or "usd")
+        charge = intent.get("latest_charge")
+        charge = charge if isinstance(charge, Mapping) else {}
+        status = _STATUSES.get(str(intent.get("status")), "pending")
+        if status == "succeeded" and charge.get("refunded"):
+            status = "refunded"
+        refunded = charge.get("amount_refunded")
+        return cls.payment_answer(
+            instance,
+            intent.get("id"),
+            status=status,
+            provider_status=intent.get("status"),
+            amount=cls.from_minor_units(int(intent.get("amount") or 0), currency),
+            currency=currency,
+            customer_id=(
+                intent.get("customer")
+                if isinstance(intent.get("customer"), str)
+                else None
+            ),
+            amount_refunded=(
+                None
+                if not isinstance(refunded, int)
+                else cls.from_minor_units(refunded, currency)
+            ),
+            client_secret=intent.get("client_secret"),
+        )
 
-        try:
-            api_key = cls.get_secret_key()
-            if api_key:
-                cls._stripe_client = stripe
-                cls._stripe_client.api_key = api_key  # type: ignore[attr-defined]
-                cls._stripe_available = True
-                logger.debug("Stripe client configured successfully")
-            else:
-                cls._stripe_available = False
-                logger.warning("No Stripe API key configured")
-        except Exception as e:
-            cls._stripe_available = False
-            logger.error(f"Failed to configure Stripe: {e}")
-
-    @classmethod
-    def _get_stripe_client(cls):
-        """Get configured Stripe client."""
-        if not cls._stripe_available:
-            cls._configure_stripe()
-        return cls._stripe_client if cls._stripe_available else None
-
-    @classmethod
-    def get_secret_key(cls) -> Optional[str]:
-        """Get Stripe secret key from environment."""
-        return env("STRIPE_SECRET_KEY") or env("STRIPE_API_KEY")
-
-    @classmethod
-    def get_webhook_secret(cls) -> Optional[str]:
-        """Get Stripe webhook secret from environment."""
-        return env("STRIPE_WEBHOOK_SECRET")
-
-    @classmethod
-    def get_publishable_key(cls) -> str:
-        """Get the publishable key from environment (or empty string)."""
-        return env("STRIPE_PUBLISHABLE_KEY") or ""
-
-    @classmethod
-    def validate_config(cls) -> bool:
-        """Validate provider configuration."""
-        if not cls._stripe_available:
-            cls._configure_stripe()
-
-        if not cls._stripe_available:
-            return False
-
-        secret_key = cls.get_secret_key()
-        return bool(secret_key)
-
-    @classmethod
-    def get_platform_name(cls) -> str:
-        """Get the platform name."""
-        return "Stripe"
-
-    @classmethod
-    def services(cls) -> List[str]:
-        """Return list of services provided."""
-        return ["payment", "billing", "subscription", "commerce"]
-
-    # Payment processing methods for rotation system
     @classmethod
     async def create_payment(
-        cls,
-        provider_instance: ProviderInstanceModel,
-        amount: float,
-        currency: str = "USD",
-        customer_id: Optional[str] = None,
-        payment_method_id: Optional[str] = None,
-        description: Optional[str] = None,
-        metadata: Optional[Dict] = None,
-    ) -> Dict:
-        """Create a payment via Stripe."""
-        api_key = getattr(provider_instance, "api_key", None)
-        if api_key and stripe is not None:
-            stripe_client = stripe.StripeClient(api_key)
+        cls, instance: ProviderInstanceModel, request: PaymentRequest
+    ) -> Dict[str, Any]:
+        params: Dict[str, Any] = {
+            "amount": cls.to_minor_units(request.amount, request.currency),
+            "currency": request.currency.lower(),
+            "customer": request.customer_id,
+            "description": request.description,
+            "capture_method": "automatic" if request.capture else "manual",
+            "metadata": {**request.metadata, "user_id": request.user_id},
+            **_EXPAND,
+        }
+        if request.payment_method_id:
+            params["payment_method"] = request.payment_method_id
+            params["confirm"] = True
+            params["automatic_payment_methods"] = {
+                "enabled": True,
+                "allow_redirects": "never",
+            }
         else:
-            stripe_client = cls._get_stripe_client()
-        if not stripe_client:
-            raise Exception("Stripe client not configured")
-
-        try:
-            amount_cents = cls.to_minor_units(amount, currency)
-
-            # Prepare payment intent data
-            intent_data = {
-                "amount": amount_cents,
-                "currency": currency.lower(),
-            }
-
-            if customer_id:
-                intent_data["customer"] = customer_id
-            if payment_method_id:
-                intent_data["payment_method"] = payment_method_id
-                intent_data["confirm"] = True
-            if description:
-                intent_data["description"] = description
-            if metadata:
-                intent_data["metadata"] = metadata
-
-            # Create payment intent
-            intent = stripe_client.PaymentIntent.create(**intent_data)  # type: ignore[attr-defined]
-
-            return {
-                "success": True,
-                "payment_id": intent.id,
-                "amount": amount,
-                "currency": currency,
-                "status": intent.status,
-                "client_secret": intent.client_secret,
-                "customer_id": intent.customer,
-                "description": intent.description,
-                "metadata": intent.metadata,
-            }
-
-        except Exception as e:
-            logger.error(f"Error creating payment: {e}")
-            return {
-                "success": False,
-                "error": str(e),
-            }
+            params["automatic_payment_methods"] = {"enabled": True}
+        intent = await cls.stripe(
+            instance,
+            "POST",
+            "/v1/payment_intents",
+            params,
+            idempotency_key=request.idempotency_key,
+            moves_money=True,
+        )
+        return cls.payment(instance, intent)
 
     @classmethod
-    def get_payment(
-        cls, provider_instance: ProviderInstanceModel, payment_id: str
-    ) -> Dict:
-        """Get payment details from Stripe."""
-        stripe_client = cls._get_stripe_client()
-        if not stripe_client:
-            raise Exception("Stripe client not configured")
-
-        try:
-            intent = stripe_client.PaymentIntent.retrieve(payment_id)
-
-            return {
-                "success": True,
-                "payment_id": intent.id,
-                "amount": float(cls.from_minor_units(intent.amount, intent.currency)),
-                "currency": intent.currency.upper(),
-                "status": intent.status,
-                "customer_id": intent.customer,
-                "description": intent.description,
-                "metadata": intent.metadata,
-            }
-
-        except Exception as e:
-            logger.error(f"Error getting payment {payment_id}: {e}")
-            return {
-                "success": False,
-                "error": str(e),
-            }
+    async def get_payment(
+        cls, instance: ProviderInstanceModel, payment_id: str
+    ) -> Dict[str, Any]:
+        intent = await cls.stripe(
+            instance,
+            "GET",
+            f"/v1/payment_intents/{path_segment(payment_id, 'payment id')}",
+            {"expand[]": "latest_charge"},
+        )
+        return cls.payment(instance, intent)
 
     @classmethod
-    def refund_payment(
-        cls,
-        provider_instance: ProviderInstanceModel,
-        payment_id: str,
-        amount: Optional[float] = None,
-        reason: Optional[str] = None,
-    ) -> Dict:
-        """Refund a payment via Stripe."""
-        stripe_client = cls._get_stripe_client()
-        if not stripe_client:
-            raise Exception("Stripe client not configured")
+    async def capture_payment(
+        cls, instance: ProviderInstanceModel, payment_id: str, action: MoneyAction
+    ) -> Dict[str, Any]:
+        params: Dict[str, Any] = dict(_EXPAND)
+        if action.amount is not None:
+            params["amount_to_capture"] = cls.to_minor_units(
+                action.amount, action.currency
+            )
+        intent = await cls.stripe(
+            instance,
+            "POST",
+            f"/v1/payment_intents/{path_segment(payment_id, 'payment id')}/capture",
+            params,
+            idempotency_key=action.idempotency_key,
+            moves_money=True,
+        )
+        return cls.payment(instance, intent)
 
-        try:
-            refund_data = {"payment_intent": payment_id}
+    @classmethod
+    async def refund_payment(
+        cls, instance: ProviderInstanceModel, payment_id: str, action: MoneyAction
+    ) -> Dict[str, Any]:
+        params: Dict[str, Any] = {"payment_intent": payment_id}
+        if action.amount is not None:
+            params["amount"] = cls.to_minor_units(action.amount, action.currency)
+        if action.reason in _REFUND_REASONS:
+            params["reason"] = action.reason
+        elif action.reason:
+            params["metadata"] = {"reason": action.reason}
+        refund = await cls.stripe(
+            instance,
+            "POST",
+            "/v1/refunds",
+            params,
+            idempotency_key=action.idempotency_key,
+            moves_money=True,
+        )
+        currency = str(refund.get("currency") or action.currency)
+        return cls.refund_answer(
+            instance,
+            refund.get("id"),
+            payment_id=payment_id,
+            status=refund.get("status"),
+            amount=cls.from_minor_units(int(refund.get("amount") or 0), currency),
+            currency=currency,
+        )
 
-            if amount is not None:
-                refund_data["amount"] = cls.to_minor_units(amount)  # type: ignore[assignment]
-
-            if reason:
-                refund_data["reason"] = reason
-
-            refund = stripe_client.Refund.create(**refund_data)
-
-            return {
-                "success": True,
-                "refund_id": refund.id,
-                "payment_id": payment_id,
-                "amount": float(cls.from_minor_units(refund.amount)),
-                "reason": refund.reason,
-                "status": refund.status,
-            }
-
-        except Exception as e:
-            logger.error(f"Error refunding payment {payment_id}: {e}")
-            return {
-                "success": False,
-                "error": str(e),
-            }
+    @classmethod
+    def customer(
+        cls, instance: ProviderInstanceModel, customer: Mapping[str, Any]
+    ) -> Dict[str, Any]:
+        if customer.get("deleted"):
+            raise InvalidInputExternalError(
+                "Stripe has deleted this customer", provider=cls.name
+            )
+        return cls.customer_answer(
+            instance,
+            customer.get("id"),
+            email=customer.get("email"),
+            name=customer.get("name"),
+        )
 
     @classmethod
     async def create_customer(
-        cls,
-        provider_instance: ProviderInstanceModel,
-        email: str,
-        name: Optional[str] = None,
-        phone: Optional[str] = None,
-        metadata: Optional[Dict] = None,
-    ) -> Dict:
-        """Create a customer in Stripe."""
-        api_key = getattr(provider_instance, "api_key", None)
-        if api_key and stripe is not None:
-            stripe_client = stripe.StripeClient(api_key)
-        else:
-            stripe_client = cls._get_stripe_client()
-        if not stripe_client:
-            raise Exception("Stripe client not configured")
-
-        try:
-            customer_data = {"email": email}
-
-            if name:
-                customer_data["name"] = name
-            if phone:
-                customer_data["phone"] = phone
-            if metadata:
-                customer_data["metadata"] = metadata  # type: ignore[assignment]
-
-            customer = stripe_client.Customer.create(**customer_data)  # type: ignore[attr-defined]
-
-            return {
-                "success": True,
-                "customer_id": customer.id,
-                "email": customer.email,
-                "name": customer.name,
-                "phone": customer.phone,
-                "metadata": customer.metadata,
-            }
-
-        except Exception as e:
-            logger.error(f"Error creating customer: {e}")
-            return {
-                "success": False,
-                "error": str(e),
-            }
+        cls, instance: ProviderInstanceModel, request: CustomerRequest
+    ) -> Dict[str, Any]:
+        customer = await cls.stripe(
+            instance,
+            "POST",
+            "/v1/customers",
+            {
+                "email": request.email,
+                "name": request.name,
+                "metadata": {"user_id": request.user_id},
+            },
+            idempotency_key=request.idempotency_key,
+        )
+        return cls.customer(instance, customer)
 
     @classmethod
-    def get_customer(
-        cls, provider_instance: ProviderInstanceModel, customer_id: str
-    ) -> Dict:
-        """Get customer details from Stripe."""
-        stripe_client = cls._get_stripe_client()
-        if not stripe_client:
-            raise Exception("Stripe client not configured")
-
-        try:
-            customer = stripe_client.Customer.retrieve(customer_id)
-
-            return {
-                "success": True,
-                "customer_id": customer.id,
-                "email": customer.email,
-                "name": customer.name,
-                "phone": customer.phone,
-                "metadata": customer.metadata,
-            }
-
-        except Exception as e:
-            logger.error(f"Error getting customer {customer_id}: {e}")
-            return {
-                "success": False,
-                "error": str(e),
-            }
+    async def get_customer(
+        cls, instance: ProviderInstanceModel, customer_id: str
+    ) -> Dict[str, Any]:
+        customer = await cls.stripe(
+            instance, "GET", f"/v1/customers/{path_segment(customer_id, 'customer id')}"
+        )
+        return cls.customer(instance, customer)
 
     @classmethod
-    def create_subscription(
-        cls,
-        provider_instance: ProviderInstanceModel,
-        customer_id: str,
-        price_id: str,
-        payment_method_id: Optional[str] = None,
-        trial_days: Optional[int] = None,
-        metadata: Optional[Dict] = None,
-    ) -> Dict:
-        """Create a subscription in Stripe."""
-        stripe_client = cls._get_stripe_client()
-        if not stripe_client:
-            raise Exception("Stripe client not configured")
-
-        try:
-            sub_data = {
-                "customer": customer_id,
-                "items": [{"price": price_id}],
-            }
-
-            if payment_method_id:
-                sub_data["default_payment_method"] = payment_method_id
-            if trial_days:
-                sub_data["trial_period_days"] = trial_days  # type: ignore[assignment]
-            if metadata:
-                sub_data["metadata"] = metadata  # type: ignore[assignment]
-
-            subscription = stripe_client.Subscription.create(**sub_data)
-
-            return {
-                "success": True,
-                "subscription_id": subscription.id,
-                "customer_id": subscription.customer,
-                "status": subscription.status,
-                "current_period_end": datetime.fromtimestamp(
-                    subscription.current_period_end
-                ).isoformat(),
-            }
-
-        except Exception as e:
-            logger.error(f"Error creating subscription: {e}")
-            return {
-                "success": False,
-                "error": str(e),
-            }
+    def subscription(
+        cls, instance: ProviderInstanceModel, subscription: Mapping[str, Any]
+    ) -> Dict[str, Any]:
+        items = (subscription.get("items") or {}).get("data") or [{}]
+        price = items[0].get("price") or {}
+        status = str(subscription.get("status") or "")
+        customer = subscription.get("customer")
+        return cls.subscription_answer(
+            instance,
+            subscription.get("id"),
+            status=status,
+            active=status in _ACTIVE,
+            plan_id=price.get("id") if isinstance(price, Mapping) else None,
+            customer_id=customer if isinstance(customer, str) else None,
+            current_period_end=_moment(subscription.get("current_period_end")),
+            cancel_at_period_end=bool(subscription.get("cancel_at_period_end")),
+        )
 
     @classmethod
-    def cancel_subscription(
-        cls,
-        provider_instance: ProviderInstanceModel,
-        subscription_id: str,
-        immediately: bool = False,
-    ) -> Dict:
-        """Cancel a subscription in Stripe."""
-        stripe_client = cls._get_stripe_client()
-        if not stripe_client:
-            raise Exception("Stripe client not configured")
-
-        try:
-            if immediately:
-                subscription = stripe_client.Subscription.delete(subscription_id)
-            else:
-                subscription = stripe_client.Subscription.modify(
-                    subscription_id, cancel_at_period_end=True
-                )
-
-            return {
-                "success": True,
-                "subscription_id": subscription.id,
-                "status": subscription.status,
-                "canceled_at": (
-                    datetime.fromtimestamp(subscription.canceled_at).isoformat()
-                    if subscription.canceled_at
-                    else None
-                ),
-                "cancelled_immediately": immediately,
-            }
-
-        except Exception as e:
-            logger.error(f"Error cancelling subscription {subscription_id}: {e}")
-            return {
-                "success": False,
-                "error": str(e),
-            }
-
-    @classmethod
-    async def process_webhook(
-        cls, provider_instance: ProviderInstanceModel, payload: str, signature: str
-    ) -> Dict:
-        """Process a webhook from Stripe. Async to satisfy tests expecting coroutine function."""
-        stripe_client = cls._get_stripe_client()
-        if not stripe_client:
-            raise Exception("Stripe client not configured")
-
-        webhook_secret = cls.get_webhook_secret()
-        if not webhook_secret:
-            return {"success": False, "error": "Webhook secret not configured"}
-
-        try:
-            event = stripe_client.Webhook.construct_event(
-                payload, signature, webhook_secret
+    async def create_subscription(
+        cls, instance: ProviderInstanceModel, request: SubscriptionRequest
+    ) -> Dict[str, Any]:
+        if not request.customer_id:
+            raise InvalidInputExternalError(
+                "A Stripe subscription is a customer's: make one first",
+                provider=cls.name,
             )
-        except stripe_client.SignatureVerificationError:
-            logger.warning("Stripe webhook signature verification failed")
-            return {"success": False, "error": "Invalid signature"}
+        subscription = await cls.stripe(
+            instance,
+            "POST",
+            "/v1/subscriptions",
+            {
+                "customer": request.customer_id,
+                "items": [{"price": request.plan_id}],
+                "trial_period_days": request.trial_days,
+                "payment_behavior": "default_incomplete",
+                "metadata": {**request.metadata, "user_id": request.user_id},
+            },
+            idempotency_key=request.idempotency_key,
+        )
+        return cls.subscription(instance, subscription)
+
+    @classmethod
+    async def get_subscription(
+        cls, instance: ProviderInstanceModel, subscription_id: str
+    ) -> Dict[str, Any]:
+        subscription = await cls.stripe(
+            instance,
+            "GET",
+            f"/v1/subscriptions/{path_segment(subscription_id, 'subscription id')}",
+        )
+        return cls.subscription(instance, subscription)
+
+    @classmethod
+    async def cancel_subscription(
+        cls, instance: ProviderInstanceModel, subscription_id: str, at_period_end: bool
+    ) -> Dict[str, Any]:
+        path = f"/v1/subscriptions/{path_segment(subscription_id, 'subscription id')}"
+        if at_period_end:
+            subscription = await cls.stripe(
+                instance, "POST", path, {"cancel_at_period_end": True}
+            )
+        else:
+            subscription = await cls.stripe(instance, "DELETE", path)
+        return cls.subscription(instance, subscription)
+
+    @classmethod
+    async def verify_webhook(
+        cls, instance: ProviderInstanceModel, payload: bytes, headers: Dict[str, str]
+    ) -> Dict[str, Any]:
+        secret = cls.required(instance, "webhook_secret")
+        timestamp, signatures = signature_parts(headers.get("stripe-signature", ""))
+        if timestamp is None or not signatures:
+            raise InvalidInputExternalError("The notification is not signed")
+        expected = hmac_sha256(
+            secret.encode(), timestamp.encode() + b"." + payload
+        ).hex()
+        if not one_matches(expected, signatures):
+            raise InvalidInputExternalError("The notification's signature is wrong")
+        if not fresh(timestamp, time.time()):
+            raise InvalidInputExternalError("The notification is too old")
+        try:
+            event = json.loads(payload)
         except ValueError:
-            logger.warning("Stripe webhook payload is not a valid event")
-            return {"success": False, "error": "Invalid payload"}
-
-        try:
-            # A StripeObject is not a dict (no .get); work on its plain form.
-            event = event.to_dict()
-            event_type = event.get("type")
-            event_data = event.get("data", {}).get("object", {})
-
-            logger.debug(f"Processing Stripe webhook event: {event_type}")
-
-            # Handle different event types
-            handled = True
-            if event_type == "payment_intent.succeeded":
-                logger.debug(f"Payment succeeded: {event_data.get('id')}")
-            elif event_type == "payment_intent.failed":
-                logger.warning(f"Payment failed: {event_data.get('id')}")
-            elif event_type == "customer.subscription.created":
-                logger.debug(f"Subscription created: {event_data.get('id')}")
-            elif event_type == "customer.subscription.deleted":
-                logger.debug(f"Subscription cancelled: {event_data.get('id')}")
-            else:
-                handled = False
-                logger.debug(f"Unhandled event type: {event_type}")
-
-            return {
-                "success": True,
-                "event_type": event_type,
-                "event_id": event.get("id"),
-                "processed": handled,
-            }
-
-        except Exception as e:
-            logger.error(f"Error processing Stripe webhook: {e}")
-            return {"success": False, "error": "Webhook processing failed"}
-
-
-# ============================================================================
-# Stripe Customer Manager (defined after provider to avoid circular imports)
-# ============================================================================
-
-
-class Stripe_CustomerManager(AbstractExternalManager):
-    """Manager for Stripe Customer external API."""
-
-    Model = Stripe_CustomerModel
-    ReferenceModel = Stripe_CustomerModel.Reference
-    # NetworkModel will be available via Model.Network after registry commit
-
-    # Provider integration
-    provider_class = PaymentExtensionStripeProvider
-
-    def create_validation(self, entity):
-        """Validate Stripe customer creation."""
-        if not entity.email:
-            raise ValueError("Email is required for Stripe customer creation")
-
-        return True
-
-    @classmethod
-    def sync_contact(cls, *args, **kwargs):
-        """Minimal sync helper used by tests: delegate to Model.get_via_provider if available."""
-        try:
-            if hasattr(cls.Model, "get_via_provider"):
-                return cls.Model.get_via_provider(*args, **kwargs)
-        except Exception:
-            pass
-        return None
-
-    @classmethod
-    def create_customer(cls, provider_instance, **kwargs):
-        """Convenience wrapper to create a customer using the provider or model helper."""
-        try:
-            if hasattr(cls.provider_class, "create_customer"):
-                return cls.provider_class.create_customer(provider_instance, **kwargs)
-        except Exception:
-            pass
-
-        if hasattr(cls.Model, "create_via_provider"):
-            return cls.Model.create_via_provider(provider_instance, **kwargs)
-
-        return {"success": False, "error": "No customer creation path available"}
-
-
-# ============================================================================
-# Stripe Product Manager (defined after provider to avoid circular imports)
-# ============================================================================
-
-
-class Stripe_ProductManager(AbstractExternalManager):
-    """Manager for Stripe Product external API."""
-
-    Model = Stripe_ProductModel
-    ReferenceModel = Stripe_ProductModel.Reference
-    # NetworkModel will be available via Model.Network after registry commit
-
-    # Provider integration
-    provider_class = PaymentExtensionStripeProvider
-
-    def create_validation(self, entity):
-        """Validate Stripe product creation."""
-        if not entity.name:
-            raise ValueError("Name is required for Stripe product creation")
-
-        return True
+            raise InvalidInputExternalError("The notification is not JSON") from None
+        named = ((event.get("data") or {}).get("object")) or {}
+        kind, object_id = None, None
+        if named.get("object") == "payment_intent":
+            kind, object_id = "payment", named.get("id")
+        elif named.get("object") in ("charge", "refund") and named.get(
+            "payment_intent"
+        ):
+            kind, object_id = "payment", named.get("payment_intent")
+        elif named.get("object") == "subscription":
+            kind, object_id = "subscription", named.get("id")
+        return cls.event_answer(
+            instance,
+            event.get("id"),
+            event_type=event.get("type"),
+            kind=kind,
+            object_id=object_id,
+        )

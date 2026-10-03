@@ -5,11 +5,11 @@
 # Manifest_parity_test keeps the two in step.
 
 name = "payment"
-version = "1.0.0"
-description = "Payment extension providing comprehensive payment processing abilities via Provider Rotation System"
+version = "2.0.0"
+description = "Payments, customers, subscriptions and signed notifications through Stripe, Square, PayPal, Helcim and Moneris"
 author = "ZephyrexTechnologies"
 entry_module = "EXT_Payment"
 minimum_framework_version = "0.0.0"
 
-pip_dependencies = ["httpx>=0.24.0", "paypalrestsdk>=1.13.0", "squareup>=42.0.0", "stripe>=15.0.0"]
+pip_dependencies = []
 system_dependencies = []

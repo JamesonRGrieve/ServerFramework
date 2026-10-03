@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Initial migration
 
 Revision ID: ee80e1858d77
