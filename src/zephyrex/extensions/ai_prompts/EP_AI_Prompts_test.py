@@ -121,6 +121,7 @@ class TestPromptEndpoints(AbstractEPTest, ExtensionServerMixin):
         """
         name = name or f"Test Prompt {faker.catch_phrase()}"
 
+        payload: Dict[str, Any]
         if invalid_data:
             # Create invalid data for testing validation
             payload = {

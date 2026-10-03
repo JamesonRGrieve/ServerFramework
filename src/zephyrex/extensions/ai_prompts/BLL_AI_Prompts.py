@@ -1,23 +1,26 @@
-"""
-AI Prompts extension business logic layer.
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""Stored prompts and their arguments.
 
-This module provides comprehensive prompt management functionality including:
-- Prompt storage and retrieval with variable injection support
-- Prompt argument management for dynamic variable substitution
-- Integration with conversations and AI chains
-- Seed data loading from markdown files
+A prompt's content marks variables as ``{VARIABLE_NAME}`` (capitals, digits
+and underscores). Each argument names one, optionally with a default;
+building a prompt fills its variables from the values given, then the
+defaults, and reports the variables still missing.
+
+A prompt belongs to whoever creates it (ROOT and SYSTEM may name another
+owner); ownership does not change on update. Arguments inherit access from
+their prompt, so only someone who may edit a prompt adds or changes its
+arguments.
 """
 
-import logging
-import os
 import re
-from os import path
-from typing import Any, ClassVar, Dict, List, Optional
+from typing import Any, Callable, ClassVar, Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from fastapi import HTTPException
+from pydantic import BaseModel as RouteModel
+from pydantic import Field
 
-from zephyrex.lib.Environment import env
-from zephyrex.pydantic2.fastapi import AuthType, RouterMixin
+from zephyrex.database.StaticPermissions import is_root_id, is_system_id
+from zephyrex.lib.CustomRoute import ExposeIn, custom_route
 from zephyrex.logic.AbstractLogicManager import (
     AbstractBLLManager,
     ApplicationModel,
@@ -28,11 +31,44 @@ from zephyrex.logic.AbstractLogicManager import (
     UpdateMixinModel,
 )
 from zephyrex.logic.BLL_Auth import TeamModel, UserModel
+from zephyrex.pydantic2.fastapi import AuthType, RouterMixin
+from zephyrex.pydantic2.registry import BaseModel
 
-# Get system ID from environment
-SYSTEM_ID = env("SYSTEM_ID")
+MAX_PROMPT_CHARACTERS = 200_000
+VARIABLE = re.compile(r"\{([A-Z_][A-Z0-9_]*)\}")
 
-logger = logging.getLogger(__name__)
+
+def variables_in(content: str) -> List[str]:
+    """The variable names ``content`` uses, in order of first use."""
+    return list(dict.fromkeys(VARIABLE.findall(content)))
+
+
+def fill(content: str, values: Dict[str, Any]) -> str:
+    """``content`` with each ``{VARIABLE}`` it has a value for replaced."""
+    return VARIABLE.sub(
+        lambda match: (
+            str(values[match.group(1)]) if match.group(1) in values else match.group(0)
+        ),
+        content,
+    )
+
+
+def _owned_by(requester_id: str) -> Callable[[Dict[str, Any]], Dict[str, Any]]:
+    def prepare(fields: Dict[str, Any]) -> Dict[str, Any]:
+        server_side = is_root_id(requester_id) or is_system_id(requester_id)
+        if not server_side or not fields.get("user_id"):
+            fields["user_id"] = requester_id
+        return fields
+
+    return prepare
+
+
+def _each(
+    kwargs: Dict[str, Any], prepare: Callable[[Dict[str, Any]], Dict[str, Any]]
+) -> Dict[str, Any]:
+    if isinstance(kwargs.get("entities"), list):
+        return {**kwargs, "entities": [prepare(dict(e)) for e in kwargs["entities"]]}
+    return prepare(dict(kwargs))
 
 
 class PromptModel(
@@ -44,30 +80,18 @@ class PromptModel(
     TeamModel.Reference.Optional,
     metaclass=ModelMeta,
 ):
-    """
-    Model representing a stored prompt template.
-
-    Prompts support variable injection using the {VARIABLE_NAME} format
-    and can be organized by user/team ownership.
-    """
-
-    favourite: bool = Field(
-        False, description="Whether this prompt is marked as a favorite"
-    )
+    favourite: bool = Field(False, description="Marked as a favourite")
     content: str = Field(
-        ..., description="The content of the prompt with variable placeholders"
+        ...,
+        description="The prompt, with {VARIABLE_NAME} placeholders",
+        max_length=MAX_PROMPT_CHARACTERS,
     )
 
-    # Database metadata
     table_comment: ClassVar[str] = (
         "A Prompt represents a stored prompt that can be used in Conversations and elsewhere. "
         "Variable injection for prompts is expected in the form {VARIABLE_NAME}."
     )
     is_system_entity: ClassVar[bool] = False
-    seed_creator_id: ClassVar[str] = SYSTEM_ID
-
-    # Seed configuration
-    seed_dir: ClassVar[str] = "../../../prompt"
 
     class Create(
         BaseModel,
@@ -76,26 +100,16 @@ class PromptModel(
         UserModel.Reference.ID.Optional,
         TeamModel.Reference.ID.Optional,
     ):
-        """Fields required to create a new prompt."""
-
-        favourite: bool = Field(
-            False, description="Whether this prompt is marked as a favorite"
+        favourite: bool = Field(False, description="Marked as a favourite")
+        content: str = Field(
+            ..., description="The prompt", max_length=MAX_PROMPT_CHARACTERS
         )
-        content: str = Field(..., description="The content of the prompt")
 
-    class Update(
-        BaseModel,
-        NameMixinModel.Optional,
-        DescriptionMixinModel.Optional,
-        UserModel.Reference.ID.Optional,
-        TeamModel.Reference.ID.Optional,
-    ):
-        """Fields that can be updated on an existing prompt."""
-
-        favourite: Optional[bool] = Field(
-            None, description="Whether this prompt is marked as a favorite"
+    class Update(BaseModel, NameMixinModel.Optional, DescriptionMixinModel.Optional):
+        favourite: Optional[bool] = Field(None, description="Marked as a favourite")
+        content: Optional[str] = Field(
+            None, description="The prompt", max_length=MAX_PROMPT_CHARACTERS
         )
-        content: Optional[str] = Field(None, description="The content of the prompt")
 
     class Search(
         ApplicationModel.Search,
@@ -105,236 +119,90 @@ class PromptModel(
         UserModel.Reference.ID.Search,
         TeamModel.Reference.ID.Search,
     ):
-        """Search criteria for prompts."""
-
-        favourite: Optional[bool] = Field(None, description="Filter by favorite status")
+        favourite: Optional[bool] = Field(None, description="Filter by favourite")
         content: Optional[StringSearchModel] = None
 
-    @staticmethod
-    def _parse_markdown_file(file_path: str) -> Optional[Dict[str, Any]]:
-        """Parse a markdown file to extract prompt data."""
-        try:
-            with open(file_path, "r", encoding="utf-8") as f:
-                content = f.read()
 
-            # Extract the first markdown heading as the title
-            title_match = re.search(r"^#\s+(.+)$", content, re.MULTILINE)
-            title = title_match.group(1) if title_match else path.basename(file_path)
+class BuildRequest(RouteModel):
+    variables: Dict[str, str] = Field(
+        default_factory=dict, description="Values for the prompt's variables"
+    )
 
-            # Create a description from the first paragraph after the title
-            description = ""
-            content_after_title = content.split("\n", 1)[1] if "\n" in content else ""
-            first_para = re.search(r"\n\n(.*?)\n\n", content_after_title + "\n\n")
-            if first_para:
-                description = first_para.group(1).strip()
 
-            return {
-                "name": title,
-                "content": content,
-                "description": description or "Imported prompt",
-                "favourite": False,
-                "user_id": SYSTEM_ID,
-            }
-        except Exception as e:
-            logger.error(f"Error parsing markdown file {file_path}: {str(e)}")
-            return None
-
-    @classmethod
-    def seed_data(cls, model_registry=None) -> List[Dict[str, Any]]:
-        """Load seed data from markdown files in the prompt directory."""
-        seed_items = []
-
-        try:
-            # Get the absolute path relative to this file
-            current_dir = os.path.dirname(os.path.abspath(__file__))
-            absolute_seed_dir = os.path.abspath(os.path.join(current_dir, cls.seed_dir))
-
-            logger.info(f"Looking for prompts in: {absolute_seed_dir}")
-
-            if not os.path.exists(absolute_seed_dir):
-                logger.warning(f"Prompt directory does not exist: {absolute_seed_dir}")
-            else:
-                for root, dirs, files in os.walk(absolute_seed_dir):
-                    for file in files:
-                        if file.endswith(".md"):
-                            file_path = path.join(root, file)
-                            prompt_data = cls._parse_markdown_file(file_path)
-                            if prompt_data:
-                                logger.info(f"Found prompt: {prompt_data['name']}")
-                                seed_items.append(prompt_data)
-
-                logger.info(f"Found {len(seed_items)} prompts to seed")
-        except (FileNotFoundError, OSError) as e:
-            logger.error(f"Error loading prompts: {str(e)}")
-
-        return seed_items
+class BuiltPrompt(RouteModel):
+    text: str
+    missing: List[str] = Field(
+        description="Variables with neither a value nor a default, left as written"
+    )
 
 
 class PromptManager(AbstractBLLManager, RouterMixin):
-    """Manager for prompt operations."""
-
     _model = PromptModel
 
-    # RouterMixin configuration
     prefix: ClassVar[Optional[str]] = "/v1/prompt"
     tags: ClassVar[Optional[List[str]]] = ["Prompt Management"]
     auth_type: ClassVar[AuthType] = AuthType.JWT
-    auth_dependency: ClassVar[Optional[str]] = "get_current_user"
-
-    def __init__(
-        self,
-        requester_id: str,
-        target_id: Optional[str] = None,
-        target_team_id: Optional[str] = None,
-        model_registry=None,
-    ):
-        super().__init__(
-            requester_id=requester_id,
-            target_id=target_id,
-            target_team_id=target_team_id,
-            model_registry=model_registry,
-        )
-        self._arguments = None
 
     @property
     def arguments(self) -> "PromptArgumentManager":
-        """Get the prompt argument manager."""
-        if self._arguments is None:
-            self._arguments = PromptArgumentManager(
-                requester_id=self.requester.id,
-                target_id=self.target_id,
-                target_team_id=self.target_team_id,
-                model_registry=self.model_registry,
-            )
-        return self._arguments
+        return PromptArgumentManager(
+            requester_id=self.requester.id, model_registry=self.model_registry
+        )
 
-    def build(self, prompt_id: str, **kwargs) -> str:
-        """
-        Build a prompt by substituting variables with provided values.
+    def create(self, **kwargs: Any) -> Any:
+        """Prompts owned by the requester (ROOT and SYSTEM may name another)."""
+        return super().create(**_each(kwargs, _owned_by(self.requester.id)))
 
-        Args:
-            prompt_id: The ID of the prompt to build
-            **kwargs: Variables to substitute in the prompt
+    def update(self, id: str, **kwargs: Any) -> Any:
+        """A prompt's owner and team are not changed by an update."""
+        kwargs.pop("user_id", None)
+        kwargs.pop("team_id", None)
+        return super().update(id, **kwargs)
 
-        Returns:
-            The built prompt with variables substituted
-        """
-        # Get the prompt
+    def defaults(self, prompt_id: str) -> Dict[str, Optional[str]]:
+        """Each of the prompt's arguments and its default (None: required)."""
+        return {
+            argument.name: argument.default_value
+            for argument in self.arguments.list(prompt_id=prompt_id)
+        }
+
+    def build(self, prompt_id: str, variables: Dict[str, Any]) -> Dict[str, Any]:
+        """The prompt filled from ``variables``, then its arguments'
+        defaults: ``{text, missing}``."""
         prompt = self.get(id=prompt_id)
+        values = {
+            name: default
+            for name, default in self.defaults(prompt_id).items()
+            if default is not None
+        }
+        values.update(variables)
+        return {
+            "text": fill(prompt.content, values),
+            "missing": [v for v in variables_in(prompt.content) if v not in values],
+        }
 
-        # Get prompt arguments to understand what variables are expected
-        arguments = self.arguments.list(prompt_id=prompt_id)
-
-        # Build a dictionary of variables to substitute
-        substitution_dict = {}
-
-        # Add provided kwargs
-        substitution_dict.update(kwargs)
-
-        # Add default values for any missing arguments
-        for arg in arguments:
-            arg_name = arg.get("name") if isinstance(arg, dict) else arg.name
-            if arg_name not in substitution_dict:
-                default_value = (
-                    arg.get("default_value")
-                    if isinstance(arg, dict)
-                    else arg.default_value
-                )
-                if default_value is not None:
-                    substitution_dict[arg_name] = default_value
-
-        # Substitute variables in the prompt content
-        content = prompt.content if hasattr(prompt, "content") else prompt["content"]
-
-        # Replace {VARIABLE_NAME} with actual values
-        def replace_variable(match):
-            var_name = match.group(1)
-            return str(substitution_dict.get(var_name, match.group(0)))
-
-        # Find all {VARIABLE_NAME} patterns and replace them
-        result = re.sub(r"\{([A-Z_][A-Z0-9_]*)\}", replace_variable, content)
-
-        return result
-
-    def validate_prompt_variables(self, prompt_id: str, **kwargs) -> Dict[str, str]:
-        """
-        Validate that all required variables for a prompt are provided.
-
-        Args:
-            prompt_id: The ID of the prompt to validate
-            **kwargs: Variables provided for the prompt
-
-        Returns:
-            Dictionary of validation errors (empty if valid)
-        """
-        errors = {}
-
-        # Get prompt arguments
-        arguments = self.arguments.list(prompt_id=prompt_id)
-
-        # Check each argument
-        for arg in arguments:
-            arg_name = arg.get("name") if isinstance(arg, dict) else arg.name
-            default_value = (
-                arg.get("default_value") if isinstance(arg, dict) else arg.default_value
-            )
-
-            # If no default value and not provided in kwargs, it's an error
-            if default_value is None and arg_name not in kwargs:
-                errors[arg_name] = f"Required variable '{arg_name}' not provided"
-
-        return errors
-
-    def extract_variables_from_content(self, content: str) -> List[str]:
-        """
-        Extract variable names from prompt content.
-
-        Args:
-            content: The prompt content to analyze
-
-        Returns:
-            List of variable names found in the content
-        """
-        # Find all {VARIABLE_NAME} patterns
-        matches = re.findall(r"\{([A-Z_][A-Z0-9_]*)\}", content)
-        return list(set(matches))  # Remove duplicates
-
-    def sync_arguments_from_content(self, prompt_id: str) -> List[str]:
-        """
-        Synchronize prompt arguments based on variables found in content.
-
-        Args:
-            prompt_id: The ID of the prompt to sync
-
-        Returns:
-            List of variable names that were added
-        """
-        # Get the prompt
+    def sync_arguments(self, prompt_id: str) -> List[str]:
+        """Add an argument for each variable the content uses and lacks one;
+        the names added."""
         prompt = self.get(id=prompt_id)
-        content = prompt.content if hasattr(prompt, "content") else prompt["content"]
+        existing = set(self.defaults(prompt_id))
+        added = [v for v in variables_in(prompt.content) if v not in existing]
+        for name in added:
+            self.arguments.create(prompt_id=prompt_id, name=name, default_value=None)
+        return added
 
-        # Extract variables from content
-        variables_in_content = self.extract_variables_from_content(content)
-
-        # Get existing arguments
-        existing_arguments = self.arguments.list(prompt_id=prompt_id)
-        existing_names = set()
-        for arg in existing_arguments:
-            arg_name = arg.get("name") if isinstance(arg, dict) else arg.name
-            existing_names.add(arg_name)
-
-        # Add missing arguments
-        added_variables = []
-        for var_name in variables_in_content:
-            if var_name not in existing_names:
-                self.arguments.create(
-                    prompt_id=prompt_id,
-                    name=var_name,
-                    default_value=None,
-                )
-                added_variables.append(var_name)
-
-        return added_variables
+    @custom_route(
+        method="POST",
+        path="/{prompt_id}/build",
+        input_model=BuildRequest,
+        output_model=BuiltPrompt,
+        authentication_type="jwt",
+        openapi_tags=("Prompt Management",),
+        summary="Fill a prompt's variables",
+        expose_in=(ExposeIn.REST,),
+    )
+    def build_route(self, prompt_id: str, body: BuildRequest) -> BuiltPrompt:
+        return BuiltPrompt(**self.build(prompt_id, body.variables))
 
 
 class PromptArgumentModel(
@@ -344,44 +212,21 @@ class PromptArgumentModel(
     PromptModel.Reference.ID,
     metaclass=ModelMeta,
 ):
-    """
-    Model representing a variable argument for a prompt.
-
-    Arguments define the variables that can be injected into a prompt
-    template, along with optional default values.
-    """
-
     default_value: Optional[str] = Field(
-        None, description="Default value for this argument if not provided"
+        None, description="Value used when none is given; none means required"
     )
 
-    # Database metadata
     table_comment: ClassVar[str] = (
         "A PromptArgument represents a variable injection for a Prompt."
     )
     is_system_entity: ClassVar[bool] = False
+    permission_references: ClassVar[List[str]] = ["prompt"]
 
-    class Create(
-        BaseModel,
-        NameMixinModel,
-        PromptModel.Reference.ID,
-    ):
-        """Fields required to create a new prompt argument."""
+    class Create(BaseModel, NameMixinModel, PromptModel.Reference.ID):
+        default_value: Optional[str] = Field(None, description="Default value")
 
-        default_value: Optional[str] = Field(
-            None, description="Default value for this argument"
-        )
-
-    class Update(
-        BaseModel,
-        NameMixinModel.Optional,
-        PromptModel.Reference.ID.Optional,
-    ):
-        """Fields that can be updated on an existing prompt argument."""
-
-        default_value: Optional[str] = Field(
-            None, description="Default value for this argument"
-        )
+    class Update(BaseModel, NameMixinModel.Optional):
+        default_value: Optional[str] = Field(None, description="Default value")
 
     class Search(
         ApplicationModel.Search,
@@ -389,85 +234,38 @@ class PromptArgumentModel(
         NameMixinModel.Search,
         PromptModel.Reference.ID.Search,
     ):
-        """Search criteria for prompt arguments."""
-
         default_value: Optional[StringSearchModel] = None
 
 
 class PromptArgumentManager(AbstractBLLManager, RouterMixin):
-    """Manager for prompt argument operations."""
-
     _model = PromptArgumentModel
 
-    # RouterMixin configuration
     prefix: ClassVar[Optional[str]] = "/v1/prompt-argument"
     tags: ClassVar[Optional[List[str]]] = ["Prompt Argument Management"]
     auth_type: ClassVar[AuthType] = AuthType.JWT
-    auth_dependency: ClassVar[Optional[str]] = "get_current_user"
 
-    def __init__(
-        self,
-        requester_id: str,
-        target_id: Optional[str] = None,
-        target_team_id: Optional[str] = None,
-        model_registry=None,
-    ):
-        super().__init__(
-            requester_id=requester_id,
-            target_id=target_id,
-            target_team_id=target_team_id,
-            model_registry=model_registry,
-        )
-
-    def create_validation(self, entity) -> None:
-        """Validate that the prompt exists before creating an argument."""
-        # Check that the prompt exists
-        prompt_manager = PromptManager(
-            requester_id=self.requester.id,
-            target_id=self.target_id,
-            target_team_id=self.target_team_id,
-            model_registry=self.model_registry,
-        )
-
-        try:
-            prompt_manager.get(id=entity.prompt_id)
-        except Exception:
-            from fastapi import HTTPException
-
+    def create_validation(self, entity: Any) -> None:
+        if not VARIABLE.fullmatch("{" + str(entity.name) + "}"):
             raise HTTPException(
-                status_code=404, detail=f"Prompt with ID {entity.prompt_id} not found"
+                status_code=422,
+                detail="An argument's name is a variable name (A-Z, 0-9, _)",
             )
+        PromptManager(
+            requester_id=self.requester.id, model_registry=self.model_registry
+        ).get(id=entity.prompt_id)
 
 
-# Extension hooks for integrating prompts with other models
+# Messages record the prompt they were generated from, when the
+# conversations extension is present.
 try:
     from zephyrex.extensions.conversations.BLL_Conversations import MessageModel
     from zephyrex.pydantic2.sqlalchemy import extension_model
 
-    # Extend Message model with prompt reference
     @extension_model(MessageModel)
-    class MessagePromptExtension(BaseModel):
-        """Add prompt reference to conversation messages."""
-
+    class MessagePromptExtension(RouteModel):
         prompt_id: Optional[str] = Field(
             None, description="ID of the prompt used to generate this message"
         )
 
 except ImportError:
-    # Conversations extension not available
     pass
-
-# Extension for AI Chains if available
-# try:
-#     from extensions.ai_chains.BLL_AI_Chains import ChainLinkModel
-#     from lib.Pydantic2SQLAlchemy import extension_model
-
-#     # Extend ChainLink model with prompt reference
-#     @extension_model(ChainLinkModel)
-#     class ChainLinkPromptExtension(BaseModel):
-#         """Add prompt reference to chain links."""
-#         prompt_id: Optional[str] = Field(None, description="ID of the related prompt")
-
-# except ImportError:
-#     # AI Chains extension not available
-#     pass

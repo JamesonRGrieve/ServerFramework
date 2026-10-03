@@ -5,11 +5,15 @@
 # Manifest_parity_test keeps the two in step.
 
 name = "ai_prompts"
-version = "1.0.0"
-description = "AI prompt management extension for template creation, optimization, and AI model integration through AI framework"
+version = "2.0.0"
+description = "Stored prompts with {VARIABLE} placeholders, their arguments and defaults"
 author = "ZephyrexTechnologies"
 entry_module = "EXT_AI_Prompts"
 minimum_framework_version = "0.0.0"
 
 pip_dependencies = []
 system_dependencies = []
+
+[[extension_dependencies]]
+name = "conversations"
+optional = true

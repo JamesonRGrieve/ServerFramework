@@ -1,19 +1,44 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""Prompts and their arguments: variables found, filled from values then
+defaults, missing ones reported; arguments synced from content; and who
+may do what.
+
+Holes these close: a caller could name another user as a prompt's owner
+or move a prompt to another owner or team by updating it, and anyone who
+could see a prompt (a shared or system one included) could add arguments
+to it, changing what it builds for everyone."""
+
+import pytest
 from faker import Faker
+from fastapi import HTTPException
 
 from AbstractTest import CategoryOfTest, ClassOfTestsConfig, ParentEntity
 from zephyrex.extensions.AbstractEXTTest import ExtensionServerMixin
-from zephyrex.extensions.ai_prompts.BLL_AI_Prompts import PromptArgumentManager, PromptManager
+from zephyrex.extensions.ai_prompts.BLL_AI_Prompts import (
+    PromptArgumentManager,
+    PromptManager,
+    fill,
+    variables_in,
+)
 from zephyrex.extensions.ai_prompts.EXT_AI_Prompts import EXT_AI_Prompts
+from zephyrex.lib.Environment import env
 from zephyrex.logic.AbstractBLLTest import AbstractBLLTest
 from zephyrex.logic.BLL_Auth_test import TestUserManager as CoreUserManagerTests
 
-# Set default test configuration for all test classes
 AbstractBLLTest.test_config = ClassOfTestsConfig(
     categories=[CategoryOfTest.LOGIC, CategoryOfTest.EXTENSION]
 )
 
-# Initialize faker
 faker = Faker()
+
+
+class TestVariables:
+    def test_variables_in_order_of_first_use(self):
+        content = "Hi {USER_NAME}, {ITEM_COUNT} items; bye {USER_NAME}. {lower} {X1}"
+        assert variables_in(content) == ["USER_NAME", "ITEM_COUNT", "X1"]
+
+    def test_fill_leaves_what_has_no_value(self):
+        assert fill("{A} and {B}", {"A": "one"}) == "one and {B}"
 
 
 class TestPromptManager(AbstractBLLTest, ExtensionServerMixin):
@@ -32,7 +57,7 @@ class TestPromptManager(AbstractBLLTest, ExtensionServerMixin):
         "content": "Updated: {USER_NAME}, this is the updated content.",
         "favourite": True,
     }
-    unique_fields = []  # No unique fields for prompts
+    unique_fields = []
     parent_entities = [
         ParentEntity(
             name="user",
@@ -41,190 +66,75 @@ class TestPromptManager(AbstractBLLTest, ExtensionServerMixin):
         ),
     ]
 
-    def test_create_prompt_with_variables(self, admin_a, model_registry):
-        """Test creating a prompt with variable placeholders"""
-        with self.class_under_test(
-            requester_id=admin_a.id, model_registry=model_registry
-        ) as manager:
-            prompt_content = (
-                "Hello {USER_NAME}, welcome to {PLATFORM}! Please {ACTION}."
-            )
+    def _prompt(self, manager, content):
+        return manager.create(
+            name=f"Prompt {faker.word()}", description="test", content=content
+        )
 
-            prompt = manager.create(
-                user_id=admin_a.id,
-                name="Welcome Prompt",
-                description="A welcome message with variables",
-                content=prompt_content,
-                favourite=False,
-            )
+    def test_build_from_values_then_defaults(self, admin_a, model_registry):
+        manager = PromptManager(requester_id=admin_a.id, model_registry=model_registry)
+        prompt = self._prompt(manager, "Hello {USER_NAME}, {MESSAGE_COUNT} new.")
+        manager.arguments.create(
+            prompt_id=prompt.id, name="USER_NAME", default_value="Guest"
+        )
+        manager.arguments.create(
+            prompt_id=prompt.id, name="MESSAGE_COUNT", default_value="0"
+        )
+        assert manager.build(
+            prompt.id, {"USER_NAME": "John", "MESSAGE_COUNT": "5"}
+        ) == {
+            "text": "Hello John, 5 new.",
+            "missing": [],
+        }
+        assert manager.build(prompt.id, {})["text"] == "Hello Guest, 0 new."
 
-            assert prompt is not None
-            assert prompt.name == "Welcome Prompt"
-            assert prompt.content == prompt_content
-            assert prompt.user_id == admin_a.id
+    def test_missing_variables_are_reported(self, admin_a, model_registry):
+        manager = PromptManager(requester_id=admin_a.id, model_registry=model_registry)
+        prompt = self._prompt(manager, "Required: {REQUIRED}, Optional: {OPTIONAL}")
+        manager.arguments.create(
+            prompt_id=prompt.id, name="REQUIRED", default_value=None
+        )
+        manager.arguments.create(
+            prompt_id=prompt.id, name="OPTIONAL", default_value="d"
+        )
+        built = manager.build(prompt.id, {})
+        assert built == {
+            "text": "Required: {REQUIRED}, Optional: d",
+            "missing": ["REQUIRED"],
+        }
+        assert manager.build(prompt.id, {"REQUIRED": "x"})["missing"] == []
 
-    def test_extract_variables_from_content(self, admin_a, model_registry):
-        """Test extracting variables from prompt content"""
-        with self.class_under_test(
-            requester_id=admin_a.id, model_registry=model_registry
-        ) as manager:
-            content = "Hello {USER_NAME}, your {ITEM_COUNT} items are ready. Visit {WEBSITE_URL}."
-            variables = manager.extract_variables_from_content(content)
+    def test_sync_arguments(self, admin_a, model_registry):
+        manager = PromptManager(requester_id=admin_a.id, model_registry=model_registry)
+        prompt = self._prompt(manager, "Variables: {VAR1}, {VAR2}, {VAR3}")
+        manager.arguments.create(prompt_id=prompt.id, name="VAR2", default_value="two")
+        assert manager.sync_arguments(prompt.id) == ["VAR1", "VAR3"]
+        assert manager.defaults(prompt.id) == {
+            "VAR1": None,
+            "VAR2": "two",
+            "VAR3": None,
+        }
+        assert manager.sync_arguments(prompt.id) == []
 
-            expected_vars = {"USER_NAME", "ITEM_COUNT", "WEBSITE_URL"}
-            assert set(variables) == expected_vars
+    def test_the_owner_is_the_creator(self, admin_a, admin_b, model_registry):
+        manager = PromptManager(requester_id=admin_a.id, model_registry=model_registry)
+        prompt = manager.create(
+            name="Mine", description="test", content="x", user_id=admin_b.id
+        )
+        assert prompt.user_id == admin_a.id
 
-    def test_build_prompt_with_variables(self, admin_a, model_registry):
-        """Test building a prompt with variable substitution"""
-        with self.class_under_test(
-            requester_id=admin_a.id, model_registry=model_registry
-        ) as manager:
-            # Create a prompt with variables
-            prompt = manager.create(
-                user_id=admin_a.id,
-                name="Test Build Prompt",
-                description="Prompt for testing build functionality",
-                content="Hello {USER_NAME}, you have {MESSAGE_COUNT} messages.",
-                favourite=False,
-            )
+    def test_an_update_does_not_move_a_prompt(self, admin_a, admin_b, model_registry):
+        manager = PromptManager(requester_id=admin_a.id, model_registry=model_registry)
+        prompt = self._prompt(manager, "x")
+        updated = manager.update(prompt.id, name="Renamed", user_id=admin_b.id)
+        assert updated.name == "Renamed" and updated.user_id == admin_a.id
 
-            # Create arguments for the prompt
-            manager.arguments.create(
-                prompt_id=prompt.id,
-                name="USER_NAME",
-                default_value="Guest",
-            )
-            manager.arguments.create(
-                prompt_id=prompt.id,
-                name="MESSAGE_COUNT",
-                default_value="0",
-            )
-
-            # Test building with provided variables
-            built_prompt = manager.build(
-                prompt_id=prompt.id, USER_NAME="John", MESSAGE_COUNT="5"
-            )
-
-            assert built_prompt == "Hello John, you have 5 messages."
-
-            # Test building with default values
-            built_prompt_default = manager.build(prompt_id=prompt.id)
-            assert built_prompt_default == "Hello Guest, you have 0 messages."
-
-    def test_validate_prompt_variables(self, admin_a, model_registry):
-        """Test validating prompt variables"""
-        with self.class_under_test(
-            requester_id=admin_a.id, model_registry=model_registry
-        ) as manager:
-            # Create a prompt
-            prompt = manager.create(
-                user_id=admin_a.id,
-                name="Validation Test Prompt",
-                description="Prompt for testing validation",
-                content="Required: {REQUIRED_VAR}, Optional: {OPTIONAL_VAR}",
-                favourite=False,
-            )
-
-            # Create one required argument (no default) and one optional (with default)
-            manager.arguments.create(
-                prompt_id=prompt.id,
-                name="REQUIRED_VAR",
-                default_value=None,  # Required
-            )
-            manager.arguments.create(
-                prompt_id=prompt.id,
-                name="OPTIONAL_VAR",
-                default_value="default_value",  # Optional
-            )
-
-            # Test validation with missing required variable
-            errors = manager.validate_prompt_variables(prompt_id=prompt.id)
-            assert "REQUIRED_VAR" in errors
-            assert "OPTIONAL_VAR" not in errors
-
-            # Test validation with all variables provided
-            errors_complete = manager.validate_prompt_variables(
-                prompt_id=prompt.id, REQUIRED_VAR="provided_value"
-            )
-            assert len(errors_complete) == 0
-
-    def test_sync_arguments_from_content(self, admin_a, model_registry):
-        """Test syncing arguments based on content variables"""
-        with self.class_under_test(
-            requester_id=admin_a.id, model_registry=model_registry
-        ) as manager:
-            # Create a prompt with variables in content
-            prompt = manager.create(
-                user_id=admin_a.id,
-                name="Sync Test Prompt",
-                description="Prompt for testing argument sync",
-                content="Variables: {VAR1}, {VAR2}, {VAR3}",
-                favourite=False,
-            )
-
-            # Sync arguments from content
-            added_vars = manager.sync_arguments_from_content(prompt_id=prompt.id)
-
-            assert len(added_vars) == 3
-            assert set(added_vars) == {"VAR1", "VAR2", "VAR3"}
-
-            # Verify arguments were created
-            arguments = manager.arguments.list(prompt_id=prompt.id)
-            arg_names = {
-                arg.name if hasattr(arg, "name") else arg["name"] for arg in arguments
-            }
-            assert arg_names == {"VAR1", "VAR2", "VAR3"}
-
-    def test_custom_route_build_prompt(self, admin_a, model_registry):
-        """Test the custom route for building prompts"""
-        with self.class_under_test(
-            requester_id=admin_a.id, model_registry=model_registry
-        ) as manager:
-            # Create a prompt
-            prompt = manager.create(
-                user_id=admin_a.id,
-                name="Custom Route Test",
-                description="Testing custom route",
-                content="Hello {NAME}!",
-                favourite=False,
-            )
-
-            # Create argument
-            manager.arguments.create(
-                prompt_id=prompt.id,
-                name="NAME",
-                default_value="World",
-            )
-
-            # Test custom route
-            result = manager.build(prompt_id=prompt.id, NAME="Custom Route")
-
-            assert result == "Hello Custom Route!"
-
-    def test_custom_route_validate_prompt_variables(self, admin_a, model_registry):
-        """Test the custom route for validating prompt variables"""
-        with self.class_under_test(
-            requester_id=admin_a.id, model_registry=model_registry
-        ) as manager:
-            # Create a prompt
-            prompt = manager.create(
-                user_id=admin_a.id,
-                name="Custom Validation Test",
-                description="Testing custom validation route",
-                content="Required: {REQUIRED}",
-                favourite=False,
-            )
-
-            # Create required argument
-            manager.arguments.create(
-                prompt_id=prompt.id,
-                name="REQUIRED",
-                default_value=None,
-            )
-
-            # Test custom route validation
-            errors = manager.validate_prompt_variables(prompt_id=prompt.id)
-            assert "REQUIRED" in errors
+    def test_root_may_name_the_owner(self, admin_a, model_registry):
+        root = PromptManager(requester_id=env("ROOT_ID"), model_registry=model_registry)
+        prompt = root.create(
+            name="For A", description="test", content="x", user_id=admin_a.id
+        )
+        assert prompt.user_id == admin_a.id
 
 
 class TestPromptArgumentManager(AbstractBLLTest, ExtensionServerMixin):
@@ -239,7 +149,7 @@ class TestPromptArgumentManager(AbstractBLLTest, ExtensionServerMixin):
         "name": "UPDATED_ARG",
         "default_value": "updated_value",
     }
-    unique_fields = []  # No unique fields for arguments
+    unique_fields = []
     parent_entities = [
         ParentEntity(
             name="prompt",
@@ -248,60 +158,59 @@ class TestPromptArgumentManager(AbstractBLLTest, ExtensionServerMixin):
         ),
     ]
 
-    def test_create_argument_with_default(self, admin_a, model_registry):
-        """Test creating an argument with a default value"""
-        # Create a prompt first
-        with PromptManager(
+    def test_an_argument_with_and_without_a_default(self, admin_a, model_registry):
+        prompt = PromptManager(
             requester_id=admin_a.id, model_registry=model_registry
-        ) as prompt_manager:
-            prompt = prompt_manager.create(
-                user_id=admin_a.id,
-                name="Test Prompt for Args",
-                description="Testing argument creation",
-                content="Hello {TEST_VAR}!",
-                favourite=False,
-            )
-
-        # Create an argument
-        with self.class_under_test(
+        ).create(
+            name="Args", description="test", content="Hello {TEST_VAR} {REQUIRED_VAR}!"
+        )
+        manager = PromptArgumentManager(
             requester_id=admin_a.id, model_registry=model_registry
-        ) as manager:
-            argument = manager.create(
-                prompt_id=prompt.id,
-                name="TEST_VAR",
-                default_value="World",
-            )
+        )
+        with_default = manager.create(
+            prompt_id=prompt.id, name="TEST_VAR", default_value="World"
+        )
+        required = manager.create(prompt_id=prompt.id, name="REQUIRED_VAR")
+        assert with_default.default_value == "World"
+        assert required.default_value is None
+        assert {with_default.prompt_id, required.prompt_id} == {prompt.id}
 
-            assert argument is not None
-            assert argument.name == "TEST_VAR"
-            assert argument.default_value == "World"
-            assert argument.prompt_id == prompt.id
-
-    def test_create_required_argument(self, admin_a, model_registry):
-        """Test creating a required argument (no default value)"""
-        # Create a prompt first
-        with PromptManager(
+    def test_an_argument_name_is_a_variable_name(self, admin_a, model_registry):
+        prompt = PromptManager(
             requester_id=admin_a.id, model_registry=model_registry
-        ) as prompt_manager:
-            prompt = prompt_manager.create(
-                user_id=admin_a.id,
-                name="Test Prompt for Required Args",
-                description="Testing required argument creation",
-                content="Hello {REQUIRED_VAR}!",
-                favourite=False,
-            )
-
-        # Create a required argument
-        with self.class_under_test(
+        ).create(name="Names", description="test", content="x")
+        manager = PromptArgumentManager(
             requester_id=admin_a.id, model_registry=model_registry
-        ) as manager:
-            argument = manager.create(
-                prompt_id=prompt.id,
-                name="REQUIRED_VAR",
-                default_value=None,  # No default = required
-            )
+        )
+        with pytest.raises(HTTPException) as refused:
+            manager.create(prompt_id=prompt.id, name="not a variable")
+        assert refused.value.status_code == 422
 
-            assert argument is not None
-            assert argument.name == "REQUIRED_VAR"
-            assert argument.default_value is None
-            assert argument.prompt_id == prompt.id
+    def test_another_users_prompt_takes_no_arguments_from_you(
+        self, admin_a, admin_b, model_registry
+    ):
+        prompt = PromptManager(
+            requester_id=admin_a.id, model_registry=model_registry
+        ).create(name="A's", description="test", content="{SECRET}")
+        with pytest.raises(HTTPException):
+            PromptArgumentManager(
+                requester_id=admin_b.id, model_registry=model_registry
+            ).create(prompt_id=prompt.id, name="SECRET", default_value="injected")
+
+    def test_a_system_prompt_takes_no_arguments_from_users(
+        self, admin_a, model_registry
+    ):
+        """A prompt every user can see (owned by SYSTEM) is still not theirs
+        to change."""
+        prompt = PromptManager(
+            requester_id=env("SYSTEM_ID"), model_registry=model_registry
+        ).create(
+            name="Shared",
+            description="test",
+            content="{TONE}",
+            user_id=env("SYSTEM_ID"),
+        )
+        with pytest.raises(HTTPException):
+            PromptArgumentManager(
+                requester_id=admin_a.id, model_registry=model_registry
+            ).create(prompt_id=prompt.id, name="TONE", default_value="rude")

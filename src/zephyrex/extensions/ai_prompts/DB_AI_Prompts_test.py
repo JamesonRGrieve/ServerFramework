@@ -3,7 +3,10 @@ from faker import Faker
 from AbstractTest import CategoryOfTest, ClassOfTestsConfig, ParentEntity
 from zephyrex.database.AbstractDBTest import AbstractDBTest
 from zephyrex.extensions.AbstractEXTTest import ExtensionServerMixin
-from zephyrex.extensions.ai_prompts.BLL_AI_Prompts import PromptArgumentModel, PromptModel
+from zephyrex.extensions.ai_prompts.BLL_AI_Prompts import (
+    PromptArgumentModel,
+    PromptModel,
+)
 from zephyrex.extensions.ai_prompts.EXT_AI_Prompts import EXT_AI_Prompts
 
 # Set default test configuration for all test classes
