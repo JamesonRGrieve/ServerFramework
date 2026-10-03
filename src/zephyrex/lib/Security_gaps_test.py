@@ -2367,7 +2367,7 @@ class TestDeepAuditOAuthTiming:
         under which module name) the class was loaded in this worker."""
         from pathlib import Path
 
-        import zephyrex.extensions.auth_oauth2_client as package
+        import zephyrex.extensions.oauth_provider as package
 
         sources = [
             path

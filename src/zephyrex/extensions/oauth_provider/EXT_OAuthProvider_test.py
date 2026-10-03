@@ -1,174 +1,114 @@
-"""Tests for the oauth_provider extension.
-
-Covers the constant-time comparison + hashing decisions in the
-client/code/token managers, plus the security-posture choices: no
-raw client_secret_hash on the Create body, PKCE enforcement on public
-clients, and PKCE verification on redemption.
-"""
-
-import os
-
-os.environ.setdefault("JWT_SECRET", "x" * 32)
-os.environ.setdefault("PYTEST_CURRENT_TEST", "oauth_provider_test")
-
-
-import base64
-import hashlib
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""The extension's abilities act for the user ``requester_id`` names, under
+that user's permissions; the operator alone rotates the signing keys."""
 
 import pytest
-from pydantic import ValidationError
+from fastapi import HTTPException
 
+from zephyrex.extensions.AbstractEXTTest import ExtensionServerMixin
+from zephyrex.extensions.oauth_provider import Config
 from zephyrex.extensions.oauth_provider.BLL_OAuthProvider import (
-    OAuth2AuthCodeManager,
-    OAuth2AuthCodeModel,
-    OAuth2ClientManager,
-    OAuth2ClientModel,
-    OAuth2ProviderManager,
-    OAuth2TokenManager,
-    OAuth2TokenModel,
-    _hash_secret,
-    _token_fingerprint,
-    _verify_pkce,
+    OauthClientManager,
+    OauthGrantManager,
 )
-from zephyrex.extensions.oauth_provider.EXT_OAuthProvider import (
-    EXT_OAuthProvider,
-)
-from zephyrex.pydantic2.fastapi import RouteType
+from zephyrex.extensions.oauth_provider.EXT_OAuthProvider import EXT_OAuthProvider
+from zephyrex.lib.Environment import env
+from zephyrex.pydantic2.registry import ModelRegistry
+
+REDIRECT = "https://rp.example.test/callback"
 
 
-class TestCanonicalWiring:
-    def test_client_round_trip(self):
-        assert OAuth2ClientManager._model is OAuth2ClientModel
+class TestAbilities(ExtensionServerMixin):
+    extension_class = EXT_OAuthProvider
 
-    def test_authcode_round_trip(self):
-        assert OAuth2AuthCodeManager._model is OAuth2AuthCodeModel
+    @pytest.fixture(autouse=True)
+    def configured(self, server, set_env, monkeypatch):
+        """This module's app is the one the abilities act in (each test
+        module builds its own app in the one process)."""
+        set_env(Config.ISSUER, "https://id.example.test")
+        set_env(Config.CONSENT_URL, "https://ui.example.test/consent")
+        registry = server.app.state.model_registry
+        monkeypatch.setattr(
+            ModelRegistry, "attached", classmethod(lambda cls: registry)
+        )
 
-    def test_token_round_trip(self):
-        assert OAuth2TokenManager._model is OAuth2TokenModel
-
-    def test_extension_metadata(self):
-        assert EXT_OAuthProvider.name == "oauth_provider"
-        abilities = EXT_OAuthProvider.get_abilities()
-        for expected in (
+    def test_abilities_are_declared(self):
+        assert EXT_OAuthProvider.get_abilities() >= {
             "oauth_provider_register_client",
-            "oauth_provider_authorize",
-            "oauth_provider_token",
-            "oauth_provider_introspect",
-            "oauth_provider_revoke",
-        ):
-            assert expected in abilities
+            "oauth_provider_list_grants",
+            "oauth_provider_revoke_grant",
+            "oauth_provider_rotate_signing_keys",
+        }
 
-
-class TestHashing:
-    def test_hash_secret_produces_bcrypt_hash(self):
-        import bcrypt
-        hashed = _hash_secret("abc", "salt-1")
-        assert hashed.startswith("$2b$")
-        assert bcrypt.checkpw(("salt-1" + "abc").encode("utf-8"), hashed.encode("utf-8"))
-
-    def test_hash_secret_is_value_dependent(self):
-        import bcrypt
-        h1 = _hash_secret("abc", "s")
-        assert not bcrypt.checkpw(("s" + "def").encode("utf-8"), h1.encode("utf-8"))
-
-    def test_hash_secret_verifies_correctly(self):
-        import bcrypt
-        hashed = _hash_secret("abc", "s")
-        assert bcrypt.checkpw(("s" + "abc").encode("utf-8"), hashed.encode("utf-8"))
-
-
-class TestTokenFingerprint:
-    def test_fingerprint_changes_with_input(self):
-        assert _token_fingerprint("a") != _token_fingerprint("b")
-
-    def test_fingerprint_stable(self):
-        assert _token_fingerprint("same") == _token_fingerprint("same")
-
-    def test_fingerprint_length(self):
-        # 32-char truncated hex digest
-        assert len(_token_fingerprint("any")) == 32
-
-
-class TestLifecycle:
-    def test_on_initialize_returns_true(self):
-        assert EXT_OAuthProvider.on_initialize() is True
-
-
-class TestSecurityPosture:
-    def test_create_schema_does_not_expose_secret_hash(self):
-        # The Create schema must not let a client write the hash directly.
-        fields = set(OAuth2ClientModel.Create.model_fields.keys())
-        assert "client_secret_hash" not in fields
-        assert "client_secret_salt" not in fields
-        assert "client_id" not in fields
-        assert "owner_user_id" not in fields
-
-    def test_authcode_create_schema_is_minimal(self):
-        # No hash, salt, fingerprint, or expiry overrides on the public body.
-        fields = set(OAuth2AuthCodeModel.Create.model_fields.keys())
-        assert "code_hash" not in fields
-        assert "code_salt" not in fields
-        assert "code_fingerprint" not in fields
-        assert "expires_at" not in fields
-        assert "is_used" not in fields
-
-    def test_token_create_schema_is_minimal(self):
-        fields = set(OAuth2TokenModel.Create.model_fields.keys())
-        assert "token_hash" not in fields
-        assert "token_salt" not in fields
-        assert "token_fingerprint" not in fields
-        assert "is_revoked" not in fields
-
-    def test_client_manager_routes_exclude_create_and_update(self):
-        assert RouteType.CREATE not in (OAuth2ClientManager.routes_to_register or [])
-        assert RouteType.UPDATE not in (OAuth2ClientManager.routes_to_register or [])
-
-    def test_authcode_and_token_managers_have_no_crud_routes(self):
-        assert OAuth2AuthCodeManager.routes_to_register == []
-        assert OAuth2TokenManager.routes_to_register == []
-
-    def test_provider_manager_advertises_custom_routes(self):
-        from zephyrex.lib.CustomRoute import iter_custom_routes
-
-        names = [name for name, _ in iter_custom_routes(OAuth2ProviderManager)]
-        for expected in (
-            "authorize_route",
-            "token_route",
-            "introspect_route",
-            "revoke_route",
-        ):
-            assert expected in names
-
-
-class TestPKCE:
-    def test_s256_match_succeeds(self):
-        verifier = "verifier-string-that-is-long-enough-for-rfc"
-        challenge = (
-            base64.urlsafe_b64encode(hashlib.sha256(verifier.encode("ascii")).digest())
-            .rstrip(b"=")
-            .decode("ascii")
+    async def test_register_client_for_the_requester(self, server, admin_a):
+        registered = await EXT_OAuthProvider.register_client(
+            admin_a.id, "Agent App", [REDIRECT], allowed_scopes=["openid"]
         )
-        assert _verify_pkce(verifier, challenge, "S256") is True
+        assert registered["client_secret"].startswith("zxcs_")
+        owned = OauthClientManager(
+            requester_id=admin_a.id, model_registry=server.app.state.model_registry
+        ).get(id=registered["id"])
+        assert owned.user_id == admin_a.id
 
-    def test_s256_mismatch_fails(self):
-        challenge = (
-            base64.urlsafe_b64encode(hashlib.sha256(b"different").digest())
-            .rstrip(b"=")
-            .decode("ascii")
+    async def test_an_ability_needs_a_requester(self, server):
+        with pytest.raises(HTTPException) as refused:
+            await EXT_OAuthProvider.list_grants("")
+        assert refused.value.status_code == 400
+
+    async def test_grants_are_the_users_own(self, server, admin_a, user_b):
+        registered = await EXT_OAuthProvider.register_client(
+            admin_a.id, "Consented App", [REDIRECT], allowed_scopes=["openid"]
         )
-        assert _verify_pkce("not-the-verifier", challenge, "S256") is False
+        registry = server.app.state.model_registry
+        client = OauthClientManager(
+            requester_id=admin_a.id, model_registry=registry
+        ).get(id=registered["id"])
+        grant = OauthGrantManager(
+            requester_id=user_b.id, model_registry=registry
+        ).consent(client, ["openid"])
+        mine = await EXT_OAuthProvider.list_grants(user_b.id)
+        assert [g["id"] for g in mine if g["client_id"] == client.client_id] == [
+            grant.id
+        ]
+        theirs = await EXT_OAuthProvider.list_grants(admin_a.id)
+        assert grant.id not in [g["id"] for g in theirs]
+        with pytest.raises(HTTPException) as refused:
+            await EXT_OAuthProvider.revoke_grant(admin_a.id, grant.id)
+        assert refused.value.status_code in (403, 404)
+        assert (await EXT_OAuthProvider.revoke_grant(user_b.id, grant.id))["revoked"]
+        assert grant.id not in [
+            g["id"] for g in await EXT_OAuthProvider.list_grants(user_b.id)
+        ]
 
-    def test_plain_match(self):
-        assert _verify_pkce("plain-secret", "plain-secret", "PLAIN") is True
+    async def test_a_grant_cannot_be_made_for_someone_else(
+        self, server, admin_a, user_b
+    ):
+        registry = server.app.state.model_registry
+        created = OauthGrantManager(
+            requester_id=user_b.id, model_registry=registry
+        ).create(
+            entities=[
+                {
+                    "client_id": "zxc_x",
+                    "client_name": "x",
+                    "scopes": "openid",
+                    "user_id": admin_a.id,
+                }
+            ]
+        )
+        assert [grant.user_id for grant in created] == [user_b.id]
 
-    def test_plain_mismatch(self):
-        assert _verify_pkce("a", "b", "PLAIN") is False
+    async def test_only_the_operator_rotates_keys(self, server, admin_a):
+        with pytest.raises(HTTPException) as refused:
+            await EXT_OAuthProvider.rotate_signing_keys(admin_a.id)
+        assert refused.value.status_code == 403
+        rotated = await EXT_OAuthProvider.rotate_signing_keys(env("ROOT_ID"))
+        assert len(rotated["kids"]) == 1
 
-    def test_unknown_method_rejected(self):
-        assert _verify_pkce("v", "c", "MD5") is False
-
-    def test_no_challenge_no_verifier_passes(self):
-        assert _verify_pkce(None, None, None) is True
-
-    def test_challenge_without_verifier_fails(self):
-        assert _verify_pkce(None, "challenge", "S256") is False
+    def test_validate_config(self, set_env):
+        assert EXT_OAuthProvider.validate_config() == []
+        set_env(Config.ISSUER, "http://id.example.test")
+        set_env(Config.CONSENT_URL, "")
+        issues = EXT_OAuthProvider.validate_config()
+        assert any(Config.ISSUER in issue for issue in issues)
+        assert any(Config.CONSENT_URL in issue for issue in issues)

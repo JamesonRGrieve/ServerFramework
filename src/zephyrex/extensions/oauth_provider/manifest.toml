@@ -5,8 +5,8 @@
 # Manifest_parity_test keeps the two in step.
 
 name = "oauth_provider"
-version = "1.0.0"
-description = "Run this server as an OAuth2 issuer (auth code, refresh token grants)."
+version = "2.0.0"
+description = "OAuth 2.0 authorization server and OpenID Connect provider (authorization code flow with PKCE, RFC 9700)"
 author = "ZephyrexTechnologies"
 entry_module = "EXT_OAuthProvider"
 minimum_framework_version = "0.0.0"
