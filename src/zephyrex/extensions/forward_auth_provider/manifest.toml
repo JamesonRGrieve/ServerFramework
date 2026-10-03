@@ -5,8 +5,8 @@
 # Manifest_parity_test keeps the two in step.
 
 name = "forward_auth_provider"
-version = "1.0.0"
-description = "Serve as a forward auth endpoint for Traefik/nginx/Caddy."
+version = "2.0.0"
+description = "Serve as the forward-auth endpoint for Traefik, nginx and Caddy"
 author = "ZephyrexTechnologies"
 entry_module = "EXT_ForwardAuthProvider"
 minimum_framework_version = "0.0.0"
