@@ -1,70 +1,85 @@
-"""WebAuthn consumer extension manifest.
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""Sign in to this server with passkeys and security keys: this server is
+the WebAuthn Relying Party for its own users (see BLL_WebAuthnConsumer).
 
-Authenticate local users via WebAuthn/FIDO2/Passkeys. Users register
-hardware security keys or platform authenticators (Touch ID, Windows Hello)
-and authenticate with cryptographic challenge-response instead of passwords.
+The sibling ``webauthn_provider`` extension serves WebAuthn to other
+applications' users instead.
 
-The complementary ``webauthn_provider`` extension implements the *server*
-side (this server acts as a WebAuthn relying party for third-party consumers).
-"""
+Abilities act for the user named by ``requester_id``, on that user's own
+credentials."""
 
 from typing import Any, ClassVar, Dict, List, Set
 
-from zephyrex.extensions.AbstractExtensionProvider import AbstractStaticExtension
-from zephyrex.lib.Dependencies import Dependencies, PIP_Dependency
-from zephyrex.lib.Logging import logger
+from zephyrex.extensions.AbstractExtensionProvider import (
+    AbstractStaticExtension,
+    ability,
+)
+from zephyrex.extensions.webauthn_consumer.BLL_WebAuthnConsumer import (
+    WebAuthnCredentialManager,
+)
+from zephyrex.extensions.webauthn_consumer.RelyingParty import (
+    SETTINGS,
+    config_issues,
+)
+from zephyrex.lib.Dependencies import Dependencies, EXT_Dependency, PIP_Dependency
+
+
+def _row(model: Any) -> Dict[str, Any]:
+    dumped: Dict[str, Any] = model.model_dump(mode="json")
+    return dumped
 
 
 class EXT_WebAuthnConsumer(AbstractStaticExtension):
     name: ClassVar[str] = "webauthn_consumer"
-    version: ClassVar[str] = "1.0.0"
-    description: ClassVar[str] = "Authenticate users via WebAuthn/FIDO2/Passkeys."
+    version: ClassVar[str] = "2.0.0"
+    description: ClassVar[str] = "Sign in with passkeys and security keys (WebAuthn)"
 
-    _env: ClassVar[Dict[str, Any]] = {
-        "WEBAUTHN_CONSUMER_RP_ID": "",
-        "WEBAUTHN_CONSUMER_RP_NAME": "",
-        "WEBAUTHN_CONSUMER_ORIGIN": "",
-        "WEBAUTHN_CONSUMER_ATTESTATION": "none",
-        "WEBAUTHN_CONSUMER_USER_VERIFICATION": "preferred",
-        "WEBAUTHN_CONSUMER_TIMEOUT_MS": "60000",
-    }
+    _env: ClassVar[Dict[str, Any]] = dict(SETTINGS)
 
     dependencies: ClassVar[Dependencies] = Dependencies(
         [
             PIP_Dependency(
-                name="fido2",
-                friendly_name="FIDO2/WebAuthn library",
-                semver=">=1.1.0",
-                reason="WebAuthn credential registration and authentication",
+                name="webauthn",
+                friendly_name="py_webauthn",
+                semver=">=3.0.1",
+                reason="WebAuthn ceremony options, attestation and assertion checks",
+            ),
+            EXT_Dependency(
+                name="auth_session",
+                friendly_name="Sessions",
+                reason="A passkey sign-in issues a revocable session",
             ),
         ]
     )
 
     _abilities: ClassVar[Set[str]] = {
-        "webauthn_consumer_register",
-        "webauthn_consumer_authenticate",
+        "webauthn_consumer_list_credentials",
+        "webauthn_consumer_remove_credential",
     }
-    _providers: ClassVar[List] = []
-    extension_dependencies: ClassVar[List[str]] = ["auth_session"]
 
     @classmethod
-    def on_initialize(cls) -> bool:
-        from zephyrex.extensions.webauthn_consumer import (  # noqa: F401
-            BLL_WebAuthnConsumer,
+    def credentials(cls, requester_id: str) -> WebAuthnCredentialManager:
+        manager: WebAuthnCredentialManager = cls.as_requester(
+            WebAuthnCredentialManager, requester_id
         )
+        return manager
 
-        logger.debug("webauthn_consumer initialized")
-        return True
+    @classmethod
+    @ability("webauthn_consumer_list_credentials")
+    async def list_credentials(cls, requester_id: str) -> List[Dict[str, Any]]:
+        """The user's registered passkeys and security keys."""
+        return [_row(c) for c in cls.credentials(requester_id).list()]
+
+    @classmethod
+    @ability("webauthn_consumer_remove_credential")
+    async def remove_credential(
+        cls, requester_id: str, record_id: str
+    ) -> Dict[str, Any]:
+        """Remove one of the user's credentials (by its record id); it no
+        longer signs in."""
+        cls.credentials(requester_id).delete(id=record_id)
+        return {"removed": record_id}
 
     @classmethod
     def validate_config(cls) -> List[str]:
-        from zephyrex.lib.Environment import env as _env
-
-        issues: List[str] = []
-        if not _env("WEBAUTHN_CONSUMER_RP_ID"):
-            issues.append("WEBAUTHN_CONSUMER_RP_ID is unset; relying party ID required")
-        if not _env("WEBAUTHN_CONSUMER_ORIGIN"):
-            issues.append(
-                "WEBAUTHN_CONSUMER_ORIGIN is unset; origin validation will fail"
-            )
-        return issues
+        return config_issues()
