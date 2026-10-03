@@ -63,7 +63,10 @@ account.
 provider (the last record when the provider cannot answer in time). Users
 with none, ROOT and SYSTEM pass; `DISABLE_SUBSCRIPTION_VALIDATION=true`
 turns it off. `UserManager.login` is a static method that manager hooks
-cannot reach, so core's login calls it through a login hook.
+cannot reach, so payment registers it as its login check
+(`register_login_check("payment", …)`), which core runs on every sign-in
+(password, MFA, every sign-in extension and grant) in an app that loaded
+payment, before any session is issued.
 
 ## Tests
 

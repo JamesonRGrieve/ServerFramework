@@ -3,6 +3,7 @@
 login check on subscriptions: real app, real database, Stripe answered by
 a local server."""
 
+import base64
 import json
 import uuid
 from datetime import UTC, datetime
@@ -13,6 +14,7 @@ from fastapi import HTTPException
 
 from zephyrex.extensions.AbstractEXTTest import ExtensionServerMixin
 from zephyrex.extensions.payment.BLL_Payment import (
+    LINK_FIELDS,
     PaymentManager,
     PaymentSubscriptionManager,
     link_customer,
@@ -27,7 +29,8 @@ from zephyrex.extensions.payment.EXT_Payment_test import (
 )
 from zephyrex.extensions.payment.PRV_Stripe_Payment import PRV_Stripe_Payment
 from zephyrex.lib.Environment import env
-from zephyrex.logic.BLL_Auth import UserManager
+from zephyrex.logic.BLL_Auth import UserManager, UserModel
+from zephyrex.testing.factories import TEST_PASSWORD
 
 
 def auth(user: Any) -> Dict[str, str]:
@@ -88,9 +91,15 @@ class TestPaymentRecords(ExtensionServerMixin):
         )
         assert response.status_code == 200, response.text
 
-    def test_a_registered_payment_id_is_no_link(self, server, registry):
-        """Registration still stores ``external_payment_id`` (core lists it);
-        without the account the server records, it links nothing."""
+    @pytest.mark.parametrize("field", LINK_FIELDS)
+    def test_a_registration_naming_a_customer_stores_nothing(
+        self, server, registry, field
+    ):
+        """The customer link is the server's to write. Registration used to
+        accept ``external_payment_id`` (core listed it as a registration
+        field) and store it on the new row; this test used to assert only
+        that the stored id linked nothing. Naming either link field now
+        refuses the registration, and no account is made."""
         email = f"reg_{uuid.uuid4().hex[:8]}@example.com"
         response = server.post(
             "/v1/user",
@@ -98,9 +107,27 @@ class TestPaymentRecords(ExtensionServerMixin):
                 "user": {
                     "email": email,
                     "password": "Str0ng!Passw0rd#",
-                    "external_payment_id": "cus_victim",
+                    field: "cus_victim",
                 }
             },
+        )
+        assert response.status_code == 422, response.text
+        assert field in response.text
+        users = UserModel.DB(registry.DB.manager.Base)
+        assert not users.exists(
+            requester_id=env("ROOT_ID"), model_registry=registry, email=email
+        )
+        assert not users.exists(
+            requester_id=env("ROOT_ID"),
+            model_registry=registry,
+            filters=[getattr(users, field) == "cus_victim"],
+        )
+
+    def test_a_registration_without_a_customer_still_registers(self, server, registry):
+        email = f"reg_{uuid.uuid4().hex[:8]}@example.com"
+        response = server.post(
+            "/v1/user",
+            json={"user": {"email": email, "password": "Str0ng!Passw0rd#"}},
         )
         assert response.status_code == 201, response.text
         user = UserManager(model_registry=registry, requester_id=env("ROOT_ID")).get(
@@ -212,6 +239,31 @@ class TestPaymentRecords(ExtensionServerMixin):
             model_registry=registry, requester_id=env("ROOT_ID")
         ).get(id=record.id)
         assert mirrored.status == "canceled" and not mirrored.active
+
+    def password_login(self, server, user: Any) -> Any:
+        credentials = base64.b64encode(f"{user.email}:{TEST_PASSWORD}".encode())
+        return server.post(
+            "/v1/user/authorize",
+            headers={"Authorization": f"Basic {credentials.decode()}"},
+        )
+
+    def test_a_lapsed_subscription_refuses_password_login(
+        self, server, payer, stripe_subscription
+    ):
+        """Nothing called the subscription check: ``UserManager.login`` is a
+        static method no manager hook reaches, so a lapsed subscriber signed
+        in. It now runs as payment's login check, before any session."""
+        stripe_subscription(payer, "canceled")
+        refused = self.password_login(server, payer)
+        assert refused.status_code == 402, refused.text
+        assert "token" not in refused.json()
+        assert "set-cookie" not in refused.headers
+
+    def test_an_active_subscription_signs_in(self, server, payer, stripe_subscription):
+        stripe_subscription(payer, "active")
+        signed_in = self.password_login(server, payer)
+        assert signed_in.status_code == 200, signed_in.text
+        assert signed_in.json()["token"]
 
     def test_an_unreachable_provider_keeps_the_last_record(
         self, server, registry, payer, stripe_subscription

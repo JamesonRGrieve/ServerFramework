@@ -53,7 +53,7 @@ from zephyrex.logic.AbstractLogicManager import (
     _cache_sync_run,
     hook_bll,
 )
-from zephyrex.logic.BLL_Auth import UserManager, UserModel
+from zephyrex.logic.BLL_Auth import UserManager, UserModel, register_login_check
 from zephyrex.pydantic2.fastapi import RouterMixin
 from zephyrex.pydantic2.fastapi.types import RouteType
 from zephyrex.pydantic2.registry import BaseModel
@@ -404,7 +404,8 @@ def require_active_subscription(user_id: str, model_registry: Any) -> None:
     login makes once the credentials are proven. Users with none, ROOT and
     SYSTEM are not checked; DISABLE_SUBSCRIPTION_VALIDATION=true turns it
     off. ``UserManager.login`` is a static method, which manager hooks
-    cannot reach, so core calls this through its login hook."""
+    cannot reach, so core runs this as payment's login check
+    (``register_login_check``) before it issues any session."""
     if str(env("DISABLE_SUBSCRIPTION_VALIDATION") or "").lower() == "true":
         return
     if not user_id or _server_side(str(user_id)):
@@ -424,3 +425,6 @@ def require_active_subscription(user_id: str, model_registry: Any) -> None:
             status_code=402,
             detail="Your subscription is inactive. Please update your payment method.",
         )
+
+
+register_login_check("payment", require_active_subscription)

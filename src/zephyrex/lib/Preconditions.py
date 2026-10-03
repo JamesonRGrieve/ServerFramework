@@ -257,7 +257,10 @@ def expect_route_version(
     """Bind a custom route's If-Match to the record of the route's own
     manager that its path names, for any write the route makes to it. Reads
     bind nothing; a save (PUT/PATCH/DELETE) is held to IF_MATCH_REQUIRED, an
-    action (POST) only to the If-Match it sends."""
+    action (POST) only to the If-Match it sends. A path that names no single
+    record (several ids, or none, as the requester's own ``/v1/user``)
+    leaves the binding to the route: :func:`expect_route_record` for the
+    record it writes, :func:`check_route_record` for one it acts for."""
     verb = method.upper()
     if verb not in _WRITE_METHODS:
         yield
@@ -265,8 +268,8 @@ def expect_route_version(
     target = route_target_id(path_params)
     if target is None:
         # The path names its record by more than one id (a membership is
-        # /{team_id}/user/{user_id}): the route resolves it and binds it with
-        # expect_route_record.
+        # /{team_id}/user/{user_id}) or by none (the requester's own
+        # account): the route resolves it and binds it itself.
         token = _route_if_match.set(_RouteIfMatch(if_match, verb in _SAVE_METHODS))
         try:
             yield
@@ -303,6 +306,26 @@ def expect_route_record(manager: Any, entity_id: str) -> Iterator[None]:
         manager, {entity_id: pending.header}, may_require=pending.may_require
     ):
         yield
+
+
+def check_route_record(manager: Any, entity_id: str) -> None:
+    """Hold a custom route that acts for a record without writing its row
+    to the request's If-Match on that record, checked now: a password
+    change is the account's, but it writes the account's credentials. 412
+    with the record as the requester may see it when it has moved on, 428
+    when one is required and the request sent none. Outside a route that
+    recorded an If-Match it checks nothing."""
+    pending = _route_if_match.get()
+    if pending is None:
+        return
+    if_match = _parse(pending.header)
+    if if_match is None:
+        if pending.may_require and if_match_required():
+            raise PreconditionRequired()
+        return
+    current = manager.visible_current(entity_id)
+    if not if_match.matches(current):
+        raise PreconditionFailed(current)
 
 
 def expected_version(table: str, entity_id: str) -> Tuple[bool, Optional[IfMatch]]:

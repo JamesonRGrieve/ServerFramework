@@ -9,6 +9,7 @@ from sqlalchemy import (  # Import inspect and Integer
     exists,
     false,
     func,
+    literal,
     or_,
     select,
     true,
@@ -29,6 +30,10 @@ T = TypeVar("T")
 ROOT_ID = env("ROOT_ID")
 SYSTEM_ID = env("SYSTEM_ID")
 TEMPLATE_ID = env("TEMPLATE_ID")
+
+# The accounts table, whose read rule is its own (see the users rule in
+# generate_permission_filter).
+USERS_TABLE = "users"
 
 
 def _active(model: Any) -> Any:
@@ -877,9 +882,18 @@ def check_permission(
                 )
             return (PermissionResult.GRANTED, None)
 
+        # A user record's visibility is the users rule in
+        # generate_permission_filter, whoever created it. Each account is
+        # stamped as its own creator, so the grants below made the SYSTEM
+        # and template accounts readable to anyone, as they would any user
+        # row recorded as SYSTEM's; the filter excludes users from them too.
+        creator_grants_apply = record_db_cls.__tablename__ != USERS_TABLE
+
         # Check for records created by SYSTEM_ID - all users can view, only ROOT_ID and SYSTEM_ID can modify
-        if hasattr(record, "created_by_user_id") and record.created_by_user_id == env(
-            "SYSTEM_ID"
+        if (
+            creator_grants_apply
+            and hasattr(record, "created_by_user_id")
+            and record.created_by_user_id == env("SYSTEM_ID")
         ):
             # For view operations, allow access
             if required_level == PermissionType.VIEW:
@@ -893,8 +907,10 @@ def check_permission(
             return (PermissionResult.GRANTED, None)
 
         # Check for records created by TEMPLATE_ID
-        if hasattr(record, "created_by_user_id") and record.created_by_user_id == env(
-            "TEMPLATE_ID"
+        if (
+            creator_grants_apply
+            and hasattr(record, "created_by_user_id")
+            and record.created_by_user_id == env("TEMPLATE_ID")
         ):
             # For view/copy/execute/share operations, all users can access
             if required_level in [
@@ -965,7 +981,7 @@ def check_permission(
 
 def _get_admin_accessible_team_ids_cte(
     user_id: str,
-    db: Session,
+    db: Optional[Session],
     declarative_base,
     max_depth: int = 5,
     unique_suffix: str = "",
@@ -977,13 +993,16 @@ def _get_admin_accessible_team_ids_cte(
 
     Args:
         user_id: The ID of the user
-        db: Database session
+        db: Database session (the CTE is built without one; may be None)
         declarative_base: The declarative base to use for accessing SQLAlchemy models
         max_depth: Maximum depth for recursion (default: 5)
         unique_suffix: Optional suffix to make CTE name unique (default: "")
-        memberships_only: Only the user's live memberships count, and only in
-            teams that are not deleted (the walk to parents stops at a deleted
-            one); a pending invitation is not a membership.
+        memberships_only: Only the user's live memberships count; a pending
+            invitation is not a membership.
+
+    A deleted team grants nothing either way: no membership in or invitation
+    to one counts, and the walk to parents stops at a deleted one, so its
+    members lose its records with it.
 
     Returns:
         CTE: Common table expression with accessible team IDs
@@ -1006,6 +1025,10 @@ def _get_admin_accessible_team_ids_cte(
     # Create a unique CTE name using the suffix if provided
     cte_name = f"admin_accessible_teams_cte{unique_suffix}"
 
+    # Aliased, so the subquery never correlates to a teams table the
+    # enclosing query reads.
+    live_team = aliased(team_db_cls, name=f"{cte_name}_live")
+    live_team_ids = select(live_team.id).where(live_team.deleted_at.is_(None))
     membership_select = (
         select(
             user_team_db_cls.team_id.label("id"),
@@ -1015,12 +1038,8 @@ def _get_admin_accessible_team_ids_cte(
         .where(user_team_db_cls.user_id == user_id)
         .where(user_team_db_cls.enabled == True)
         .where(_active(user_team_db_cls))
+        .where(user_team_db_cls.team_id.in_(live_team_ids))
     )
-    if memberships_only:
-        live_team_ids = select(team_db_cls.id).where(team_db_cls.deleted_at.is_(None))
-        membership_select = membership_select.where(
-            user_team_db_cls.team_id.in_(live_team_ids)
-        )
     base_selects = [membership_select]
 
     # Invitations that target the user directly should also expose the team
@@ -1037,7 +1056,10 @@ def _get_admin_accessible_team_ids_cte(
         invitation_db_cls = invitation_db_class_hook(declarative_base)
         invitee_db_cls = invitee_db_class_hook(declarative_base)
 
-        invitation_filters = [invitation_db_cls.team_id.isnot(None)]
+        invitation_filters = [
+            invitation_db_cls.team_id.isnot(None),
+            invitation_db_cls.team_id.in_(live_team_ids),
+        ]
         if hasattr(invitation_db_cls, "deleted_at"):
             invitation_filters.append(invitation_db_cls.deleted_at.is_(None))
         if hasattr(invitation_db_cls, "expires_at"):
@@ -1099,13 +1121,12 @@ def _get_admin_accessible_team_ids_cte(
         .where(team_alias.parent_id.isnot(None))
         .where(cte_alias.c.depth < max_depth)
     )
-    if memberships_only:
-        parent_alias = aliased(team_db_cls, name=f"{cte_name}_parent")
-        recursive_term = recursive_term.where(
-            team_alias.parent_id.in_(
-                select(parent_alias.id).where(parent_alias.deleted_at.is_(None))
-            )
+    parent_alias = aliased(team_db_cls, name=f"{cte_name}_parent")
+    recursive_term = recursive_term.where(
+        team_alias.parent_id.in_(
+            select(parent_alias.id).where(parent_alias.deleted_at.is_(None))
         )
+    )
 
     recursive_cte = recursive_cte.union(recursive_term)
 
@@ -1460,6 +1481,9 @@ def generate_permission_filter(
                 ]
 
                 if sufficient_role_ids_for_admin:
+                    live_team = aliased(
+                        team_db_cls, name=f"admin_role_live_team{unique_suffix}"
+                    )
                     # Check if the user has *any* sufficient role on the *specific team* owning the record
                     user_has_sufficient_role_on_team = exists().where(
                         and_(
@@ -1469,6 +1493,13 @@ def generate_permission_filter(
                             user_team_db_cls.role_id.in_(sufficient_role_ids_for_admin),
                             user_team_db_cls.enabled == True,
                             _active(user_team_db_cls),
+                            # A deleted team's admins keep no hold on its
+                            # records, as its members keep no view of them.
+                            resource_db_cls.team_id.in_(
+                                select(live_team.id).where(
+                                    live_team.deleted_at.is_(None)
+                                )
+                            ),
                         )
                     )
                     conditions.append(user_has_sufficient_role_on_team)
@@ -1514,7 +1545,7 @@ def generate_permission_filter(
     # accounts are SYSTEM-created, so this grant would expose them.
     if hasattr(
         resource_db_cls, "created_by_user_id"
-    ) and resource_db_cls.__tablename__ not in ["invitations", "Invitees", "users"]:
+    ) and resource_db_cls.__tablename__ not in ["invitations", "Invitees", USERS_TABLE]:
         # SYSTEM_ID-created records: viewable by all (grant); EDIT/DELETE restricted
         # to ROOT_ID and SYSTEM_ID via the universal-deny return below.
         if required_permission_level == PermissionType.VIEW:
@@ -1535,7 +1566,7 @@ def generate_permission_filter(
     # also grants. Anyone else is invisible, so a server-side lookup of an
     # arbitrary account (login, registration, invitation acceptance) runs as
     # ROOT or SYSTEM, never as the requester.
-    if resource_db_cls.__tablename__ == "users":
+    if resource_db_cls.__tablename__ == USERS_TABLE:
         conditions.append(resource_db_cls.id == user_id)
 
         if required_permission_level == PermissionType.VIEW:
@@ -1751,6 +1782,46 @@ def generate_permission_filter(
                 )
 
     return final_filter
+
+
+def live_team_members_filter(
+    requester_id: str, team_id: str, users_db_cls: Any, declarative_base: Any
+) -> Any:
+    """A filter on ``users_db_cls`` for the live members of ``team_id`` the
+    requester may list: users with an enabled, unexpired, undeleted
+    membership in it, when the team is live and the requester holds a live
+    membership in it or in one of its sub-teams (the reach the users rule
+    gives a requester, so the list names no one that rule hides); ROOT and
+    SYSTEM list any team's. Anyone else matches no one, so membership of a
+    team the requester is not in never shows."""
+    from zephyrex.logic.BLL_Auth import TeamModel, UserTeamModel
+
+    team_db_cls = TeamModel.DB(declarative_base)
+    user_team_db_cls = UserTeamModel.DB(declarative_base)
+    live_team = aliased(team_db_cls, name="team_members_live_team")
+    membership = and_(
+        user_team_db_cls.user_id == users_db_cls.id,
+        user_team_db_cls.team_id == team_id,
+        user_team_db_cls.enabled == True,
+        _active(user_team_db_cls),
+        user_team_db_cls.team_id.in_(
+            select(live_team.id).where(live_team.deleted_at.is_(None))
+        ),
+    )
+    if is_root_id(requester_id) or is_system_id(requester_id):
+        return exists().where(membership)
+    reachable_team_ids = _get_admin_accessible_team_ids_cte(
+        requester_id,
+        None,
+        declarative_base,
+        max_depth=5,
+        unique_suffix="_team_members",
+        memberships_only=True,
+    )
+    return and_(
+        exists().where(membership),
+        literal(team_id).in_(select(reachable_team_ids.c.id)),
+    )
 
 
 def user_has_permission(

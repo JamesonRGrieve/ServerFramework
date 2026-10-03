@@ -809,10 +809,14 @@ def create_sqlalchemy_model(
     # Get existing columns from base classes to avoid conflicts
     existing_columns = _get_existing_columns(mixin_classes, base_model)
 
-    # Start building the class dictionary
+    # Start building the class dictionary. Declared indexes are built anew
+    # for each table (see pydantic2.sqlalchemy.indexes).
+    table_indexes = tuple(
+        declared.build() for declared in getattr(pydantic_model, "table_indexes", ())
+    )
     class_dict: Dict[str, Any] = {
         "__tablename__": tablename,
-        "__table_args__": {"comment": table_comment},
+        "__table_args__": (*table_indexes, {"comment": table_comment}),
         "__module__": pydantic_model.__module__,
     }
     # Access inherited through references (StaticPermissions reads these

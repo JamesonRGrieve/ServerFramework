@@ -230,3 +230,122 @@ def test_graphql_navigation_reaches_live_teammates_only(server, model_registry):
     _change_membership(model_registry, membership, enabled=False)
 
     assert _membership_users(server, owner)[member.id] is None
+
+
+@pytest.mark.parametrize("internal", ["ROOT_ID", "SYSTEM_ID", "TEMPLATE_ID"])
+def test_the_internal_accounts_do_not_exist_for_a_user(
+    server, model_registry, internal: str
+):
+    """``check_permission`` granted VIEW on any SYSTEM- or TEMPLATE-created
+    row before the users rule ran, so ``exists()`` on the seeded internal
+    accounts answered true for anyone. The users rule alone decides now
+    (it excludes the users table from those grants, as the filter does)."""
+    viewer = create_user(server)
+    users = UserModel.DB(model_registry.DB.manager.Base)
+
+    assert not users.exists(
+        requester_id=viewer.id, model_registry=model_registry, id=env(internal)
+    )
+    assert users.exists(
+        requester_id=viewer.id, model_registry=model_registry, id=viewer.id
+    )
+    assert users.exists(
+        requester_id=env("ROOT_ID"), model_registry=model_registry, id=env(internal)
+    )
+
+
+def test_a_system_provisioned_user_is_no_more_visible_than_any(server, model_registry):
+    """A user row recorded as SYSTEM's (a create stamps each user as its own
+    creator, but rows written past it, such as by an import, may name
+    SYSTEM) is visible to its teammates, not to everyone."""
+    stranger, teammate = create_user(server), create_user(server)
+    users = UserModel.DB(model_registry.DB.manager.Base)
+    provisioned = users.create(
+        requester_id=env("SYSTEM_ID"),
+        model_registry=model_registry,
+        return_type="dto",
+        override_dto=UserModel,
+        email=f"provisioned_{uuid.uuid4().hex[:8]}@example.com",
+    )
+    users.update(
+        requester_id=env("ROOT_ID"),
+        model_registry=model_registry,
+        id=provisioned.id,
+        new_properties={"created_by_user_id": env("SYSTEM_ID")},
+    )
+    _join(server, provisioned, _team(server, teammate))
+
+    assert not users.exists(
+        requester_id=stranger.id, model_registry=model_registry, id=provisioned.id
+    )
+    assert not _visible(model_registry, stranger.id, provisioned)
+    assert users.exists(
+        requester_id=teammate.id, model_registry=model_registry, id=provisioned.id
+    )
+
+
+def test_get_by_team_is_an_unknown_filter_like_any_other(server, model_registry):
+    """``UserManager.get(team_id=…)`` called ``user_has_read_access`` with a
+    signature it does not have (and a team id as the user id), so it raised
+    TypeError. Users have no team column: ``team_id`` is refused as any
+    unknown filter is."""
+    viewer = create_user(server)
+    team = _team(server, viewer)
+    users = UserManager(requester_id=viewer.id, model_registry=model_registry)
+    assert users.get(id=viewer.id).id == viewer.id
+
+    with pytest.raises(Exception) as unknown:
+        users.get(id=viewer.id, no_such_column="x")
+    with pytest.raises(Exception) as by_team:
+        users.get(id=viewer.id, team_id=team.id)
+    assert type(by_team.value) is type(unknown.value)
+    assert not isinstance(by_team.value, TypeError)
+
+
+def _graphql_team_members(server: Any, viewer: Any, team: Any) -> Any:
+    response = server.post(
+        "/graphql",
+        json={"query": '{ users(teamId: "%s") { id } }' % team.id},
+        headers={"Authorization": f"Bearer {viewer.jwt}"},
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert "errors" not in body, body
+    return {row["id"] for row in body["data"]["users"]}
+
+
+def test_graphql_lists_a_teams_live_members(server, model_registry):
+    """``users(teamId:)`` filtered users on a ``team_id`` column they do not
+    have, so every such query errored. It lists the team's live members, to
+    those who could see them through that team."""
+    owner, member, departed = (
+        create_user(server),
+        create_user(server),
+        create_user(server),
+    )
+    team = _team(server, owner)
+    _join(server, member, team)
+    ended = _join(server, departed, team)
+    _change_membership(model_registry, ended, enabled=False)
+    elsewhere = _team(server, create_user(server))
+
+    assert _graphql_team_members(server, owner, team) == {owner.id, member.id}
+    assert _graphql_team_members(server, member, team) == {owner.id, member.id}
+    assert _graphql_team_members(server, member, elsewhere) == set()
+
+
+def test_a_teams_members_are_not_listed_to_an_outsider(server, model_registry):
+    """Sharing another team with a member does not reveal what else they
+    belong to."""
+    outsider, member = create_user(server), create_user(server)
+    team = _team(server, create_user(server))
+    _join(server, member, team)
+    _join(server, member, _team(server, outsider))
+    assert _visible(model_registry, outsider.id, member)
+
+    users = UserManager(requester_id=outsider.id, model_registry=model_registry)
+    assert users.list(team_id=team.id) == []
+    assert _graphql_team_members(server, outsider, team) == set()
+
+    root = UserManager(requester_id=env("ROOT_ID"), model_registry=model_registry)
+    assert member.id in {user.id for user in root.list(team_id=team.id)}

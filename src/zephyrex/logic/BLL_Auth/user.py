@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 import secrets
 from datetime import datetime, timedelta, timezone
-from typing import Any, ClassVar, Dict, List, Optional, Type, Union
+from typing import Any, ClassVar, Dict, List, Optional, Tuple, Type
 
 import bcrypt
 from fastapi import HTTPException, Header, Request, Response, status
@@ -19,6 +19,8 @@ from zephyrex.lib.InboundSecurity import (
     rate_limit,
 )
 from zephyrex.lib.Logging import logger
+from zephyrex.lib.Preconditions import check_route_record, expect_route_record
+from zephyrex.pydantic2.sqlalchemy.indexes import TableIndex
 from zephyrex.pydantic2.fastapi import (
     AuthType,
     RequestInfo,
@@ -48,6 +50,7 @@ from zephyrex.logic.BLL_Auth._shared import (
     _session_hooks,
     mfa_login_methods,
     refuse_internal_account,
+    run_login_checks,
     verify_mfa_login_code,
 )
 from zephyrex.lib.SessionCookies import clear_session_cookies, set_session_cookies
@@ -85,6 +88,9 @@ MFA_CHALLENGE_TTL_SECONDS = 300
 # User fields only root may change (see UserManager.update).
 ACCOUNT_STATE_FIELDS = frozenset({"active", "mfa_count"})
 
+# The database's guarantee of one live account per email.
+USERS_EMAIL_UNIQUE_INDEX = "uq_users_email_live"
+
 
 class UserModel(
     ApplicationModel.Optional,
@@ -109,6 +115,17 @@ class UserModel(
     # Database metadata for SQLAlchemy generation
     table_comment: ClassVar[str] = (
         "Core user accounts for authentication and identity management"
+    )
+    # One live account per email. The stored email is the normalized one
+    # (UserManager._normalize_identifier), so the column itself is indexed;
+    # migration users_email_unique_live creates it.
+    table_indexes: ClassVar[Tuple[TableIndex, ...]] = (
+        TableIndex(
+            name=USERS_EMAIL_UNIQUE_INDEX,
+            columns=("email",),
+            unique=True,
+            where="deleted_at IS NULL",
+        ),
     )
     seed_data: ClassVar[List[Dict[str, Any]]] = [
         {
@@ -313,6 +330,12 @@ class UserModel(
         active: Optional[bool] | None = None
         timezone: Optional[str] | None = None
         language: Optional[str] | None = None
+
+
+# UserModel's own fields (plus its image mixin's), taken before any extension
+# extends the model: registration accepts these and refuses the columns
+# extensions add (they are the server's to write).
+CORE_USER_FIELDS = frozenset({*UserModel.__annotations__, "image_url"})
 
 
 class UserManager(AbstractBLLManager, RouterMixin):
@@ -674,6 +697,22 @@ class UserManager(AbstractBLLManager, RouterMixin):
                 status_code=403,
                 detail=f"Only root may set {', '.join(administrative)}",
             )
+
+        # The stored email is the normalized one: login and registration
+        # match it so, and the database holds it unique among live users.
+        if kwargs.get("email"):
+            kwargs["email"] = UserManager._normalize_identifier(kwargs["email"])
+            UserDB = self.DB
+            if UserDB.exists(
+                requester_id=env("ROOT_ID"),
+                model_registry=self.model_registry,
+                filters=[
+                    UserDB.email == kwargs["email"],
+                    UserDB.id != id,
+                    UserDB.deleted_at.is_(None),
+                ],
+            ):
+                raise HTTPException(status_code=409, detail="Email already in use")
 
         # Extract metadata fields (non-model fields)
         metadata_fields = {}
@@ -1229,8 +1268,11 @@ class UserManager(AbstractBLLManager, RouterMixin):
         credentials (and second factor, when they have one) are proven: the
         token in the body for API clients, and in the session cookies for
         browsers. Shared by password login, the MFA challenge step and every
-        sign-in extension; an internal account is refused here (403)."""
+        sign-in extension; an internal account is refused here (403), and so
+        is anyone a loaded extension's login check refuses
+        (``register_login_check``), before any session exists."""
         refuse_internal_account(user["id"])
+        run_login_checks(str(user["id"]), model_registry)
         root_id = env("ROOT_ID")
 
         # Login successful — issue the session row first (when
@@ -1610,10 +1652,12 @@ class UserManager(AbstractBLLManager, RouterMixin):
         the extension is not loaded, a typed ``HTTPException(503)``
         surfaces — passwordless grant validators are extension-side and
         cannot meaningfully run without ``auth_session``. An internal
-        account is refused (403), whatever the grant says.
+        account is refused (403), whatever the grant says, and so is anyone
+        a loaded extension's login check refuses.
         """
         user_id = user.id if hasattr(user, "id") else user["id"]
         refuse_internal_account(user_id)
+        run_login_checks(str(user_id), model_registry)
         issue_hook = _session_hooks["issue_session"]
         if issue_hook is None:
             raise HTTPException(
@@ -1696,20 +1740,29 @@ class UserManager(AbstractBLLManager, RouterMixin):
             user=user, model_registry=model_registry, grant_type=grant_type
         )
 
-    def get(
-        self,
-        include: Optional[Union[List[str], str]] | None = None,
-        fields: Optional[Union[List[str], str]] | None = None,
-        **kwargs,
-    ) -> Any:
-        """Get a user with optional included relationships."""
-        if "team_id" in kwargs:
-            if not self.DB.user_has_read_access(
-                self.requester.id, kwargs.get("team_id"), self.db
-            ):
-                raise HTTPException(status_code=403, detail="get - not permissable")
+    def list(self, *args: Any, team_id: Optional[str] = None, **kwargs: Any) -> Any:
+        """List users; with ``team_id``, the live members of that team.
 
-        return super().get(include=include, fields=fields, **kwargs)
+        Users have no team column. A team's members are the users with an
+        enabled, unexpired, undeleted membership in it, and only for a
+        requester who could see them through it: one with a live membership
+        in that team or in one of its sub-teams (as the user visibility rule
+        reaches up), or ROOT and SYSTEM. Anyone else gets no one, so the
+        filter never says who belongs to a team the requester is not in.
+        """
+        if team_id is not None:
+            from zephyrex.database.StaticPermissions import live_team_members_filter
+
+            kwargs["filters"] = [
+                *(kwargs.get("filters") or []),
+                live_team_members_filter(
+                    self.requester.id,
+                    str(team_id),
+                    self.DB,
+                    self.model_registry.DB.manager.Base,
+                ),
+            ]
+        return super().list(*args, **kwargs)
 
     def get_current_user(self, fields: Optional[List[str]] | None = None):
         """Get the current user's profile."""
@@ -1719,12 +1772,14 @@ class UserManager(AbstractBLLManager, RouterMixin):
         return user
 
     def update_current_user(self, body: Dict[str, Any]):
-        """Update the current user's profile."""
+        """Update the current user's profile. The path names no record, so
+        the request's If-Match is bound to the requester's own row here."""
         user_data = dict(body.get("user", {}))
         # The caller is the target; identity and audit fields in the body are
         # never theirs to set (and ``id`` would collide with the target id).
         self._strip_server_controlled_fields(user_data)
-        updated_user = self.update(id=self.requester.id, **user_data)
+        with expect_route_record(self, self.requester.id):
+            updated_user = self.update(id=self.requester.id, **user_data)
         if hasattr(updated_user, "model_dump"):
             return updated_user.model_dump()
         return updated_user
@@ -1750,9 +1805,12 @@ class UserManager(AbstractBLLManager, RouterMixin):
             )
 
     def change_password(self, body: Dict[str, Any]):
-        """Change the current user's password"""
+        """Change the current user's password. The change is the account's
+        but writes its credentials, so the request's If-Match is checked
+        against the requester's own users row before anything is written."""
         current_password = body.get("current_password")
         new_password = body.get("new_password")
+        check_route_record(self, self.requester.id)
         return self.credentials.change_password(
             user_id=self.requester.id,
             current_password=current_password,
@@ -1985,10 +2043,24 @@ class UserManager(AbstractBLLManager, RouterMixin):
         metadata_fields = {}
         model_fields = {}
 
-        # Get the model fields for comparison
-        model_fields_set = set(UserModel.__annotations__.keys())
-        # Add fields from mixins that might not be in annotations
-        model_fields_set.add("image_url")
+        # The core user fields, as UserModel declared them: an extension that
+        # adds a column to users also adds it to UserModel's annotations.
+        model_fields_set = set(CORE_USER_FIELDS)
+
+        # Columns other extensions add to users (the payment customer link)
+        # are the server's to write, never the registrant's: refused here, so
+        # they reach neither the row nor, as a look-alike, the metadata.
+        user_columns = UserModel.DB(model_registry.DB.manager.Base).__table__.columns
+        server_set = sorted(
+            key
+            for key in registration_data
+            if key in user_columns and key not in model_fields_set
+        )
+        if server_set:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Not settable at registration: {server_set}",
+            )
 
         for key, value in registration_data.items():
             # Include invitation_code and invitation_id as special fields that shouldn't go to metadata
@@ -1996,7 +2068,6 @@ class UserManager(AbstractBLLManager, RouterMixin):
                 "password",
                 "invitation_code",
                 "invitation_id",
-                "external_payment_id",
             ]:
                 model_fields[key] = value
             else:

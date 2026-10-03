@@ -283,6 +283,138 @@ class TestMembership:
         assert refused.status_code == 428, refused.text
 
 
+class TestSelfScopedUser:
+    """``PUT /v1/user`` (profile) and ``PATCH /v1/user`` (password) name no
+    record in their path; both are held to the requester's own users row,
+    whose ``"<updated_at ?? created_at>"`` a client sends.
+
+    Regression: nothing bound their If-Match, so a stale profile save
+    overwrote a newer one and a stale password change went through."""
+
+    NEW_PASSWORD = "Another-passw0rd"
+
+    @pytest.fixture
+    def user(self, server: Any) -> Any:
+        from zephyrex.testing.factories import create_user
+
+        return create_user(server)
+
+    def _me(self, server: Any, user: Any) -> Dict[str, Any]:
+        response = server.get("/v1/user", headers=_headers(user))
+        assert response.status_code == 200, response.text
+        me: Dict[str, Any] = response.json()["user"]
+        return me
+
+    def _profile(self, server: Any, user: Any, name: str, **headers: str) -> Any:
+        return server.put(
+            "/v1/user",
+            json={"user": {"display_name": name}},
+            headers=_headers(user, **headers),
+        )
+
+    def _password(self, server: Any, user: Any, **headers: str) -> Any:
+        from zephyrex.testing.factories import TEST_PASSWORD
+
+        return server.patch(
+            "/v1/user",
+            json={"current_password": TEST_PASSWORD, "new_password": self.NEW_PASSWORD},
+            headers=_headers(user, **headers),
+        )
+
+    def _signs_in_with(self, server: Any, user: Any, password: str) -> bool:
+        import base64
+
+        credentials = base64.b64encode(f"{user.email}:{password}".encode()).decode()
+        response = server.post(
+            "/v1/user/authorize", headers={"Authorization": f"Basic {credentials}"}
+        )
+        return response.status_code == 200 and "token" in response.json()
+
+    def _make_stale(self, server: Any, user: Any) -> str:
+        """The version the user read, then moved on by another save."""
+        read = entity_etag(self._me(server, user))
+        assert read is not None
+        moved = self._profile(server, user, "Moved on", **_if_match(read))
+        assert moved.status_code == 200, moved.text
+        return read
+
+    def test_a_stale_profile_save_is_refused_with_the_current_record(
+        self, server, user
+    ):
+        stale = self._make_stale(server, user)
+        current = self._me(server, user)
+
+        refused = self._profile(server, user, "Stale", **_if_match(stale))
+        assert refused.status_code == 412, refused.text
+        body = refused.json()
+        assert set(body) == {"detail", "current"}
+        assert body["current"]["id"] == user.id
+        assert body["current"]["updated_at"] == current["updated_at"]
+        assert body["current"]["display_name"] == "Moved on"
+        assert refused.headers["etag"] == entity_etag(current)
+        assert self._me(server, user) == current
+
+    def test_the_current_version_saves_the_profile(self, server, user):
+        me = self._me(server, user)
+        etag = entity_etag(me)
+        assert etag is not None
+        saved = self._profile(server, user, "Fresh", **_if_match(etag))
+        assert saved.status_code == 200, saved.text
+        after = self._me(server, user)
+        assert after["display_name"] == "Fresh"
+        assert entity_etag(after) != etag
+
+    def test_a_profile_save_naming_no_version_saves_while_lenient(self, server, user):
+        assert self._profile(server, user, "Unversioned").status_code == 200
+        assert self._me(server, user)["display_name"] == "Unversioned"
+
+    def test_a_profile_save_naming_no_version_is_428_when_required(
+        self, server, user, if_match_required
+    ):
+        before = self._me(server, user)
+        refused = self._profile(server, user, "Unversioned")
+        assert refused.status_code == 428, refused.text
+        assert refused.json() == {"detail": REQUIRED_DETAIL}
+        assert self._me(server, user) == before
+
+    def test_a_stale_password_change_is_refused_and_changes_nothing(self, server, user):
+        from zephyrex.testing.factories import TEST_PASSWORD
+
+        stale = self._make_stale(server, user)
+        current = self._me(server, user)
+
+        refused = self._password(server, user, **_if_match(stale))
+        assert refused.status_code == 412, refused.text
+        body = refused.json()
+        assert body["current"]["id"] == user.id
+        assert body["current"]["updated_at"] == current["updated_at"]
+        assert self._signs_in_with(server, user, TEST_PASSWORD)
+        assert not self._signs_in_with(server, user, self.NEW_PASSWORD)
+
+    def test_the_current_version_changes_the_password(self, server, user):
+        etag = entity_etag(self._me(server, user))
+        assert etag is not None
+        changed = self._password(server, user, **_if_match(etag))
+        assert changed.status_code == 200, changed.text
+        assert self._signs_in_with(server, user, self.NEW_PASSWORD)
+
+    def test_a_password_change_naming_no_version_goes_through_while_lenient(
+        self, server, user
+    ):
+        assert self._password(server, user).status_code == 200
+        assert self._signs_in_with(server, user, self.NEW_PASSWORD)
+
+    def test_a_password_change_naming_no_version_is_428_when_required(
+        self, server, user, if_match_required
+    ):
+        from zephyrex.testing.factories import TEST_PASSWORD
+
+        refused = self._password(server, user)
+        assert refused.status_code == 428, refused.text
+        assert refused.json() == {"detail": REQUIRED_DETAIL}
+        assert self._signs_in_with(server, user, TEST_PASSWORD)
+
+
 class TestBatch:
     def _batch_put(self, server: Any, user: Any, targets: List[Any]) -> Any:
         return server.put(

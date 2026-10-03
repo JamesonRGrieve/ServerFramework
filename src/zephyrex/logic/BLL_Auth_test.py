@@ -40,9 +40,10 @@ from zephyrex.logic.BLL_Auth import (
     UserModel,
     UserTeamManager,
     make_user_id_grant_validator,
+    register_login_check,
     register_mfa_source,
 )
-from zephyrex.logic.BLL_Auth._shared import _mfa_sources
+from zephyrex.logic.BLL_Auth._shared import _login_checks, _mfa_sources
 from zephyrex.testing.factories import (
     INTERNAL_ACCOUNTS,
     TEST_PASSWORD,
@@ -3809,15 +3810,24 @@ class TestInternalAccountsNeverSignIn:
                 assert refused.value.status_code == 403
 
     def test_an_email_two_accounts_share_names_neither(self, model_registry):
+        """This test made two live accounts with one email and asserted the
+        lookup named neither (409). The database now refuses the second
+        (uq_users_email_live, see User_email_unique_test), so an email names
+        at most one live account, and the lookup names that one."""
+        from sqlalchemy.exc import IntegrityError
+
         email = generate_test_email("shared")
         UserDB = UserModel.DB(model_registry.DB.manager.Base)
-        for _ in range(2):
+        first = UserDB.create(
+            requester_id=env("ROOT_ID"), model_registry=model_registry, email=email
+        )
+        with pytest.raises(IntegrityError):
             UserDB.create(
                 requester_id=env("ROOT_ID"), model_registry=model_registry, email=email
             )
-        with pytest.raises(HTTPException) as refused:
-            UserManager.user_id_for_verified_email(email, model_registry)
-        assert refused.value.status_code == 409
+        assert UserManager.user_id_for_verified_email(email, model_registry) == str(
+            first["id"]
+        )
 
 
 class TestMFAMethodSources:
@@ -3915,6 +3925,62 @@ class TestMFAMethodSources:
             model_registry,
             Response(),
         )
+        assert signed_in["user"]["id"] == user.id
+
+
+class TestLoginChecks:
+    """A loaded extension's login check runs on every sign-in before its
+    session is issued, and refuses by raising; a check whose extension the
+    app did not load never runs (the table is process-global)."""
+
+    @pytest.fixture
+    def refused_users(self, model_registry) -> Iterator[Tuple[Set[str], Set[str]]]:
+        """Two real checks refusing the users each test names: one owned by
+        an extension this app loaded, one by an extension it did not."""
+        loaded_refuses: Set[str] = set()
+        unloaded_refuses: Set[str] = set()
+        loaded_name = next(
+            name
+            for name in sorted(model_registry.loaded_extension_names())
+            if name not in _login_checks
+        )
+        unloaded_name = f"not_loaded_{uuid.uuid4().hex[:8]}"
+
+        def refuse(refused: Set[str]) -> Any:
+            def check(user_id: str, _registry: Any) -> None:
+                if user_id in refused:
+                    raise HTTPException(status_code=403, detail="Refused by check")
+
+            return check
+
+        register_login_check(loaded_name, refuse(loaded_refuses))
+        register_login_check(unloaded_name, refuse(unloaded_refuses))
+        yield loaded_refuses, unloaded_refuses
+        _login_checks.pop(loaded_name, None)
+        _login_checks.pop(unloaded_name, None)
+
+    def test_a_loaded_extensions_check_refuses_before_the_session(
+        self, server, model_registry, refused_users
+    ):
+        loaded_refuses, _ = refused_users
+        user = create_user(server)
+        loaded_refuses.add(user.id)
+        with pytest.raises(HTTPException) as refused:
+            TestMFAMethodSources.password_login(server, model_registry, user)
+        assert refused.value.status_code == 403
+        assert refused.value.detail == "Refused by check"
+        # Grant flows (magic link, device pairing) issue their session here.
+        with pytest.raises(HTTPException) as refused_grant:
+            UserManager._issue_session(user=user, model_registry=model_registry)
+        assert refused_grant.value.detail == "Refused by check"
+
+    def test_a_check_of_an_extension_not_loaded_never_runs(
+        self, server, model_registry, refused_users
+    ):
+        _, unloaded_refuses = refused_users
+        user = create_user(server)
+        unloaded_refuses.add(user.id)
+        signed_in = TestMFAMethodSources.password_login(server, model_registry, user)
         assert signed_in["user"]["id"] == user.id
 
 

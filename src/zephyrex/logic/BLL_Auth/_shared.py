@@ -467,6 +467,33 @@ def verify_mfa_login_code(user_id: str, code: str, model_registry: Any) -> bool:
     )
 
 
+LoginCheck = Callable[[str, Any], None]
+
+# Checks a sign-in passes before its session is issued, by the extension
+# that owns each, registered when that extension's BLL module is imported
+# (payment: an inactive subscription). ``check(user_id, model_registry)``
+# refuses by raising an HTTPException. The table is process-global, so a
+# check runs only for an app that loaded its extension.
+_login_checks: Dict[str, LoginCheck] = {}
+
+
+def register_login_check(extension_name: str, check: LoginCheck) -> None:
+    """Add (or, on a module reload, replace) ``extension_name``'s login
+    check."""
+    _login_checks[extension_name] = check
+
+
+def run_login_checks(user_id: str, model_registry: Any) -> None:
+    """Run the login check of every extension loaded into
+    ``model_registry``'s app for ``user_id``; the first to refuse raises.
+    ``UserManager._complete_login`` calls this for password, MFA and every
+    sign-in extension's login alike."""
+    loaded = model_registry.loaded_extension_names()
+    for extension_name, check in list(_login_checks.items()):
+        if extension_name in loaded:
+            check(user_id, model_registry)
+
+
 INTERNAL_ACCOUNT_REFUSED = "Internal accounts do not sign in"
 
 

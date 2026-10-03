@@ -22,6 +22,7 @@ from zephyrex.logic.BLL_Auth._shared import (
     register_api_key_hooks as register_api_key_hooks,
     register_invitation_hooks as register_invitation_hooks,
     register_lockout_hooks as register_lockout_hooks,
+    register_login_check as register_login_check,
     register_metadata_hooks as register_metadata_hooks,
     register_mfa_source as register_mfa_source,
     register_pii_hooks as register_pii_hooks,
