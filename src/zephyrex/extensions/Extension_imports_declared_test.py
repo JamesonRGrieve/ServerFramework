@@ -27,10 +27,12 @@ _DISTRIBUTION_OF = {
     "google": "google-auth",
     "googleapiclient": "google-api-python-client",
     "influxdb_client": "influxdb-client",
+    "llama_cpp": "llama-cpp-python",
     "mysql": "mysql-connector-python",
     "opentelemetry": "opentelemetry-api",
     "prometheus_client": "prometheus-client",
     "psycopg2": "psycopg2-binary",
+    "saml2": "pysaml2",
     "sentry_sdk": "sentry-sdk",
     "square": "squareup",
 }
