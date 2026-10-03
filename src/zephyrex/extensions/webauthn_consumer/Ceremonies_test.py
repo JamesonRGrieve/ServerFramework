@@ -23,6 +23,7 @@ from fastapi.testclient import TestClient
 
 from conftest import CORE_COMPANION_EXTENSIONS
 from zephyrex.extensions.webauthn_consumer.BLL_WebAuthnConsumer import (
+    MFA_METHOD_TYPE,
     WebAuthnCeremonyModel,
     WebAuthnCredentialManager,
     WebAuthnCredentialModel,
@@ -37,7 +38,12 @@ from zephyrex.extensions.webauthn_consumer.SoftwareAuthenticator_test import (
 from zephyrex.lib.Environment import env
 from zephyrex.lib.SessionCookies import SESSION_COOKIE
 from zephyrex.logic.BLL_Auth import UserModel
-from zephyrex.testing.factories import TEST_PASSWORD, authorize_user, create_user
+from zephyrex.testing.factories import (
+    INTERNAL_ACCOUNTS,
+    TEST_PASSWORD,
+    authorize_user,
+    create_user,
+)
 
 RP_ID = "example.test"
 ORIGIN = "https://app.example.test"
@@ -343,6 +349,39 @@ class TestCredentials:
         )
         assert {c.user_id for c in [single, *batch]} == {owner.id}
 
+    @pytest.mark.parametrize("internal", INTERNAL_ACCOUNTS)
+    def test_no_credential_is_registered_to_an_internal_account(
+        self, server, internal
+    ) -> None:
+        manager = WebAuthnCredentialManager(
+            requester_id=env("ROOT_ID"), model_registry=registry(server)
+        )
+        with pytest.raises(HTTPException) as refused:
+            manager.create(
+                credential_id=uuid.uuid4().hex,
+                public_key="AAAA",
+                attestation_format="none",
+                attestation_trust="none",
+                user_id=env(internal),
+            )
+        assert refused.value.status_code == 403
+
+    def test_a_credential_of_roots_signs_no_one_in(self, server) -> None:
+        """A credential moved to ROOT beneath the manager (by an older
+        version, or directly), asserting ROOT's handle, issues no session."""
+        authenticator = SoftwareAuthenticator()
+        registered = register(server, new_user(server), authenticator)
+        WebAuthnCredentialModel.DB(registry(server).DB.manager.Base).update(
+            requester_id=env("ROOT_ID"),
+            model_registry=registry(server),
+            id=registered["id"],
+            new_properties={"user_id": env("ROOT_ID")},
+        )
+        authenticator.user_handle = env("ROOT_ID").encode("utf-8")
+        refused = sign_in(server, authenticator)
+        assert refused.status_code == 403, refused.text
+        assert SESSION_COOKIE not in server.cookies
+
     def test_a_removed_credential_no_longer_signs_in(self, server) -> None:
         user = new_user(server)
         authenticator = SoftwareAuthenticator()
@@ -558,6 +597,53 @@ class TestSecondFactor:
                 ),
             },
         )
+
+    def test_a_key_alone_is_a_second_factor(self, server) -> None:
+        """A user whose only second factor is a key is challenged at
+        password login, finishes with the key, and no code stands in."""
+        user = new_user(server)
+        authenticator = SoftwareAuthenticator()
+        registered = register(server, user, authenticator)
+        server.cookies.clear()
+        basic = base64.b64encode(f"{user.email}:{TEST_PASSWORD}".encode()).decode()
+        login = server.post(
+            "/v1/user/authorize", headers={"Authorization": f"Basic {basic}"}
+        )
+        assert login.status_code == 200, login.text
+        body = login.json()
+        assert body["mfa_required"] is True and not body.get("token")
+        assert body["methods"] == [
+            {"id": registered["id"], "method_type": MFA_METHOD_TYPE}
+        ]
+        challenge = body["challenge_token"]
+        coded = server.post(
+            "/v1/user/authorize/mfa",
+            json={"challenge_token": challenge, "code": "000000"},
+        )
+        assert coded.status_code == 401, coded.text
+        completed = self._answer(server, challenge, authenticator)
+        assert completed.status_code == 200, completed.text
+        assert completed.json()["user"]["id"] == user.id
+
+    def test_a_removed_key_no_longer_challenges(self, server) -> None:
+        user = new_user(server)
+        registered = register(server, user, SoftwareAuthenticator())
+        removed = server.delete(
+            f"{CREDENTIALS}/{registered['id']}", headers=bearer(user.jwt)
+        )
+        assert removed.status_code in (200, 204), removed.text
+        assert authorize_user(server, user.email, TEST_PASSWORD)
+
+    def test_the_challenge_lists_codes_and_keys(self, server, mfa_user) -> None:
+        registered = register(server, mfa_user, SoftwareAuthenticator())
+        server.cookies.clear()
+        basic = base64.b64encode(f"{mfa_user.email}:{TEST_PASSWORD}".encode()).decode()
+        login = server.post(
+            "/v1/user/authorize", headers={"Authorization": f"Basic {basic}"}
+        )
+        methods = login.json()["methods"]
+        assert {"id": registered["id"], "method_type": MFA_METHOD_TYPE} in methods
+        assert any(m["method_type"] != MFA_METHOD_TYPE for m in methods)
 
     def test_a_key_completes_the_mfa_login_once(self, server, mfa_user) -> None:
         authenticator = SoftwareAuthenticator()

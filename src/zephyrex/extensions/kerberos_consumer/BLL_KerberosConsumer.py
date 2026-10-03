@@ -55,7 +55,7 @@ from zephyrex.logic.AbstractLogicManager import (
     StringSearchModel,
     UpdateMixinModel,
 )
-from zephyrex.logic.BLL_Auth import UserManager, UserModel
+from zephyrex.logic.BLL_Auth import UserManager, UserModel, refuse_internal_account
 from zephyrex.logic.BLL_Providers import ProviderInstanceModel, ProviderManager
 from zephyrex.pydantic2.fastapi import AuthType, RouteType, RouterMixin
 from zephyrex.pydantic2.registry import BaseModel
@@ -187,6 +187,7 @@ class KerberosPrincipalManager(AbstractBLLManager, RouterMixin):
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="A link names its principal and its user",
             )
+        refuse_internal_account(user_id)
         if self._user(user_id)["deleted_at"]:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="No such user"
@@ -334,6 +335,7 @@ class KerberosPrincipalManager(AbstractBLLManager, RouterMixin):
             logger.info(
                 "kerberos_consumer: created user %s for %s", user.id, accepted.principal
             )
+        refuse_internal_account(link.user_id)
         found = self._user(str(link.user_id))
         if not found["active"] or found["deleted_at"]:
             raise HTTPException(

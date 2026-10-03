@@ -29,6 +29,7 @@ from zephyrex.extensions.AbstractEXTTest import ExtensionServerMixin
 from zephyrex.extensions.oauth_consumer.BLL_OAuthConsumer import (
     BINDING_COOKIE,
     OAUTH_PREFIX,
+    OAuthIdentityManager,
     OAuthIdentityModel,
     OAuthLoginStateModel,
 )
@@ -62,6 +63,7 @@ from zephyrex.logic.BLL_Providers import (
     ProviderInstanceSettingManager,
     ProviderManager,
 )
+from zephyrex.testing.factories import INTERNAL_ACCOUNTS, internal_account_email
 
 Response = Any
 
@@ -611,6 +613,55 @@ class TestAccounts(OAuthCase):
         assert joined.status_code == 200, joined.text
         assert joined.json()["user_id"] == admin_a.id and not joined.json()["new_user"]
         assert idp.account.sub in [i.subject for i in flow.identities(admin_a.id)]
+
+    def test_a_verified_email_joins_whatever_its_case(self, flow, idp, admin_a):
+        name = flow.oidc(idp)
+        idp.account.email = admin_a.email.upper()
+        joined = flow.sign_in(idp, name)
+        assert joined.status_code == 200, joined.text
+        assert joined.json()["user_id"] == admin_a.id
+
+    @pytest.mark.parametrize("internal", INTERNAL_ACCOUNTS)
+    def test_no_verified_email_reaches_an_internal_account(self, flow, idp, internal):
+        """ROOT's seeded email is predictable; a provider asserting it as
+        verified must not sign in as the superuser."""
+        name = flow.oidc(idp)
+        with internal_account_email(flow.registry, env(internal)) as email:
+            idp.account.email = email
+            refused = flow.sign_in(idp, name)
+        assert refused.status_code == 403, refused.text
+        assert flow.identities(env(internal)) == []
+
+    @pytest.mark.parametrize("internal", INTERNAL_ACCOUNTS)
+    def test_an_identity_linked_to_an_internal_account_signs_no_one_in(
+        self, flow, idp, internal
+    ):
+        """Neither may an identity be linked to one, nor does a link to one
+        (written beneath the manager) issue a session."""
+        name = flow.oidc(idp)
+        user_id = flow.sign_in(idp, name).json()["user_id"]
+        [identity] = flow.identities(user_id)
+        manager = OAuthIdentityManager(
+            requester_id=env("ROOT_ID"), model_registry=flow.registry
+        )
+        with pytest.raises(HTTPException) as linking:
+            manager.create(
+                user_id=env(internal),
+                provider_instance_id=identity.provider_instance_id,
+                provider=identity.provider,
+                issuer=identity.issuer,
+                subject=f"internal-{secrets.token_hex(4)}",
+            )
+        assert linking.value.status_code == 403
+        IdentityDB = OAuthIdentityModel.DB(flow.registry.DB.manager.Base)
+        IdentityDB.update(
+            requester_id=env("ROOT_ID"),
+            model_registry=flow.registry,
+            id=identity.id,
+            new_properties={"user_id": env(internal)},
+        )
+        refused = flow.sign_in(idp, name)
+        assert refused.status_code == 403, refused.text
 
     def test_an_unverified_email_never_joins_an_existing_account(
         self, flow, idp, admin_b

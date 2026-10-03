@@ -37,6 +37,7 @@ from zephyrex.logic.BLL_Providers import (
     ProviderInstanceSettingManager,
     ProviderManager,
 )
+from zephyrex.testing.factories import INTERNAL_ACCOUNTS, internal_account_email
 
 LOGIN_PATH = "/v1/auth/forward-auth/login"
 LINKS_PATH = "/v1/auth/forward-auth"
@@ -605,6 +606,53 @@ class TestForwardAuthSignIn(ExtensionServerMixin):
         assert response.json()["user_id"] == user.id
         [link] = self.links(server, name("peggy"))
         assert link.user_id == user.id
+
+    @pytest.mark.parametrize("internal", INTERNAL_ACCOUNTS)
+    def test_no_trusted_email_reaches_an_internal_account(
+        self, server, authelia, verifier, verifier_instance, set_env, internal
+    ):
+        """ROOT's seeded email is predictable; a verifier trusted for emails
+        asserting it must not sign in as the superuser."""
+        set_env("REGISTRATION_MODE", "open")
+        verifier_instance(
+            {
+                "verify_url": verifier.base_url + VERIFY_PATH,
+                "forward_cookies": SESSION_COOKIE,
+                "trusted_for_email": "true",
+            }
+        )
+        registry = server.app.state.model_registry
+        with internal_account_email(registry, env(internal)) as email:
+            cookie = authelia.login(f"usurper-{internal}", email=email)
+            response = server.get(LOGIN_PATH, headers=browser(cookie))
+        assert response.status_code == 403, response.text
+        assert self.links(server, name(f"usurper-{internal}")) == []
+
+    @pytest.mark.parametrize("internal", INTERNAL_ACCOUNTS)
+    def test_nothing_links_to_an_internal_account(self, server, service, internal):
+        with pytest.raises(Exception) as refused:
+            self.root_links(server).create(
+                user_id=env(internal),
+                provider_instance_id=str(service.id),
+                identity=f"internal-{uuid.uuid4().hex[:8]}",
+            )
+        assert getattr(refused.value, "status_code", None) == 403
+
+    def test_an_identity_linked_to_root_signs_no_one_in(
+        self, server, authelia, service
+    ):
+        """A link to ROOT written beneath the manager (by an older version,
+        or directly) still issues no session."""
+        registry = server.app.state.model_registry
+        ForwardAuthIdentityModel.DB(registry.DB.manager.Base).create(
+            requester_id=env("ROOT_ID"),
+            model_registry=registry,
+            provider_instance_id=str(service.id),
+            identity=name("rooted"),
+            user_id=env("ROOT_ID"),
+        )
+        response = server.get(LOGIN_PATH, headers=browser(authelia.login("rooted")))
+        assert response.status_code == 403, response.text
 
     def test_an_identity_root_linked_signs_in_while_registration_is_closed(
         self, server, authelia, service, set_env

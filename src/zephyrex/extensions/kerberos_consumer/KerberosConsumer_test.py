@@ -44,6 +44,7 @@ from zephyrex.extensions.kerberos_consumer.PRV_KerberosKeytab import (
     tls_server_end_point,
 )
 from zephyrex.lib.Environment import env
+from zephyrex.testing.factories import INTERNAL_ACCOUNTS
 from zephyrex.logic.BLL_Auth import UserModel
 from zephyrex.logic.BLL_Providers import (
     ProviderInstanceManager,
@@ -566,6 +567,32 @@ class TestKerberosNegotiate(ExtensionServerMixin):
         assert removed.status_code == 204, removed.text
         again = client_token(realm.kinit("dave"))
         assert server.get(NEGOTIATE_PATH, headers=again.header).status_code == 403
+
+    @pytest.mark.parametrize("internal", INTERNAL_ACCOUNTS)
+    def test_nothing_links_to_an_internal_account(self, server, internal):
+        with pytest.raises(Exception) as refused:
+            self.root_links(server).create(
+                user_id=env(internal), principal=principal(f"internal-{internal}")
+            )
+        assert getattr(refused.value, "status_code", None) == 403
+
+    def test_a_principal_linked_to_root_signs_no_one_in(self, server, realm, service):
+        """A link to ROOT written beneath the manager (by an older version,
+        or directly) still issues no session."""
+        user = f"rooted{uuid.uuid4().hex[:6]}"
+        realm.kadmin(f"addprinc -randkey {principal_name(user)}")
+        realm.keytab(f"{user}.keytab", principal_name(user))
+        registry = server.app.state.model_registry
+        KerberosPrincipalModel.DB(registry.DB.manager.Base).create(
+            requester_id=env("ROOT_ID"),
+            model_registry=registry,
+            principal=principal(user),
+            realm=REALM,
+            user_id=env("ROOT_ID"),
+        )
+        token = client_token(realm.kinit(user))
+        response = server.get(NEGOTIATE_PATH, headers=token.header)
+        assert response.status_code == 403, response.text
 
     def test_a_disabled_account_cannot_sign_in(self, server, realm, service, set_env):
         set_env("REGISTRATION_MODE", "closed")

@@ -1,8 +1,9 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 import os
 import re
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Any, Dict, Iterator, List, Optional, Set, Tuple
 
 import pytest
 from faker import Faker
@@ -27,12 +28,27 @@ from zephyrex.extensions.metadata.BLL_Metadata import (
     UserMetadataManager,
 )
 from zephyrex.logic.BLL_Auth import (
+    MFAMethodSource,
+    PasswordlessGrantRegistry,
     RoleManager,
     SessionManager,
     TeamManager,
     UserCredentialManager,
+    UserCredentialModel,
+    UserIdGrantPayload,
     UserManager,
+    UserModel,
     UserTeamManager,
+    make_user_id_grant_validator,
+    register_mfa_source,
+)
+from zephyrex.logic.BLL_Auth._shared import _mfa_sources
+from zephyrex.testing.factories import (
+    INTERNAL_ACCOUNTS,
+    TEST_PASSWORD,
+    create_user,
+    generate_test_email,
+    internal_account_email,
 )
 
 # Initialize faker for generating test data once
@@ -3672,3 +3688,233 @@ class TestJWTDualKeyRotation:
 
         with pytest.raises(jwt.InvalidSignatureError):
             UserManager._decode_jwt(bad_token)
+
+
+def _user_row(model_registry: Any, user_id: str) -> Dict[str, Any]:
+    rows: List[Dict[str, Any]] = UserModel.DB(model_registry.DB.manager.Base).list(
+        requester_id=env("ROOT_ID"), model_registry=model_registry, id=user_id
+    )
+    [row] = rows
+    return row
+
+
+class TestInternalAccountsNeverSignIn:
+    """ROOT, SYSTEM and the template user act through API keys and server
+    code. No session is issued for one, whatever proved the identity, and no
+    external identity reaches one by its (predictable) email."""
+
+    @pytest.mark.parametrize("internal", INTERNAL_ACCOUNTS)
+    def test_no_login_completes_for_an_internal_account(self, model_registry, internal):
+        user = _user_row(model_registry, env(internal))
+        with pytest.raises(HTTPException) as refused:
+            UserManager._complete_login(user, model_registry, Response())
+        assert refused.value.status_code == 403
+
+    @pytest.mark.parametrize("internal", INTERNAL_ACCOUNTS)
+    def test_no_grant_signs_in_an_internal_account(self, model_registry, internal):
+        grant_type = f"internal_probe_{uuid.uuid4().hex[:8]}"
+        PasswordlessGrantRegistry.register(
+            grant_type, make_user_id_grant_validator("Probe")
+        )
+        try:
+            with pytest.raises(HTTPException) as refused:
+                UserManager.login_via_grant(
+                    grant_type=grant_type,
+                    grant_payload=UserIdGrantPayload(
+                        user_id=env(internal), model_registry=model_registry
+                    ),
+                    model_registry=model_registry,
+                )
+            assert refused.value.status_code == 403
+        finally:
+            PasswordlessGrantRegistry._validators.pop(grant_type, None)
+
+    def test_a_password_login_of_root_is_refused(self, model_registry):
+        """Even given a password, ROOT gets no session."""
+        password = "Root-Probe-1234!"
+        root_id = env("ROOT_ID")
+        CredentialDB = UserCredentialModel.DB(model_registry.DB.manager.Base)
+        with internal_account_email(model_registry, root_id) as email:
+            UserCredentialManager(
+                requester_id=root_id, model_registry=model_registry
+            ).create(user_id=root_id, password=password)
+            try:
+                with pytest.raises(HTTPException) as refused:
+                    UserManager.login(
+                        {"email": email, "password": password},
+                        ip_address=f"203.0.113.{uuid.uuid4().int % 250 + 1}",
+                        model_registry=model_registry,
+                        response=Response(),
+                    )
+                assert refused.value.status_code == 403
+            finally:
+                with model_registry.DB.manager._get_db_session() as session:
+                    session.query(CredentialDB).filter(
+                        CredentialDB.user_id == root_id
+                    ).delete(synchronize_session=False)
+
+    def test_a_verified_email_matches_as_registration_stores_it(
+        self, server, model_registry
+    ):
+        user = create_user(server, email=generate_test_email("mixed_case"))
+        assert (
+            UserManager.user_id_for_verified_email(
+                f"  {user.email.upper()} ", model_registry
+            )
+            == user.id
+        )
+
+    def test_no_email_names_no_account(self, model_registry):
+        assert UserManager.user_id_for_verified_email(None, model_registry) is None
+        assert (
+            UserManager.user_id_for_verified_email(
+                generate_test_email("nobody"), model_registry
+            )
+            is None
+        )
+
+    @pytest.mark.parametrize("internal", INTERNAL_ACCOUNTS)
+    def test_an_internal_accounts_email_is_refused(self, model_registry, internal):
+        with internal_account_email(model_registry, env(internal)) as email:
+            for asserted in (email, email.upper()):
+                with pytest.raises(HTTPException) as refused:
+                    UserManager.user_id_for_verified_email(asserted, model_registry)
+                assert refused.value.status_code == 403
+
+    def test_an_email_two_accounts_share_names_neither(self, model_registry):
+        email = generate_test_email("shared")
+        UserDB = UserModel.DB(model_registry.DB.manager.Base)
+        for _ in range(2):
+            UserDB.create(
+                requester_id=env("ROOT_ID"), model_registry=model_registry, email=email
+            )
+        with pytest.raises(HTTPException) as refused:
+            UserManager.user_id_for_verified_email(email, model_registry)
+        assert refused.value.status_code == 409
+
+
+class TestMFAMethodSources:
+    """Second factors come from every registered source: a user with any is
+    challenged, the challenge lists them all, and a code any code-based
+    source accepts completes it."""
+
+    CODE = "424242"
+
+    @pytest.fixture
+    def sources(self) -> Iterator[Tuple[Set[str], Set[str]]]:
+        """Two real sources answering for the users each test names: one
+        whose factor is a typed code, one whose factor completes elsewhere
+        (a security key)."""
+        coded: Set[str] = set()
+        keyed: Set[str] = set()
+        names = [
+            f"probe_code_{uuid.uuid4().hex[:8]}",
+            f"probe_key_{uuid.uuid4().hex[:8]}",
+        ]
+        register_mfa_source(
+            names[0],
+            MFAMethodSource(
+                login_methods=lambda user_id, _registry: (
+                    [{"id": f"code-{user_id}", "method_type": "totp"}]
+                    if user_id in coded
+                    else []
+                ),
+                verify_login_code=lambda user_id, code, _registry: user_id in coded
+                and code == self.CODE,
+            ),
+        )
+        register_mfa_source(
+            names[1],
+            MFAMethodSource(
+                login_methods=lambda user_id, _registry: (
+                    [{"id": f"key-{user_id}", "method_type": "webauthn"}]
+                    if user_id in keyed
+                    else []
+                )
+            ),
+        )
+        yield coded, keyed
+        for name in names:
+            _mfa_sources.pop(name, None)
+
+    @staticmethod
+    def password_login(server, model_registry, user):
+        return UserManager.login(
+            {"email": user.email, "password": TEST_PASSWORD},
+            ip_address=f"203.0.113.{uuid.uuid4().int % 250 + 1}",
+            model_registry=model_registry,
+            response=Response(),
+        )
+
+    def test_a_user_without_a_factor_signs_in_in_one_step(
+        self, server, model_registry, sources
+    ):
+        user = create_user(server)
+        assert "token" in self.password_login(server, model_registry, user)
+
+    def test_a_factor_from_a_source_without_codes_still_challenges(
+        self, server, model_registry, sources
+    ):
+        coded, keyed = sources
+        user = create_user(server)
+        keyed.add(user.id)
+        challenge = self.password_login(server, model_registry, user)
+        assert challenge["mfa_required"] is True
+        assert challenge["methods"] == [
+            {"id": f"key-{user.id}", "method_type": "webauthn"}
+        ]
+        with pytest.raises(HTTPException) as refused:
+            UserManager.login_mfa(
+                {"challenge_token": challenge["challenge_token"], "code": self.CODE},
+                model_registry,
+                Response(),
+            )
+        assert refused.value.status_code == 401
+
+    def test_the_challenge_lists_every_sources_methods(
+        self, server, model_registry, sources
+    ):
+        coded, keyed = sources
+        user = create_user(server)
+        coded.add(user.id)
+        keyed.add(user.id)
+        challenge = self.password_login(server, model_registry, user)
+        assert {m["id"] for m in challenge["methods"]} >= {
+            f"code-{user.id}",
+            f"key-{user.id}",
+        }
+        signed_in = UserManager.login_mfa(
+            {"challenge_token": challenge["challenge_token"], "code": self.CODE},
+            model_registry,
+            Response(),
+        )
+        assert signed_in["user"]["id"] == user.id
+
+
+class TestADeletedAccountsTokensAreVoid:
+    """Soft-deleting a user ends their still-unexpired tokens everywhere."""
+
+    @staticmethod
+    def soft_delete(model_registry, user_id: str) -> None:
+        UserDB = UserModel.DB(model_registry.DB.manager.Base)
+        with model_registry.DB.manager._get_db_session() as session:
+            session.query(UserDB).filter(UserDB.id == user_id).update(
+                {UserDB.deleted_at: datetime.now(timezone.utc)},
+                synchronize_session=False,
+            )
+
+    def test_a_deleted_users_token_no_longer_authenticates(
+        self, server, model_registry
+    ):
+        user = create_user(server)
+        bearer = {"Authorization": f"Bearer {user.jwt}"}
+        assert server.get("/v1/user", headers=bearer).status_code == 200
+        self.soft_delete(model_registry, user.id)
+        with pytest.raises(HTTPException) as refused:
+            UserManager.auth(model_registry, authorization=f"Bearer {user.jwt}")
+        assert refused.value.status_code == 401
+        with pytest.raises(HTTPException) as unverified:
+            UserManager.verify_token(user.jwt, model_registry)
+        assert unverified.value.status_code == 401
+        assert server.get("/v1/user", headers=bearer).status_code == 401
+        assert server.get("/v1/team", headers=bearer).status_code == 401

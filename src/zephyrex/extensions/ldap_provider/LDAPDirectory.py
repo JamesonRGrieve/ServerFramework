@@ -59,7 +59,7 @@ from zephyrex.logic.BLL_Auth import (
     UserModel,
     UserTeamModel,
     _lockout_hooks,
-    _mfa_hooks,
+    mfa_login_methods,
 )
 
 PAGE_SIZE = 200
@@ -564,8 +564,7 @@ class LDAPDirectory:
             if record_failure is not None:
                 record_failure(user_id, address, self.registry)
             return None
-        login_methods = _mfa_hooks["login_methods"]
-        if login_methods is not None and login_methods(user_id, self.registry):
+        if mfa_login_methods(user_id, self.registry):
             raise Refused(
                 ResultCode.UNWILLING_TO_PERFORM,
                 "this account has a second factor, which a simple bind cannot carry",

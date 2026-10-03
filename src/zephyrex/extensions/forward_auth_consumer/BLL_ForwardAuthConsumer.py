@@ -55,7 +55,12 @@ from zephyrex.logic.AbstractLogicManager import (
     StringSearchModel,
     UpdateMixinModel,
 )
-from zephyrex.logic.BLL_Auth import UserManager, UserModel, _invitation_hooks
+from zephyrex.logic.BLL_Auth import (
+    UserManager,
+    UserModel,
+    _invitation_hooks,
+    refuse_internal_account,
+)
 from zephyrex.logic.BLL_Providers import ProviderInstanceModel, ProviderManager
 from zephyrex.pydantic2.fastapi import AuthType, RouterMixin, RouteType
 from zephyrex.pydantic2.registry import BaseModel
@@ -178,6 +183,7 @@ class ForwardAuthIdentityManager(AbstractBLLManager, RouterMixin):
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="A link names its user, verifier instance and identity",
             )
+        refuse_internal_account(user_id)
         self._user(user_id)
         if not any(str(row.id) == instance_id for row in self._verifier_rows()):
             raise HTTPException(
@@ -399,9 +405,11 @@ class ForwardAuthIdentityManager(AbstractBLLManager, RouterMixin):
                 if verifier.trusted_for_email and verified.email
                 else None
             )
-            existing = self._users(email=email) if email else []
-            user = existing[0] if existing else self._registered(verified, email)
-            link = self._link(instance_id, verified.identity, str(user["id"]))
+            user_id = UserManager.user_id_for_verified_email(email, self.model_registry)
+            if user_id is None:
+                user_id = str(self._registered(verified, email)["id"])
+            link = self._link(instance_id, verified.identity, user_id)
+        refuse_internal_account(link.user_id)
         user = self._user(str(link.user_id))
         if user.get("active") is False:
             raise HTTPException(

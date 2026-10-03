@@ -44,7 +44,11 @@ from zephyrex.lib.InboundSecurity import (
 from zephyrex.lib.SecretEncryption import FERNET_PREFIX
 from zephyrex.lib.SessionCookies import SESSION_COOKIE
 from zephyrex.logic.BLL_Auth import UserManager
-from zephyrex.testing.factories import create_user
+from zephyrex.testing.factories import (
+    INTERNAL_ACCOUNTS,
+    create_user,
+    internal_account_email,
+)
 
 DIRECTORY_ROUTE = "/v1/ldap/directory"
 IDENTITY_ROUTE = "/v1/ldap/identity"
@@ -515,6 +519,71 @@ class TestAccounts:
         )
         linked = signed_in(server, trusted["id"], directory, "erin")
         assert linked["user"]["id"] == local.id
+
+    @staticmethod
+    def add_person(directory: Directory, uid: str, password: str, mail: str) -> None:
+        """A new entry in the real directory, written as its administrator."""
+        connection = Connection(
+            Server("127.0.0.1", port=directory.ldap_port, get_info="NO_INFO"),
+            user=ROOT_DN,
+            password=ROOT_PASSWORD,
+            auto_bind=True,
+            receive_timeout=10,
+        )
+        try:
+            assert connection.add(
+                f"uid={uid},{PEOPLE}",
+                ["inetOrgPerson"],
+                {
+                    "uid": uid,
+                    "cn": uid,
+                    "sn": uid,
+                    "mail": mail,
+                    "userPassword": password,
+                },
+            ), connection.result
+        finally:
+            connection.unbind()
+
+    @pytest.mark.parametrize("internal", INTERNAL_ACCOUNTS)
+    def test_no_directory_email_reaches_an_internal_account(
+        self,
+        server: TestClient,
+        registry: Any,
+        directory: Directory,
+        internal: str,
+    ) -> None:
+        """ROOT's seeded email is predictable; a directory trusted to link
+        by email whose entry carries it must not sign in as the superuser,
+        and no administrator may link an entry to an internal account."""
+        trusted = create_directory(
+            server, directory, name="Trusted email", link_existing_by_email=True
+        )
+        uid = f"usurper{uuid.uuid4().hex[:8]}"
+        password = "usurper-pass-1"
+        with internal_account_email(registry, env(internal)) as email:
+            self.add_person(directory, uid, password, email.upper())
+            response = login(server, trusted["id"], uid, password)
+        assert response.status_code == 403, response.text
+        assert SESSION_COOKIE not in server.cookies
+        found = server.post(
+            f"{DIRECTORY_ROUTE}/{trusted['id']}/lookup",
+            json={"username": uid},
+            headers=root(),
+        ).json()
+        linked = server.post(
+            IDENTITY_ROUTE,
+            json={
+                "ldap_identity": {
+                    "user_id": env(internal),
+                    "ldap_directory_id": trusted["id"],
+                    "external_id": found["external_id"],
+                    "dn": found["dn"],
+                }
+            },
+            headers=root(),
+        )
+        assert linked.status_code == 403, linked.text
 
     def test_an_identity_belongs_to_one_directory(
         self, server: TestClient, directory: Directory, ldaps: Dict[str, Any]

@@ -75,6 +75,7 @@ from zephyrex.logic.BLL_Auth import (
     UserManager,
     UserModel,
     _lockout_hooks,
+    refuse_internal_account,
 )
 from zephyrex.pydantic2.fastapi import AuthType, RouterMixin
 from zephyrex.pydantic2.fastapi.types import RouteType
@@ -530,6 +531,7 @@ class LdapIdentityManager(AbstractBLLManager, RouterMixin):
 
     def create_validation(self, entity: Any) -> None:
         load_directory(self.model_registry, entity.ldap_directory_id)
+        refuse_internal_account(entity.user_id)
         if not _users(self.model_registry, id=entity.user_id):
             raise HTTPException(status_code=404, detail="No such user")
         if find_identity(
@@ -684,6 +686,7 @@ class LdapLoginManager(AbstractBLLManager, RouterMixin):
         created (see the module docstring), with the identity refreshed."""
         identity = find_identity(self.model_registry, directory.id, account.external_id)
         if identity is not None:
+            refuse_internal_account(identity.user_id)
             users = _users(self.model_registry, id=identity.user_id)
             if len(users) != 1 or not _active(users[0]):
                 raise _refused()
@@ -693,8 +696,8 @@ class LdapLoginManager(AbstractBLLManager, RouterMixin):
         email = (
             UserManager._normalize_identifier(account.email) if account.email else None
         )
-        existing = _users(self.model_registry, email=email) if email else []
-        if existing:
+        existing_id = UserManager.user_id_for_verified_email(email, self.model_registry)
+        if existing_id is not None:
             if not directory.link_existing_by_email:
                 raise HTTPException(
                     status_code=409,
@@ -703,7 +706,7 @@ class LdapLoginManager(AbstractBLLManager, RouterMixin):
                         "administrator must link it to this directory"
                     ),
                 )
-            user = existing[0]
+            user = _users(self.model_registry, id=existing_id)[0]
             if not _active(user):
                 raise _refused()
         else:

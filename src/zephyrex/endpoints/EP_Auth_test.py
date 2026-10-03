@@ -1894,9 +1894,13 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
         session row, valid jti, valid signature), soft-delete the
         users-table row out from under it via SQL so
         ``_enforce_session_not_revoked`` still passes (it gates on the
-        sessions row, not the users row) but the subsequent
-        ``UserModel.DB.get(id=payload["sub"])`` filters the row out —
-        which raises the 404 this test asserts.
+        sessions row, not the users row).
+
+        This test used to assert 404 there. It now asserts 401: a
+        deleted account's still-unexpired token is void, so
+        ``UserManager.auth`` refuses it as an invalid token before any
+        route runs. Before that fix, the deleted user's token authenticated
+        on every other route, and only this one answered 404.
         """
         from datetime import datetime, timezone
 
@@ -1927,9 +1931,9 @@ class TestUserAndSessionEndpoints(AbstractEPTest):
             self.get_delete_endpoint(test_user.id, {}),
             headers=self._get_appropriate_headers(test_user.jwt),
         )
-        assert response.status_code == 404, (
+        assert response.status_code == 401, (
             "DELETE /v1/user with a JWT bound to a soft-deleted user "
-            f"must return 404; got {response.status_code}: "
+            f"must return 401; got {response.status_code}: "
             f"{response.text[:200]}"
         )
 

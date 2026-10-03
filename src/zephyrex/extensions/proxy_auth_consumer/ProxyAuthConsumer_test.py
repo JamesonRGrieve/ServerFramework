@@ -245,6 +245,16 @@ class TestProxySignIn(ExtensionServerMixin):
         [link] = self.links(server, name)
         assert link.user_id == user.id
 
+    def test_a_trusted_email_matches_whatever_its_case(self, server, proxied, set_env):
+        """Registration stores emails normalized; a proxy's may not be."""
+        set_env("PROXY_AUTH_CONSUMER_TRUST_EMAIL", "true")
+        email = generate_test_email("proxy_cased")
+        user = create_user(server, email=email)
+        name = unique("cased")
+        response = self.login(proxied, {USER_HEADER: name, EMAIL_HEADER: email.upper()})
+        assert response.status_code == 200, response.text
+        assert response.json()["user_id"] == user.id
+
     def test_a_trusted_email_gives_a_new_account_its_email(self, proxied, set_env):
         set_env("PROXY_AUTH_CONSUMER_TRUST_EMAIL", "true")
         email = generate_test_email("proxy_new")

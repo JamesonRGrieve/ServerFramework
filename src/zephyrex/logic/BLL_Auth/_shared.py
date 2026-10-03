@@ -2,6 +2,7 @@
 import base64 as _b64
 import hmac
 import secrets
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import (
     TYPE_CHECKING,
@@ -38,6 +39,7 @@ from zephyrex.database.HookRegistries import (
     register_acl_hooks as register_acl_hooks,
     register_invitation_hooks as register_invitation_hooks,
 )
+from zephyrex.database.StaticPermissions import is_any_internal_id
 from zephyrex.lib.DateTimeUtils import ensure_utc
 from zephyrex.lib.Environment import env
 
@@ -416,23 +418,67 @@ def register_api_key_hooks(
         _api_key_hooks["resolve_principal"] = resolve_principal
 
 
-# auth_mfa extension hooks — populated when ``auth_mfa.BLL_Auth_MFA`` is
-# imported. Without the extension no user has MFA methods and login is a
-# single step.
-_mfa_hooks: dict = {
-    "login_methods": None,  # (user_id, model_registry) -> [{id, method_type}]
-    "verify_login_code": None,  # (user_id, code, model_registry) -> bool
-}
+MFALoginMethods = Callable[[str, Any], List[Dict[str, str]]]
+MFACodeVerifier = Callable[[str, str, Any], bool]
 
 
-def register_mfa_hooks(*, login_methods=None, verify_login_code=None) -> None:
-    """Called when ``auth_mfa.BLL_Auth_MFA`` is imported."""
-    for name, fn in (
-        ("login_methods", login_methods),
-        ("verify_login_code", verify_login_code),
-    ):
-        if fn is not None:
-            _mfa_hooks[name] = fn
+@dataclass(frozen=True)
+class MFAMethodSource:
+    """One extension's second factors.
+
+    ``login_methods(user_id, model_registry)`` lists the user's usable
+    methods as ``{"id", "method_type"}``. ``verify_login_code(user_id, code,
+    model_registry)`` says whether ``code`` is a current one, for a factor
+    the user types (TOTP, a recovery code). A source without it, such as a
+    security key, answers the challenge at its own route.
+    """
+
+    login_methods: MFALoginMethods
+    verify_login_code: Optional[MFACodeVerifier] = None
+
+
+# Second-factor sources by name, registered when each contributing
+# extension's BLL module is imported (auth_mfa, webauthn_consumer). Without
+# any, no user has a second factor and login is a single step.
+_mfa_sources: Dict[str, MFAMethodSource] = {}
+
+
+def register_mfa_source(name: str, source: MFAMethodSource) -> None:
+    """Add (or, on a module reload, replace) the source called ``name``."""
+    _mfa_sources[name] = source
+
+
+def mfa_login_methods(user_id: str, model_registry: Any) -> List[Dict[str, str]]:
+    """Every source's methods for ``user_id``: a user with any of them is
+    challenged for a second factor."""
+    return [
+        method
+        for source in list(_mfa_sources.values())
+        for method in source.login_methods(user_id, model_registry)
+    ]
+
+
+def verify_mfa_login_code(user_id: str, code: str, model_registry: Any) -> bool:
+    """Whether ``code`` is a current code of any source's for ``user_id``."""
+    return any(
+        source.verify_login_code(user_id, code, model_registry)
+        for source in list(_mfa_sources.values())
+        if source.verify_login_code is not None
+    )
+
+
+INTERNAL_ACCOUNT_REFUSED = "Internal accounts do not sign in"
+
+
+def refuse_internal_account(user_id: Any) -> None:
+    """403 for ROOT, SYSTEM and the template user. They hold every
+    privilege and are seeded with predictable emails (``root@<domain>``);
+    they act through API keys and server code, never a session. Every
+    session issued and every external identity linked or matched by email
+    passes through this, so no identity provider, proxy or directory that
+    asserts one of their emails, or a link made to one, signs in as it."""
+    if is_any_internal_id(str(user_id)):
+        raise HTTPException(status_code=403, detail=INTERNAL_ACCOUNT_REFUSED)
 
 
 def reset_session_hooks() -> None:

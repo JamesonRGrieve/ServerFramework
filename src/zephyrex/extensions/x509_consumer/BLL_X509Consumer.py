@@ -81,7 +81,12 @@ from zephyrex.logic.AbstractLogicManager import (
     StringSearchModel,
     UpdateMixinModel,
 )
-from zephyrex.logic.BLL_Auth import UserManager, UserModel, _invitation_hooks
+from zephyrex.logic.BLL_Auth import (
+    UserManager,
+    UserModel,
+    _invitation_hooks,
+    refuse_internal_account,
+)
 from zephyrex.pydantic2.fastapi import AuthType, RouterMixin, RouteType
 from zephyrex.pydantic2.registry import BaseModel
 
@@ -485,6 +490,7 @@ class UserX509LinkManager(AbstractBLLManager, RouterMixin):
         identity = str(kwargs.get("identity") or "").strip()
         if not user_id or not trust_anchor_id or not identity:
             raise _bad_request("A link names its user, trust anchor and identity")
+        refuse_internal_account(user_id)
         self._user(user_id)
         if not self._anchor_exists(trust_anchor_id):
             raise HTTPException(
@@ -644,10 +650,14 @@ class UserX509LinkManager(AbstractBLLManager, RouterMixin):
             raise _refused(exc) from exc
         link = self.linked(anchor.id, identity)
         if link is None:
-            email = email_of(leaf) if anchor.trusted_for_email else None
-            existing = self._users(email=email) if email else []
-            user = existing[0] if existing else self._registered(identity, email)
-            link = self._link(anchor.id, identity, str(user["id"]))
+            vouched = email_of(leaf) if anchor.trusted_for_email else None
+            # Stored emails are normalized at registration; match the same.
+            email = UserManager._normalize_identifier(vouched) if vouched else None
+            user_id = UserManager.user_id_for_verified_email(email, self.model_registry)
+            if user_id is None:
+                user_id = str(self._registered(identity, email)["id"])
+            link = self._link(anchor.id, identity, user_id)
+        refuse_internal_account(link.user_id)
         user = self._user(str(link.user_id))
         if user.get("active") is False:
             raise HTTPException(

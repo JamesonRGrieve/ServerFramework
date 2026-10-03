@@ -56,11 +56,7 @@ from fastapi import HTTPException, Request, Response, status
 from pydantic import BaseModel as RouteModel
 from pydantic import Field
 
-from zephyrex.database.StaticPermissions import (
-    is_any_internal_id,
-    is_root_id,
-    is_system_id,
-)
+from zephyrex.database.StaticPermissions import is_root_id, is_system_id
 from zephyrex.lib import Environment
 from zephyrex.lib.CustomRoute import ExposeIn, custom_route
 from zephyrex.lib.Environment import env, env_bool
@@ -78,7 +74,12 @@ from zephyrex.logic.AbstractLogicManager import (
     StringSearchModel,
     UpdateMixinModel,
 )
-from zephyrex.logic.BLL_Auth import UserManager, UserModel, _invitation_hooks
+from zephyrex.logic.BLL_Auth import (
+    UserManager,
+    UserModel,
+    _invitation_hooks,
+    refuse_internal_account,
+)
 from zephyrex.pydantic2.fastapi import AuthType, RouterMixin, RouteType
 from zephyrex.pydantic2.registry import BaseModel
 
@@ -280,6 +281,9 @@ def asserted_identity(request: Request) -> AssertedIdentity:
         email = _single_value(request, email_header, MAX_EMAIL_LENGTH)
         if email is not None and not _EMAIL.fullmatch(email):
             raise _bad_request(f"{email_header} is not an email address")
+        if email is not None:
+            # Stored emails are normalized at registration; match the same.
+            email = UserManager._normalize_identifier(email)
     name = _single_value(request, name_header, MAX_NAME_LENGTH)
     return AssertedIdentity(identity=identity, email=email, name=name)
 
@@ -377,8 +381,7 @@ class UserProxyAuthLinkManager(AbstractBLLManager, RouterMixin):
     def _account(self, user_id: str) -> Dict[str, Any]:
         """The live, active account ``user_id``, which may not be an
         internal one (ROOT, SYSTEM, the template user). 403 otherwise."""
-        if is_any_internal_id(user_id):
-            raise _forbidden("Internal accounts do not sign in through a proxy")
+        refuse_internal_account(user_id)
         users = self._users(id=user_id)
         if len(users) != 1:
             raise _forbidden("The account no longer exists")
@@ -423,14 +426,11 @@ class UserProxyAuthLinkManager(AbstractBLLManager, RouterMixin):
     def _first_link(self, asserted: AssertedIdentity) -> Any:
         """Link an identity seen for the first time: to the one account
         with its trusted email, else to a new account."""
-        existing = self._users(email=asserted.email) if asserted.email else []
-        if len(existing) > 1:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="More than one account has that email",
-            )
-        if existing:
-            user = self._account(str(existing[0]["id"]))
+        user_id = UserManager.user_id_for_verified_email(
+            asserted.email, self.model_registry
+        )
+        if user_id is not None:
+            user = self._account(user_id)
         else:
             user = self._registered(asserted)
         return self._link(asserted.identity, str(user["id"]))

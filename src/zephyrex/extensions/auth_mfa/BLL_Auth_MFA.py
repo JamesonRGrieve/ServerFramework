@@ -34,7 +34,12 @@ from zephyrex.logic.AbstractLogicManager import (
     UpdateMixinModel,
     hook_bll,
 )
-from zephyrex.logic.BLL_Auth import UserManager, UserModel, register_mfa_hooks
+from zephyrex.logic.BLL_Auth import (
+    MFAMethodSource,
+    UserManager,
+    UserModel,
+    register_mfa_source,
+)
 
 # Recovery codes are two dash-joined groups: ``XXXXX-XXXXX``.
 _RECOVERY_CODE_ALPHABET = string.ascii_uppercase + string.digits
@@ -978,8 +983,8 @@ MultifactorMethodModel.Manager = MultifactorMethodManager
 
 
 # Password login consults these to demand and check a second factor. Both run
-# as the user logging in, so the verification lockout keys on them. The hook
-# table is process-global: an app that did not load auth_mfa has no methods.
+# as the user logging in, so the verification lockout keys on them. The source
+# table is process-global, so each checks that this app bound auth_mfa.
 def _login_methods(user_id: str, model_registry: Any) -> List[Dict[str, str]]:
     if not model_registry.is_model_bound(MultifactorMethodModel):
         return []
@@ -1004,4 +1009,7 @@ def _verify_login_code(user_id: str, code: str, model_registry: Any) -> bool:
     )
 
 
-register_mfa_hooks(login_methods=_login_methods, verify_login_code=_verify_login_code)
+register_mfa_source(
+    "auth_mfa",
+    MFAMethodSource(login_methods=_login_methods, verify_login_code=_verify_login_code),
+)

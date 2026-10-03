@@ -17,6 +17,8 @@ from zephyrex.extensions.saml_consumer.BLL_SAMLConsumer import (
     GRANT_TYPE,
     REQUEST_COOKIE,
     ROUTE_PREFIX,
+    SamlIdentityManager,
+    SamlIdentityModel,
     SamlIdentityProviderModel,
 )
 from zephyrex.extensions.saml_consumer.EXT_SAMLConsumer import EXT_SAMLConsumer
@@ -24,7 +26,11 @@ from zephyrex.extensions.saml_consumer.LocalIdP_test import LocalIdP, encoded, k
 from zephyrex.lib.Environment import env
 from zephyrex.lib.SessionCookies import SESSION_COOKIE
 from zephyrex.logic.BLL_Auth import SessionModel, UserManager, UserModel, UserTeamModel
-from zephyrex.testing.factories import create_user
+from zephyrex.testing.factories import (
+    INTERNAL_ACCOUNTS,
+    create_user,
+    internal_account_email,
+)
 
 SP_KEY, SP_CERT = key_pair("zephyrex-sp")
 RETURN_TO = "/signed-in"
@@ -484,6 +490,50 @@ class TestSAMLSignIn(ExtensionServerMixin):
         summary = self.add_idp(server, idp, emails_verified=True)
         finished = self.round_trip(server, idp, summary, name_id=admin_a.email)[2]
         assert self.signed_in_user(server, finished).id == admin_a.id
+
+    @staticmethod
+    def identities_of(server: TestClient, user_id: str) -> list:
+        registry = registry_of(server)
+        IdentityDB = SamlIdentityModel.DB(registry.DB.manager.Base)
+        return list(
+            IdentityDB.list(
+                requester_id=env("ROOT_ID"),
+                model_registry=registry,
+                filters=[
+                    IdentityDB.user_id == user_id,
+                    IdentityDB.deleted_at.is_(None),
+                ],
+            )
+        )
+
+    @pytest.mark.parametrize("internal", INTERNAL_ACCOUNTS)
+    def test_no_vouched_for_email_reaches_an_internal_account(
+        self, server: TestClient, idp: LocalIdP, internal: str
+    ) -> None:
+        """ROOT's seeded email is predictable; an IdP trusted for emails
+        asserting it must not sign in as the superuser."""
+        summary = self.add_idp(server, idp, emails_verified=True)
+        with internal_account_email(registry_of(server), env(internal)) as email:
+            finished = self.round_trip(server, idp, summary, name_id=email)[2]
+        assert finished.status_code == 403, finished.text
+        assert SESSION_COOKIE not in cookies_set(finished)
+        assert self.identities_of(server, env(internal)) == []
+
+    @pytest.mark.parametrize("internal", INTERNAL_ACCOUNTS)
+    def test_nothing_links_to_an_internal_account(
+        self, server: TestClient, idp: LocalIdP, internal: str
+    ) -> None:
+        summary = self.add_idp(server, idp)
+        with pytest.raises(Exception) as refused:
+            SamlIdentityManager(
+                model_registry=registry_of(server), requester_id=env("ROOT_ID")
+            ).create(
+                user_id=env(internal),
+                identity_provider_id=summary["id"],
+                idp_entity_id=idp.entity_id,
+                subject=new_email("internal"),
+            )
+        assert getattr(refused.value, "status_code", None) == 403
 
     def test_an_email_the_idp_does_not_vouch_for_does_not_take_an_account(
         self, server: TestClient, idp: LocalIdP

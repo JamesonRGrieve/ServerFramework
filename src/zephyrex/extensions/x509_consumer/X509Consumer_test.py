@@ -39,7 +39,12 @@ from zephyrex.extensions.x509_consumer.X509Verification import UPN_OID
 from zephyrex.lib.Environment import env
 from zephyrex.logic.BLL_Auth import UserModel
 from zephyrex.logic.BLL_Auth.user_team import UserTeamModel
-from zephyrex.testing.factories import create_user, generate_test_email
+from zephyrex.testing.factories import (
+    INTERNAL_ACCOUNTS,
+    create_user,
+    generate_test_email,
+    internal_account_email,
+)
 
 LOGIN = "/v1/auth/x509/login"
 HEADER = "X-SSL-Client-Cert"
@@ -886,6 +891,67 @@ class TestCertificateSignIn(ExtensionServerMixin):
         )
         assert response.status_code == 200, response.text
         assert response.json()["user_id"] == user.id
+
+    def test_a_vouched_email_matches_whatever_its_case(
+        self, server, proxied, pki, anchor
+    ):
+        """Registration stores emails normalized; a certificate's may not be."""
+        email = generate_test_email("x509_cased")
+        user = create_user(server, email=email)
+        anchor(pki.root, trusted_for_email=True)
+        name = self.unique("cased")
+        response = self.login(
+            proxied, pki.client(name, emails=[email.upper()]), pki.issuing
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["user_id"] == user.id
+        [link] = self.links(server, name)
+        assert link.user_id == user.id
+
+    @pytest.mark.parametrize("internal", INTERNAL_ACCOUNTS)
+    def test_no_vouched_email_reaches_an_internal_account(
+        self, server, proxied, pki, anchor, internal
+    ):
+        """ROOT's seeded email is predictable; a CA trusted for emails
+        vouching for it must not sign in as the superuser."""
+        anchor(pki.root, trusted_for_email=True)
+        name = self.unique("usurper")
+        registry = server.app.state.model_registry
+        with internal_account_email(registry, env(internal)) as email:
+            response = self.login(
+                proxied, pki.client(name, emails=[email]), pki.issuing
+            )
+        assert response.status_code == 403, response.text
+        assert self.links(server, name) == []
+
+    @pytest.mark.parametrize("internal", INTERNAL_ACCOUNTS)
+    def test_nothing_links_to_an_internal_account(self, server, pki, anchor, internal):
+        row = anchor(pki.root)
+        with pytest.raises(Exception) as refused:
+            self.root_links(server).create(
+                user_id=env(internal),
+                trust_anchor_id=str(row.id),
+                identity=self.unique("internal"),
+            )
+        assert getattr(refused.value, "status_code", None) == 403
+
+    def test_an_identity_linked_to_root_signs_no_one_in(
+        self, server, proxied, pki, anchor
+    ):
+        """A link to ROOT written beneath the manager (by an older version,
+        or directly) still issues no session."""
+        row = anchor(pki.root)
+        name = self.unique("rooted")
+        registry = server.app.state.model_registry
+        UserX509LinkModel.DB(registry.DB.manager.Base).create(
+            requester_id=env("ROOT_ID"),
+            model_registry=registry,
+            trust_anchor_id=str(row.id),
+            identity=name,
+            user_id=env("ROOT_ID"),
+        )
+        response = self.login(proxied, pki.client(name), pki.issuing)
+        assert response.status_code == 403, response.text
 
     def test_an_email_alone_never_takes_over_an_account(
         self, server, proxied, pki, anchor

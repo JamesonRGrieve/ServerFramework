@@ -66,7 +66,7 @@ from zephyrex.logic.AbstractLogicManager import (
     StringSearchModel,
     UpdateMixinModel,
 )
-from zephyrex.logic.BLL_Auth import UserManager, UserModel
+from zephyrex.logic.BLL_Auth import UserManager, UserModel, refuse_internal_account
 from zephyrex.pydantic2.fastapi import AuthType, RouterMixin
 from zephyrex.pydantic2.registry import BaseModel
 
@@ -422,6 +422,7 @@ class RadiusIdentityManager(RootManagedManager, RouterMixin):
         RadiusServerManager(
             requester_id=self.requester.id, model_registry=self.model_registry
         ).get(id=server_id)
+        refuse_internal_account(fields.get("user_id"))
         UserManager(
             requester_id=self.requester.id, model_registry=self.model_registry
         ).get(id=fields.get("user_id"))
@@ -432,6 +433,8 @@ class RadiusIdentityManager(RootManagedManager, RouterMixin):
         return fields
 
     def prepare_update(self, id: str, fields: Dict[str, Any]) -> Dict[str, Any]:
+        if fields.get("user_id") is not None:
+            refuse_internal_account(fields["user_id"])
         username = fields.get("username")
         if username is not None:
             current = self.get(id=id)
@@ -707,6 +710,7 @@ class RadiusLoginManager(AbstractBLLManager, RouterMixin):
         now = datetime.now(timezone.utc)
         if identities:
             identity: RadiusIdentityModel = identities[0]
+            refuse_internal_account(identity.user_id)
             users = UserDB.list(
                 requester_id=root_id,
                 model_registry=self.model_registry,

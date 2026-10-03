@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Extracted test fixture factories and helpers.
 
 Shared between conftest.py (session-scoped) and ExtensionServerMixin
@@ -7,6 +8,8 @@ entities, returning the created object.
 
 import base64
 import uuid
+from contextlib import contextmanager
+from typing import Any, Iterator
 
 from faker import Faker
 from starlette.testclient import TestClient
@@ -88,6 +91,38 @@ def create_user(
         }
 
     return UserWithJWT(**user_dict, jwt=authorize_user(server, user.email))
+
+
+# The env names of the internal accounts, which no sign-in may reach.
+INTERNAL_ACCOUNTS = ("ROOT_ID", "SYSTEM_ID", "TEMPLATE_ID")
+
+
+@contextmanager
+def internal_account_email(model_registry: Any, user_id: str) -> Iterator[str]:
+    """Give the internal account ``user_id`` (ROOT, SYSTEM, the template
+    user) a real address while the block runs, and yield it. The test
+    APP_URI has no domain, so the seeded ``root@`` is no address; in a
+    deployment it is a predictable one an external identity could assert."""
+    UserDB = UserModel.DB(model_registry.DB.manager.Base)
+    seeded = UserDB.get(
+        requester_id=env("ROOT_ID"), model_registry=model_registry, id=user_id
+    )["email"]
+    email = generate_test_email("internal")
+    UserDB.update(
+        requester_id=env("ROOT_ID"),
+        model_registry=model_registry,
+        id=user_id,
+        new_properties={"email": email},
+    )
+    try:
+        yield email
+    finally:
+        UserDB.update(
+            requester_id=env("ROOT_ID"),
+            model_registry=model_registry,
+            id=user_id,
+            new_properties={"email": seeded},
+        )
 
 
 def authorize_user(server, email: str, password=TEST_PASSWORD):

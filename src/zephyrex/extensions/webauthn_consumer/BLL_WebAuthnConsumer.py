@@ -8,9 +8,12 @@ A signed-in user registers a credential in two steps: POST
 takes the browser's response and stores the credential. Signing in is the
 same pair under ``/v1/webauthn/authenticate``, and needs no username: a
 passkey names its user. A verified passkey sign-in, which always requires
-user verification, gives the same session as a password login. After a
-password login that yields an MFA challenge, ``/v1/webauthn/mfa`` completes
-it with a registered credential instead of a code.
+user verification, gives the same session as a password login. Every
+enabled credential is also a second factor (an MFA source, method type
+``webauthn``): a password or other first-factor login of a user with one
+yields an MFA challenge, which ``/v1/webauthn/mfa`` completes with the
+credential instead of a code. Internal accounts (ROOT, SYSTEM, the
+template user) hold no credentials and never sign in.
 
 Every ceremony's challenge is generated here, stored, spent by its first
 use, valid for the configured timeout, and bound: a registration to the
@@ -63,12 +66,21 @@ from zephyrex.logic.AbstractLogicManager import (
     StringSearchModel,
     UpdateMixinModel,
 )
-from zephyrex.logic.BLL_Auth import OneTimeTokenMixin, UserManager, UserModel
+from zephyrex.logic.BLL_Auth import (
+    MFAMethodSource,
+    OneTimeTokenMixin,
+    UserManager,
+    UserModel,
+    refuse_internal_account,
+    register_mfa_source,
+)
 from zephyrex.logic.BLL_Auth.user import MFA_CHALLENGE_AUDIENCE
 from zephyrex.pydantic2.fastapi import AuthType, RouterMixin, RouteType
 from zephyrex.pydantic2.registry import BaseModel
 
 DEVICE_NAME_MAX_LENGTH = 100
+# How an MFA challenge names a credential among the user's second factors.
+MFA_METHOD_TYPE = "webauthn"
 # A sign-in begun for an unknown email is offered this many bytes of a
 # stable, keyed stand-in credential id, so the options do not reveal
 # whether the account exists or has credentials.
@@ -210,6 +222,42 @@ class WebAuthnCeremonyModel(
         ceremony: Optional[StringSearchModel] = None
 
 
+def usable_credentials(
+    model_registry: Any, user_id: str
+) -> List[WebAuthnCredentialModel]:
+    """``user_id``'s enabled credentials: those an assertion may use."""
+    CredentialDB = WebAuthnCredentialModel.DB(model_registry.DB.manager.Base)
+    found: List[WebAuthnCredentialModel] = CredentialDB.list(
+        requester_id=env("ROOT_ID"),
+        model_registry=model_registry,
+        filters=[
+            CredentialDB.user_id == user_id,
+            CredentialDB.is_enabled == True,  # noqa: E712
+            CredentialDB.deleted_at.is_(None),
+        ],
+        return_type="dto",
+        override_dto=WebAuthnCredentialModel,
+    )
+    return found
+
+
+def _second_factor_methods(user_id: str, model_registry: Any) -> List[Dict[str, str]]:
+    """A user's credentials as second factors: password login challenges a
+    user who has one, and ``/v1/webauthn/mfa`` answers it. The source table
+    is process-global, so this checks that the app bound the extension."""
+    if not model_registry.is_model_bound(WebAuthnCredentialModel):
+        return []
+    return [
+        {"id": str(credential.id), "method_type": MFA_METHOD_TYPE}
+        for credential in usable_credentials(model_registry, user_id)
+    ]
+
+
+register_mfa_source(
+    "webauthn_consumer", MFAMethodSource(login_methods=_second_factor_methods)
+)
+
+
 # ---------------------------------------------------------------------------
 # Route models
 # ---------------------------------------------------------------------------
@@ -296,12 +344,14 @@ class WebAuthnCredentialManager(AbstractBLLManager, RouterMixin):
     ]
 
     def create(self, **kwargs: Any) -> Any:
-        """The owner is the requester; ROOT and SYSTEM may name another."""
+        """The owner is the requester; ROOT and SYSTEM may name another, but
+        not an internal account (403): it would sign in as it."""
         requester_id = self.requester.id
 
         def owned(fields: Dict[str, Any]) -> Dict[str, Any]:
             if not _server_side(requester_id) or not fields.get("user_id"):
                 fields["user_id"] = requester_id
+            refuse_internal_account(fields["user_id"])
             return fields
 
         return super().create(**_each(kwargs, owned))
@@ -397,18 +447,7 @@ class WebAuthnCeremonyManager(AbstractBLLManager, RouterMixin):
         return opened
 
     def _usable_credentials(self, user_id: str) -> List[WebAuthnCredentialModel]:
-        found: List[WebAuthnCredentialModel] = self._credentials.list(
-            requester_id=env("ROOT_ID"),
-            model_registry=self.model_registry,
-            filters=[
-                self._credentials.user_id == user_id,
-                self._credentials.is_enabled == True,  # noqa: E712
-                self._credentials.deleted_at.is_(None),
-            ],
-            return_type="dto",
-            override_dto=WebAuthnCredentialModel,
-        )
-        return found
+        return usable_credentials(self.model_registry, user_id)
 
     def _credential(self, credential_id: str) -> Optional[WebAuthnCredentialModel]:
         found: List[WebAuthnCredentialModel] = self._credentials.list(

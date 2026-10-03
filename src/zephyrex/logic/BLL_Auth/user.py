@@ -45,8 +45,10 @@ from zephyrex.logic.BLL_Auth._shared import (
     _invitation_hooks,
     _lockout_hooks,
     _metadata_hooks,
-    _mfa_hooks,
     _session_hooks,
+    mfa_login_methods,
+    refuse_internal_account,
+    verify_mfa_login_code,
 )
 from zephyrex.lib.SessionCookies import clear_session_cookies, set_session_cookies
 from zephyrex.logic.BLL_Auth.password_policy import (
@@ -989,14 +991,19 @@ class UserManager(AbstractBLLManager, RouterMixin):
                 except Exception:
                     pass
 
-            user = UserModel.DB(model_registry.DB.manager.Base).get(
+            # ROOT's reads include deleted rows; a deleted user's token is
+            # void. (A soft delete through the manager evicts the cache.)
+            UserDB = UserModel.DB(model_registry.DB.manager.Base)
+            live: List[UserModel] = UserDB.list(
                 requester_id=env("ROOT_ID"),
                 model_registry=model_registry,
-                id=payload["sub"],
+                filters=[UserDB.id == payload["sub"], UserDB.deleted_at.is_(None)],
                 return_type="dto",
                 override_dto=UserModel,
             )
-
+            if len(live) != 1:
+                raise HTTPException(status_code=401, detail="Invalid token")
+            user = live[0]
             if not user.active:
                 raise HTTPException(status_code=401, detail="Inactive user")
 
@@ -1070,6 +1077,39 @@ class UserManager(AbstractBLLManager, RouterMixin):
         import unicodedata
 
         return unicodedata.normalize("NFKC", identifier).lower().strip()
+
+    @staticmethod
+    def user_id_for_verified_email(
+        email: Optional[str], model_registry: Any
+    ) -> Optional[str]:
+        """The one live account an external identity's vouched-for email
+        names, for linking that identity on its first sign-in. The email is
+        matched as registration stores it (``_normalize_identifier``).
+
+        None without an email or without such an account; 409 when several
+        accounts have it; 403 when it is an internal account's
+        (``refuse_internal_account``).
+        """
+        if not email:
+            return None
+        UserDB = UserModel.DB(model_registry.DB.manager.Base)
+        users: List[Dict[str, Any]] = UserDB.list(
+            requester_id=env("ROOT_ID"),
+            model_registry=model_registry,
+            filters=[
+                UserDB.email == UserManager._normalize_identifier(email),
+                UserDB.deleted_at.is_(None),
+            ],
+        )
+        if len(users) > 1:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="More than one account has that email",
+            )
+        if not users:
+            return None
+        refuse_internal_account(users[0]["id"])
+        return str(users[0]["id"])
 
     @staticmethod
     def _resolve_issued_api_key(
@@ -1165,9 +1205,13 @@ class UserManager(AbstractBLLManager, RouterMixin):
                     model_registry, (api_key_header, token)
                 )
                 if issued_key_user_id is not None:
+                    KeyUserDB = UserModel.DB(db_manager.Base)
                     key_user: Optional[UserModel] = (
-                        db.query(UserModel.DB(db_manager.Base))
-                        .filter(UserModel.DB(db_manager.Base).id == issued_key_user_id)
+                        db.query(KeyUserDB)
+                        .filter(
+                            KeyUserDB.id == issued_key_user_id,
+                            KeyUserDB.deleted_at.is_(None),
+                        )
                         .first()
                     )
                     if key_user is None:
@@ -1188,13 +1232,18 @@ class UserManager(AbstractBLLManager, RouterMixin):
                         payload, model_registry, db=db
                     )
 
+                    UserDB = UserModel.DB(db_manager.Base)
+                    # A deleted account's still-unexpired tokens are void:
+                    # the token is as invalid as one for no user at all.
                     user = (
-                        db.query(UserModel.DB(db_manager.Base))
-                        .filter(UserModel.DB(db_manager.Base).id == payload["sub"])
+                        db.query(UserDB)
+                        .filter(
+                            UserDB.id == payload["sub"], UserDB.deleted_at.is_(None)
+                        )
                         .first()
                     )
                     if not user:
-                        raise HTTPException(status_code=404, detail="User not found")
+                        raise HTTPException(status_code=401, detail="Invalid token")
 
                     if not user.active:
                         raise HTTPException(
@@ -1279,7 +1328,9 @@ class UserManager(AbstractBLLManager, RouterMixin):
         """Issue the session and build the login response for a user whose
         credentials (and second factor, when they have one) are proven: the
         token in the body for API clients, and in the session cookies for
-        browsers. Shared by password login and the MFA challenge step."""
+        browsers. Shared by password login, the MFA challenge step and every
+        sign-in extension; an internal account is refused here (403)."""
+        refuse_internal_account(user["id"])
         root_id = env("ROOT_ID")
 
         # Login successful — issue the session row first (when
@@ -1593,9 +1644,11 @@ class UserManager(AbstractBLLManager, RouterMixin):
         """For a user with a verified second factor, the challenge any first
         factor (password, magic link) yields instead of a session:
         ``{mfa_required, challenge_token, methods}``, redeemed at POST
-        /v1/user/authorize/mfa. None for a user without one."""
-        login_methods = _mfa_hooks["login_methods"]
-        methods = login_methods(user_id, model_registry) if login_methods else []
+        /v1/user/authorize/mfa (or at the route of the extension whose
+        method the user picks, such as /v1/webauthn/mfa). ``methods`` is
+        every registered source's (see ``register_mfa_source``). None for a
+        user without one."""
+        methods = mfa_login_methods(user_id, model_registry)
         if not methods:
             return None
         return {
@@ -1617,8 +1670,7 @@ class UserManager(AbstractBLLManager, RouterMixin):
         POST /authorize and a current TOTP or recovery code for the normal
         login response. A wrong code leaves the challenge usable until it
         expires (attempts are bounded by the MFA verification lockout); a
-        right one spends it."""
-        verify_code = _mfa_hooks["verify_login_code"]
+        right one spends it. The code may be any code-based source's."""
         try:
             claims = read_single_use_token(
                 str(body.get("challenge_token") or ""),
@@ -1630,11 +1682,7 @@ class UserManager(AbstractBLLManager, RouterMixin):
             )
         user_id = str(claims["sub"])
         code = str(body.get("code") or "")
-        if (
-            verify_code is None
-            or not code
-            or not verify_code(user_id, code, model_registry)
-        ):
+        if not code or not verify_mfa_login_code(user_id, code, model_registry):
             raise HTTPException(status_code=401, detail="Invalid MFA code")
         if not redeem_single_use_token(claims):
             raise HTTPException(status_code=401, detail="MFA challenge already used")
@@ -1661,9 +1709,11 @@ class UserManager(AbstractBLLManager, RouterMixin):
         Shared by passwordless grant flows (``login_via_grant``). When
         the extension is not loaded, a typed ``HTTPException(503)``
         surfaces — passwordless grant validators are extension-side and
-        cannot meaningfully run without ``auth_session``.
+        cannot meaningfully run without ``auth_session``. An internal
+        account is refused (403), whatever the grant says.
         """
         user_id = user.id if hasattr(user, "id") else user["id"]
+        refuse_internal_account(user_id)
         issue_hook = _session_hooks["issue_session"]
         if issue_hook is None:
             raise HTTPException(

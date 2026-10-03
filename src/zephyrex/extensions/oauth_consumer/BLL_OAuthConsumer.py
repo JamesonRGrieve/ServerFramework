@@ -94,6 +94,7 @@ from zephyrex.logic.BLL_Auth import (
     UserManager,
     UserModel,
     _invitation_hooks,
+    refuse_internal_account,
 )
 from zephyrex.logic.BLL_Auth.user import issue_browser_session
 from zephyrex.logic.BLL_Providers import (
@@ -503,12 +504,14 @@ class OAuthIdentityManager(AbstractBLLManager, RouterMixin):
     ]
 
     def create(self, **kwargs: Any) -> Any:
-        """An identity of the requester's own; ROOT and SYSTEM name the user."""
+        """An identity of the requester's own; ROOT and SYSTEM name the user,
+        never an internal account (403)."""
         requester_id = self.requester.id
 
         def owned(fields: Dict[str, Any]) -> Dict[str, Any]:
             if not _server_side(requester_id) or not fields.get("user_id"):
                 fields["user_id"] = requester_id
+            refuse_internal_account(fields["user_id"])
             return fields
 
         return super().create(**_each(kwargs, owned))
@@ -756,17 +759,6 @@ class OAuthConsumerManager(AbstractBLLManager, RouterMixin):
             raise InvalidGrantError(detail="The linked user no longer exists")
         return user
 
-    def _user_by_email(self, email: str) -> Optional[UserModel]:
-        UserDB = UserModel.DB(self.model_registry.DB.manager.Base)
-        users: List[UserModel] = UserDB.list(
-            requester_id=env("ROOT_ID"),
-            model_registry=self.model_registry,
-            filters=[UserDB.email == email, UserDB.deleted_at.is_(None)],
-            return_type="dto",
-            override_dto=UserModel,
-        )
-        return users[0] if users else None
-
     def _assert_signup_allowed(self, email: str) -> None:
         """``REGISTRATION_MODE``: open creates; invite needs a pending
         invitation addressed to ``email``; closed refuses."""
@@ -830,11 +822,11 @@ class OAuthConsumerManager(AbstractBLLManager, RouterMixin):
         if identity.email is None or not identity.email_verified:
             raise HTTPException(status_code=403, detail=_UNVERIFIED_EMAIL)
         email = UserManager._normalize_identifier(identity.email)
-        existing = self._user_by_email(email)
-        if existing is not None:
-            assert_may_sign_in(existing)
-            self._link(configured, identity, tokens, str(existing.id))
-            return str(existing.id), False
+        existing_id = UserManager.user_id_for_verified_email(email, self.model_registry)
+        if existing_id is not None:
+            assert_may_sign_in(self._user(existing_id))
+            self._link(configured, identity, tokens, existing_id)
+            return existing_id, False
         self._assert_signup_allowed(email)
         user = self._create_user(identity, email)
         self._link(configured, identity, tokens, str(user.id))
@@ -1074,7 +1066,9 @@ async def current_access_token(
 
 
 def assert_may_sign_in(user: UserModel) -> None:
-    """An inactive or deleted account signs in by no provider."""
+    """An internal account (ROOT, SYSTEM, the template user), or an inactive
+    or deleted one, signs in by no provider."""
+    refuse_internal_account(user.id)
     if user.active is False or getattr(user, "deleted_at", None) is not None:
         raise HTTPException(status_code=403, detail="User account is disabled")
 

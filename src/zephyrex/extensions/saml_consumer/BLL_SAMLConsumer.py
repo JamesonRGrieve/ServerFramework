@@ -89,6 +89,7 @@ from zephyrex.logic.BLL_Auth import (
     UserModel,
     _invitation_hooks,
     make_user_id_grant_validator,
+    refuse_internal_account,
 )
 from zephyrex.logic.BLL_Auth.user import issue_browser_session
 from zephyrex.pydantic2.fastapi import AuthType, RouterMixin, RouteType
@@ -932,12 +933,14 @@ class SamlIdentityManager(AbstractBLLManager, RouterMixin):
 
     def create(self, **kwargs: Any) -> Any:
         """An identity belongs to its user: a user links only themselves;
-        ROOT and SYSTEM (the sign-in) name the user."""
+        ROOT and SYSTEM (the sign-in) name the user, never an internal
+        account (403)."""
         requester_id = str(self.requester.id)
 
         def owned(fields: Dict[str, Any]) -> Dict[str, Any]:
             if not _server_side(requester_id) or not fields.get("user_id"):
                 fields["user_id"] = requester_id
+            refuse_internal_account(fields["user_id"])
             return fields
 
         if isinstance(kwargs.get("entities"), list):
@@ -1031,6 +1034,7 @@ class SamlAccounts:
         return rows[0] if rows else None
 
     def _active_user(self, user_id: str) -> UserModel:
+        refuse_internal_account(user_id)
         user = self._user(id=user_id)
         if user is None or user.active is False:
             raise HTTPException(status_code=403, detail="This account is disabled")
@@ -1039,17 +1043,15 @@ class SamlAccounts:
     def _by_verified_email(self, email: Optional[str]) -> Optional[UserModel]:
         """The account an asserted email names. Linking to it needs the IdP
         to vouch for its emails; otherwise the email is taken."""
-        if not email:
-            return None
-        user = self._user(email=email)
-        if user is None:
+        user_id = UserManager.user_id_for_verified_email(email, self.model_registry)
+        if user_id is None:
             return None
         if not self.idp.emails_verified:
             raise HTTPException(
                 status_code=409,
                 detail="An account already uses this email; this IdP is not trusted to prove it",
             )
-        return self._active_user(str(user.id))
+        return self._active_user(user_id)
 
     def _registered(
         self, identity: AssertedIdentity, email: Optional[str]

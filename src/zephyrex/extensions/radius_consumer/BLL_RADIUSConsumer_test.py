@@ -38,6 +38,7 @@ from zephyrex.extensions.radius_consumer.RADIUSTestServers import (
 from zephyrex.lib.Environment import env
 from zephyrex.lib.InboundSecurity import reset_rate_limit_counts
 from zephyrex.logic.BLL_Auth import UserManager, UserModel
+from zephyrex.testing.factories import INTERNAL_ACCOUNTS
 
 SECRET = "a-long-shared-secret-for-the-tests-7f3a"
 USERS = {"alice": "wonderland", "bob": "builder", "carol": "singer"}
@@ -583,6 +584,30 @@ class TestRadiusSignIn(ExtensionServerMixin):
             server, radius_server, admin_a.id, "alice", _bearer(admin_a.jwt)
         )
         assert response.status_code in (403, 404)
+
+    @pytest.mark.parametrize("internal", INTERNAL_ACCOUNTS)
+    def test_nothing_links_to_an_internal_account(self, server, freeradius, internal):
+        radius_server = self._udp(server, freeradius.udp_port)
+        response = self._link_response(
+            server, radius_server, env(internal), "carol", _root()
+        )
+        assert response.status_code == 403, response.text
+
+    def test_an_identity_linked_to_root_signs_no_one_in(
+        self, server, model_registry, freeradius
+    ):
+        """A link to ROOT written beneath the manager (by an older version,
+        or directly) still issues no session."""
+        radius_server = self._udp(server, freeradius.udp_port)
+        RadiusIdentityModel.DB(model_registry.DB.manager.Base).create(
+            requester_id=env("ROOT_ID"),
+            model_registry=model_registry,
+            user_id=env("ROOT_ID"),
+            radius_server_id=radius_server["id"],
+            username="carol",
+        )
+        response = self._login(server, radius_server, "carol", "singer")
+        assert response.status_code == 403, response.text
 
     def test_a_username_links_to_one_account_per_server(
         self, server, admin_a, admin_b, freeradius
