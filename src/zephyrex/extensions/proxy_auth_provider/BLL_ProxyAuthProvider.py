@@ -24,6 +24,7 @@ the app's content negotiation transcodes or refuses non-JSON bodies, so
 those requests could not reach an upstream unchanged.
 """
 
+import re
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator, ClassVar, FrozenSet, List, Optional, Tuple
 
@@ -47,6 +48,7 @@ from zephyrex.extensions.proxy_auth_provider.ProxyHeaders import (
     upstream_request_headers,
     upstream_target,
 )
+from zephyrex.lib.ContentNegotiation import skip_negotiation
 from zephyrex.lib.CustomRoute import ExposeIn, custom_route
 from zephyrex.lib.DateTimeUtils import ensure_utc
 from zephyrex.lib.Environment import env
@@ -352,3 +354,7 @@ class ProxyAuthManager(AbstractBLLManager, RouterMixin):
         self, upstream: str, path: str, request: Request
     ) -> Response:
         return await self.forward(request, upstream)
+
+
+# Bodies and media types are the upstream's: none is negotiated here.
+skip_negotiation(f"{re.escape(PROXY_PREFIX)}/.*")

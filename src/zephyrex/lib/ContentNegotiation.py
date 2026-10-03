@@ -26,6 +26,7 @@ Clients request a format in three (prioritized) ways:
 from __future__ import annotations
 
 import json
+import re
 import tomllib
 from typing import Any
 from urllib.parse import parse_qsl
@@ -87,6 +88,18 @@ _KEY_TO_MIME: dict[str, str] = {
 }
 
 DEFAULT_FORMAT = "json"
+
+# Paths whose requests and responses pass through untouched: a forward-auth
+# verifier answers a proxy's subrequest whatever the page's Accept said, and
+# a reverse proxy relays bodies and media types it does not own.
+_PASS_THROUGH_PATHS: list[re.Pattern[str]] = []
+
+
+def skip_negotiation(path_pattern: str) -> None:
+    """Leave requests to paths matching ``path_pattern`` (a regular
+    expression matched against the whole path) out of content negotiation:
+    no suffix rewrite, no transcoding, no 406 or 415."""
+    _PASS_THROUGH_PATHS.append(re.compile(path_pattern))
 
 
 # ---------------------------------------------------------------------------
@@ -372,7 +385,9 @@ class ContentNegotiationMiddleware:
         self.app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] != "http":
+        if scope["type"] != "http" or any(
+            pattern.fullmatch(scope.get("path", "")) for pattern in _PASS_THROUGH_PATHS
+        ):
             await self.app(scope, receive, send)
             return
 

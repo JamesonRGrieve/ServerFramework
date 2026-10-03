@@ -57,6 +57,7 @@ from pydantic import Field, field_validator
 from starlette.datastructures import Headers
 
 from zephyrex.database.StaticPermissions import is_root_id, is_system_id
+from zephyrex.lib.ContentNegotiation import skip_negotiation
 from zephyrex.lib.CustomRoute import ExposeIn, custom_route
 from zephyrex.lib.DateTimeUtils import ensure_utc
 from zephyrex.lib.Environment import env
@@ -826,3 +827,9 @@ class ForwardAuthManager(AbstractBLLManager, RouterMixin):
             return self.answer(request, redirect_with_401)
         except ForwardAuthRefusal as refusal:
             return refusal.response()
+
+
+# The proxy forwards the guarded page's Accept, which need not name any
+# format this API negotiates; the verifier's answer carries no body to
+# negotiate.
+skip_negotiation(r"/v1/auth/forward/verify")

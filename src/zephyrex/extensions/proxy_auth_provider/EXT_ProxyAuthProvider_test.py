@@ -373,6 +373,20 @@ class TestProxy(ExtensionServerMixin):
 
     # What comes back.
 
+    def test_any_media_type_is_relayed(self, server, declare, upstream, user_b):
+        """The upstream's media types are its own: an Accept naming none of
+        this API's formats, or a path ending .xml, is relayed untouched."""
+        upstream.routes["/app/logo.xml"] = plain(
+            b"<svg/>", **{"Content-Type": "image/svg+xml"}
+        )
+        name, _ = declare(upstream.base_url + "/app/")
+        answer = server.get(
+            f"/v1/proxy/{name}/logo.xml",
+            headers={**auth(user_b), "Accept": "image/svg+xml"},
+        )
+        assert (answer.status_code, answer.content) == (200, b"<svg/>")
+        assert answer.headers["content-type"] == "image/svg+xml"
+
     def test_status_headers_and_redirects_come_back(
         self, server, declare, upstream, user_b
     ):

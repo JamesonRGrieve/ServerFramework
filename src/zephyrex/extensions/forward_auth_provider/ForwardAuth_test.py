@@ -291,6 +291,14 @@ class TestNoSession:
         assert query["theme"] == ["dark"]
         assert query["rd"] == [f"https://{APP_HOST}/reports?id=7&x=1"]
 
+    def test_an_html_only_accept_is_answered_not_refused(
+        self, proxy: TestClient
+    ) -> None:
+        """A proxy forwards the page's Accept; one naming only text/html
+        (curl, some clients) must reach the verifier, not get a 406."""
+        response = ask(proxy, accept="text/html", uri="/reports")
+        assert response.status_code == 302
+
     def test_subdomain_of_an_allowed_suffix_is_returned_to(
         self, proxy: TestClient
     ) -> None:

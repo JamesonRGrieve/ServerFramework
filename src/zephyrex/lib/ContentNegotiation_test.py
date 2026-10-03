@@ -36,6 +36,7 @@ from zephyrex.lib.ContentNegotiation import (
     resolve_request_format,
     resolve_response_format,
     serialize,
+    skip_negotiation,
     strip_format_suffix,
 )
 
@@ -51,6 +52,8 @@ class Token(BaseModel):
 
     grant_type: str
     code: str
+
+
 SAMPLE_LIST = [
     {"name": "Alice", "age": 30},
     {"name": "Bob", "age": 25},
@@ -145,6 +148,33 @@ class TestResolveRequestFormat:
 
     def test_form_is_never_a_response_format(self) -> None:
         assert resolve_response_format("application/x-www-form-urlencoded") is None
+
+
+class TestSkipNegotiation:
+    def test_a_declared_path_passes_through_untouched(self) -> None:
+        from zephyrex.lib import ContentNegotiation
+
+        app = FastAPI()
+        app.add_middleware(ContentNegotiationMiddleware)
+
+        @app.get("/relay/{rest:path}")
+        def relay(rest: str) -> dict:
+            return {"rest": rest}
+
+        client = TestClient(app)
+        html = {"Accept": "text/html"}
+        # Negotiated: an Accept naming no API format is 406, and a format
+        # suffix is taken off the path.
+        assert client.get("/relay/page", headers=html).status_code == 406
+        assert client.get("/relay/page.json").json() == {"rest": "page"}
+        skip_negotiation("/relay/.*")
+        try:
+            refused_before = client.get("/relay/page", headers=html)
+            suffixed = client.get("/relay/page.json")
+        finally:
+            ContentNegotiation._PASS_THROUGH_PATHS.pop()
+        assert refused_before.status_code == 200
+        assert suffixed.json() == {"rest": "page.json"}
 
 
 class TestFormBodies:
