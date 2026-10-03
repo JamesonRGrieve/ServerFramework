@@ -16,7 +16,7 @@ from typing import (
 )
 
 from fastapi import HTTPException
-from sqlalchemy import Column, DateTime, ForeignKey, String, event, func, inspect
+from sqlalchemy import Column, DateTime, ForeignKey, String, event, inspect
 from sqlalchemy.orm import Query, Session, declared_attr, relationship
 from sqlalchemy.orm.exc import MultipleResultsFound, NoResultFound
 
@@ -92,6 +92,15 @@ def get_dto_class(cls, override_dto=None):
 T = TypeVar("T")
 DtoT = TypeVar("DtoT")
 ModelT = TypeVar("ModelT")
+
+
+def utc_now() -> datetime:
+    """The current time in UTC, to the microsecond, without a zone (as the
+    timestamp columns hold it). Stamped by the application: the database's
+    ``now()`` keeps whole seconds on SQLite and the transaction's start on
+    PostgreSQL, so two edits close together would share an ``updated_at``,
+    the value a client's If-Match names."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 def validate_fields(cls, fields):
@@ -599,7 +608,7 @@ class BaseMixin:
 
     @declared_attr
     def created_at(cls):
-        return Column(DateTime, default=func.now())
+        return Column(DateTime, default=utc_now)
 
     @declared_attr
     def created_by_user_id(cls):
@@ -714,13 +723,17 @@ class BaseMixin:
             user_can_create_referenced_entity,
         )
 
-        # Root user can create anything
-        if is_root_id(user_id):
+        # ROOT can create anything; so can SYSTEM, the framework's own
+        # identity for seeding and internal automation (the permission filter
+        # already lets it see every record, and the manager layer checks what
+        # it changes). Without this, a seeded row whose class inherits access
+        # through a reference (a rotation's instance links) is refused.
+        if is_root_id(user_id) or is_system_id(user_id):
             return True
 
         # Check system flag - only ROOT_ID and SYSTEM_ID can create in system-flagged tables
         if hasattr(cls, "system") and getattr(cls, "system", False):
-            return is_root_id(user_id) or is_system_id(user_id)
+            return False
 
         # Check if user has access to all referenced entities
         can_access, missing_entity = check_access_to_all_referenced_entities(
@@ -1371,7 +1384,7 @@ class UpdateMixin(SoftDeleteMixin):
 
     @declared_attr
     def updated_at(cls):
-        return Column(DateTime, default=func.now(), onupdate=func.now())
+        return Column(DateTime, default=utc_now, onupdate=utc_now)
 
     @declared_attr
     def updated_by_user_id(cls):
@@ -1468,7 +1481,7 @@ class UpdateMixin(SoftDeleteMixin):
         if hasattr(cls, "updated_by_user_id"):
             updated["updated_by_user_id"] = requester_id
         if hasattr(cls, "updated_at"):
-            updated["updated_at"] = func.now()
+            updated["updated_at"] = utc_now()
 
         # Get hooks for before_update
         hooks = cls.hooks  # type: ignore[attr-defined]

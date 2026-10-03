@@ -1950,8 +1950,9 @@ class RotationManager(AbstractBLLManager, RouterMixin):
         rotation_provider_instances = self._get_ordered_rotation_provider_instances()
 
         if not rotation_provider_instances:
+            # Nothing configured to serve the call: unavailable, not missing.
             raise HTTPException(
-                status_code=404,
+                status_code=503,
                 detail=f"No provider instances found for rotation {self.target_id}",
             )
 

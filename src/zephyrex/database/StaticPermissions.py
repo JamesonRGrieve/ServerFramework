@@ -32,14 +32,19 @@ TEMPLATE_ID = env("TEMPLATE_ID")
 
 
 def _active(model: Any) -> Any:
-    """Not-expired temporal-authorization predicate for a permission/membership row.
+    """The predicate for a permission, membership or invitation row that
+    still grants access: not expired (no expiry, or one still ahead) and
+    not deleted. Encoded once because it is security-critical.
 
-    A grant is active when it has no expiry (``expires_at IS NULL``) or the
-    expiry is still in the future. Extracted so this security-critical rule is
-    encoded once; the emitted SQL is identical at every call site
-    (``expires_at IS NULL OR expires_at > now()``).
+    The deletion half matters because these rows are read through core
+    ``select()`` subqueries, which the ORM's automatic ``deleted_at IS NULL``
+    filter does not reach: a revoked grant or a removed team membership
+    would otherwise go on granting access.
     """
-    return or_(model.expires_at.is_(None), model.expires_at > func.now())
+    not_expired = or_(model.expires_at.is_(None), model.expires_at > func.now())
+    if hasattr(model, "deleted_at"):
+        return and_(not_expired, model.deleted_at.is_(None))
+    return not_expired
 
 
 def is_any_internal_id(user_id: str) -> bool:
@@ -62,6 +67,48 @@ def is_system_user_id(user_id: str) -> bool:
     `_user_` form; both names resolve to the same SYSTEM_ID check so
     that authorization helpers do not fork on naming."""
     return user_id == SYSTEM_ID
+
+
+def referenced_class(db_cls: Any, ref_name: str) -> Optional[Any]:
+    """The mapped class ``db_cls`` references as ``ref_name``, found through
+    its relationship of that name, else the foreign key on its
+    ``<ref_name>_id`` column, else the table the reference names by the
+    builder's convention (``conversation`` → ``conversations``): models
+    built from Pydantic declare references as ``_id`` columns, often with
+    neither a relationship nor a constraint. None when the class has no such
+    column or no table answers to it."""
+    ref_attr = getattr(db_cls, ref_name, None)
+    if (
+        ref_attr is not None
+        and hasattr(ref_attr, "property")
+        and hasattr(ref_attr.property, "mapper")
+    ):
+        return ref_attr.property.mapper.class_
+    table = getattr(db_cls, "__table__", None)
+    column = table.c.get(f"{ref_name}_id") if table is not None else None
+    if column is None:
+        return None
+    if column.foreign_keys:
+        target_name = next(iter(column.foreign_keys)).column.table.name
+    else:
+        from zephyrex.lib.AbstractPydantic2 import default_name_processor
+
+        target_name = default_name_processor.generate_resource_name(
+            stringcase.pascalcase(ref_name), use_plural=True
+        )
+    for mapper in db_cls.registry.mappers:
+        if mapper.local_table.name == target_name:
+            return mapper.class_
+    return None
+
+
+def declarative_base_of(db_cls: Any) -> Any:
+    """The declarative base a mapped class was built on: what the
+    permission checks resolve the auth tables (roles, teams) through."""
+    for base in db_cls.__mro__:
+        if "registry" in base.__dict__ and "__table__" not in base.__dict__:
+            return base
+    raise ValueError(f"{db_cls.__name__} is not a declaratively mapped class")
 
 
 def is_template_id(user_id: str) -> bool:
@@ -292,18 +339,8 @@ def find_create_permission_reference_chain(cls, db, visited=None):
     # If the class has a create_permission_reference, follow it
     ref_name = create_perm_ref
 
-    # Get the relationship attribute from the class
-    ref_attr = getattr(cls, ref_name, None)
-
-    if ref_attr is None:
-        raise ValueError(
-            f"Invalid create_permission_reference '{ref_name}' in {cls.__name__}"
-        )
-
-    # Get the referenced model class
-    if hasattr(ref_attr, "property") and hasattr(ref_attr.property, "mapper"):
-        ref_model = ref_attr.property.mapper.class_
-
+    ref_model = referenced_class(cls, ref_name)
+    if ref_model is not None:
         # Recursively follow the chain, creating a new copy of the visited set
         # This ensures proper detection of circular references across different branches
         new_visited = visited.copy()
@@ -401,20 +438,13 @@ def check_access_to_all_referenced_entities(
                 (cls.__name__, ref_id_field, None, "missing_required_reference"),
             )
 
-        # Get the referenced model class
-        ref_attr = getattr(cls, ref_name, None)
-        if (
-            not ref_attr
-            or not hasattr(ref_attr, "property")
-            or not hasattr(ref_attr.property, "mapper")
-        ):
-            # Log a warning if the reference attribute is invalid
+        ref_model = referenced_class(cls, ref_name)
+        if ref_model is None:
+            # A declared reference that leads nowhere grants nothing.
             logger.warning(
                 f"Invalid permission reference attribute '{ref_name}' in class '{cls.__name__}'"
             )
-            continue
-
-        ref_model = ref_attr.property.mapper.class_
+            return (False, (cls.__name__, ref_id_field, None, "invalid_reference"))
 
         # Get the referenced record
         ref_id = kwargs[ref_id_field]
@@ -427,7 +457,7 @@ def check_access_to_all_referenced_entities(
             ref_model,
             ref_id,
             db,
-            declarative_base=None,
+            declarative_base=declarative_base_of(ref_model),
             minimum_role=minimum_role,
         )
 
@@ -571,19 +601,20 @@ def can_manage_permissions(
 
     # Check for explicit SHARE permission using check_permission. The
     # PermissionType goes to ``required_level``, not the ``declarative_base`` slot.
+    base = declarative_base_of(model_class)
     result, _ = check_permission(
         user_id,
         model_class,
         resource_id,
         db,
-        declarative_base=None,
+        declarative_base=base,
         required_level=PermissionType.SHARE,
     )
     if result == PermissionResult.GRANTED:
         return (True, None)
 
     # Check if the user has EDIT permission to the resource
-    if user_can_edit(user_id, model_class, resource_id, db):
+    if user_can_edit(user_id, model_class, resource_id, db, declarative_base=base):
         # For deletion, check if they have DELETE permission as well
         if (
             operation_type == "delete"
@@ -592,7 +623,7 @@ def can_manage_permissions(
                 model_class,
                 resource_id,
                 db,
-                declarative_base=None,
+                declarative_base=base,
                 required_level=PermissionType.DELETE,
             )[0]
             == PermissionResult.GRANTED
@@ -681,19 +712,19 @@ def user_can_create_referenced_entity(cls, user_id, db, minimum_role=None, **kwa
         ref_id = kwargs[ref_id_field]
 
         # Get the referenced entity model
-        ref_attr = getattr(cls, ref_name, None)
-        if (
-            not ref_attr
-            or not hasattr(ref_attr, "property")
-            or not hasattr(ref_attr.property, "mapper")
-        ):
+        ref_model = referenced_class(cls, ref_name)
+        if ref_model is None:
             return (False, f"Invalid reference attribute: {ref_name}")
-
-        ref_model = ref_attr.property.mapper.class_
 
         # Check if the user has admin access to the referenced entity
         # Admin access (EDIT permission) is required to create entities that reference this entity
-        if not user_can_edit(user_id, ref_model, ref_id, db):
+        if not user_can_edit(
+            user_id,
+            ref_model,
+            ref_id,
+            db,
+            declarative_base=declarative_base_of(ref_model),
+        ):
             return (
                 False,
                 f"User {user_id} does not have admin access to {ref_model.__name__} {ref_id}",
@@ -1038,8 +1069,10 @@ def _get_admin_accessible_team_ids_cte(
 
     recursive_cte = combined_base.cte(cte_name, recursive=True)
 
-    cte_alias = aliased(recursive_cte, name="cte_alias")
-    team_alias = aliased(team_db_cls, name="team_alias")
+    # Named after the CTE, so filters nested through permission references
+    # (each with its own CTE) do not collide.
+    cte_alias = aliased(recursive_cte, name=f"{cte_name}_alias")
+    team_alias = aliased(team_db_cls, name=f"{cte_name}_team")
 
     recursive_term = (
         select(
@@ -1611,6 +1644,29 @@ def generate_permission_filter(
             declarative_base,
         )
         conditions.append(direct_permissions)
+
+    # 5. Access inherited through references: a record whose class declares
+    # ``permission_references`` is reachable at the level its referenced
+    # record is (a message, through its conversation).
+    for ref_name in getattr(resource_db_cls, "permission_references", None) or []:
+        ref_cls = referenced_class(resource_db_cls, ref_name)
+        ref_column = getattr(resource_db_cls, f"{ref_name}_id", None)
+        if ref_cls is None or ref_column is None:
+            logger.warning(
+                f"Invalid permission reference '{ref_name}' on {resource_cls.__name__}"
+            )
+            continue
+        ref_filter = generate_permission_filter(
+            user_id,
+            ref_cls,
+            db,
+            declarative_base,
+            required_permission_level,
+            _visited_classes=set(_visited_classes),
+            minimum_role=minimum_role,
+            db_manager=db_manager,
+        )
+        conditions.append(ref_column.in_(select(ref_cls.id).where(ref_filter)))
 
     # Combine all conditions with OR
     if not conditions:

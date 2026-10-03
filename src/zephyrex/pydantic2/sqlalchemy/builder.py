@@ -34,6 +34,11 @@ from zephyrex.pydantic2.registry import ModelRegistry
 from zephyrex.pydantic2.sqlalchemy._const import RESERVED_SQLALCHEMY_NAMES, TYPE_MAPPING
 from zephyrex.pydantic2.sqlalchemy.mixins import ParentRelationshipMixin
 
+# A model's access rules that live on its database class: the references
+# through which it inherits access. (create_permission_reference stays on
+# the Pydantic model; the classes that declare it check creates themselves.)
+PERMISSION_CLASS_ATTRIBUTES = ("permission_references",)
+
 
 def _sanitize_field_name(field_name: str) -> str:
     """
@@ -810,6 +815,12 @@ def create_sqlalchemy_model(
         "__table_args__": {"comment": table_comment},
         "__module__": pydantic_model.__module__,
     }
+    # Access inherited through references (StaticPermissions reads these
+    # from the database class).
+    for permission_attr in PERMISSION_CLASS_ATTRIBUTES:
+        declared = getattr(pydantic_model, permission_attr, None)
+        if declared:
+            class_dict[permission_attr] = declared
 
     # Process fields from the Pydantic model
     for field_name, field_info in pydantic_model.model_fields.items():

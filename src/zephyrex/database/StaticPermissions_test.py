@@ -1124,22 +1124,21 @@ class TestRequiredReferences:
         assert missing_info is not None
         assert missing_info[3] == "missing_required_reference"
 
-        # Now provide the required reference and verify it passes to the permission check
-        mock_db.query.return_value.filter.return_value.first.return_value = MagicMock()
-        mock_db.query.return_value.exists.return_value.scalar.return_value = True
-        with patch(
-            f"{__name__}.check_permission_wrapper",
-            return_value=(PermissionResult.GRANTED, None),
-        ):
-            result, _ = check_access_to_all_referenced_entities(
-                regular_user_id,
-                ResourceWithPermissionReferences,
-                mock_db,
-                minimum_role="user",
-                parent_resource_id=test_records["resource_id"],
-            )
-            # With patch returning GRANTED, should now pass
-            assert result is True
+        # A reference id given, but the declared reference leads to no table:
+        # access is denied, not granted. (This passed through as granted, so a
+        # misspelt permission reference silently opened its records; the
+        # granted path is exercised on a real database in
+        # Permission_revocation_test and the conversations access tests.)
+        result, missing_info = check_access_to_all_referenced_entities(
+            regular_user_id,
+            ResourceWithPermissionReferences,
+            mock_db,
+            minimum_role="user",
+            parent_resource_id=test_records["resource_id"],
+        )
+        assert result is False
+        assert missing_info is not None
+        assert missing_info[3] == "invalid_reference"
 
 
 # Add a test class for circular reference protection

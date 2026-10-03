@@ -2029,6 +2029,11 @@ class AbstractStaticExtension(
             for name in provider_names
             for instance in instances.list(provider_id=providers.get(name=name).id)
         ]
+        if not instance_ids:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"No {cls.name} provider instance can do this",
+            )
         return await root.arotate(
             cls.provider_call(method_name),
             *args,
