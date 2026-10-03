@@ -55,6 +55,7 @@ IDENTITY_ROUTE = "/v1/ldap/identity"
 LOGIN_ROUTE = "/v1/auth/ldap/login"
 TEST_CLIENT_HOST = "testclient"
 PER_USER_LOCKOUT = 5
+LDAPS_NAME = "Corp LDAPS"
 
 
 @pytest.fixture(scope="module")
@@ -113,8 +114,25 @@ def create_directory(
 
 
 @pytest.fixture(scope="module")
-def ldaps(server: TestClient, directory: Directory) -> Dict[str, Any]:
-    return create_directory(server, directory, name="Corp LDAPS")
+def ldaps(server: TestClient, registry: Any, directory: Directory) -> Dict[str, Any]:
+    """This run's directory record, made once per run. The module's app is
+    rebuilt when xdist resumes the module after another one, but the
+    database stays, and the people linked through the first record would
+    meet a second as a directory email taking over an account (409). The
+    run's directory listens on its own port, so the record reaching it is
+    this run's."""
+    existing = LdapDirectoryModel.DB(registry.DB.manager.Base).list(
+        requester_id=env("ROOT_ID"),
+        model_registry=registry,
+        name=LDAPS_NAME,
+        port=directory.ldaps_port,
+    )
+    if not existing:
+        return create_directory(server, directory, name=LDAPS_NAME)
+    fetched = server.get(f"{DIRECTORY_ROUTE}/{existing[0]['id']}", headers=root())
+    assert fetched.status_code == 200, fetched.text
+    record: Dict[str, Any] = fetched.json()["ldap_directory"]
+    return record
 
 
 def login(server: TestClient, directory_id: str, username: str, password: str) -> Any:
@@ -274,7 +292,7 @@ class TestDirectories:
         listed = server.get("/v1/auth/ldap/directories")
         assert listed.status_code == 200, listed.text
         entries = listed.json()["directories"]
-        assert {"id": ldaps["id"], "name": "Corp LDAPS"} in entries
+        assert {"id": ldaps["id"], "name": LDAPS_NAME} in entries
         assert all(set(entry) == {"id", "name"} for entry in entries)
 
     def test_check_and_lookup(
@@ -299,7 +317,7 @@ class TestSignIn:
         self, server: TestClient, directory: Directory, ldaps: Dict[str, Any]
     ) -> None:
         body = signed_in(server, ldaps["id"], directory, "alice")
-        assert body["user"]["email"] == "alice@example.com"
+        assert body["user"]["email"] == directory.people["alice"].mail
         assert body["token"] and body["session_key"]
         assert body["mfa_required"] is False
         assert SESSION_COOKIE in server.cookies
@@ -307,7 +325,7 @@ class TestSignIn:
             "/v1/user", headers={"Authorization": f"Bearer {body['token']}"}
         )
         assert me.status_code == 200, me.text
-        assert me.json()["user"]["email"] == "alice@example.com"
+        assert me.json()["user"]["email"] == directory.people["alice"].mail
 
     def test_the_identity_is_the_entry_uuid_and_survives_a_move(
         self,
@@ -361,7 +379,7 @@ class TestSignIn:
             port=directory.ldap_port,
         )
         body = signed_in(server, starttls["id"], directory, "rob(admin)")
-        assert body["user"]["email"] == "rob@example.com"
+        assert body["user"]["email"] == directory.people["rob(admin)"].mail
 
     def test_a_second_factor_still_stands(
         self,
@@ -510,7 +528,7 @@ class TestAccounts:
     def test_a_directory_email_does_not_take_over_a_local_account(
         self, server: TestClient, directory: Directory, ldaps: Dict[str, Any]
     ) -> None:
-        local = create_user(server, email="erin@example.com")
+        local = create_user(server, email=directory.people["erin"].mail)
         response = login(server, ldaps["id"], "erin", directory.people["erin"].password)
         assert response.status_code == 409, response.text
         assert SESSION_COOKIE not in server.cookies
@@ -670,10 +688,11 @@ class TestAccounts:
     ) -> None:
         """Signing in the password way fails like a wrong password (401),
         not as a missing credential."""
+        gina = directory.people["gina"]
         signed_in(server, ldaps["id"], directory, "gina")
         server.cookies.clear()
         response = server.post(
             "/v1/user/authorize",
-            json={"email": "gina@example.com", "password": "gina-pass-1"},
+            json={"email": gina.mail, "password": gina.password},
         )
         assert response.status_code == 401, response.text

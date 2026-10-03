@@ -66,7 +66,7 @@ async def test_the_abilities(directory: Directory, directory_id: str) -> None:
         directory_id, "bob"
     )
     assert found["dn"] == directory.people["bob"].dn
-    assert found["email"] == "bob@example.com"
+    assert found["email"] == directory.people["bob"].mail
 
 
 def _load_migration() -> ModuleType:

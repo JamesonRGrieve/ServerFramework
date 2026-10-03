@@ -20,6 +20,7 @@ import signal
 import socket
 import subprocess
 import time
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Iterator, List, Tuple
@@ -60,19 +61,31 @@ class Person:
         return f"uid={_dn_value(self.uid)},{PEOPLE}"
 
 
+# The app databases these tests sign in to outlive a run, while each run's
+# directory is new (new entryUUIDs). Mail addresses are this run's own, so
+# an account a previous run created from a person never meets this run's
+# entry for them (a directory email does not take over an existing account:
+# the second run's sign-ins were 409s).
+RUN_TAG = uuid.uuid4().hex[:8]
+
+
+def _mail(uid: str) -> str:
+    return f"{uid}.{RUN_TAG}@example.com"
+
+
 PEOPLE_SEEDED: Tuple[Person, ...] = (
-    Person("alice", "alice-pass-1", "alice@example.com", "Alice A", ("engineers",)),
-    Person("alicia", "alicia-pass-1", "alicia@example.com", "Alicia B"),
-    Person("bob", "bob-pass-1", "bob@example.com", "Bob C", ("engineers", "ops")),
+    Person("alice", "alice-pass-1", _mail("alice"), "Alice A", ("engineers",)),
+    Person("alicia", "alicia-pass-1", _mail("alicia"), "Alicia B"),
+    Person("bob", "bob-pass-1", _mail("bob"), "Bob C", ("engineers", "ops")),
     Person("carol", "carol-pass-1", None, "Carol, no mail"),
-    Person("rob(admin)", "rob-pass-1", "rob@example.com", "Rob Parens"),
-    Person("dora", "dora-pass-1", "dora@example.com", "Dora D"),
-    Person("erin", "erin-pass-1", "erin@example.com", "Erin E"),
-    Person("frank", "frank-pass-1", "frank@example.com", "Frank F"),
-    Person("gina", "gina-pass-1", "gina@example.com", "Gina G"),
-    Person("hank", "hank-pass-1", "hank@example.com", "Hank H"),
-    Person("ivy", "ivy-pass-1", "ivy@example.com", "Ivy I"),
-    Person("judy", "judy-pass-1", "judy@example.com", "Judy J"),
+    Person("rob(admin)", "rob-pass-1", _mail("rob"), "Rob Parens"),
+    Person("dora", "dora-pass-1", _mail("dora"), "Dora D"),
+    Person("erin", "erin-pass-1", _mail("erin"), "Erin E"),
+    Person("frank", "frank-pass-1", _mail("frank"), "Frank F"),
+    Person("gina", "gina-pass-1", _mail("gina"), "Gina G"),
+    Person("hank", "hank-pass-1", _mail("hank"), "Hank H"),
+    Person("ivy", "ivy-pass-1", _mail("ivy"), "Ivy I"),
+    Person("judy", "judy-pass-1", _mail("judy"), "Judy J"),
 )
 GROUP_NAMES = ("engineers", "ops")
 

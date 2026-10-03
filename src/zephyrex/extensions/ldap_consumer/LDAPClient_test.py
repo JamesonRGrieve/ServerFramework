@@ -59,7 +59,7 @@ class TestSignIn:
         alice = directory.people["alice"]
         account = client(directory).authenticate("alice", alice.password)
         assert account.dn == alice.dn
-        assert account.email == "alice@example.com"
+        assert account.email == alice.mail
         assert account.display_name == "Alice A"
         assert account.groups == (directory.group_dn("engineers"),)
 
