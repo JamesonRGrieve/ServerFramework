@@ -5,15 +5,15 @@
 # Manifest_parity_test keeps the two in step.
 
 name = "radius_consumer"
-version = "1.0.0"
-description = "Authenticate users against an external RADIUS server (PAP/CHAP/EAP)."
+version = "2.0.0"
+description = "Sign users in through RADIUS servers: PAP over RadSec or UDP, with Access-Challenge for one-time codes"
 author = "ZephyrexTechnologies"
 entry_module = "EXT_RADIUSConsumer"
 minimum_framework_version = "0.0.0"
 
-pip_dependencies = []
+pip_dependencies = ["pyrad>=2.5.4"]
 system_dependencies = []
 
 [[extension_dependencies]]
 name = "auth_session"
-optional = false
+optional = true
