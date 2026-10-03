@@ -5,15 +5,11 @@
 # Manifest_parity_test keeps the two in step.
 
 name = "scim_consumer"
-version = "1.0.0"
-description = "Provision users and groups from an external SCIM 2.0 identity provider."
+version = "2.0.0"
+description = "A SCIM 2.0 service identity providers provision users and groups into."
 author = "ZephyrexTechnologies"
 entry_module = "EXT_SCIMConsumer"
 minimum_framework_version = "0.0.0"
 
 pip_dependencies = []
 system_dependencies = []
-
-[[extension_dependencies]]
-name = "auth_session"
-optional = false

@@ -1,80 +1,76 @@
-"""SCIM 2.0 consumer extension manifest.
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""SCIM 2.0 consumer: this server is the SCIM service provider that
+identity providers (Okta, Entra ID, OneLogin, any SCIM client) provision
+users and groups into, at ``/v1/scim/v2`` (see ``BLL_SCIMConsumer``).
 
-Provision and deprovision local users and groups from an external SCIM 2.0
-identity provider (Azure AD, Okta, etc.). The external IdP pushes user
-lifecycle events (create, update, disable, delete) to this server's SCIM
-endpoints.
+Root registers each identity provider as a connection
+(``POST /v1/scim/connection/register``) and is shown its bearer token
+once. The complementary ``scim_provider`` extension is the other
+direction: this server pushing its users out to SCIM services.
 
-The complementary ``scim_provider`` extension implements the *server* side
-(this server pushes SCIM events to downstream service providers).
-"""
+Abilities act for ``requester_id`` under that user's permissions (in
+practice root's, who owns the connections)."""
 
 from typing import Any, ClassVar, Dict, List, Set
 
-from zephyrex.extensions.AbstractExtensionProvider import AbstractStaticExtension
-from zephyrex.lib.Dependencies import Dependencies, PIP_Dependency
-from zephyrex.lib.Logging import logger
+from zephyrex.extensions.AbstractExtensionProvider import (
+    AbstractStaticExtension,
+    ability,
+)
+from zephyrex.extensions.ExternalErrors import InvalidInputExternalError
+from zephyrex.extensions.scim_consumer.BLL_SCIMConsumer import (
+    ScimConnectionManager,
+    ScimProvisioningLogManager,
+)
+from zephyrex.lib.Dependencies import Dependencies
+
+MAX_LOG_ENTRIES = 500
+
+
+def _row(model: Any) -> Dict[str, Any]:
+    dumped: Dict[str, Any] = model.model_dump(mode="json")
+    return dumped
 
 
 class EXT_SCIMConsumer(AbstractStaticExtension):
     name: ClassVar[str] = "scim_consumer"
-    version: ClassVar[str] = "1.0.0"
+    version: ClassVar[str] = "2.0.0"
     description: ClassVar[str] = (
-        "Provision users and groups from an external SCIM 2.0 identity provider."
+        "A SCIM 2.0 service identity providers provision users and groups into."
     )
 
-    _env: ClassVar[Dict[str, Any]] = {
-        "SCIM_CONSUMER_BEARER_TOKEN": "",
-        "SCIM_CONSUMER_BASE_PATH": "/scim/v2",
-        "SCIM_CONSUMER_AUTO_CREATE_USERS": "true",
-        "SCIM_CONSUMER_AUTO_DEACTIVATE_USERS": "true",
-        "SCIM_CONSUMER_DEFAULT_ROLE": "",
-    }
-
-    dependencies: ClassVar[Dependencies] = Dependencies(
-        [
-            PIP_Dependency(
-                name="requests",
-                friendly_name="HTTP requests library",
-                semver=">=2.31.0",
-                reason="SCIM schema discovery and outbound requests",
-            ),
-        ]
-    )
-
+    _env: ClassVar[Dict[str, Any]] = {}
+    dependencies: ClassVar[Dependencies] = Dependencies([])
     _abilities: ClassVar[Set[str]] = {
-        "scim_consumer_users",
-        "scim_consumer_groups",
-        "scim_consumer_schemas",
+        "list_scim_connections",
+        "scim_provisioning_log",
     }
-    _providers: ClassVar[List] = []
-    extension_dependencies: ClassVar[List[str]] = ["auth_session"]
 
     @classmethod
-    def on_initialize(cls) -> bool:
-        from zephyrex.lib.Environment import env as _env
-
-        if not _env("SCIM_CONSUMER_BEARER_TOKEN"):
-            logger.error(
-                "SCIM_CONSUMER_BEARER_TOKEN is unset — refusing to load "
-                "SCIM endpoints without authentication"
-            )
-            return False
-
-        from zephyrex.extensions.scim_consumer import (  # noqa: F401
-            BLL_SCIMConsumer,
+    @ability("list_scim_connections")
+    async def list_scim_connections(cls, requester_id: str) -> List[Dict[str, Any]]:
+        """The identity-provider connections the user can see (tokens are
+        never shown)."""
+        manager: ScimConnectionManager = cls.as_requester(
+            ScimConnectionManager, requester_id
         )
-
-        logger.debug("scim_consumer initialized")
-        return True
+        return [_row(connection) for connection in manager.list()]
 
     @classmethod
-    def validate_config(cls) -> List[str]:
-        from zephyrex.lib.Environment import env as _env
-
-        issues: List[str] = []
-        if not _env("SCIM_CONSUMER_BEARER_TOKEN"):
-            issues.append(
-                "SCIM_CONSUMER_BEARER_TOKEN is unset; SCIM endpoints will be unauthenticated"
-            )
-        return issues
+    @ability("scim_provisioning_log")
+    async def scim_provisioning_log(
+        cls, requester_id: str, connection_id: str, limit: int = 50
+    ) -> List[Dict[str, Any]]:
+        """A connection's ``limit`` most recent provisioning requests,
+        newest first."""
+        if not 1 <= limit <= MAX_LOG_ENTRIES:
+            raise InvalidInputExternalError(f"limit is 1-{MAX_LOG_ENTRIES}")
+        manager: ScimProvisioningLogManager = cls.as_requester(
+            ScimProvisioningLogManager, requester_id
+        )
+        entries = sorted(
+            manager.list(scim_connection_id=connection_id),
+            key=lambda entry: entry.received_at,
+            reverse=True,
+        )
+        return [_row(entry) for entry in entries[:limit]]
