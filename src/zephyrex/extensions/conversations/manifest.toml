@@ -5,11 +5,19 @@
 # Manifest_parity_test keeps the two in step.
 
 name = "conversations"
-version = "1.0.0"
-description = "Conversation management extension providing comprehensive conversation capabilities for direct messages, group chats, message threading, and collaborative communication"
+version = "2.0.0"
+description = "Direct messages and group chats between users and their agents"
 author = "ZephyrexTechnologies"
 entry_module = "EXT_Conversations"
 minimum_framework_version = "0.0.0"
 
 pip_dependencies = []
 system_dependencies = []
+
+[[extension_dependencies]]
+name = "acl_rbac"
+optional = false
+
+[[extension_dependencies]]
+name = "ai"
+optional = true

@@ -131,7 +131,10 @@ def upgrade() -> None:
         sa.Column("deleted_at", sa.DateTime(), nullable=True),
         sa.Column("deleted_by_user_id", sa.String(), nullable=True),
         sa.Column(
-            "parent_id", sa.String(), nullable=True, comment="The ID of the relevant parent"
+            "parent_id",
+            sa.String(),
+            nullable=True,
+            comment="The ID of the relevant parent",
         ),
         sa.ForeignKeyConstraint(["conversation_id"], ["conversations.id"]),
         sa.ForeignKeyConstraint(["parent_id"], ["messages.id"]),
@@ -238,7 +241,10 @@ def upgrade() -> None:
         sa.Column("deleted_at", sa.DateTime(), nullable=True),
         sa.Column("deleted_by_user_id", sa.String(), nullable=True),
         sa.Column(
-            "parent_id", sa.String(), nullable=True, comment="The ID of the relevant parent"
+            "parent_id",
+            sa.String(),
+            nullable=True,
+            comment="The ID of the relevant parent",
         ),
         sa.ForeignKeyConstraint(["message_id"], ["messages.id"]),
         sa.ForeignKeyConstraint(["conversation_id"], ["conversations.id"]),

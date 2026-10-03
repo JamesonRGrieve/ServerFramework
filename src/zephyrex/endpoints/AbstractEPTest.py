@@ -462,8 +462,13 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
 
             if model_module:
                 for _, candidate in inspect.getmembers(model_module, inspect.isclass):
-                    if candidate is self.class_under_test or not hasattr(
-                        candidate, "model_fields"
+                    # Only registry models (those with a database class) are
+                    # related records; a route's request or response model
+                    # that names this model is not a relationship.
+                    if (
+                        candidate is self.class_under_test
+                        or not hasattr(candidate, "model_fields")
+                        or not callable(getattr(candidate, "DB", None))
                     ):
                         continue
 
@@ -2036,10 +2041,13 @@ class AbstractEPTest(AbstractTest, AbstractGraphQLTest):
 
     def test_GET_404_nonexistent_parent(self, server: Any, admin_a: Any):
         """Test listing resources for a nonexistent parent."""
-        if not self.parent_entities or not any(
-            p.path_level for p in self.parent_entities
+        # A parent is in the list path only when the list route is nested at
+        # least as deep as the parent's level.
+        list_nesting = self._get_nesting_level("LIST")
+        if not any(
+            p.path_level and p.path_level <= list_nesting for p in self.parent_entities
         ):
-            pytest.skip("No path parents for this entity")
+            pytest.skip("The list route names no parent in its path")
 
         # Create path_parent_ids with fake IDs
         path_parent_ids = {}

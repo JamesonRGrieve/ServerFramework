@@ -810,7 +810,6 @@ class TestArtifactEndpoints(AbstractEPTest, ExtensionServerMixin):
         "hosted_path": lambda: f"/static/test_artifacts/test_{faker.uuid4()}.txt",
         "content": lambda: faker.text(),
         "encrypted": False,
-        "conversation_id": None,  # Will be populated from parent entities
         "message_id": None,  # Will be populated from parent entities
     }
     update_fields = {
@@ -855,15 +854,9 @@ class TestArtifactEndpoints(AbstractEPTest, ExtensionServerMixin):
         ),
     ]
 
-    # Parent entities now only include conversation and message
+    # An artifact's parent is its message; the server files it in the
+    # message's conversation (naming another conversation is refused).
     parent_entities = [
-        ParentEntity(
-            name="conversation",
-            foreign_key="conversation_id",
-            nullable=False,
-            path_level=1,
-            test_class=TestConversationEndpoints,
-        ),
         ParentEntity(
             name="message",
             foreign_key="message_id",

@@ -1,13 +1,30 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""Conversations between users (and their agents): direct messages and
+group chats, threaded messages, feedback on messages, and artifacts.
+
+Access follows the conversation. Its owner holds it, and each participant
+added is granted view and edit on it (a Permission row), which lets them
+read and post. Participants, messages, feedback and artifacts inherit
+access from the conversation (``permission_references``).
+
+A message's author is whoever posts it; the author cannot be named by the
+caller. Agent messages carry no author and are posted only through
+:meth:`MessageManager.create_agent_message`. Only an author edits their
+message; an author or the conversation's owner deletes it. Feedback is
+likewise its author's. Only the owner deletes a conversation; the owner
+removes anyone, and a participant may leave.
+"""
+
 from datetime import datetime, timezone
-from typing import Any, ClassVar, Dict, List, Optional
+from typing import Any, Callable, ClassVar, Dict, List, Optional
 
 from fastapi import HTTPException
+from pydantic import BaseModel as RouteModel
 from pydantic import Field, model_validator
 
+from zephyrex.database.StaticPermissions import is_root_id, is_system_id
+from zephyrex.lib.CustomRoute import ExposeIn, custom_route
 from zephyrex.lib.Environment import env
-from zephyrex.lib.Logging import logger
-from zephyrex.pydantic2.registry import BaseModel
-from zephyrex.pydantic2.fastapi import AuthType, RouterMixin
 from zephyrex.logic.AbstractLogicManager import (
     AbstractBLLManager,
     ApplicationModel,
@@ -18,6 +35,40 @@ from zephyrex.logic.AbstractLogicManager import (
     UpdateMixinModel,
 )
 from zephyrex.logic.BLL_Auth import TeamModel, UserModel
+from zephyrex.pydantic2.fastapi import AuthType, RouterMixin
+from zephyrex.pydantic2.registry import BaseModel
+
+MAX_THREAD_DEPTH = 10
+MAX_THREAD_MESSAGES = 1000
+
+
+def _server_side(requester_id: str) -> bool:
+    """ROOT and SYSTEM act on others' behalf; users act as themselves."""
+    return is_root_id(requester_id) or is_system_id(requester_id)
+
+
+def _each(
+    kwargs: Dict[str, Any], prepare: Callable[[Dict[str, Any]], Dict[str, Any]]
+) -> Dict[str, Any]:
+    """``kwargs`` for a create, or each of a batch's ``entities``, prepared."""
+    if isinstance(kwargs.get("entities"), list):
+        return {**kwargs, "entities": [prepare(dict(e)) for e in kwargs["entities"]]}
+    return prepare(dict(kwargs))
+
+
+def _created(result: Any) -> List[Any]:
+    return result if isinstance(result, list) else [result]
+
+
+def _authored_by(requester_id: str) -> Callable[[Dict[str, Any]], Dict[str, Any]]:
+    """The author is the requester; ROOT and SYSTEM may name another."""
+
+    def prepare(fields: Dict[str, Any]) -> Dict[str, Any]:
+        if not _server_side(requester_id) or not fields.get("user_id"):
+            fields["user_id"] = requester_id
+        return fields
+
+    return prepare
 
 
 class ConversationModel(
@@ -35,7 +86,6 @@ class ConversationModel(
         False, description="Whether this conversation is a group chat"
     )
 
-    # Database metadata
     table_comment: ClassVar[str] = (
         "Conversations represent structured discussions between users"
     )
@@ -79,11 +129,11 @@ class ConversationUserModel(
     ConversationModel.Reference,
     metaclass=ModelMeta,
 ):
-    # Database metadata
     table_comment: ClassVar[str] = (
         "Associative entity managing the many-to-many relationship between users and "
         "conversations. Represents a user's participation in a conversation."
     )
+    permission_references: ClassVar[List[str]] = ["conversation"]
 
     class Create(BaseModel, ConversationModel.Reference.ID, UserModel.Reference.ID):
         pass
@@ -100,220 +150,243 @@ class ConversationUserModel(
         pass
 
 
+class ParticipantRequest(RouteModel):
+    user_id: str = Field(..., description="The user to add")
+
+
+class ParticipantRemoved(RouteModel):
+    conversation_id: str
+    user_id: str
+
+
+class DirectMessageRequest(RouteModel):
+    other_user_id: str = Field(..., description="The other user")
+    initial_message: Optional[str] = Field(None, description="A first message")
+
+
+class DirectMessageResponse(RouteModel):
+    conversation: ConversationModel
+    message: Optional["MessageModel"] = None
+
+
 class ConversationManager(AbstractBLLManager, RouterMixin):
     _model = ConversationModel
 
-    # RouterMixin configuration
     prefix: ClassVar[Optional[str]] = "/v1/conversation"
     tags: ClassVar[Optional[List[str]]] = ["Conversations"]
     auth_type: ClassVar[AuthType] = AuthType.JWT
 
-    def __init__(
-        self,
-        requester_id: str,
-        target_id: Optional[str] = None,
-        target_team_id: Optional[str] = None,
-        model_registry: Optional[Any] = None,
-    ) -> None:
-        """Initialize ConversationManager.
-
-        Args:
-            requester_id: ID of the user making the request
-            target_id: ID of the target entity for operations
-            target_team_id: ID of the target team
-            model_registry: Model registry for dynamic model handling
-        """
-        super().__init__(
-            requester_id=requester_id,
-            target_id=target_id,
-            target_team_id=target_team_id,
-            model_registry=model_registry,
-        )
-        self._messages = None
-        self._artifacts = None
-        self._conversation_users = None
-
     @property
     def messages(self) -> "MessageManager":
-        """Get the message manager for this conversation manager."""
-        if self._messages is None:
-            self._messages = MessageManager(
-                requester_id=self.requester.id,
-                target_id=self.target_id,
-                target_team_id=self.target_team_id,
-                model_registry=self.model_registry,
-            )
-        return self._messages
+        return MessageManager(
+            requester_id=self.requester.id, model_registry=self.model_registry
+        )
 
     @property
     def artifacts(self) -> "ArtifactManager":
-        """Get the artifact manager for this conversation manager."""
-        if self._artifacts is None:
-            self._artifacts = ArtifactManager(
-                requester_id=self.requester.id,
-                target_id=self.target_id,
-                target_team_id=self.target_team_id,
-                model_registry=self.model_registry,
-            )
-        return self._artifacts
+        return ArtifactManager(
+            requester_id=self.requester.id, model_registry=self.model_registry
+        )
 
     @property
     def conversation_users(self) -> "ConversationUserManager":
-        """Get the conversation user manager for this conversation manager."""
-        if self._conversation_users is None:
-            self._conversation_users = ConversationUserManager(
-                requester_id=self.requester.id,
-                target_id=self.target_id,
-                target_team_id=self.target_team_id,
-                model_registry=self.model_registry,
-            )
-        return self._conversation_users
-
-    def create_validation(self, entity):
-        """Validate conversation creation."""
-        if entity.user_id:
-            try:
-                from zephyrex.logic.BLL_Auth import UserManager
-
-                UserManager(
-                    requester_id=env("SYSTEM_ID"),
-                    model_registry=self.model_registry,
-                ).get(id=entity.user_id)
-            except HTTPException:
-                raise HTTPException(status_code=404, detail="User not found")
-
-    def create(self, **kwargs) -> ConversationModel:
-        """Create a new conversation and add the creator as the first participant.
-
-        Agent association with newly-created conversations is handled by the
-        ``ai_agents`` extension's own ``@hook_bll(ConversationManager.create,
-        timing=HookTiming.AFTER)`` registration (see
-        ``BLL_AI_Agents.associate_agent_with_conversation``) — the framework's
-        hook registry dispatches it automatically via ``wrap_method_with_hooks``
-        whenever that extension is loaded. Conversations must not hard-import a
-        sibling extension's BLL to invoke it manually; that duplicates the
-        dispatch and, when ``ai_agents`` isn't loaded, re-attempts the entire
-        (failing) import on every single call.
-        """
-        conversation = super().create(**kwargs)
-
-        self.add_participant(
-            conversation_id=conversation.id,
-            user_id=self.requester.id,
+        return ConversationUserManager(
+            requester_id=self.requester.id, model_registry=self.model_registry
         )
 
-        return conversation
+    def create_validation(self, entity: Any) -> None:
+        if entity.user_id:
+            _user_exists(self.model_registry, entity.user_id)
+
+    def create(self, **kwargs: Any) -> Any:
+        """A conversation owned by its creator, who is its first participant.
+        Agent association is the ``ai_agents`` extension's create hook."""
+        result = super().create(**_each(kwargs, _authored_by(self.requester.id)))
+        for conversation in _created(result):
+            self.add_participant(
+                conversation_id=conversation.id, user_id=conversation.user_id
+            )
+        return result
+
+    def delete(self, id: str) -> None:
+        """Only the owner deletes a conversation."""
+        conversation = self.get(id=id)
+        if (
+            not _server_side(self.requester.id)
+            and conversation.user_id != self.requester.id
+        ):
+            raise HTTPException(
+                status_code=403, detail="Only the owner deletes a conversation"
+            )
+        super().delete(id)
 
     def add_participant(
-        self,
-        conversation_id: str,
-        user_id: str,
+        self, conversation_id: str, user_id: str
     ) -> ConversationUserModel:
-        """Add a participant to a conversation, or return their existing membership."""
-        existing_participants = self.conversation_users.list(
+        """Add ``user_id`` (or return their membership), granting them view
+        and edit on the conversation. The requester must be able to edit it."""
+        existing = self.conversation_users.list(
             conversation_id=conversation_id, user_id=user_id
         )
-        if existing_participants:
-            return existing_participants[0]
-
-        return self.conversation_users.create(
-            conversation_id=conversation_id,
-            user_id=user_id,
+        if existing:
+            found: ConversationUserModel = existing[0]
+            return found
+        added: ConversationUserModel = self.conversation_users.create(
+            conversation_id=conversation_id, user_id=user_id
         )
+        return added
 
     def remove_participant(self, conversation_id: str, user_id: str) -> None:
-        """Remove a participant from a conversation."""
-        participants = self.conversation_users.list(
+        """The owner removes anyone; a participant may leave."""
+        conversation = self.get(id=conversation_id)
+        if not _server_side(self.requester.id) and self.requester.id not in (
+            conversation.user_id,
+            user_id,
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail="Only the owner removes others from a conversation",
+            )
+        if user_id == conversation.user_id:
+            raise HTTPException(
+                status_code=400, detail="The owner cannot leave their conversation"
+            )
+        memberships = self.conversation_users.list(
             conversation_id=conversation_id, user_id=user_id
         )
-
-        if not participants:
+        if not memberships:
             raise HTTPException(
                 status_code=404,
                 detail="User is not a participant in this conversation",
             )
-
-        participant = participants[0]
-        self.conversation_users.delete(id=participant.id)
+        root = ConversationUserManager(
+            requester_id=env("ROOT_ID"), model_registry=self.model_registry
+        )
+        for membership in memberships:
+            root.delete_row(membership.id)
+        _revoke(self.model_registry, conversation_id, user_id)
 
     def get_participants(self, conversation_id: str) -> List[ConversationUserModel]:
-        """Get all participants in a conversation."""
         return self.conversation_users.list(conversation_id=conversation_id)
 
     def create_direct_message(
         self, other_user_id: str, initial_message: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Find or create a direct (non-group) conversation with ``other_user_id``.
-
-        Optionally posts ``initial_message`` into the resulting conversation.
-        """
+        """The direct conversation between the requester and
+        ``other_user_id``, made if there is none, with ``initial_message``
+        posted into it."""
         requester_id = self.requester.id
-
-        existing_conversations = self.list(
-            user_id=requester_id, is_group_chat=False
-        )
-        conversation = None
-        for candidate in existing_conversations:
-            candidate_id = (
-                candidate["id"] if isinstance(candidate, dict) else candidate.id
+        if other_user_id == requester_id:
+            raise HTTPException(
+                status_code=400, detail="A direct message needs another user"
             )
-            participant_ids = {
-                (p["user_id"] if isinstance(p, dict) else p.user_id)
-                for p in self.conversation_users.list(conversation_id=candidate_id)
+        _user_exists(self.model_registry, other_user_id)
+        conversation = None
+        for candidate in self.list(is_group_chat=False):
+            members = {
+                member.user_id
+                for member in self.conversation_users.list(conversation_id=candidate.id)
             }
-            if participant_ids == {requester_id, other_user_id}:
+            if members == {requester_id, other_user_id}:
                 conversation = candidate
                 break
-
         if conversation is None:
-            conversation = self.create(
-                user_id=requester_id,
-                name="Direct Message",
-                is_group_chat=False,
-            )
-            self.add_participant(
-                conversation_id=conversation.id, user_id=other_user_id
-            )
-
+            conversation = self.create(name="Direct Message", is_group_chat=False)
+            self.add_participant(conversation_id=conversation.id, user_id=other_user_id)
         message = None
         if initial_message:
             message = self.messages.create(
-                conversation_id=conversation.id,
-                content=initial_message,
+                conversation_id=conversation.id, content=initial_message
             )
-
         return {"conversation": conversation, "message": message}
+
+    @custom_route(
+        method="POST",
+        path="/{conversation_id}/participants",
+        input_model=ParticipantRequest,
+        output_model=ConversationUserModel,
+        authentication_type="jwt",
+        openapi_tags=("Conversations",),
+        summary="Add a participant to a conversation",
+        expose_in=(ExposeIn.REST,),
+    )
+    def add_participant_route(
+        self, conversation_id: str, body: ParticipantRequest
+    ) -> ConversationUserModel:
+        _user_exists(self.model_registry, body.user_id)
+        return self.add_participant(conversation_id, body.user_id)
+
+    @custom_route(
+        method="DELETE",
+        path="/{conversation_id}/participants/{user_id}",
+        authentication_type="jwt",
+        openapi_tags=("Conversations",),
+        summary="Remove a participant from a conversation, or leave it",
+        output_model=ParticipantRemoved,
+        expose_in=(ExposeIn.REST,),
+    )
+    def remove_participant_route(
+        self, conversation_id: str, user_id: str
+    ) -> ParticipantRemoved:
+        self.remove_participant(conversation_id, user_id)
+        return ParticipantRemoved(conversation_id=conversation_id, user_id=user_id)
+
+    @custom_route(
+        method="POST",
+        path="/direct",
+        input_model=DirectMessageRequest,
+        output_model=DirectMessageResponse,
+        authentication_type="jwt",
+        openapi_tags=("Conversations",),
+        summary="Open (or find) a direct conversation with another user",
+        expose_in=(ExposeIn.REST,),
+    )
+    def direct_message_route(self, body: DirectMessageRequest) -> DirectMessageResponse:
+        return DirectMessageResponse(
+            **self.create_direct_message(body.other_user_id, body.initial_message)
+        )
 
 
 class ConversationUserManager(AbstractBLLManager, RouterMixin):
     _model = ConversationUserModel
 
-    # RouterMixin configuration
     prefix: ClassVar[Optional[str]] = "/v1/conversation/user"
     tags: ClassVar[Optional[List[str]]] = ["Conversation Users"]
     auth_type: ClassVar[AuthType] = AuthType.JWT
 
-    def create_validation(self, entity):
-        """Validate conversation user creation."""
-        if entity.user_id:
-            try:
-                from zephyrex.logic.BLL_Auth import UserManager
+    def create_validation(self, entity: Any) -> None:
+        _user_exists(self.model_registry, entity.user_id)
+        # The requester must see the conversation; editing it is the
+        # permission check on create.
+        ConversationManager(
+            requester_id=self.requester.id, model_registry=self.model_registry
+        ).get(id=entity.conversation_id)
 
-                UserManager(
-                    requester_id=env("SYSTEM_ID"),
-                    model_registry=self.model_registry,
-                ).get(id=entity.user_id)
-            except HTTPException:
-                raise HTTPException(status_code=404, detail="User not found")
+    def create(self, **kwargs: Any) -> Any:
+        """Memberships with their grants: the same as adding participants."""
+        result = super().create(**kwargs)
+        conversations = ConversationManager(
+            requester_id=env("ROOT_ID"), model_registry=self.model_registry
+        )
+        for membership in _created(result):
+            owner = conversations.get(id=membership.conversation_id).user_id
+            if owner != membership.user_id:
+                _grant(
+                    self.model_registry, membership.conversation_id, membership.user_id
+                )
+        return result
 
-        if entity.conversation_id:
-            try:
-                ConversationManager(
-                    requester_id=env("SYSTEM_ID"),
-                    model_registry=self.model_registry,
-                ).get(id=entity.conversation_id)
-            except HTTPException:
-                raise HTTPException(status_code=404, detail="Conversation not found")
+    def delete(self, id: str) -> None:
+        """Deleting a membership removes the participant, under the same
+        rules (the owner removes anyone; a participant leaves)."""
+        membership = self.get(id=id)
+        ConversationManager(
+            requester_id=self.requester.id, model_registry=self.model_registry
+        ).remove_participant(membership.conversation_id, membership.user_id)
+
+    def delete_row(self, id: str) -> None:
+        """Delete the membership row itself, once removal is authorized."""
+        super().delete(id)
 
 
 class MessageModel(
@@ -329,24 +402,24 @@ class MessageModel(
     )
     is_deleted: bool = Field(False, description="Whether message is soft deleted")
     user_id: Optional[str] = Field(
-        None, description="ID of the user sending the message"
+        None, description="The user who wrote the message; none for an agent"
     )
 
-    # Database metadata
     table_comment: ClassVar[str] = (
         "Messages represent individual communications within conversations, "
         "supporting threading via parent_id and edit history tracking."
     )
+    permission_references: ClassVar[List[str]] = ["conversation"]
 
     class Create(BaseModel, ConversationModel.Reference.ID, ParentMixinModel.Optional):
         content: str = Field(..., description="Content of the message")
         user_id: Optional[str] = Field(
-            None, description="ID of the user sending the message"
+            None, description="Set by the server: the poster, or none for an agent"
         )
-        file: Optional[str] = Field(None, description="Audio file in base64 format")
 
     class Update(BaseModel):
         content: Optional[str] = Field(None, description="New content for the message")
+        edited_at: Optional[datetime] = Field(None, description="Set by the server")
 
     class Search(
         ApplicationModel.Search,
@@ -359,144 +432,171 @@ class MessageModel(
         is_deleted: Optional[bool] = None
 
 
+class VoiceMessageRequest(RouteModel):
+    conversation_id: str = Field(..., description="The conversation")
+    audio_base64: str = Field(..., description="The recording, base64")
+    filename: str = Field("audio.webm", description="The recording's file name")
+    parent_id: Optional[str] = Field(None, description="The message replied to")
+
+
+class ThreadResponse(RouteModel):
+    messages: List[MessageModel]
+
+
 class MessageManager(AbstractBLLManager, RouterMixin):
     _model = MessageModel
 
-    # RouterMixin configuration
     prefix: ClassVar[Optional[str]] = "/v1/message"
     tags: ClassVar[Optional[List[str]]] = ["Messages"]
     auth_type: ClassVar[AuthType] = AuthType.JWT
 
-    def __init__(
-        self,
-        requester_id: str,
-        target_id: Optional[str] = None,
-        target_team_id: Optional[str] = None,
-        model_registry: Optional[Any] = None,
-    ) -> None:
-        """Initialize MessageManager.
-
-        Args:
-            requester_id: ID of the user making the request
-            target_id: ID of the target entity for operations
-            target_team_id: ID of the target team
-            model_registry: Model registry for dynamic model handling
-        """
-        super().__init__(
-            requester_id=requester_id,
-            target_id=target_id,
-            target_team_id=target_team_id,
-            model_registry=model_registry,
-        )
-        self._feedbacks = None
-
     @property
     def feedbacks(self) -> "FeedbackManager":
-        """Get the feedback manager for this message manager."""
-        if self._feedbacks is None:
-            self._feedbacks = FeedbackManager(
-                requester_id=self.requester.id,
-                target_id=self.target_id,
-                target_team_id=self.target_team_id,
-                model_registry=self.model_registry,
-            )
-        return self._feedbacks
+        return FeedbackManager(
+            requester_id=self.requester.id, model_registry=self.model_registry
+        )
 
-    def create_validation(self, entity):
-        """Validate message creation."""
-        if entity.conversation_id:
-            try:
-                ConversationManager(
-                    requester_id=env("SYSTEM_ID"),
-                    model_registry=self.model_registry,
-                ).get(id=entity.conversation_id)
-            except HTTPException:
-                raise HTTPException(status_code=404, detail="Conversation not found")
-
+    def create_validation(self, entity: Any) -> None:
+        conversation = ConversationManager(
+            requester_id=self.requester.id, model_registry=self.model_registry
+        ).get(id=entity.conversation_id)
         if entity.parent_id:
-            try:
-                MessageManager(
-                    requester_id=env("SYSTEM_ID"),
-                    model_registry=self.model_registry,
-                ).get(id=entity.parent_id)
-            except HTTPException:
-                raise HTTPException(status_code=404, detail="Parent message not found")
+            parent = self.get(id=entity.parent_id)
+            if parent.conversation_id != conversation.id:
+                raise HTTPException(
+                    status_code=400,
+                    detail="A reply is in its parent's conversation",
+                )
 
-    def create(self, **kwargs) -> MessageModel:
-        """Create a new message in a conversation."""
-        if "user_id" not in kwargs:
-            kwargs["user_id"] = self.requester.id
+    def create(self, **kwargs: Any) -> Any:
+        """Messages by the requester (ROOT and SYSTEM name the author, or
+        none). Agent replies to new messages are the ``ai_agents``
+        extension's create hook."""
+        requester_id = self.requester.id
 
-        if "file" in kwargs:
-            try:
-                from zephyrex.extensions.ai.BLL_AI import transcribe_audio_to_text
+        def authored(fields: Dict[str, Any]) -> Dict[str, Any]:
+            if not _server_side(requester_id) or "user_id" not in fields:
+                fields["user_id"] = requester_id
+            return fields
 
-                resp = transcribe_audio_to_text(self, **kwargs)
-                if resp:
-                    if resp == "Transcription failed":
-                        raise HTTPException(status_code=500, detail=resp)
-                    kwargs["content"] = resp
-            except HTTPException:
-                raise
-            except Exception as e:
-                logger.error(f"Error transcribing audio to text: {e}")
-            finally:
-                kwargs.pop("file", None)
+        return super().create(**_each(kwargs, authored))
 
-        # Agent auto-response to newly-created messages is handled by the
-        # ``ai_agents`` extension's own ``@hook_bll(MessageManager.create,
-        # timing="after")`` registration (see
-        # ``BLL_AI_Agents.auto_respond_agents_on_message``) — the framework's
-        # hook registry dispatches it automatically via ``wrap_method_with_hooks``
-        # whenever that extension is loaded. See ``ConversationManager.create``
-        # above for why a manual, hard-imported invocation here is wrong.
+    def create_agent_message(self, **kwargs: Any) -> Any:
+        """A message an agent posts, with no author, into a conversation
+        the requester (the agent's user) can post in."""
+        kwargs.pop("entities", None)
+        kwargs["user_id"] = None
         return super().create(**kwargs)
 
-    def update(self, id: str, **kwargs) -> MessageModel:
-        """Update a message, tracking edit history."""
+    def update(self, id: str, **kwargs: Any) -> Any:
+        """Only the author edits a message; an edit is stamped."""
+        message = self.get(id=id)
+        if not _server_side(self.requester.id) and message.user_id != self.requester.id:
+            raise HTTPException(
+                status_code=403, detail="Only the author edits a message"
+            )
+        kwargs.pop("edited_at", None)
         if "content" in kwargs:
             kwargs["edited_at"] = datetime.now(timezone.utc)
-
         return super().update(id, **kwargs)
 
-    @staticmethod
-    def edit(
-        manager: "MessageManager", id: str, content: str, fork: bool = False
-    ) -> MessageModel:
-        """Edit a message, optionally creating a fork (reply) instead of in-place edit."""
-        if fork:
-            original_message = manager.get(id=id)
-            return manager.create(
-                conversation_id=original_message.conversation_id,
-                content=content,
-                parent_id=id,
+    def delete(self, id: str) -> None:
+        """The author or the conversation's owner deletes a message."""
+        message = self.get(id=id)
+        if _server_side(self.requester.id) or message.user_id == self.requester.id:
+            super().delete(id)
+            return
+        conversation = ConversationManager(
+            requester_id=self.requester.id, model_registry=self.model_registry
+        ).get(id=message.conversation_id)
+        if conversation.user_id != self.requester.id:
+            raise HTTPException(
+                status_code=403,
+                detail="Only the author or the conversation's owner deletes a message",
             )
-        return manager.update(id, content=content)
+        # The database lets only a row's creator delete it; the owner's
+        # moderation is authorized here, so the row goes as ROOT.
+        MessageManager(
+            requester_id=env("ROOT_ID"), model_registry=self.model_registry
+        ).delete(id)
 
-    def get_thread(self, message_id: str, depth: int = 0) -> List[MessageModel]:
-        """Get a thread of messages starting from a parent message."""
-        thread = []
-
-        parent = self.get(id=message_id)
-        thread.append(parent)
-
-        if depth != 0:  # 0 means no limit, negative values also mean no limit
-            replies = self.list(parent_id=message_id)
-            for reply in replies:
-                reply_id = reply["id"] if isinstance(reply, dict) else reply.id
-                sub_thread = self.get_thread(
-                    reply_id, depth - 1 if depth > 0 else depth
+    def get_thread(
+        self, message_id: str, depth: int = MAX_THREAD_DEPTH
+    ) -> List[MessageModel]:
+        """A message and its replies, ``depth`` levels down (at most
+        ``MAX_THREAD_DEPTH``), oldest first at each level."""
+        depth = max(0, min(depth, MAX_THREAD_DEPTH))
+        thread = [self.get(id=message_id)]
+        level = [message_id]
+        for _ in range(depth):
+            replies: List[MessageModel] = []
+            for parent_id in level:
+                replies.extend(
+                    self.list(
+                        parent_id=parent_id, sort_by="created_at", sort_order="asc"
+                    )
                 )
-                thread.extend(sub_thread)
-
+            if not replies:
+                break
+            thread.extend(replies)
+            if len(thread) >= MAX_THREAD_MESSAGES:
+                return thread[:MAX_THREAD_MESSAGES]
+            level = [reply.id for reply in replies]
         return thread
+
+    def recent(self, conversation_id: str, limit: int) -> List[MessageModel]:
+        """The last ``limit`` messages of a conversation, oldest first."""
+        newest = self.list(
+            conversation_id=conversation_id,
+            sort_by="created_at",
+            sort_order="desc",
+            limit=limit,
+        )
+        return list(reversed(newest))
+
+    @custom_route(
+        method="GET",
+        path="/{message_id}/thread",
+        output_model=ThreadResponse,
+        authentication_type="jwt",
+        openapi_tags=("Messages",),
+        summary="A message and its replies",
+        expose_in=(ExposeIn.REST,),
+    )
+    def thread_route(
+        self, message_id: str, depth: int = MAX_THREAD_DEPTH
+    ) -> ThreadResponse:
+        return ThreadResponse(messages=self.get_thread(message_id, depth))
+
+    @custom_route(
+        method="POST",
+        path="/voice",
+        input_model=VoiceMessageRequest,
+        output_model=MessageModel,
+        authentication_type="jwt",
+        openapi_tags=("Messages",),
+        summary="Post a recording as a message, transcribed by the AI extension",
+        expose_in=(ExposeIn.REST,),
+    )
+    async def voice_route(self, body: VoiceMessageRequest) -> MessageModel:
+        # The caller must be able to post before any audio leaves the server.
+        ConversationManager(
+            requester_id=self.requester.id, model_registry=self.model_registry
+        ).get(id=body.conversation_id)
+        text = await _transcribe(body.audio_base64, body.filename)
+        message: MessageModel = self.create(
+            conversation_id=body.conversation_id,
+            content=text,
+            parent_id=body.parent_id,
+        )
+        return message
 
 
 class FeedbackModel(
     ApplicationModel,
     UpdateMixinModel,
     UserModel.Reference.ID.Optional,
-    MessageModel.Reference.ID,
+    MessageModel.Reference,
     metaclass=ModelMeta,
 ):
     content: str = Field(..., description="Feedback content")
@@ -505,11 +605,11 @@ class FeedbackModel(
         description="Whether this is positive (True), negative (False), or neutral (None) feedback",
     )
 
-    # Database metadata
     table_comment: ClassVar[str] = (
         "Feedback on messages from users, supporting positive/negative/neutral sentiment "
         "for message quality assessment and AI training."
     )
+    permission_references: ClassVar[List[str]] = ["message"]
 
     class Create(BaseModel, MessageModel.Reference.ID, UserModel.Reference.ID.Optional):
         content: str = Field(..., description="Feedback content")
@@ -536,28 +636,32 @@ class FeedbackModel(
 class FeedbackManager(AbstractBLLManager, RouterMixin):
     _model = FeedbackModel
 
-    # RouterMixin configuration
     prefix: ClassVar[Optional[str]] = "/v1/feedback"
     tags: ClassVar[Optional[List[str]]] = ["Feedback"]
     auth_type: ClassVar[AuthType] = AuthType.JWT
 
-    def create_validation(self, entity):
-        """Validate feedback creation."""
-        if entity.message_id:
-            try:
-                MessageManager(
-                    requester_id=env("SYSTEM_ID"),
-                    model_registry=self.model_registry,
-                ).get(id=entity.message_id)
-            except HTTPException:
-                raise HTTPException(status_code=404, detail="Message not found")
+    def create_validation(self, entity: Any) -> None:
+        MessageManager(
+            requester_id=self.requester.id, model_registry=self.model_registry
+        ).get(id=entity.message_id)
 
-    def create(self, **kwargs) -> FeedbackModel:
-        """Create a new feedback entry."""
-        if "user_id" not in kwargs:
-            kwargs["user_id"] = self.requester.id
+    def create(self, **kwargs: Any) -> Any:
+        return super().create(**_each(kwargs, _authored_by(self.requester.id)))
 
-        return super().create(**kwargs)
+    def _own(self, id: str) -> None:
+        if (
+            not _server_side(self.requester.id)
+            and self.get(id=id).user_id != self.requester.id
+        ):
+            raise HTTPException(status_code=403, detail="Feedback is its author's")
+
+    def update(self, id: str, **kwargs: Any) -> Any:
+        self._own(id)
+        return super().update(id, **kwargs)
+
+    def delete(self, id: str) -> None:
+        self._own(id)
+        super().delete(id)
 
 
 class ArtifactModel(
@@ -577,11 +681,11 @@ class ArtifactModel(
     file_size: Optional[int] = Field(None, description="File size in bytes")
     mime_type: Optional[str] = Field(None, description="MIME type of the file")
 
-    # Database metadata
     table_comment: ClassVar[str] = (
         "Artifacts represent files and content attachments associated with conversations "
         "and messages, supporting encryption and various content types."
     )
+    permission_references: ClassVar[List[str]] = ["conversation"]
 
     class Create(
         BaseModel,
@@ -603,8 +707,7 @@ class ArtifactModel(
         mime_type: Optional[str] = Field(None, description="MIME type of the file")
 
         @model_validator(mode="after")
-        def validate_artifact_create(self):
-            """Ensure at least one of conversation_id or message_id is provided."""
+        def validate_artifact_create(self) -> "ArtifactModel.Create":
             if not self.conversation_id and not self.message_id:
                 raise ValueError(
                     "Either conversation_id or message_id must be provided"
@@ -621,10 +724,6 @@ class ArtifactModel(
         content: Optional[str] = Field(
             None, description="Embedded content of the artifact"
         )
-        conversation_id: Optional[str] = Field(
-            None, description="ID of the conversation this artifact belongs to"
-        )
-        message_id: Optional[str] = Field(None, description="ID of the source message")
         encrypted: Optional[bool] = Field(
             None, description="Whether the artifact is encrypted"
         )
@@ -650,39 +749,85 @@ class ArtifactModel(
 class ArtifactManager(AbstractBLLManager, RouterMixin):
     _model = ArtifactModel
 
-    # RouterMixin configuration
     prefix: ClassVar[Optional[str]] = "/v1/artifact"
     tags: ClassVar[Optional[List[str]]] = ["Artifacts"]
     auth_type: ClassVar[AuthType] = AuthType.JWT
 
-    def create_validation(self, entity):
-        """Validate artifact creation."""
-        if entity.conversation_id:
-            try:
-                ConversationManager(
-                    requester_id=env("SYSTEM_ID"),
-                    model_registry=self.model_registry,
-                ).get(id=entity.conversation_id)
-            except HTTPException:
-                raise HTTPException(status_code=404, detail="Conversation not found")
+    def create_validation(self, entity: Any) -> None:
+        ConversationManager(
+            requester_id=self.requester.id, model_registry=self.model_registry
+        ).get(id=entity.conversation_id)
 
-        if entity.message_id:
-            try:
-                MessageManager(
-                    requester_id=env("SYSTEM_ID"),
-                    model_registry=self.model_registry,
-                ).get(id=entity.message_id)
-            except HTTPException:
-                raise HTTPException(status_code=404, detail="Message not found")
+    def create(self, **kwargs: Any) -> Any:
+        """Artifacts by the requester, each in its message's conversation."""
+        authored = _authored_by(self.requester.id)
+        messages = MessageManager(
+            requester_id=self.requester.id, model_registry=self.model_registry
+        )
 
-        if not entity.conversation_id and not entity.message_id:
-            raise HTTPException(
-                status_code=400, detail="Artifact must belong to a conversation"
-            )
+        def placed(fields: Dict[str, Any]) -> Dict[str, Any]:
+            fields = authored(fields)
+            if fields.get("message_id"):
+                message = messages.get(id=fields["message_id"])
+                if fields.get("conversation_id") not in (None, message.conversation_id):
+                    raise HTTPException(
+                        status_code=400,
+                        detail="An artifact is in its message's conversation",
+                    )
+                fields["conversation_id"] = message.conversation_id
+            return fields
 
-    def create(self, **kwargs) -> ArtifactModel:
-        """Create a new artifact."""
-        if "user_id" not in kwargs:
-            kwargs["user_id"] = self.requester.id
+        return super().create(**_each(kwargs, placed))
 
-        return super().create(**kwargs)
+
+def _user_exists(model_registry: Any, user_id: str) -> None:
+    from zephyrex.logic.BLL_Auth import UserManager
+
+    try:
+        UserManager(requester_id=env("SYSTEM_ID"), model_registry=model_registry).get(
+            id=user_id
+        )
+    except HTTPException:
+        raise HTTPException(status_code=404, detail="User not found") from None
+
+
+def _grant(model_registry: Any, conversation_id: str, user_id: str) -> None:
+    """Give a participant view and edit on the conversation."""
+    from zephyrex.extensions.acl_rbac.BLL_ACL import PermissionManager
+
+    PermissionManager(
+        requester_id=env("ROOT_ID"), model_registry=model_registry
+    ).create(
+        resource_type="conversations",
+        resource_id=conversation_id,
+        user_id=user_id,
+        can_view=True,
+        can_edit=True,
+    )
+
+
+def _revoke(model_registry: Any, conversation_id: str, user_id: str) -> None:
+    from zephyrex.extensions.acl_rbac.BLL_ACL import PermissionManager
+
+    permissions = PermissionManager(
+        requester_id=env("ROOT_ID"), model_registry=model_registry
+    )
+    for grant in permissions.list(
+        resource_type="conversations", resource_id=conversation_id, user_id=user_id
+    ):
+        permissions.delete(id=grant.id)
+
+
+async def _transcribe(audio_base64: str, filename: str) -> str:
+    """The text of a recording, through the AI extension's transcription
+    (503 when no transcribing model is configured)."""
+    from zephyrex.extensions.ai.EXT_AI import EXT_AI
+
+    transcript: Dict[str, Any] = await EXT_AI.transcribe(audio_base64, filename)
+    text = str(transcript.get("text", "")).strip()
+    if not text:
+        raise HTTPException(status_code=422, detail="No speech was heard")
+    return text
+
+
+DirectMessageResponse.model_rebuild()

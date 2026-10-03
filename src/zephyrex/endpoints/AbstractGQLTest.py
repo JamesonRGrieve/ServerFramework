@@ -1102,10 +1102,17 @@ class AbstractGraphQLTest:
             parent_field = convert_field_name(
                 reference_relationship_name(parent.foreign_key)
             )
+            # The user query is self-scoped (it takes no id): a user parent
+            # is read as the requester, who owns what they create.
+            if parent_field == "user":
+                assert parent_id == admin_a.id, "the entity's user is not its creator"
+                selector = parent_field
+            else:
+                selector = f'{parent_field}(id: "{parent_id}")'
             data = self._gql_query(
                 server,
                 admin_a.jwt,
-                f'{{ {parent_field}(id: "{parent_id}") {{ id {collection} {{ id }} }} }}',
+                f"{{ {selector} {{ id {collection} {{ id }} }} }}",
                 as_root=parent.system,
             )
             assert data[parent_field] is not None, f"{parent_field} not readable"
