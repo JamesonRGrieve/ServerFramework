@@ -102,6 +102,19 @@ def skip_negotiation(path_pattern: str) -> None:
     _PASS_THROUGH_PATHS.append(re.compile(path_pattern))
 
 
+# Paths that take form-encoded bodies. Elsewhere a form body is refused: an
+# HTML form is the one body another site's page can send without a CORS
+# preflight, so routes that never expect one never read one.
+_FORM_PATHS: list[re.Pattern[str]] = []
+
+
+def accept_form_bodies(path_pattern: str) -> None:
+    """Let requests to paths matching ``path_pattern`` (a regular expression
+    matched against the whole path) send application/x-www-form-urlencoded
+    bodies, read as one string per field."""
+    _FORM_PATHS.append(re.compile(path_pattern))
+
+
 # ---------------------------------------------------------------------------
 # Serialization helpers
 # ---------------------------------------------------------------------------
@@ -421,6 +434,10 @@ class ContentNegotiationMiddleware:
         content_type_value = headers.get(b"content-type", b"").decode("latin-1")
         req_fmt = resolve_request_format(content_type_value or None)
         method = scope.get("method", "GET")
+        if req_fmt == "form" and not any(
+            pattern.fullmatch(scope.get("path", "")) for pattern in _FORM_PATHS
+        ):
+            req_fmt = None
 
         if req_fmt is None and method in ("POST", "PUT", "PATCH"):
             supported = ", ".join(sorted(set(_MEDIA_TYPE_MAP.values())))

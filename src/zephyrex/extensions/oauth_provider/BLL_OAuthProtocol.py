@@ -35,6 +35,7 @@ from zephyrex.extensions.oauth_provider.OAuthProtocol import (
     OAuthError,
 )
 from zephyrex.lib.CustomRoute import ExposeIn, custom_route
+from zephyrex.lib.ContentNegotiation import accept_form_bodies
 from zephyrex.lib.SessionCookies import accept_cross_site_writes
 from zephyrex.lib.InboundSecurity import (
     DEFAULT_AUTH_RATE_LIMIT,
@@ -333,3 +334,5 @@ class OauthDiscoveryManager(AbstractBLLManager, RouterMixin):
 # Browser apps (public clients) call these from their own origin; they take
 # client credentials or PKCE, never the session cookie.
 accept_cross_site_writes(r"/v1/oauth2/(token|introspect|revoke)")
+# RFC 6749 sends these as form bodies.
+accept_form_bodies(r"/v1/oauth2/(token|introspect|revoke)")

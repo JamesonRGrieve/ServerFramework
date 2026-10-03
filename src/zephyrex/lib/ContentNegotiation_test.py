@@ -32,6 +32,7 @@ from zephyrex.lib.ContentNegotiation import (
     MIME_YAML,
     MIME_YAML_ALT,
     ContentNegotiationMiddleware,
+    accept_form_bodies,
     deserialize,
     resolve_request_format,
     resolve_response_format,
@@ -203,19 +204,23 @@ class TestFormBodies:
         def token(body: Token) -> dict:
             return body.model_dump()
 
+        from zephyrex.lib import ContentNegotiation
+
         client = TestClient(app)
-        answer = client.post(
-            "/token",
-            content="grant_type=authorization_code&code=abc",
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-        )
+        form = {"Content-Type": "application/x-www-form-urlencoded"}
+        body = "grant_type=authorization_code&code=abc"
+        # A route that did not ask for form bodies never reads one.
+        assert client.post("/token", content=body, headers=form).status_code == 415
+        accept_form_bodies("/token")
+        try:
+            answer = client.post("/token", content=body, headers=form)
+            repeated = client.post(
+                "/token", content="grant_type=a&grant_type=b&code=abc", headers=form
+            )
+        finally:
+            ContentNegotiation._FORM_PATHS.pop()
         assert answer.status_code == 200
         assert answer.json() == {"grant_type": "authorization_code", "code": "abc"}
-        repeated = client.post(
-            "/token",
-            content="grant_type=a&grant_type=b&code=abc",
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-        )
         assert repeated.status_code == 422
 
 

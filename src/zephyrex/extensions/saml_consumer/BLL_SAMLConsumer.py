@@ -72,6 +72,7 @@ from zephyrex.lib.InboundSecurity import (
 from zephyrex.lib.Logging import logger
 from zephyrex.lib.ProviderHTTPClient import ClientPolicy, ProviderHTTPClient
 from zephyrex.lib.SecretEncryption import decrypt_secret, encrypt_secret
+from zephyrex.lib.ContentNegotiation import accept_form_bodies
 from zephyrex.lib.SessionCookies import accept_cross_site_writes
 from zephyrex.logic.AbstractLogicManager import (
     AbstractBLLManager,
@@ -1127,3 +1128,4 @@ PasswordlessGrantRegistry.register(GRANT_TYPE, make_user_id_grant_validator("SAM
 # The IdP's page posts the response here (HTTP-POST binding); it reaches the
 # ACS without the session, and the browser binding cookie still arrives.
 accept_cross_site_writes(f"{re.escape(ROUTE_PREFIX)}/[^/]+/acs")
+accept_form_bodies(f"{re.escape(ROUTE_PREFIX)}/[^/]+/acs")

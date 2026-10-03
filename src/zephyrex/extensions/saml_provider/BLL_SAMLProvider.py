@@ -84,6 +84,7 @@ from zephyrex.lib.AuthProvider import get_auth_provider
 from zephyrex.lib.CustomRoute import ExposeIn, custom_route
 from zephyrex.lib.DateTimeUtils import ensure_utc
 from zephyrex.lib.Environment import env
+from zephyrex.lib.ContentNegotiation import accept_form_bodies
 from zephyrex.lib.SessionCookies import accept_cross_site_writes
 from zephyrex.logic.AbstractLogicManager import (
     AbstractBLLManager,
@@ -1047,3 +1048,4 @@ def metadata_document(model_registry: Any) -> Tuple[str, str]:
 # An SP's page posts its AuthnRequest here (HTTP-POST binding). It reaches
 # the route without the session, which only /sso/continue (a GET) reads.
 accept_cross_site_writes(re.escape(f"{PREFIX}{SSO_PATH}"))
+accept_form_bodies(re.escape(f"{PREFIX}{SSO_PATH}"))
