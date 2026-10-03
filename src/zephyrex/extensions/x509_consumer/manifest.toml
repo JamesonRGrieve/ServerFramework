@@ -5,15 +5,19 @@
 # Manifest_parity_test keeps the two in step.
 
 name = "x509_consumer"
-version = "1.0.0"
-description = "Authenticate users via X.509 client certificates (mutual TLS)."
+version = "2.0.0"
+description = "Sign in with an X.509 client certificate (mutual TLS), verified against admin-managed trust anchors with CRL and OCSP revocation."
 author = "ZephyrexTechnologies"
 entry_module = "EXT_X509Consumer"
 minimum_framework_version = "0.0.0"
 
-pip_dependencies = []
+pip_dependencies = ["cryptography>=45.0.0"]
 system_dependencies = []
 
 [[extension_dependencies]]
 name = "auth_session"
-optional = false
+optional = true
+
+[[extension_dependencies]]
+name = "auth_invitations"
+optional = true

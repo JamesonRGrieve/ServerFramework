@@ -1,36 +1,47 @@
-"""X.509 client certificate consumer extension manifest.
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""Sign in with an X.509 client certificate (mutual TLS).
 
-Authenticate local users via X.509 client certificates (mutual TLS).
-The TLS terminator (nginx, Traefik, etc.) validates the client certificate
-and passes the certificate subject/fingerprint in request headers. This
-extension maps certificate identities to local users.
+``POST /v1/auth/x509/login`` verifies the certificate the client presented
+(forwarded by a trusted TLS terminator, or handed over by an ASGI server
+that terminates TLS itself) against the trust anchors ROOT manages at
+``/v1/auth/x509/trust-anchor``, checks its revocation, maps it to a local
+user and issues the same session as password login. See
+``BLL_X509Consumer`` for the trust rules.
 
-The complementary ``x509_provider`` extension implements the *server* side
-(this server acts as a certificate authority for client certificates).
+- ``X509_CONSUMER_TRUSTED_PROXIES``: comma-separated addresses or CIDRs of
+  the TLS terminators whose forwarded certificate header is believed (as
+  the app sees the peer). Empty: no header is ever believed.
+- ``X509_CONSUMER_CERT_HEADER``: the header they forward the certificate
+  in (URL-encoded PEM, as nginx's ``$ssl_client_escaped_cert``, or base64
+  DER). Default ``X-SSL-Client-Cert``.
+
+The complementary ``x509_provider`` extension is the other side: this
+server as the CA that issues client certificates.
 """
 
 from typing import Any, ClassVar, Dict, List, Set
 
-from zephyrex.extensions.AbstractExtensionProvider import AbstractStaticExtension
-from zephyrex.lib.Dependencies import Dependencies, PIP_Dependency
-from zephyrex.lib.Logging import logger
+from zephyrex.extensions.AbstractExtensionProvider import (
+    AbstractStaticExtension,
+    ability,
+)
+from zephyrex.lib.Dependencies import Dependencies, EXT_Dependency, PIP_Dependency
+
+# x509.verification's client verifier and extension policies (45.0).
+CRYPTOGRAPHY_REQUIREMENT = ">=45.0.0"
 
 
 class EXT_X509Consumer(AbstractStaticExtension):
     name: ClassVar[str] = "x509_consumer"
-    version: ClassVar[str] = "1.0.0"
+    version: ClassVar[str] = "2.0.0"
     description: ClassVar[str] = (
-        "Authenticate users via X.509 client certificates (mutual TLS)."
+        "Sign in with an X.509 client certificate (mutual TLS), verified "
+        "against admin-managed trust anchors with CRL and OCSP revocation."
     )
 
     _env: ClassVar[Dict[str, Any]] = {
-        "X509_CONSUMER_CERT_HEADER": "X-Client-Cert",
-        "X509_CONSUMER_SUBJECT_HEADER": "X-Client-Cert-Subject",
-        "X509_CONSUMER_FINGERPRINT_HEADER": "X-Client-Cert-Fingerprint",
-        "X509_CONSUMER_VERIFY_HEADER": "X-Client-Cert-Verify",
-        "X509_CONSUMER_CA_CERT_PATH": "",
-        "X509_CONSUMER_CRL_PATH": "",
-        "X509_CONSUMER_SUBJECT_MATCH_FIELD": "CN",
+        "X509_CONSUMER_TRUSTED_PROXIES": "",
+        "X509_CONSUMER_CERT_HEADER": "X-SSL-Client-Cert",
     }
 
     dependencies: ClassVar[Dependencies] = Dependencies(
@@ -38,35 +49,43 @@ class EXT_X509Consumer(AbstractStaticExtension):
             PIP_Dependency(
                 name="cryptography",
                 friendly_name="Cryptographic library",
-                semver=">=41.0.0",
-                reason="X.509 certificate parsing and validation",
+                semver=CRYPTOGRAPHY_REQUIREMENT,
+                reason="X.509 path validation, CRL and OCSP",
+            ),
+            EXT_Dependency(
+                name="auth_session",
+                friendly_name="Sessions",
+                optional=True,
+                reason="Persists the sessions sign-in issues, so they can be revoked",
+            ),
+            EXT_Dependency(
+                name="auth_invitations",
+                friendly_name="Invitations",
+                optional=True,
+                reason="REGISTRATION_MODE=invite admits a new user by invitation",
             ),
         ]
     )
 
-    _abilities: ClassVar[Set[str]] = {
-        "x509_consumer_authenticate",
-        "x509_consumer_verify",
-    }
-    _providers: ClassVar[List] = []
-    extension_dependencies: ClassVar[List[str]] = ["auth_session"]
+    _abilities: ClassVar[Set[str]] = {"x509_linked_identities"}
 
     @classmethod
-    def on_initialize(cls) -> bool:
-        from zephyrex.extensions.x509_consumer import (  # noqa: F401
-            BLL_X509Consumer,
+    @ability("x509_linked_identities")
+    async def x509_linked_identities(cls, requester_id: str) -> List[Dict[str, Any]]:
+        """The certificate identities that sign in as ``requester_id``."""
+        from zephyrex.extensions.x509_consumer.BLL_X509Consumer import (
+            UserX509LinkManager,
         )
 
-        logger.debug("x509_consumer initialized")
-        return True
-
-    @classmethod
-    def validate_config(cls) -> List[str]:
-        from zephyrex.lib.Environment import env as _env
-
-        issues: List[str] = []
-        if not _env("X509_CONSUMER_CA_CERT_PATH"):
-            issues.append(
-                "X509_CONSUMER_CA_CERT_PATH is unset; cannot validate client certificates"
-            )
-        return issues
+        manager = cls.as_requester(UserX509LinkManager, requester_id)
+        return [
+            {
+                "id": str(link.id),
+                "trust_anchor_id": link.trust_anchor_id,
+                "identity": link.identity,
+                "subject_dn": link.subject_dn,
+                "not_after": link.not_after,
+                "last_login_at": link.last_login_at,
+            }
+            for link in manager.list(user_id=requester_id) or []
+        ]
