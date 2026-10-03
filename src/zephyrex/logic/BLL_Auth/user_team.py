@@ -6,6 +6,7 @@ from fastapi import HTTPException
 from pydantic import Field
 
 from zephyrex.lib.Environment import env
+from zephyrex.lib.Preconditions import expect_route_record
 from zephyrex.logic.BLL_Auth.team_authority import TeamAuthority
 from zephyrex.pydantic2.fastapi import RouterMixin
 from zephyrex.logic.AbstractLogicManager import (
@@ -465,7 +466,8 @@ class UserTeamManager(AbstractBLLManager, RouterMixin):
         target_user_team = user_team_list[0]
 
         target_role_id = body["user_team"]["role_id"]  # type: ignore[index]
-        self.update(id=target_user_team.id, role_id=target_role_id)
+        with expect_route_record(self, target_user_team.id):
+            self.update(id=target_user_team.id, role_id=target_role_id)
 
         return {"message": "Role updated successfully"}
 
@@ -482,7 +484,8 @@ class UserTeamManager(AbstractBLLManager, RouterMixin):
         )
         if not memberships:
             raise HTTPException(status_code=404, detail="Membership not found")
-        self.delete(id=memberships[0].id)
+        with expect_route_record(self, memberships[0].id):
+            self.delete(id=memberships[0].id)
 
 
 UserTeamModel.Manager = UserTeamManager

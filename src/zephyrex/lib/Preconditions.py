@@ -259,12 +259,48 @@ def expect_route_version(
     bind nothing; a save (PUT/PATCH/DELETE) is held to IF_MATCH_REQUIRED, an
     action (POST) only to the If-Match it sends."""
     verb = method.upper()
-    target = route_target_id(path_params) if verb in _WRITE_METHODS else None
-    if target is None:
+    if verb not in _WRITE_METHODS:
         yield
+        return
+    target = route_target_id(path_params)
+    if target is None:
+        # The path names its record by more than one id (a membership is
+        # /{team_id}/user/{user_id}): the route resolves it and binds it with
+        # expect_route_record.
+        token = _route_if_match.set(_RouteIfMatch(if_match, verb in _SAVE_METHODS))
+        try:
+            yield
+        finally:
+            _route_if_match.reset(token)
         return
     with expect_versions(
         manager, {target: if_match}, may_require=verb in _SAVE_METHODS
+    ):
+        yield
+
+
+@dataclass(frozen=True)
+class _RouteIfMatch:
+    header: Optional[str]
+    may_require: bool
+
+
+_route_if_match: ContextVar[Optional[_RouteIfMatch]] = ContextVar(
+    "zephyrex_route_if_match", default=None
+)
+
+
+@contextmanager
+def expect_route_record(manager: Any, entity_id: str) -> Iterator[None]:
+    """Hold a write to the record a custom route resolved itself to the
+    request's If-Match, for a route whose path names its record by several
+    ids. Outside such a request it binds nothing."""
+    pending = _route_if_match.get()
+    if pending is None:
+        yield
+        return
+    with expect_versions(
+        manager, {entity_id: pending.header}, may_require=pending.may_require
     ):
         yield
 

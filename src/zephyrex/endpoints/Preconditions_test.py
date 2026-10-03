@@ -224,6 +224,65 @@ class TestDelete:
         assert _get(server, admin_a, team["id"]).status_code == 200
 
 
+class TestMembership:
+    """/v1/team/{team_id}/user/{user_id} names its record, the membership,
+    by two ids; it is held to the membership row's version."""
+
+    def _member(self, server, admin_a, admin_b) -> Dict[str, Any]:
+        from zephyrex.lib.Environment import env
+        from zephyrex.testing.factories import add_user_to_team
+
+        team = _team(server, admin_a)
+        add_user_to_team(server, admin_b.id, team["id"], env("USER_ROLE_ID"))
+        listed = server.get(f"{TEAMS}/{team['id']}/user", headers=_headers(admin_a))
+        assert listed.status_code == 200, listed.text
+        rows = listed.json()["user_teams"]
+        mine = [row for row in rows if row["user_id"] == admin_b.id]
+        assert len(mine) == 1, rows
+        (membership,) = mine
+        return {"team": team, "membership": membership}
+
+    def _path(self, made: Dict[str, Any]) -> str:
+        return f"{TEAMS}/{made['team']['id']}/user/{made['membership']['user_id']}"
+
+    def test_a_stale_role_change_is_refused(self, server, admin_a, admin_b):
+        made = self._member(server, admin_a, admin_b)
+        body = {"user_team": {"role_id": made["membership"]["role_id"]}}
+        refused = server.patch(
+            self._path(made), json=body, headers=_headers(admin_a, **_if_match(STALE))
+        )
+        assert refused.status_code == 412, refused.text
+        assert refused.json()["current"]["id"] == made["membership"]["id"]
+        etag = entity_etag(made["membership"])
+        assert etag is not None
+        saved = server.patch(
+            self._path(made), json=body, headers=_headers(admin_a, **_if_match(etag))
+        )
+        assert saved.status_code == 200, saved.text
+
+    def test_a_stale_removal_is_refused_and_the_member_stays(
+        self, server, admin_a, admin_b
+    ):
+        made = self._member(server, admin_a, admin_b)
+        refused = server.delete(
+            self._path(made), headers=_headers(admin_a, **_if_match(STALE))
+        )
+        assert refused.status_code == 412, refused.text
+        etag = entity_etag(made["membership"])
+        assert etag is not None
+        removed = server.delete(
+            self._path(made), headers=_headers(admin_a, **_if_match(etag))
+        )
+        assert removed.status_code == 204, removed.text
+
+    def test_a_removal_naming_no_version_is_428_when_required(
+        self, server, admin_a, admin_b, if_match_required
+    ):
+        made = self._member(server, admin_a, admin_b)
+        refused = server.delete(self._path(made), headers=_headers(admin_a))
+        assert refused.status_code == 428, refused.text
+
+
 class TestBatch:
     def _batch_put(self, server: Any, user: Any, targets: List[Any]) -> Any:
         return server.put(
