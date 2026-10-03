@@ -5,8 +5,8 @@
 # Manifest_parity_test keeps the two in step.
 
 name = "proxy_auth_provider"
-version = "1.0.0"
-description = "Set trusted proxy auth headers for downstream services."
+version = "2.0.0"
+description = "Proxy signed-in users to declared upstreams with trusted identity headers"
 author = "ZephyrexTechnologies"
 entry_module = "EXT_ProxyAuthProvider"
 minimum_framework_version = "0.0.0"

@@ -1,49 +1,37 @@
-"""Trusted proxy header authentication provider extension manifest.
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""This server as an authenticating reverse proxy for the services the
+operator declares (``BLL_ProxyAuthProvider``): a signed-in user reaches
+them through ``/v1/proxy/<upstream>/``, and they receive trusted, optionally
+signed identity headers instead of the user's credentials.
 
-This server acts as an authenticating reverse proxy, setting trusted
-headers (X-Forwarded-User, X-Forwarded-Email, X-Forwarded-Groups) for
-downstream services after validating the user's session.
-
-The complementary ``proxy_auth_consumer`` extension implements the
-*client* side (trust headers from an upstream proxy).
+Behind a reverse proxy of your own (Traefik, nginx, Caddy), use
+``forward_auth_provider`` instead: the proxy forwards, and this server only
+decides. ``proxy_auth_consumer`` is the other direction (trusting an
+upstream proxy's headers).
 """
 
-from typing import Any, ClassVar, Dict, List, Set
+from typing import Any, ClassVar, Dict, Set
 
 from zephyrex.extensions.AbstractExtensionProvider import AbstractStaticExtension
-from zephyrex.lib.Dependencies import Dependencies
-from zephyrex.lib.Logging import logger
+from zephyrex.lib.Dependencies import Dependencies, EXT_Dependency
 
 
 class EXT_ProxyAuthProvider(AbstractStaticExtension):
     name: ClassVar[str] = "proxy_auth_provider"
-    version: ClassVar[str] = "1.0.0"
+    version: ClassVar[str] = "2.0.0"
     description: ClassVar[str] = (
-        "Set trusted proxy auth headers for downstream services."
+        "Proxy signed-in users to declared upstreams with trusted identity headers"
     )
 
-    _env: ClassVar[Dict[str, Any]] = {
-        "PROXY_AUTH_PROVIDER_USER_HEADER": "X-Forwarded-User",
-        "PROXY_AUTH_PROVIDER_EMAIL_HEADER": "X-Forwarded-Email",
-        "PROXY_AUTH_PROVIDER_NAME_HEADER": "X-Forwarded-Name",
-        "PROXY_AUTH_PROVIDER_GROUPS_HEADER": "X-Forwarded-Groups",
-        "PROXY_AUTH_PROVIDER_STRIP_INCOMING": "true",
-    }
-
-    dependencies: ClassVar[Dependencies] = Dependencies([])
-
-    _abilities: ClassVar[Set[str]] = {
-        "proxy_auth_provider_inject_headers",
-        "proxy_auth_provider_manage_targets",
-    }
-    _providers: ClassVar[List] = []
-    extension_dependencies: ClassVar[List[str]] = ["auth_session"]
-
-    @classmethod
-    def on_initialize(cls) -> bool:
-        from zephyrex.extensions.proxy_auth_provider import (  # noqa: F401
-            BLL_ProxyAuthProvider,
-        )
-
-        logger.debug("proxy_auth_provider initialized")
-        return True
+    _env: ClassVar[Dict[str, Any]] = {}
+    dependencies: ClassVar[Dependencies] = Dependencies(
+        [
+            EXT_Dependency(
+                name="auth_session",
+                friendly_name="Sessions",
+                reason="A revoked session stops reaching the upstreams too",
+                optional=False,
+            )
+        ]
+    )
+    _abilities: ClassVar[Set[str]] = set()
