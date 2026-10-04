@@ -597,6 +597,39 @@ class TestUserManager(AbstractBLLTest):
             created_by != spoofed_creator
         ), "Mass-assignment: register honoured client-supplied created_by_user_id"
 
+    @pytest.mark.security
+    @pytest.mark.auth
+    @pytest.mark.parametrize("field, value", [("active", False), ("mfa_count", 0)])
+    def test_register_refuses_account_state(self, model_registry, field, value):
+        """``active`` and ``mfa_count`` are root-only on update, but
+        registration took them from UserModel's annotations and stored them:
+        a registrant could make an account with no MFA requirement, or one
+        an admin's later disable would not visibly change. Naming either now
+        refuses the registration (422), and no account is made."""
+        email = f"state_reg_{uuid.uuid4().hex[:8]}@example.com"
+        with pytest.raises(HTTPException) as refused:
+            UserManager.register(
+                {"email": email, "password": "Test1234!", field: value},
+                model_registry,
+            )
+        assert refused.value.status_code == 422
+        assert field in str(refused.value.detail)
+        UserDB = UserModel.DB(model_registry.DB.manager.Base)
+        assert not UserDB.exists(
+            requester_id=env("ROOT_ID"), model_registry=model_registry, email=email
+        )
+
+    @pytest.mark.auth
+    def test_register_without_account_state_takes_the_defaults(self, model_registry):
+        email = f"state_default_{uuid.uuid4().hex[:8]}@example.com"
+        UserManager.register({"email": email, "password": "Test1234!"}, model_registry)
+        UserDB = UserModel.DB(model_registry.DB.manager.Base)
+        (user,) = UserDB.list(
+            requester_id=env("ROOT_ID"), model_registry=model_registry, email=email
+        )
+        assert user["active"] is True
+        assert not user["mfa_count"]
+
 
 class TestTeamManager(AbstractBLLTest):
     class_under_test = TeamManager

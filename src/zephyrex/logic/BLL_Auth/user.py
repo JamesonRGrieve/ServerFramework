@@ -332,10 +332,11 @@ class UserModel(
         language: Optional[str] | None = None
 
 
-# UserModel's own fields (plus its image mixin's), taken before any extension
-# extends the model: registration accepts these and refuses the columns
-# extensions add (they are the server's to write).
-CORE_USER_FIELDS = frozenset({*UserModel.__annotations__, "image_url"})
+# The fields a registrant may send: UserModel.Create's, taken before any
+# extension extends the model. Every other users column is the server's to
+# write, and registration refuses it: account state only root may change
+# (ACCOUNT_STATE_FIELDS) and the columns extensions add (the payment link).
+REGISTRATION_FIELDS = frozenset(UserModel.Create.model_fields)
 
 
 class UserManager(AbstractBLLManager, RouterMixin):
@@ -1025,9 +1026,9 @@ class UserManager(AbstractBLLManager, RouterMixin):
         names, for linking that identity on its first sign-in. The email is
         matched as registration stores it (``_normalize_identifier``).
 
-        None without an email or without such an account; 409 when several
-        accounts have it; 403 when it is an internal account's
-        (``refuse_internal_account``).
+        None without an email or without such an account; 403 when it is an
+        internal account's (``refuse_internal_account``). The filter is
+        uq_users_email_live's own predicate, so it matches at most one row.
         """
         if not email:
             return None
@@ -1040,11 +1041,6 @@ class UserManager(AbstractBLLManager, RouterMixin):
                 UserDB.deleted_at.is_(None),
             ],
         )
-        if len(users) > 1:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="More than one account has that email",
-            )
         if not users:
             return None
         refuse_internal_account(users[0]["id"])
@@ -2043,18 +2039,15 @@ class UserManager(AbstractBLLManager, RouterMixin):
         metadata_fields = {}
         model_fields = {}
 
-        # The core user fields, as UserModel declared them: an extension that
-        # adds a column to users also adds it to UserModel's annotations.
-        model_fields_set = set(CORE_USER_FIELDS)
-
-        # Columns other extensions add to users (the payment customer link)
-        # are the server's to write, never the registrant's: refused here, so
-        # they reach neither the row nor, as a look-alike, the metadata.
+        # A users column outside REGISTRATION_FIELDS (active, mfa_count, the
+        # payment customer link) is the server's to write, never the
+        # registrant's: refused here, so it reaches neither the row nor, as a
+        # look-alike, the metadata.
         user_columns = UserModel.DB(model_registry.DB.manager.Base).__table__.columns
         server_set = sorted(
             key
             for key in registration_data
-            if key in user_columns and key not in model_fields_set
+            if key in user_columns and key not in REGISTRATION_FIELDS
         )
         if server_set:
             raise HTTPException(
@@ -2063,12 +2056,7 @@ class UserManager(AbstractBLLManager, RouterMixin):
             )
 
         for key, value in registration_data.items():
-            # Include invitation_code and invitation_id as special fields that shouldn't go to metadata
-            if key in model_fields_set or key in [
-                "password",
-                "invitation_code",
-                "invitation_id",
-            ]:
+            if key in REGISTRATION_FIELDS:
                 model_fields[key] = value
             else:
                 metadata_fields[key] = value
