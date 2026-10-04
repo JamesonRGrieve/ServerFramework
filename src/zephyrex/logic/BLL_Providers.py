@@ -2829,32 +2829,42 @@ class RotationProviderInstanceManager(AbstractBLLManager, RouterMixin):
             )
         return self._rotation  # type: ignore[return-value]
 
-    def create_validation(self, entity):
-        """Validate rotation provider instance creation - check that rotation and provider instance exist."""
-        # Use ROOT_ID to bypass permission filtering for pure existence checks
-        # Check that rotation exists
-        if entity.rotation_id:
-            rotation = RotationModel.DB(self.model_registry.DB.manager.Base).get(
-                requester_id=env("ROOT_ID"),
+    def _require_visible_references(
+        self, rotation_id: Optional[str], provider_instance_id: Optional[str]
+    ) -> None:
+        """The rotation and provider instance a link names must be ones the
+        requester can see, or they are not found (404). Checked as ROOT, any
+        user could put any instance, theirs or not, into their rotation.
+        ROOT and SYSTEM see every record, so nothing changes for them."""
+        base = self.model_registry.DB.manager.Base
+        references = (
+            (RotationModel, rotation_id, "Rotation not found"),
+            (
+                ProviderInstanceModel,
+                provider_instance_id,
+                "Provider instance not found",
+            ),
+        )
+        for model, reference_id, not_found in references:
+            if reference_id and not model.DB(base).exists(
+                requester_id=self.requester.id,
                 model_registry=self.model_registry,
-                id=entity.rotation_id,
-            )
-            if not rotation:
-                raise HTTPException(status_code=404, detail="Rotation not found")
+                id=reference_id,
+            ):
+                raise HTTPException(status_code=404, detail=not_found)
 
-        # Check that provider instance exists
-        if entity.provider_instance_id:
-            provider_instance = ProviderInstanceModel.DB(
-                self.model_registry.DB.manager.Base
-            ).get(
-                requester_id=env("ROOT_ID"),
-                model_registry=self.model_registry,
-                id=entity.provider_instance_id,
-            )
-            if not provider_instance:
-                raise HTTPException(
-                    status_code=404, detail="Provider instance not found"
-                )
+    def update(self, id: str, **kwargs: Any) -> Any:
+        self._require_visible_references(
+            kwargs.get("rotation_id"), kwargs.get("provider_instance_id")
+        )
+        return super().update(id, **kwargs)
+
+    def create_validation(self, entity):
+        """Validate rotation provider instance creation: the rotation and
+        provider instance must be visible to the requester."""
+        self._require_visible_references(
+            entity.rotation_id, entity.provider_instance_id
+        )
 
         # Prevent circular parent relationships
         if entity.parent_id == entity.rotation_id:

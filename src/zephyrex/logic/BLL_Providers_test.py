@@ -301,3 +301,84 @@ class TestRotationProviderInstanceManager(AbstractBLLTest):
 
         # Call the original update method from AbstractBLLTest
         return super()._update(user_id, team_id, model_registry=model_registry)
+
+    @staticmethod
+    def _rotation_and_instance(model_registry, owner_id: str, provider_id: str):
+        with RotationManager(
+            requester_id=owner_id, model_registry=model_registry
+        ) as rotations:
+            rotation = rotations.create(name=f"Rotation {uuid.uuid4()}")
+        with ProviderInstanceManager(
+            requester_id=owner_id, model_registry=model_registry
+        ) as instances:
+            instance = instances.create(
+                name=f"Instance {uuid.uuid4()}", provider_id=provider_id
+            )
+        return rotation, instance
+
+    @pytest.fixture
+    def provider_id(self, model_registry) -> str:
+        with ProviderManager(
+            requester_id=env("ROOT_ID"), model_registry=model_registry
+        ) as providers:
+            return str(providers.create(name=f"Link Provider {uuid.uuid4()}").id)
+
+    def test_an_invisible_instance_cannot_join_your_rotation(
+        self, admin_a, admin_b, server, model_registry, provider_id
+    ):
+        """The rotation and instance were checked as ROOT, so a user could
+        put another user's instance (and its credentials) into their own
+        rotation. An instance the requester cannot see is not found."""
+        rotation, _ = self._rotation_and_instance(
+            model_registry, admin_a.id, provider_id
+        )
+        _, theirs = self._rotation_and_instance(model_registry, admin_b.id, provider_id)
+        with RotationProviderInstanceManager(
+            requester_id=admin_a.id, model_registry=model_registry
+        ) as links:
+            with pytest.raises(HTTPException) as refused:
+                links.create(rotation_id=rotation.id, provider_instance_id=theirs.id)
+            assert refused.value.status_code == 404
+            assert links.list(rotation_id=rotation.id) == []
+
+    def test_an_invisible_instance_cannot_replace_yours(
+        self, admin_a, admin_b, server, model_registry, provider_id
+    ):
+        rotation, mine = self._rotation_and_instance(
+            model_registry, admin_a.id, provider_id
+        )
+        _, theirs = self._rotation_and_instance(model_registry, admin_b.id, provider_id)
+        with RotationProviderInstanceManager(
+            requester_id=admin_a.id, model_registry=model_registry
+        ) as links:
+            link = links.create(rotation_id=rotation.id, provider_instance_id=mine.id)
+            with pytest.raises(HTTPException) as refused:
+                links.update(link.id, provider_instance_id=theirs.id)
+            assert refused.value.status_code == 404
+            assert links.get(id=link.id).provider_instance_id == mine.id
+
+    def test_your_own_instance_joins_your_rotation(
+        self, admin_a, server, model_registry, provider_id
+    ):
+        rotation, mine = self._rotation_and_instance(
+            model_registry, admin_a.id, provider_id
+        )
+        with RotationProviderInstanceManager(
+            requester_id=admin_a.id, model_registry=model_registry
+        ) as links:
+            link = links.create(rotation_id=rotation.id, provider_instance_id=mine.id)
+            assert link.provider_instance_id == mine.id
+            assert link.rotation_id == rotation.id
+
+    def test_root_links_any_instance(
+        self, admin_a, admin_b, server, model_registry, provider_id
+    ):
+        rotation, _ = self._rotation_and_instance(
+            model_registry, admin_a.id, provider_id
+        )
+        _, theirs = self._rotation_and_instance(model_registry, admin_b.id, provider_id)
+        with RotationProviderInstanceManager(
+            requester_id=env("ROOT_ID"), model_registry=model_registry
+        ) as links:
+            link = links.create(rotation_id=rotation.id, provider_instance_id=theirs.id)
+            assert link.provider_instance_id == theirs.id
