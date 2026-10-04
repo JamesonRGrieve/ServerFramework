@@ -10,13 +10,17 @@ and its next call would carry that instance's credential to them, or a
 forward-auth verifier would vouch for whoever they liked.
 """
 
+import importlib.util
 import uuid
+from pathlib import Path
+from types import ModuleType
 from typing import Any, Dict, List, Optional
 
 import pytest
 from fastapi import HTTPException
 
 from zephyrex.lib.Environment import env
+from zephyrex.logic.BLL_Auth import UserTeamModel
 from zephyrex.logic.BLL_Extensions import AbilityManager, ExtensionManager
 from zephyrex.logic.BLL_Providers import (
     ProviderExtensionAbilityManager,
@@ -30,8 +34,26 @@ from zephyrex.logic.BLL_Providers import (
     ProviderManager,
 )
 from zephyrex.pydantic2.registry import ModelRegistry
+from zephyrex.testing.factories import add_user_to_team, create_team, create_user
 
 ATTACKER_URL = "https://attacker.example.test"
+CLEANUP_NAME = "provider_instance_settings_planted"
+CLEANUP = (
+    Path(__file__).parents[1]
+    / "database"
+    / "migrations"
+    / "versions"
+    / f"{CLEANUP_NAME}.py"
+)
+
+
+def _cleanup() -> ModuleType:
+    """The migration that removed the settings planted before 6acbda48."""
+    spec = importlib.util.spec_from_file_location(CLEANUP_NAME, CLEANUP)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def _refused(status: int, call: Any, *args: Any, **kwargs: Any) -> None:
@@ -275,7 +297,31 @@ class TestProviderInstanceChildAccess:
             if earlier is not None and earlier is not model_registry:
                 earlier.bind_app(earlier.app)
 
-    def test_a_planted_setting_is_neither_its_planters_nor_applied(
+    @staticmethod
+    def planted(model_registry) -> Dict[str, List[str]]:
+        """What the cleanup migration judges planted in the app's database
+        (read only)."""
+        engine = model_registry.DB.manager.get_setup_engine()
+        with engine.connect() as conn:
+            found: Dict[str, List[str]] = _cleanup().planted_setting_ids(conn)
+        return found
+
+    @classmethod
+    def clean(cls, model_registry, instance_id: str) -> None:
+        """Runs the cleanup over ``instance_id`` alone: this worker's
+        database holds other tests' rows, which are not this test's to
+        remove."""
+        found = cls.planted(model_registry).get(instance_id, [])
+        engine = model_registry.DB.manager.get_setup_engine()
+        with engine.begin() as conn:
+            _cleanup().tombstone(conn, {instance_id: found})
+
+    # Changed with the decision "one-time cleanup instead": f225977e kept a
+    # planted row from applying with a read-time author check in
+    # get_setting, which also stopped a departed team admin's settings from
+    # applying. The check is gone; the plant is removed by the migration,
+    # so these tests show the cleanup finds and removes it.
+    def test_a_planted_setting_is_not_its_planters_and_the_cleanup_removes_it(
         self, admin_a, admin_b, server, model_registry, instance_of
     ):
         victim = instance_of(admin_a.id)
@@ -284,20 +330,28 @@ class TestProviderInstanceChildAccess:
             _refused(404, settings.get, id=planted)
             assert planted not in {s.id for s in settings.list()}
             _refused(404, settings.update, planted, value=ATTACKER_URL)
+        assert self.planted(model_registry)[victim.id] == [planted]
+        self.clean(model_registry, victim.id)
         assert self.applied(model_registry, victim.id) is None
 
-    def test_a_planted_setting_on_an_operator_instance_is_not_applied(
+    def test_the_cleanup_removes_a_users_setting_on_an_operator_instance(
         self, admin_b, server, model_registry, instance_of
     ):
-        """Only the operator configures a system-scoped instance, so nothing
-        a user wrote on one applies, though the instance is theirs to see."""
-        operator = instance_of(env("SYSTEM_ID"), scope="system")
-        planted = self.plant(model_registry, operator.id, admin_b.id, ATTACKER_URL)
-        with self.settings(model_registry, admin_b.id) as settings:
-            _refused(403, settings.update, planted, value=ATTACKER_URL)
-        assert self.applied(model_registry, operator.id) is None
+        """Only the operator configures a root- or system-scoped instance,
+        so the cleanup removes anything a user wrote on one, though the
+        instance is theirs to see (system) or theirs by name (root)."""
+        for operator in (
+            instance_of(env("SYSTEM_ID"), scope="system"),
+            instance_of(env("ROOT_ID"), scope="root", user_id=admin_b.id),
+        ):
+            planted = self.plant(model_registry, operator.id, admin_b.id, ATTACKER_URL)
+            with self.settings(model_registry, admin_b.id) as settings:
+                _refused(403, settings.update, planted, value=ATTACKER_URL)
+            assert self.planted(model_registry)[operator.id] == [planted]
+            self.clean(model_registry, operator.id)
+            assert self.applied(model_registry, operator.id) is None
 
-    def test_settings_the_configurers_wrote_apply(
+    def test_settings_the_configurers_wrote_apply_and_are_kept(
         self, admin_a, server, model_registry, instance_of
     ):
         mine = instance_of(admin_a.id)
@@ -305,13 +359,110 @@ class TestProviderInstanceChildAccess:
             settings.create(
                 provider_instance_id=mine.id, key="api_base", value="https://own"
             )
-        assert self.applied(model_registry, mine.id) == "https://own"
         served = instance_of(admin_a.id)
         with self.settings(model_registry, env("SYSTEM_ID")) as settings:
             settings.create(
                 provider_instance_id=served.id, key="api_base", value="https://op"
             )
+        operator = instance_of(env("ROOT_ID"), scope="root")
+        with self.settings(model_registry, env("ROOT_ID")) as settings:
+            settings.create(
+                provider_instance_id=operator.id, key="api_base", value="https://root"
+            )
+        planted = self.plant(model_registry, mine.id, str(uuid.uuid4()), ATTACKER_URL)
+        assert self.planted(model_registry)[mine.id] == [planted]
+        for instance in (mine, served, operator):
+            self.clean(model_registry, instance.id)
+        assert self.applied(model_registry, mine.id) == "https://own"
         assert self.applied(model_registry, served.id) == "https://op"
+        assert self.applied(model_registry, operator.id) == "https://root"
+
+    @pytest.fixture
+    def team_with_two_admins(self, server, model_registry):
+        """A fresh team (``founder`` made it, so administers it) with a
+        second admin, ``admin``, and a plain ``member``."""
+        founder, admin, member = (create_user(server) for _ in range(3))
+        team = create_team(server, founder.id, name=f"Team {uuid.uuid4()}")
+        add_user_to_team(server, admin.id, team.id, env("ADMIN_ROLE_ID"))
+        add_user_to_team(server, member.id, team.id, env("USER_ROLE_ID"))
+        return founder, admin, member, team
+
+    @staticmethod
+    def leave(model_registry, user_id: str, team_id: str) -> None:
+        user_team_db = UserTeamModel.DB(model_registry.DB.manager.Base)
+        for membership in user_team_db.list(
+            requester_id=env("ROOT_ID"),
+            model_registry=model_registry,
+            return_type="dto",
+            override_dto=UserTeamModel,
+            filters=[user_team_db.deleted_at.is_(None)],
+            user_id=user_id,
+            team_id=team_id,
+        ):
+            user_team_db.delete(
+                requester_id=env("ROOT_ID"),
+                model_registry=model_registry,
+                id=membership.id,
+            )
+
+    def test_a_team_admins_setting_still_applies_after_they_leave(
+        self, server, model_registry, instance_of, team_with_two_admins
+    ):
+        """The reason for the decision. A team admin configures the team's
+        instance, then leaves the team: the instance keeps running on what
+        they set. f225977e's read-time check dropped the setting the moment
+        they left (this fails on it)."""
+        founder, admin, _, team = team_with_two_admins
+        shared = instance_of(founder.id, team_id=team.id)
+        with self.settings(model_registry, admin.id) as settings:
+            settings.create(
+                provider_instance_id=shared.id, key="api_base", value="https://team"
+            )
+        assert shared.id not in self.planted(model_registry)
+        self.clean(model_registry, shared.id)
+
+        self.leave(model_registry, admin.id, team.id)
+
+        assert self.applied(model_registry, shared.id) == "https://team"
+        with self.settings(model_registry, admin.id) as settings:
+            _refused(
+                404,
+                settings.create,
+                provider_instance_id=shared.id,
+                key="base_url",
+                value=ATTACKER_URL,
+            )
+
+    def test_the_cleanup_removes_a_team_members_plant_but_not_an_admins(
+        self, server, model_registry, instance_of, team_with_two_admins
+    ):
+        founder, admin, member, team = team_with_two_admins
+        shared = instance_of(founder.id, team_id=team.id)
+        with self.settings(model_registry, admin.id) as settings:
+            kept = settings.create(
+                provider_instance_id=shared.id, key="base_url", value="https://admin"
+            )
+        planted = self.plant(model_registry, shared.id, member.id, ATTACKER_URL)
+        found = self.planted(model_registry)[shared.id]
+        assert found == [planted] and kept.id not in found
+        self.clean(model_registry, shared.id)
+        assert self.applied(model_registry, shared.id) is None
+        assert self.stored(model_registry, shared.id) == {"base_url": "https://admin"}
+
+    def test_a_deleted_setting_no_longer_applies(
+        self, admin_a, server, model_registry, instance_of
+    ):
+        """get_setting read as ROOT, whose reads include deleted rows, so a
+        setting its owner deleted went on steering the instance (and the
+        cleanup's soft-delete would have changed nothing). This fails on
+        the old get_setting."""
+        mine = instance_of(admin_a.id)
+        with self.settings(model_registry, admin_a.id) as settings:
+            row = settings.create(
+                provider_instance_id=mine.id, key="api_base", value="https://gone"
+            )
+            settings.delete(row.id)
+        assert self.applied(model_registry, mine.id) is None
 
     # -- usage ------------------------------------------------------------
 
