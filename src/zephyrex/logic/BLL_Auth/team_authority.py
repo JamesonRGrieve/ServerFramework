@@ -15,6 +15,7 @@ from fastapi import HTTPException
 
 from zephyrex.lib.DateTimeUtils import ensure_utc
 from zephyrex.lib.Environment import env
+from zephyrex.logic.AbstractLogicManager.ownership import server_side
 
 _MAX_ROLE_DEPTH = 32
 
@@ -48,12 +49,10 @@ class TeamAuthority:
     """The requester's authority over one team's membership."""
 
     def __init__(self, requester_id: str, team_id: str, model_registry: Any) -> None:
-        from zephyrex.database.StaticPermissions import is_root_id, is_system_user_id
-
         self._model_registry = model_registry
         self._chains: Dict[str, List[str]] = {}
         self._admin_roles: Dict[str, bool] = {}
-        self.unlimited = is_root_id(requester_id) or is_system_user_id(requester_id)
+        self.unlimited = server_side(requester_id)
         self.role_id = (
             None
             if self.unlimited

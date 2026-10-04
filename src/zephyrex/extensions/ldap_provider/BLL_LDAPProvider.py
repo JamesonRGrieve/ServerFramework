@@ -17,7 +17,6 @@ import bcrypt
 from fastapi import HTTPException
 from pydantic import Field
 
-from zephyrex.database.StaticPermissions import is_root_id, is_system_id
 from zephyrex.lib.Environment import env
 from zephyrex.logic.AbstractLogicManager import (
     AbstractBLLManager,
@@ -27,6 +26,7 @@ from zephyrex.logic.AbstractLogicManager import (
     StringSearchModel,
     UpdateMixinModel,
 )
+from zephyrex.logic.AbstractLogicManager.ownership import server_side
 from zephyrex.logic.BLL_Auth._shared import _BCRYPT_ROUNDS, _DUMMY_BCRYPT_HASH
 from zephyrex.pydantic2.fastapi import AuthType, RouterMixin
 from zephyrex.pydantic2.registry import BaseModel
@@ -125,8 +125,7 @@ class LdapServiceAccountManager(AbstractBLLManager, RouterMixin):
     auth_type: ClassVar[AuthType] = AuthType.JWT
 
     def _require_server_side(self) -> None:
-        requester_id = self.requester.id
-        if not (is_root_id(requester_id) or is_system_id(requester_id)):
+        if not server_side(self.requester.id):
             raise HTTPException(
                 status_code=403,
                 detail="LDAP service accounts are configured by the server only",

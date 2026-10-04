@@ -38,6 +38,7 @@ from zephyrex.logic.AbstractLogicManager import (
     StringSearchModel,
     UpdateMixinModel,
 )
+from zephyrex.logic.AbstractLogicManager.ownership import server_side
 from zephyrex.logic.BLL_Auth import (
     PendingSessionError,
     UserModel,
@@ -140,12 +141,7 @@ class SessionModel(
             Base = db_manager.Base
         else:
             raise ValueError("Either model_registry or db_manager is required")
-        from zephyrex.database.StaticPermissions import (
-            is_root_id,
-            is_system_user_id,
-        )
-
-        if is_root_id(user_id) or is_system_user_id(user_id):
+        if server_side(user_id):
             return True
 
         SQLAlchemy_model = cls.DB(Base)

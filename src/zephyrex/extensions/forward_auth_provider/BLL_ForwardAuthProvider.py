@@ -56,7 +56,6 @@ from fastapi import HTTPException, Request, Response
 from pydantic import Field, field_validator
 from starlette.datastructures import Headers
 
-from zephyrex.database.StaticPermissions import is_root_id, is_system_id
 from zephyrex.lib.ContentNegotiation import skip_negotiation
 from zephyrex.lib.CustomRoute import ExposeIn, custom_route
 from zephyrex.lib.DateTimeUtils import ensure_utc
@@ -75,6 +74,7 @@ from zephyrex.logic.AbstractLogicManager import (
     StringSearchModel,
     UpdateMixinModel,
 )
+from zephyrex.logic.AbstractLogicManager.ownership import server_side
 from zephyrex.logic.BLL_Auth import TeamModel, UserModel, UserTeamModel
 from zephyrex.pydantic2.fastapi import AuthType, RouterMixin
 from zephyrex.pydantic2.fastapi.resource import create_manager_factory
@@ -305,8 +305,7 @@ def _require_server_side(manager: AbstractBLLManager) -> None:
     """Rules are the server's own configuration: only ROOT or SYSTEM (the
     root API key) reads or changes them."""
     requester = manager.optional_requester
-    requester_id = requester.id if requester is not None else None
-    if not requester_id or not (is_root_id(requester_id) or is_system_id(requester_id)):
+    if requester is None or not server_side(requester.id):
         raise HTTPException(
             status_code=403, detail="Only the server's administrator manages this"
         )

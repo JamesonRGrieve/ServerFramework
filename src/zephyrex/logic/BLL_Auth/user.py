@@ -37,6 +37,7 @@ from zephyrex.logic.AbstractLogicManager import (
     StringSearchModel,
     UpdateMixinModel,
 )
+from zephyrex.logic.AbstractLogicManager.ownership import server_side
 from zephyrex.logic.BLL_Auth._shared import (
     BaseModel,
     InvalidGrantError,
@@ -182,7 +183,6 @@ class UserModel(
             PermissionType,
             check_permission,
             is_root_id,
-            is_system_user_id,
         )
 
         # Root has admin access to everything
@@ -206,7 +206,7 @@ class UserModel(
         if hasattr(record, "created_by_user_id") and record.created_by_user_id == env(
             "TEMPLATE_ID"
         ):
-            return is_root_id(user_id) or is_system_user_id(user_id)
+            return server_side(user_id)
 
         # For User model, only allow admin access to your own record
         if id == user_id:

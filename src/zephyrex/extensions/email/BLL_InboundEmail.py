@@ -20,7 +20,6 @@ from fastapi import HTTPException, Request
 from pydantic import Field
 from sqlalchemy import update
 
-from zephyrex.database.StaticPermissions import is_root_id, is_system_id
 from zephyrex.extensions.email.InboundEndpoint import (
     MIN_SIGNING_SECRET_LENGTH,
     RECIPIENTS_HEADER,
@@ -40,6 +39,7 @@ from zephyrex.logic.AbstractLogicManager import (
     StringSearchModel,
     UpdateMixinModel,
 )
+from zephyrex.logic.AbstractLogicManager.ownership import server_side
 from zephyrex.pydantic2.fastapi import AuthType, RouterMixin, RouteType
 from zephyrex.pydantic2.registry import BaseModel
 
@@ -98,9 +98,7 @@ class EmailInboundMailboxManager(AbstractBLLManager):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         requester = self.optional_requester
-        if requester is None or not (
-            is_root_id(requester.id) or is_system_id(requester.id)
-        ):
+        if requester is None or not server_side(requester.id):
             raise HTTPException(
                 status_code=403, detail="Inbound mailbox cursors are server state"
             )

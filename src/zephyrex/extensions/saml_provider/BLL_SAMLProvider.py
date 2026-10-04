@@ -61,11 +61,7 @@ from pydantic import Field
 from saml2 import BINDING_HTTP_POST, BINDING_HTTP_REDIRECT, saml, samlp
 from saml2.server import Server
 
-from zephyrex.database.StaticPermissions import (
-    is_any_internal_id,
-    is_root_id,
-    is_system_id,
-)
+from zephyrex.database.StaticPermissions import is_any_internal_id
 from zephyrex.extensions.saml_provider import IdP
 from zephyrex.extensions.saml_provider.IdP import (
     NAME_ID_FORMATS,
@@ -94,6 +90,7 @@ from zephyrex.logic.AbstractLogicManager import (
     StringSearchModel,
     UpdateMixinModel,
 )
+from zephyrex.logic.AbstractLogicManager.ownership import server_side
 from zephyrex.logic.BLL_Auth import UserManager, UserModel
 from zephyrex.logic.BLL_Providers import ProviderInstanceManager, ProviderManager
 from zephyrex.pydantic2.fastapi import AuthType, RouterMixin
@@ -129,10 +126,6 @@ T = TypeVar("T")
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
-
-
-def _administrator(requester_id: str) -> bool:
-    return is_root_id(requester_id) or is_system_id(requester_id)
 
 
 def _root() -> str:
@@ -392,7 +385,7 @@ class SamlServiceProviderManager(AbstractBLLManager, RouterMixin):
         target_team_id: Optional[str] = None,
         parent: Optional[Any] = None,
     ) -> None:
-        if requester_id is not None and not _administrator(requester_id):
+        if requester_id is not None and not server_side(requester_id):
             raise HTTPException(
                 status_code=403,
                 detail="SAML service providers are managed by the administrator",

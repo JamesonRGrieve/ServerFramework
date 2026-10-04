@@ -12,12 +12,11 @@ with embeddings from the same model.
 
 import json
 import math
-from typing import Any, Callable, ClassVar, Dict, List, Optional, Sequence, Tuple
+from typing import Any, ClassVar, List, Optional, Sequence, Tuple
 
 from pydantic import BaseModel as RouteModel
 from pydantic import Field
 
-from zephyrex.database.StaticPermissions import is_root_id, is_system_id
 from zephyrex.lib.CustomRoute import ExposeIn, custom_route
 from zephyrex.lib.Logging import logger
 from zephyrex.logic.AbstractLogicManager import (
@@ -27,6 +26,7 @@ from zephyrex.logic.AbstractLogicManager import (
     StringSearchModel,
     UpdateMixinModel,
 )
+from zephyrex.logic.AbstractLogicManager.ownership import each_created, owned_by
 from zephyrex.logic.BLL_Auth import TeamModel, UserModel
 from zephyrex.pydantic2.fastapi import AuthType, RouterMixin
 from zephyrex.pydantic2.fastapi.types import RouteType
@@ -172,17 +172,6 @@ class RecalledMemories(RouteModel):
     memories: List[MemoryModel]
 
 
-def _kept_for(requester_id: str) -> Callable[[Dict[str, Any]], Dict[str, Any]]:
-    def prepare(fields: Dict[str, Any]) -> Dict[str, Any]:
-        if not (
-            is_root_id(requester_id) or is_system_id(requester_id)
-        ) or not fields.get("user_id"):
-            fields["user_id"] = requester_id
-        return fields
-
-    return prepare
-
-
 class MemoryManager(AbstractBLLManager, RouterMixin):
     """Memories are kept through :meth:`keep` (which the remember route and
     the abilities use, embedding first); the generic routes read, search and
@@ -202,11 +191,7 @@ class MemoryManager(AbstractBLLManager, RouterMixin):
 
     def create(self, **kwargs: Any) -> Any:
         """Memories kept for the requester (ROOT and SYSTEM name the owner)."""
-        prepare = _kept_for(self.requester.id)
-        if isinstance(kwargs.get("entities"), list):
-            kwargs["entities"] = [prepare(dict(e)) for e in kwargs["entities"]]
-            return super().create(**kwargs)
-        return super().create(**prepare(dict(kwargs)))
+        return super().create(**each_created(kwargs, owned_by(self.requester.id)))
 
     def update(self, id: str, **kwargs: Any) -> Any:
         """Only a memory's label changes; what is remembered does not."""
