@@ -1247,81 +1247,50 @@ def _in_live_team_hierarchy(
     )
 
 
-def _get_role_hierarchy_map(db: Session, declarative_base) -> dict:
-    """
-    Get the role hierarchy map {role_name: level}.
-    Uses memoization to optimize performance and prevent repeated database queries.
+def admin_role_ids(declarative_base: Any, unique_suffix: str = "") -> CTE:
+    """A recursive CTE of the roles that administer a team: the admin role
+    (``ADMIN_ROLE_ID``) and every role that extends it, by ``parent_id``
+    ancestry by id (superadmin among them). This is the one admin rule:
+    the team-record filter and ``TeamAuthority`` both ask it.
 
-    Args:
-        db: Database session
-        declarative_base: The declarative base to use for accessing SQLAlchemy models
+    A role's name and its depth in the tree rank nothing. Names are not
+    unique, and any member may create a role in their team, so ranking by
+    either let a team's ``mod`` (extending ``user``, at the admin's depth)
+    administer the team, and a role named ``user`` one level down lift every
+    plain member of every team.
 
-    Returns:
-        dict: A dictionary mapping role names to their hierarchy level
-    """
-    # Local import to break cycle
-    from zephyrex.database.DatabaseManager import DatabaseManager
+    A deleted or expired role extends nothing, and ends the walk down
+    through it. The recursion is a ``UNION`` over ids alone, so a cyclic
+    tree (which the role manager refuses, but a direct write could make)
+    ends the walk too."""
     from zephyrex.logic.BLL_Auth import RoleModel
 
-    # Get SQLAlchemy model using the declarative base
     role_db_cls = RoleModel.DB(declarative_base)
-
-    # Simple in-memory cache (module-level) instead of external cache
-    # This is thread-safe for read operations
-    if not hasattr(_get_role_hierarchy_map, "_cache"):
-        _get_role_hierarchy_map._cache = {}  # type: ignore[attr-defined]
-        _get_role_hierarchy_map._cache_time = 0  # type: ignore[attr-defined]
-
-    # Check if cache is still valid (5 minutes)
-    import time
-
-    current_time = time.time()
-    cache_valid = (
-        current_time - getattr(_get_role_hierarchy_map, "_cache_time", 0) < 300
-    )  # 5 minutes
-
-    # Always query once to satisfy tests that verify db.query is called
-    _ = db.query(role_db_cls)
-
-    if cache_valid and _get_role_hierarchy_map._cache:  # type: ignore[attr-defined]
-        # mark the cache as valid to be identified by test
-        _get_role_hierarchy_map._cache["valid"] = True  # type: ignore[attr-defined]
-        return _get_role_hierarchy_map._cache  # type: ignore[attr-defined, no-any-return]
-
-    # Optimize the query - only get necessary columns, limit the max roles fetched
-    # This prevents potential DoS attacks on large systems
-    MAX_ROLES = 1000  # Set a reasonable limit based on your system
-    roles = (
-        db.query(role_db_cls.id, role_db_cls.name, role_db_cls.parent_id)
-        .limit(MAX_ROLES)
-        .all()
+    cte_name = f"admin_roles_cte{unique_suffix}"
+    admin = aliased(role_db_cls, name=f"{cte_name}_admin")
+    admin_roles = (
+        select(admin.id.label("id"))
+        .where(admin.id == env("ADMIN_ROLE_ID"))
+        .where(_active(admin))
+        .cte(cte_name, recursive=True)
+    )
+    reached = aliased(admin_roles, name=f"{cte_name}_alias")
+    child = aliased(role_db_cls, name=f"{cte_name}_child")
+    return admin_roles.union(
+        select(child.id.label("id"))
+        .select_from(child)
+        .join(reached, child.parent_id == reached.c.id)
+        .where(_active(child))
     )
 
-    # Build the hierarchy
-    role_hierarchy = {}
-    level = 0
-    current_level_roles = [role for role in roles if role.parent_id is None]
 
-    # Limit depth to prevent excessive processing
-    MAX_DEPTH = 10  # Reasonable depth limit for role hierarchies
-    depth = 0
-
-    while current_level_roles and depth < MAX_DEPTH:
-        for role in current_level_roles:
-            role_hierarchy[role.name] = level
-        level += 1
-        depth += 1
-        next_level_roles = []
-        for parent_role in current_level_roles:
-            children = [role for role in roles if role.parent_id == parent_role.id]
-            next_level_roles.extend(children)
-        current_level_roles = next_level_roles
-
-    # Update cache
-    _get_role_hierarchy_map._cache = role_hierarchy  # type: ignore[attr-defined]
-    _get_role_hierarchy_map._cache_time = current_time  # type: ignore[attr-defined]
-
-    return role_hierarchy
+def role_extends_admin(db: Session, declarative_base: Any, role_id: str) -> bool:
+    """Whether ``role_id`` is the admin role or extends it (``admin_role_ids``)."""
+    admin_roles = admin_role_ids(declarative_base)
+    found = db.execute(
+        select(admin_roles.c.id).where(admin_roles.c.id == role_id).limit(1)
+    )
+    return found.first() is not None
 
 
 def _resolve_db_class(resource_cls: Type[Any], declarative_base) -> Type[Any]:
@@ -1547,7 +1516,7 @@ def generate_permission_filter(
     from zephyrex.database.StaticPermissions import (
         PermissionType,
     )  # Local import if needed
-    from zephyrex.logic.BLL_Auth import RoleModel, TeamModel, UserTeamModel
+    from zephyrex.logic.BLL_Auth import TeamModel, UserTeamModel
 
     if required_permission_level is None:
         required_permission_level = PermissionType.VIEW
@@ -1555,11 +1524,6 @@ def generate_permission_filter(
     # Get SQLAlchemy models using the declarative base
     resource_db_cls = _resolve_db_class(resource_cls, declarative_base)
 
-    # Import the Pydantic models for other entities
-    from zephyrex.database.DatabaseManager import DatabaseManager
-    from zephyrex.logic.BLL_Auth import RoleModel, TeamModel, UserTeamModel
-
-    role_db_cls = RoleModel.DB(declarative_base)
     team_db_cls = TeamModel.DB(declarative_base)
     user_team_db_cls = UserTeamModel.DB(declarative_base)
 
@@ -1663,54 +1627,28 @@ def generate_permission_filter(
             PermissionType.DELETE,
             PermissionType.SHARE,
         ]:
-            # Find roles sufficient for 'admin' level access
-            admin_role = (
-                db.query(role_db_cls).filter(role_db_cls.name == "admin").first()
+            # A live member of the record's own team whose role administers
+            # it (admin_role_ids, the rule TeamAuthority applies).
+            admin_roles = admin_role_ids(declarative_base, unique_suffix)
+            live_team = aliased(
+                team_db_cls, name=f"admin_role_live_team{unique_suffix}"
             )
-            if admin_role:
-                role_hierarchy = _get_role_hierarchy_map(db, declarative_base)
-                admin_level = role_hierarchy.get("admin", -1)
-                sufficient_role_ids_for_admin = [
-                    role.id
-                    for role in db.query(role_db_cls).all()
-                    if role_hierarchy.get(role.name, -99) >= admin_level
-                ]
-
-                if sufficient_role_ids_for_admin:
-                    live_team = aliased(
-                        team_db_cls, name=f"admin_role_live_team{unique_suffix}"
+            conditions.append(
+                exists().where(
+                    and_(
+                        user_team_db_cls.user_id == user_id,
+                        user_team_db_cls.team_id == resource_db_cls.team_id,
+                        user_team_db_cls.role_id.in_(select(admin_roles.c.id)),
+                        user_team_db_cls.enabled == True,
+                        _active(user_team_db_cls),
+                        # A deleted team's admins keep no hold on its
+                        # records, as its members keep no view of them.
+                        resource_db_cls.team_id.in_(
+                            select(live_team.id).where(live_team.deleted_at.is_(None))
+                        ),
                     )
-                    # Check if the user has *any* sufficient role on the *specific team* owning the record
-                    user_has_sufficient_role_on_team = exists().where(
-                        and_(
-                            user_team_db_cls.user_id == user_id,
-                            user_team_db_cls.team_id
-                            == resource_db_cls.team_id,  # Link to the record's team
-                            user_team_db_cls.role_id.in_(sufficient_role_ids_for_admin),
-                            user_team_db_cls.enabled == True,
-                            _active(user_team_db_cls),
-                            # A deleted team's admins keep no hold on its
-                            # records, as its members keep no view of them.
-                            resource_db_cls.team_id.in_(
-                                select(live_team.id).where(
-                                    live_team.deleted_at.is_(None)
-                                )
-                            ),
-                        )
-                    )
-                    conditions.append(user_has_sufficient_role_on_team)
-                else:
-                    # No roles are sufficient for admin, so team check fails for admin levels
-                    if required_permission_level != PermissionType.VIEW:
-                        conditions.append(false())
-                    else:  # For VIEW, just the team membership check suffices
-                        conditions.append(team_filter)
-            else:
-                # If 'admin' role doesn't exist, team check fails for admin levels
-                if required_permission_level != PermissionType.VIEW:
-                    conditions.append(false())
-                else:
-                    conditions.append(team_filter)
+                )
+            )
 
     # 3. System Record Access Logic - Apply to both user_id and created_by_user_id
     # ROOT_ID-created records are restricted to ROOT_ID only. The non-ROOT viewer

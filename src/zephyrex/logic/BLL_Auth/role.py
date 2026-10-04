@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 from datetime import datetime
 from typing import Any, ClassVar, Dict, List, Optional, Type, Union
 
@@ -20,6 +21,7 @@ from zephyrex.logic.AbstractLogicManager import (
 )
 from zephyrex.logic.BLL_Auth._shared import BaseModel
 from zephyrex.logic.BLL_Auth.team import TeamModel
+from zephyrex.logic.BLL_Auth.team_authority import TeamAuthority
 
 
 class RoleModel(
@@ -243,6 +245,20 @@ class RoleManager(AbstractBLLManager, RouterMixin):
                 ut_manager.update(id=ut.id, role_id=role.parent_id)
 
         super().delete(id=id)
+
+    def update(self, id: str, **kwargs: Any) -> Any:
+        """A role's parent sets what everyone holding it may do, so moving
+        it is a grant of its new rank to all of them: only someone who may
+        grant that rank in the role's team may (TeamAuthority). Without
+        this, whoever created a role (any member may) could make it extend
+        admin once it was granted to them."""
+        if "parent_id" in kwargs:
+            role = self.get(id=id)
+            if kwargs["parent_id"] != role.parent_id:
+                TeamAuthority(
+                    self.requester.id, role.team_id, self.model_registry
+                ).assert_may_place(id, kwargs["parent_id"])
+        return super().update(id, **kwargs)
 
     def _register_search_transformers(self):
         self.register_search_transformer("is_system", self._transform_is_system_search)

@@ -52,6 +52,7 @@ class TeamAuthority:
 
         self._model_registry = model_registry
         self._chains: Dict[str, List[str]] = {}
+        self._admin_roles: Dict[str, bool] = {}
         self.unlimited = is_root_id(requester_id) or is_system_user_id(requester_id)
         self.role_id = (
             None
@@ -63,10 +64,22 @@ class TeamAuthority:
         return len(_role_chain(role_id, self._model_registry, self._chains))
 
     def is_admin_role(self, role_id: str) -> bool:
-        """``role_id`` is the admin role or extends it."""
-        return env("ADMIN_ROLE_ID") in _role_chain(
-            role_id, self._model_registry, self._chains
-        )
+        """``role_id`` is the admin role or extends it: the rule the
+        team-record filter applies (``admin_role_ids``). 404 for an unknown
+        role."""
+        from zephyrex.database.StaticPermissions import role_extends_admin
+
+        self.rank(role_id)
+        if role_id not in self._admin_roles:
+            manager = self._model_registry.DB.manager
+            session = manager.get_session()
+            try:
+                self._admin_roles[role_id] = role_extends_admin(
+                    session, manager.Base, role_id
+                )
+            finally:
+                session.close()
+        return self._admin_roles[role_id]
 
     def administers(self) -> bool:
         return self.unlimited or (
@@ -88,6 +101,24 @@ class TeamAuthority:
         """May hand out ``role_id`` (by invitation or role change)."""
         ceiling = self._own_rank()
         if ceiling is not None and self.rank(role_id) > ceiling:
+            raise HTTPException(
+                status_code=403, detail="Cannot grant a role above your own"
+            )
+
+    def assert_may_place(self, role_id: str, parent_id: Optional[str]) -> None:
+        """May make ``role_id`` extend ``parent_id`` (None: no parent). A
+        role's parent sets what everyone holding it may do, so the move is a
+        grant of the role's new rank to all of them; 422 when the role would
+        extend itself."""
+        parent_chain = (
+            []
+            if parent_id is None
+            else _role_chain(parent_id, self._model_registry, self._chains)
+        )
+        if role_id in parent_chain:
+            raise HTTPException(status_code=422, detail="A role cannot extend itself")
+        ceiling = self._own_rank()
+        if ceiling is not None and len(parent_chain) + 1 > ceiling:
             raise HTTPException(
                 status_code=403, detail="Cannot grant a role above your own"
             )

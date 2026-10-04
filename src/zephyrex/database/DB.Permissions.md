@@ -62,16 +62,15 @@ Hierarchical role system with inheritance.
 - `admin`: Administrative role (inherits from user)
 - `superadmin`: Super administrative role (inherits from admin)
 
-**Role Management:**
-```python
-def _get_role_hierarchy_map(db: Session) -> dict:
-    """Build role hierarchy with caching for performance"""
-    # Caches role hierarchy for 5 minutes (300 seconds TTL)
-    # Maps role names to hierarchy levels
-    # Testing support: When cache is valid, a "valid" key is injected
-    # into the cache dict (_get_role_hierarchy_map._cache["valid"] = True)
-    # to allow tests to verify cache hit behavior
-```
+**Who administers a team:** a member whose role is the admin role
+(`ADMIN_ROLE_ID`) or extends it, by `parent_id` ancestry by id. One rule,
+`admin_role_ids(declarative_base)` (a recursive CTE of those role ids; a
+deleted or expired role extends nothing), serves both the team-record filter
+(EDIT/DELETE/SHARE on a record's own team) and `TeamAuthority.is_admin_role`
+(the membership rules). A role's name and its depth rank nothing: names are
+not unique and any member may create a role in their team. Moving a role
+(a new `parent_id`) grants its new rank to everyone holding it, so it is
+`TeamAuthority.assert_may_place`'s to allow.
 
 ### Team Structure
 Hierarchical teams with parent-child relationships.
@@ -140,7 +139,7 @@ def generate_permission_filter(
     Generate optimized SQL WHERE conditions using:
     
     1. Recursive CTEs for team hierarchy traversal with depth limits
-    2. Role hierarchy caching with 5-minute TTL
+    2. A recursive CTE of the admin roles (admin_role_ids) for team admins
     3. System user privilege escalation
     4. Permission inheritance through reference chains
     5. Circular reference detection and prevention

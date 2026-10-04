@@ -1400,58 +1400,10 @@ class TestTeamHierarchyDepth:
         assert hasattr(cte, "recursive"), "CTE should have recursive attribute"
 
 
-# Add a test class for role hierarchy DoS protection
-class TestRoleHierarchyProtection:
-    def test_role_hierarchy_map_has_limits(self, mock_db):
-        """Test that _get_role_hierarchy_map has limits to prevent DoS attacks."""
-        # Instead of trying to patch the method, test directly with db mock
-        # Setup mock db with Role class
-        import types
-
-        from zephyrex.database.StaticPermissions import _get_role_hierarchy_map
-
-        # Create a minimal Role class for testing
-        class MockRole:
-            id = None
-            name = None
-            parent_id = None
-
-        # Configure db.query to return a chainable mock
-        mock_query_obj = MagicMock()
-        mock_db.query.return_value = mock_query_obj
-
-        # Make sure query() returns something with proper attributes
-        mock_query_obj.filter.return_value.first.return_value = None
-        mock_query_obj.limit.return_value.all.return_value = []
-
-        # Reset mock call counts
-        mock_db.reset_mock()
-
-        cache = None
-        # Patch time functions to avoid caching issues
-        with patch("time.time", return_value=10000):
-            # Call the function
-            cache = _get_role_hierarchy_map(mock_db, Base)
-
-        # Verify limit was called before all
-        assert mock_db.query.called
-
-        # return if its a cache valid. the limit call is not expected.
-        if cache is not None and "valid" in cache:
-            return
-
-        assert mock_query_obj.limit.called
-
-        # Get call arguments - should have MAX_ROLES limit
-        limit_calls = mock_query_obj.limit.call_args_list
-        assert len(limit_calls) > 0, "limit() was not called"
-
-        # The limit should be a reasonable value to prevent DoS
-        limit_value = limit_calls[0][0][0]  # First arg of first call
-        assert isinstance(limit_value, int), "Limit should be an integer"
-        assert (
-            limit_value > 0 and limit_value <= 2000
-        ), f"Limit value {limit_value} should be reasonable"
+# The role-hierarchy map (role names ranked by depth, cached, capped at 1000
+# roles) went with the rule it served. The admin roles are a recursive CTE
+# now; that it ends on a cyclic tree is shown on a real database in
+# Team_admin_edit_test.py (test_a_cyclic_role_tree_ends_the_walk).
 
 
 # Add a test class for null checks

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
 from datetime import datetime
 from typing import Any, ClassVar, Dict, List, Optional, Set, Type, Union
 
@@ -134,101 +135,6 @@ class UserTeamModel(
             return is_root_id(user_id)
 
         return True
-
-    @classmethod
-    def user_has_admin_access(
-        cls, user_id, team_id, db, db_manager=None, model_registry=None
-    ):
-        """
-        Overrides the default admin access check for UserTeam records with better error handling.
-        Checks if the user is an admin in the team.
-
-        Args:
-            user_id: The ID of the user requesting access
-            team_id: The ID of the team that the user should belong to
-            db: Database session
-            db_manager: Database manager instance (deprecated)
-            model_registry: Model registry instance (preferred)
-
-        Returns:
-            bool: True if access is granted, False otherwise
-
-        Raises:
-            ValueError: If neither model_registry nor db_manager is provided
-            Exception: If there are database access issues
-        """
-        # Get Base from either model_registry or db_manager
-        if model_registry:
-            Base = model_registry.DB.manager.Base
-        elif db_manager:
-            Base = db_manager.Base
-        else:
-            raise ValueError("Either model_registry or db_manager is required")
-
-        from zephyrex.database.StaticPermissions import is_root_id, is_system_user_id
-        from zephyrex.lib.Logging import logger
-
-        # Root and system users always have admin access
-        if is_root_id(user_id) or is_system_user_id(user_id):
-            return True
-
-        try:
-            # Query for the specific user-team relationship
-            user_team = (
-                db.query(cls.DB(Base))
-                .filter(
-                    cls.DB(Base).user_id == user_id,
-                    cls.DB(Base).team_id == team_id,
-                )
-                .first()
-            )
-
-            if user_team is None:
-                logger.warning(
-                    f"No UserTeam relationship found for user_id={user_id}, team_id={team_id}"
-                )
-                return False
-
-            # Check if membership is deleted
-            if hasattr(user_team, "deleted_at") and user_team.deleted_at is not None:
-                logger.warning(
-                    f"UserTeam relationship is deleted for user_id={user_id}, team_id={team_id}"
-                )
-                return False
-
-            # Check if membership is enabled
-            if hasattr(user_team, "enabled") and not user_team.enabled:
-                logger.warning(
-                    f"UserTeam relationship is disabled for user_id={user_id}, team_id={team_id}"
-                )
-                return False
-
-            # Check if membership has expired
-            if hasattr(user_team, "expires_at") and user_team.expires_at:
-                from datetime import datetime
-
-                if datetime.utcnow() > user_team.expires_at:
-                    logger.warning(
-                        f"UserTeam relationship has expired for user_id={user_id}, team_id={team_id}"
-                    )
-                    return False
-
-            admin_role_id = env("ADMIN_ROLE_ID")
-            is_admin = user_team.role_id == admin_role_id
-
-            logger.debug(
-                f"Admin access check: user_id={user_id}, team_id={team_id}, "
-                f"role_id={user_team.role_id}, admin_role_id={admin_role_id}, is_admin={is_admin}"
-            )
-
-            return is_admin
-
-        except Exception as e:
-            logger.error(
-                f"Database error during admin access check for user_id={user_id}, team_id={team_id}: {str(e)}"
-            )
-            # Re-raise the exception to be handled by the caller
-            raise
 
 
 class UserTeamManager(AbstractBLLManager, RouterMixin):
