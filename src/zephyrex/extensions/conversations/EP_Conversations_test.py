@@ -203,18 +203,25 @@ class TestConversationEndpoints(AbstractEPTest, ExtensionServerMixin):
         if self.reason_to_skip("test_PATCH_200_rename"):
             pytest.skip("Skipping test_PATCH_200_rename")
 
-        # First create a conversation with some messages
-        conversation = self.test_POST_201(server, admin_a, team_a)
-        print(f"Created conversation: {conversation}")
-
-        # Test message endpoints creates messages in this conversation
-        message_tests = TestMessageEndpoints()
-        message = message_tests.test_POST_201(
-            server,
-            admin_a,
-            team_a,
-            parent_ids={"conversation_id": conversation["id"]},
+        # First create a conversation with a message to name it by
+        headers = self._get_appropriate_headers(admin_a.jwt)
+        created = server.post(
+            f"/v1/{self.base_endpoint}",
+            json={self.entity_name: self.create_payload(name="Rename me")},
+            headers=headers,
         )
+        self._assert_response_status(created, 201, "POST", self.base_endpoint)
+        conversation = self._assert_entity_in_response(created)
+        posted = server.post(
+            "/v1/message",
+            json={
+                "message": TestMessageEndpoints().create_payload(
+                    parent_ids={"conversation_id": conversation["id"]}
+                )
+            },
+            headers=headers,
+        )
+        self._assert_response_status(posted, 201, "POST", "message")
 
         # Call the rename endpoint
         endpoint = f"/v1/{self.base_endpoint}?id={conversation['id']}"
@@ -447,6 +454,7 @@ class TestMessageEndpoints(AbstractEPTest, ExtensionServerMixin):
         """
         content = name or f"Test message: {faker.text()}"
 
+        payload: Dict[str, Any]
         if invalid_data:
             # Create invalid data for testing validation
             payload = {
@@ -745,7 +753,9 @@ class TestFeedbackEndpoints(AbstractEPTest, ExtensionServerMixin):
                 f"Response: {json_response}"
             )
 
-        feedbacks = json_response.get("feedbacks", json_response.get("feedback", []))
+        feedbacks: List[Dict[str, Any]] = json_response.get(
+            "feedbacks", json_response.get("feedback", [])
+        )
 
         # Verify all returned feedback is positive
         for feedback in feedbacks:
@@ -986,7 +996,9 @@ class TestArtifactEndpoints(AbstractEPTest, ExtensionServerMixin):
                 f"Response: {json_response}"
             )
 
-        artifacts = json_response.get("artifacts", json_response.get("artifact", []))
+        artifacts: List[Dict[str, Any]] = json_response.get(
+            "artifacts", json_response.get("artifact", [])
+        )
 
         # Verify all returned artifacts are encrypted
         for artifact in artifacts:

@@ -6,12 +6,12 @@
 
 - Create a Conversation
     - POST /v1/conversation
-    - POST /v1/project/{project_id}/conversation (if optional `ai_agents` extension dependency installed)
+    - POST /v1/project_conversation, with `project_id` and `conversation_id` in the body, files a conversation in a project (if optional `ai_agents` extension dependency installed)
 - Get a Conversation
     - GET /v1/conversation/{id}
 - List Conversations
     - GET /v1/conversation
-    - GET /v1/project/{project_id}/conversation (if optional `ai_agents` extension dependency installed)
+    - GET /v1/project_conversation?project_id={project_id}, a project's conversation links (if optional `ai_agents` extension dependency installed)
 - Search Conversations
     - POST /v1/conversation/search
 - Update a Conversation

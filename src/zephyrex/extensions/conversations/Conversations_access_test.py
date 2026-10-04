@@ -9,6 +9,7 @@ the participant and direct-message routes ran without a database
 registry."""
 
 import base64
+import uuid
 from typing import Any, Dict
 
 import pytest
@@ -21,15 +22,35 @@ from zephyrex.extensions.conversations.BLL_Conversations import (
 )
 from zephyrex.extensions.conversations.EXT_Conversations import EXT_Conversations
 from zephyrex.extensions.ExternalErrors import InvalidInputExternalError
+from zephyrex.lib.Environment import env
 from zephyrex.pydantic2.registry import ModelRegistry
+from zephyrex.testing.factories import add_user_to_team, create_team
 
 
 def auth(user) -> Dict[str, str]:
     return {"Authorization": f"Bearer {user.jwt}"}
 
 
-class TestConversationAccess(ExtensionServerMixin):
+class AcquaintedServer(ExtensionServerMixin):
     extension_class = EXT_Conversations
+
+    @pytest.fixture(scope="class", autouse=True)
+    def acquainted(self, server, admin_a, admin_b, user_b) -> None:
+        """Put admin_a, admin_b and user_b in one team. A participant or the
+        other side of a direct message must be a user the requester can
+        see, and these tests seat them in each other's conversations (they
+        once did so as strangers, when a participant was checked as
+        SYSTEM). Sharing a team makes them visible to each other; it grants
+        nothing on a conversation, so an outsider here is still one who was
+        never added."""
+        team = create_team(
+            server, admin_a.id, name=f"Acquainted {uuid.uuid4().hex[:8]}"
+        )
+        for user in (admin_b, user_b):
+            add_user_to_team(server, user.id, team.id, env("USER_ROLE_ID"))
+
+
+class TestConversationAccess(AcquaintedServer):
 
     def _conversation(self, server, owner, name="Plans") -> Dict[str, Any]:
         response = server.post(
@@ -338,8 +359,7 @@ class TestConversationAccess(ExtensionServerMixin):
         assert message.user_id is None
 
 
-class TestAbilities(ExtensionServerMixin):
-    extension_class = EXT_Conversations
+class TestAbilities(AcquaintedServer):
 
     @pytest.fixture(autouse=True)
     def attached(self, server, monkeypatch) -> None:

@@ -196,7 +196,7 @@ class ConversationManager(AbstractBLLManager, RouterMixin):
 
     def create_validation(self, entity: Any) -> None:
         if entity.user_id:
-            _user_exists(self.model_registry, entity.user_id)
+            _visible_user(self.model_registry, self.requester.id, entity.user_id)
 
     def create(self, **kwargs: Any) -> Any:
         """A conversation owned by its creator, who is its first participant.
@@ -224,7 +224,8 @@ class ConversationManager(AbstractBLLManager, RouterMixin):
         self, conversation_id: str, user_id: str
     ) -> ConversationUserModel:
         """Add ``user_id`` (or return their membership), granting them view
-        and edit on the conversation. The requester must be able to edit it."""
+        and edit on the conversation. The requester must be able to edit it
+        and to see the user."""
         existing = self.conversation_users.list(
             conversation_id=conversation_id, user_id=user_id
         )
@@ -274,13 +275,14 @@ class ConversationManager(AbstractBLLManager, RouterMixin):
     ) -> Dict[str, Any]:
         """The direct conversation between the requester and
         ``other_user_id``, made if there is none, with ``initial_message``
-        posted into it."""
+        posted into it. The requester must see ``other_user_id``; nothing is
+        written for a user they cannot."""
         requester_id = self.requester.id
         if other_user_id == requester_id:
             raise HTTPException(
                 status_code=400, detail="A direct message needs another user"
             )
-        _user_exists(self.model_registry, other_user_id)
+        _visible_user(self.model_registry, requester_id, other_user_id)
         conversation = None
         for candidate in self.list(is_group_chat=False):
             members = {
@@ -313,7 +315,6 @@ class ConversationManager(AbstractBLLManager, RouterMixin):
     def add_participant_route(
         self, conversation_id: str, body: ParticipantRequest
     ) -> ConversationUserModel:
-        _user_exists(self.model_registry, body.user_id)
         return self.add_participant(conversation_id, body.user_id)
 
     @custom_route(
@@ -355,7 +356,6 @@ class ConversationUserManager(AbstractBLLManager, RouterMixin):
     auth_type: ClassVar[AuthType] = AuthType.JWT
 
     def create_validation(self, entity: Any) -> None:
-        _user_exists(self.model_registry, entity.user_id)
         # The requester must see the conversation; editing it is the
         # permission check on create.
         ConversationManager(
@@ -363,7 +363,15 @@ class ConversationUserManager(AbstractBLLManager, RouterMixin):
         ).get(id=entity.conversation_id)
 
     def create(self, **kwargs: Any) -> Any:
-        """Memberships with their grants: the same as adding participants."""
+        """Memberships with their grants: the same as adding participants.
+        Every user named, singly or in a batch, must be one the requester
+        can see, checked before any membership is written."""
+        entities = kwargs.get("entities")
+        named = entities if isinstance(entities, list) else [kwargs]
+        for fields in named:
+            user_id = dict(fields).get("user_id")
+            if user_id:
+                _visible_user(self.model_registry, self.requester.id, user_id)
         result = super().create(**kwargs)
         conversations = ConversationManager(
             requester_id=env("ROOT_ID"), model_registry=self.model_registry
@@ -780,11 +788,16 @@ class ArtifactManager(AbstractBLLManager, RouterMixin):
         return super().create(**_each(kwargs, placed))
 
 
-def _user_exists(model_registry: Any, user_id: str) -> None:
+def _visible_user(model_registry: Any, requester_id: str, user_id: str) -> None:
+    """A user named as a participant must be one the requester can see
+    (the users rule: a shared live team hierarchy, either direction; ROOT
+    and SYSTEM see everyone, which is how the server seats participants on
+    its own account). An invisible user is a 404, as a missing one is, so
+    a known id never reaches a stranger."""
     from zephyrex.logic.BLL_Auth import UserManager
 
     try:
-        UserManager(requester_id=env("SYSTEM_ID"), model_registry=model_registry).get(
+        UserManager(requester_id=requester_id, model_registry=model_registry).get(
             id=user_id
         )
     except HTTPException:

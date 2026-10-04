@@ -141,11 +141,17 @@ class Conversations_UserModel(BaseModel):
 The extension provides static route endpoints for common operations:
 
 ### Participant Management
-- `POST /v1/conversations/{conversation_id}/participants` - Add participant to conversation
-- `DELETE /v1/conversations/{conversation_id}/participants/{user_id}` - Remove participant from conversation
+- `POST /v1/conversation/{conversation_id}/participants` - Add participant to conversation
+- `DELETE /v1/conversation/{conversation_id}/participants/{user_id}` - Remove participant from conversation
 
 ### Direct Messaging
-- `POST /v1/conversations/direct-message` - Create direct message conversation
+- `POST /v1/conversation/direct` - Create direct message conversation
+
+A participant (added by route, ability, `POST /v1/conversation/user` singly or in a batch)
+and the other side of a direct message must be a user the requester can see under the users
+rule (a shared live team hierarchy, either direction). Anyone else is a 404, the same answer
+as a missing user, and nothing is written. ROOT and SYSTEM see everyone, which is how the
+server seats participants on its own account.
 
 ### Message Threading
 - `GET /v1/conversations/{conversation_id}/messages/{message_id}/thread` - Get message thread

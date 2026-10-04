@@ -23,6 +23,8 @@ from zephyrex.extensions.conversations.BLL_Conversations import (
     ConversationManager,
     MessageManager,
 )
+from zephyrex.lib.Environment import env
+from zephyrex.testing.factories import add_user_to_team, create_user
 
 WAIT_SECONDS = 10.0
 POLL_SECONDS = 0.1
@@ -92,14 +94,19 @@ class TestConversationMessageTurn(ExtensionServerMixin):
         assert turn.payload == "Hello agent"
 
     def test_another_participants_message_is_the_owners_turn(
-        self, admin_a, user_b, model_registry
+        self, server, admin_a, team_a, model_registry
     ):
+        # A participant must be a user the owner can see, so the other
+        # participant is admin_a's teammate (this once seated user_b, a
+        # stranger, when a participant was checked as SYSTEM).
+        teammate = create_user(server)
+        add_user_to_team(server, teammate.id, team_a.id, env("USER_ROLE_ID"))
         agent, conversation = self._seated_agent(admin_a, model_registry)
         self._listen(agent.id, admin_a, model_registry)
         ConversationManager(
             requester_id=admin_a.id, model_registry=model_registry
-        ).add_participant(conversation.id, user_b.id)
-        message = self._post(conversation.id, user_b, model_registry, "from b")
+        ).add_participant(conversation.id, teammate.id)
+        message = self._post(conversation.id, teammate, model_registry, "from b")
         [turn] = self._turns(agent.id, admin_a, model_registry, minimum=1)
         assert turn.trigger_message_id == message.id
         assert turn.user_id == admin_a.id
